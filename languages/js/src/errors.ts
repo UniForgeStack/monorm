@@ -59,6 +59,82 @@ export class DecodeError extends ORMError {
   }
 }
 
+/** The text of a `ValidationError`: the messages with no field, then `path: message`; the same text in every language. */
+function validationText(fields: ReadonlyMap<string, readonly string[]>, nonFieldMessages: readonly string[]): string {
+  const parts = [...nonFieldMessages, ...[...fields].flatMap(([path, list]) => list.map(m => `${path}: ${m}`))];
+  return parts.length > 0 ? parts.join("; ") : "validation failed";
+}
+
+/**
+ * App code rejects a value: messages per field path, and messages with no field.
+ * A path joins field names and list indexes with dots: `address.city`, `lines.2.qty`.
+ * A dot in a field name is not escaped, so the field `a.b` and the path `["a", "b"]` are one path.
+ * `fields` is a `Map` in the order of first use; a plain object would move integer-like paths to the front.
+ * `new ValidationError("text")` is one message with no field.
+ */
+export class ValidationError extends ORMError {
+  override name = "ValidationError";
+  readonly #fields = new Map<string, string[]>();
+  readonly #nonFieldMessages: string[] = [];
+
+  constructor(
+    fields?: Readonly<Record<string, string | readonly string[]>> | string,
+    options: { readonly nonFieldMessages?: readonly string[] } = {},
+  ) {
+    super("validation failed");
+    if (typeof fields === "string") {
+      this.#nonFieldMessages.push(fields);
+    } else if (fields !== undefined) {
+      for (const [path, texts] of Object.entries(fields)) {
+        for (const text of typeof texts === "string" ? [texts] : texts) this.add(path, text);
+      }
+    }
+    this.#nonFieldMessages.push(...(options.nonFieldMessages ?? []));
+    this.#refresh();
+  }
+
+  /** The messages of each field path, in the order of first use. */
+  get fields(): ReadonlyMap<string, readonly string[]> {
+    return this.#fields;
+  }
+
+  /** The messages that belong to no field. */
+  get nonFieldMessages(): readonly string[] {
+    return this.#nonFieldMessages;
+  }
+
+  /** Add `message` to the field at `path` (a dotted string, or its parts). */
+  add(path: string | readonly (string | number)[], message: string): this {
+    const key = typeof path === "string" ? path : path.join(".");
+    const list = this.#fields.get(key);
+    if (list === undefined) this.#fields.set(key, [message]);
+    else list.push(message);
+    this.#refresh();
+    return this;
+  }
+
+  /** Add a message that belongs to no field. */
+  addNonFieldMessage(message: string): this {
+    this.#nonFieldMessages.push(message);
+    this.#refresh();
+    return this;
+  }
+
+  /** `JSON.stringify` keeps the fields, which a `Map` alone would drop. */
+  toJSON(): { name: string; message: string; fields: Record<string, string[]>; nonFieldMessages: string[] } {
+    return {
+      name: this.name,
+      message: this.message,
+      fields: Object.fromEntries([...this.#fields].map(([path, texts]) => [path, [...texts]])),
+      nonFieldMessages: [...this.#nonFieldMessages],
+    };
+  }
+
+  #refresh(): void {
+    this.message = validationText(this.#fields, this.#nonFieldMessages);
+  }
+}
+
 /** `get()` matched no row. Each model has a subclass: `User.DoesNotExist`. */
 export class DoesNotExist extends ORMError {
   override name = "DoesNotExist";
@@ -114,14 +190,30 @@ const KINDS: Record<string, new (message: string) => Error> = {
   QueryError,
   SchemaError,
   TypeError,
+  ValidationError,
   WriteProtected,
 };
 
+/** The JSON line of a `[monorm:DatabaseError+]` error. */
 interface NativeFields {
   sqlstate?: string | null;
   constraint?: string | null;
   detail?: string | null;
   cause?: NativeFields & { kind: string; message: string };
+}
+
+/** The JSON line of a `[monorm:ValidationError+]` error: the fields are pairs, in the order of first use. */
+interface NativeValidation {
+  fields?: [string, string[]][];
+  nonFieldMessages?: string[];
+}
+
+function validationFromNative(native: NativeValidation): ValidationError {
+  const out = new ValidationError(undefined, { nonFieldMessages: native.nonFieldMessages ?? [] });
+  for (const [path, list] of native.fields ?? []) {
+    for (const message of list) out.add(path, message);
+  }
+  return out;
 }
 
 function build(cls: new (message: string) => Error, message: string, fields: NativeFields): Error {
@@ -148,15 +240,15 @@ export function fromNative(e: unknown): unknown {
   if (!m || !cls) {
     return e;
   }
-  // `+`: a JSON line of database error fields comes before the message.
+  // `+`: a JSON line comes before the message: the fields of a database error, or the paths and messages of a validation error.
   let message = m[3]!;
-  let fields: NativeFields = {};
+  let json: unknown = {};
   if (m[2]) {
     const nl = message.indexOf("\n");
-    fields = JSON.parse(message.slice(0, nl)) as NativeFields;
+    json = JSON.parse(message.slice(0, nl));
     message = message.slice(nl + 1);
   }
-  const out = build(cls, message, fields);
+  const out = cls === ValidationError ? validationFromNative(json as NativeValidation) : build(cls, message, json as NativeFields);
   if (e.stack) {
     const head = `${e.name}: ${e.message}`;
     const trace = e.stack.startsWith(head) ? e.stack.slice(head.length) : "";

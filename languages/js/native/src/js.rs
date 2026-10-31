@@ -139,6 +139,18 @@ impl Js {
         }
     }
 
+    /// `Array.from(v)`: the items of an iterable; a `Map` gives its `[key, value]` pairs.
+    pub fn array_from(self, v: V) -> napi::Result<V> {
+        let mut global = ptr::null_mut();
+        call!(napi_get_global(self.0, &mut global))?;
+        let array = self.get(global, "Array")?;
+        let from = self.get(array, "from")?;
+        let mut out = ptr::null_mut();
+        let args = [v];
+        call!(napi_call_function(self.0, array, from, 1, args.as_ptr(), &mut out))?;
+        Ok(out)
+    }
+
     /// `process.emitWarning(message, kind)`.
     pub fn emit_warning(self, message: &str, kind: &str) -> napi::Result<()> {
         let mut global = ptr::null_mut();

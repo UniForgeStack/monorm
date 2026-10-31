@@ -1179,7 +1179,32 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("SchemaError", py.get_type::<errors::SchemaError>())?;
     m.add("SchemaWarning", py.get_type::<errors::SchemaWarning>())?;
     m.add("MigrationError", py.get_type::<errors::MigrationError>())?;
+    m.add_function(wrap_pyfunction!(test_raise_validation_error, m)?)?;
+    m.add_function(wrap_pyfunction!(test_validation_text, m)?)?;
     Ok(())
+}
+
+/// For tests only: reads a `ValidationError` into the engine's typed error, and raises that error back, the crossing of
+/// the binding in both directions. Any other exception comes back unchanged.
+#[pyfunction]
+#[pyo3(name = "_test_raise_validation_error")]
+fn test_raise_validation_error(error: Bound<'_, PyAny>) -> PyResult<()> {
+    let error = PyErr::from_value(error);
+    Err(match errors::validation_from_py(&error) {
+        Some(v) => engine_err(monorm_engine::Error::Validation(v)),
+        None => error,
+    })
+}
+
+/// For tests only: the display text that Rust writes for a `ValidationError`.
+#[pyfunction]
+#[pyo3(name = "_test_validation_text")]
+fn test_validation_text(error: Bound<'_, PyAny>) -> PyResult<String> {
+    let error = PyErr::from_value(error);
+    match errors::validation_from_py(&error) {
+        Some(v) => Ok(v.to_string()),
+        None => Err(pyo3::exceptions::PyTypeError::new_err("expected a monorm.ValidationError")),
+    }
 }
 
 /// Static packaging compatibility metadata (separate from extension manifests).

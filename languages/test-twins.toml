@@ -474,6 +474,8 @@
 "transaction_failures::a_failed_related_set_outside_a_transaction_stays_atomic" = "change: split it out under this name and add SQLite."
 "transaction_failures::a_later_statement_raises_transaction_aborted" = "change: TS adds assert.notEqual(later.cause, first);"
 "transaction_failures::a_nested_transaction_recovers_a_failed_related_set" = "change: split it out under this name and add SQLite."
+# languages/python/tests/test_validation_error.py
+"validation_error::a_copy_keeps_the_paths_and_messages" = "one-language: Python pickle protocol; TypeScript has no copy protocol for errors"
 # languages/python/tests/test_writes.py
 "writes::copy_column_types" = "change: twin writes::insert_many_copy_column_types; TS COPYs one Profile row only: TS must add the second row with `links: []` and the Tag `priority` COPY;"
 "writes::copy_in_a_tenant_block" = "change: TS checks the tenant block and the hook event in one test: merge this test and `copy_is_seen_by_query_hooks` into"

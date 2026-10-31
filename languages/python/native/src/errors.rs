@@ -1,8 +1,9 @@
 use monorm_engine::db::{DbError, ErrorKind};
-use monorm_engine::Error;
+use monorm_engine::{Error, ValidationError};
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyTypeError, PyUserWarning, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::{PyDict, PyList};
 use pyo3::PyErr;
 
 create_exception!(_native, DatabaseError, PyException, "Error reported by the database or driver.");
@@ -93,6 +94,7 @@ pub fn engine_err(e: Error) -> PyErr {
         Error::Db(e) => db_err(e),
         Error::Value(m) => PyTypeError::new_err(m),
         Error::WriteProtected(m) => WriteProtected::new_err(format!("{m} is write-protected (@@protected_write); write it inside monorm.allow_writes({m})")),
+        Error::Validation(v) => validation_to_py(&v),
         Error::Binding(e) => match e.downcast::<PyErr>() {
             Ok(e) => *e,
             Err(e) => PyTypeError::new_err(e.to_string()),
@@ -100,7 +102,52 @@ pub fn engine_err(e: Error) -> PyErr {
     }
 }
 
-/// A Python error raised while converting a value, carried through the engine.
+/// A Python error raised while converting a value, carried through the engine unchanged.
 pub fn binding(e: PyErr) -> Error {
     Error::Binding(Box::new(e))
+}
+
+/// `monorm.errors.ValidationError`, the class of the Python layer: Rust builds and reads it by its `fields` and `non_field_messages`.
+fn validation_class<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    py.import("monorm.errors")?.getattr("ValidationError")
+}
+
+/// The fields and messages of a `ValidationError` raised in Python; `None` for any other exception.
+pub fn validation_from_py(e: &PyErr) -> Option<ValidationError> {
+    Python::attach(|py| {
+        let class = validation_class(py).ok()?;
+        let value = e.value(py);
+        if !value.is_instance(&class).unwrap_or(false) {
+            return None;
+        }
+        let fields = value.getattr("fields").ok()?.cast_into::<PyDict>().ok()?;
+        let mut out = ValidationError::new();
+        for (path, list) in fields.iter() {
+            let path: String = path.extract().ok()?;
+            for message in list.extract::<Vec<String>>().ok()? {
+                out.add(path.clone(), message);
+            }
+        }
+        for message in value.getattr("non_field_messages").ok()?.extract::<Vec<String>>().ok()? {
+            out.add_non_field_message(message);
+        }
+        Some(out)
+    })
+}
+
+/// A new Python `ValidationError` with the paths and messages of `v`.
+pub fn validation_to_py(v: &ValidationError) -> PyErr {
+    Python::attach(|py| {
+        let build = || -> PyResult<PyErr> {
+            let fields = PyDict::new(py);
+            for (path, list) in v.fields() {
+                fields.set_item(path, PyList::new(py, list)?)?;
+            }
+            let kwargs = PyDict::new(py);
+            kwargs.set_item("non_field_messages", PyList::new(py, v.non_field_messages())?)?;
+            let value = validation_class(py)?.call((fields,), Some(&kwargs))?;
+            Ok(PyErr::from_value(value))
+        };
+        build().unwrap_or_else(|e| e)
+    })
 }

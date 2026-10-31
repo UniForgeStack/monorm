@@ -1058,7 +1058,13 @@ const post = await postFactory.create();
 Errors map to classes with Python's names: `ORMError`, plus `DatabaseError`,
 `IntegrityError`, `LockNotAvailable`, `TransactionAborted`, `QueryError`, `SchemaError`, `NotConnected`,
 `NotLoaded`, `TransactionRequired`, `DoesNotExist`, `MultipleObjectsReturned`,
-`MigrationError`, `WriteProtected` and `VersionConflict`. Values of the wrong type throw a `TypeError` before any SQL runs.
+`MigrationError`, `WriteProtected`, `VersionConflict` and `ValidationError`. Values of the wrong type throw a `TypeError` before any SQL runs.
+
+A `ValidationError` has `fields` (a `Map` from a path such as `address.city` or `lines.2.qty` to a list of messages, in the order of first use) and `nonFieldMessages` (the messages with no field).
+`fields` is a `Map` because a plain object moves integer-like paths to the front.
+`add(path, message)` takes a dotted string or an array such as `["lines", 2, "qty"]`; `addNonFieldMessage(message)` adds a message with no field.
+A dot in a field name is not escaped: the field `a.b` and the path `["a", "b"]` are one path.
+The `message` text and the order of the paths are the same as in Python (see `docs/api/python-api.md`, "ValidationError").
 
 A `DatabaseError` (and its subclasses) has `sqlstate`, `constraint` and `detail`, each `null` when the database did not give it.
 They are the same as in Python (see `docs/api/python-api.md`, "Database errors"): SQLite constraint failures get the Postgres SQLSTATE, and only Postgres gives `constraint` and `detail`.

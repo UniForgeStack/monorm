@@ -1,4 +1,5 @@
 use crate::db::DbError;
+use crate::validation::ValidationError;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -17,6 +18,8 @@ pub enum Error {
     Value(String),
     /// A write to a `@@protected_write` model (named here) outside a scope that allows it.
     WriteProtected(String),
+    /// App code rejected a value: messages per field path, and messages with no field.
+    Validation(ValidationError),
     /// An error a binding raised itself while converting its values (e.g. a Python
     /// exception), handed back to it unchanged.
     Binding(Box<dyn std::error::Error + Send + Sync>),
@@ -37,9 +40,16 @@ impl std::fmt::Display for Error {
         match self {
             Error::Query(m) | Error::Schema(m) | Error::Migration(m) | Error::Value(m) => f.write_str(m),
             Error::WriteProtected(m) => write!(f, "{m} is write-protected (@@protected_write); write it inside a scope that allows writes to {m}"),
+            Error::Validation(e) => write!(f, "{e}"),
             Error::Db(e) => write!(f, "{e}"),
             Error::Binding(e) => write!(f, "{e}"),
         }
+    }
+}
+
+impl From<ValidationError> for Error {
+    fn from(e: ValidationError) -> Self {
+        Error::Validation(e)
     }
 }
 

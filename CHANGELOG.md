@@ -4,6 +4,7 @@ All notable changes are listed here, in the [Keep a Changelog](https://keepachan
 
 ## [Unreleased]
 
+- `ValidationError` in Python and TypeScript: messages per field path (`address.city`, `lines.2.qty`) and messages with no field (`non_field_messages`, `nonFieldMessages` in TypeScript). A dot in a field name is not escaped. It crosses the binding as a typed error, and Rust code reads it as `monorm_engine::ValidationError`.
 - `monorm init [dir]` starts a Python or TypeScript project: it asks for the language, the tool, the database and the built-in extensions, and flags answer each question. `uvx monorm init`, `python -m monorm init`, `npx monorm init` and `npm create monorm` run the same code. The PyPI package now has a `monorm` console script, and `create-monorm` depends on `@ufstack/monorm`.
 
 ## [0.1.2] - 2026-10-31
