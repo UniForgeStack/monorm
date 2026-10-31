@@ -74,7 +74,7 @@ test("query-set classes", async (t) => {
     assert.deepEqual((await (rows[1]!.tags as unknown as TagQueries).named("py")).map((t) => t.name), ["python"]);
   });
 
-  await t.test("a relation query set uses them", async () => {
+  await t.test("bound load query set uses custom methods", async () => {
     await seed();
     const users = await User.objects.orderBy("name").load((User.posts.objects as unknown as PostQueries).published() as never);
     assert.deepEqual(users.map((u) => (u.posts as unknown as { cached: { title: string }[] }).cached.map((p) => p.title)), [["hit", "quiet"], ["bob"]]);
