@@ -87,7 +87,7 @@ RULES: list[tuple[str, set[str]]] = [
     ),
     (r"^scripts/check-init\.sh$", set()),  # no CI job runs it
     (r"^scripts/(tests/test_internal_bench\.py|bench-hook-seam\.(py|sh))$", {"python"}),
-    (r"^scripts/check-test-twins\.py$", {"test-twins", "python"}),
+    (r"^(scripts/check-test-twins\.py|scripts/tests/test_check_test_twins\.py|languages/test-twins\.toml)$", {"test-twins", "python"}),
 ]
 COMPILED = [(re.compile(pattern), groups) for pattern, groups in RULES]
 # The paths that scripts/release/versions.py reads (TEXT_SITES and JSON_SITES); a change there also runs its check.

@@ -53,6 +53,8 @@ The schema (`schema.prisma`), the migrations and the generated SQL do not change
    The features today are `generate-python`, `generate-typescript` and `generate-rust`.
 3. Add a native crate in `languages/<lang>/native` that calls the engine and exposes the API of the language.
 4. Add tests that run on PostgreSQL and on SQLite.
+   A test case has the ID `<file stem>::<test name>` in every language, and `scripts/check-test-twins.py` fails on a case that exists in one language only.
+   Give the new language its own column in that script, and list a case that has no twin in `languages/test-twins.toml` with a reason.
 5. Add packaging for the registry of the language.
 6. Add the new commands to the check lists in [CLAUDE.md](../../CLAUDE.md) and [CONTRIBUTING.md](../../CONTRIBUTING.md).
    Keep the two lists in step.

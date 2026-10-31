@@ -39,6 +39,10 @@ class PlanTest(unittest.TestCase):
     def test_python_tests_run_the_twin_check(self) -> None:
         self.assertEqual(plan("languages/python/tests/test_x.py"), {"names", "python", "test-twins"})
 
+    def test_twin_check_files_run_the_twin_check(self) -> None:
+        for path in ("scripts/check-test-twins.py", "scripts/tests/test_check_test_twins.py", "languages/test-twins.toml"):
+            self.assertEqual(plan(path), {"names", "test-twins", "python"}, path)
+
     def test_typescript_only(self) -> None:
         self.assertEqual(plan("languages/js/src/client.ts"), {"names", "node", "create-monorm", "packages"})
         self.assertEqual(plan("languages/js/test/x.test.ts"), {"names", "node", "test-twins"})

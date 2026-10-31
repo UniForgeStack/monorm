@@ -122,3 +122,8 @@ reason = "The old `.orm` schema file syntax, named as history in the Prisma-synt
 glob = "bench/compare/js/run.mjs"
 pattern = '"orm-artifact"'
 reason = "The bench flag `--orm-artifact` that run.sh and the owner's VM runs pass (d428e01); the Python runner keeps the same name."
+
+[[allow]]
+glob = "languages/test-twins.toml"
+pattern = '::orm_(?:prefetch_is_removed|otel_is_a_member_of_the_package)"'
+reason = "Case IDs of tests that check the old name is gone; the test names keep it after a `test_` prefix."

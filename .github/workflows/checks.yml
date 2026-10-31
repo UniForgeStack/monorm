@@ -184,9 +184,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      # The script does not exist until the test-twin job lands.
-      - if: hashFiles('scripts/check-test-twins.py') != ''
-        run: python3 scripts/check-test-twins.py
+      - run: python3 scripts/check-test-twins.py
 
   checks-ok:
     needs: [affected, rust, python, node, release-scripts, docs, test-twins]
