@@ -1,12 +1,15 @@
 //! One serialized SQLite connection on a dedicated thread. No SQLite calls on Tokio.
+use std::cell::Cell as StdCell;
 use std::sync::{atomic::{AtomicBool, AtomicU64, Ordering}, mpsc, Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use rusqlite::{Connection, types::Value as SqlValue};
 use sea_query::Value;
 use tokio::sync::{oneshot, Mutex as AsyncMutex, OwnedMutexGuard};
 
-use super::{BoxFuture, Cell, DbError, DbResult, Driver, ErrorKind, Executor, RawRows, RowSet, Transaction};
+use super::deadline::Fate;
+use super::{BoxFuture, Cell, DbError, DbResult, Driver, ErrorKind, Executor, RawRows, RowSet, TimeoutOutcome, Transaction};
 use monorm_core::{dialect::Dialect, ir::{ColType, ValueType}};
 
 type Job = Box<dyn FnOnce(&mut Connection) + Send>;
@@ -37,9 +40,47 @@ fn sqlstate(extended_code: std::os::raw::c_int) -> Option<&'static str> {
 
 fn closed() -> DbError { DbError::other("SQLite connection or transaction is closed") }
 
+const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+const BUSY_STEP: Duration = Duration::from_millis(2);
+/// How often a waiting cleanup interrupts the running statement again. An interrupt that lands
+/// between two statements is lost, so one call is not enough.
+const INTERRUPT_EVERY: Duration = Duration::from_millis(25);
+
+thread_local! {
+    /// The deadline of the job on this worker thread. The busy handler is a plain `fn`.
+    static BUSY_DEADLINE: StdCell<Option<Instant>> = const { StdCell::new(None) };
+}
+
+/// Retries a busy database like `busy_timeout(5 s)`, but stops at the transaction deadline.
+fn deadline_busy(retries: i32) -> bool {
+    if BUSY_DEADLINE.get().is_some_and(|d| Instant::now() >= d) { return false; }
+    if BUSY_STEP * retries.max(0) as u32 >= BUSY_TIMEOUT { return false; }
+    std::thread::sleep(BUSY_STEP);
+    true
+}
+
+/// Back to the plain busy timeout. Setting a busy handler clears `busy_timeout`, so it is set again.
+fn restore_busy(c: &Connection) {
+    BUSY_DEADLINE.set(None);
+    let _ = c.busy_handler(None);
+    let _ = c.busy_timeout(BUSY_TIMEOUT);
+}
+
+fn with_deadline<T>(c: &mut Connection, deadline: Option<Instant>, f: impl FnOnce(&mut Connection) -> T) -> T {
+    let Some(deadline) = deadline else { return f(c) };
+    BUSY_DEADLINE.set(Some(deadline));
+    let _ = c.busy_handler(Some(deadline_busy));
+    let out = f(c);
+    restore_busy(c);
+    out
+}
+
 struct Worker {
     sender: Mutex<Option<mpsc::Sender<Job>>>,
     next_savepoint: AtomicU64,
+    interrupt: rusqlite::InterruptHandle,
+    /// A rollback failed: the connection may hold a transaction nobody can end, so it takes no more jobs.
+    quarantined: AtomicBool,
 }
 
 impl Worker {
@@ -50,6 +91,7 @@ impl Worker {
     }
 
     fn enqueue(&self, job: Job) -> DbResult<()> {
+        if self.quarantined.load(Ordering::Acquire) { return Err(closed()); }
         self.sender.lock().unwrap().as_ref().ok_or_else(closed)?.send(job).map_err(|_| closed())
     }
 }
@@ -64,23 +106,23 @@ impl SqliteDriver {
         let path = url.strip_prefix("sqlite://").ok_or_else(|| DbError::other("use sqlite://:memory: or sqlite://path/to/database.db"))?.to_owned();
         if path.is_empty() || path.contains('?') || path.contains('#') { return Err(DbError::other("SQLite URL requires a file path or :memory:; URL options are unsupported")); }
         let (sender, receive) = mpsc::channel::<Job>();
-        let (ready, opened) = oneshot::channel();
+        let (ready, opened) = oneshot::channel::<DbResult<rusqlite::InterruptHandle>>();
         std::thread::Builder::new().name("monorm-sqlite".into()).spawn(move || {
             let result = Connection::open(&path).and_then(|conn| {
-                conn.busy_timeout(std::time::Duration::from_secs(5))?;
+                conn.busy_timeout(BUSY_TIMEOUT)?;
                 conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA case_sensitive_like = ON;")?;
                 Ok(conn)
             });
             match result {
                 Ok(mut conn) => {
-                    if ready.send(Ok(())).is_err() { return; }
+                    if ready.send(Ok(conn.get_interrupt_handle())).is_err() { return; }
                     for job in receive { job(&mut conn); }
                 }
                 Err(e) => { let _ = ready.send(Err(sqlite_err(e))); }
             }
         }).map_err(|e| DbError::other(e.to_string()))?;
-        opened.await.map_err(|_| closed())??;
-        Ok(Self { worker: Arc::new(Worker { sender: Mutex::new(Some(sender)), next_savepoint: AtomicU64::new(0) }), gate: Arc::new(AsyncMutex::new(())) })
+        let interrupt = opened.await.map_err(|_| closed())??;
+        Ok(Self { worker: Arc::new(Worker { sender: Mutex::new(Some(sender)), next_savepoint: AtomicU64::new(0), interrupt, quarantined: AtomicBool::new(false) }), gate: Arc::new(AsyncMutex::new(())) })
     }
 
     async fn with<T: Send + 'static>(&self, f: impl FnOnce(&mut Connection) -> DbResult<T> + Send + 'static) -> DbResult<T> {
@@ -91,15 +133,17 @@ impl SqliteDriver {
     async fn transaction(&self, migration: bool, start: Option<super::TxStart>) -> DbResult<Arc<dyn Transaction>> {
         let guard = self.gate.clone().lock_owned().await;
         if let Some(start) = &start { start.acquired.store(true, Ordering::SeqCst); }
+        let deadline = start.as_ref().and_then(|s| s.deadline);
         let state = Arc::new(TxState {
             worker: self.worker.clone(), gate: Arc::new(AsyncMutex::new(())), guard: Mutex::new(Some(guard)),
             savepoints: Arc::new(Mutex::new(vec![])), done: AtomicBool::new(false), savepoint: None, migration, parent: Mutex::new(None),
+            fate: Arc::new(Fate::new()), deadline,
         });
         // State already owns the guard: cancellation queues rollback before releasing it.
-        self.worker.call(move |conn| {
+        self.worker.call(move |conn| with_deadline(conn, deadline, |conn| {
             if migration { conn.execute_batch("PRAGMA foreign_keys = OFF").map_err(sqlite_err)?; }
             conn.execute_batch("BEGIN IMMEDIATE").map_err(sqlite_err)
-        }).await?;
+        })).await?;
         Ok(Arc::new(SqliteTx { state }))
     }
 }
@@ -230,6 +274,8 @@ struct TxState {
     worker: Arc<Worker>, gate: Arc<AsyncMutex<()>>, guard: Mutex<Option<OwnedMutexGuard<()>>>,
     savepoints: Arc<Mutex<Vec<String>>>,
     done: AtomicBool, savepoint: Option<String>, migration: bool, parent: Mutex<Option<Arc<TxState>>>,
+    /// The root deadline passed. Shared with the savepoint states; a queued job then does nothing.
+    fate: Arc<Fate>, deadline: Option<Instant>,
 }
 
 impl Drop for TxState {
@@ -259,9 +305,9 @@ impl SqliteTx {
         let state = self.state.clone();
         self.state.worker.call(move |c| {
             // Check on the worker, in SQL queue order, including after cancellation.
-            if state.done.load(Ordering::Acquire) { return Err(closed()); }
+            if state.done.load(Ordering::Acquire) || state.fate.is_expired() { return Err(closed()); }
             super::check_savepoint(&state.savepoints.lock().unwrap(), &state.savepoint)?;
-            f(c)
+            with_deadline(c, state.deadline, f)
         }).await
     }
 
@@ -269,15 +315,17 @@ impl SqliteTx {
         let _gate = self.state.gate.lock().await;
         let state = self.state.clone();
         self.state.worker.call(move |c| {
-            if state.done.load(Ordering::Acquire) { return Err(closed()); }
+            if state.done.load(Ordering::Acquire) || state.fate.is_expired() { return Err(closed()); }
             let mut stack = state.savepoints.lock().unwrap();
             super::check_savepoint(&stack, &state.savepoint)?;
+            // The first swap decides: a root COMMIT that loses to expiry sends nothing.
+            if commit && state.savepoint.is_none() && !state.fate.commit_sent() { return Err(closed()); }
             state.done.store(true, Ordering::Release);
             let _guard = state.guard.lock().unwrap().take();
             let _parent = state.parent.lock().unwrap().take();
             let name = &state.savepoint;
             let migration = state.migration;
-            let result = (|| {
+            let result = with_deadline(c, state.deadline, |c| (|| {
                 if migration && commit {
                     let mut stmt = c.prepare("PRAGMA foreign_key_check").map_err(sqlite_err)?;
                     if stmt.query([]).map_err(sqlite_err)?.next().map_err(sqlite_err)?.is_some() {
@@ -290,7 +338,7 @@ impl SqliteTx {
                     (None, true) => "COMMIT".into(), (None, false) => "ROLLBACK".into(),
                 };
                 c.execute_batch(&sql).map_err(sqlite_err)
-            })();
+            })());
             if result.is_ok() && name.is_some() { stack.pop(); }
             if result.is_err() && name.is_none() { let _ = c.execute_batch("ROLLBACK"); }
             if migration { c.execute_batch("PRAGMA foreign_keys = ON").map_err(sqlite_err)?; }
@@ -312,16 +360,17 @@ impl Executor for SqliteTx {
             if self.state.done.load(Ordering::Acquire) { return Err(closed()); }
             let parent = self.state.clone();
             self.state.worker.call(move |c| {
-                if parent.done.load(Ordering::Acquire) { return Err(closed()); }
+                if parent.done.load(Ordering::Acquire) || parent.fate.is_expired() { return Err(closed()); }
                 let mut stack = parent.savepoints.lock().unwrap();
                 super::check_savepoint(&stack, &parent.savepoint)?;
                 let name = format!("monorm_sp_{}", parent.worker.next_savepoint.fetch_add(1, Ordering::Relaxed));
-                c.execute_batch(&format!("SAVEPOINT {name}")).map_err(sqlite_err)?;
+                with_deadline(c, parent.deadline, |c| c.execute_batch(&format!("SAVEPOINT {name}"))).map_err(sqlite_err)?;
                 stack.push(name.clone());
                 let state = Arc::new(TxState {
                     worker: parent.worker.clone(), gate: parent.gate.clone(), guard: Mutex::new(None),
                     savepoints: parent.savepoints.clone(), done: AtomicBool::new(false),
                     savepoint: Some(name), migration: false, parent: Mutex::new(Some(parent.clone())),
+                    fate: parent.fate.clone(), deadline: parent.deadline,
                 });
                 Ok(Arc::new(SqliteTx { state }) as Arc<dyn Transaction>)
             }).await
@@ -332,6 +381,48 @@ impl Executor for SqliteTx {
 impl Transaction for SqliteTx {
     fn commit(&self) -> BoxFuture<'_, DbResult<()>> { Box::pin(self.finish(true)) }
     fn rollback(&self) -> BoxFuture<'_, DbResult<()>> { Box::pin(self.finish(false)) }
+
+    fn expire(&self, grace: Duration) -> BoxFuture<'_, TimeoutOutcome> {
+        Box::pin(async move {
+            let state = self.state.clone();
+            // A lost swap means a COMMIT is sent: it runs to its end, so no interrupt may follow.
+            let won = state.fate.expire();
+            // `true` once the cleanup job runs: no interrupt may follow it, or it would hit the next lease.
+            let started = Arc::new(Mutex::new(false));
+            let (ack, acked) = oneshot::channel();
+            let job = {
+                let (state, started) = (state.clone(), started.clone());
+                Box::new(move |c: &mut Connection| {
+                    *started.lock().unwrap() = true;
+                    restore_busy(c);
+                    // An interrupted write has already rolled the transaction back.
+                    let rolled_back = (0..2).any(|_| c.is_autocommit() || { let _ = c.execute_batch("ROLLBACK"); c.is_autocommit() });
+                    if state.migration { let _ = c.execute_batch("PRAGMA foreign_keys = ON"); }
+                    state.savepoints.lock().unwrap().clear();
+                    state.done.store(true, Ordering::Release);
+                    if !rolled_back { state.worker.quarantined.store(true, Ordering::Release); }
+                    drop(state.guard.lock().unwrap().take());
+                    let _ = ack.send(rolled_back);
+                })
+            };
+            if state.worker.enqueue(job).is_err() { return TimeoutOutcome::Unknown; }
+            let interrupting = async {
+                if !won { return std::future::pending::<()>().await; }
+                loop {
+                    {
+                        let started = started.lock().unwrap();
+                        if !*started { state.worker.interrupt.interrupt(); }
+                    }
+                    tokio::time::sleep(INTERRUPT_EVERY).await;
+                }
+            };
+            let waited = tokio::time::timeout(grace, async { tokio::select! { r = acked => r.ok(), _ = interrupting => None } }).await;
+            match waited {
+                Ok(Some(true)) if won => TimeoutOutcome::RolledBack,
+                _ => TimeoutOutcome::Unknown,
+            }
+        })
+    }
 }
 
 struct Rows(Vec<Vec<SqlValue>>);

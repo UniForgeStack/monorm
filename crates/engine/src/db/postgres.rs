@@ -34,7 +34,8 @@ use tokio_postgres::types::{to_sql_checked, FromSql, IsNull, Kind, ToSql, Type};
 use tokio_postgres::binary_copy::BinaryCopyInWriter;
 use tokio_postgres::{NoTls, Row, SimpleQueryMessage, Statement};
 
-use super::{numeric, BoxFuture, Cell, DbError, DbResult, Driver, ErrorKind, Executor, RawRows, RowSet, SessionLock, Transaction};
+use super::deadline::Fate;
+use super::{numeric, BoxFuture, Cell, DbError, DbResult, Driver, ErrorKind, Executor, RawRows, RowSet, SessionLock, TimeoutOutcome, Transaction};
 use monorm_core::ir::{ColType, ValueType};
 
 const STATEMENT_CACHE_MAX: usize = 512;
@@ -640,6 +641,7 @@ impl PgDriver {
     ) -> DbResult<Arc<dyn Transaction>> {
         let client = get_client(&self.pool).await?;
         if let Some(acquired) = acquired { acquired.store(true, Ordering::SeqCst); }
+        let expiry = Arc::new(Expiry { fate: Fate::new(), cancel: client.cancel_token(), tls: self.tls.clone() });
         let session = Session { client: Some(client), finished: false, next_savepoint: 0, savepoints: vec![] };
         let sql = match isolation {
             Some(level) => format!("BEGIN ISOLATION LEVEL {}", level.sql()),
@@ -651,6 +653,7 @@ impl PgDriver {
             session: Arc::new(Mutex::new(session)),
             savepoint: None,
             done: AtomicBool::new(false),
+            expiry,
         });
         Ok(tx)
     }
@@ -810,11 +813,29 @@ impl Drop for Session {
     }
 }
 
+/// What the root transaction and its savepoints share for the deadline.
+struct Expiry {
+    /// Decides between the root COMMIT and the expiry; no statement starts after expiry won.
+    fate: Fate,
+    cancel: tokio_postgres::CancelToken,
+    tls: Option<tls::MakeRustlsConnect>,
+}
+
+impl Expiry {
+    async fn send_cancel(&self) {
+        let _ = match self.tls.clone() {
+            Some(tls) => self.cancel.cancel_query(tls).await,
+            None => self.cancel.cancel_query(NoTls).await,
+        };
+    }
+}
+
 struct PgTx {
     session: Arc<Mutex<Session>>,
     /// `None` for the outermost transaction.
     savepoint: Option<String>,
     done: AtomicBool,
+    expiry: Arc<Expiry>,
 }
 
 impl PgTx {
@@ -823,7 +844,7 @@ impl PgTx {
             return Err(closed());
         }
         let mut session = self.session.lock().await;
-        if self.done.load(Ordering::Acquire) { return Err(closed()); }
+        if self.done.load(Ordering::Acquire) || self.expiry.fate.is_expired() { return Err(closed()); }
         super::check_savepoint(&session.savepoints, &self.savepoint)?;
         let name = format!("monorm_sp_{}", session.next_savepoint);
         session.next_savepoint += 1;
@@ -834,6 +855,7 @@ impl PgTx {
             session: self.session.clone(),
             savepoint: Some(name),
             done: AtomicBool::new(false),
+            expiry: self.expiry.clone(),
         })
     }
 
@@ -846,16 +868,18 @@ impl PgTx {
             return Err(closed());
         }
         let session = self.session.lock().await;
-        if self.done.load(Ordering::Acquire) { return Err(closed()); }
+        if self.done.load(Ordering::Acquire) || self.expiry.fate.is_expired() { return Err(closed()); }
         super::check_savepoint(&session.savepoints, &self.savepoint)?;
         let client = session.client.as_ref().ok_or_else(closed)?;
         f(client).await
     }
 
-    async fn finish(&self, sql: String) -> DbResult<()> {
+    async fn finish(&self, sql: String, commit: bool) -> DbResult<()> {
         let mut session = self.session.lock().await;
-        if self.done.load(Ordering::Acquire) { return Err(closed()); }
+        if self.done.load(Ordering::Acquire) || self.expiry.fate.is_expired() { return Err(closed()); }
         super::check_savepoint(&session.savepoints, &self.savepoint)?;
+        // The swap goes right before the COMMIT: when expiry won, nothing is sent.
+        if commit && self.savepoint.is_none() && !self.expiry.fate.commit_sent() { return Err(closed()); }
         self.done.store(true, Ordering::Release);
         let client = session.client.as_ref().ok_or_else(closed)?;
         let result = client.batch_execute(&sql).await.map_err(pg_err);
@@ -937,7 +961,7 @@ impl Transaction for PgTx {
                 // and the COMMIT does not run, instead of ending as a silent ROLLBACK.
                 None => "SELECT 1; COMMIT".to_owned(),
             };
-            self.finish(sql).await.map_err(|mut e| {
+            self.finish(sql, true).await.map_err(|mut e| {
                 if self.savepoint.is_none() && e.kind == ErrorKind::TransactionAborted {
                     e.message = "the database aborted the transaction before COMMIT".to_owned();
                 }
@@ -952,7 +976,49 @@ impl Transaction for PgTx {
                 Some(sp) => format!("ROLLBACK TO SAVEPOINT {sp}; RELEASE SAVEPOINT {sp}"),
                 None => "ROLLBACK".to_owned(),
             };
-            self.finish(sql).await
+            self.finish(sql, false).await
+        })
+    }
+
+    /// When expiry wins the `Fate` swap, a statement that runs gets a cancel request. When a
+    /// COMMIT won, no cancel goes out and the connection is closed. The connection is reused
+    /// only after a confirmed `ROLLBACK` that no cancel preceded: a cancel request could hit a
+    /// later user of the connection.
+    fn expire(&self, grace: std::time::Duration) -> BoxFuture<'_, TimeoutOutcome> {
+        Box::pin(async move {
+            let won = self.expiry.fate.expire();
+            let cleanup = async {
+                let mut cancelled = false;
+                let mut session = match self.session.try_lock() {
+                    Ok(session) => session,
+                    Err(_) => {
+                        if won {
+                            self.expiry.send_cancel().await;
+                            cancelled = true;
+                        }
+                        self.session.lock().await
+                    }
+                };
+                let mut retire = cancelled || !won;
+                let mut rolled_back = false;
+                if won {
+                    if let Some(client) = session.client.as_ref() {
+                        rolled_back = client.batch_execute("ROLLBACK").await.is_ok();
+                    }
+                    retire |= !rolled_back;
+                }
+                self.done.store(true, Ordering::Release);
+                session.finished = true;
+                if let Some(obj) = session.client.take() {
+                    if retire { drop(Object::take(obj)); }
+                }
+                rolled_back
+            };
+            // A cleanup that does not end in time leaves the session unfinished: its drop closes the connection.
+            match tokio::time::timeout(grace, cleanup).await {
+                Ok(true) if won => TimeoutOutcome::RolledBack,
+                _ => TimeoutOutcome::Unknown,
+            }
         })
     }
 }
@@ -1078,10 +1144,12 @@ mod failure_tests {
             let db = driver().await;
             let obj = get_client(&db.pool).await.unwrap();
             obj.batch_execute("BEGIN; CREATE TEMP TABLE sibling_savepoints (id INTEGER PRIMARY KEY) ON COMMIT PRESERVE ROWS").await.unwrap();
+            let expiry = Arc::new(Expiry { fate: Fate::new(), cancel: obj.cancel_token(), tls: None });
             let outer = Arc::new(PgTx {
                 session: Arc::new(Mutex::new(Session { client: Some(obj), finished: false, next_savepoint: 0, savepoints: vec![] })),
                 savepoint: None,
                 done: AtomicBool::new(false),
+                expiry,
             });
             let (started, ready) = tokio::sync::oneshot::channel();
             let (rolled_back, finished) = tokio::sync::oneshot::channel();
@@ -1137,10 +1205,12 @@ mod failure_tests {
             let obj = get_client(&db.pool).await.unwrap();
             obj.batch_execute("BEGIN").await.unwrap();
             let pid: i32 = obj.query_one("SELECT pg_backend_pid()", &[]).await.unwrap().get(0);
+            let expiry = Arc::new(Expiry { fate: Fate::new(), cancel: obj.cancel_token(), tls: None });
             let tx = PgTx {
                 session: Arc::new(Mutex::new(Session { client: Some(obj), finished: false, next_savepoint: 0, savepoints: vec![] })),
                 savepoint: None,
                 done: AtomicBool::new(false),
+                expiry,
             };
             let killer = driver().await;
             killer.batch(format!("SELECT pg_terminate_backend({pid})")).await.unwrap();
