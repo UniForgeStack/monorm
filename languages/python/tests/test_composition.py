@@ -244,3 +244,52 @@ async def test_a_composed_write_returns_the_computed_field():
             assert [r.initials for r in updated] == ["MS"]
     finally:
         await db.close()
+
+
+RETURNED = """
+model Person {
+ id Int @id @default(autoincrement())
+ name String
+ bio String?
+ @@map("composition_returned_people")
+}
+model Staff {
+ salary Int
+ badge String?
+ @@composition.model(parent: "Person", parentRef: "person", childRef: "staff")
+ @@query.defaults(fields: ["name", "salary"])
+ @@map("composition_returned_staff")
+}
+"""
+
+
+@pytest.mark.skipif(not has_extension("monorm.query-defaults"), reason="requires the monorm.query-defaults package")
+async def test_a_multi_table_write_returns_the_default_selection_or_the_named_columns(observe_queries):
+    registry = monorm.Registry()
+    models = monorm.loads('datasource db {\n provider = "sqlite"\n}\n' + RETURNED, registry=registry)
+    Staff = models["Staff"]
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
+    await db.create_tables()
+    try:
+        staff = Staff.objects.using(db)
+        with observe_queries(db) as events:
+            row = await staff.insert(name="Ann", salary=1, badge="b", bio="x")
+        assert row.to_dict() == {"salary": 1, "name": "Ann"}
+        assert '"badge"' not in events[-1].sql and '"bio"' not in events[-1].sql
+        with observe_queries(db) as events:
+            named = await staff.insert(name="Bob", salary=2).returning(Staff.badge)
+        assert named.to_dict() == {"badge": None}
+        assert '"badge"' in events[-1].sql and '"salary"' not in events[-1].sql
+        everything = await staff.without_defaults().insert(name="Cid", salary=3, bio="z")
+        assert (everything.salary, everything.badge, everything.name, everything.bio) == (3, None, "Cid", "z")
+        many = await staff.insert_many([{"name": "Dee", "salary": 4}, {"name": "Eve", "salary": 5}]).returning()
+        assert [r.to_dict() for r in many] == [{"salary": 4, "name": "Dee"}, {"salary": 5, "name": "Eve"}]
+        updated = await staff.filter(Staff.name == "Ann").update(salary=9).returning()
+        assert [r.to_dict() for r in updated] == [{"salary": 9, "name": "Ann"}]
+        updated = await staff.filter(Staff.name == "Ann").update(salary=10).returning(Staff.badge)
+        assert [r.to_dict() for r in updated] == [{"badge": "b"}]
+        deleted = await staff.filter(Staff.name == "Dee").delete().returning()
+        assert [r.to_dict() for r in deleted] == [{"salary": 4, "name": "Dee"}]
+        assert await staff.without_defaults().count() == 4
+    finally:
+        await db.close()

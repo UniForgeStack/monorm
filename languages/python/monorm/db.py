@@ -284,6 +284,7 @@ class Database:
         *,
         returning: bool = True,
         without_defaults: bool | tuple[str, ...] = False,
+        model_fields: list[str] | None = None,
     ) -> Any:
         set_json, params = (json.dumps(set_[0]), set_[1]) if set_ is not None else (None, [])
         scope_json, params = _with_scope("{}", params)
@@ -307,6 +308,7 @@ class Database:
                 returning,
                 scope,
                 json.dumps(without_defaults),
+                model_fields,
             ),
             ("insert", model, fields, conflict),
         )
@@ -329,6 +331,7 @@ class Database:
         batch_size: int | None,
         db: Database | None = None,
         without_defaults: bool | tuple[str, ...] = False,
+        model_fields: list[str] | None = None,
     ) -> Any:
         filters_json, params = _with_scope(json.dumps(filters), params, key="filters")
         tx, allowed = self._tx(), allowed_writes()
@@ -346,6 +349,7 @@ class Database:
                 json.dumps(without_defaults),
                 allowed,
                 t,
+                model_fields,
             ),
             ("update_many", model, fields, filters_json),
         )

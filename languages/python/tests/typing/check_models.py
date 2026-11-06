@@ -106,7 +106,13 @@ async def check() -> None:
         await User.objects.insert(email="a@b.c", name="A").on_conflict(User.email, update=flag).returning(), User | None
     )
     User.objects.insert(email="a@b.c", name="A").on_conflict(User.email)  # E: update is required
-    User.objects.insert(email="a@b.c", name="A").returning()  # E: a plain insert gives the instance
+    assert_type(await User.objects.insert(email="a@b.c", name="A").returning(User.name), User)
+    assert_type(await User.objects.insert_many([{"email": "a", "name": "A"}]).returning(User.id), list[User])
+    assert_type(await Post.objects.filter(Post.id == 1).update(views=1).returning(Post.views), list[Post])
+    assert_type(await Post.objects.filter(Post.id == 1).delete().returning(Post.id), list[Post])
+    assert_type(await Post.objects.update_many([{"id": 1, "views": 2}]).returning(Post.views), list[Post])
+    assert_type(await User.objects.insert(email="a", name="A").on_conflict(User.email, update=True).returning(User.name), User)
+    User.objects.insert(email="a@b.c", name="A").returning(1)  # E: returning() takes columns
     assert_type(await Post.objects.filter(Post.id == 1).update(views=Post.views + 1), int)
     assert_type(await Post.objects.filter(Post.id == 1).update(views=1).returning(), list[Post])
     assert_type(await Post.objects.filter(Post.id == 1).delete(), int)

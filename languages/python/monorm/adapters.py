@@ -314,7 +314,11 @@ class PendingInsert(_AdaptedWrite, InsertOne[Any]):
 
     async def run(self) -> Any:
         prepared: PreparedInsert[Any] = prepare_insert(self.qs, self.checked)
-        return await self.operation.execute(lambda stored: prepared.execute({**self.checked, **stored}))
+        return await self.operation.execute(lambda stored: prepared.execute({**self.checked, **stored}, self._names))
+
+    async def _execute(self, returning: bool) -> Any:
+        """``returning(...)``: the same insert, as a list of the one instance."""
+        return [await self.run()]
 
 
 class PendingUpdate(_AdaptedWrite, Update[Any]):
@@ -329,29 +333,30 @@ class PendingUpdate(_AdaptedWrite, Update[Any]):
         params: list[Any] = []
         super().__init__(qs, qs._mutation_ir("update", params, checked), params)
 
-    def returning(self) -> Returning[Any]:
+    def _returning(self, names: list[str] | None) -> Returning[Any]:
         self._used = True
-        return PendingReturning(self)
+        return PendingReturning(self, names)
 
-    async def run(self, returning: bool = False) -> Any:
+    async def run(self, returning: bool = False, names: list[str] | None = None) -> Any:
         prepared: PreparedUpdate[Any] = prepare_update(self.qs, self.checked)
         return await self.operation.execute(
-            lambda stored: prepared.execute({**self.checked, **stored}, returning=returning)
+            lambda stored: prepared.execute({**self.checked, **stored}, returning=returning, names=names)
         )
 
 
 class PendingReturning(Returning[Any]):
     """``PendingUpdate.returning()``: ``await`` gives the rows of the update."""
 
-    __slots__ = ("_update",)
+    __slots__ = ("_update", "_names")
 
-    def __init__(self, update: PendingUpdate):
-        super().__init__(update.qs, update._ir, update._params)
+    def __init__(self, update: PendingUpdate, names: list[str] | None):
+        super().__init__(update.qs, update._returning_ir(names), update._params)
         self._update = update
+        self._names = names
 
     def __await__(self) -> Generator[Any, None, Any]:
         self._used = True
-        return self._update.run(returning=True).__await__()
+        return self._update.run(returning=True, names=self._names).__await__()
 
 
 class PendingInsertMany(InsertMany[Any]):
@@ -379,6 +384,7 @@ class PendingInsertMany(InsertMany[Any]):
         def statement(stored: Mapping[Any, Any]) -> Awaitable[Any]:
             fields, aligned, provided = prepare_rows(model, _fill_rows(self.rows, stored))
             insert: InsertMany[Any] = InsertMany(self._qs, fields, aligned, provided, batch_size=self._batch_size)
+            insert._names = self._names
             insert._used = True
             return insert._execute(returning)
 
@@ -405,6 +411,7 @@ class PendingUpdateMany(UpdateMany[Any]):
 
         def statement(stored: Mapping[Any, Any]) -> Awaitable[Any]:
             update = UpdateMany(self._qs, _fill_rows(self.rows, stored), self._batch_size)
+            update._names = self._names
             update._used = True
             return update._run(returning)
 

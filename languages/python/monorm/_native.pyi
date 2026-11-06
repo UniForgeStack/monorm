@@ -58,6 +58,7 @@ class Schema:
         params: list[Any],
         batch_size: int | None = None,
         returning: bool = False,
+        model_fields: list[str] | None = None,
         without_defaults: str = "false",
     ) -> str: ...
     def __init__(self, schema_json: str, classes: dict[str, type] | None = None, packages: dict[str, str] | None = None) -> None: ...  # no `packages`: hook bindings stay unresolved
@@ -122,6 +123,7 @@ class Engine:
         params: list[Any],
         batch_size: int | None = None,
         returning: bool = False,
+        model_fields: list[str] | None = None,
         without_defaults: str = "false",
     ) -> str: ...
     def prefetch(
@@ -163,6 +165,7 @@ class Engine:
         returning: bool = True,
         scope: str | None = None,
         without_defaults: str = "false",
+        model_fields: list[str] | None = None,
     ) -> Awaitable[Any]: ...
     def copy_insert(
         self,
@@ -198,6 +201,7 @@ class Engine:
         without_defaults: str = "false",
         allowed: Sequence[str] = ...,
         trace: Trace | None = None,
+        model_fields: list[str] | None = None,
     ) -> Awaitable[Any]: ...
     def begin(self, tx: Transaction | None = None) -> Awaitable[Transaction]: ...
     def advisory_lock(

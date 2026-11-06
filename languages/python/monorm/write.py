@@ -225,6 +225,26 @@ def _field_names(model: type[Model], columns: tuple[ColumnRef[Any], ...], what: 
     return names
 
 
+def returning_names(model: type[Model], columns: tuple[Any, ...], what: str = "returning") -> list[str] | None:
+    """The stored field names of the columns given to ``returning(...)``; ``None`` for the default selection.
+    Only plain columns of the model: a relation, labeled set or path is read with ``monorm.of(rows).load(...)``."""
+    from .expr import no_alias
+    from .nested import NestedRef
+
+    names: list[str] = []
+    for c in columns:
+        if not isinstance(c, ColumnRef) or c._root is not model or c._path:
+            raise TypeError(
+                f"{what}() takes columns of {model.__name__}, got {c!r}; "
+                "load relations of the returned rows with monorm.of(rows).load(...)"
+            )
+        no_alias(c)
+        names.extend(c._load_names() if isinstance(c, NestedRef) else [c._field.name])
+    if len(set(names)) != len(names):
+        raise TypeError(f"{what}() names a field twice")
+    return names or None
+
+
 def _index_names(model: type[Any], index: IndexRef | Sequence[IndexRef] | None) -> list[str] | None:
     if index is None:
         return None
@@ -248,6 +268,7 @@ class _Insert:
         "_update",
         "_set",
         "_batch_size",
+        "_names",
         "_used",
     )
 
@@ -276,6 +297,7 @@ class _Insert:
         self._update = update  # None: DO NOTHING
         self._set = set_  # DO UPDATE assignments (IR) and their parameters
         self._batch_size = batch_size
+        self._names: list[str] | None = None  # returning(...) columns; None: the default selection
         self._used = False
 
     def _with_conflict(
@@ -344,6 +366,7 @@ class _Insert:
             "set": self._set[0] if self._set else [],
             "indexes": self._indexes,
             "without_defaults": self._qs._without_defaults,
+            "model_fields": self._names,
         }
         from .db import _with_scope
 
@@ -378,6 +401,7 @@ class _Insert:
             self._indexes,
             returning=returning,
             without_defaults=self._qs._without_defaults,
+            model_fields=self._names,
         )
 
     def __del__(self) -> None:
@@ -444,6 +468,13 @@ class InsertOne(_Insert, Generic[M]):
         write assignments of the model unless the call sets their fields. ``await`` gives the affected-row count; ``.returning()`` the row."""
         return self._with_conflict(UpsertOne, columns, index, update, update_fields, update_values)  # type: ignore[no-any-return]
 
+    def returning(self, *columns: ColumnRef[Any]) -> InsertReturning[M]:
+        """Give the instance with only ``columns`` (and the key) loaded; without columns, the
+        default selection. Other fields raise ``NotLoaded``."""
+        self._names = returning_names(self._qs.model, columns)
+        self._used = True
+        return InsertReturning(self, one=True)
+
     def __await__(self) -> Generator[Any, None, M]:
         self._used = True
         return self._one().__await__()
@@ -459,9 +490,10 @@ class UpsertOne(_Insert, Generic[R_co]):
 
     __slots__ = ()
 
-    def returning(self) -> InsertReturning[R_co]:
+    def returning(self, *columns: ColumnRef[Any]) -> InsertReturning[R_co]:
         """``RETURNING`` the row: ``await`` gives the instance, ``None`` when
-        ``update=False`` skipped the row."""
+        ``update=False`` skipped the row. With ``columns``, the instance holds those and the key."""
+        self._names = returning_names(self._qs.model, columns)
         self._used = True
         return InsertReturning(self, one=True)
 
@@ -498,9 +530,11 @@ class InsertMany(_Insert, Generic[M]):
         neither, every given field except the conflict columns is overwritten."""
         return self._with_conflict(InsertMany, columns, index, update, update_fields, update_values)  # type: ignore[no-any-return]
 
-    def returning(self) -> InsertReturning[list[M]]:
+    def returning(self, *columns: ColumnRef[Any]) -> InsertReturning[list[M]]:
         """``RETURNING`` the rows: ``await`` gives the instances in input order; rows
-        that ``update=False`` skipped are left out."""
+        that ``update=False`` skipped are left out. With ``columns``, each instance holds those and
+        the key; without, the default selection."""
+        self._names = returning_names(self._qs.model, columns)
         self._used = True
         return InsertReturning(self, one=False)
 
@@ -600,11 +634,22 @@ class _SetStatement(Generic[M]):
         self._params = params
         self._used = False
 
-    def returning(self) -> Returning[M]:
+    def returning(self, *columns: ColumnRef[Any]) -> Returning[M]:
         """Run with ``RETURNING`` and give the affected rows as instances instead of a
-        count."""
+        count. With ``columns``, the instances hold those and the key; without, the default selection."""
+        return self._returning(returning_names(self._qs.model, columns))
+
+    def _returning(self, names: list[str] | None) -> Returning[M]:
         self._used = True
-        return Returning(self._qs, None if self._ir is None else {**self._ir, "returning": True}, self._params)
+        return Returning(self._qs, self._returning_ir(names), self._params)
+
+    def _returning_ir(self, names: list[str] | None) -> dict[str, Any] | None:
+        if self._ir is None:
+            return None
+        ir = {**self._ir, "returning": True}
+        if names is not None:
+            ir["model_fields"] = names
+        return ir
 
     def inspect(self) -> QueryInspection:
         """Inspect this mutation without executing it."""
@@ -696,7 +741,7 @@ class UpdateMany(Generic[M]):
     """``update_many``: ``await`` gives the number of rows updated; ``.returning()`` the
     rows."""
 
-    __slots__ = ("_qs", "_fields", "_rows", "_batch_size", "_used")
+    __slots__ = ("_qs", "_fields", "_rows", "_batch_size", "_names", "_used")
 
     def __init__(self, qs: QuerySet[M], rows: Iterable[Mapping[str, Any]], batch_size: int | None) -> None:
         if batch_size is not None and batch_size < 1:
@@ -705,6 +750,7 @@ class UpdateMany(Generic[M]):
         self._qs = qs
         self._fields, self._rows = prepare_update_rows(qs.model, rows)
         self._batch_size = batch_size
+        self._names: list[str] | None = None  # returning(...) columns; None: the default selection
         self._used = False
 
     def inspect(self) -> QueryInspection:
@@ -730,7 +776,8 @@ class UpdateMany(Generic[M]):
                 params,
                 self._batch_size,
                 returning,
-                json.dumps(self._qs._without_defaults),
+                model_fields=self._names,
+                without_defaults=json.dumps(self._qs._without_defaults),
             )
         )
 
@@ -754,10 +801,13 @@ class UpdateMany(Generic[M]):
             self._batch_size,
             self._qs._db,
             self._qs._without_defaults,
+            self._names,
         )
 
-    def returning(self) -> _UpdateManyReturning[M]:
-        """Run with ``RETURNING`` and give the updated rows instead of a count."""
+    def returning(self, *columns: ColumnRef[Any]) -> _UpdateManyReturning[M]:
+        """Run with ``RETURNING`` and give the updated rows instead of a count. With ``columns``,
+        the instances hold those and the key; without, the default selection."""
+        self._names = returning_names(self._qs.model, columns)
         self._used = True
         return _UpdateManyReturning(self)
 

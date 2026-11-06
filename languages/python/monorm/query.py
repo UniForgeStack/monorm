@@ -1035,12 +1035,21 @@ class QuerySet(Generic[M]):
         self._standalone()
         return self._query_ir("select", params, ctes=ctes)[0]
 
+    def _no_load(self, op: str) -> None:
+        if self._loads or self._model_fields is not None:
+            raise TypeError(
+                f"{op}() returns what returning(...) selects, not what load() selects; "
+                f"call {op}(...).returning({self._model.__name__}.<column>, ...) instead"
+            )
+
     def _mutation_ir(
         self, op: str, params: list[Any], values: Mapping[str, Any] | None = None, *, guard: bool = True
     ) -> dict[str, Any]:
         """The IR of a write. ``guard=False`` skips the unfiltered-write check: the shared query set of
-        ``update_many`` has no filter by design, and each row is matched by its key."""
+        ``update_many`` has no filter by design, and each row is matched by its key. A write takes no
+        ``load()`` selection: ``returning(...)`` carries it as ``model_fields``."""
         self._standalone()
+        self._no_load(op)
         if self._limit is not None or self._offset is not None:
             raise QueryError(f"{op}() is not supported on a sliced query set")
         if self._lock is not None:
@@ -1059,8 +1068,6 @@ class QuerySet(Generic[M]):
             ir["without_defaults"] = self._without_defaults
         if self._without_root_filter:
             ir["without_root_filter"] = True
-        if self._model_fields is not None:
-            ir["model_fields"] = list(self._model_fields)
         if values is not None:
             ir["set"] = assignments(self._model, values, ctx)
         return ctx.finish(ir)
@@ -1365,8 +1372,10 @@ class QuerySet(Generic[M]):
 
     def insert(self, **values: Any) -> InsertOne[M]:
         """``INSERT`` one row; ``await`` gives the new instance with database defaults
-        (id, timestamps) filled in. Chain ``.on_conflict(...)`` for an upsert."""
+        (id, timestamps) filled in. Chain ``.on_conflict(...)`` for an upsert.
+        ``.returning(*columns)`` loads only those columns (and the key)."""
         self._standalone()
+        self._no_load("insert")
         split = adapters.split(self._model, values)
         if split is not None:
             values, pending = split
@@ -1443,6 +1452,7 @@ class QuerySet(Generic[M]):
         ``copy=True`` loads the rows with Postgres ``COPY`` instead, for large imports:
         ``await`` gives the row count, and ``on_conflict()`` is not available."""
         self._standalone()
+        self._no_load("insert_many")
         checked, pending = adapters.split_rows(self._model, rows)
         if pending:
             if copy:
@@ -1910,7 +1920,8 @@ class BoundQuerySet(Generic[M]):
 
     async def _write(self, build: Callable[[QuerySet[M]], Returning[M]]) -> list[M]:
         """Run the ``RETURNING`` statement that ``build`` makes of the bound query, fill the
-        objects whose rows it returns, and give those objects in input order."""
+        objects whose rows it returns, and give those objects in input order. The columns that
+        the bound set loads become the ``returning(...)`` columns."""
         from ._loading import merge
 
         query = self._query()
@@ -1919,7 +1930,12 @@ class BoundQuerySet(Generic[M]):
             group = meta.leaf_group
             held = [n for n in meta.field_names if any(n in o.__dict__ or group.get(n) in o.__dict__ for o in self._objs)]
             query = query.load(*(ColumnRef(self._qs._model, (), meta.fields[n]) for n in held))
-        returned = {row.pk: row for row in await build(query)}
+        names = None if query._model_fields is None else list(query._model_fields)
+        query = query._clone(_loads=(), _model_fields=None)._derived()
+        statement = build(query)
+        if names is not None and statement._ir is not None:
+            statement._ir = {**statement._ir, "model_fields": names}
+        returned = {row.pk: row for row in await statement}
         if len(self._objs) == 1 and len(returned) == 1:
             # a key change returns the row under its new key
             merge(self._objs[0], next(iter(returned.values())), True)

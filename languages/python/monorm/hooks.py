@@ -32,12 +32,15 @@ class PreparedInsert(Generic[M]):
         self._qs = qs
         self._values = dict(values)
 
-    async def execute(self, values: Mapping[str, Any] | None = None) -> M:
-        """Insert ``values`` (by default the checked values) and give the new instance."""
+    async def execute(self, values: Mapping[str, Any] | None = None, names: list[str] | None = None) -> M:
+        """Insert ``values`` (by default the checked values) and give the new instance, with the
+        fields ``names`` (the default selection without them)."""
         from .db import resolve
 
         fields, rows, _ = prepare_rows(self._qs.model, [self._values if values is None else values])
-        objs: list[M] = await resolve(self._qs._db)._insert(self._qs.model._meta.name, fields, rows, db=self._qs._db)
+        objs: list[M] = await resolve(self._qs._db)._insert(
+            self._qs.model._meta.name, fields, rows, db=self._qs._db, model_fields=names
+        )
         return objs[0]
 
 
@@ -52,12 +55,14 @@ class PreparedUpdate(Generic[M]):
         #: The filters pin one row by a non-null primary key or unique field.
         self.unique = unique
 
-    async def execute(self, values: Mapping[str, Any] | None = None, *, returning: bool = False) -> int | list[M]:
+    async def execute(
+        self, values: Mapping[str, Any] | None = None, *, returning: bool = False, names: list[str] | None = None
+    ) -> int | list[M]:
         """Update the matching rows to ``values`` (by default the checked values);
-        with ``returning``, give the rows."""
+        with ``returning``, give the rows with the fields ``names`` (the default selection without them)."""
         statement = Update.build(self._qs, self._values if values is None else values)
         if returning:
-            return await statement.returning()
+            return await statement._returning(names)
         return await statement
 
 
