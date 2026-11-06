@@ -7,6 +7,13 @@ There is no Rust runner yet.
 - `python/run.py` runs the contenders `orm`, `django-sync`, `django-async`, `sqlalchemy-sync` (psycopg) and `sqlalchemy-async` (asyncpg) (and `orm-all`, see below).
 - `js/run.mjs` runs the contenders `orm`, `prisma`, `drizzle` and `pg` on Node, and `orm`, `prisma` and `drizzle` on Bun.
 
+## Next run: add `yara-orm`
+
+Add `yara-orm` (PyPI, 1.19.1 on 2026-11-06) as a Python contender in `python/run.py`, then run it with the next cloud run.
+It is an async ORM with a Rust engine (PyO3, tokio-postgres, deadpool), so it is the closest Python contender to `monorm`.
+On one macOS arm64 machine on 2026-11-06, it was faster than `monorm` on `get` by key (60 µs against 75 µs, 68 µs with `prepare()`) and on one insert (113 µs against 123 µs), and slower on a read of 5,000 rows (2.6 ms against 2.0 ms) (measured, 3 rounds, local PostgreSQL 18).
+Its `get()` and `filter(**eq)` cache the SQL per query shape in Python; its `bulk_create` returns only the keys.
+
 ## Full run
 
 ```bash
