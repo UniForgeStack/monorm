@@ -66,7 +66,8 @@ Enums must choose `@@storage(text)` or `@@storage(int)` explicitly. JSON and UUI
 values use text storage; `String @db.Uuid` retains UUID conversion. Dates use
 `DateTime @db.Date`, and timestamps round-trip in UTC. `now()` uses SQLite's
 `CURRENT_TIMESTAMP`. AUTOINCREMENT requires an integer primary key. Aggregates,
-windows, CTEs, sliced prefetch and bulk updates use the shared query APIs.
+windows, CTEs, sliced prefetch, bulk updates and `union()` / `union_all()` of
+`select()` queries use the shared query APIs.
 
 Unsupported features fail schema validation: exact Decimal, arrays, native enums,
 PostgreSQL extensions and declared SQL functions, native type overrides and SQL

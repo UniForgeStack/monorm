@@ -658,6 +658,44 @@ Other `Select` methods:
   terms, are rejected; `paginate({ last })` over a `distinct(on)` with more order terms is rejected.
 * There is no `lock()`: to lock rows, use `QuerySet.lock()` with `load()`.
 
+### Set operations: `union()` and `unionAll()`
+
+`select({...}).union(other)` and `.unionAll(other)` give the rows of two `select()` queries
+in one SQL statement. `union()` removes duplicate rows; `unionAll()` keeps them.
+The result is a `CompoundSelect<Row>`, not a `Select`.
+
+```ts
+const authors = User.objects.select({ id: User.id, label: User.name });
+const tags = Tag.objects.select({ id: Tag.id, label: Tag.name });
+const rows = await authors.union(tags).orderBy("label", "-id").slice(0, 20);   // { id: bigint; label: string }[]
+await authors.unionAll(tags).count();
+await User.objects.select({ id: User.id }).union(Comment.objects.select({ id: Comment.authorId })).scalars();  // (bigint | null)[]
+```
+
+* Both sides select the same keys in the same order, with the same types. The only
+  difference allowed is nullability: `bigint` and `bigint | null` give `bigint | null`.
+  Different key sets are a type error; a different order or type is a `QueryError`.
+* Each side keeps its own filters, `orderBy()`, slice and defaults. A side that has a slice
+  is cut before the set operation. A side with `orderBy()` and no slice has no ordering
+  effect on the result.
+* The final `orderBy()` takes output names only: `"id"`, or `"-id"` for descending.
+  It replaces the earlier final order. `limit()`, `offset()` and `slice()` apply to the whole
+  result and can be set once. A negative slice is a `RangeError`.
+* `union()` and `unionAll()` chain: `a.unionAll(b).union(c)` groups left to right, and
+  `a.unionAll(b.union(c))` groups the right side.
+* A `CompoundSelect` has `all()`, `require()`, `first()`, `get()` (no condition; multiple
+  rows throw `MultipleObjectsReturned`), `count()`, `exists()`, `scalar()` and
+  `scalars()` (one column only), `sql()`, `inspect()` and `explain()`. It can be awaited and
+  iterated with `for await`. It has no `filter()`, `select()`, `groupBy()`, `lock()`,
+  `last()` or `at()`: set the final order and slice instead.
+* A `CompoundSelect` is lazy and immutable. Awaiting it caches the rows; `all()` gives a fresh lazy copy.
+  `require()` applies to the final result only. A side that is already `require()`d is
+  rejected.
+* A side cannot have a CTE, an unbound `param()` or `outer()`, a model in the select list,
+  a nested, array, JSON or custom-converted column, a write or a lock.
+* Both sides use the same database. Mixed `using(...)` choices throw `QueryError`.
+  In a transaction, the statement runs on the transaction connection.
+
 ## Subqueries
 
 * `exists(qs)`.

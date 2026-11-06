@@ -880,6 +880,45 @@ A `Select` also has:
   terms, are rejected; `paginate(last=...)` over a `distinct(on)` with more order terms is rejected.
 * There is no `lock()`: to lock rows, use `QuerySet.lock()` with `load()`.
 
+### Set operations: `union()` and `union_all()`
+
+`select(...).union(other)` and `.union_all(other)` give the rows of two `select()` queries
+in one SQL statement. `union()` removes duplicate rows; `union_all()` keeps them.
+The result is a `CompoundSelect`, not a `Select`.
+
+```python
+authors = User.objects.select(User.id, User.name.label("label"))
+tags = Tag.objects.select(Tag.id, Tag.name.label("label"))
+rows = await authors.union(tags).order_by("label", "-id")[:20]     # list[Row[int, str]]
+await authors.union_all(tags).count()
+await User.objects.select(User.id).union(Comment.objects.select(Comment.author_id)).scalars()  # list[int | None]
+```
+
+* Both sides select the same output names in the same order, with the same types. The
+  only difference allowed is nullability: `int` and `int | None` give `int | None`.
+  Name a column with `.label()` to match the other side. A wrong name, count or type is a
+  `QueryError`. Type checkers reject a different column count.
+* Each side keeps its own filters, `order_by()`, slice and defaults. A side that has a slice
+  is cut before the set operation. A side with `order_by()` and no slice has no ordering
+  effect on the result.
+* The final `order_by()` takes output names only: `"id"`, or `"-id"` for descending.
+  It replaces the earlier final order. `limit()`, `offset()` and a slice apply to the whole
+  result and can be set once. A negative slice is a `ValueError`.
+* `union()` and `union_all()` chain: `a.union_all(b).union(c)` groups left to right, and
+  `a.union_all(b.union(c))` groups the right side.
+* A `CompoundSelect` has `all()`, `require()`, `first()`, `get()` (no condition; multiple
+  rows raise `MultipleObjectsReturned`), `count()`, `exists()`, `scalar()` and
+  `scalars()` (one column only), `sql()`, `inspect()` and `explain()`. It can be awaited and
+  iterated with `async for`. It has no `filter()`, `select()`, `group_by()`, `lock()`,
+  `last()` or indexing: set the final order and slice instead.
+* A `CompoundSelect` is lazy and immutable. Awaiting it caches the rows; `all()` gives a fresh lazy copy.
+  `require()` applies to the final result only. A side that is already `require()`d is
+  rejected.
+* A side cannot have a CTE, an unbound `param()` or `outer()`, a model in the select list,
+  a nested, array, JSON or custom-converted column, a write or a lock.
+* Both sides use the same database. Mixed `using(...)` choices raise `QueryError`.
+  In a transaction, the statement runs on the transaction connection.
+
 | Django | here |
 |---|---|
 | `values("id", "title")` / `values_list(...)` | `select(Post.id, Post.title)` |
