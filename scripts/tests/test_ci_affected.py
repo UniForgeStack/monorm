@@ -27,7 +27,14 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(plan(), {"names"})
 
     def test_docs_only(self) -> None:
-        self.assertEqual(plan("README.md", "docs/guides/x.md", "CONTRIBUTING.md"), {"names", "docs"})
+        self.assertEqual(plan("README.md", "CONTRIBUTING.md"), {"names", "docs"})
+
+    def test_guides_run_both_language_runners(self) -> None:
+        self.assertEqual(plan("docs/guides/x.md"), {"names", "docs", "python", "node"})
+
+    def test_docs_fixtures_run_both_language_runners(self) -> None:
+        for suffix in ("md", "json", "prisma", "py", "ts"):
+            self.assertEqual(plan(f"fixtures/docs/example.{suffix}"), {"names", "docs", "rust", "python", "node"})
 
     def test_changelog_also_feeds_the_release_check(self) -> None:
         self.assertEqual(plan("CHANGELOG.md"), {"names", "docs", "release-scripts"})

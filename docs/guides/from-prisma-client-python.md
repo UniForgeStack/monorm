@@ -25,7 +25,7 @@ MonOrm ignores the generator block, and it ignores `url`: the URL comes from `mo
 `cuid()` fails when the schema loads: `User.id: cuid() is not supported; use @client_default(uuid()) or @client_default(uuid7())` (measured).
 Existing rows keep their `cuid` values: a `String` column holds them, and only new rows get a UUID.
 
-```prisma
+```prisma file=schema.prisma
 generator client {
   provider = "prisma-client-py"
 }
@@ -54,7 +54,7 @@ model Post {
 Prisma Client Python generates the client with `prisma generate`.
 MonOrm loads the schema when the program starts, with no generation step:
 
-```python
+```python run
 import monorm
 
 models = monorm.load("schema.prisma")
@@ -100,7 +100,7 @@ await db.post.create_many(data=[
 ])
 ```
 
-```python
+```python run
 # MonOrm
 alice = await User.objects.insert(name="Alice")
 await Post.objects.insert_many([
@@ -121,7 +121,7 @@ posts = await db.post.find_many(
 )
 ```
 
-```python
+```python run
 # MonOrm
 posts = await Post.objects.filter(Post.published, Post.views > 10).order_by(-Post.views)
 ```
@@ -147,7 +147,7 @@ for user in users:
     print(user.name, [post.title for post in user.posts])
 ```
 
-```python
+```python run
 # MonOrm
 users = await User.objects.filter(User.posts.published).load(User.posts)
 for user in users:
@@ -167,8 +167,9 @@ await db.post.update(where={"id": post.id}, data={"title": "Hello again"})
 await db.post.update_many(where={"title": "Draft"}, data={"published": True})
 ```
 
-```python
+```python run
 # MonOrm
+post = await Post.objects.get(Post.title == "Hello")
 await post.update(title="Hello again")
 await Post.objects.filter(Post.title == "Draft").update(published=True)   # returns the row count
 ```
@@ -183,7 +184,7 @@ await db.post.delete(where={"id": post.id})
 await db.post.delete_many(where={"title": "Draft"})
 ```
 
-```python
+```python run
 # MonOrm
 await post.delete()
 await Post.objects.filter(Post.title == "Draft").delete()
@@ -197,7 +198,7 @@ async with db.tx() as tx:
     await tx.post.create(data={"title": "Kept", "author_id": alice.id})
 ```
 
-```python
+```python run
 # MonOrm
 async with db.transaction():
     await Post.objects.insert(title="Kept", author=alice)

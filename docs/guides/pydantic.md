@@ -1,5 +1,7 @@
 # Pydantic and other serializers (Python)
 
+<!-- docs-test: setup=blog-lite -->
+
 monorm does not generate Pydantic classes, and a model does not depend on Pydantic.
 You write the response schema, and Pydantic reads a monorm instance through its attributes.
 Other serializers that read attributes work the same way.
@@ -8,7 +10,7 @@ Other serializers that read attributes work the same way.
 
 Set `from_attributes=True` and call `model_validate`:
 
-```python
+```python run
 import datetime
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
@@ -36,7 +38,7 @@ Pydantic reads it as a missing attribute:
 
 Load the fields that the schema needs:
 
-```python
+```python run
 class UserName(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
@@ -51,7 +53,7 @@ UserName.model_validate(user)
 Load a relation before you validate.
 A to-one relation (`Post.author`) reads like a field:
 
-```python
+```python run
 class AuthorOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     name: str
@@ -70,7 +72,7 @@ A to-many relation (`User.posts`) is a `RelatedSet`, which is a query set, not a
 Its loaded rows are in `.cached`.
 Give the schema field a `BeforeValidator` that reads `.cached`:
 
-```python
+```python run
 from typing import Annotated, TypeVar
 from pydantic import BeforeValidator
 

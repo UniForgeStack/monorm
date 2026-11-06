@@ -1,18 +1,20 @@
 # Loading values onto an instance
 
+<!-- docs-test: setup=blog-lite -->
+
 An instance can load more values after a query.
 It takes the same load arguments as a query set.
 This guide is for both languages.
 The internals are in [reference-loading.md](../contracts/reference-loading.md).
 
-```python
+```python run
 await post.load(Post.body, Post.author, Post.comments)
 await post.load(Post.author.name)
 await post.load(Post.comments.objects.filter(Comment.body == "hello").label("matching_comments"))
 await post.load(Post.author, reload=True)
 ```
 
-```typescript
+```typescript run
 const loaded = await post.load(Post.body, Post.author, Post.comments);
 await post.load(Post.author.name);
 await post.load(Post.comments.objects.filter(Comment.body.eq("hello")).label("matchingComments"));
