@@ -231,6 +231,7 @@ interface Addon {
   cliMigrateArgs(argv: string[]): (string | null)[] | null;
   listMigrations(dir: string): string[][];
   findMigration(dir: string, name: string): string[];
+  squashMigration(dir: string, to: string, name?: string | null): string[];
 }
 
 /** The platforms of the bundled libraries: `${process.platform}-${process.arch}`, and `-musl` after a Linux key on a musl system. */

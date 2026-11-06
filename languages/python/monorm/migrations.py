@@ -157,6 +157,14 @@ class Migrations:
         folders = self.schema.make_migration(str(self.directory), name, empty, self.online)
         return [Migration(f, self.directory / f) for f in folders]
 
+    def squash(self, *, to: str, name: str | None = None) -> Migration:
+        """Fold the migrations 1..``to`` (a number or a name) into one folder and delete the old folders.
+
+        The new folder lists the replaced migrations; a database that applied all of them adopts it with no SQL.
+        Hand edits inside generated folders are not kept. Reads no database."""
+        found, path = _native.squash_migration(str(self.directory), to, name)
+        return Migration(found, path)
+
 
 @dataclass(frozen=True)
 class Pulled:

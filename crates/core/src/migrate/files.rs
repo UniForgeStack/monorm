@@ -13,7 +13,9 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{plan, plan_online, DbSchema, FolderKind, MigrationPlan, Step};
+use sha2::{Digest, Sha256};
+
+use super::{plan, plan_between, plan_online, plan_squash, DbSchema, FolderKind, MigrationPlan, Step};
 use crate::schema::{Result, Schema};
 
 #[derive(Debug, Clone)]
@@ -201,6 +203,113 @@ pub fn make(dir: &Path, schema: &Schema, name: Option<&str>, empty: bool, online
         made.push((MigrationFolder { name: folder, path }, plan));
     }
     Ok(made)
+}
+
+/// Files a migration may hold that run in a host language, not in the engine.
+pub const DATA_FILES: [&str; 2] = ["data.py", "data.ts"];
+
+/// Starts each of the first lines of the `up.sql` of a squash folder; the rest of the line is the name and
+/// the checksum of a replaced migration.
+pub const REPLACES_HEADER: &str = "-- monorm: replaces";
+
+/// Hex SHA-256 of the text of an `up.sql`: the checksum that `monorm_migrations` records.
+pub fn checksum(text: &str) -> String {
+    Sha256::digest(text.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The (name, checksum) of each migration that `up_sql` replaces, from its leading [`REPLACES_HEADER`] lines.
+pub fn parse_replaces(up_sql: &str) -> std::result::Result<Vec<(String, String)>, String> {
+    let mut out = vec![];
+    for line in up_sql.lines().map_while(|l| l.strip_prefix(REPLACES_HEADER).filter(|r| r.is_empty() || r.starts_with(char::is_whitespace))) {
+        let mut words = line.split_whitespace();
+        match (words.next(), words.next(), words.next()) {
+            (Some(name), Some(sum), None) => out.push((name.to_owned(), sum.to_owned())),
+            _ => return Err(format!("bad `{REPLACES_HEADER}` line; expected `{REPLACES_HEADER} <name> <checksum>`")),
+        }
+    }
+    Ok(out)
+}
+
+fn read(path: &Path) -> Result<String> {
+    std::fs::read_to_string(path).map_err(|e| io(path, e))
+}
+
+fn first_line_is_no_tx(path: &Path) -> bool {
+    std::fs::read_to_string(path).is_ok_and(|t| t.lines().next().is_some_and(|l| l.starts_with(NO_TX_HEADER)))
+}
+
+/// A folder the online form wrote to validate constraints: every statement is `VALIDATE CONSTRAINT`.
+fn only_validates(up: &str) -> bool {
+    let mut statements = up.lines().filter(|l| !l.trim().is_empty() && !l.starts_with("--")).peekable();
+    statements.peek().is_some() && statements.all(|l| l.contains(" VALIDATE CONSTRAINT "))
+}
+
+/// Whether a generated `up.sql` is not what its snapshots give. The forms that the snapshots do not hold
+/// (a rename hint, the online `NOT VALID` form) can not be regenerated, so they are not compared.
+fn hand_edited(up: &str, previous: &DbSchema, snapshot: &DbSchema, name: &str) -> Result<bool> {
+    if up.lines().any(|l| l.starts_with("-- rename ")) || up.contains(" NOT VALID") {
+        return Ok(false);
+    }
+    let fresh = plan_between(previous, snapshot, &Default::default())?;
+    Ok(render(&fresh.up, &format!("{name}: up")) != up)
+}
+
+/// Folds the first migrations up to `to` into one folder, `<first number>_<name>` (`name` is `squashed_<last
+/// number>` by default), and deletes the folders it replaces. The new `up.sql` builds the snapshot of `to` and
+/// starts with one [`REPLACES_HEADER`] line for each replaced folder.
+///
+/// It refuses, before it writes anything, a range with a data step, a folder that holds only hand-written SQL
+/// or whose `up.sql` has a hand edit, a squash folder, or a no-transaction folder.
+pub fn squash(dir: &Path, to: &str, name: Option<&str>) -> Result<MigrationFolder> {
+    let last = find(dir, to)?;
+    let range: Vec<MigrationFolder> = list(dir)?.into_iter().take_while(|m| m.name <= last.name).collect();
+    if range.len() < 2 {
+        return Err(format!("{} is the first migration; a squash folds at least two", last.name));
+    }
+    let mut replaces = String::new();
+    let mut previous = DbSchema::default();
+    for m in &range {
+        let up_path = m.path.join("up.sql");
+        let up = read(&up_path)?;
+        if let Some(file) = DATA_FILES.iter().find(|f| m.path.join(f).is_file()) {
+            return Err(format!("{} has a data step ({file}), which depends on the schema between migrations; move it out of the range, or squash up to the migration before it", m.name));
+        }
+        if first_line_is_no_tx(&up_path) || first_line_is_no_tx(&m.path.join("down.sql")) {
+            return Err(format!("{} is a no-transaction migration; a squash does not fold it", m.name));
+        }
+        if !parse_replaces(&up).map_err(|e| format!("{}/up.sql: {e}", m.name))?.is_empty() {
+            return Err(format!("{} is a squash folder; a squash of a squash is not supported", m.name));
+        }
+        let snapshot_path = m.path.join("snapshot.json");
+        let snapshot = super::parse_snapshot(&read(&snapshot_path)?).map_err(|e| format!("{}: {e}", snapshot_path.display()))?;
+        if snapshot == previous && !only_validates(&up) {
+            return Err(format!("{} holds only hand-written SQL (its snapshot equals the one before it), and a squash would lose it; move it out of the range or delete it", m.name));
+        }
+        if hand_edited(&up, &previous, &snapshot, &m.name)? && !only_validates(&up) {
+            return Err(format!("{}/up.sql differs from the SQL its snapshots give: a squash builds the schema fresh and would lose the hand edit; undo the edit, or squash up to the migration before it", m.name));
+        }
+        replaces.push_str(&format!("{REPLACES_HEADER} {} {}\n", m.name, checksum(&up)));
+        previous = snapshot;
+    }
+    let plan = plan_squash(&previous)?;
+    let folder = format!("{}_{}", &range[0].name[..4], name.map_or_else(|| format!("squashed_{}", &last.name[..4]), slug));
+    let up = format!("{replaces}{}", render(&plan.up, &format!("{folder}: up")));
+    let snapshot = serde_json::to_string_pretty(&plan.snapshot).map_err(|e| e.to_string())? + "\n";
+    // The new folder can take the name of a replaced one, so it is written beside them and moved after the delete.
+    let staging = dir.join(".squash");
+    let _ = std::fs::remove_dir_all(&staging);
+    let write = |file: &str, text: String| std::fs::create_dir_all(&staging).map_err(|e| io(&staging, e)).and_then(|_| std::fs::write(staging.join(file), text).map_err(|e| io(&staging.join(file), e)));
+    let written = write("up.sql", up).and_then(|_| write("down.sql", render(&plan.down, &format!("{folder}: down")))).and_then(|_| write("snapshot.json", snapshot));
+    if let Err(e) = written {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Err(e);
+    }
+    for m in &range {
+        std::fs::remove_dir_all(&m.path).map_err(|e| io(&m.path, e))?;
+    }
+    let path = dir.join(&folder);
+    std::fs::rename(&staging, &path).map_err(|e| io(&path, e))?;
+    Ok(MigrationFolder { name: folder, path })
 }
 
 #[cfg(test)]

@@ -11,6 +11,7 @@
 //!   compile [-o ir.json]                          the compiled schema (JSON IR)
 //!   generate [python|typescript|rust] [-o FILE] [--import MODULE] [--query-set Model=TARGET]... [--model-methods Model=TARGET]...
 //!   makemigrations [name] [--empty] [--check]
+//!   squashmigrations --to <migration> [--name NAME]
 //!   sqlmigrate <migration> [--down]
 //!   migrate [target] [--allow-destructive]
 //!   rollback [--steps N | --to <migration>|zero] [--allow-destructive]
@@ -85,6 +86,8 @@ const COMMANDS: &str = "  init [dir] [--lang python|typescript] [--tool uv|pip|n
                                            module:Class (Python) or specifier#Export (TypeScript)
   makemigrations [name] [--empty] [--check]
                                            write the next migration from schema changes
+  squashmigrations --to <migration> [--name NAME]
+                                           fold the first migrations, up to --to, into one folder and delete them
   sqlmigrate <migration> [--down]          print a migration's SQL
   migrate [target] [--allow-destructive]   apply pending migrations; a drop on a table with rows needs the flag
   rollback [--steps N | --to <migration>|zero] [--allow-destructive]
@@ -476,6 +479,13 @@ async fn command(argv: &[String], host: Host) -> Result<i32> {
                     }
                 }
             }
+        }
+        "squashmigrations" => {
+            args.allow(command, &["--to", "--name"], 0)?;
+            let to = args.opt(&["--to"]).ok_or_else(|| Failure::Usage("squashmigrations needs --to <migration>".into()))?;
+            let folder = files::files::squash(&migrations_dir(&args, &settings)?, to, args.opt(&["--name"])).map_err(Failure::Failed)?;
+            println!("Created {}", folder.path.display());
+            eprintln!("warning: a hand edit inside a replaced folder is not kept; the new folder builds the schema fresh");
         }
         "sqlmigrate" => {
             args.allow(command, &["--down"], 1)?;

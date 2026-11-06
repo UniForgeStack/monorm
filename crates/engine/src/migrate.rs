@@ -15,8 +15,6 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use sha2::{Digest, Sha256};
-
 use monorm_core::dialect::Dialect;
 use monorm_core::migrate::files::{self, MigrationFolder};
 use monorm_core::migrate::pg::ident;
@@ -55,17 +53,18 @@ impl Migration {
         NoTx::parse(&self.up_sql()?).map_err(|e| Error::Migration(format!("{}/up.sql: {e}", self.name)))
     }
 
+    /// The (name, checksum) of each migration this one replaces: empty unless it is a squash folder.
+    pub fn replaces(&self) -> Result<Vec<(String, String)>> {
+        files::parse_replaces(&self.up_sql()?).map_err(|e| Error::Migration(format!("{}/up.sql: {e}", self.name)))
+    }
+
     /// Hex SHA-256 of `up.sql`.
     pub fn checksum(&self) -> Result<String> {
         Ok(checksum(&self.up_sql()?))
     }
 }
 
-pub fn checksum(text: &str) -> String {
-    Sha256::digest(text.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
-}
-
-pub use files::NO_TX_HEADER;
+pub use files::{checksum, DATA_FILES, NO_TX_HEADER, REPLACES_HEADER};
 
 /// The index a no-transaction script builds or drops.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,6 +113,11 @@ pub fn list(dir: &Path) -> Result<Vec<Migration>> {
 /// A migration by folder name or number (`"3"`, `"0003"`, `"0003_add_tags"`).
 pub fn find(dir: &Path, name: &str) -> Result<Migration> {
     files::find(dir, name).map(Migration::from).map_err(Error::Migration)
+}
+
+/// Folds migrations 1..=`to` into one folder (see `files::squash`); no database is read.
+pub fn squash(dir: &Path, to: &str, name: Option<&str>) -> Result<Migration> {
+    files::squash(dir, to, name).map(Migration::from).map_err(Error::Migration)
 }
 
 #[derive(Debug, Clone)]
@@ -308,9 +312,6 @@ async fn locked(
         }
     }
 }
-
-/// Files a migration may hold that run in a host language, not in this engine.
-pub const DATA_FILES: [&str; 2] = ["data.py", "data.ts"];
 
 impl Migration {
     /// The data step (`data.py` / `data.ts`) of this migration, if it has one.

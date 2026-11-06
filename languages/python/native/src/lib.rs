@@ -1235,6 +1235,14 @@ fn list_migrations(dir: PathBuf) -> PyResult<Vec<(String, PathBuf)>> {
     Ok(all.into_iter().map(|m| (m.name, m.path)).collect())
 }
 
+/// Folds the migrations up to `to` into one folder: `(name, path)`.
+#[pyfunction]
+#[pyo3(signature = (dir, to, name=None))]
+fn squash_migration(dir: PathBuf, to: &str, name: Option<&str>) -> PyResult<(String, PathBuf)> {
+    let m = engine_migrate::squash(&dir, to, name).map_err(engine_err)?;
+    Ok((m.name, m.path))
+}
+
 /// A migration folder by name or number: `(name, path)`.
 #[pyfunction]
 fn find_migration(dir: PathBuf, name: &str) -> PyResult<(String, PathBuf)> {
@@ -1286,6 +1294,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     #[cfg(feature = "cli")]
     m.add_function(wrap_pyfunction!(cli_schema, m)?)?;
     m.add_function(wrap_pyfunction!(list_migrations, m)?)?;
+    m.add_function(wrap_pyfunction!(squash_migration, m)?)?;
     m.add_function(wrap_pyfunction!(find_migration, m)?)?;
     m.add_class::<PySchema>()?;
     m.add_class::<Engine>()?;

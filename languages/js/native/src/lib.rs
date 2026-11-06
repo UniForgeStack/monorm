@@ -1466,6 +1466,13 @@ pub fn list_migrations(dir: String) -> napi::Result<Vec<Vec<String>>> {
     Ok(all.into_iter().map(|m| vec![m.name, m.path.to_string_lossy().into_owned()]).collect())
 }
 
+/// Folds the migrations up to `to` into one folder: `[name, path]`.
+#[napi]
+pub fn squash_migration(dir: String, to: String, name: Option<String>) -> napi::Result<Vec<String>> {
+    let m = engine_migrate::squash(Path::new(&dir), &to, name.as_deref()).map_err(engine_err)?;
+    Ok(vec![m.name, m.path.to_string_lossy().into_owned()])
+}
+
 /// A migration folder by name or number: `[name, path]`.
 #[napi]
 pub fn find_migration(dir: String, name: String) -> napi::Result<Vec<String>> {

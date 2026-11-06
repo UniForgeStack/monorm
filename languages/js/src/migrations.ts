@@ -130,6 +130,14 @@ export class Migrations {
     const folders = call(() => this.schema.makeMigration(this.directory, name ?? null, options.empty ?? false, this.options.online ?? false));
     return folders.map((f) => new Migration(f, join(this.directory, f)));
   }
+
+  /** Folds the migrations 1..`to` (a number or a name) into one folder and deletes the old folders.
+   * The new folder lists the replaced migrations; a database that applied all of them adopts it with no SQL.
+   * Hand edits inside generated folders are not kept. Reads no database. */
+  squash(options: { readonly to: string; readonly name?: string }): Migration {
+    const [name, path] = call(() => native().squashMigration(this.directory, options.to, options.name ?? null));
+    return new Migration(name!, path!);
+  }
 }
 
 /** A schema file read from a live database (`pull()`). */

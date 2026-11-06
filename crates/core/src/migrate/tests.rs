@@ -1784,3 +1784,198 @@ fn refresh_renders_only_for_a_materialized_view_on_postgres() {
     let lite = with_views("sqlite", "text", vec![view("Titles", BODY, json!({}))]);
     assert!(super::refresh_statement(&lite, "Titles", false).unwrap_err().contains("SQLite"));
 }
+
+fn squash_dir(label: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("monorm-squash-{label}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    dir
+}
+
+/// Three migrations: the blog, a `views` column, a `likes` column.
+fn squash_history(dir: &std::path::Path) {
+    files::make(dir, &schema(blog(vec![], json!({}))), None, false, false).unwrap();
+    files::make(dir, &schema(blog(vec![views()], json!({}))), None, false, false).unwrap();
+    files::make(dir, &schema(blog(vec![views(), field("likes", "int")], json!({}))), None, false, false).unwrap();
+}
+
+fn names(dir: &std::path::Path) -> Vec<String> {
+    files::list(dir).unwrap().into_iter().map(|m| m.name).collect()
+}
+
+#[test]
+fn squash_writes_one_folder_that_builds_the_snapshot_and_deletes_the_range() {
+    let dir = squash_dir("write");
+    squash_history(&dir);
+    let old = names(&dir);
+    let sums: Vec<String> = files::list(&dir).unwrap().iter().take(2).map(|m| files::checksum(&std::fs::read_to_string(m.path.join("up.sql")).unwrap())).collect();
+    let folder = files::squash(&dir, "2", None).unwrap();
+    assert_eq!(folder.name, "0001_squashed_0002");
+    assert_eq!(names(&dir), ["0001_squashed_0002", "0003_add_column_posts_likes"]);
+    let up = std::fs::read_to_string(folder.path.join("up.sql")).unwrap();
+    let lines: Vec<&str> = up.lines().collect();
+    assert_eq!(lines[0], format!("-- monorm: replaces {} {}", old[0], sums[0]));
+    assert_eq!(lines[1], format!("-- monorm: replaces {} {}", old[1], sums[1]));
+    assert_eq!(files::parse_replaces(&up).unwrap(), vec![(old[0].clone(), sums[0].clone()), (old[1].clone(), sums[1].clone())]);
+    assert!(up.contains("CREATE TABLE \"posts\"") && up.contains("\"views\""), "{up}");
+    let down = std::fs::read_to_string(folder.path.join("down.sql")).unwrap();
+    assert!(down.contains("DROP TABLE \"posts\"") && down.contains("DROP TABLE \"users\""), "{down}");
+    // the snapshot is the one of `--to`, so the next migration still diffs from it
+    let latest = files::latest_snapshot(&dir).unwrap();
+    assert_eq!(files::next(&dir, &schema(blog(vec![views(), field("likes", "int")], json!({})))).unwrap().up.len(), 0);
+    assert!(latest.tables.iter().any(|t| t.columns.iter().any(|c| c.name == "likes")));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn squash_to_the_last_migration_leaves_no_change_to_make() {
+    let dir = squash_dir("last");
+    squash_history(&dir);
+    let folder = files::squash(&dir, "0003_add_column_posts_likes", Some("baseline")).unwrap();
+    assert_eq!(folder.name, "0001_baseline");
+    assert_eq!(names(&dir), ["0001_baseline"]);
+    let s = schema(blog(vec![views(), field("likes", "int")], json!({})));
+    assert!(files::make(&dir, &s, None, false, false).unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn squash_may_take_the_name_of_a_replaced_folder() {
+    let dir = squash_dir("samename");
+    squash_history(&dir);
+    assert_eq!(files::squash(&dir, "2", Some("initial")).unwrap().name, "0001_initial");
+    assert_eq!(names(&dir), ["0001_initial", "0003_add_column_posts_likes"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn squash_of_sqlite_creates_the_tables_directly() {
+    let dir = squash_dir("sqlite");
+    let sqlite = |extra: Vec<Value>| {
+        let mut ir = blog(extra, json!({}));
+        ir["dialect"] = json!("sqlite");
+        schema(ir)
+    };
+    files::make(&dir, &sqlite(vec![]), None, false, false).unwrap();
+    files::make(&dir, &sqlite(vec![views()]), None, false, false).unwrap();
+    let folder = files::squash(&dir, "2", None).unwrap();
+    let up = std::fs::read_to_string(folder.path.join("up.sql")).unwrap();
+    assert!(up.contains("CREATE TABLE \"posts\"") && !up.contains("__orm_new_"), "{up}");
+    let down = std::fs::read_to_string(folder.path.join("down.sql")).unwrap();
+    assert!(down.contains("DROP TABLE"), "{down}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn squash_of_a_schema_with_an_extension_creates_it() {
+    let dir = squash_dir("extension");
+    let s = |extra: Vec<Value>| {
+        let mut ir = json!({"models": [{"name": "Doc", "table": "docs", "fields": [id(), {"name": "email", "column": "email", "type": "text", "db_type": "citext"}]}],
+                            "extensions": [{"name": "citext", "schema": "public"}]});
+        ir["models"][0]["fields"].as_array_mut().unwrap().extend(extra);
+        schema(ir)
+    };
+    files::make(&dir, &s(vec![]), None, false, false).unwrap();
+    files::make(&dir, &s(vec![views()]), None, false, false).unwrap();
+    let folder = files::squash(&dir, "2", None).unwrap();
+    let up = std::fs::read_to_string(folder.path.join("up.sql")).unwrap();
+    assert!(up.contains("CREATE EXTENSION IF NOT EXISTS \"citext\""), "{up}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn refuses(label: &str, to: &str, break_it: impl FnOnce(&std::path::Path), expect: &str) {
+    let dir = squash_dir(label);
+    squash_history(&dir);
+    break_it(&dir);
+    let before = names(&dir);
+    let err = files::squash(&dir, to, None).unwrap_err();
+    assert!(err.contains(expect), "{err}");
+    assert_eq!(names(&dir), before, "a refusal writes and deletes nothing");
+    assert!(!dir.join(".squash").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn squash_refuses_a_data_step() {
+    refuses("data", "3", |d| std::fs::write(d.join("0002_add_column_posts_views/data.py"), "").unwrap(), "data step (data.py)");
+}
+
+#[test]
+fn squash_refuses_a_folder_of_hand_written_sql() {
+    refuses("empty", "4", |d| { files::make(d, &schema(blog(vec![views(), field("likes", "int")], json!({}))), Some("manual"), true, false).unwrap(); }, "hand-written");
+}
+
+#[test]
+fn squash_refuses_a_squash_folder() {
+    let dir = squash_dir("nested");
+    squash_history(&dir);
+    files::squash(&dir, "2", None).unwrap();
+    files::make(&dir, &schema(blog(vec![views(), field("likes", "int"), field("shares", "int")], json!({}))), None, false, false).unwrap();
+    let err = files::squash(&dir, "4", None).unwrap_err();
+    assert!(err.contains("squash of a squash"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn squash_refuses_a_no_transaction_folder() {
+    refuses("notx", "3", |d| {
+        let p = d.join("0002_add_column_posts_views/up.sql");
+        let text = std::fs::read_to_string(&p).unwrap();
+        std::fs::write(&p, format!("-- monorm: no-transaction\n{text}")).unwrap();
+    }, "no-transaction");
+}
+
+#[test]
+fn squash_refuses_a_hand_edit_of_a_generated_script() {
+    refuses("edit", "3", |d| {
+        let p = d.join("0002_add_column_posts_views/up.sql");
+        let text = std::fs::read_to_string(&p).unwrap();
+        std::fs::write(&p, format!("{text}\nCREATE INDEX hand_made ON posts (id);\n")).unwrap();
+    }, "hand edit");
+}
+
+#[test]
+fn squash_keeps_a_folder_with_a_rename_hint() {
+    let dir = squash_dir("rename");
+    files::make(&dir, &schema(blog(vec![], json!({}))), None, false, false).unwrap();
+    let mut ir = blog(vec![], json!({}));
+    ir["models"][0]["table"] = json!("members");
+    ir["models"][0]["renamed_from"] = json!("users");
+    files::make(&dir, &schema(ir), None, false, false).unwrap();
+    assert_eq!(files::squash(&dir, "2", None).unwrap().name, "0001_squashed_0002");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn squash_folds_the_online_folders() {
+    let dir = squash_dir("online");
+    files::make(&dir, &schema(blog(vec![], json!({}))), None, false, true).unwrap();
+    let v2 = schema(blog(vec![views()], json!({"indexes": [{"columns": [{"field": "title"}]}],
+                                              "constraints": [{"kind": "check", "name": "t_set", "expr": "title <> ''"}]})));
+    files::make(&dir, &v2, None, false, true).unwrap();
+    // the index folder is a no-transaction folder: the squash of the whole chain is refused, a squash before it is not
+    let err = files::squash(&dir, "4", None).unwrap_err();
+    assert!(err.contains("no-transaction"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn squash_refuses_one_migration() {
+    let dir = squash_dir("one");
+    squash_history(&dir);
+    assert!(files::squash(&dir, "1", None).unwrap_err().contains("at least two"));
+    assert!(files::squash(&dir, "9", None).unwrap_err().contains("no migration"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn plan_between_goes_from_one_snapshot_to_another_and_back() {
+    let p1 = super::plan(&schema(blog(vec![], json!({}))), &DbSchema::default()).unwrap();
+    let p2 = super::plan(&schema(blog(vec![views()], json!({}))), &p1.snapshot).unwrap();
+    let between = super::plan_between(&p1.snapshot, &p2.snapshot, &Default::default()).unwrap();
+    assert_eq!(sql(&between.up), sql(&p2.up));
+    assert_eq!(sql(&between.down), sql(&p2.down));
+    let empty = DbSchema { dialect: p2.snapshot.dialect, version: p2.snapshot.version, ..Default::default() };
+    let to_empty = super::plan_between(&p2.snapshot, &empty, &Default::default()).unwrap();
+    assert!(sql(&to_empty.up).iter().any(|s| s.starts_with("DROP TABLE \"posts\"")));
+    assert_eq!(to_empty.snapshot, empty);
+}

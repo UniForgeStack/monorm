@@ -168,6 +168,37 @@ fn pg_plan(previous: &DbSchema, p: Prepared, up: &[Op], down: &[Op]) -> Migratio
     MigrationPlan { up, down, snapshot: p.current, kind: FolderKind::Main }
 }
 
+/// The migration from `previous` to `next`, from the two snapshots alone: no rename hints, and none of the
+/// checks of [`plan`]. `next` may be empty (the down plan of a squash). An empty snapshot takes the dialect of the other.
+pub fn plan_between(previous: &DbSchema, next: &DbSchema, renames: &model::Renames) -> Result<MigrationPlan> {
+    let dialect = if previous.version != 0 { previous.dialect } else { next.dialect };
+    let identity_changed = previous.identities != next.identities;
+    let fills = diff::json_backfills(previous, next, renames)?;
+    let (mut up, mut down) = if dialect == crate::dialect::Dialect::Sqlite {
+        (sqlite::steps_with(previous, next, renames, &fills)?, sqlite::steps(next, previous, &renames.reversed())?)
+    } else {
+        let mut up = diff::diff(previous, next, renames)?;
+        up.extend(fills);
+        let down = diff::diff(next, previous, &renames.reversed())?;
+        (steps(&up, next), steps(&down, previous))
+    };
+    if identity_changed { identity_step(&mut up); identity_step(&mut down); }
+    Ok(MigrationPlan { up, down, snapshot: next.clone(), kind: FolderKind::Main })
+}
+
+/// The squash of the migrations that end in `snapshot`: `up` builds it from an empty database (with its
+/// extensions), `down` removes it.
+pub fn plan_squash(snapshot: &DbSchema) -> Result<MigrationPlan> {
+    let empty = DbSchema { dialect: snapshot.dialect, version: snapshot.version, ..Default::default() };
+    let mut plan = plan_between(&empty, snapshot, &Default::default())?;
+    if snapshot.dialect == crate::dialect::Dialect::Sqlite {
+        let sql = sqlite::create_all(snapshot, false).join(";\n");
+        plan.up = if sql.is_empty() { vec![] } else { vec![Step::new("Create the schema".into(), sql, None, vec![])] };
+        if snapshot.identities.is_some() { identity_step(&mut plan.up); }
+    }
+    Ok(plan)
+}
+
 /// Shadow databases can add parentheses to equivalent native expressions.
 /// Compare their checked structure so pull and drift do not report those as changes.
 pub fn reconcile_introspection(previous: &DbSchema, current: &mut DbSchema) {
