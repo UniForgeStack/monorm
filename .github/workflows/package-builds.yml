@@ -1,5 +1,5 @@
 name: Package builds
-# Builds the one `monorm` wheel (16 files), the one npm tarball and the outside extension packages, and installs them.
+# Builds the one `monorm` wheel (24 files), the one npm tarball and the outside extension packages, and installs them.
 on:
   workflow_dispatch:
   pull_request:
@@ -8,25 +8,42 @@ on:
 permissions:
   contents: read
 jobs:
-  # A wheel holds the libraries of one platform and the npm package holds all 4, so each platform builds its own.
+  # A wheel holds the libraries of one platform and the npm package holds all 6, so each platform builds its own.
   # Linux arm64 builds on GitHub's native arm64 runner: the libraries run there, and the build needs no QEMU and no cross linker.
+  # The musl platforms build on the same Linux runners with `cargo zigbuild`; their libraries load only on Alpine.
   libraries:
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, windows-latest]
+        libc: [gnu, musl]
+        exclude:
+          - {os: macos-15, libc: musl}
+          - {os: windows-latest, libc: musl}
         include:
           - os: ubuntu-24.04
+            libc: gnu
             platform: linux-x64
             target: x86_64-unknown-linux-gnu.2.28
           - os: ubuntu-24.04-arm
+            libc: gnu
             platform: linux-arm64
             target: aarch64-unknown-linux-gnu.2.28
+          - os: ubuntu-24.04
+            libc: musl
+            platform: linux-x64-musl
+            target: x86_64-unknown-linux-musl
+            suffix: -musl
+          - os: ubuntu-24.04-arm
+            libc: musl
+            platform: linux-arm64-musl
+            target: aarch64-unknown-linux-musl
+            suffix: -musl
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     env:
       CARGO_INCREMENTAL: 0
-      # The Linux libraries target glibc 2.28, so they load on RHEL 8 and Debian 10 and later.
+      # The glibc Linux libraries target glibc 2.28, so they load on RHEL 8 and Debian 10 and later.
       MONORM_CARGO_TARGET: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@v4
@@ -36,20 +53,25 @@ jobs:
           node-version: 22
       - if: runner.os == 'Linux'
         run: python3 -m pip install --break-system-packages ziglang cargo-zigbuild
+      # A musl target links the C runtime statically by default, and then rustc emits no cdylib.
+      - if: matrix.libc == 'musl'
+        run: |
+          rustup target add "$MONORM_CARGO_TARGET"
+          echo 'RUSTFLAGS=-C target-feature=-crt-static' >> "$GITHUB_ENV"
       - run: npm ci --ignore-scripts
         working-directory: languages/js
       - name: Build the engine and the extension libraries of this platform
         run: node languages/js/scripts/assemble-bundle.mjs --collect target/bundle
-      # `PLATFORMS` in `monorm-extension-package` does not ship Linux arm64 in an outside package, so that platform builds no library of it.
+      # `PLATFORMS` in `monorm-extension-package` ships neither Linux arm64 nor a musl platform in an outside package, so those build no library of it.
       - name: Build the library of the outside extension
-        if: matrix.platform != 'linux-arm64'
+        if: matrix.platform != 'linux-arm64' && matrix.libc != 'musl'
         shell: bash
         run: |
           extra=()
           if [ -n "$MONORM_CARGO_TARGET" ]; then extra=(--zigbuild "$MONORM_CARGO_TARGET"); fi
           cargo run -q -p monorm-extension-package -- library tests/outside-extension --out target/bundle/outside-extension "${extra[@]}"
       - if: runner.os == 'Linux'
-        run: python3 scripts/check-glibc.py target/bundle/*/${{ matrix.platform }}/*.so target/bundle/engine/${{ matrix.platform }}/monorm.node
+        run: python3 scripts/check-glibc.py --libc ${{ matrix.libc == 'musl' && 'musl' || 'glibc' }} target/bundle/*/${{ matrix.platform }}/*.so target/bundle/engine/${{ matrix.platform }}/monorm.node
       # No later job runs Node on arm64, so this is the only load of the arm64 addon.
       - name: Load the Node addon of this platform
         if: matrix.platform == 'linux-arm64'
@@ -62,7 +84,7 @@ jobs:
           '
       - uses: actions/upload-artifact@v4
         with:
-          name: libraries-${{ matrix.os }}
+          name: libraries-${{ matrix.os }}${{ matrix.suffix }}
           path: target/bundle
   python:
     needs: libraries
@@ -71,6 +93,21 @@ jobs:
       matrix:
         os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, windows-latest]
         python: ['3.11', '3.12', '3.13', '3.14']
+        libc: [gnu, musl]
+        exclude:
+          - {os: macos-15, libc: musl}
+          - {os: windows-latest, libc: musl}
+        include:
+          - os: ubuntu-24.04
+            libc: musl
+            platform: linux-x64-musl
+            target: x86_64-unknown-linux-musl
+            suffix: -musl
+          - os: ubuntu-24.04-arm
+            libc: musl
+            platform: linux-arm64-musl
+            target: aarch64-unknown-linux-musl
+            suffix: -musl
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     services:
@@ -94,31 +131,41 @@ jobs:
         run: python -m pip install ziglang
       - uses: actions/download-artifact@v4
         with:
-          name: libraries-${{ matrix.os }}
+          name: libraries-${{ matrix.os }}${{ matrix.suffix }}
           path: target/bundle
       - run: python languages/python/packaging/check-dependencies.py
-      - run: python languages/python/packaging/stage.py --libraries target/bundle
+      - name: Stage the libraries
+        shell: bash
+        run: |
+          if [ "${{ matrix.libc }}" = musl ]; then platform="--platform ${{ matrix.platform }}"; fi
+          python languages/python/packaging/stage.py --libraries target/bundle $platform
       - name: Build the wheel
         shell: bash
         run: |
-          if [ "$RUNNER_OS" = Linux ]; then flags="--zig --compatibility manylinux_2_28"; else flags="--compatibility pypi"; fi
+          if [ "${{ matrix.libc }}" = musl ]; then
+            rustup target add "${{ matrix.target }}"
+            flags="--zig --target ${{ matrix.target }} --compatibility musllinux_1_2"
+          elif [ "$RUNNER_OS" = Linux ]; then flags="--zig --compatibility manylinux_2_28"; else flags="--compatibility pypi"; fi
           maturin build --release $flags --interpreter python --out target/wheels
       - run: python languages/python/packaging/check-wheel.py $(ls target/wheels/monorm-*.whl)
         shell: bash
       - if: runner.os == 'Linux'
-        run: python scripts/check-glibc.py target/wheels/monorm-*.whl
+        run: python scripts/check-glibc.py --libc ${{ matrix.libc == 'musl' && 'musl' || 'glibc' }} target/wheels/monorm-*.whl
       - name: Record the wheel size
         shell: bash
         run: |
           for wheel in target/wheels/monorm-*.whl; do
-            echo "${{ matrix.os }} py${{ matrix.python }} $(basename "$wheel"): $(wc -c < "$wheel") bytes" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "${{ matrix.os }}${{ matrix.suffix }} py${{ matrix.python }} $(basename "$wheel"): $(wc -c < "$wheel") bytes" | tee -a "$GITHUB_STEP_SUMMARY"
           done
-      - run: python -m pip install target/wheels/monorm-*.whl
+      # A musllinux wheel does not install on glibc: the Alpine steps of `consumers` install it.
+      - if: matrix.libc == 'gnu'
+        run: python -m pip install target/wheels/monorm-*.whl
         shell: bash
-      - run: python languages/python/packaging/smoke-python.py
+      - if: matrix.libc == 'gnu'
+        run: python languages/python/packaging/smoke-python.py
       - uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ matrix.os }}-${{ matrix.python }}
+          name: wheels-${{ matrix.os }}${{ matrix.suffix }}-${{ matrix.python }}
           path: target/wheels/*.whl
   npm:
     needs: libraries
@@ -149,7 +196,7 @@ jobs:
           path: target/bundle
       - run: npm ci --ignore-scripts
         working-directory: languages/js
-      - name: Assemble the package with the libraries of all 4 platforms
+      - name: Assemble the package with the libraries of all 6 platforms
         run: |
           npm run assemble
           node scripts/assemble-bundle.mjs --libraries ../../target/bundle

@@ -1,7 +1,7 @@
 // Packs `monorm`, installs the tarball in a fresh Node project and a fresh Bun project, and runs smoke-node.mjs in each.
 //   node languages/js/packaging/check-node-install.mjs
 // `npm pack` runs `prepack`: it builds `dist/` and checks that `npm run assemble` filled the package.
-// Set ORM_TEST_DATABASE_URL to run the PostgreSQL query too. Set MONORM_PACK_PLATFORMS=all to demand all 4 platforms.
+// Set ORM_TEST_DATABASE_URL to run the PostgreSQL query too. Set MONORM_PACK_PLATFORMS=all to demand all 6 platforms.
 import { execFileSync, spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";

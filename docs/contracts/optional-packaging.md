@@ -6,11 +6,13 @@ There are no native profiles, no extras and no per-extension packages.
 
 | Registry | Package | What it holds |
 | --- | --- | --- |
-| PyPI | `monorm` | 16 platform wheels (4 platforms × CPython 3.11 to 3.14). No sdist. |
-| npm | `monorm` | One tarball with the addon and the extension libraries of 4 platforms. |
+| PyPI | `monorm` | 24 platform wheels (6 platforms × CPython 3.11 to 3.14). No sdist. |
+| npm | `monorm` | One tarball with the addon and the extension libraries of 6 platforms. |
 | crates.io | `monorm` | The contracts library for authors of outside extensions. No binary. |
 
-The 4 platforms are `darwin-arm64`, `linux-arm64`, `linux-x64` and `win32-x64`.
+The 6 platforms are `darwin-arm64`, `linux-arm64`, `linux-arm64-musl`, `linux-x64`, `linux-x64-musl` and `win32-x64`.
+The musl platforms serve Alpine: their wheels are `musllinux_1_2`, and Node picks `linux-<arch>-musl` when its report names no glibc version.
+An outside extension package ships no musl library; the loader error names the missing platform key.
 The two Linux platforms need glibc 2.28 or newer.
 Another platform needs a source build.
 The engine has both PostgreSQL and SQLite, the migration and schema APIs, and both code generators.
@@ -71,8 +73,8 @@ cd languages/js && npm install && npm run build:native && npm run assemble   # N
 ```
 
 `MONORM_NATIVE=<file>` makes Node load another addon file.
-`MONORM_CARGO_TARGET=<triple>[.<glibc>]` builds with `cargo zigbuild` for that target (the Linux release uses `x86_64-unknown-linux-gnu.2.28` and `aarch64-unknown-linux-gnu.2.28`).
-`stage.py --libraries <dir>` stages libraries that another job built, and `assemble-bundle.mjs --collect <dir>` gathers the libraries of 4 platforms for the tarball.
+`MONORM_CARGO_TARGET=<triple>[.<glibc>]` builds with `cargo zigbuild` for that target (the Linux release uses `x86_64-unknown-linux-gnu.2.28` and `aarch64-unknown-linux-gnu.2.28`, and for musl `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl` with `RUSTFLAGS="-C target-feature=-crt-static"`).
+`stage.py --libraries <dir>` stages libraries that another job built, and `assemble-bundle.mjs --collect <dir>` gathers the libraries of 6 platforms for the tarball.
 `MONORM_PACK_PLATFORMS=all` makes a missing platform an error when you pack.
 
 ## Immutable adapter contract
@@ -99,7 +101,7 @@ It builds the one wheel and the one tarball of the checkout, packages the outsid
 - an outside package with a built-in id, which must give the "installed twice" error.
 
 `languages/python/packaging/check-wheel.py` checks the wheel content, `smoke-python.py` and `smoke-node.mjs` are the smoke scripts, and `languages/js/packaging/check-node-install.mjs` packs and installs the tarball offline.
-`scripts/check-glibc.py` fails when a Linux library needs a symbol version above glibc 2.28.
+`scripts/check-glibc.py` fails when a Linux library needs a symbol version above glibc 2.28; with `--libc musl` it fails on any glibc symbol and needs `libc.so` or `libc.musl-<arch>.so.1`.
 Set `ORM_TEST_DATABASE_URL` to an isolated PostgreSQL database for the PostgreSQL checks; SQLite checks use in-memory databases.
 `.github/workflows/package-builds.yml` builds the wheels and the tarball on each platform, and `extension-packages.yml` runs the seam on Linux.
 Both workflows publish nothing; `release.yml` publishes (see [RELEASING.md](../../RELEASING.md)).

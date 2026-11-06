@@ -154,7 +154,7 @@ def touch_wheel(directory: Path, name: str, version: str, tag: str):
 def pypi_dir(version: str = "0.1.0") -> Path:
     directory = Path(tempfile.mkdtemp())
     pythons = ("cp311", "cp312", "cp313", "cp314")
-    tags = ("manylinux_2_28_x86_64", "manylinux_2_28_aarch64", "macosx_11_0_arm64", "win_amd64")
+    tags = ("manylinux_2_28_x86_64", "manylinux_2_28_aarch64", "musllinux_1_2_x86_64", "musllinux_1_2_aarch64", "macosx_11_0_arm64", "win_amd64")
     assert len(pythons) * len(tags) == publish_lists.WHEELS
     for python in pythons:
         for tag in tags:
@@ -177,8 +177,8 @@ def npm_dir(version: str = "0.1.0") -> Path:
 
 
 class PublishListsTest(unittest.TestCase):
-    def test_a_release_is_16_wheels_of_one_pypi_project_and_one_npm_package(self):
-        self.assertEqual(publish_lists.PYPI, {"monorm": ("wheel",) * 16})
+    def test_a_release_is_24_wheels_of_one_pypi_project_and_one_npm_package(self):
+        self.assertEqual(publish_lists.PYPI, {"monorm": ("wheel",) * 24})
         self.assertEqual(publish_lists.NPM, ["@ufstack/monorm"])
 
     def test_a_complete_pypi_directory_passes(self):

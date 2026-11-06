@@ -139,7 +139,7 @@ The `monorm` command line comes with the Python and npm packages.
 To start a project, run `uvx monorm init my-app`, `npm create monorm my-app` or `bun create monorm my-app`.
 `monorm init` asks for the language (Python or TypeScript), the tool, the database (SQLite or PostgreSQL) and the built-in extensions.
 Flags answer each question: `--lang`, `--tool`, `--db`, `--url`, `--ext a,b` and `--yes`.
-Both packages hold PostgreSQL and SQLite. They build for 4 platforms: Linux x86-64, Linux arm64, macOS arm64 and Windows x86-64.
+Both packages hold PostgreSQL and SQLite. They build for 6 platforms: Linux x86-64 and Linux arm64 (glibc and musl, so Alpine works), macOS arm64 and Windows x86-64.
 An extension that is not built in is a separate package that you install next to `monorm` ([optional-packaging.md](docs/contracts/optional-packaging.md)).
 
 To build from source:
