@@ -655,3 +655,162 @@ async def test_online_migrate_ends_with_no_drift(tmp_path):
         assert not any("shop_name_idx" in i for i in indexes) and not any("item_shop_id_fkey" in c for c in constraints)
         assert len(await migrator.upgrade()) == 3
         assert not await migrator.drift()
+
+
+SQUASH_SHOP_TAG = GATE_SHOP.replace("  note String?\n", "  note String?\n  tag  String?\n")
+SQUASH_DOC = 'model Doc {\n  id    BigInt @id @default(autoincrement())\n  email String @db.Citext\n\n  @@map("ext_docs")\n}\n'
+
+
+def squash_history(directory, prefix):
+    """Writes three migrations (keep; shop; a tag column on shop) and gives the Migrations of the last schema."""
+    sources = [prefix + GATE_KEEP, prefix + GATE_KEEP + GATE_SHOP, prefix + GATE_KEEP + SQUASH_SHOP_TAG]
+    for source in sources:
+        Migrations(directory, models(source)).make()
+    return Migrations(directory, models(sources[-1]))
+
+
+async def migration_names(db):
+    return [r[0] for r in await db._fetch_text("SELECT name FROM monorm_migrations ORDER BY name")]
+
+
+@pytest.mark.case("migrations::squash_replays_on_a_fresh_database_with_no_drift")
+@pytest.mark.parametrize("dialect", DIALECTS)
+async def test_squash_replays_on_a_fresh_database_with_no_drift(tmp_path, dialect):
+    async with gate_database(dialect) as (db, prefix):
+        migs = squash_history(tmp_path, prefix)
+        old = [m.name for m in migs.all()]
+        squashed = migs.squash(to="2")
+        assert squashed.name == "0001_squashed_0002"
+        assert squashed.up_sql.startswith(f"-- monorm: replaces {old[0]} ")
+        assert [m.name for m in migs.all()] == [squashed.name, old[2]]
+        migrator = Migrator(db, migs)
+        assert [m.name for m in await migrator.upgrade()] == [squashed.name, old[2]]
+        assert not await migrator.drift()
+        assert await migration_names(db) == sorted([squashed.name, old[2]])
+        assert len(await migrator.downgrade(steps=2)) == 2
+        assert not await gate_has_table(db, dialect, "shop")
+
+
+@pytest.mark.case("migrations::squash_runs_the_extensions_of_the_snapshot")
+async def test_squash_runs_the_extensions_of_the_snapshot(tmp_path):
+    async with gate_database("postgres") as (db, _):
+        Migrations(tmp_path, models(GATE_KEEP)).make()
+        migs = Migrations(tmp_path, models(GATE_KEEP + SQUASH_DOC))
+        migs.make()
+        squashed = migs.squash(to="2")
+        assert 'CREATE EXTENSION IF NOT EXISTS "citext"' in squashed.up_sql
+        try:
+            await db.execute("DROP TABLE IF EXISTS ext_docs")
+            assert [m.name for m in await Migrator(db, migs).upgrade()] == [squashed.name]
+            assert not await Migrator(db, migs).drift()
+        finally:
+            await db.execute("DROP TABLE IF EXISTS ext_docs")
+
+
+@pytest.mark.case("migrations::squash_adopts_on_a_database_that_applied_the_old_migrations")
+@pytest.mark.parametrize("dialect", DIALECTS)
+async def test_squash_adopts_on_a_database_that_applied_the_old_migrations(tmp_path, dialect):
+    async with gate_database(dialect) as (db, prefix):
+        migs = squash_history(tmp_path, prefix)
+        old = [m.name for m in migs.all()]
+        await Migrator(db, migs).upgrade()
+        await db.execute("INSERT INTO shop (name) VALUES ('a')")
+        squashed = migs.squash(to="2")
+        migrator = Migrator(db, migs)
+        assert [s.applied for s in await migrator.status()] == [True, True]
+        assert await migration_names(db) == old  # status reads only
+        assert await migrator.upgrade() == []  # no SQL ran: the table keeps its row
+        assert await migration_names(db) == sorted([squashed.name, old[2]])
+        assert await gate_rows(db, "shop") == 1
+        assert not await migrator.drift()
+        assert await migrator.upgrade() == []
+
+
+@pytest.mark.case("migrations::squash_adopts_once_with_two_migrators")
+async def test_squash_adopts_once_with_two_migrators(tmp_path):
+    async with gate_database("postgres") as (db, prefix):
+        migs = squash_history(tmp_path, prefix)
+        await Migrator(db, migs).upgrade()
+        squashed = migs.squash(to="2")
+        other = await connect(models(GATE_KEEP))
+        try:
+            results = await asyncio.gather(Migrator(db, migs).upgrade(), Migrator(other, migs).upgrade())
+        finally:
+            await other.close()
+        assert results == [[], []]
+        names = await migration_names(db)
+        assert names.count(squashed.name) == 1 and len(names) == 2
+
+
+@pytest.mark.case("migrations::squash_refuses_a_partly_applied_database")
+@pytest.mark.parametrize("dialect", DIALECTS)
+async def test_squash_refuses_a_partly_applied_database(tmp_path, dialect):
+    async with gate_database(dialect) as (db, prefix):
+        migs = squash_history(tmp_path, prefix)
+        await Migrator(db, migs).upgrade(target="2")
+        before = await migration_names(db)
+        squashed = migs.squash(to="3")
+        message = re.escape(f"applied 2 of the 3 migrations that {squashed.name} replaces")
+        with pytest.raises(MigrationError, match=message):
+            await Migrator(db, migs).upgrade()
+        with pytest.raises(MigrationError, match=message):
+            await Migrator(db, migs).status()
+        assert await migration_names(db) == before
+
+
+@pytest.mark.case("migrations::squash_refuses_a_data_step_in_the_range")
+@pytest.mark.parametrize("dialect", DIALECTS)
+async def test_squash_refuses_a_data_step_in_the_range(tmp_path, dialect):
+    migs = squash_history(tmp_path, GATE_SQLITE if dialect == "sqlite" else "")
+    before = [m.name for m in migs.all()]
+    (migs.all()[1].path / "data.py").write_text("")
+    with pytest.raises(MigrationError, match="data step"):
+        migs.squash(to="3")
+    assert [m.name for m in migs.all()] == before
+
+
+@pytest.mark.case("migrations::squash_checks_the_checksums_of_replaced_migrations")
+@pytest.mark.parametrize("dialect", DIALECTS)
+async def test_squash_checks_the_checksums_of_replaced_migrations(tmp_path, dialect):
+    async with gate_database(dialect) as (db, prefix):
+        migs = squash_history(tmp_path, prefix)
+        old = [m.name for m in migs.all()]
+        await Migrator(db, migs).upgrade()
+        await db.execute(f"UPDATE monorm_migrations SET checksum = 'edited' WHERE name = '{old[1]}'")
+        migs.squash(to="3")
+        with pytest.raises(MigrationError, match=re.escape(f"{old[1]}/up.sql changed after it was applied")):
+            await Migrator(db, migs).upgrade()
+        assert await migration_names(db) == old
+
+
+@pytest.mark.case("migrations::squash_rollback_after_adoption")
+@pytest.mark.parametrize("dialect", DIALECTS)
+async def test_squash_rollback_after_adoption(tmp_path, dialect):
+    async with gate_database(dialect) as (db, prefix):
+        migs = squash_history(tmp_path, prefix)
+        await Migrator(db, migs).upgrade()
+        squashed = migs.squash(to="3")
+        migrator = Migrator(db, migs)
+        assert await migrator.upgrade() == []
+        assert [m.name for m in await migrator.downgrade()] == [squashed.name]
+        assert not await gate_has_table(db, dialect, "shop")
+        assert await migration_names(db) == []
+
+
+@pytest.mark.case("migrations::squash_of_baselined_migrations_needs_force_to_roll_back")
+@pytest.mark.parametrize("dialect", DIALECTS)
+async def test_squash_of_baselined_migrations_needs_force_to_roll_back(tmp_path, dialect):
+    async with gate_database(dialect) as (db, prefix):
+        migs = squash_history(tmp_path, prefix)
+        old = [m.name for m in migs.all()]
+        await Migrator(db, migs).upgrade()
+        flag = "1" if dialect == "sqlite" else "true"
+        await db.execute(f"UPDATE monorm_migrations SET baseline = {flag} WHERE name = '{old[0]}'")
+        squashed = migs.squash(to="3")
+        migrator = Migrator(db, migs)
+        assert await migrator.upgrade() == []
+        with pytest.raises(MigrationError, match="was baselined"):
+            await migrator.downgrade()
+        assert await gate_has_table(db, dialect, "shop")
+        assert [m.name for m in await migrator.downgrade(force=True)] == [squashed.name]
+        assert not await gate_has_table(db, dialect, "shop")

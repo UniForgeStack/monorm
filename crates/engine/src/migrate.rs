@@ -243,13 +243,28 @@ pub async fn status(conn: &dyn Executor, dir: &Path) -> Result<Vec<Status>> {
     }
     ensure_table(conn).await?;
     let mut done = applied(conn).await?;
-    let out: Vec<Status> = list(dir)?
-        .into_iter()
-        .map(|m| {
-            let at = done.remove(&m.name).map(|(_, at)| at);
-            Status { applied: at.is_some(), applied_at: at, migration: m }
-        })
-        .collect();
+    let mut out: Vec<Status> = vec![];
+    for m in list(dir)? {
+        let replaces = m.replaces()?;
+        let mut at = None;
+        if replaces.is_empty() {
+            at = done.remove(&m.name).map(|(_, at)| at);
+        } else {
+            match squash_state(&m, &replaces, &m.checksum()?, &done) {
+                Squash::Own => at = done.remove(&m.name).map(|(_, at)| at),
+                Squash::Fresh => {}
+                Squash::Replaced => at = replaces.iter().filter_map(|(r, _)| done.remove(r)).map(|(_, at)| at).max(),
+                Squash::Partial(n) => {
+                    return Err(Error::Migration(format!(
+                        "the database applied {n} of the {} migrations that {} replaces; migrate it with a release before the squash",
+                        replaces.len(),
+                        m.name
+                    )))
+                }
+            }
+        }
+        out.push(Status { applied: at.is_some(), applied_at: at, migration: m });
+    }
     if !done.is_empty() {
         let names: Vec<&str> = done.keys().map(String::as_str).collect();
         return Err(Error::Migration(format!(
@@ -260,7 +275,35 @@ pub async fn status(conn: &dyn Executor, dir: &Path) -> Result<Vec<Status>> {
     Ok(out)
 }
 
-/// Applied migrations must be a prefix of the directory and unchanged since.
+/// How the database stands to a squash folder (one with `replaces` lines).
+#[derive(Debug, PartialEq, Eq)]
+enum Squash {
+    /// The squash folder itself is recorded (it ran, or the database adopted it).
+    Own,
+    /// All the replaced migrations are recorded and the squash folder is not: adoption is due.
+    Replaced,
+    Fresh,
+    /// Only this many of the replaced migrations are recorded.
+    Partial(usize),
+}
+
+/// `own_sum` is the checksum of the squash folder. A squash named like one of the migrations it replaces
+/// shares a row with it: the checksum tells the two apart.
+fn squash_state(m: &Migration, replaces: &[(String, String)], own_sum: &str, done: &BTreeMap<String, (String, String)>) -> Squash {
+    if let Some((sum, _)) = done.get(&m.name) {
+        if sum == own_sum || !replaces.iter().any(|(r, _)| *r == m.name) {
+            return Squash::Own;
+        }
+    }
+    match replaces.iter().filter(|(r, _)| done.contains_key(r)).count() {
+        0 => Squash::Fresh,
+        n if n == replaces.len() => Squash::Replaced,
+        n => Squash::Partial(n),
+    }
+}
+
+/// Applied migrations must be a prefix of the directory and unchanged since. The recorded rows of the
+/// migrations that a squash folder replaces must still have the checksums of its `replaces` lines.
 fn verify(statuses: &[Status], applied: &BTreeMap<String, (String, String)>) -> Result<()> {
     let mut pending: Option<&str> = None;
     for s in statuses {
@@ -271,9 +314,62 @@ fn verify(statuses: &[Status], applied: &BTreeMap<String, (String, String)>) -> 
                 "{} is applied but the earlier {p} is not; renumber the unapplied migration after the applied ones",
                 s.migration.name
             )));
-        } else if applied[&s.migration.name].0 != s.migration.checksum()? {
-            return Err(Error::Migration(format!("{}/up.sql changed after it was applied", s.migration.name)));
+        } else {
+            let m = &s.migration;
+            let replaces = m.replaces()?;
+            let sum = m.checksum()?;
+            if squash_state(m, &replaces, &sum, applied) == Squash::Replaced {
+                for (name, expected) in &replaces {
+                    if applied[name].0 != *expected {
+                        return Err(Error::Migration(format!("{name}/up.sql changed after it was applied (the checksum differs from the replaces line of {})", m.name)));
+                    }
+                }
+            } else if applied[&m.name].0 != sum {
+                return Err(Error::Migration(format!("{}/up.sql changed after it was applied", m.name)));
+            }
         }
+    }
+    Ok(())
+}
+
+/// For each squash folder whose replaced migrations are all recorded and which is not yet: records the
+/// folder and forgets the replaced rows, in one transaction under the migration lock, with no SQL of the
+/// folder run. The new row is baselined when any replaced row was. Gives the folders it adopted.
+pub async fn adopt(conn: &dyn Executor, dir: &Path) -> Result<Vec<Migration>> {
+    let mut done = vec![];
+    for m in list(dir)? {
+        let replaces = m.replaces()?;
+        if replaces.is_empty() {
+            continue;
+        }
+        ensure_table(conn).await?;
+        let sum = m.checksum()?;
+        let names = replaces.iter().map(|(n, _)| lit(n)).collect::<Vec<_>>().join(", ");
+        let any = match conn.dialect() {
+            Dialect::Postgres => "COALESCE(bool_or(baseline), false)",
+            Dialect::Sqlite => "COALESCE(MAX(baseline), 0)",
+        };
+        let record = format!(
+            "INSERT INTO {TABLE} (name, checksum, baseline) SELECT {}, {}, {any} FROM {TABLE} WHERE name IN ({names}) \
+             ON CONFLICT (name) DO UPDATE SET checksum = excluded.checksum",
+            lit(&m.name),
+            lit(&sum)
+        );
+        let forget = format!("DELETE FROM {TABLE} WHERE name IN ({names}) AND name <> {}", lit(&m.name));
+        let ran = locked(conn, None, |now| (squash_state(&m, &replaces, &sum, now) == Squash::Replaced).then(|| [record, forget])).await?;
+        if ran {
+            done.push(m);
+        }
+    }
+    Ok(done)
+}
+
+/// [`adopt`] after the checks of [`status`] and [`verify`], so a partly applied database or a changed checksum fails before anything is written.
+async fn adopt_if_ready(conn: &dyn Executor, dir: &Path) -> Result<()> {
+    if list(dir)?.iter().any(|m| m.replaces().is_ok_and(|r| !r.is_empty())) {
+        let statuses = status(conn, dir).await?;
+        verify(&statuses, &applied(conn).await?)?;
+        adopt(conn, dir).await?;
     }
     Ok(())
 }
@@ -326,6 +422,7 @@ impl Migration {
 /// holds no lock: [`begin_apply`] checks again in its transaction. A no-transaction
 /// migration (see [`apply_no_transaction`]) with a data step, or on SQLite, is refused.
 pub async fn pending(conn: &dyn Executor, dir: &Path, target: Option<&str>, allow_destructive: bool) -> Result<Vec<Migration>> {
+    adopt_if_ready(conn, dir).await?;
     let statuses = status(conn, dir).await?;
     verify(&statuses, &applied(conn).await?)?;
     let stop = target.map(|t| find(dir, t)).transpose()?.map(|m| m.name);
@@ -555,6 +652,7 @@ pub async fn baseline(conn: &dyn Executor, dir: &Path) -> Result<Migration> {
 /// that marks a destructive step on a table with rows is refused too: checked first for
 /// every migration to revert, then again in the transaction of each.
 pub async fn downgrade(conn: &dyn Driver, dir: &Path, down: Down, force: bool, allow_destructive: bool) -> Result<Vec<Migration>> {
+    adopt_if_ready(conn, dir).await?;
     let applied: Vec<Migration> = status(conn, dir).await?.into_iter().filter(|s| s.applied).map(|s| s.migration).collect();
     let revert: Vec<Migration> = match down {
         Down::To(t) => {

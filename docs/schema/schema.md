@@ -799,6 +799,7 @@ python -m monorm sqlmigrate 2 [--down]
 python -m monorm migrate [target] [--allow-destructive]   # apply pending migrations
 python -m monorm rollback [--steps N | --to 0002_x | --to zero] [--force] [--allow-destructive]
 python -m monorm showmigrations
+python -m monorm squashmigrations --to 0005 [--name X]   # fold migrations 1..5 into one folder
 python -m monorm pull [-o schema.prisma] [--force]   # the schema file from a live database
 python -m monorm baseline                       # mark the first migration applied (after pull)
 python -m monorm fmt --native                   # convert supported SQL expressions offline
@@ -1056,6 +1057,28 @@ live schema is re-created in a second shadow too. An object that both shadows ag
 counts as equal, because Postgres does not always print a parsed expression back the
 same way. So drift needs the right to create a schema, and the extensions that the
 snapshot uses must be installed.
+
+### Squash
+
+`monorm squashmigrations --to N [--name X]` (`Migrations.squash(to=N)`, `migrations.squash({ to: N })`)
+folds the migrations 1..N into one folder, `<first number>_squashed_<N>` or `<first number>_<X>`.
+It reads no database. The `up.sql` of the new folder builds the snapshot of migration N in a fresh
+database, extensions included, and starts with one line per replaced migration:
+`-- monorm: replaces <folder> <sha256 of its up.sql>`. The command then deletes the replaced folders.
+Later migrations stay as they are.
+
+A database that applied all the replaced migrations adopts the folder: `migrate` records one row and
+runs no SQL. The row is baselined when any replaced row was. Two migrators that adopt at the same time
+leave one row. A database that applied none runs the folder. A database that applied some of them is
+refused, and nothing is written; migrate it with a release from before the squash first.
+The checksum of each replaced row must still equal the checksum in its `replaces` line, as for any
+applied migration.
+
+`rollback` of an adopted folder runs its `down.sql`, which drops the whole schema of migrations 1..N.
+Squash refuses, and writes nothing, for a range with a data step (`data.py`, `data.ts`), a folder of
+hand-written SQL only, a squash folder or a no-transaction folder, and a folder whose `up.sql` differs
+from the SQL its snapshots give (a hand edit the fresh build would lose). That last check skips folders
+with rename hints and folders with `NOT VALID` constraints, so a hand edit in one of them is not found.
 
 ### Why not SeaORM's or Refinery's tooling
 
