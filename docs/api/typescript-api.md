@@ -692,7 +692,7 @@ the async context where it is first awaited (its transaction, `allowWrites` and 
 A write runs in the transaction where it is awaited.
 Query-set `update`, `updateMany`, `delete`, `hardDelete` and `undelete` return inspectable statements. They execute once when first awaited (or when `then`, `catch` or `finally` is called), as inserts do. Instance writes still return a `Promise`.
 
-* `insert(row)` gives the stored row. A field left out gets its `@client_default`
+* `insert(row)` gives the stored row, with the default selection (see below). A field left out gets its `@client_default`
   (filled natively, as in Python), else the database default; an explicit value, also
   `null`, wins.
 * `insertMany(rows)` and every `.onConflict(...)` give the number of rows inserted or
@@ -703,9 +703,12 @@ Query-set `update`, `updateMany`, `delete`, `hardDelete` and `undelete` return i
 
   ```ts
   const n = await Post.objects.insertMany(rows);
+  const keys = await Post.objects.insertMany(rows).returning(Post.id);
   const posts = await Post.objects.insertMany(rows).returning();
   const bob = await User.objects.insert(row).onConflict(User.email, { update: true }).returning();
   const maybe = await User.objects.insert(row).onConflict(User.email, { update: false }).returning(); // null if it existed
+  const rows = await Post.objects.insertMany(rs).returning(Post.id);
+  await of(rows).load(Post.author);
   await Post.objects.insertMany(rows).onConflict(Post.slug, {
     update: true,
     updateFields: [Post.title],
@@ -760,15 +763,34 @@ Query-set `update`, `updateMany`, `delete`, `hardDelete` and `undelete` return i
   lower number of rows for each statement. All the statements run in one transaction.
   An upsert sees one batch at a time: two rows with the same conflict key throw in one
   statement, but in two batches the second one updates the row of the first.
-* `qs.update({...}, { returning })` gives a count, or the rows when `returning` is set.
-* `qs.delete({ returning })` gives a count, or the deleted rows.
+* `qs.update({...})` gives a count; `qs.update({...}).returning()` gives the rows.
+* `qs.delete()` gives a count; `qs.delete().returning()` gives the deleted rows.
 * `update()` and `delete()` on a query set with no caller filter throw `UnfilteredWriteError`, before any SQL and on `.inspect()`.
   `hardDelete()` is guarded too.
   `filter()`, `exclude()` and a related set (`author.posts`) count as a filter; query defaults, soft-delete, the scope and a filter that is always true (`and()`) do not.
   `Post.objects.all().update({...})` and `.all().delete()` mark "every row" and pass, on every kind of query set.
   `connect(url, { allowUnfilteredWrites: true })` turns the guard off for that database.
   Instance writes, `insert()`, `updateMany()` and raw SQL are not guarded.
-* `updateMany(rows, { batchSize, returning })` does a bulk update by primary key with
+What a write returns:
+
+| Call | No `.returning()` | `.returning()` | `.returning(cols)` |
+| --- | --- | --- | --- |
+| `insert(row)` | the row, default selection | the row, default selection | the row with `cols` |
+| `insertMany(rows)` | the count | the rows, in input order | the rows with `cols` |
+| `insert(row).onConflict(...)` | the count | the row (`null` if skipped) | the row with `cols` |
+| `update(values)`, `delete()` | the count | the rows, default selection | the rows with `cols` |
+| `updateMany(rows)` | the count | the rows, default selection | the rows with `cols` |
+| `insertMany(rows, { copy: true })` | the count | not available | not available |
+
+The default selection is the read default of the model, minus what `withoutDefaults(...)` bypasses.
+A field that a default hides is `NotLoaded` after a write, also when the caller supplied it.
+`withoutDefaults()` on a write restores it. `cols` always bring the primary key (every key field of a composite key).
+
+* `.returning(...columns)` on every write (`insert`, `insertMany`, `update`, `updateMany`, `delete`) picks the returned fields.
+  The row has those columns, the primary key and the helper fields; any other field is `NotLoaded`.
+  A relation, a labeled set or a path in `returning()` throws `TypeError`: load it afterwards with `of(rows).load(...)`.
+  `load()` on a write throws `TypeError` too. `{ returning: true }` is removed.
+* `updateMany(rows, { batchSize })` does a bulk update by primary key with
   `UPDATE ... FROM (VALUES ...)`, falling back to `CASE`. All its batches run in one
   transaction.
 * On an instance: `post.update({...})` (refreshed from `RETURNING`) and `post.delete()`.
@@ -1035,7 +1057,7 @@ A package that changes writes and reads from outside the ORM (for example
   conversion, native planning) without SQL or I/O. `prepared.execute(values?)` inserts it.
 * `qs.prepareUpdate(values)` checks `qs.update(values)` the same way. `prepared.unique`
   is true when the engine proves that the filters pin one row by a non-null primary
-  key or unique field. `prepared.execute(values?, { returning })` runs it.
+  key or unique field. `prepared.execute(values?, { returning })` runs it. Prepared writes keep this option.
 * `Model._meta.addRowDecoder(decode)` runs `decode(row)` on each instance that a query
   or write returns. A partial instance has only its loaded fields as own properties.
 

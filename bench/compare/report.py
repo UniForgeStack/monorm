@@ -233,7 +233,7 @@ STATIC_NOTES = [
     "`pg` `join-to-one` uses an inner JOIN. `posts.author_id` is NOT NULL, so the rows equal the ORMs' joins.",
     "The JS `camelRow`/`data()` row conversion runs inside the timed operation: a user does the same work.",
     "Django `delete-100` (`QuerySet.delete()`) runs BEGIN, DELETE, COMMIT: 3 statements.",
-    "monorm returns full rows from `bulk-insert-*`: `insertMany(...).returning()` has no key-only form. Prisma and Django return ids only or full instances as noted per contender below.",
+    "monorm returns ids only from `bulk-insert-*`: `insertMany(...).returning(Comment.id)`. Prisma and Django return ids only or full instances as noted per contender below.",
     "Warm-up: every case runs 50 untimed calls before the timed calls, the same count for every contender. Timed calls use iterations 1..N, the warm-up uses distinct iteration numbers.",
     "Contenders run one per process and round, in a rotating order, on a database reset before every process.",
 ]

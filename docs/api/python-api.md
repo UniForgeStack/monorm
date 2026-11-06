@@ -1109,6 +1109,8 @@ await alice.posts.insert(title="...", body="...")   # FK filled in
 
 # Many rows: one statement per batch; the row count, or the rows with RETURNING
 n = await Post.objects.insert_many(rows)
+rows = await Post.objects.insert_many(rs).returning(Post.id)   # the key only
+await monorm.of(rows).load(Post.author)                        # relations load afterwards
 posts = await Post.objects.insert_many([
     {"author": alice, "title": "Hi", "body": "..."},
     {"author_id": alice.id, "title": "Yo", "body": "...", "views": 3},
@@ -1159,7 +1161,24 @@ await post.load(Post.views, reload=True)         # some fields
 `refresh()` is removed and its name stays reserved.
 `on_commit` callbacks and `load_x()` still read replicas: use `.using("primary")` there.
 
-* `insert(...)` gives the instance. `insert_many(...)` and every insert with
+* What a write returns:
+
+  | Call | No `.returning()` | `.returning()` | `.returning(*cols)` |
+  | --- | --- | --- | --- |
+  | `insert(...)` | the instance, default selection | the instance, default selection | the instance with `cols` |
+  | `insert_many(...)` | the count | the instances, in input order | the instances with `cols` |
+  | `insert(...).on_conflict(...)` | the count | the instance (`None` if skipped) | the instance with `cols` |
+  | `update(...)`, `delete()` | the count | the instances, default selection | the instances with `cols` |
+  | `update_many(rows)` | the count | the instances, default selection | the instances with `cols` |
+  | `insert_many(..., copy=True)` | the count | not available | not available |
+
+  The default selection is the read default of the model, minus what `without_defaults(...)` bypasses.
+  A field that a default hides is `NotLoaded` after a write, also when the caller supplied it.
+  `without_defaults()` on a write restores it. `cols` always bring the primary key (every key field of a composite key).
+  Every other field is `NotLoaded`.
+  A relation, a labeled set or a path in `returning()` raises `TypeError`: load it afterwards with `monorm.of(rows).load(...)`.
+  `load()` on a write raises `TypeError` and names `returning(...)`.
+* `insert(...)` gives the instance, with the default selection. `insert_many(...)` and every insert with
   `on_conflict(...)` give the number of rows inserted or updated (no `RETURNING` in
   the SQL), as `update()` does; `.returning()` gives the rows. One row with
   `update=True` gives the instance; with `update=False` (or a `bool` that the type

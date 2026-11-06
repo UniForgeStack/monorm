@@ -51,7 +51,7 @@ class MonormContender(Contender):
             "capabilities": meta["capabilities"],
             "prepared_statements": "engine default: prepared once per connection and cached",
             "pool": POOL_SIZE,
-            "insert_note": "monorm returns full rows: insert_many(...).returning() has no key-only form",
+            "insert_note": "bulk-insert-* returns ids only: insert_many(...).returning(Comment.id)",
             "upsert_note": "on_conflict returns a row count, no RETURNING",
         }
 
@@ -139,7 +139,7 @@ def _cases(db: monorm.Database) -> dict[str, Case]:
         return await Comment.objects.insert(**rows[0])
 
     async def bulk_insert(rows: list[dict[str, Any]]) -> Any:
-        return await Comment.objects.insert_many(rows).returning()
+        return await Comment.objects.insert_many(rows).returning(Comment.id)
 
     async def update_1(i: int) -> int:
         return await Post.objects.filter(Post.id == pk_for(i)).update(views=Post.views + 1)

@@ -115,12 +115,12 @@ export async function create(name = "orm") {
       norm: raw => Number(raw.id),
     },
     "bulk-insert-100": {
-      op: r => Comment.objects.insertMany(r.map(camelRow)).returning(),
+      op: r => Comment.objects.insertMany(r.map(camelRow)).returning(Comment.id),
       setup: i => commentRows(i, 100),
       norm: raw => raw.map(o => Number(o.id)),
     },
     "bulk-insert-1000": {
-      op: r => Comment.objects.insertMany(r.map(camelRow)).returning(),
+      op: r => Comment.objects.insertMany(r.map(camelRow)).returning(Comment.id),
       setup: i => commentRows(i, 1000),
       norm: raw => raw.map(o => Number(o.id)),
     },
@@ -185,7 +185,7 @@ export async function create(name = "orm") {
         capabilities: meta.capabilities,
         native: process.env.MONORM_NATIVE ?? "languages/js/monorm.node",
         prepared_statements: "engine default: prepared once per connection and cached",
-        insert_note: "monorm returns full rows: insertMany(...).returning() has no key-only form",
+        insert_note: "bulk-insert-* returns ids only: insertMany(...).returning(Comment.id), as Prisma and pg do",
         upsert_note: "onConflict returns a row count, no RETURNING",
         pool: POOL_SIZE,
       };
