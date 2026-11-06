@@ -1020,7 +1020,7 @@ impl<'s> Planner<'s> {
                 if let Some(w) = p.with_clause(&q.with)? {
                     stmt.with_cte(w);
                 }
-                within_param_cap(target, &stmt)?;
+                within_param_cap(target, &stmt, "write")?;
                 let returned = p.returned(types)?;
                 if stmt.has_row_values() {
                     Plan::RowUpdate(stmt, returned)
@@ -1039,14 +1039,14 @@ impl<'s> Planner<'s> {
                     if let Some(w) = p.with_clause(&q.with)? {
                         stmt.with_cte(w);
                     }
-                    within_param_cap(target, &stmt)?;
+                    within_param_cap(target, &stmt, "write")?;
                     return Ok(Plan::Update(stmt, p.returned(types)?));
                 }
                 let (mut stmt, types) = p.delete(q)?;
                 if let Some(w) = p.with_clause(&q.with)? {
                     stmt.with_cte(w);
                 }
-                within_param_cap(target, &stmt)?;
+                within_param_cap(target, &stmt, "write")?;
                 Plan::Delete(stmt, p.returned(types)?)
             }
             Operation::Compound(_) => unreachable!("planned above"),
@@ -3340,12 +3340,14 @@ impl<'s> Planner<'s> {
     }
 }
 
-/// A write is one statement, so a key set above the driver's parameter cap cannot run: fail before the driver does.
-fn within_param_cap<S: sea_query::QueryStatementWriter>(target: Target, stmt: &S) -> Result<()> {
+/// One statement cannot bind more parameters than the driver allows: fail before the driver does.
+/// `what` names the statement in the message: "write" or "query".
+pub(crate) fn within_param_cap<S: sea_query::QueryStatementWriter>(target: Target, stmt: &S, what: &str) -> Result<()> {
     let n = crate::db::build(target.dialect, stmt).1.len();
     if n > target.caps.max_params {
+        let fix = if what == "write" { "split the objects into smaller sets" } else { "use fewer values or smaller sets" };
         return Err(Error::query(format!(
-            "this write binds {n} parameters, above the {} the database allows in one statement; split the objects into smaller sets",
+            "this {what} binds {n} parameters, above the {} the database allows in one statement; {fix}",
             target.caps.max_params
         )));
     }

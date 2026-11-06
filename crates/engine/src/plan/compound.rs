@@ -14,6 +14,8 @@ struct Node {
     names: Vec<String>,
     /// `None`: a `NULL` literal in every operand below, until a sibling gives it a type.
     types: Vec<Option<ValueType>>,
+    /// The first and the last branch (leaf) number below this node, counted from 0 in reading order.
+    branches: (usize, usize),
     kind: Kind,
 }
 
@@ -23,6 +25,14 @@ enum Kind {
 }
 
 impl Node {
+    /// How an error names this node: `branch 2`, or `branches 0 to 1` for a nested group.
+    fn label(&self) -> String {
+        match self.branches {
+            (a, b) if a == b => format!("branch {a}"),
+            (a, b) => format!("branches {a} to {b}"),
+        }
+    }
+
     fn sliced(&self) -> bool {
         matches!(&self.kind, Kind::Set { order, limit, offset, .. } if !order.is_empty() || limit.is_some() || offset.is_some())
     }
@@ -33,7 +43,7 @@ pub(super) fn plan<'s>(schema: &'s Schema, target: Target, c: &Compound, params:
     let SetExpr::Set { .. } = &c.expr else {
         return Err(Error::query("a compound query needs a set operation: union() or union_all()"));
     };
-    let node = node(schema, target, &c.expr, params)?;
+    let node = node(schema, target, &c.expr, params, &mut 0)?;
     let mut types = Vec::with_capacity(node.types.len());
     for (t, name) in node.types.iter().zip(&node.names) {
         types.push(t.ok_or_else(|| Error::query(format!("column {name:?} has no type: every query gives NULL there; select a typed value")))?);
@@ -44,13 +54,13 @@ pub(super) fn plan<'s>(schema: &'s Schema, target: Target, c: &Compound, params:
     let width = types.len();
     Ok(match c.terminal {
         CompoundTerminal::Read => {
-            within_cap(target, &stmt)?;
+            within_param_cap(target, &stmt, "query")?;
             Plan::Select(SelectPlan { stmt, types, output: Output::Rows { model, items: vec![None; width] }, filtered: false, computed: vec![], prefetch: vec![] })
         }
         CompoundTerminal::Count => {
             let mut outer = Query::select();
             outer.expr(SExpr::cust("COUNT(*)")).from_subquery(stmt, Alias::new("counted"));
-            within_cap(target, &outer)?;
+            within_param_cap(target, &outer, "query")?;
             Plan::Count(outer)
         }
         CompoundTerminal::Exists => {
@@ -58,7 +68,7 @@ pub(super) fn plan<'s>(schema: &'s Schema, target: Target, c: &Compound, params:
             inner.expr(SExpr::cust("1")).from_subquery(stmt, Alias::new("existing")).limit(1);
             let mut outer = Query::select();
             outer.expr(SExpr::exists(inner));
-            within_cap(target, &outer)?;
+            within_param_cap(target, &outer, "query")?;
             Plan::Exists(outer)
         }
     })
@@ -71,25 +81,20 @@ fn first_model(schema: &Schema, e: &SetExpr) -> Result<usize> {
     }
 }
 
-fn within_cap(target: Target, stmt: &SelectStatement) -> Result<()> {
-    let n = crate::db::build(target.dialect, stmt).1.len();
-    if n > target.caps.max_params {
-        return Err(Error::query(format!(
-            "this query binds {n} parameters, above the {} the database allows in one statement; use fewer values or smaller sets",
-            target.caps.max_params
-        )));
-    }
-    Ok(())
-}
-
-fn node<'s>(schema: &'s Schema, target: Target, e: &SetExpr, params: &'s dyn Params) -> Result<Node> {
+fn node<'s>(schema: &'s Schema, target: Target, e: &SetExpr, params: &'s dyn Params, next: &mut usize) -> Result<Node> {
     match e {
-        SetExpr::Leaf(q) => leaf(schema, target, q, params),
+        SetExpr::Leaf(q) => {
+            let mut n = leaf(schema, target, q, params)?;
+            n.branches = (*next, *next);
+            *next += 1;
+            Ok(n)
+        }
         SetExpr::Set { operator, left, right, order, limit, offset } => {
-            let (left, right) = (node(schema, target, left, params)?, node(schema, target, right, params)?);
+            let (left, right) = (node(schema, target, left, params, next)?, node(schema, target, right, params, next)?);
+            let (lb, rb) = (left.label(), right.label());
             if left.names.len() != right.names.len() {
                 return Err(Error::query(format!(
-                    "a set operation needs the same columns on both sides: the left query has {} columns, the right one has {}",
+                    "a set operation needs the same columns on both sides: {lb} has {} columns, {rb} has {}",
                     left.names.len(),
                     right.names.len()
                 )));
@@ -98,15 +103,15 @@ fn node<'s>(schema: &'s Schema, target: Target, e: &SetExpr, params: &'s dyn Par
             for (i, name) in left.names.iter().enumerate() {
                 if *name != right.names[i] {
                     return Err(Error::query(format!(
-                        "a set operation needs the same column names in the same order: column {i} is {name:?} on the left and {:?} on the right; name the columns alike with the same labels",
+                        "a set operation needs the same column names in the same order: column {i} is {name:?} in {lb} and {:?} in {rb}; name the columns alike with the same labels",
                         right.names[i]
                     )));
                 }
                 types.push(match (left.types[i], right.types[i]) {
-                    (Some(a), Some(b)) if a == b => Some(a),
+                    (Some(a), Some(b)) if same_type(a, b) => Some(a),
                     (Some(a), Some(b)) => {
                         return Err(Error::query(format!(
-                            "column {name:?} has type {} on the left and {} on the right; a set operation does not convert types",
+                            "column {name:?} has type {} in {lb} and {} in {rb}; a set operation does not convert types",
                             describe(a),
                             describe(b)
                         )))
@@ -116,9 +121,16 @@ fn node<'s>(schema: &'s Schema, target: Target, e: &SetExpr, params: &'s dyn Par
             }
             let order = order.iter().map(|o| order_name(&left.names, o)).collect::<Result<Vec<_>>>()?;
             let names = left.names.clone();
-            Ok(Node { names, types, kind: Kind::Set { operator: *operator, left: Box::new(left), right: Box::new(right), order, limit: *limit, offset: *offset } })
+            let branches = (left.branches.0, right.branches.1);
+            Ok(Node { names, types, branches, kind: Kind::Set { operator: *operator, left: Box::new(left), right: Box::new(right), order, limit: *limit, offset: *offset } })
         }
     }
+}
+
+/// `String` and `Text` differ only in the length the database allows; both read and write as text.
+fn same_type(a: ValueType, b: ValueType) -> bool {
+    let family = |t: ColType| if t == ColType::Text { ColType::String } else { t };
+    family(a.ty) == family(b.ty) && a.array == b.array && a.enum_idx == b.enum_idx
 }
 
 fn describe(t: ValueType) -> String {
@@ -203,7 +215,7 @@ fn leaf<'s>(schema: &'s Schema, target: Target, q: &Select, params: &'s dyn Para
         }
         types.push(Some(*t));
     }
-    Ok(Node { names, types, kind: Kind::Leaf { stmt: Box::new(plan.stmt), nulls } })
+    Ok(Node { names, types, branches: (0, 0), kind: Kind::Leaf { stmt: Box::new(plan.stmt), nulls } })
 }
 
 #[derive(Default)]
@@ -231,10 +243,10 @@ fn render(target: Target, n: Node, types: &[ValueType], counter: &mut Counter, p
         Kind::Leaf { stmt, nulls } => {
             let mut s = Query::select();
             for (i, t) in types.iter().enumerate() {
+                if nulls[i] && t.enum_idx.is_some() {
+                    return Err(Error::query(format!("NULL can't stand for the enum column {:?} in a set operation; select a typed value", n.names[i])));
+                }
                 if nulls[i] && target.dialect == Dialect::Postgres {
-                    if t.enum_idx.is_some() {
-                        return Err(Error::query(format!("NULL can't stand for the enum column {:?} in a set operation", n.names[i])));
-                    }
                     let cast = template(target.dialect, format!("CAST($1 AS {})", pg_type(*t)), vec![SExpr::col(unit(i))]);
                     s.expr_as(cast, unit(i));
                 } else {

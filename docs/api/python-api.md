@@ -896,11 +896,12 @@ await User.objects.select(User.id).union(Comment.objects.select(Comment.author_i
 
 * Both sides select the same output names in the same order, with the same types. The
   only difference allowed is nullability: `int` and `int | None` give `int | None`.
-  Name a column with `.label()` to match the other side. A wrong name, count or type is a
-  `QueryError`. Type checkers reject a different column count.
+  `String` and `Text` columns count as one type. Name a column with `.label()` to match the
+  other side. A wrong name, count or type is a `QueryError` that names the branches. Type
+  checkers reject a different column count.
 * Each side keeps its own filters, `order_by()`, slice and defaults. A side that has a slice
-  is cut before the set operation. A side with `order_by()` and no slice has no ordering
-  effect on the result.
+  is cut before the set operation. A side with `order_by()` and no slice does not
+  order the result: only the final `order_by()` does.
 * The final `order_by()` takes output names only: `"id"`, or `"-id"` for descending.
   It replaces the earlier final order. `limit()`, `offset()` and a slice apply to the whole
   result and can be set once. A negative slice is a `ValueError`.

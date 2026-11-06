@@ -1,12 +1,15 @@
 """`select(...).union(other)` and `.union_all(other)`: one statement, one `CompoundSelect`."""
 
 import os
+from pathlib import Path
 
 import pytest
 from blog.models import Comment, Post, Profile, Tag, User
 
 import monorm
 from monorm import CompoundSelect, DoesNotExist, MultipleObjectsReturned, QueryError, func
+
+SQLITE_SOURCE = Path(__file__).resolve().parents[3].joinpath("examples/sqlite/schema.prisma").read_text()
 
 
 async def seed():
@@ -270,3 +273,63 @@ async def test_or_is_still_filter_combination(clean):
     low = Post.objects.filter(Post.views < 10)
     assert sorted(p.title for p in await (high | low)) == ["a1", "b1"]
     assert sorted(r.title for r in await Post.objects.select(Post.title).filter((Post.views > 50) | (Post.views < 10))) == ["a1", "b1"]
+
+
+async def test_string_and_text_columns_union(clean):
+    (alice, *_), posts = await seed()
+    await Post.objects.filter(Post.title == "a1").update(body="first body")
+    await Comment.objects.insert(post=posts[0], body="first body", author=alice)
+    # Post.title is `varchar(200)` and Comment.body is `text`: one family.
+    q = Post.objects.select(Post.title.label("text")).union(Comment.objects.select(Comment.body.label("text")))
+    assert sorted(r.text for r in await q) == ["a1", "a2", "b1", "first body"]
+    assert await q.count() == 4
+
+
+async def test_unbound_param_and_outer(clean):
+    await seed()
+    bound = Post.objects.filter(Post.id == monorm.param("n")).select(Post.id, Post.title.label("label"))
+    with pytest.raises(QueryError, match="placeholder"):
+        await names(low=1, high=2).union(bound)
+    inner = Post.objects.filter(Post.id == monorm.outer(User.id)).select(Post.id, Post.title.label("label"))
+    with pytest.raises(ValueError, match="enclosing"):
+        await names(low=1, high=2).union(inner)
+
+
+async def test_sqlite_select_union():
+    registry = monorm.Registry()
+    m = monorm.loads(SQLITE_SOURCE, registry=registry)
+    Author, Book = m["Author"], m["Book"]
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
+    await db.create_tables()
+    try:
+        a, b = await Author.objects.using(db).insert_many([{"email": "a@example.com", "name": "Alice"}, {"email": "b@example.com", "name": "Bob"}]).returning()
+        await Book.objects.using(db).insert_many(
+            [{"author_id": a.id, "title": "one"}, {"author_id": a.id, "title": "Alice"}, {"author_id": b.id, "title": "three"}]
+        )
+        people = Author.objects.using(db).select(Author.name.label("label"))
+        books = Book.objects.using(db).select(Book.title.label("label"))
+        assert sorted(r.label for r in await people.union(books)) == ["Alice", "Bob", "one", "three"]
+        assert sorted(r.label for r in await people.union_all(books)) == ["Alice", "Alice", "Bob", "one", "three"]
+        left = people.order_by(Author.name)[:1]
+        right = books.order_by(Book.title.desc())[:1]
+        assert sorted(r.label for r in await left.union_all(right)) == ["Alice", "three"]
+        assert [r.label for r in await left.union_all(right).order_by("label")[1:2]] == ["three"]
+        assert await left.union_all(right).union_all(people).count() == 4
+        assert await left.union_all(right).order_by("-label")[:1].exists()
+        # A mismatch is an error, not a wrong result; a type mismatch names the branches.
+        with pytest.raises(QueryError, match="same columns"):
+            await people.union(Book.objects.using(db).select(Book.title.label("other")))
+        with pytest.raises(QueryError, match="branch 0 and .* in branch 1"):
+            await people.union(Book.objects.using(db).select(Book.id.label("label")))
+        with pytest.raises(QueryError):
+            await people.union(books).order_by("missing")
+        async with db.transaction():
+            await Author.objects.using(db).insert(email="t@example.com", name="Tess")
+            assert "Tess" in [r.label for r in await people.union(books)]
+        q = people.union(books).order_by("label")
+        first = await q
+        assert await q == first
+        assert len(await q.all()) == len(first)
+    finally:
+        await db.drop_tables()
+        await db.close()

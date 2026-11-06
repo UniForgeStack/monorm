@@ -607,6 +607,15 @@ export function checkRunnable(meta: ModelMeta, state: QueryState): void {
   void meta;
 }
 
+/** `cuts` plus `kind` (`limit`, `offset`, `slice`); throws when the query already has a cut that `kind` would replace. `noun` names the query in the error. */
+export function addCut(cuts: readonly string[], kind: string, noun: string): readonly string[] {
+  if (cuts.includes(kind) || cuts.includes("slice") || (kind === "slice" && cuts.length)) {
+    const named = cuts.map((c) => `${c === "offset" ? "an" : "a"} ${c}`).join(" and ");
+    throw new QueryError(`${kind}() can't be applied to a ${noun} that already has ${named}; use one limit() and one offset(), or a single slice(); to change or clear a limit or offset, build a new ${noun}`);
+  }
+  return [...cuts, kind];
+}
+
 /**
  * A query over one model. Every builder method returns a new query set; nothing runs
  * until a terminal method is called (`all()`, `first()`, `count()`, `update()`, ...).
@@ -926,12 +935,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   }
 
   private cut(kind: string): readonly string[] {
-    const cuts = this.state.cuts ?? [];
-    if (cuts.includes(kind) || cuts.includes("slice") || (kind === "slice" && cuts.length)) {
-      const named = cuts.map((c) => `${c === "offset" ? "an" : "a"} ${c}`).join(" and ");
-      throw new QueryError(`${kind}() can't be applied to a query set that already has ${named}; use one limit() and one offset(), or a single slice(); to change or clear a limit or offset, build a new query set`);
-    }
-    return [...cuts, kind];
+    return addCut(this.state.cuts ?? [], kind, "query set");
   }
 
   private noCuts(what: string): void {

@@ -661,6 +661,15 @@ export async function setOperations() {
   names.union(Post.objects.select({ id: Post.id }));
   // @ts-expect-error both sides select the same columns
   names.union(Post.objects.select({ id: Post.id, title: Post.title }));
+  // @ts-expect-error a column holds one type: bigint and number do not mix
+  names.union(Post.objects.select({ id: Post.views, label: Post.title }));
+  // @ts-expect-error a column holds one type: string and bigint do not mix
+  names.unionAll(Post.objects.select({ id: Post.id, label: Post.id }));
+  // @ts-expect-error the same check holds for a set of a set
+  both.union(Post.objects.select({ id: Post.views, label: Post.title }));
+  // A String column and a Text column are both `string`
+  const texts = titles.union(Post.objects.select({ id: Post.id, label: Post.body }));
+  same<Awaited<typeof texts>, { id: bigint; label: string }[]>();
   // @ts-expect-error a set operation has no filter()
   both.filter(User.id.eq(1n));
   // @ts-expect-error a set operation has no select()

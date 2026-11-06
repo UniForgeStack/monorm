@@ -674,10 +674,11 @@ await User.objects.select({ id: User.id }).union(Comment.objects.select({ id: Co
 
 * Both sides select the same keys in the same order, with the same types. The only
   difference allowed is nullability: `bigint` and `bigint | null` give `bigint | null`.
-  Different key sets are a type error; a different order or type is a `QueryError`.
+  `String` and `Text` columns count as one type. Different key sets or value types are a
+  type error; a different order or type is a `QueryError` that names the branches.
 * Each side keeps its own filters, `orderBy()`, slice and defaults. A side that has a slice
-  is cut before the set operation. A side with `orderBy()` and no slice has no ordering
-  effect on the result.
+  is cut before the set operation. A side with `orderBy()` and no slice does not
+  order the result: only the final `orderBy()` does.
 * The final `orderBy()` takes output names only: `"id"`, or `"-id"` for descending.
   It replaces the earlier final order. `limit()`, `offset()` and `slice()` apply to the whole
   result and can be set once. A negative slice is a `RangeError`.

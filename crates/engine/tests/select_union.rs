@@ -1,6 +1,6 @@
 //! `UNION` / `UNION ALL` of `select(...)` queries: one statement, derived-table branches.
 use monorm_core::{dialect::{Dialect, Target}, dsl, ir::{Operation, ValueType, ColType}, schema::Schema};
-use monorm_engine::{db, params::NoParams, plan::{Output, Plan, Planner}};
+use monorm_engine::{db, params::{NoParams, Params}, plan::{Output, Plan, Planner}};
 use serde_json::{json, Value};
 
 fn schema() -> Schema {
@@ -8,6 +8,10 @@ fn schema() -> Schema {
         json!({"name":"id","column":"id","type":"big_int","primary_key":true}),
         json!({"name":"title","column":"title","type":"text"}),
         json!({"name":"views","column":"views","type":"int"}),
+        json!({"name":"slug","column":"slug","type":"string"}),
+        json!({"name":"stamp","column":"stamp","type":"int","read_sql":"({} + 0)"}),
+        json!({"name":"status","column":"status","type":"string","enum":"Status"}),
+        json!({"name":"kind","column":"kind","type":"string","enum":"Kind"}),
     ];
     let user = vec![
         json!({"name":"id","column":"id","type":"big_int","primary_key":true}),
@@ -15,7 +19,8 @@ fn schema() -> Schema {
         json!({"name":"tags","column":"tags","type":"text","array":true}),
         json!({"name":"meta","column":"meta","type":"json"}),
     ];
-    let ir = json!({"models":[
+    let enum_of = |name: &str| json!({"name":name,"db_name":name.to_lowercase(),"values":[{"name":"A","value":"a"},{"name":"B","value":"b"}]});
+    let ir = json!({"enums":[enum_of("Status"), enum_of("Kind")],"models":[
         {"name":"Post","table":"posts","fields":post},
         {"name":"User","table":"users","fields":user},
     ]});
@@ -133,6 +138,109 @@ fn mismatches_and_unsupported_outputs_are_rejected() {
         let e = error(Dialect::Postgres, expr.clone());
         assert!(e.to_lowercase().contains(&needle.to_lowercase()), "{needle}: {e} for {expr}");
     }
+}
+
+#[test]
+fn a_string_column_and_a_text_column_are_one_family() {
+    // `slug` is `String`, `title` is `Text`: the same family, in either order.
+    let a = leaf("Post", &[("slug", "x")], json!({}));
+    let b = leaf("Post", &[("title", "x")], json!({}));
+    for dialect in [Dialect::Postgres, Dialect::Sqlite] {
+        for expr in [set("union", a.clone(), b.clone(), json!({})), set("union_all", b.clone(), a.clone(), json!({}))] {
+            let Plan::Select(p) = plan(dialect, "read", expr).unwrap() else { panic!("a select") };
+            assert_eq!(p.types.len(), 1);
+            assert!(matches!(p.types[0].ty, ColType::String | ColType::Text), "{:?}", p.types[0]);
+        }
+    }
+    // Other families stay apart: text is not an integer.
+    let views = leaf("Post", &[("views", "x")], json!({}));
+    assert!(error(Dialect::Postgres, set("union", a, views, json!({}))).contains("does not convert"));
+}
+
+#[test]
+fn an_error_names_the_branches() {
+    let a = leaf("Post", &[("id", "a")], json!({}));
+    let b = leaf("Post", &[("id", "a")], json!({}));
+    let odd = leaf("Post", &[("title", "a")], json!({}));
+    let group = set("union", a.clone(), b.clone(), json!({}));
+    // Branch numbers count the leaves in reading order, so a nested tree names the right one.
+    let e = error(Dialect::Postgres, set("union", group.clone(), odd.clone(), json!({})));
+    assert!(e.contains("branches 0 to 1") && e.contains("branch 2"), "{e}");
+    let e = error(Dialect::Postgres, set("union", a.clone(), set("union", b, odd, json!({})), json!({})));
+    assert!(e.contains("branch 1") && e.contains("branch 2") && !e.contains("left"), "{e}");
+    let wide = leaf("Post", &[("id", "a"), ("title", "b")], json!({}));
+    let e = error(Dialect::Sqlite, set("union", group, wide, json!({})));
+    assert!(e.contains("branches 0 to 1 has 1 columns") && e.contains("branch 2 has 2"), "{e}");
+    let named = leaf("Post", &[("id", "z")], json!({}));
+    assert!(error(Dialect::Postgres, set("union", a, named, json!({}))).contains("in branch 0 and \"z\" in branch 1"));
+}
+
+#[test]
+fn an_enum_column_needs_the_same_enum_and_a_typed_value() {
+    let status = leaf("Post", &[("status", "x")], json!({}));
+    let kind = leaf("Post", &[("kind", "x")], json!({}));
+    let e = error(Dialect::Postgres, set("union", status.clone(), kind, json!({})));
+    assert!(e.contains("does not convert"), "{e}");
+    assert!(plan(Dialect::Postgres, "read", set("union", status.clone(), status.clone(), json!({}))).is_ok());
+    // A NULL takes the type of its sibling, but an enum has no `CAST` here: both databases reject it alike.
+    let null = json!({"t":"leaf","model":"Post","columns":[item(json!({"t":"null"}), "x")]});
+    for dialect in [Dialect::Postgres, Dialect::Sqlite] {
+        let e = error(dialect, set("union_all", null.clone(), status.clone(), json!({})));
+        assert!(e.contains("NULL can't stand for the enum column"), "{dialect:?}: {e}");
+    }
+}
+
+#[test]
+fn a_hostile_output_name_never_reaches_the_sql() {
+    // Output names are labels: the statement aliases every column `_u<i>`.
+    let name = "a\" FROM \"posts\"; DROP TABLE posts; --";
+    let one = || leaf("Post", &[("id", name)], json!({}));
+    let expr = set("union", one(), one(), json!({"order":[format!("-{name}")]}));
+    for dialect in [Dialect::Postgres, Dialect::Sqlite] {
+        let s = sql(dialect, "read", expr.clone());
+        assert!(!s.contains("DROP") && s.contains("ORDER BY \"_u0\" DESC"), "{s}");
+    }
+    // A name that no column has stays an error, even when it looks like an alias.
+    assert!(error(Dialect::Postgres, set("union", one(), one(), json!({"order":["_u0"]}))).contains("_u0"));
+}
+
+struct Vals(Vec<sea_query::Value>);
+
+impl Params for Vals {
+    fn len(&self) -> usize { self.0.len() }
+    fn value(&self, i: usize, _: Option<ValueType>) -> monorm_engine::Result<sea_query::Value> { Ok(self.0[i].clone()) }
+    fn text(&self, _: usize) -> monorm_engine::Result<String> { unreachable!("no pattern") }
+    fn count(&self, _: usize) -> monorm_engine::Result<u64> { unreachable!("no slice") }
+}
+
+#[test]
+fn the_root_scope_reaches_every_branch() {
+    let by_scope = json!({"filters":[{"t":"cmp","op":"eq","l":col("id"),"r":{"t":"scope","name":"shop"}}]});
+    let expr = || set("union_all", leaf("Post", &[("id", "a")], by_scope.clone()), leaf("Post", &[("id", "a")], by_scope.clone()), json!({}));
+    let with = |scope: Value, params: &dyn Params| {
+        let op: Operation = serde_json::from_value(json!({"op":"compound","terminal":"read","scope":scope,"expr":expr()})).unwrap();
+        Planner::plan(&schema(), Target::new(Dialect::Postgres), &op, params).map(|p| match p {
+            Plan::Select(p) => db::build(Dialect::Postgres, &p.stmt),
+            _ => panic!("a select"),
+        })
+    };
+    let params = Vals(vec![sea_query::Value::BigInt(Some(7))]);
+    let (text, values) = with(json!({"shop":0}), &params).unwrap();
+    assert_eq!(text.matches("= $").count(), 2, "{text}");
+    assert_eq!(values.len(), 2, "each branch binds the scope value once");
+    let e = with(json!({}), &params).err().expect("closed by default").to_string();
+    assert!(e.contains("scope.shop") && e.contains("not set"), "{e}");
+}
+
+#[test]
+fn a_read_conversion_is_rejected_for_a_plain_column_only() {
+    // The check mirrors `select_columns`: a plain column reads through `read_sql`, an expression over one does not.
+    let plain = leaf("Post", &[("stamp", "x")], json!({}));
+    let e = error(Dialect::Postgres, set("union", plain, leaf("Post", &[("views", "x")], json!({})), json!({})));
+    assert!(e.contains("read conversion"), "{e}");
+    let calc = json!({"t":"leaf","model":"Post","columns":[item(json!({"t":"arith","op":"add","l":col("stamp"),"r":col("views")}), "x")]});
+    let ok = set("union", calc, leaf("Post", &[("views", "x")], json!({})), json!({}));
+    assert!(plan(Dialect::Postgres, "read", ok).is_ok());
 }
 
 #[test]

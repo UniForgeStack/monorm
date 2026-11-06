@@ -3,13 +3,27 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { CompoundSelect, DoesNotExist, MultipleObjectsReturned, QueryError, func, getDatabase } from "../src/index.js";
+import { CompoundSelect, DoesNotExist, MultipleObjectsReturned, QueryError, Registry, connect, func, getDatabase, loads, outer, param } from "../src/index.js";
 import { Comment, Post, Profile, Tag, User } from "./blog/models.js";
 import { otherDatabase, useDatabase } from "./helpers.js";
 
 useDatabase();
 
 type Dynamic = any; // eslint-disable-line @typescript-eslint/no-explicit-any
+
+const SQLITE_SOURCE = `datasource db { provider = "sqlite" }
+model Author {
+  id    BigInt @id @default(autoincrement())
+  email String @unique
+  name  String
+  books Book[]
+}
+model Book {
+  id       BigInt @id @default(autoincrement())
+  authorId BigInt
+  title    String
+  author   Author @relation(fields: [authorId], references: [id])
+}`;
 
 async function seed() {
   const [alice, bob, carol] = (await User.objects.insertMany([
@@ -258,4 +272,58 @@ test("or is still filter combination", async () => {
   assert.deepEqual((await high.or(low)).map((p) => p.title).sort(), ["a1", "b1"]);
   const rows = await Post.objects.filter(Post.views.gt(50).or(Post.views.lt(10))).select({ title: Post.title });
   assert.deepEqual(rows.map((r) => r.title).sort(), ["a1", "b1"]);
+});
+
+test("string and text columns union", async () => {
+  const { users: [alice], posts } = await seed();
+  await Post.objects.filter(Post.title.eq("a1")).update({ body: "first body" });
+  await Comment.objects.insert({ post: posts[0]!, body: "first body", author: alice });
+  // Post.title is `varchar(200)` and Comment.body is `text`: one family.
+  const q = Post.objects.select({ text: Post.title }).union(Comment.objects.select({ text: Comment.body }));
+  assert.deepEqual((await q).map((r) => r.text).sort(), ["a1", "a2", "b1", "first body"]);
+  assert.equal(await q.count(), 4);
+});
+
+test("unbound param and outer", async () => {
+  await seed();
+  const bound = Post.objects.filter(Post.id.eq(param("n"))).select({ id: Post.id, label: Post.title });
+  await assert.rejects(async () => await (names(1n, 2n) as Dynamic).union(bound), /placeholder/);
+  const inner = Post.objects.filter(Post.id.eq(outer(User.id))).select({ id: Post.id, label: Post.title });
+  await assert.rejects(async () => await (names(1n, 2n) as Dynamic).union(inner), /enclosing|outer/);
+});
+
+test("sqlite select union", async () => {
+  const registry = new Registry();
+  const { Author, Book } = loads(SQLITE_SOURCE, { registry }) as Dynamic;
+  const db = await connect("sqlite://:memory:", { registry, default: false });
+  try {
+    await db.createTables();
+    const [a, b] = await Author.objects.using(db).insertMany([{ email: "a@example.com", name: "Alice" }, { email: "b@example.com", name: "Bob" }]).returning();
+    await Book.objects.using(db).insertMany([{ authorId: a.id, title: "one" }, { authorId: a.id, title: "Alice" }, { authorId: b.id, title: "three" }]);
+    const people = Author.objects.using(db).select({ label: Author.name });
+    const books = Book.objects.using(db).select({ label: Book.title });
+    const labels = (rows: { label: string }[]) => rows.map((r) => r.label).sort();
+    assert.deepEqual(labels(await people.union(books)), ["Alice", "Bob", "one", "three"]);
+    assert.deepEqual(labels(await people.unionAll(books)), ["Alice", "Alice", "Bob", "one", "three"]);
+    const left = people.orderBy(Author.name).limit(1);
+    const right = books.orderBy(Book.title.desc()).limit(1);
+    assert.deepEqual(labels(await left.unionAll(right)), ["Alice", "three"]);
+    assert.deepEqual((await left.unionAll(right).orderBy("label").slice(1, 2)).map((r: { label: string }) => r.label), ["three"]);
+    assert.equal(await left.unionAll(right).unionAll(people).count(), 4);
+    assert.equal(await left.unionAll(right).orderBy("-label").limit(1).exists(), true);
+    // A mismatch is an error, not a wrong result; a type mismatch names the branches.
+    await assert.rejects(async () => await (people as Dynamic).union(Book.objects.using(db).select({ other: Book.title })), /same columns/);
+    await assert.rejects(async () => await (people as Dynamic).union(Book.objects.using(db).select({ label: Book.id })), /branch 0 and .* in branch 1/);
+    await assert.rejects(async () => await people.union(books).orderBy("missing" as never), QueryError);
+    await db.transaction(async () => {
+      await Author.objects.using(db).insert({ email: "t@example.com", name: "Tess" });
+      assert.ok(labels(await people.union(books)).includes("Tess"));
+    });
+    const q = people.union(books).orderBy("label");
+    const first = await q;
+    assert.deepEqual(await q, first);
+    assert.equal((await q.all()).length, first.length);
+  } finally {
+    await db.close();
+  }
 });

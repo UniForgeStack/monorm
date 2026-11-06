@@ -22,16 +22,24 @@ import { DoesNotExist, QueryError } from "./errors.js";
 import type { IR } from "./expr.js";
 import { call, type NativeSelect } from "./native.js";
 import { NestedColumn } from "./nested.js";
-import { cachedRows, type QuerySet, type RequiredQuery, type RequiredResult, type PreserveRequired } from "./query.js";
+import { addCut, cachedRows, type QuerySet, type RequiredQuery, type RequiredResult, type PreserveRequired } from "./query.js";
 import { OneSelectRow, Select, type OnlyValue, type OneColumn } from "./select.js";
 import type { ModelSpec } from "./meta.js";
 
 type Operand = Select<any, any, any, any, any, any, any> | CompoundSelect<any>;
 
-/** `[]` when both sides select the same names; otherwise an argument nobody can pass. */
+/** Two column values that one set-operation column can hold: one is the other, ignoring `null`. */
+type Related<A, B> = [NonNullable<A>] extends [NonNullable<B>] ? true : [NonNullable<B>] extends [NonNullable<A>] ? true : false;
+
+/** The names whose value types cannot share one column. */
+type Clash<L, R> = { [K in keyof L & keyof R]: Related<L[K], R[K]> extends true ? never : K }[keyof L & keyof R];
+
+/** `[]` when both sides select the same names with values that fit one column; otherwise an argument nobody can pass. */
 export type SameColumns<L, R> = [keyof L] extends [keyof R]
   ? [keyof R] extends [keyof L]
-    ? []
+    ? [Clash<L, R>] extends [never]
+      ? []
+      : [error: "both queries of a set operation must select values of the same type in each column"]
     : [error: "both queries of a set operation must select the same columns"]
   : [error: "both queries of a set operation must select the same columns"];
 
@@ -159,12 +167,7 @@ export class CompoundSelect<Row extends object> {
   }
 
   private cut(kind: string): readonly string[] {
-    const cuts = this.state.cuts;
-    if (cuts.includes(kind) || cuts.includes("slice") || (kind === "slice" && cuts.length)) {
-      const named = cuts.map((c) => `${c === "offset" ? "an" : "a"} ${c}`).join(" and ");
-      throw new QueryError(`${kind}() can't be applied to a query that already has ${named}; use one limit() and one offset(), or a single slice(); to change or clear a limit or offset, build a new query`);
-    }
-    return [...cuts, kind];
+    return addCut(this.state.cuts, kind, "query");
   }
 
   /** At most `n` rows of the whole result. */
