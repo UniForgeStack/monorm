@@ -70,6 +70,7 @@ export {
   SchemaError,
   TransactionAborted,
   TransactionRequired,
+  UnfilteredWriteError,
   ValidationError,
   VersionConflict,
   WriteProtected,

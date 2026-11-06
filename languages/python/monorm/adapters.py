@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeVar
 from weakref import WeakKeyDictionary
 
 from .expr import Expression
-from .hooks import PreparedInsert, PreparedUpdate, decode_field, prepare_insert, prepare_update
+from .hooks import PreparedInsert, PreparedUpdate, _prepare_update, decode_field, prepare_insert, prepare_update
 from .protection import allow_writes, allowed_writes
 from .write import InsertMany, InsertOne, Returning, Update, UpdateMany, prepare_rows
 
@@ -400,7 +400,7 @@ class PendingUpdateMany(UpdateMany[Any]):
         key = self._qs.model._meta.key_names
         if self._rows:
             with_values = {name: value for name, value in self.rows[0].items() if name not in key}
-            prepare_update(self._qs, with_values)
+            _prepare_update(self._qs, with_values, guard=False)
         self._inspect_returning(False)  # rejects a bad row or a CTE before any upload
 
         def statement(stored: Mapping[Any, Any]) -> Awaitable[Any]:

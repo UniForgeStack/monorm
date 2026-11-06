@@ -73,11 +73,17 @@ def prepare_insert(qs: QuerySet[M], values: Mapping[str, Any]) -> PreparedInsert
 
 def prepare_update(qs: QuerySet[M], values: Mapping[str, Any]) -> PreparedUpdate[M]:
     """Check ``qs.update(**values)`` as ``update()`` does, without SQL or I/O."""
+    return _prepare_update(qs, values, guard=True)
+
+
+def _prepare_update(qs: QuerySet[M], values: Mapping[str, Any], *, guard: bool) -> PreparedUpdate[M]:
+    """``prepare_update``; ``guard=False`` skips the unfiltered-write check, because the shared
+    query set of ``update_many`` has no filter by design."""
     from .db import _with_scope, resolve
 
     resolve(qs._db)
     params: list[Any] = []
-    ir = qs._mutation_ir("update", params, values)
+    ir = qs._mutation_ir("update", params, values, guard=guard)
     op, params = _with_scope(json.dumps(ir), params)
     unique: bool = qs.model._meta.registry.native().unique_row_update(op, params, list(allowed_writes()))
     return PreparedUpdate(qs, values, unique)

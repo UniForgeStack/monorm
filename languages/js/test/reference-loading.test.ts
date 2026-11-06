@@ -73,7 +73,7 @@ for (const dialect of ["sqlite", "postgres"]) {
       await row.update({ ownerId: 2 });
       assert.throws(() => row.owner, NotLoaded);
       assert.equal((await loadRelation(row, "owner")).id, 2);
-      await Required.objects.using(db).update({ ownerId: 1 });
+      await Required.objects.using(db).all().update({ ownerId: 1 });
       await row.load({ reload: true });
       assert.throws(() => row.owner, NotLoaded);
       assert.equal((await loadRelation(row, "owner")).id, 1);
@@ -263,7 +263,7 @@ for (const dialect of ["sqlite", "postgres"]) {
       await keyed.load(Required.owner, Required.ownerId);
       assert.equal(keyed.owner.id, keyed.ownerId);
       assert.equal(keyed.owner.id, 2);
-      await Required.objects.using(db).update({ ownerId: 2 });
+      await Required.objects.using(db).all().update({ ownerId: 2 });
       await row.load(Required.ownerId, { reload: true });
       assert.throws(() => row.owner, NotLoaded);
       await row.load(Required.owner);

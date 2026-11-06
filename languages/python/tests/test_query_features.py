@@ -120,7 +120,7 @@ async def test_scalar_subquery(clean):
 async def test_scalar_subquery_in_update(clean):
     (alice, bob, carol), _ = await seed()
     n_comments = Comment.objects.filter(Comment.post_id == outer(Post.id)).select(func.count()).as_scalar()
-    statement = Post.objects.update(views=n_comments)
+    statement = Post.objects.all().update(views=n_comments)
     assert statement.inspect() == monorm.QueryInspection(1, False, (monorm.StatementInspection(scalar_correlated=1),))
     await statement
     views = {p.title: p.views for p in await Post.objects.all()}
@@ -190,7 +190,7 @@ async def test_case_value_types(clean):
     )
     assert value == Decimal("0.5") and isinstance(value, Decimal)
     # the type the context expects wins over the case's own: an integer branch assigned to a decimal field
-    await Profile.objects.update(balance=func.case((Profile.role == Role.admin, 7), default=2))
+    await Profile.objects.all().update(balance=func.case((Profile.role == Role.admin, 7), default=2))
     assert sorted(await Profile.objects.select(Profile.balance).scalars()) == [Decimal("2"), Decimal("7")]
     assert (
         await Profile.objects.filter(Profile.balance > func.case((Profile.role == Role.admin, 1), default=9)).count()
@@ -227,7 +227,7 @@ async def test_case_expression(clean):
     )
     assert [(u.name, n) for u, n in users] == [("Alice", "many"), ("Bob", "few"), ("Carol", "few")]
     # in an update, values bind with the field's type
-    await Post.objects.update(
+    await Post.objects.all().update(
         views=func.case((Post.views >= 50, Post.views - 50), (Post.title == "a1", 1), default=Post.views)
     )
     views = {p.title: p.views for p in await Post.objects.all()}
@@ -448,7 +448,7 @@ async def test_aggregate_over_a_to_one_path_keeps_its_guards(clean):
         ("b1", bob.id),
     ]
     # An UPDATE applies no joins: its aggregate keeps the subquery.
-    await Post.objects.update(views=func.max(Post.author.id))
+    await Post.objects.all().update(views=func.max(Post.author.id))
     assert await Post.objects.order_by(Post.title).select(Post.views).scalars() == [alice.id] * 3 + [bob.id]
 
 
@@ -596,7 +596,7 @@ async def test_window_function_errors(clean):
     with pytest.raises(QueryError, match="window function: add .over"):
         await Post.objects.select(func.row_number())
     with pytest.raises(QueryError, match="window functions can only be used in select"):
-        await Post.objects.update(views=rank)
+        await Post.objects.all().update(views=rank)
     with pytest.raises(ValueError, match="rows or range"):
         func.count().over(rows=(None, 0), range=(None, 0))
     async with (await _db()).transaction():
@@ -694,7 +694,7 @@ async def test_joining_a_cte(clean):
     )
     assert [tuple(r) for r in rows] == [("Alice", 75, 1), ("Bob", 100, 1)]
     with pytest.raises(QueryError, match="can't run on a query set with from_"):
-        User.objects.join(totals, totals.c.author_id == User.id).update(name="x")
+        User.objects.join(totals, totals.c.author_id == User.id).all().update(name="x")
     with pytest.raises(ValueError, match="already read"):
         User.objects.join(totals, totals.c.author_id == User.id).join(totals, totals.c.n > 0)
 
@@ -800,7 +800,7 @@ async def test_cte_errors(clean):
     with pytest.raises(QueryError, match="only available in queries reading totals"):
         await Post.objects.filter(totals.c.n > 1)
     with pytest.raises(QueryError, match="can't run on a query set with from_"):
-        await Post.objects.from_(Post.objects.cte("p")).delete()
+        await Post.objects.from_(Post.objects.cte("p")).all().delete()
     other = Post.objects.select(Post.author_id).cte("totals")
     with pytest.raises(ValueError, match="two different CTEs"):
         User.objects.filter(

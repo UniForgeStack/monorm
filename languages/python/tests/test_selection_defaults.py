@@ -205,7 +205,7 @@ async def test_selection_defaults(dialect):
         await monorm.of(hidden_books).load(Book.author)
         assert hidden_books[0].author.name == "changed" and hidden_books[1].author is None
         assert await a.in_bulk() == {visible.pk: partial}
-        changed_return = await a.load(Author.name).update(name="again").returning()
+        changed_return = await a.load(Author.name).all().update(name="again").returning()
         assert changed_return[0].to_dict() == {"name": "again"}
         default_return = await a.filter(Author.id == visible.pk).update(note="n").returning()
         assert default_return[0].to_dict() == {"name": "again", "note": "n"}
@@ -220,12 +220,12 @@ async def test_selection_defaults(dialect):
             and bypassed_prefetch.books.cached[0].author_id == visible.pk
         )
         assert await a.filter(Author.books.title == "one").count() == 1
-        written = await a.load().update(visible=False).returning()
+        written = await a.load().all().update(visible=False).returning()
         assert len(written) == 1 and written[0].visible is False
         assert await a.count() == 0
         assert await a.without_defaults().update_many([{"id": hidden.pk, "name": "bulk"}]) == 1
         assert await a.update_many([{"id": hidden.pk, "name": "excluded"}]) == 0
-        assert await a.delete() == 0
+        assert await a.all().delete() == 0
         assert await a.without_defaults().filter(Author.id == hidden.pk).delete() == 1
     finally:
         await db.drop_tables()

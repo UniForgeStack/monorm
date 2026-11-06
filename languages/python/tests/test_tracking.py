@@ -185,14 +185,14 @@ async def test_the_soft_delete_methods_bypass_only_the_deleted_default(dialect):
             assert [d.id for d in await docs.deleted_only()] == [1]
             assert await docs.undelete() == 1
             assert await docs.count() == 2
-            assert await docs.delete() == 2
-            assert await docs.hard_delete() == 2
+            assert await docs.all().delete() == 2
+            assert await docs.all().hard_delete() == 2
         # Shop 2's deleted row survived the shop 1 undelete and hard delete.
         rows = await docs.without_defaults().order_by(Doc.id)
         assert [(d.id, d.deleted is not None) for d in rows] == [(3, True), (4, False)]
         for statement in (
             docs.undelete(),
-            docs.hard_delete(),
+            docs.all().hard_delete(),
             docs.all_with_deleted().count(),
             docs.deleted_only().count(),
         ):
@@ -358,7 +358,7 @@ model Doc {
         with pytest.raises(monorm.VersionConflict):
             await second.delete()
         assert (await docs.get(Doc.id == 1)).title == "b"
-        assert await docs.update(title="d") == 1
+        assert await docs.all().update(title="d") == 1
         assert (await docs.get(Doc.id == 1)).version == 2
         await second.load(reload=True)
         await second.update(title="e")
@@ -418,7 +418,7 @@ async def test_an_upsert_sets_updated_at_in_application_mode(dialect):
         await docs.insert(id=1, title="a", changed=OLD)
         await docs.insert(id=1, title="b").on_conflict(Doc.id, update=True)
         assert as_utc((await docs.get(Doc.id == 1)).changed) > OLD
-        await docs.update(changed=OLD)
+        await docs.all().update(changed=OLD)
         await docs.insert(id=1, title="c", changed=OLD).on_conflict(
             Doc.id, update=True, update_fields=[Doc.title, Doc.changed]
         )

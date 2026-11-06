@@ -76,7 +76,7 @@ async def test_update_aggregates_share_only_their_relation_path(provider):
         assert [(r.n, r.total, r.distinct_n, r.filtered_total, r.other_n, r.label) for r in rows] == [
             (3, 30, 2, 20, 1, "updated"), (1, 7, 1, None, 1, "updated"), (0, None, 0, None, 0, "updated"),
         ]
-        single = Parent.objects.using(db).update(n=monorm.func.count(Parent.children))
+        single = Parent.objects.using(db).all().update(n=monorm.func.count(Parent.children))
         assert single.inspect().statements == (monorm.StatementInspection(scalar_correlated=1),)
         events.clear()
         remove = db.on_query(events.append)
@@ -90,7 +90,7 @@ async def test_update_aggregates_share_only_their_relation_path(provider):
         assert await pair == 2
         rows = await Parent.objects.using(db).order_by(Parent.id).all()
         assert [(r.n, r.total) for r in rows] == [(3, 30), (1, 7), (0, None)]
-        wrapped = Parent.objects.using(db).update(
+        wrapped = Parent.objects.using(db).all().update(
             n=monorm.func.count(Parent.children) + 1,
             total=monorm.func.sum(Parent.children.views),
         )
@@ -115,7 +115,7 @@ async def test_update_aggregates_share_only_their_relation_path(provider):
         assert [(r.n, r.total, r.other_n, r.label) for r in rows] == [
             (4, 30, 2, "wrapped"), (2, 7, 2, "wrapped"), (99, None, 1, "wrapped"),
         ]
-        repeated = Parent.objects.using(db).update(n=monorm.func.count(Parent.children) + monorm.func.count(Parent.children))
+        repeated = Parent.objects.using(db).all().update(n=monorm.func.count(Parent.children) + monorm.func.count(Parent.children))
         assert repeated.inspect().statements[0].scalar_correlated == 1
         rows = sorted(await repeated.returning(), key=lambda row: row.id)
         assert [r.n for r in rows] == [6, 2, 0]

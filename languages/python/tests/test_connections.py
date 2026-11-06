@@ -632,7 +632,7 @@ async def test_scope_values_in_default_filters_are_closed_by_default(db, dialect
             assert prepare_update(orders.filter(Order.id == o1.id), {"total": 11}).unique
             with monorm.debug.n_plus_one():
                 assert (await orders.filter(Order.id == monorm.param("i")).prepare().get(i=o1.id)).total == 10
-            assert await orders.update(total=0) == 2
+            assert await orders.all().update(total=0) == 2
             assert await orders.update_many([{"id": o3.id, "total": 99}]) == 0
             assert await orders.filter(Order.id == o3.id).delete() == 0
         assert sorted(o.total for o in await orders.without_defaults()) == [0, 0, 30]

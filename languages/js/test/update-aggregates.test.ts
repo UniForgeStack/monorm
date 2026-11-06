@@ -66,7 +66,7 @@ for (const provider of ["sqlite", "postgresql"]) {
       assert.deepEqual(rows.map((r: any) => [r.n, r.total, r.distinctN, r.filteredTotal, r.otherN, r.label]), [
         [3, 30n, 2, 20n, 1, "updated"], [1, 7n, 1, null, 1, "updated"], [0, null, 0, null, 0, "updated"],
       ]);
-      const single = Parent.objects.using(db).update({ n: func.count(Parent.children) });
+      const single = Parent.objects.using(db).all().update({ n: func.count(Parent.children) });
       assert.deepStrictEqual(single.inspect().statements, [statementInspection({ scalarCorrelated: 1 })]);
       statements.length = 0;
       const removeSingle = db.onQuery((e) => { statements.push(e.sql); });
@@ -78,7 +78,7 @@ for (const provider of ["sqlite", "postgresql"]) {
       assert.equal(await pair, 2);
       const pairedRows = await Parent.objects.using(db).orderBy(Parent.id).all();
       assert.deepEqual(pairedRows.map((r: any) => [r.n, r.total]), [[3, 30n], [1, 7n], [0, null]]);
-      const wrapped = Parent.objects.using(db).update({
+      const wrapped = Parent.objects.using(db).all().update({
         n: func.count(Parent.children).add(1), total: func.sum(Parent.children.views),
       }, { returning: true });
       assert.equal(wrapped.inspect().statements[0]!.scalarCorrelated, 1);
@@ -102,7 +102,7 @@ for (const provider of ["sqlite", "postgresql"]) {
       assert.deepEqual(combinedRows.map((r: any) => [r.n, r.total, r.otherN, r.label]), [
         [4, 30n, 2, "wrapped"], [2, 7n, 2, "wrapped"], [99, null, 1, "wrapped"],
       ]);
-      const repeated = Parent.objects.using(db).update({ n: func.count(Parent.children).add(func.count(Parent.children)) }, { returning: true });
+      const repeated = Parent.objects.using(db).all().update({ n: func.count(Parent.children).add(func.count(Parent.children)) }, { returning: true });
       assert.equal(repeated.inspect().statements[0]!.scalarCorrelated, 1);
       const repeatedRows = (await repeated).sort((a: any, b: any) => a.id - b.id);
       assert.deepEqual(repeatedRows.map((r: any) => r.n), [6, 2, 0]);

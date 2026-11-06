@@ -384,7 +384,7 @@ async def test_update_and_delete_returning(clean):
     posts = await Post.objects.filter(Post.author_id == alice.id).update(views=Post.views + 1).returning()
     assert sorted(p.views for p in posts) == [6, 51]
     assert await Post.objects.filter(Post.views > 1000).update(views=0).returning() == []
-    assert await Post.objects.update().returning() == []  # nothing to set: no SQL
+    assert await Post.objects.all().update().returning() == []  # nothing to set: no SQL
 
     gone = await Post.objects.filter(Post.views > 90).delete().returning()
     assert [p.title for p in gone] == ["bob's old"]
@@ -392,13 +392,13 @@ async def test_update_and_delete_returning(clean):
 
     # A statement that is never awaited warns, like an un-awaited coroutine.
     with pytest.warns(RuntimeWarning, match="never awaited"):
-        Post.objects.update(views=0)
+        Post.objects.all().update(views=0)
         import gc
 
         gc.collect()
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        await Post.objects.update(views=0)
+        await Post.objects.all().update(views=0)
     assert {p.views for p in await Post.objects} == {0}
 
 
@@ -443,7 +443,7 @@ async def test_upsert_with_expressions(clean):
     )
     assert sorted(o.views for o in out) == [2, 100]
     with pytest.raises(monorm.QueryError):
-        await Post.objects.update(views=monorm.excluded(Post.views))
+        await Post.objects.all().update(views=monorm.excluded(Post.views))
 
 
 async def test_update_many(clean):
@@ -516,7 +516,7 @@ async def test_fallback_sql_runs_on_postgres(clean):
         }
         assert names(await User.objects.using(db).filter(User.name.icontains("ALI"))) == ["Alice"]
         with pytest.raises(monorm.QueryError, match="does not support update"):
-            await Post.objects.using(db).update(views=0).returning()
+            await Post.objects.using(db).all().update(views=0).returning()
     finally:
         await db.close()
 

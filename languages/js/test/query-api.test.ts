@@ -110,7 +110,7 @@ test("bound load reads keys from the instances, to-one and many-to-many", async 
   const { posts: rows } = await seed();
   await Comment.objects.insertMany([{ post: rows[0]!, body: "a" }, { post: rows[3]!, body: "b" }]);
   const comments = await Comment.objects.orderBy("id");
-  await Comment.objects.delete(); // the instances' own rows are not read again
+  await Comment.objects.all().delete(); // the instances' own rows are not read again
   await of(comments).load(Comment.post.author);
   const loaded = comments as unknown as { post: { title: string; author: { name: string } } }[];
   assert.deepEqual(loaded.map((c) => [c.post.title, c.post.author.name]), [["draft", "Alice"], ["bob", "Bob"]]);

@@ -124,7 +124,7 @@ async def test_retirement_migration_requires_reference_cleanup(tmp_path, url, pr
         with pytest.raises(monorm.DatabaseError):
             await runner.upgrade()
         assert await models["Tag"].objects.using(db).count() == 1
-        await models["Tag"].objects.using(db).delete()
+        await models["Tag"].objects.using(db).all().delete()
         await runner.upgrade()
         with pytest.raises(monorm.IntegrityError):
             await db.execute("INSERT INTO identity08_migration_tags (id, kind, object_id) VALUES (2, 1, 9)")

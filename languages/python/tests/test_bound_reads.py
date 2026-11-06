@@ -310,7 +310,7 @@ async def test_a_large_bound_read_runs_in_chunks_of_500_keys(clean, db, observe_
     alice = await User.objects.insert(email="alice@example.com", name="Alice")
     await Post.objects.insert_many([{"author": alice, "title": f"p{i}", "body": "b"} for i in range(1200)])
     held = await Post.objects.order_by(Post.id)
-    await Post.objects.update(title="changed")
+    await Post.objects.all().update(title="changed")
     wanted = list(reversed(held))
     with observe_queries(db) as events:
         result = await Post.objects.of(wanted)
@@ -335,7 +335,7 @@ async def test_a_large_composite_key_bound_read_does_not_hang(db, observe_querie
         await other.create_tables()
         await Cell.objects.using(other).insert_many([{"a": i, "b": 1} for i in range(1200)])
         held = await Cell.objects.using(other).order_by(Cell.a)
-        await Cell.objects.using(other).update(v=7)
+        await Cell.objects.using(other).all().update(v=7)
         with observe_queries(other) as events:
             assert await asyncio.wait_for(Cell.objects.of(held).using(other), 60) == held
             assert await Cell.objects.of(held).using(other).count() == 1200

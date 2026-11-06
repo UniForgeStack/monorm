@@ -34,11 +34,27 @@ __all__ = [
     "VersionConflict",
     "ValidationError",
     "DecodeError",
+    "UnfilteredWriteError",
 ]
 
 
 class ORMError(Exception):
     """Base class for errors raised by the Python layer."""
+
+
+class UnfilteredWriteError(ORMError):
+    """``update()`` or ``delete()`` on a query set with no ``filter()``, ``exclude()`` or related set.
+    Call ``.all()`` to write every row on purpose, or open the database with
+    ``connect(url, allow_unfiltered_writes=True)``."""
+
+    def __init__(self, op: str, model: str) -> None:
+        super().__init__(
+            f"{model}.objects.{op}() has no filter and would change every row; "
+            f"call .all() first ({model}.objects.all().{op}(...)) to write every row, "
+            "or open the database with connect(url, allow_unfiltered_writes=True)"
+        )
+        self.op = op
+        self.model = model
 
 
 class DoesNotExist(ORMError, LookupError):

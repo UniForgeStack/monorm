@@ -256,7 +256,7 @@ async def test_bound_load_reads_keys_from_the_instances(clean):
     _, _, posts = await seed()
     await Comment.objects.insert_many([{"post": posts[0], "body": "a"}, {"post": posts[3], "body": "b"}])
     comments = await Comment.objects.order_by(Comment.id)
-    await Comment.objects.delete()  # the instances' own rows are not read again
+    await Comment.objects.all().delete()  # the instances' own rows are not read again
     await monorm.of(comments).load(Comment.post.author)
     assert [(c.post.title, c.post.author.name) for c in comments] == [("draft", "Alice"), ("bob", "Bob")]
 

@@ -152,7 +152,7 @@ for (const provider of ["sqlite", "postgresql"]) {
     try {
       const entries = await Entry.objects.using(db).orderBy("id");
       const writers = await Writer.objects.using(db).orderBy("id");
-      await Entry.objects.using(db).delete(); // the roots are gone: only a root query would notice
+      await Entry.objects.using(db).all().delete(); // the roots are gone: only a root query would notice
       const engine = (db as Any).engine;
       const run = engine.prefetch.bind(engine);
       let prefetches = 0;

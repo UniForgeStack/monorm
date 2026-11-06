@@ -76,7 +76,12 @@ class Database:
     """A connection pool. Created by :func:`connect`."""
 
     def __init__(
-        self, engine: _native.Engine, url: str, registry: Registry = registry, replicas: Sequence[_native.Engine] = ()
+        self,
+        engine: _native.Engine,
+        url: str,
+        registry: Registry = registry,
+        replicas: Sequence[_native.Engine] = (),
+        allow_unfiltered_writes: bool = False,
     ) -> None:
         self._base = engine
         self.url = url
@@ -85,13 +90,14 @@ class Database:
         self._hooks: dict[object, Callable[[QueryEvent], object]] = {}
         self._replicas = list(replicas)
         self._turn = 0
+        self._allow_unfiltered_writes = allow_unfiltered_writes
         # The database a `primary` view belongs to: they share transactions and callbacks.
         self._root: Database = self
 
     @property
     def primary(self) -> Database:
         """This database without its replicas: every statement goes to the primary."""
-        view = Database(self._base, self.url, self._registry)
+        view = Database(self._base, self.url, self._registry, allow_unfiltered_writes=self._allow_unfiltered_writes)
         view._root = self._root
         return view
 
@@ -563,6 +569,7 @@ async def connect(
     default: bool = True,
     registry: Registry = registry,
     replicas: Sequence[str] = (),
+    allow_unfiltered_writes: bool = False,
     _disable: tuple[str, ...] = (),
 ) -> Database:
     """Open a connection pool. Import your model modules first: the schema is compiled
@@ -572,14 +579,20 @@ async def connect(
     With ``default=True`` (the default) queries use this database unless
     ``.using(db)`` says otherwise. With ``replicas`` (URLs of read replicas of
     ``url``), reads outside a transaction go to a replica, in turn; writes and every
-    statement in a transaction go to ``url``. ``_disable`` switches database capabilities off
-    (``"ilike"``, ``"update_from_values"``, ...) to test the SQL other databases get.
+    statement in a transaction go to ``url``.
+
+    ``update()`` and ``delete()`` on a query set with no caller filter raise
+    ``UnfilteredWriteError`` unless it came from ``.all()``.
+    With ``allow_unfiltered_writes=True`` this database accepts them.
+
+    ``_disable`` switches database capabilities off (``"ilike"``, ``"update_from_values"``, ...)
+    to test the SQL other databases get.
     """
     global _default
     schema = registry.prepare()
     engine = await _native.connect(url, schema, max_connections, list(_disable))
     readers = [await _native.connect(r, schema, max_connections, list(_disable)) for r in replicas]
-    db = Database(engine, url, registry, readers)
+    db = Database(engine, url, registry, readers, allow_unfiltered_writes)
     if default:
         _default = db
     return db

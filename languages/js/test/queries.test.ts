@@ -279,7 +279,7 @@ test("update and delete returning rows", async () => {
   const posts = await Post.objects.filter(Post.authorId.eq(alice.id)).update({ views: Post.views.add(1) }, { returning: true });
   assert.deepEqual(posts.map((p) => p.views).sort((x, y) => x - y), [6, 51]);
   assert.deepEqual(await Post.objects.filter(Post.views.gt(1000)).update({ views: 0 }, { returning: true }), []);
-  assert.deepEqual(await Post.objects.update({}, { returning: true }), []); // nothing to set: no SQL
+  assert.deepEqual(await Post.objects.all().update({}, { returning: true }), []); // nothing to set: no SQL
   const gone = await Post.objects.filter(Post.views.gt(90)).delete({ returning: true });
   assert.deepEqual(gone.map((p) => p.title), ["bob's old"]);
   assert.equal(await Post.objects.count(), 2);
@@ -298,7 +298,7 @@ test("upsert with expressions", async () => {
     .onConflict(Post.id, { update: true, updateValues: { views: excluded(Post.views).mul(100) } })
     .returning();
   assert.deepEqual(out.map((o) => o.views).sort((x, y) => x - y), [2, 100]);
-  await assert.rejects(Post.objects.update({ views: excluded(Post.views) }), QueryError);
+  await assert.rejects(Post.objects.all().update({ views: excluded(Post.views) }), QueryError);
 });
 
 test("updateMany", async () => {
@@ -345,7 +345,7 @@ test("fallback SQL runs on Postgres", async () => {
     const got = await Post.objects.filter(Post.id.in([a1.id, b1.id])).orderBy(Post.id).all();
     assert.deepEqual(got.map((p) => [p.title, p.views]), [["x", 1], ["y", 2]]);
     assert.deepEqual(names(await User.objects.using(db).filter(User.name.icontains("ALI")).all()), ["Alice"]);
-    await assert.rejects(Post.objects.using(db).update({ views: 0 }, { returning: true }), /does not support update/);
+    await assert.rejects(Post.objects.using(db).all().update({ views: 0 }, { returning: true }), /does not support update/);
   } finally {
     await db.close();
   }

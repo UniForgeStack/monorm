@@ -207,14 +207,14 @@ def test_lock_refuses_a_filtered_aggregate():
 
 def test_lock_rejected_where_meaningless():
     with pytest.raises(QueryError):
-        User.objects.lock().update(name="x")
+        User.objects.lock().all().update(name="x")
     with pytest.raises(QueryError):
         User.objects.lock().delete()
 
 
 def test_writes_validate_when_built():
     with pytest.raises(TypeError):
-        User.objects.update(nope=1)
+        User.objects.all().update(nope=1)
     with pytest.raises(QueryError):
         User.objects.all()[:3].delete()
     with pytest.raises(TypeError):

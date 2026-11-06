@@ -127,9 +127,9 @@ async def test_proxy_with_query_defaults_is_a_filtered_view(dialect):
         await Active.objects.using(db).insert(id=3, name="cat")
         assert [r.name for r in await Active.objects.using(db).order_by(Active.id)] == ["ann", "cat"]
         # query set writes select through the policy filter
-        assert await Active.objects.using(db).update(bio="x") == 2
+        assert await Active.objects.using(db).all().update(bio="x") == 2
         assert (await Member.objects.using(db).get(Member.id == 2)).bio == "b"
-        assert await Active.objects.using(db).delete() == 2
+        assert await Active.objects.using(db).all().delete() == 2
         assert [m.id for m in await Member.objects.using(db)] == [2]
     finally:
         await db.drop_tables()

@@ -131,7 +131,7 @@ test("every hook gets every event before the first hook error reaches the caller
   try {
     const calls: string[] = [];
     for (const name of ["first", "second"]) db.onQuery(() => { calls.push(name); throw new Error(name); });
-    await assert.rejects(Person.objects.using(db).load(Person.customers).all(), (error: Error) => { // two statements
+    await assert.rejects(async () => { await Person.objects.using(db).load(Person.customers).all(); }, (error: Error) => { // two statements
       assert.equal(error.message, "first");
       assert.ok(error.cause instanceof AggregateError);
       assert.equal(error.cause.errors.length, 3);

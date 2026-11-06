@@ -99,7 +99,7 @@ async def test_identity_reload_fk_invalidation_and_counts(references, monkeypatc
         _ = row.owner
     assert (await load_relation(row, "owner")).id == 2
     assert calls == 3
-    await m["Required"].objects.using(db).update(owner_id=1)
+    await m["Required"].objects.using(db).all().update(owner_id=1)
     await row.load(reload=True)
     with pytest.raises(monorm.NotLoaded):
         _ = row.owner
@@ -359,7 +359,7 @@ async def test_instance_load_validates_before_io_and_reload_invalidates_referenc
             await row.load(Required.owner, Owner.name)
     assert not queries
     await row.load(Required.owner)
-    await Required.objects.using(db).update(owner_id=2)
+    await Required.objects.using(db).all().update(owner_id=2)
     await row.load(Required.owner_id, reload=True)
     with pytest.raises(monorm.NotLoaded):
         _ = row.owner
@@ -372,7 +372,7 @@ async def test_loading_a_key_and_its_reference_uses_the_new_key(references):
     await seed(db, m)
     Required = m["Required"]
     row = await Required.objects.using(db).load(Required.id).get()
-    await Required.objects.using(db).update(owner_id=2)
+    await Required.objects.using(db).all().update(owner_id=2)
     await row.load(Required.owner, Required.owner_id)
     assert row.owner_id == row.owner.id == 2
 

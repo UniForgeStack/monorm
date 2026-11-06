@@ -345,7 +345,7 @@ async def test_case_expression():
         size = func.case((Note.n >= 10, "big"), (Note.n >= 5, "mid"), default="small")
         assert await Note.objects.using(db).order_by(Note.id).select(size).scalars() == ["small", "mid", "big"]
         assert await Note.objects.using(db).select(func.sum(func.case((Note.n >= 5, 1), default=0))).scalar() == 2
-        await Note.objects.using(db).update(n=func.case((Note.n == 1, 100), default=Note.n))
+        await Note.objects.using(db).all().update(n=func.case((Note.n == 1, 100), default=Note.n))
         assert await Note.objects.using(db).order_by(Note.id).select(Note.n).scalars() == [100, 5, 10]
     finally:
         await db.close()

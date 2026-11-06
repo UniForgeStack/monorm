@@ -438,18 +438,18 @@ for (const dialect of ['postgres', 'sqlite']) {
       const orders = Order.objects.using(sdb);
       const [o1, , o3] = await orders.insertMany([{ shopId: s1.id, total: 10 }, { shopId: s1.id, total: 20 }, { shopId: s2.id, total: 30 }]).returning();
       for (const read of [() => orders.all(), () => orders.count(), () => Shop.objects.using(sdb).filter(Shop.orders.total.gt(25)).count()]) {
-        await assert.rejects(read(), /Order default "query" from monorm\.query-defaults \(without_defaults\("query"\)\) reads scope\.shop/);
+        await assert.rejects(async () => { await read(); }, /Order default "query" from monorm\.query-defaults \(without_defaults\("query"\)\) reads scope\.shop/);
       }
       assert.equal(await orders.withoutDefaults().count(), 3);
       // A lazy mutation and its inspection use the scope of execution, not construction.
       let deferred!: ReturnType<typeof orders.update>;
-      await scope({ shop: s1.id }, async () => { deferred = orders.update({ total: 31 }); });
+      await scope({ shop: s1.id }, async () => { deferred = orders.all().update({ total: 31 }); });
       assert.throws(() => deferred.inspect(), /Order default "query" from monorm\.query-defaults \(without_defaults\("query"\)\) reads scope\.shop/);
       await scope({ shop: s2.id }, async () => {
         deferred.inspect();
         assert.equal(await deferred, 1);
         assert.deepEqual((await orders.all()).map((o: any) => o.total), [31]);
-        await orders.update({ total: 30 });
+        await orders.all().update({ total: 30 });
       });
       await scope({ shop: s1.id }, async () => {
         assert.deepEqual((await orders.all()).map((o: any) => o.total).sort(), [10, 20]);
@@ -464,7 +464,7 @@ for (const dialect of ['postgres', 'sqlite']) {
         assert.match(orders.filter(Order.total.gt(param('t'))).prepare().sql({ t: 1 }), /s6_js_orders/);
         assert.match(orders.select({ total: Order.total }).sql(), /s6_js_orders/);
         assert.equal(orders.filter(Order.id.eq(o1.id)).prepareUpdate({ total: 11 }).unique, true);
-        assert.equal(await orders.update({ total: 0 }), 2);
+        assert.equal(await orders.all().update({ total: 0 }), 2);
         assert.equal(await orders.updateMany([{ id: o3.id, total: 99 }]), 0);
         assert.equal(await orders.filter(Order.id.eq(o3.id)).delete(), 0);
       });
@@ -501,7 +501,7 @@ for (const dialect of ['postgres', 'sqlite']) {
       });
       await scope({ shop: null }, async () => {
         await assert.rejects(async () => { await of(shops).using(sdb).load(Shop.orders); }, /scope\.shop is None/);
-        await assert.rejects(Shop.objects.using(sdb).load(Shop.orders).all(), /scope\.shop is None/);
+        await assert.rejects(async () => { await Shop.objects.using(sdb).load(Shop.orders).all(); }, /scope\.shop is None/);
       });
     } finally {
       await sdb.dropTables();

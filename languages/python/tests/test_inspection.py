@@ -112,7 +112,7 @@ async def test_write_batch_inspection_and_observation(clean):
 
 async def test_mutations_inspect_generated_subqueries(clean):
     scalar = Comment.objects.filter(Comment.post_id == monorm.outer(Post.id)).select(monorm.func.count()).as_scalar()
-    update = Post.objects.update(views=scalar)
+    update = Post.objects.all().update(views=scalar)
     assert update.inspect().statements[0] == monorm.StatementInspection(scalar_correlated=1)
     assert await update == 0
     delete = Post.objects.filter(Post.comments.body == "hi").delete().returning()
@@ -132,7 +132,7 @@ def test_inspecting_a_write_is_a_valid_terminal_use():
         warnings.simplefilter("always")
         assert Tag.objects.insert_many([{"name": "inspection only"}]).inspect().statement_count == 1
         assert Tag.objects.update_many([]).inspect().statement_count == 0
-        assert Tag.objects.update(name="inspection only").inspect().statement_count == 1
+        assert Tag.objects.all().update(name="inspection only").inspect().statement_count == 1
         assert Tag.objects.filter(Tag.name == "absent").delete().returning().inspect().statement_count == 1
         gc.collect()
     assert caught == []

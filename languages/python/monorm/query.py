@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Generic, Literal, NoReturn, TypeAlias, Ty
 
 from .inspection import QueryInspection, _inspect
 from ._cache import cached
-from .errors import QueryError, TransactionRequired
+from .errors import QueryError, TransactionRequired, UnfilteredWriteError
 from .expr import (
     IR,
     ColumnRef,
@@ -28,6 +28,7 @@ from .expr import (
     and_,
     no_alias,
     as_condition,
+    constant_truth,
     resolve_null_rule,
     differs,
     not_,
@@ -426,6 +427,7 @@ class QuerySet(Generic[M]):
         "_from",
         "_joins",
         "_result",
+        "_every_row",
     )
 
     def __init__(self, model: type[M]) -> None:
@@ -462,6 +464,8 @@ class QuerySet(Generic[M]):
         self._from: Cte | None = None
         self._joins: tuple[tuple[Cte, Condition, bool], ...] = ()
         self._result: asyncio.Task[list[M]] | None = None
+        # all() marks a query set that writes every row on purpose: it passes the unfiltered-write guard
+        self._every_row = False
 
     @property
     def model(self) -> type[M]:
@@ -497,6 +501,7 @@ class QuerySet(Generic[M]):
         new._db = self._db
         new._from = self._from
         new._joins = self._joins
+        new._every_row = self._every_row
         new._result = None
         if cls is not QuerySet:
             _copy_subclass_state(self, new)
@@ -511,7 +516,9 @@ class QuerySet(Generic[M]):
         return cast("RequiredQuerySet[M]", self._clone(_required=True))
 
     def all(self) -> Self:
-        return self._clone()
+        """A new query set with an empty result cache. It also marks "every row": ``update()``
+        and ``delete()`` on it run with no filter (they raise ``UnfilteredWriteError`` otherwise)."""
+        return self._clone(_every_row=True)
 
     def without_defaults(self, *names: str) -> Self:
         """Bypass named defaults, or all defaults with no names; retain caller filters."""
@@ -1028,7 +1035,11 @@ class QuerySet(Generic[M]):
         self._standalone()
         return self._query_ir("select", params, ctes=ctes)[0]
 
-    def _mutation_ir(self, op: str, params: list[Any], values: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    def _mutation_ir(
+        self, op: str, params: list[Any], values: Mapping[str, Any] | None = None, *, guard: bool = True
+    ) -> dict[str, Any]:
+        """The IR of a write. ``guard=False`` skips the unfiltered-write check: the shared query set of
+        ``update_many`` has no filter by design, and each row is matched by its key."""
         self._standalone()
         if self._limit is not None or self._offset is not None:
             raise QueryError(f"{op}() is not supported on a sliced query set")
@@ -1036,6 +1047,12 @@ class QuerySet(Generic[M]):
             raise QueryError(f"{op}() locks the rows it changes; drop lock()")
         if self._from is not None or self._joins:
             raise QueryError(f"{op}() writes the model's table; it can't run on a query set with from_() or join()")
+        if guard and not self._every_row and all(constant_truth(f) is True for f in self._filters):
+            from .db import resolve
+
+            # A filter that is always true (`and_()` of no conditions) writes every row, as no filter does.
+            if not resolve(self._db)._allow_unfiltered_writes:
+                raise UnfilteredWriteError(op, self._model._meta.name)
         ctx = IRContext(self._model, params)
         ir: dict[str, Any] = {"op": op, "model": self._model._meta.name, "filters": [f._ir(ctx) for f in self._filters]}
         if self._without_defaults:
@@ -1457,15 +1474,16 @@ class QuerySet(Generic[M]):
                 raise QueryError(f"| needs one filter() call per side{qs._or_origin()}; put the conditions in one call")
         base = QuerySet(self._model)
         for name in QuerySet.__slots__:
-            if name in ("_filters", "_model", "_result"):
+            if name in ("_filters", "_model", "_result", "_every_row"):
                 continue
             theirs, ours = getattr(other, name), getattr(base, name)
             if (theirs is not ours) if name == "_via" else (theirs != ours):
                 raise QueryError(f"| takes filters only from the right query set, which also sets {name.lstrip('_')}")
         left = self._plain()
+        every_row = self._every_row or other._every_row  # all() on either side: the union is a deliberate write of every row
         if not self._filters or not other._filters:
-            return left._clone(_filters=())
-        return left._clone(_filters=(or_(self._filters[0], other._filters[0]),))
+            return left._clone(_filters=(), _every_row=every_row)
+        return left._clone(_filters=(or_(self._filters[0], other._filters[0]),), _every_row=every_row)
 
     def _plain(self) -> Self:
         return self

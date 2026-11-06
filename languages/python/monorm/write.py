@@ -701,7 +701,7 @@ class UpdateMany(Generic[M]):
     def __init__(self, qs: QuerySet[M], rows: Iterable[Mapping[str, Any]], batch_size: int | None) -> None:
         if batch_size is not None and batch_size < 1:
             raise ValueError("batch_size must be at least 1")
-        qs._mutation_ir("update", [])  # rejects sliced and locked query sets
+        qs._mutation_ir("update", [], guard=False)  # rejects sliced and locked query sets
         self._qs = qs
         self._fields, self._rows = prepare_update_rows(qs.model, rows)
         self._batch_size = batch_size
@@ -717,7 +717,7 @@ class UpdateMany(Generic[M]):
         if not self._rows:
             return QueryInspection(0, False, ())
         params: list[Any] = []
-        ir = self._qs._mutation_ir("update", params)
+        ir = self._qs._mutation_ir("update", params, guard=False)
         if "with" in ir:
             raise QueryError("update_many() filters can't read CTEs")
         filters, params = _with_scope(json.dumps(ir["filters"]), params, key="filters")
@@ -740,7 +740,7 @@ class UpdateMany(Generic[M]):
         if not self._rows:
             return [] if returning else 0
         params: list[Any] = []
-        ir = self._qs._mutation_ir("update", params)
+        ir = self._qs._mutation_ir("update", params, guard=False)
         if "with" in ir:
             raise QueryError("update_many() filters can't read CTEs")
         db = resolve(self._qs._db)

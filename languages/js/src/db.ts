@@ -131,6 +131,8 @@ export class Database {
     readonly url: string,
     readonly registry: Registry,
     private readonly replicas: readonly NativeEngine[] = [],
+    /** @internal `connect(url, { allowUnfilteredWrites: true })`: `update()` and `delete()` take a query set with no filter. */
+    readonly allowUnfilteredWrites: boolean = false,
   ) {}
 
   /**
@@ -218,7 +220,7 @@ export class Database {
 
   /** This database without its replicas: every statement goes to the primary. */
   get primary(): Database {
-    const view = new Database(this.base, this.url, this.registry);
+    const view = new Database(this.base, this.url, this.registry, [], this.allowUnfilteredWrites);
     view.root = this.root;
     return view;
   }
@@ -499,6 +501,9 @@ export interface ConnectOptions {
   /** URLs of read replicas: reads outside a transaction go to one of them, in turn;
    * writes and every statement in a transaction go to the primary. */
   readonly replicas?: readonly string[];
+  /** Let `update()` and `delete()` run on a query set with no filter (they throw
+   * `UnfilteredWriteError` otherwise; `.all()` marks one that writes every row on purpose). */
+  readonly allowUnfilteredWrites?: boolean;
 }
 
 /**
@@ -522,7 +527,7 @@ export async function connect(url: string, options: ConnectOptions = {}): Promis
     }
     throw e;
   }
-  const db = new Database(engine, url, reg, readers);
+  const db = new Database(engine, url, reg, readers, options.allowUnfilteredWrites ?? false);
   if (options.default ?? true) {
     defaultDb = db;
   }

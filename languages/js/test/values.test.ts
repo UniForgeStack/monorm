@@ -87,7 +87,7 @@ test("every column type round-trips", async () => {
 });
 
 test("fetched rows decode every type, nulls in every column, through the packed rows", async () => {
-  await objects().delete();
+  await objects().all().delete();
   const micros = new Date("2026-05-06T07:08:09.123Z");
   Object.defineProperty(micros, "monorm:micros", { value: 456 });
   Object.defineProperty(micros, "monorm:micros-ms", { value: micros.getTime() });

@@ -32,10 +32,10 @@ const writes: Record<string, (Entry: Any, rows: () => Any) => Promise<unknown>> 
   insertMany: (_Entry, rows) => rows().insertMany([{ id: 3, name: "new" }, { id: 4, name: "bulk" }], { batchSize: 1 }).returning(),
   upsert: (Entry, rows) => rows().insert({ id: 1, name: "changed" }).onConflict(Entry.id, { update: true }).returning(),
   bulkUpsert: (Entry, rows) => rows().insertMany([{ id: 1, name: "changed" }]).onConflict(Entry.id, { update: true }),
-  update: (_Entry, rows) => rows().update({ name: "changed" }, { returning: true }),
+  update: (_Entry, rows) => rows().all().update({ name: "changed" }, { returning: true }),
   updateMany: (_Entry, rows) => rows().updateMany([{ id: 1, name: "changed" }]),
-  delete: (_Entry, rows) => rows().delete({ returning: true }),
-  hardDelete: (_Entry, rows) => hardDeleteStatement(rows()),
+  delete: (_Entry, rows) => rows().all().delete({ returning: true }),
+  hardDelete: (_Entry, rows) => hardDeleteStatement(rows().all()),
 };
 for (const [dialect, url] of [["Postgres", DATABASE_URL], ["SQLite", "sqlite://:memory:"]] as const) {
   for (const [method, build] of Object.entries(writes)) {
@@ -58,7 +58,7 @@ for (const [dialect, url] of [["Postgres", DATABASE_URL], ["SQLite", "sqlite://:
     try {
       await rows().insertMany([{ id: 1, name: "one" }, { id: 2, name: "two" }]);
       for (const build of Object.values(writes)) {
-        await rows().delete();
+        await rows().all().delete();
         await rows().insertMany([{ id: 1, name: "one" }, { id: 2, name: "two" }]);
         let statement!: Promise<unknown>;
         await db.transaction(async () => { statement = build(Entry, rows); });
@@ -89,7 +89,7 @@ for (const [dialect, url] of [["Postgres", DATABASE_URL], ["SQLite", "sqlite://:
     const { db, Entry, rows } = await setup(url, true);
     try {
       for (const build of Object.values(writes)) {
-        await allowWrites([Entry], () => rows().delete());
+        await allowWrites([Entry], () => rows().all().delete());
         await allowWrites([Entry], () => rows().insertMany([{ id: 1, name: "one" }, { id: 2, name: "two" }]));
         let escaped!: Promise<unknown>;
         await allowWrites([Entry], async () => { escaped = build(Entry, rows); });

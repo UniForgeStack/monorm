@@ -56,7 +56,7 @@ async def test_the_decimal_wire_format_round_trips(clean):
     alice, _ = await users()
     await Profile.objects.insert(user=alice)
     for text in ["1234567890.12", "-0.01", "0.50", "-99999999.99"]:
-        p = await Profile.objects.update(balance=Decimal(text)).returning()
+        p = await Profile.objects.all().update(balance=Decimal(text)).returning()
         assert p[0].balance == Decimal(text) and str(p[0].balance) == text
 
 

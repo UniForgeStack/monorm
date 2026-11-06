@@ -25,6 +25,7 @@ import {
   Slot,
   SlotParams,
   and,
+  constantTruth,
   differs,
   exists,
   noAlias,
@@ -43,7 +44,7 @@ import {
   type Source,
   type Subquery,
 } from "./expr.js";
-import { NotLoaded, QueryError, TransactionRequired } from "./errors.js";
+import { NotLoaded, QueryError, TransactionRequired, UnfilteredWriteError } from "./errors.js";
 import { irNames, type DefaultNames, type Hop, type HopKind, type In, type ModelSpec, type RelationMeta } from "./meta.js";
 import { DB, IndexRef, columnOf, fieldValue, RELATED, registerQueries, type Instance, type ModelClass, type ModelMeta } from "./model.js";
 import { call, wait, type NativeReturned, type NativeSelect, type NativeTrace, type NativeTransaction } from "./native.js";
@@ -538,6 +539,8 @@ export interface QueryState {
   readonly withoutDefaults: boolean | readonly string[];
   /** Skip the root model's default filter only: `of()` sets it, joined and aggregated targets keep theirs. */
   readonly withoutRootFilter?: boolean;
+  /** `all()` marked this set: `update()` and `delete()` may write every row. */
+  readonly everyRow?: boolean;
   readonly withoutRelated: boolean;
   readonly modelFields: readonly string[] | undefined;
   /** `modelFields` adds to the model's default selection (a bare path beside columns). */
@@ -872,12 +875,13 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     for (const [key, value] of Object.entries(other.state) as [keyof QueryState, unknown][]) {
       const base = EMPTY[key];
       const empty = Array.isArray(value) && !value.length && (base === undefined || Array.isArray(base));
-      if (key !== "filters" && value !== base && !empty) throw new QueryError(`or() takes filters only from the other query set, which also sets ${key}`);
+      if (key !== "filters" && key !== "everyRow" && value !== base && !empty) throw new QueryError(`or() takes filters only from the other query set, which also sets ${key}`);
     }
     const { relation: _relation, instance: _instance, ...own } = this as unknown as Record<string, unknown>;
     const left = Object.assign(new (querySetClass(this.meta))(this.meta, this.state), own) as unknown as this;
-    if (!this.state.filters.length || !other.state.filters.length) return left.clone({ filters: [] }) as never;
-    return left.clone({ filters: [or(this.state.filters[0] as never, other.state.filters[0] as never) as unknown as Node] }) as never;
+    const everyRow = this.state.everyRow === true || other.state.everyRow === true;
+    if (!this.state.filters.length || !other.state.filters.length) return left.clone({ filters: [], everyRow }) as never;
+    return left.clone({ filters: [or(this.state.filters[0] as never, other.state.filters[0] as never) as unknown as Node], everyRow }) as never;
   }
 
   /** Drop rows matching all `conditions`. */
@@ -1184,8 +1188,12 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     return this.queryIr("select", params, undefined, ctes)[0];
   }
 
-  /** @internal */
-  mutationIr(op: string, params: unknown[], values?: object): IR {
+  /**
+   * @internal
+   * `guard: false` skips the unfiltered-write check. `updateMany()` needs it: its rows
+   * set the keys, so the query set has no filter by design.
+   */
+  mutationIr(op: string, params: unknown[], values?: object, guard = true): IR {
     this.assertStandalone();
     const s = this.state;
     if (s.limit !== undefined || s.offset !== undefined) {
@@ -1196,6 +1204,10 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     }
     if (s.from || s.joins.length) {
       throw new QueryError(`${op}() writes the model's table; it can't run on a query set with from() or join()`);
+    }
+    // A filter that is always true (`and()` of no conditions) writes every row, as no filter does.
+    if (guard && !s.everyRow && s.filters.every((f) => constantTruth(f) === true) && !resolve(s.db).allowUnfilteredWrites) {
+      throw new UnfilteredWriteError(op, this.meta.name);
     }
     const ctx = new IRContext(this.meta, params);
     const ir: IR = { op, model: this.meta.name, filters: s.filters.map((f) => f.ir(ctx)) };
@@ -1283,9 +1295,12 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     return new Builder(db.registry, this.state.db).select(res) as R[];
   }
 
-  /** A new query set with an empty result cache: `await qs.all()` queries afresh (unlike `await qs`, which reuses its first result). Nothing runs until it is awaited. */
+  /**
+   * A new query set with an empty result cache: `await qs.all()` queries afresh, and `await qs` reuses its first result.
+   * It also marks "every row", which lets `update()` and `delete()` run with no filter.
+   */
   all(): this {
-    return this.clone({});
+    return this.clone({ everyRow: true });
   }
 
   /**
@@ -1525,9 +1540,13 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    * non-null primary key or unique field. `execute()` runs the update.
    */
   prepareUpdate(values: M["update"]): PreparedUpdate<M> {
+    return this.prepareUpdateWith(values, true);
+  }
+
+  private prepareUpdateWith(values: M["update"], guard: boolean): PreparedUpdate<M> {
     this.db();
     const params: unknown[] = [];
-    const ir = this.mutationIr("update", params, values);
+    const ir = this.mutationIr("update", params, values, guard);
     const unique = call(() => this.meta.registry.native().uniqueRowUpdate(...withScope(JSON.stringify(ir), params), allowedWrites()));
     return { unique, execute: (data = values, options = {}) => this.updateValues(data, options.returning ?? false) };
   }
@@ -1592,7 +1611,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     const first = rows[0] as object | undefined;
     if (first === undefined) return;
     const key = new Set<string>(this.meta.key.map((f) => f.name));
-    this.prepareUpdate(Object.fromEntries(Object.entries(first).filter(([name]) => !key.has(name))) as M["update"]);
+    this.prepareUpdateWith(Object.fromEntries(Object.entries(first).filter(([name]) => !key.has(name))) as M["update"], false);
     this.inspectUpdateMany(rows, options); // rejects a bad row before any upload
   }
 
@@ -1601,13 +1620,13 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     if (batchSize !== undefined && (!Number.isInteger(batchSize) || batchSize < 1)) {
       throw new RangeError("batchSize must be at least 1");
     }
-    this.mutationIr("update", []); // refuses sliced and locked query sets
+    this.mutationIr("update", [], undefined, false); // refuses sliced and locked query sets
     const prepared = prepareUpdateRows(this.meta, rows);
     if (!prepared.rows.length) {
       return { prepared, batchSize, returning, params: [], ir: null };
     }
     const params: unknown[] = [];
-    const ir = this.mutationIr("update", params);
+    const ir = this.mutationIr("update", params, undefined, false);
     if ("with" in ir) {
       throw new QueryError("updateMany() filters can't read CTEs");
     }

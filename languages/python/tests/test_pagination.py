@@ -158,7 +158,7 @@ async def test_rejected_orders_and_cursors(items):
     with pytest.raises(
         TypeError, match=r"score=Item.score.desc\(\) is an ordering, for order_by\(\); write 0 - Item.score"
     ):
-        qs.update(score=-Item.score)
+        qs.all().update(score=-Item.score)
     for misuse in (
         lambda: qs.insert(owner_id=1, score=-Item.score, name="x", code="x", at=T0),
         lambda: qs.filter(Item.score == -Item.score).count(),

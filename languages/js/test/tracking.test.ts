@@ -168,13 +168,13 @@ model Doc {
         assert.deepEqual(await ids(docs.deletedOnly()), [1]);
         assert.equal(await docs.undelete(), 1);
         assert.equal(await docs.count(), 2);
-        assert.equal(await docs.delete(), 2);
-        assert.equal(await docs.hardDelete(), 2);
+        assert.equal(await docs.all().delete(), 2);
+        assert.equal(await docs.all().hardDelete(), 2);
       });
       const rows = await docs.withoutDefaults().orderBy(Doc.id.asc()).all();
       assert.deepEqual(rows.map((d: { id: number; deleted: Date | null }) => [d.id, d.deleted !== null]), [[3, true], [4, false]]);
       const reads = /default "tenant" from monorm\.query-defaults .* reads scope\.shop/;
-      for (const statement of [docs.undelete(), docs.hardDelete(), docs.allWithDeleted().count(), docs.deletedOnly().count()]) {
+      for (const statement of [docs.all().undelete(), docs.all().hardDelete(), docs.allWithDeleted().count(), docs.deletedOnly().count()]) {
         await assert.rejects(Promise.resolve(statement), reads);
       }
     } finally { await db.dropTables(); await db.close(); }
@@ -444,7 +444,7 @@ model Doc {
       assert.equal(first.version, 1);
       await assert.rejects(second.update({ title: "c" }), VersionConflict);
       await assert.rejects(second.delete(), VersionConflict);
-      assert.equal(await docs.update({ title: "d" }), 1);
+      assert.equal(await docs.all().update({ title: "d" }), 1);
       assert.equal((await docs.get(Doc.id.eq(1))).version, 2);
       await second.load({ reload: true });
       await second.update({ title: "e" });
@@ -486,7 +486,7 @@ model Doc {
       await docs.insert({ id: 1, title: "a", changed: OLD });
       await docs.insert({ id: 1, title: "b" }).onConflict(Doc.id, { update: true });
       assert.ok((await docs.get(Doc.id.eq(1))).changed > OLD);
-      await docs.update({ changed: OLD });
+      await docs.all().update({ changed: OLD });
       await docs.insert({ id: 1, title: "c", changed: OLD }).onConflict(Doc.id, { update: true, updateFields: [Doc.title, Doc.changed] });
       assert.equal((await docs.get(Doc.id.eq(1))).changed.getTime(), OLD.getTime());
     } finally { await db.dropTables(); await db.close(); }

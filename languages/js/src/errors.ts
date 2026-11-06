@@ -181,6 +181,22 @@ export class WriteProtected extends ORMError {
   override name = "WriteProtected";
 }
 
+/** `update()` or `delete()` on a query set with no filter, which would change every row.
+ * `.all()` marks a write to every row; `connect(url, { allowUnfilteredWrites: true })` turns the guard off. */
+export class UnfilteredWriteError extends ORMError {
+  override name = "UnfilteredWriteError";
+
+  constructor(
+    readonly op: string,
+    readonly model: string,
+  ) {
+    super(
+      `${model}.objects.${op}() has no filter and would change every row; call .all() first ` +
+        `(${model}.objects.all().${op}(...)) to write every row, or open the database with connect(url, { allowUnfilteredWrites: true })`,
+    );
+  }
+}
+
 const KINDS: Record<string, new (message: string) => Error> = {
   MigrationError,
   DatabaseError,

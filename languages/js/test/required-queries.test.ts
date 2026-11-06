@@ -29,7 +29,7 @@ test("optional and required model reads", async () => {
     assert.deepEqual(await empty, []);
     const required = empty.require();
     for (const method of ["get", "first", "last", "all"]) {
-      await assert.rejects(required[method](), Note.DoesNotExist);
+      await assert.rejects(async () => { await required[method](); }, Note.DoesNotExist);
     }
     for (let i = 0; i < 2; i++) await assert.rejects(async () => await required, Note.DoesNotExist);
     await assert.rejects(async () => { for await (const row of required) void row; }, Note.DoesNotExist);
@@ -55,7 +55,7 @@ test("optional and required selected rows", async () => {
     assert.equal(await empty.first(), null);
     assert.deepEqual(await empty.all(), []);
     for (const method of ["get", "first", "all", "scalar", "scalars"]) {
-      await assert.rejects(empty.require()[method](), DoesNotExist);
+      await assert.rejects(async () => { await empty.require()[method](); }, DoesNotExist);
     }
     await assert.rejects(async () => await empty.require(), DoesNotExist);
     assert.equal(await empty.get(), null);

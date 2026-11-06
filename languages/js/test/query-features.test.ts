@@ -89,7 +89,7 @@ test("scalar subqueries", async () => {
 test("a scalar subquery in an update", async () => {
   await seed();
   const nComments = Comment.objects.filter(Comment.postId.eq(outer(Post.id))).select({ n: func.count() }).asScalar();
-  await Post.objects.update({ views: nComments });
+  await Post.objects.all().update({ views: nComments });
   const views = Object.fromEntries((await Post.objects.all()).map((p) => [p.title, p.views]));
   assert.deepEqual(views, { a1: 0, a2: 2, a3: 0, b1: 1 });
 });
@@ -142,7 +142,7 @@ test("CASE expressions", async () => {
   }).groupBy(Post.authorId).all();
   assert.deepEqual(counts, [{ a: alice.id, hot: 1n, rest: 25n }, { a: bob.id, hot: 1n, rest: 0n }]);
   assert.equal(await Post.objects.filter(heat.eq("hot")).count(), 2);
-  await Post.objects.update({ views: func.case([Post.views.gte(50), Post.views.sub(50)], [Post.title.eq("a1"), 1], { default: Post.views }) });
+  await Post.objects.all().update({ views: func.case([Post.views.gte(50), Post.views.sub(50)], [Post.title.eq("a1"), 1], { default: Post.views }) });
   const views = Object.fromEntries((await Post.objects.all()).map((p) => [p.title, p.views]));
   assert.deepEqual(views, { a1: 1, a2: 0, a3: 20, b1: 50 });
 });
@@ -232,7 +232,7 @@ test("window functions", async () => {
 test("window function errors", async () => {
   const rank = func.rowNumber().over({ orderBy: Post.views });
   await assert.rejects(async () => Post.objects.filter(rank.lte(3)).all(), /window functions can only be used in select/);
-  await assert.rejects(Post.objects.update({ views: rank as never }), /window functions can only be used in select/);
+  await assert.rejects(Post.objects.all().update({ views: rank as never }), /window functions can only be used in select/);
   assert.throws(() => func.count().over({ rows: [null, 0], range: [null, 0] }), /rows or range/);
   await getDatabase().transaction(async () => {
     await assert.rejects(async () => Post.objects.lock().orderBy(rank).all(), /window functions/);

@@ -74,8 +74,8 @@ test("proxy partition fills its key and keeps its predicate without defaults", {
     assert.match(Percent.objects.using(db).withoutDefaults().sql(), / IN \('percent'\)/);
     await assert.rejects(Percent.objects.using(db).insert({ shop: 1, percent: null }));
     await assert.rejects(Percent.objects.using(db).insert({ shop: 1, percent: 10, kind: "fixed" }));
-    assert.equal(await Percent.objects.using(db).withoutDefaults().update({ percent: 15 }), 1);
-    assert.equal(await Percent.objects.using(db).withoutDefaults().delete(), 1);
+    assert.equal(await Percent.objects.using(db).withoutDefaults().all().update({ percent: 15 }), 1);
+    assert.equal(await Percent.objects.using(db).withoutDefaults().all().delete(), 1);
     assert.equal(await Reward.objects.using(db).count(), 1);
   } finally { await db.dropTables(); await db.close(); }
 });

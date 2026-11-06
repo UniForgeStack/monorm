@@ -177,9 +177,9 @@ test("CASE of plain strings takes the enum type of the column it is assigned to"
     await pg.createTables();
     const members = Member.objects.using(pg);
     await members.insertMany([{ n: 1 }, { n: 9 }]);
-    await members.update({ level: func.case([Member.n.gt(5), "admin"], { default: "basic" }) });
+    await members.all().update({ level: func.case([Member.n.gt(5), "admin"], { default: "basic" }) });
     assert.deepEqual(await members.orderBy(Member.id).select({ l: Member.level }).scalars(), ["basic", "admin"]);
-    await members.update({ level: "basic" });
+    await members.all().update({ level: "basic" });
     assert.equal(await members.filter(Member.level.eq(func.case([Member.n.gt(5), "admin"], { default: "basic" }))).count(), 1);
   } finally {
     await pg.dropTables();

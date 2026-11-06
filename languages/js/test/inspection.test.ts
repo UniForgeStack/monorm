@@ -99,7 +99,7 @@ test("inserts, upserts, mutations and bulk returning writes inspect without exec
     assert.equal(events.length, 3);
     events.length = 0;
     const scalar = Comment.objects.filter(Comment.postId.eq(outer(Post.id))).select({ n: func.count() }).asScalar();
-    const mutation = Post.objects.update({ views: scalar });
+    const mutation = Post.objects.all().update({ views: scalar });
     assert.deepStrictEqual(mutation.inspect().statements, [statementInspection({ scalarCorrelated: 1 })]);
     const deletion = Post.objects.filter(Post.comments.body.eq("hi")).delete({ returning: true });
     assert.deepStrictEqual(deletion.inspect().statements, [statementInspection({ setCorrelated: 1 })]);
@@ -111,7 +111,7 @@ test("inserts, upserts, mutations and bulk returning writes inspect without exec
     assert.equal(await upsert, null);
     assert.equal(Tag.objects.insertMany([]).inspect().statementCount, 0);
     assert.equal(Tag.objects.updateMany([]).inspect().statementCount, 0);
-    assert.equal(Tag.objects.update({}).inspect().statementCount, 0);
+    assert.equal(Tag.objects.all().update({}).inspect().statementCount, 0);
   } finally { remove(); }
 });
 

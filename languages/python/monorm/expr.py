@@ -2042,6 +2042,23 @@ def not_(condition: ConditionLike) -> Condition:
     return Not(resolve_null_rule(as_condition(condition), negated=True))
 
 
+def constant_truth(condition: Condition) -> bool | None:
+    """The value of a condition that is a constant (``and_()``, ``~or_()``, ``not_in([])``), else ``None``."""
+    if isinstance(condition, Const):
+        return condition.value
+    if isinstance(condition, Not):
+        inner = constant_truth(condition.item)
+        return None if inner is None else not inner
+    if isinstance(condition, BoolOp):
+        values = [constant_truth(item) for item in condition.items]
+        decisive = condition.op == "or"
+        if decisive in values:
+            return decisive
+        if None not in values:
+            return not decisive
+    return None
+
+
 def differs(column: ColumnRef[Any], value: Any) -> Condition:
     """``column`` differs from ``value``, or from every item of a list; a NULL row of a nullable
     column counts as different, except from ``None``."""

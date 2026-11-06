@@ -100,10 +100,10 @@ async def test_proxy_partition_bound_is_storage_and_prunes_without_defaults():
             await Percent.objects.using(db).insert(shop=1, percent=None)
         with pytest.raises(monorm.IntegrityError):
             await Percent.objects.using(db).insert(shop=1, percent=10, kind=models["RewardKind"].FIXED)
-        assert await Percent.objects.using(db).without_defaults().update(percent=15) == 1
+        assert await Percent.objects.using(db).without_defaults().all().update(percent=15) == 1
         await fixed.load(reload=True)
         assert fixed.amount == 20
-        assert await Percent.objects.using(db).without_defaults().delete() == 1
+        assert await Percent.objects.using(db).without_defaults().all().delete() == 1
         assert await Reward.objects.using(db).count() == 2
         assert await Percent.objects.using(db).insert_many([{"shop": 2, "percent": 25}], copy=True) == 1
         assert await Percent.objects.using(db).without_defaults().count() == 1
@@ -137,7 +137,7 @@ async def test_rewards_proxy_partition_inherits_scope_and_soft_delete():
         with monorm.scope(shop=1):
             assert await Percent.objects.using(db).count() == 1
             assert await Reward.objects.using(db).count() == 2
-            assert await Percent.objects.using(db).delete() == 1
+            assert await Percent.objects.using(db).all().delete() == 1
             assert await Percent.objects.using(db).count() == 0
             assert await Fixed.objects.using(db).count() == 1
         # Neither scope nor the deleted-row default remains; storage ownership does.
@@ -238,7 +238,7 @@ async def test_spec_rewards_example_with_decimals_local_uniqueness_and_soft_dele
                 await Reward.objects.using(db).insert(
                     shop_id=1, tier_id=1, type=models["RewardType"].PERCENTAGE_DISCOUNT, percent=None
                 )
-            assert await Percent.objects.using(db).delete() == 1
+            assert await Percent.objects.using(db).all().delete() == 1
             assert await Percent.objects.using(db).count() == 0
             assert await Percent.objects.using(db).without_defaults().count() == 1
             await Percent.objects.using(db).insert(shop_id=1, tier_id=1, content_hash="same", percent=Decimal("20"))

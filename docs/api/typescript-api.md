@@ -189,7 +189,7 @@ one runs it (a query set is a *thenable*, like Prisma's and Drizzle's queries, a
 | Method | Gives |
 |---|---|
 | `await qs` / `for await (const u of qs)` | `R[]`, cached per query set (below) |
-| `.all()` | a new query set (or `select()`) with an empty cache: nothing runs until it is awaited, and `await qs.all()` always queries afresh |
+| `.all()` | a new query set (or `select()`) with an empty cache; `await qs.all()` always queries afresh |
 | `.first()` / `.last()` | `OneRowQuery<R \| null>`, awaited for the row; `.last()` throws `QueryError` at the call on a query set with a limit, offset or slice |
 | `.at(n)` | `OneRowQuery<R \| null>`: the row at position `n` of the order; `at(-1)` is `last()`, another negative `n` throws; `n` may be `param()` |
 | `.get(...conditions)` | `OneRowQuery<R \| null>`; throws `User.MultipleObjectsReturned` for multiple matches |
@@ -762,6 +762,12 @@ Query-set `update`, `updateMany`, `delete`, `hardDelete` and `undelete` return i
   statement, but in two batches the second one updates the row of the first.
 * `qs.update({...}, { returning })` gives a count, or the rows when `returning` is set.
 * `qs.delete({ returning })` gives a count, or the deleted rows.
+* `update()` and `delete()` on a query set with no caller filter throw `UnfilteredWriteError`, before any SQL and on `.inspect()`.
+  `hardDelete()` is guarded too.
+  `filter()`, `exclude()` and a related set (`author.posts`) count as a filter; query defaults, soft-delete, the scope and a filter that is always true (`and()`) do not.
+  `Post.objects.all().update({...})` and `.all().delete()` mark "every row" and pass, on every kind of query set.
+  `connect(url, { allowUnfilteredWrites: true })` turns the guard off for that database.
+  Instance writes, `insert()`, `updateMany()` and raw SQL are not guarded.
 * `updateMany(rows, { batchSize, returning })` does a bulk update by primary key with
   `UPDATE ... FROM (VALUES ...)`, falling back to `CASE`. All its batches run in one
   transaction.

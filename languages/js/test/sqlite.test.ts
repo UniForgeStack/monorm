@@ -245,7 +245,7 @@ test("SQLite CASE", async () => {
     await Note.objects.using(db).insertMany([{ n: 1 }, { n: 5 }, { n: 10 }]);
     const size = func.case([Note.n.gte(10), "big"], [Note.n.gte(5), "mid"], { default: "small" });
     assert.deepEqual((await Note.objects.using(db).orderBy(Note.id).select({ s: size }).all()).map((r: any) => r.s), ["small", "mid", "big"]);
-    await Note.objects.using(db).update({ n: func.case([Note.n.eq(1), 100], { default: Note.n }) });
+    await Note.objects.using(db).all().update({ n: func.case([Note.n.eq(1), 100], { default: Note.n }) });
     assert.deepEqual((await Note.objects.using(db).orderBy(Note.id).all()).map((r: any) => r.n), [100, 5, 10]);
   } finally { await db.close(); }
 });

@@ -962,7 +962,7 @@ A `Select` also has:
   await Post.objects.filter(heat == "hot")
   # Django's Sum(Case(When(published=True, then=1), default=0)):
   await Post.objects.select(Post.author_id, func.sum(func.case((Post.published, 1), default=0))).group_by(Post.author_id)
-  await Post.objects.update(views=func.case((Post.views > 100, 100), default=Post.views))
+  await Post.objects.all().update(views=func.case((Post.views > 100, 100), default=Post.views))
   ```
 
   Plain values bind with the type the context expects (the updated field, or the other side
@@ -989,7 +989,7 @@ latest = (Post.objects.filter(Post.author_id == outer(User.id))
 await User.objects.select(User, latest.label("latest"))              # Row[User, str]
 avg = Post.objects.filter(Post.author_id == outer(Post.author_id)).select(func.avg(Post.views)).as_scalar()
 await Post.objects.filter(Post.views > avg)                           # above their author's average
-await Post.objects.update(views=Comment.objects.filter(Comment.post_id == outer(Post.id)).select(func.count()).as_scalar())
+await Post.objects.all().update(views=Comment.objects.filter(Comment.post_id == outer(Post.id)).select(func.count()).as_scalar())
 ```
 
 * `outer(Model.col)` refers to the nearest enclosing query over `Model` (a subquery
@@ -1133,6 +1133,15 @@ await Post.objects.filter(Post.views < 10).delete()
 # ... or the affected rows, with RETURNING (only added when you ask for it)
 posts = await Post.objects.filter(...).update(views=Post.views + 1).returning()   # list[Post]
 gone = await Post.objects.filter(...).delete().returning()
+
+# A query set with no caller filter raises UnfilteredWriteError, before any SQL (also on inspect()).
+# filter(), exclude() and a related set (author.posts) count; query defaults, soft-delete, scope and a filter that is always true (`and_()`) do not.
+# all() marks "every row" and passes, on every kind of query set:
+await Post.objects.all().update(views=0)
+await Post.objects.all().delete()
+# monorm.connect(url, allow_unfiltered_writes=True) turns the guard off for that database.
+# hard_delete() is a DELETE and is guarded too.
+# Instance writes, insert(), update_many() and raw SQL are not guarded.
 
 # Each row to its own values, by primary key: one statement per batch
 n = await Post.objects.update_many([{"id": 1, "title": "a"}, {"id": 2, "title": "b"}])

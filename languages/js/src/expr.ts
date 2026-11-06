@@ -1971,6 +1971,22 @@ export function not<S extends string, P>(condition: Expression<boolean | null, S
   return new Not(resolveNullRule(asCondition(condition), true)) as never;
 }
 
+/** The value of a condition that is a constant (`and()`, `not(or())`, `notIn([])`), else `undefined`. */
+export function constantTruth(condition: unknown): boolean | undefined {
+  if (condition instanceof Const) return condition.value;
+  if (condition instanceof Not) {
+    const inner = constantTruth(condition.item);
+    return inner === undefined ? undefined : !inner;
+  }
+  if (condition instanceof BoolOp) {
+    const values = condition.items.map(constantTruth);
+    const decisive = condition.op === "or";
+    if (values.includes(decisive)) return decisive;
+    if (!values.includes(undefined)) return !decisive;
+  }
+  return undefined;
+}
+
 const ARITH: Record<string, string> = { add: "+", sub: "-", mul: "*", div: "/", mod: "%", concat: "||" };
 const SYMBOLS: Record<string, string> = { eq: "==", ne: "!=", lt: "<", le: "<=", gt: ">", ge: ">=" };
 
