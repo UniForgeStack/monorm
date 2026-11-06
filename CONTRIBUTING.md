@@ -23,7 +23,7 @@ Run these from the repository root. Keep them green before you open a pull reque
 
 ```bash
 # Start PostgreSQL first (Linux: `service postgresql start`; macOS: your own server) with the test database above.
-uv venv .venv && . .venv/bin/activate && uv pip install maturin pytest 'pytest-asyncio>=0.24' mypy pyright   # the wheel builder and the test tools
+uv venv .venv && . .venv/bin/activate && uv pip install maturin pytest 'pytest-asyncio>=0.24' pydantic mypy pyright   # the wheel builder and the test tools
 python languages/python/packaging/stage.py   # the extension libraries of this platform, for the one wheel
 maturin develop                   # the one `monorm` package: engine, built-in extensions and auth
 python -m pytest -q               # Python end-to-end, SQL shape and typing tests
@@ -65,6 +65,17 @@ cd examples/blog && python -m monorm generate
 cargo run -q -p monorm-cli -- --schema examples/blog/schema.prisma generate typescript
 cargo run -q -p monorm-cli -- --schema examples/blog/schema.prisma generate typescript -o languages/js/test/blog/models.ts --import ../../src/index.js
 ```
+
+### Runnable guide examples
+
+Mark a complete example with `python run` or `typescript run` in its fence.
+Blocks run in file order in one namespace, with top-level `await`, in a fresh process and work directory per document.
+Leave fragments and comparison examples unmarked.
+Use `run fail=ValueError` (TypeScript: the error's `name`) for an expected error, and `file=schema.prisma` on a fence to write its content before execution.
+The comment `<!-- docs-test: setup=blog-lite -->` selects the shared seeded models in `fixtures/docs/`.
+SQLite is the default; `db=postgresql` in the comment requires `ORM_DOCS_DATABASE_URL` or the document is skipped.
+Point that variable at a separate, disposable database: the setup's tables are dropped after each document.
+The normal Python and Node test suites run these examples; Bun runs the TypeScript examples too.
 
 ## Pull requests
 

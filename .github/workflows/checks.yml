@@ -87,9 +87,11 @@ jobs:
         options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       ORM_TEST_DATABASE_URL: postgres://postgres:postgres@localhost/orm_test
+      ORM_DOCS_DATABASE_URL: postgres://postgres:postgres@localhost/orm_docs
       PYTHON: python3.14
     steps:
       - uses: actions/checkout@v4
+      - run: docker exec ${{ job.services.postgres.id }} createdb -U postgres orm_docs
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-python@v5
         with:
@@ -101,7 +103,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: uv venv --python "$PYTHON" .venv && uv pip install --python .venv/bin/python pytest 'pytest-asyncio>=0.24' mypy pyright maturin
+      - run: uv venv --python "$PYTHON" .venv && uv pip install --python .venv/bin/python pytest 'pytest-asyncio>=0.24' pydantic mypy pyright maturin
       - run: echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       - run: python languages/python/packaging/stage.py
       - run: maturin develop
@@ -129,9 +131,11 @@ jobs:
         options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
     env:
       ORM_TEST_DATABASE_URL: postgres://postgres:postgres@localhost/orm_test
+      ORM_DOCS_DATABASE_URL: postgres://postgres:postgres@localhost/orm_docs
       PYTHON: python3.14
     steps:
       - uses: actions/checkout@v4
+      - run: docker exec ${{ job.services.postgres.id }} createdb -U postgres orm_docs
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-python@v5
         with:

@@ -1,0 +1,50 @@
+[
+  {
+    "info": [
+      "markdown"
+    ],
+    "line": 4,
+    "source": "```python run\nnot_a_real_block()\n```\n"
+  },
+  {
+    "info": [
+      "python",
+      "run",
+      "fail=ValueError"
+    ],
+    "line": 10,
+    "source": "raise ValueError(\"expected\")\n"
+  },
+  {
+    "info": [
+      "typescript",
+      "run",
+      "fail=TypeError"
+    ],
+    "line": 14,
+    "source": "throw new TypeError(\"expected\");\n"
+  },
+  {
+    "info": [
+      "prisma",
+      "file=schema.prisma"
+    ],
+    "line": 18,
+    "source": "model Item {\n  id Int @id\n}\n"
+  },
+  {
+    "info": [
+      "python"
+    ],
+    "line": 24,
+    "source": "# Prisma Client Python\nthis_must_not_run()\n"
+  },
+  {
+    "info": [
+      "python",
+      "run"
+    ],
+    "line": 29,
+    "source": "text = \"```\"\n```\nassert text\n"
+  }
+]

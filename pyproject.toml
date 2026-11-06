@@ -33,7 +33,7 @@ Changelog = "https://github.com/UniForgeStack/monorm/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 otel = ["opentelemetry-api>=1.20"]
-dev = ["pytest>=8", "pytest-asyncio>=0.24", "mypy>=1.11", "pyright"]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "pydantic>=2", "mypy>=1.11", "pyright"]
 
 [project.entry-points."monorm.extensions"]
 "monorm.timestamps" = "monorm_timestamps"

@@ -1,0 +1,37 @@
+datasource db {
+  provider = "sqlite"
+}
+
+model User {
+  id         Int      @id @default(autoincrement())
+  email      String   @unique
+  name       String
+  created_at DateTime @default(now())
+  posts      Post[]
+  comments   Comment[]
+  @@map("users")
+}
+
+model Post {
+  id         Int      @id @default(autoincrement())
+  author_id  Int
+  title      String
+  body       String   @default("")
+  views      Int      @default(0)
+  published  Boolean  @default(false)
+  created_at DateTime @default(now())
+  author     User     @relation(fields: [author_id], references: [id], onDelete: Cascade)
+  comments   Comment[]
+  @@map("posts")
+}
+
+model Comment {
+  id         Int      @id @default(autoincrement())
+  post_id    Int
+  author_id  Int?
+  body       String
+  created_at DateTime @default(now())
+  post       Post     @relation(fields: [post_id], references: [id], onDelete: Cascade)
+  author     User?    @relation(fields: [author_id], references: [id], onDelete: SetNull)
+  @@map("comments")
+}

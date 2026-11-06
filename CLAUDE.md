@@ -19,7 +19,7 @@ Outside contributors: read [CONTRIBUTING.md](CONTRIBUTING.md). It has the same c
 
 ```bash
 service postgresql start          # the test database (postgres:postgres@localhost/orm_test)
-. .venv/bin/activate && uv pip install maturin pytest 'pytest-asyncio>=0.24' mypy pyright   # the wheel builder and the test tools
+. .venv/bin/activate && uv pip install maturin pytest 'pytest-asyncio>=0.24' pydantic mypy pyright   # the wheel builder and the test tools
 python languages/python/packaging/stage.py   # the extension libraries of this platform, for the one wheel
 maturin develop                   # the one `monorm` package: engine, built-in extensions and auth
 python -m pytest -q               # Python end-to-end, SQL shape and typing tests
