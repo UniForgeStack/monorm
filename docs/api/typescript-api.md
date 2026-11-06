@@ -189,13 +189,13 @@ one runs it (a query set is a *thenable*, like Prisma's and Drizzle's queries, a
 | Method | Gives |
 |---|---|
 | `await qs` / `for await (const u of qs)` | `R[]`, cached per query set (below) |
-| `.all()` | `Promise<R[]>`, always a fresh query |
+| `.all()` | a new query set (or `select()`) with an empty cache: nothing runs until it is awaited, and `await qs.all()` always queries afresh |
 | `.first()` / `.last()` | `OneRowQuery<R \| null>`, awaited for the row; `.last()` throws `QueryError` at the call on a query set with a limit, offset or slice |
 | `.at(n)` | `OneRowQuery<R \| null>`: the row at position `n` of the order; `at(-1)` is `last()`, another negative `n` throws; `n` may be `param()` |
 | `.get(...conditions)` | `OneRowQuery<R \| null>`; throws `User.MultipleObjectsReturned` for multiple matches |
 | `.require().get(...)` | `OneRowQuery<R>`; throws on zero or multiple matches |
 | `.require().first()` / `.require().last()` / `.require().at(n)` | `OneRowQuery<R>`; throws on zero matches |
-| `.require().all()` | `Promise<R[]>`; throws if the result is empty |
+| `.require().all()` | a new query set that throws on await if the result is empty |
 | `.count()` / `.exists()` | `Promise<number>` / `Promise<boolean>` |
 | `.inBulk(keys?, { field })` | `Promise<Map<key, R>>`; a model with a composite key needs `field` |
 | `.batches(size)` / `.iterate(size)` | async generators that walk the primary key (keyset pagination) |
@@ -219,7 +219,7 @@ Counts and existence checks keep their normal zero/false results.
 **The result cache.** A query set runs on its first `await`; awaiting the same query set
 again gives the same rows (a new array each time) without another query, and concurrent
 awaits share one run, as with Django's result cache. Every builder returns a new query
-set with an empty cache, and `.all()` always queries, so `await qs.all()` is the way to
+set with an empty cache, and so does `.all()`, so `await qs.all()` is the way to
 re-read. A failed run isn't cached. `User.objects` itself lives as long as the model, so
 `await User.objects` queries every time. Writes don't clear caches: re-read with a new
 query set or `.all()`. `select()` caches the same way.
@@ -1124,7 +1124,7 @@ await migrator.status(); await migrator.upgrade(); await migrator.downgrade({ st
 ## Decisions
 
 * **Awaitable query sets** (`await qs`), as in Python, Prisma and Drizzle, with a result
-  cache so one query set queries once; `.all()` is the explicit fresh query.
+  cache so one query set queries once; `.all()` is a lazy copy, so `await qs.all()` is the explicit fresh query.
 * **`bigint` and decimal.js**, following Prisma. `BigInt` keys never lose precision, and
   decimals stay exact on the wire.
 * **`Date` for timestamps.** It gives millisecond precision. Temporal can replace it once

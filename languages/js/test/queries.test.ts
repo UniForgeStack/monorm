@@ -69,6 +69,40 @@ test("await runs a query set once; all() queries afresh", async () => {
   await assert.rejects(Promise.resolve(bad as never), QueryError);
 });
 
+test("all() is lazy: it sends no query until awaited", async () => {
+  await User.objects.insert({ email: "a@x.io", name: "A" });
+  const db = getDatabase();
+  const events: unknown[] = [];
+  const stop = db.onQuery((e) => events.push(e));
+  try {
+    const qs = User.objects.filter(User.name.ne("Z"));
+    const copy = qs.all();
+    assert.notEqual(copy, qs);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(events.length, 0);
+    assert.equal((await copy).length, 1);
+    assert.equal(events.length, 1);
+    // an await of the original reads once and keeps it; await qs.all() reads again after a write
+    await qs;
+    await User.objects.insert({ email: "b@x.io", name: "B" });
+    assert.equal((await qs).length, 1);
+    assert.equal((await qs.all()).length, 2);
+    // the copy takes more builders and a limit, and still runs only when awaited
+    assert.deepEqual((await User.objects.all().filter(User.name.ne("A")).orderBy(User.name).limit(5)).map((u) => u.name), ["B"]);
+    assert.deepEqual((await User.objects.select({ name: User.name }).all().orderBy(User.name).limit(1)).map((r) => r.name), ["A"]);
+    events.length = 0;
+    const lazySelect = User.objects.select({ name: User.name }).all();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(events.length, 0);
+    assert.equal((await lazySelect).length, 2);
+    // all() takes a write: the copy deletes every row
+    assert.equal(await User.objects.all().delete(), 2);
+    assert.equal((await User.objects.all()).length, 0);
+  } finally {
+    stop();
+  }
+});
+
 test("insertMany with mixed columns", async () => {
   const u = await User.objects.insert({ email: "x@example.com", name: "X" });
   const posts = await Post.objects.insertMany([
@@ -491,7 +525,7 @@ test("row locks", async () => {
       await assert.rejects(elsewhere(() => User.objects.using(other).lock({ nowait: true }).get(User.id.eq(alice.id))), LockNotAvailable);
       // exclusive blocks shared too
       await assert.rejects(elsewhere(() => User.objects.using(other).lock({ exclusive: false, nowait: true }).get(User.id.eq(alice.id))), LockNotAvailable);
-      const others = await elsewhere(() => User.objects.using(other).orderBy(User.id).lock({ skipLocked: true }).all());
+      const others = await elsewhere(async () => User.objects.using(other).orderBy(User.id).lock({ skipLocked: true }).all());
       assert.deepEqual(names(others), ["Bob", "Carol"]);
       // plain reads aren't blocked
       assert.equal((await User.objects.using(other).require().get(User.id.eq(alice.id))).name, "Alice");
@@ -499,9 +533,9 @@ test("row locks", async () => {
     await db.transaction(async () => {
       await Post.objects.load(Post.author).lock({ exclusive: false }).filter(Post.id.eq(a1.id)).all();
       // shared locks coexist; the joined author row isn't locked at all
-      assert.equal((await other.transaction(() => Post.objects.using(other).lock({ exclusive: false, nowait: true }).filter(Post.id.eq(a1.id)).all())).length, 1);
+      assert.equal((await other.transaction(async () => Post.objects.using(other).lock({ exclusive: false, nowait: true }).filter(Post.id.eq(a1.id)).all())).length, 1);
       await other.transaction(() => User.objects.using(other).lock({ nowait: true }).get(User.id.eq(alice.id)));
-      await assert.rejects(other.transaction(() => Post.objects.using(other).lock({ nowait: true }).filter(Post.id.eq(a1.id)).all()), LockNotAvailable);
+      await assert.rejects(other.transaction(async () => Post.objects.using(other).lock({ nowait: true }).filter(Post.id.eq(a1.id)).all()), LockNotAvailable);
     });
   } finally {
     await other.close();

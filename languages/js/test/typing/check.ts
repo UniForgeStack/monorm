@@ -375,6 +375,11 @@ export async function prepared() {
   await q.all({ author: "1", t: "x", n: 1 });
   // @ts-expect-error a query with param() placeholders runs through prepare()
   await Post.objects.filter(Post.id.eq(param("id"))).all();
+  // all() is a query set: builders and writes follow it
+  const lazy = Post.objects.all().filter(Post.published).limit(5);
+  await lazy;
+  const removed: number = await Post.objects.all().delete();
+  void removed;
 }
 
 export function inspectionTypes() {

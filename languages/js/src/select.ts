@@ -411,10 +411,9 @@ export class Select<M extends ModelSpec, Row extends object, S extends string, P
     return this.finish(await this.fetch());
   }
 
-  /** The rows, queried afresh (unlike `await sel`, which reuses its first result). */
-  all(...check: Runnable<P, X>): Promise<Row[]> {
-    void check;
-    return this.read();
+  /** A new select with an empty result cache: `await sel.all()` queries afresh (unlike `await sel`, which reuses its first result). Nothing runs until it is awaited. */
+  all(): this {
+    return this.with(this.qs) as this;
   }
 
   /** `await sel`: the rows, queried on the first `await` and reused by later ones. */

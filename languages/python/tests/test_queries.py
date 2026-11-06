@@ -191,6 +191,33 @@ async def test_result_cache(clean, observe_queries):
     assert bad._result is not failed
 
 
+async def test_all_is_lazy_it_sends_no_query_until_awaited(clean, observe_queries):
+    await User.objects.insert(email="a@example.com", name="A")
+    qs = User.objects.filter(User.name != "Z")
+    with observe_queries(clean) as events:
+        copy = qs.all()
+        await asyncio.sleep(0.02)
+        assert copy is not qs and events == []
+        assert len(await copy) == 1
+        assert len(events) == 1
+        # an await of the original reads once and keeps it; await qs.all() reads again after a write
+        await qs
+        await User.objects.insert(email="b@example.com", name="B")
+        assert len(await qs) == 1
+        assert len(await qs.all()) == 2
+        # the copy takes more builders and a limit, and still runs only when awaited
+        assert names(await User.objects.all().filter(User.name != "A").order_by(User.name).limit(5)) == ["B"]
+        assert [r.name for r in await User.objects.select(User.name).all().order_by(User.name).limit(1)] == ["A"]
+        events.clear()
+        lazy_select = User.objects.select(User.name).all()
+        await asyncio.sleep(0.02)
+        assert events == []
+        assert len(await lazy_select) == 2
+        # all() takes a write: the copy deletes every row
+        assert await User.objects.all().delete() == 2
+        assert len(await User.objects.all()) == 0
+
+
 async def test_filter_across_a_to_many_relation(clean):
     await seed()
     # The motivating example: users with a post created before yesterday.

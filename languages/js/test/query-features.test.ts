@@ -231,11 +231,11 @@ test("window functions", async () => {
 
 test("window function errors", async () => {
   const rank = func.rowNumber().over({ orderBy: Post.views });
-  await assert.rejects(Post.objects.filter(rank.lte(3)).all(), /window functions can only be used in select/);
+  await assert.rejects(async () => Post.objects.filter(rank.lte(3)).all(), /window functions can only be used in select/);
   await assert.rejects(Post.objects.update({ views: rank as never }), /window functions can only be used in select/);
   assert.throws(() => func.count().over({ rows: [null, 0], range: [null, 0] }), /rows or range/);
   await getDatabase().transaction(async () => {
-    await assert.rejects(Post.objects.lock().orderBy(rank).all(), /window functions/);
+    await assert.rejects(async () => Post.objects.lock().orderBy(rank).all(), /window functions/);
   });
 });
 
@@ -273,9 +273,9 @@ test("named window limits", async () => {
   assert.throws(() => func.sum(Post.views).over(w, { orderBy: Post.id }), /without its own orderBy/);
   assert.throws(() => func.sum(Post.views).over(window({ rows: [null, 0] }), { rows: [null, 0] }), /without its own frame/);
   const other = window({ orderBy: Post.id });
-  await assert.rejects(Post.objects.select({ a: func.sum(Post.views).over(w), b: func.sum(Post.views).over(other) }).all(), /only one named window/);
-  await assert.rejects(Post.objects.select({ a: func.sum(Post.views).over(w) }).orderBy(Post.id).all(), /order_by/);
-  await assert.rejects(Post.objects.select({ a: func.sum(Post.views).over(w) }).limit(3).all(), /slicing/);
+  await assert.rejects(async () => Post.objects.select({ a: func.sum(Post.views).over(w), b: func.sum(Post.views).over(other) }).all(), /only one named window/);
+  await assert.rejects(async () => Post.objects.select({ a: func.sum(Post.views).over(w) }).orderBy(Post.id).all(), /order_by/);
+  await assert.rejects(async () => Post.objects.select({ a: func.sum(Post.views).over(w) }).limit(3).all(), /slicing/);
 });
 
 // -- CTEs -----------------------------------------------------------------------------------------
@@ -377,7 +377,7 @@ test("recursive CTEs", async () => {
 test("CTE errors", async () => {
   const totals = Post.objects.select({ authorId: Post.authorId, n: func.count() }).groupBy(Post.authorId).cte("totals");
   assert.throws(() => Post.objects.from(totals as never), /columns of Post/);
-  await assert.rejects(Post.objects.filter(totals.c.n.gt(1) as never).all(), /only available in queries reading totals/);
+  await assert.rejects(async () => Post.objects.filter(totals.c.n.gt(1) as never).all(), /only available in queries reading totals/);
   await assert.rejects(Post.objects.from(Post.objects.cte("p")).delete(), /can't run on a query set with from\(\)/);
   const other = Post.objects.select({ authorId: Post.authorId }).cte("totals");
   assert.throws(

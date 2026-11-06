@@ -1283,10 +1283,9 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     return new Builder(db.registry, this.state.db).select(res) as R[];
   }
 
-  /** The rows, queried afresh (unlike `await qs`, which reuses its first result). */
-  all(...check: Runnable<P, X>): Promise<R[]> {
-    void check;
-    return this.fetch().then((rows) => this.checkRows(rows));
+  /** A new query set with an empty result cache: `await qs.all()` queries afresh (unlike `await qs`, which reuses its first result). Nothing runs until it is awaited. */
+  all(): this {
+    return this.clone({});
   }
 
   /**

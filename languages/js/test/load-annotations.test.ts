@@ -111,7 +111,7 @@ test("load rejects an aggregate that merges rows", async () => {
   await seed();
   const merging = () => Post.objects.load(func.count().label("x") as Dynamic);
   assert.throws(() => merging().sql(), { name: "QueryError", message: /merges rows/ });
-  await assert.rejects(() => merging().all(), QueryError);
+  await assert.rejects(async () => merging().all(), QueryError);
 });
 
 test("a bound load takes a labeled expression", async () => {

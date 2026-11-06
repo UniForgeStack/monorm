@@ -86,7 +86,7 @@ test("SQLite nested transactions, rollback, and unsupported locks", async () => 
         await Author.objects.using(db).insert({ email: "rolled", name: "Rolled" });
         throw new Error("rollback inner");
       }), /rollback inner/);
-      await assert.rejects(Author.objects.using(db).lock().all(), QueryError);
+      await assert.rejects(async () => Author.objects.using(db).lock().all(), QueryError);
       await assert.rejects(db.lock("example"), /sqlite does not support advisory locks/);
     });
     assert.equal(await Author.objects.using(db).count(), 1);
@@ -433,7 +433,7 @@ test("SQLite LIKE helpers send the escape character", async () => {
     await db.createTables();
     const objects = Author.objects.using(db);
     await objects.insertMany(["50% off", "50x off", "a_b", "axb", "C:\\dir"].map((name, i) => ({ email: `e${i}`, name })));
-    const names = async (qs: { all(): Promise<readonly { name: string }[]> }) => (await qs.all()).map((r) => r.name);
+    const names = async (qs: { all(): PromiseLike<readonly { name: string }[]> }) => (await qs.all()).map((r) => r.name);
     assert.deepEqual(await names(objects.filter(Author.name.contains("50%")).orderBy(Author.id)), ["50% off"]);
     assert.deepEqual(await names(objects.filter(Author.name.startsWith("a_")).orderBy(Author.id)), ["a_b"]);
     assert.deepEqual(await names(objects.filter(Author.name.icontains("A_B")).orderBy(Author.id)), ["a_b"]);
