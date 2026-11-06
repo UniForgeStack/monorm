@@ -70,12 +70,12 @@ test("native adoption survives registry IR and unrelated migration snapshots", a
     return reg;
   };
   try {
-    assert.ok(new Migrations(dir, registry('raw("((qty > 0))")')).make());
+    assert.ok(new Migrations(dir, registry('raw("((qty > 0))")')).make().length);
     const native = new Migrations(dir, registry("qty > 0"));
     assert.deepEqual(native.plan().up, []);
     assert.deepEqual(native.plan().down, []);
     const unrelated = new Migrations(dir, registry("qty > 0", "  note String?\n"));
-    assert.ok(unrelated.make("unrelated"));
+    assert.ok(unrelated.make("unrelated").length);
     assert.deepEqual(unrelated.plan().up, []);
   } finally {
     rmSync(dir, { recursive: true });

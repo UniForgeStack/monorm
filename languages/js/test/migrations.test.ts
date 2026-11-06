@@ -100,7 +100,7 @@ test("schema errors name the line", () => {
 
 test("the first migration", () => {
   const migs = new Migrations(tmp(), models(V1));
-  const m = migs.make()!;
+  const m = migs.make()[0]!;
   assert.equal(m.name, "0001_initial");
   const up = m.upSql;
   assert.ok(up.indexOf('CREATE TABLE "authors"') < up.indexOf('CREATE TABLE "books"'));
@@ -108,7 +108,7 @@ test("the first migration", () => {
   assert.ok(m.downSql.includes('DROP TABLE "books";'));
   const snap = JSON.parse(readFileSync(join(m.path, "snapshot.json"), "utf8")) as { tables: { name: string }[] };
   assert.deepEqual(snap.tables.map((t) => t.name), ["authors", "books"]);
-  assert.equal(migs.make(), null); // nothing changed
+  assert.deepEqual(migs.make(), []); // nothing changed
 });
 
 test("the second migration alters in place", () => {
@@ -119,9 +119,9 @@ test("the second migration alters in place", () => {
   assert.equal(sql[0], 'CREATE EXTENSION IF NOT EXISTS "citext"');
   assert.ok(sql.includes('ALTER TABLE "books" RENAME COLUMN "title" TO "name"'));
   assert.ok(migs.plan().up.some((s) => s.warning?.includes("changes authors.email from varchar(254) to citext")));
-  const m = migs.make("catalog changes")!;
+  const m = migs.make("catalog changes")[0]!;
   assert.equal(m.name, "0002_catalog_changes");
-  assert.equal(migs.make(), null);
+  assert.deepEqual(migs.make(), []);
   // checksums are the Python package's: sha256 of up.sql
   assert.match(m.checksum, /^[0-9a-f]{64}$/);
 });
@@ -135,7 +135,7 @@ test("plan steps say which ones lose data", () => {
   const second = new Migrations(dir, models(V2));
   const flagged = second.plan().up.filter((s) => s.destructive).map((s) => s.sql);
   assert.deepEqual(flagged, ['ALTER TABLE "authors" ALTER COLUMN "email" TYPE citext USING "email"::citext']);
-  const m = second.make("catalog")!;
+  const m = second.make("catalog")[0]!;
   assert.ok(m.upSql.includes("-- monorm: destructive alter-type authors.email\n"));
   assert.ok(m.downSql.includes("-- monorm: destructive alter-type authors.email\n"));
 });
@@ -155,20 +155,20 @@ test("online makemigrations splits an index on an existing table", () => {
   new Migrations(dir, models(ONLINE_PLAIN), online).make();
   const migs = new Migrations(dir, models(ONLINE_INDEXED), online);
   assert.deepEqual(migs.plan().up.map((s) => [s.sql, s.transaction]), [['CREATE INDEX CONCURRENTLY IF NOT EXISTS "shop_name_idx" ON "shop" ("name")', false]]);
-  const first = migs.make()!;
-  assert.deepEqual(migs.all().map((m) => m.name), ["0001_initial", "0002_create_index_shop_name_idx"]);
-  assert.equal(first.name, "0002_create_index_shop_name_idx");
+  const first = migs.make("add_idx")[0]!;
+  assert.deepEqual(migs.all().map((m) => m.name), ["0001_initial", "0002_add_idx_index_shop_name_idx"]);
+  assert.equal(first.name, "0002_add_idx_index_shop_name_idx");
   assert.ok(first.upSql.startsWith('-- monorm: no-transaction create-index "shop_name_idx"\n'));
   assert.ok(first.downSql.startsWith('-- monorm: no-transaction drop-index "shop_name_idx"\n'));
   assert.ok(first.downSql.includes("DROP INDEX CONCURRENTLY IF EXISTS"));
   const snapshot = JSON.parse(readFileSync(join(first.path, "snapshot.json"), "utf8")) as { tables: { indexes: unknown[] }[] };
   assert.ok(snapshot.tables[0]!.indexes.length > 0);
-  assert.equal(migs.make(), null); // nothing changed
+  assert.deepEqual(migs.make(), []); // nothing changed
   // a removed index: the no-transaction folder comes before the main folder
   const gone = new Migrations(dir, models(ONLINE_SHOP("  note String?\n")), online);
-  gone.make();
+  assert.deepEqual(gone.make("swap").map((m) => m.name), ["0003_swap_drop_shop_name_idx", "0004_swap"]);
   const all = gone.all();
-  assert.deepEqual(all.slice(-2).map((m) => m.name), ["0003_drop_index_shop_name_idx", "0004_add_column_shop_note"]);
+  assert.deepEqual(all.slice(-2).map((m) => m.name), ["0003_swap_drop_shop_name_idx", "0004_swap"]);
   assert.ok(all.at(-2)!.upSql.startsWith('-- monorm: no-transaction drop-index "shop_name_idx"\n'));
   assert.equal(gone.plan().up.length, 0);
 });
@@ -184,10 +184,10 @@ test("online makemigrations validates a foreign key in its own folder", () => {
   assert.ok(sql[0]!.endsWith("NOT VALID") && sql[0]!.includes("FOREIGN KEY"), sql[0]);
   assert.equal(sql[1], 'ALTER TABLE "item" VALIDATE CONSTRAINT "item_shop_id_fkey"');
   assert.ok(plan.up.every((s) => s.transaction));
-  migs.make();
+  const written = migs.make("add_fk");
   const names = migs.all().map((m) => m.name);
-  assert.equal(names.length, 3);
-  assert.equal(names[2], "0003_validate_constraints");
+  assert.deepEqual(written.map((m) => m.name), names.slice(1));
+  assert.deepEqual(names.slice(1), ["0002_add_fk", "0003_add_fk_validate"]);
   const [, main, validate] = migs.all();
   assert.ok(main!.upSql.includes("NOT VALID") && !main!.upSql.includes("VALIDATE"));
   assert.ok(validate!.upSql.includes("VALIDATE CONSTRAINT") && !validate!.upSql.startsWith("-- monorm: no-transaction"));
@@ -200,19 +200,19 @@ test("online makemigrations leaves a new table alone", () => {
   const dir = tmp();
   const v1 = ONLINE_SHOP_WITH_ITEMS + ONLINE_ITEM_FK;
   const migs = new Migrations(dir, models(v1), online);
-  const made = migs.make()!;
+  const made = migs.make()[0]!;
   assert.deepEqual(migs.all().map((m) => m.name), ["0001_initial"]);
   assert.ok(!made.upSql.includes("CONCURRENTLY") && !made.upSql.includes("NOT VALID"));
   assert.ok(made.upSql.includes("FOREIGN KEY"));
   const off = join(dir, "off");
   mkdirSync(off);
-  const plain = new Migrations(off, models(v1)).make()!;
+  const plain = new Migrations(off, models(v1)).make()[0]!;
   assert.equal(plain.upSql, made.upSql);
   assert.equal(plain.downSql, made.downSql);
   // a table added next to an existing one, with an index: still one folder
   const more = v1 + 'model Tag {\n  id   BigInt @id\n  name String\n\n  @@index([name])\n  @@map("tag")\n}\n';
   const migs2 = new Migrations(dir, models(more), online);
-  const tag = migs2.make()!;
+  const tag = migs2.make()[0]!;
   assert.equal(migs2.all().length, 2);
   assert.ok(tag.upSql.includes('CREATE INDEX "tag_name_idx" ON "tag" ("name")'));
   assert.ok(!tag.upSql.includes("CONCURRENTLY"));
@@ -248,16 +248,15 @@ test("the CLI online setting", () => {
   assert.equal(run("makemigrations", "--check").code, 1);
   const made = run("makemigrations");
   assert.equal(made.code, 0);
-  assert.ok(made.out.includes("0002_create_index_shop_name_idx"));
+  assert.ok(made.out.includes("0002_create_index_shop_name_idx_on_shop_index_shop_name_idx"));
   assert.equal(run("makemigrations", "--check").code, 0);
-  assert.ok(readFileSync(join(dir, "migrations/0002_create_index_shop_name_idx/up.sql"), "utf8").startsWith("-- monorm: no-transaction"));
+  assert.ok(readFileSync(join(dir, "migrations/0002_create_index_shop_name_idx_on_shop_index_shop_name_idx/up.sql"), "utf8").startsWith("-- monorm: no-transaction"));
 });
 
 test("migrations from a schema file", () => {
   const dir = tmp();
   writeFileSync(join(dir, "schema.prisma"), V1);
-  const m = new Migrations(join(dir, "migrations"), join(dir, "schema.prisma")).make();
-  assert.ok(m !== null);
+  assert.equal(new Migrations(join(dir, "migrations"), join(dir, "schema.prisma")).make().length, 1);
 });
 
 test("the generated models are current", async () => {
@@ -380,7 +379,7 @@ test("an edited applied migration is refused", async () => {
   const dir = tmp();
   const db = await database(models(V1));
   const migs = new Migrations(dir, models(V1));
-  const m = migs.make()!;
+  const m = migs.make()[0]!;
   const migrator = new Migrator(db, migs);
   await migrator.upgrade();
   writeFileSync(join(m.path, "up.sql"), m.upSql + "\n-- edited\n");
@@ -392,7 +391,7 @@ test("a failed migration rolls back", async () => {
   const dir = tmp();
   const db = await database(models(V1));
   const migs = new Migrations(dir, models(V1));
-  const m = migs.make()!;
+  const m = migs.make()[0]!;
   writeFileSync(join(m.path, "up.sql"), m.upSql + "\nSELECT no_such_function();\n");
   await assert.rejects(new Migrator(db, migs).upgrade(), DatabaseError);
   assert.equal(await scalar(db, "SELECT to_regclass('authors')::text"), null);
@@ -451,7 +450,7 @@ async function gateDatabase(dialect: GateDialect): Promise<{ db: Database; prefi
 /** Writes the next migration for `source` without applying it. */
 function gateNext(dir: string, source: string) {
   const migs = new Migrations(dir, models(source));
-  const migration = migs.make();
+  const [migration] = migs.make();
   assert.ok(migration);
   return { migs, migration };
 }
@@ -826,7 +825,7 @@ test("online migrate ends with no drift", async () => {
     await new Migrator(db, new Migrations(directory, models(first))).upgrade();
     await db.execute("INSERT INTO shop (name) VALUES ('a'), ('b'); INSERT INTO item (shop_id) VALUES (1), (2)");
     const migs = new Migrations(directory, models(last), { online: flag });
-    assert.ok(migs.make() !== null);
+    assert.ok(migs.make().length > 0);
     assert.equal(migs.all().length, flag ? 4 : 2);
     migrator = new Migrator(db, migs);
     assert.equal((await migrator.upgrade()).length, migs.all().length - 1);

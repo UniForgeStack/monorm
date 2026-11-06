@@ -8,8 +8,10 @@
 //! - A new foreign key or check on an existing table is added `NOT VALID` in the main folder and
 //!   validated in a following folder.
 //!
-//! Everything else stays in the main folder: a new table, a unique index, and a partitioned table
-//! (PostgreSQL has no `CONCURRENTLY` or `NOT VALID` form for it).
+//! Everything else stays in the main folder: a new table, a unique index, and an index or foreign
+//! key of a partitioned table. PostgreSQL refuses `CREATE INDEX CONCURRENTLY` on a partitioned
+//! table, and before PostgreSQL 18 it refuses a foreign key `NOT VALID` there. A check of a
+//! partitioned table is added `NOT VALID` like any other.
 
 use std::collections::HashSet;
 
@@ -55,18 +57,18 @@ fn split(previous: &DbSchema, p: &Prepared, up: &[Op]) -> Split {
     let created: HashSet<&str> = up.iter().filter_map(|op| match op { Op::CreateTable { table, .. } => Some(table.name.as_str()), _ => None }).collect();
     let dropped: HashSet<&str> = up.iter().filter_map(|op| match op { Op::DropTable { table } => Some(table.as_str()), _ => None }).collect();
     // The table of `name` (a name after the change) as it is in the previous snapshot, if it
-    // has rows to lock: it exists there, the change does not create it again, and it is not partitioned.
+    // has rows to lock: it exists there and the change does not create it again.
     let existing = |name: &str| -> Option<&Table> {
         if created.contains(name) { return None; }
         let old = p.renames.tables.get(name).map_or(name, String::as_str);
-        let table = previous.tables.iter().find(|t| t.name == old)?;
-        table.partition_by.is_none().then_some(table)
+        previous.tables.iter().find(|t| t.name == old)
     };
+    let plain = |name: &str| existing(name).filter(|t| t.partition_by.is_none());
     let mut s = Split::default();
     for (i, op) in up.iter().enumerate() {
         match op {
             Op::CreateIndex { table, index } if !index.unique => {
-                if existing(table).is_some() {
+                if plain(table).is_some() {
                     s.moved.insert(i);
                     s.creates.push((table.clone(), index.clone()));
                 }
@@ -80,7 +82,10 @@ fn split(previous: &DbSchema, p: &Prepared, up: &[Op]) -> Split {
                     }
                 }
             }
-            Op::AddConstraint { table, constraint: c @ (Constraint::Check(_) | Constraint::ForeignKey(_)) } if existing(table).is_some() => {
+            Op::AddConstraint { table, constraint: c @ Constraint::Check(_) } if existing(table).is_some() => {
+                s.validates.push((table.clone(), c.name().to_owned()));
+            }
+            Op::AddConstraint { table, constraint: c @ Constraint::ForeignKey(_) } if plain(table).is_some() => {
                 s.validates.push((table.clone(), c.name().to_owned()));
             }
             _ => {}
@@ -89,11 +94,11 @@ fn split(previous: &DbSchema, p: &Prepared, up: &[Op]) -> Split {
     s
 }
 
-/// `schema` without the indexes named in `names`.
-fn without(schema: &DbSchema, names: &HashSet<&str>) -> DbSchema {
+/// `schema` without the indexes named in `index_names`.
+fn without_indexes(schema: &DbSchema, index_names: &HashSet<&str>) -> DbSchema {
     let mut schema = schema.clone();
     for t in &mut schema.tables {
-        t.indexes.retain(|ix| !names.contains(ix.name.as_str()));
+        t.indexes.retain(|ix| !index_names.contains(ix.name.as_str()));
     }
     schema
 }
@@ -129,7 +134,7 @@ pub fn plan_online(schema: &Schema, previous: &DbSchema) -> Result<Vec<Migration
         gone.insert(&index.name);
         let up = super::steps_with(&[Op::DropIndex { name: index.name.clone() }], previous, |_| CONCURRENTLY);
         let down = super::steps_with(&[Op::CreateIndex { table: table.clone(), index: index.clone() }], previous, |_| CONCURRENTLY);
-        plans.push(folder(FolderKind::DropIndex(pg::ident(&index.name)), up, down, without(previous, &gone)));
+        plans.push(folder(FolderKind::DropIndex(pg::ident(&index.name)), up, down, without_indexes(previous, &gone)));
     }
 
     // the main folder: what stays, and the down of what moved is left to the folders of the moves
@@ -153,17 +158,16 @@ pub fn plan_online(schema: &Schema, previous: &DbSchema) -> Result<Vec<Migration
         super::identity_step(&mut main_down);
     }
     if !main_up.is_empty() || !main_down.is_empty() {
-        plans.push(folder(FolderKind::Main, main_up, main_down, without(&p.current, &create_names)));
+        plans.push(folder(FolderKind::Main, main_up, main_down, without_indexes(&p.current, &create_names)));
     }
 
     // create folders: the index is there after each of them
     let mut later = create_names.clone();
-    for (_, index) in &s.creates {
+    for (table, index) in &s.creates {
         later.remove(index.name.as_str());
-        let table = s.creates.iter().find(|(_, ix)| ix.name == index.name).map(|(t, _)| t.clone()).unwrap_or_default();
-        let up = super::steps_with(&[Op::CreateIndex { table, index: index.clone() }], &p.current, |_| CONCURRENTLY);
+        let up = super::steps_with(&[Op::CreateIndex { table: table.clone(), index: index.clone() }], &p.current, |_| CONCURRENTLY);
         let down = super::steps_with(&[Op::DropIndex { name: index.name.clone() }], previous, |_| CONCURRENTLY);
-        plans.push(folder(FolderKind::CreateIndex(pg::ident(&index.name)), up, down, without(&p.current, &later)));
+        plans.push(folder(FolderKind::CreateIndex(pg::ident(&index.name)), up, down, without_indexes(&p.current, &later)));
     }
 
     if !s.validates.is_empty() {

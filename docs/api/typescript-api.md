@@ -1194,7 +1194,7 @@ may hold a `data.ts` with `export async function run(db)`, run by `migrator.upgr
 `npx monorm migrate` in the migration's transaction (see [`schema.md`](../schema/schema.md#data-migrations)).
 ```ts
 const migrations = new Migrations("migrations", registry);   // or a schema path or source; a third argument { online: true } writes online folders
-migrations.all(); migrations.plan(); migrations.make("add_tags");   // null when nothing changed
+migrations.all(); migrations.plan(); migrations.make("add_tags");   // make() returns the Migration[] it wrote (several with online; [] when nothing changed)
 const migrator = new Migrator(db, migrations);
 await migrator.status(); await migrator.upgrade(); await migrator.downgrade({ steps: 1 });   // { target, force: true } reverts a baselined migration
 ```

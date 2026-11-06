@@ -793,7 +793,13 @@ a no-transaction folder with `DROP INDEX CONCURRENTLY IF EXISTS` for each remove
 the main folder, a no-transaction folder with `CREATE INDEX CONCURRENTLY IF NOT EXISTS` for each new non-unique index,
 and one folder with `VALIDATE CONSTRAINT` for the foreign keys and checks that the main folder adds as `NOT VALID`.
 Each folder has the `snapshot.json` of the schema after it.
-New tables, unique indexes and partitioned tables stay in the main folder, and SQLite is unchanged.
+Each folder name is the migration number, the migration label and a suffix: `_drop_<index>`, `_index_<index>`, `_validate`, and none for the main folder.
+The label is the `--name`, or the first step of the main folder; so `makemigrations --name add_author_idx` names every folder it writes.
+A change of indexes only writes no main folder.
+New tables and unique indexes stay in the main folder.
+An index or a foreign key of a partitioned table also stays there, because PostgreSQL refuses `CREATE INDEX CONCURRENTLY` on it, and (before PostgreSQL 18) a foreign key `NOT VALID`.
+A check of a partitioned table is added `NOT VALID` like any other.
+SQLite is unchanged.
 The default is `false`; the Python and TypeScript `Migrations` take `online=True` / `{ online: true }`.
 `Step.transaction` is `false` for a concurrent step.
 Exit codes: 0 success, 1 failure (including
@@ -802,7 +808,10 @@ repository's `pyproject.toml` points at the blog example; its first migration is
 [`examples/blog/migrations/0001_initial`](../../examples/blog/migrations/0001_initial/up.sql).
 
 From Python: `Migrations("migrations", "schema.prisma")` (or a `Registry`) has
-`.plan()`, `.make(name)` and `.all()`. `Migrator(db, migrations)` has `.upgrade()`,
+`.plan()`, `.make(name)` and `.all()`.
+`.make(name)` returns the list of the folders it wrote, in order (one folder, or several with `online=True`; an empty list when nothing changed).
+`.all()` lists every migration, including the earlier ones.
+`Migrator(db, migrations)` has `.upgrade()`,
 `.downgrade()`, `.status()`, `.baseline()` and `.drift()`; `await monorm.migrations.pull(db)`
 reads a live database.
 

@@ -54,7 +54,7 @@ test("a data step runs in the migration's transaction", async () => {
   writeFileSync(schema, V1);
   migrations.make();
   writeFileSync(schema, V2);
-  const second = migrations.make("slug")!;
+  const second = migrations.make("slug")[0]!;
   writeFileSync(join(second.path, "data.ts"), FILL);
 
   const db = await connect(DATA_URL, { maxConnections: 2, default: false, registry: new Registry() });
@@ -69,7 +69,7 @@ test("a data step runs in the migration's transaction", async () => {
 
   // a failing data step rolls back its SQL and is not recorded
   writeFileSync(schema, V2 + "\nmodel Extra {\n  id BigInt @id\n}\n");
-  const third = migrations.make("extra")!;
+  const third = migrations.make("extra")[0]!;
   writeFileSync(join(third.path, "data.ts"), 'export async function run(db) { throw new Error("data step failed"); }\n');
   await assert.rejects(migrator.upgrade(), /data step failed/);
   assert.deepEqual(await db.fetchText("SELECT to_regclass('extra')"), [[null]]);
@@ -91,7 +91,7 @@ test("npx monorm migrate runs data steps", () => {
   writeFileSync(schema, sqlite + V1);
   migrations.make();
   writeFileSync(schema, sqlite + V2);
-  const second = migrations.make("slug")!;
+  const second = migrations.make("slug")[0]!;
   writeFileSync(
     join(second.path, "data.ts"),
     "export async function run(db) {\n  await db.execute(\"INSERT INTO author (name, slug) VALUES ('Ann', 'ann')\");\n}\n",

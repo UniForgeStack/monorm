@@ -93,8 +93,8 @@ def test_schema_errors_name_the_line():
 
 def test_first_migration(tmp_path):
     migs = Migrations(tmp_path, models(V1))
-    m = migs.make()
-    assert m is not None and m.name == "0001_initial"
+    [m] = migs.make()
+    assert m.name == "0001_initial"
     up = m.up_sql
     assert up.index('CREATE TABLE "authors"') < up.index('CREATE TABLE "books"')
     assert (
@@ -105,7 +105,7 @@ def test_first_migration(tmp_path):
     assert 'DROP TABLE "books";' in m.down_sql
     snap = json.loads(m.snapshot)
     assert [t["name"] for t in snap["tables"]] == ["authors", "books"]
-    assert migs.make() is None  # nothing changed
+    assert migs.make() == []  # nothing changed
 
 
 def test_second_migration_alters_in_place(tmp_path):
@@ -131,10 +131,10 @@ def test_second_migration_alters_in_place(tmp_path):
         'DROP EXTENSION IF EXISTS "citext"',
         'DROP EXTENSION IF EXISTS "pg_trgm"',
     ]
-    m = migs.make("catalog changes")
-    assert m is not None and m.name == "0002_catalog_changes"
+    [m] = migs.make("catalog changes")
+    assert m.name == "0002_catalog_changes"
     assert "-- WARNING: changes authors.email" in m.up_sql
-    assert migs.make() is None
+    assert migs.make() == []
 
 
 def test_plan_steps_say_which_ones_lose_data(tmp_path):
@@ -145,8 +145,8 @@ def test_plan_steps_say_which_ones_lose_data(tmp_path):
     plan = Migrations(tmp_path, models(V2)).plan()
     flagged = [s.sql for s in plan.up if s.destructive]
     assert flagged == ['ALTER TABLE "authors" ALTER COLUMN "email" TYPE citext USING "email"::citext']
-    m = Migrations(tmp_path, models(V2)).make("catalog")
-    assert m is not None and "-- monorm: destructive alter-type authors.email\n" in m.up_sql
+    [m] = Migrations(tmp_path, models(V2)).make("catalog")
+    assert "-- monorm: destructive alter-type authors.email\n" in m.up_sql
     assert "-- monorm: destructive alter-type authors.email\n" in m.down_sql
 
 
@@ -175,8 +175,8 @@ def test_kept_rename_hints_do_nothing_after_the_rename(tmp_path):
 
 def test_migrations_from_a_schema_file(tmp_path):
     (tmp_path / "schema.prisma").write_text(V1)
-    m = Migrations(tmp_path / "migrations", tmp_path / "schema.prisma").make()
-    assert m is not None and (m.path / "snapshot.json").is_file()
+    [m] = Migrations(tmp_path / "migrations", tmp_path / "schema.prisma").make()
+    assert (m.path / "snapshot.json").is_file()
 
 
 def test_the_generated_models_are_current():
@@ -218,20 +218,19 @@ def test_online_makemigrations_splits_an_index_on_an_existing_table(tmp_path):
     assert [(s.sql, s.transaction) for s in plan.up] == [
         ('CREATE INDEX CONCURRENTLY IF NOT EXISTS "shop_name_idx" ON "shop" ("name")', False)
     ]
-    first = migs.make()
-    assert first is not None
+    [first] = migs.make("add_idx")
     assert [m.name for m in migs.all()] == ["0001_initial", first.name]
-    assert first.name == "0002_create_index_shop_name_idx"
+    assert first.name == "0002_add_idx_index_shop_name_idx"
     assert first.up_sql.startswith('-- monorm: no-transaction create-index "shop_name_idx"\n')
     assert first.down_sql.startswith('-- monorm: no-transaction drop-index "shop_name_idx"\n')
     assert "DROP INDEX CONCURRENTLY IF EXISTS" in first.down_sql
     assert json.loads(first.snapshot)["tables"][0]["indexes"]
-    assert migs.make() is None  # nothing changed
+    assert migs.make() == []  # nothing changed
     # a removed index: the no-transaction folder comes before the main folder
     gone = Migrations(tmp_path, models(ONLINE_SHOP % "  note String?\n"), online=True)
-    gone.make()
+    assert [m.name for m in gone.make("swap")] == ["0003_swap_drop_shop_name_idx", "0004_swap"]
     names = [m.name for m in gone.all()]
-    assert names[-2:] == ["0003_drop_index_shop_name_idx", "0004_add_column_shop_note"]
+    assert names[-2:] == ["0003_swap_drop_shop_name_idx", "0004_swap"]
     assert gone.all()[-2].up_sql.startswith('-- monorm: no-transaction drop-index "shop_name_idx"\n')
     assert gone.plan().up == []
 
@@ -246,9 +245,9 @@ def test_online_makemigrations_validates_a_foreign_key_in_its_own_folder(tmp_pat
     assert len(sql) == 2 and sql[0].endswith("NOT VALID") and "FOREIGN KEY" in sql[0], sql
     assert sql[1] == 'ALTER TABLE "item" VALIDATE CONSTRAINT "item_shop_id_fkey"'
     assert all(s.transaction for s in plan.up)
-    migs.make()
+    written = migs.make("add_fk")
     names = [m.name for m in migs.all()]
-    assert len(names) == 3 and names[-1] == "0003_validate_constraints"
+    assert [m.name for m in written] == names[1:] == ["0002_add_fk", "0003_add_fk_validate"]
     main, validate = migs.all()[1:]
     assert "NOT VALID" in main.up_sql and "VALIDATE" not in main.up_sql
     assert "VALIDATE CONSTRAINT" in validate.up_sql and not validate.up_sql.startswith("-- monorm: no-transaction")
@@ -260,19 +259,19 @@ def test_online_makemigrations_validates_a_foreign_key_in_its_own_folder(tmp_pat
 def test_online_makemigrations_leaves_a_new_table_alone(tmp_path):
     # first migration: a new table with an index and a foreign key stays in one folder
     migs = Migrations(tmp_path, models(ONLINE_SHOP_WITH_ITEMS + ONLINE_ITEM_FK), online=True)
-    made = migs.make()
-    assert made is not None and [m.name for m in migs.all()] == ["0001_initial"]
+    [made] = migs.make()
+    assert [m.name for m in migs.all()] == ["0001_initial"]
     assert "CONCURRENTLY" not in made.up_sql and "NOT VALID" not in made.up_sql
     assert "FOREIGN KEY" in made.up_sql
     off = tmp_path / "off"
     off.mkdir()
-    plain = Migrations(off, models(ONLINE_SHOP_WITH_ITEMS + ONLINE_ITEM_FK)).make()
-    assert plain is not None and plain.up_sql == made.up_sql and plain.down_sql == made.down_sql
+    [plain] = Migrations(off, models(ONLINE_SHOP_WITH_ITEMS + ONLINE_ITEM_FK)).make()
+    assert plain.up_sql == made.up_sql and plain.down_sql == made.down_sql
     # a table added next to an existing one, with an index: still one folder
     more = ONLINE_SHOP_WITH_ITEMS + ONLINE_ITEM_FK + 'model Tag {\n  id   BigInt @id\n  name String\n\n  @@index([name])\n  @@map("tag")\n}\n'
     migs2 = Migrations(tmp_path, models(more), online=True)
-    tag = migs2.make()
-    assert tag is not None and len(migs2.all()) == 2
+    [tag] = migs2.make()
+    assert len(migs2.all()) == 2
     assert 'CREATE INDEX "tag_name_idx" ON "tag" ("name")' in tag.up_sql
     assert "CONCURRENTLY" not in tag.up_sql
 
@@ -300,6 +299,6 @@ def test_the_cli_online_setting(tmp_path, capfd, monkeypatch):
     (tmp_path / "schema.prisma").write_text(ONLINE_INDEXED)
     assert cli(["makemigrations", "--check"]) == 1
     assert cli(["makemigrations"]) == 0
-    assert "0002_create_index_shop_name_idx" in capfd.readouterr().out
+    assert "0002_create_index_shop_name_idx_on_shop_index_shop_name_idx" in capfd.readouterr().out
     assert cli(["makemigrations", "--check"]) == 0
-    assert (tmp_path / "migrations/0002_create_index_shop_name_idx/up.sql").read_text().startswith("-- monorm: no-transaction")
+    assert (tmp_path / "migrations/0002_create_index_shop_name_idx_on_shop_index_shop_name_idx/up.sql").read_text().startswith("-- monorm: no-transaction")

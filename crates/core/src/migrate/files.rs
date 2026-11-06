@@ -140,14 +140,21 @@ fn render_no_tx(header: &str, steps: &[Step], title: &str) -> String {
     format!("{} {header}\n{}", NO_TX_HEADER, render(steps, title))
 }
 
-/// The label of a folder name and the file headers of the up and down scripts of `kind`.
-fn folder_label(kind: &FolderKind) -> Option<(String, String, String)> {
-    match kind {
-        FolderKind::Main => None,
-        FolderKind::DropIndex(n) => Some((format!("drop_index_{}", slug(n)), format!("drop-index {n}"), format!("create-index {n}"))),
-        FolderKind::CreateIndex(n) => Some((format!("create_index_{}", slug(n)), format!("create-index {n}"), format!("drop-index {n}"))),
-        FolderKind::Validate => None,
-    }
+/// What `kind` adds to the name of its folder, and the first line of its up and down scripts.
+struct FolderText {
+    suffix: String,
+    up_header: Option<String>,
+    down_header: Option<String>,
+}
+
+fn folder_text(kind: &FolderKind) -> FolderText {
+    let (suffix, up_header, down_header) = match kind {
+        FolderKind::Main => (String::new(), None, None),
+        FolderKind::DropIndex(n) => (format!("_drop_{}", slug(n)), Some(format!("drop-index {n}")), Some(format!("create-index {n}"))),
+        FolderKind::CreateIndex(n) => (format!("_index_{}", slug(n)), Some(format!("create-index {n}")), Some(format!("drop-index {n}"))),
+        FolderKind::Validate => ("_validate".to_owned(), None, None),
+    };
+    FolderText { suffix, up_header, down_header }
 }
 
 /// Writes the next migration: one folder, or with `online` the folders of [`plan_online`], numbered in
@@ -163,23 +170,23 @@ pub fn make(dir: &Path, schema: &Schema, name: Option<&str>, empty: bool, online
         Some(m) => m.name[..4].parse::<u32>().unwrap_or(0) + 1,
         None => 1,
     };
+    // every folder of the change carries the migration label, so `--name` survives on each of them
+    let label = match name {
+        Some(n) => slug(n),
+        None if existing.is_empty() => "initial".into(),
+        None => plans
+            .iter()
+            .find(|p| p.kind == FolderKind::Main)
+            .or(plans.first())
+            .and_then(|p| p.up.first())
+            .map(|s| slug(&s.summary))
+            .unwrap_or_else(|| "manual".into()),
+    };
     let mut made = Vec::new();
     for (i, plan) in plans.into_iter().enumerate() {
         let number = first + i as u32;
-        let (label, up_header, down_header) = match folder_label(&plan.kind) {
-            Some((label, up, down)) => (label, Some(up), Some(down)),
-            None if plan.kind == FolderKind::Validate => ("validate_constraints".into(), None, None),
-            None => (
-                match name {
-                    Some(n) => slug(n),
-                    None if existing.is_empty() => "initial".into(),
-                    None => plan.up.first().map(|s| slug(&s.summary)).unwrap_or_else(|| "manual".into()),
-                },
-                None,
-                None,
-            ),
-        };
-        let folder = format!("{number:04}_{label}");
+        let FolderText { suffix, up_header, down_header } = folder_text(&plan.kind);
+        let folder = format!("{number:04}_{label}{suffix}");
         let path = dir.join(&folder);
         std::fs::create_dir_all(&path).map_err(|e| io(&path, e))?;
         let write = |file: &str, text: String| std::fs::write(path.join(file), text).map_err(|e| io(&path.join(file), e));

@@ -67,8 +67,7 @@ def write_versions(tmp_path: Path) -> Migrations:
     schema.write_text(V1)
     migrations.make()
     schema.write_text(V2)
-    second = migrations.make("slug")
-    assert second is not None
+    [second] = migrations.make("slug")
     (second.path / "data.py").write_text(FILL)
     return migrations
 
@@ -92,8 +91,7 @@ async def test_data_step_runs_in_the_migration_transaction(tmp_path):
         # a failing data step rolls back its SQL and is not recorded
         schema = tmp_path / "schema.prisma"
         schema.write_text(V2 + "\nmodel Extra {\n  id BigInt @id\n}\n")
-        third = migrations.make("extra")
-        assert third is not None
+        [third] = migrations.make("extra")
         (third.path / "data.py").write_text(FAIL)
         with pytest.raises(RuntimeError, match="data step failed"):
             await migrator.upgrade()
@@ -122,8 +120,7 @@ def test_python_m_orm_migrate_runs_data_steps(tmp_path):
     schema.write_text(SQLITE + V1)
     migrations.make()
     schema.write_text(SQLITE + V2)
-    second = migrations.make("slug")
-    assert second is not None
+    [second] = migrations.make("slug")
     (second.path / "data.py").write_text(SEED)
 
     env = {**os.environ, "MONORM_DATABASE_URL": f"sqlite://{tmp_path / 'app.db'}"}

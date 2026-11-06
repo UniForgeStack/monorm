@@ -124,7 +124,7 @@ test("moving to the Generic field form needs no migration", async () => {
       assert.equal(await cli(["--schema", path, "identities"]), 0);
       const registry = new Registry();
       load(path, { registry });
-      assert.equal(new Migrations(join(dir, "migrations"), registry).make("initial") === null, i === 1);
+      assert.equal(new Migrations(join(dir, "migrations"), registry).make("initial").length === 0, i === 1);
     }
   } finally { rmSync(dir, { recursive: true }); }
 });

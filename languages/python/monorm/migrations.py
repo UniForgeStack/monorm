@@ -145,17 +145,17 @@ class Migrations:
             snapshot=raw["snapshot"],
         )
 
-    def make(self, name: str | None = None, *, empty: bool = False) -> Migration | None:
-        """Write the next migration; returns None if there is nothing to migrate.
+    def make(self, name: str | None = None, *, empty: bool = False) -> list[Migration]:
+        """Write the next migration; returns the folders it wrote, in order (empty if there is nothing to migrate).
 
         ``empty=True`` writes one even without schema changes (for data migrations or
         hand-written SQL); its snapshot is the current schema.
 
-        With ``online`` it may write more than one folder; the result is the first, and :meth:`all`
-        lists them all.
+        Without ``online`` the list has one folder. With ``online`` it has one folder for each step
+        (main, concurrent index, validate), and each name starts with the migration label.
         """
         folders = self.schema.make_migration(str(self.directory), name, empty, self.online)
-        return Migration(folders[0], self.directory / folders[0]) if folders else None
+        return [Migration(f, self.directory / f) for f in folders]
 
 
 @dataclass(frozen=True)

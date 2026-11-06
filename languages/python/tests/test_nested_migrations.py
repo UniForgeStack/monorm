@@ -48,8 +48,7 @@ def up(tmp_path, source: str) -> list[str]:
 
 def test_first_migration_creates_the_leaf_columns_and_the_null_check(tmp_path):
     migs = Migrations(tmp_path, models(V1))
-    m = migs.make()
-    assert m is not None
+    [m] = migs.make()
     for column in (
         '"address_city" varchar',
         '"address_geo_lat" double precision',
@@ -58,7 +57,7 @@ def test_first_migration_creates_the_leaf_columns_and_the_null_check(tmp_path):
         assert column in m.up_sql
     assert CHECK in m.up_sql
     assert '"address_city" varchar NOT NULL' not in m.up_sql  # a null field leaves every column null
-    assert migs.make() is None
+    assert migs.make() == []
 
 
 def test_adding_a_subfield_adds_a_column_and_extends_the_check(tmp_path):
@@ -108,8 +107,8 @@ def test_renamed_from_with_a_new_prefix_renames_the_default_named_columns(tmp_pa
 def test_a_second_make_after_a_nested_change_finds_nothing(tmp_path):
     Migrations(tmp_path, models(V1)).make()
     changed = V1.replace("  city String\n", "  city String\n  zip  String\n")
-    assert Migrations(tmp_path, models(changed)).make() is not None
-    assert Migrations(tmp_path, models(changed)).make() is None
+    assert Migrations(tmp_path, models(changed)).make()
+    assert Migrations(tmp_path, models(changed)).make() == []
 
 
 def test_a_null_field_without_a_required_subfield_is_a_schema_error():
@@ -120,21 +119,21 @@ def test_a_null_field_without_a_required_subfield_is_a_schema_error():
 def test_a_second_make_after_a_removed_subfield_finds_nothing(tmp_path):
     Migrations(tmp_path, models(V1)).make()
     changed = V1.replace("  lng Float?\n", "")
-    assert Migrations(tmp_path, models(changed)).make() is not None
-    assert Migrations(tmp_path, models(changed)).make() is None
+    assert Migrations(tmp_path, models(changed)).make()
+    assert Migrations(tmp_path, models(changed)).make() == []
 
 
 def test_a_second_make_after_a_check_change_finds_nothing(tmp_path):
     Migrations(tmp_path, models(V1)).make()
     changed = V1.replace("  lat Float\n", "  lat Float?\n")  # only the generated check changes
-    assert Migrations(tmp_path, models(changed)).make() is not None
-    assert Migrations(tmp_path, models(changed)).make() is None
+    assert Migrations(tmp_path, models(changed)).make()
+    assert Migrations(tmp_path, models(changed)).make() == []
 
 
 def test_a_second_make_on_sqlite_finds_nothing(tmp_path):
     source = 'datasource db { provider = "sqlite" }\n' + V1
-    assert Migrations(tmp_path, models(source)).make() is not None
-    assert Migrations(tmp_path, models(source)).make() is None
+    assert Migrations(tmp_path, models(source)).make()
+    assert Migrations(tmp_path, models(source)).make() == []
 
 
 def test_adding_a_defaulted_leaf_to_a_nullable_group_fills_only_present_rows(tmp_path):
@@ -151,7 +150,7 @@ def test_adding_a_defaulted_leaf_to_a_nullable_group_fills_only_present_rows(tmp
 def test_a_snapshot_without_root_required_gives_no_migration(tmp_path):
     source = V1.replace("  address Address?\n", "  address Address\n")
     migs = Migrations(tmp_path, models(source))
-    assert migs.make() is not None
+    assert migs.make()
     assert "root_required" not in next(tmp_path.glob("*/snapshot.json")).read_text()  # the snapshot holds database tables only
     assert up(tmp_path, source) == []
 
@@ -218,8 +217,8 @@ def test_a_new_required_subfield_in_a_json_list_is_an_error(tmp_path):
 
 def test_a_second_make_after_a_json_backfill_finds_nothing(tmp_path):
     Migrations(tmp_path, models(JSON_V1)).make()
-    assert Migrations(tmp_path, models(JSON_V2)).make() is not None
-    assert Migrations(tmp_path, models(JSON_V2)).make() is None
+    assert Migrations(tmp_path, models(JSON_V2)).make()
+    assert Migrations(tmp_path, models(JSON_V2)).make() == []
     assert '"alt"' in sorted(tmp_path.glob("*/snapshot.json"))[-1].read_text()
 
 
@@ -244,7 +243,7 @@ async def database(dialect, registry):
 
 async def migrate(db, tmp_path, source):
     migs = Migrations(tmp_path, models(source))
-    assert migs.make() is not None
+    assert migs.make()
     await Migrator(db, migs).upgrade(allow_destructive=True)
 
 
@@ -490,8 +489,8 @@ async def test_a_json_to_columns_change_copies_every_leaf_type_and_down_reverses
 @pytest.mark.parametrize("dialect", DIALECTS)
 def test_a_second_make_after_a_storage_change_finds_nothing(tmp_path, dialect):
     for where in ("columns", "json", "columns"):
-        assert Migrations(tmp_path, models(storage(dialect, where))).make() is not None
-        assert Migrations(tmp_path, models(storage(dialect, where))).make() is None
+        assert Migrations(tmp_path, models(storage(dialect, where))).make()
+        assert Migrations(tmp_path, models(storage(dialect, where))).make() == []
 
 
 ORM_SOURCE = """

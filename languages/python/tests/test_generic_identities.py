@@ -228,7 +228,7 @@ def test_moving_to_the_generic_field_form_needs_no_migration(tmp_path):
         registry = monorm.Registry()
         monorm.load(schema, registry=registry)
         made = Migrations(directory, registry).make("initial")
-        assert (made is None) == (i == 1)
+        assert (made == []) == (i == 1)
 
 
 async def test_a_proxy_that_keeps_a_generic_field_fails_and_one_without_it_loads(tmp_path):

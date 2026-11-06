@@ -123,7 +123,7 @@ async def test_edited_applied_migration_is_refused(tmp_path):
     await reset(db)
     try:
         migs = Migrations(tmp_path, v1())
-        m = migs.make()
+        [m] = migs.make()
         migrator = Migrator(db, migs)
         await migrator.upgrade()
         (m.path / "up.sql").write_text(m.up_sql + "\n-- edited\n")
@@ -141,7 +141,7 @@ async def test_failed_migration_rolls_back(tmp_path):
     await reset(db)
     try:
         migs = Migrations(tmp_path, v1())
-        m = migs.make()
+        [m] = migs.make()
         (m.path / "up.sql").write_text(m.up_sql + "\nSELECT no_such_function();\n")
         with pytest.raises(monorm.DatabaseError):
             await Migrator(db, migs).upgrade()
@@ -281,8 +281,7 @@ async def gate_database(dialect):
 async def gate_apply(db, tmp_path, source):
     """Writes the next migration for `source` and applies it (no flag: it must not be destructive)."""
     migs = Migrations(tmp_path, models(source))
-    migration = migs.make()
-    assert migration is not None
+    [migration] = migs.make()
     await Migrator(db, migs).upgrade()
     return migration
 
@@ -290,8 +289,7 @@ async def gate_apply(db, tmp_path, source):
 def gate_next(tmp_path, source):
     """Writes the next migration for `source` without applying it."""
     migs = Migrations(tmp_path, models(source))
-    migration = migs.make()
-    assert migration is not None
+    [migration] = migs.make()
     return migs, migration
 
 
@@ -639,8 +637,7 @@ async def test_online_migrate_ends_with_no_drift(tmp_path):
             await Migrator(db, Migrations(directory, models(first))).upgrade()
             await db.execute("INSERT INTO shop (name) VALUES ('a'), ('b'); INSERT INTO item (shop_id) VALUES (1), (2)")
             migs = Migrations(directory, models(last), online=online)
-            made = migs.make()
-            assert made is not None
+            migs.make()
             assert len(migs.all()) == (4 if online else 2)
             migrator = Migrator(db, migs)
             assert len(await migrator.upgrade()) == len(migs.all()) - 1

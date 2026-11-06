@@ -634,7 +634,7 @@ async def test_cross_dialect_snapshots_are_rejected(tmp_path):
     postgres, _ = models(SOURCE.replace('provider = "sqlite"', 'provider = "postgresql"'))
     sqlite, _ = models()
     directory = str(tmp_path / "migrations")
-    initial = Migrations(directory, postgres).make("initial")
+    [initial] = Migrations(directory, postgres).make("initial")
     assert '"version": 1' in Path(initial.path, "snapshot.json").read_text()
     with pytest.raises(monorm.SchemaError, match="snapshot targets postgres"):
         Migrations(directory, sqlite).make("wrong")

@@ -122,12 +122,13 @@ export class Migrations {
     return JSON.parse(call(() => this.schema.planMigration(this.directory, this.options.online ?? false))) as Plan;
   }
 
-  /** Writes the next migration; `null` if there is nothing to migrate. `empty` writes one
-   * even without schema changes (for data migrations or hand-written SQL). With `online` it may write
-   * more than one folder; the result is the first, and `all()` lists them all. */
-  make(name?: string, options: { readonly empty?: boolean } = {}): Migration | null {
+  /** Writes the next migration and returns the folders it wrote, in order (empty if there is nothing to migrate).
+   * `empty` writes one even without schema changes (for data migrations or hand-written SQL).
+   * Without `online` the list has one folder. With `online` it has one folder for each step
+   * (main, concurrent index, validate), and each name starts with the migration label. */
+  make(name?: string, options: { readonly empty?: boolean } = {}): Migration[] {
     const folders = call(() => this.schema.makeMigration(this.directory, name ?? null, options.empty ?? false, this.options.online ?? false));
-    return folders.length === 0 ? null : new Migration(folders[0]!, join(this.directory, folders[0]!));
+    return folders.map((f) => new Migration(f, join(this.directory, f)));
   }
 }
 

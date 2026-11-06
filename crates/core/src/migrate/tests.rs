@@ -1416,7 +1416,7 @@ fn online_adds_a_foreign_key_and_a_check_not_valid_and_validates_them_in_a_folde
 }
 
 #[test]
-fn online_leaves_a_new_table_a_unique_index_and_a_partitioned_table_alone() {
+fn online_leaves_a_new_table_and_a_unique_index_alone() {
     // a new table with an index and a foreign key
     let v0 = DbSchema::default();
     let new_table = schema(blog(vec![], json!({"indexes": [{"columns": [{"field": "title"}]}]})));
@@ -1434,11 +1434,52 @@ fn online_leaves_a_new_table_a_unique_index_and_a_partitioned_table_alone() {
     assert_eq!(kinds(&plans), ["main"]);
     assert_eq!(sql(&plans[0].up), sql(&super::plan(&unique, &v1).unwrap().up));
 
-    // an index on a partitioned table keeps its shape: PostgreSQL refuses CONCURRENTLY there
-    let (_, mut v1) = posts_v1();
-    v1.tables.iter_mut().find(|t| t.name == "posts").unwrap().partition_by = Some("RANGE (\"id\")".into());
-    let indexed = schema(blog(vec![], json!({"indexes": [{"columns": [{"field": "title"}]}]})));
-    assert_eq!(kinds(&plan_online(&indexed, &v1).unwrap()), ["main"]);
+}
+
+fn partitioned_posts(post: Value) -> Schema {
+    let mut ir = blog(vec![], post);
+    partition_posts(&mut ir);
+    schema(ir)
+}
+
+fn partition_posts(ir: &mut Value) {
+    ir["models"][1]["partition"] = json!({"strategy": "range", "keys": [{"field": "id"}]});
+    ir["partitions"] = json!([{"of": "Post", "bound": "FOR VALUES FROM (1) TO (1000)", "objects": {"name": "PostFirst", "table": "posts_first", "fields": ir["models"][1]["fields"].clone()}}]);
+}
+
+#[test]
+fn online_keeps_an_index_and_a_foreign_key_of_a_partitioned_table_in_the_main_folder() {
+    // both snapshots declare the partition key, so only the index or the key differs
+    let v1 = super::plan(&partitioned_posts(json!({})), &DbSchema::default()).unwrap().snapshot;
+    assert!(v1.tables.iter().any(|t| t.name == "posts" && t.partition_by.is_some()));
+    let indexed = partitioned_posts(json!({"indexes": [{"columns": [{"field": "title"}]}]}));
+    let plans = plan_online(&indexed, &v1).unwrap();
+    assert_eq!(kinds(&plans), ["main"]);
+    assert!(sql(&plans[0].up).iter().any(|s| s.starts_with("CREATE INDEX ")), "{:?}", sql(&plans[0].up));
+
+    // PostgreSQL 16 refuses a foreign key NOT VALID on a partitioned table
+    let users_only = {
+        let mut ir = json!({"models": [
+            {"name": "User", "table": "users", "fields": [id()]},
+            {"name": "Post", "table": "posts", "fields": [id(), field("author_id", "big_int"), field("title", "text")]},
+        ]});
+        partition_posts(&mut ir);
+        schema(ir)
+    };
+    let v1 = super::plan(&users_only, &DbSchema::default()).unwrap().snapshot;
+    let plans = plan_online(&partitioned_posts(json!({})), &v1).unwrap();
+    assert_eq!(kinds(&plans), ["main"]);
+    assert!(sql(&plans[0].up).iter().any(|s| s.contains("FOREIGN KEY") && !s.contains("NOT VALID")), "{:?}", sql(&plans[0].up));
+}
+
+#[test]
+fn online_adds_a_check_of_a_partitioned_table_not_valid() {
+    let v1 = super::plan(&partitioned_posts(json!({})), &DbSchema::default()).unwrap().snapshot;
+    let checked = partitioned_posts(json!({"constraints": [{"kind": "check", "name": "title_set", "expr": "title <> ''"}]}));
+    let plans = plan_online(&checked, &v1).unwrap();
+    assert_eq!(kinds(&plans), ["main", "validate"]);
+    assert!(sql(&plans[0].up).iter().any(|s| s.ends_with("CHECK (title <> '') NOT VALID")), "{:?}", sql(&plans[0].up));
+    assert_eq!(sql(&plans[1].up), ["ALTER TABLE \"posts\" VALIDATE CONSTRAINT \"title_set\""]);
 }
 
 #[test]
@@ -1493,6 +1534,23 @@ fn online_does_nothing_on_sqlite() {
 }
 
 #[test]
+fn make_online_gives_every_folder_the_migration_name() {
+    let dir = std::env::temp_dir().join(format!("monorm-online-name-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    files::make(&dir, &schema(blog(vec![], json!({}))), None, false, true).unwrap();
+    let v2 = schema(blog(vec![], json!({"indexes": [{"name": "t_idx", "columns": [{"field": "title"}]}]})));
+    let made = files::make(&dir, &v2, Some("add_title_idx"), false, true).unwrap();
+    // an index-only change has no main folder; the name stays on the one folder it writes
+    assert_eq!(made.iter().map(|(f, _)| f.name.as_str()).collect::<Vec<_>>(), ["0002_add_title_idx_index_t_idx"]);
+    let v3 = schema(blog(vec![views()], json!({"indexes": [{"name": "u_idx", "columns": [{"field": "views"}]}],
+                                         "constraints": [{"kind": "check", "name": "t_set", "expr": "title <> ''"}]})));
+    let made = files::make(&dir, &v3, Some("swap"), false, true).unwrap();
+    let names: Vec<_> = made.iter().map(|(f, _)| f.name.as_str()).collect();
+    assert_eq!(names, ["0003_swap_drop_t_idx", "0004_swap", "0005_swap_index_u_idx", "0006_swap_validate"]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn make_online_writes_ordered_folders_with_headers_and_snapshots() {
     let dir = std::env::temp_dir().join(format!("monorm-online-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -1501,7 +1559,7 @@ fn make_online_writes_ordered_folders_with_headers_and_snapshots() {
     let v2 = schema(blog(vec![views()], json!({"indexes": [{"columns": [{"field": "title"}]}]})));
     let made = files::make(&dir, &v2, None, false, true).unwrap();
     let names: Vec<_> = made.iter().map(|(f, _)| f.name.clone()).collect();
-    assert_eq!(names, ["0002_add_column_posts_views", "0003_create_index_posts_title_idx"]);
+    assert_eq!(names, ["0002_add_column_posts_views", "0003_add_column_posts_views_index_posts_title_idx"]);
     let create = &made[1].0.path;
     let up = std::fs::read_to_string(create.join("up.sql")).unwrap();
     assert!(up.starts_with("-- monorm: no-transaction create-index \"posts_title_idx\"\n"), "{up}");

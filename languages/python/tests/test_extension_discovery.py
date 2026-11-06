@@ -309,7 +309,7 @@ def test_a_native_schema_without_package_directories_leaves_the_hook_bindings_un
     with pytest.raises(SchemaError, match="acme.outside: the schema binds its hooks, but no package directory was given"):
         _native.Schema(ir, None, {})
     assert _native.Schema(ir, None, package_dirs()) is not None
-    assert Migrations(tmp_path / "migrations", schema).make() is not None
+    assert Migrations(tmp_path / "migrations", schema).make()
 
 
 def test_define_needs_the_library_of_a_package_whose_hooks_the_schema_binds(site: Path, outside_library: Path, tmp_path: Path) -> None:
