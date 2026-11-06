@@ -1261,6 +1261,54 @@ pub enum Operation {
     Exists(Select),
     Update(Update),
     Delete(Delete),
+    /// `UNION` / `UNION ALL` of `select(...)` queries, read as rows, counted or tested.
+    Compound(Compound),
+}
+
+/// What a compound query returns.
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CompoundTerminal {
+    Read,
+    Count,
+    Exists,
+}
+
+/// The set operator of one compound node. Only the two union forms exist.
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SetOperator {
+    Union,
+    UnionAll,
+}
+
+/// A tree of set operations over leaf selects. Every leaf keeps its own filters, order
+/// and slice. `order`, `limit` and `offset` of a node apply to its whole result.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(tag = "t", rename_all = "snake_case")]
+pub enum SetExpr {
+    Leaf(Box<Select>),
+    Set {
+        operator: SetOperator,
+        left: Box<SetExpr>,
+        right: Box<SetExpr>,
+        /// Output names, `-` before the name for descending.
+        #[serde(default)]
+        order: Vec<String>,
+        #[serde(default)]
+        limit: Option<Count>,
+        #[serde(default)]
+        offset: Option<Count>,
+    },
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct Compound {
+    pub terminal: CompoundTerminal,
+    /// The parameter index of each `scope.<name>` value; the leaves carry none.
+    #[serde(default)]
+    pub scope: BTreeMap<String, usize>,
+    pub expr: SetExpr,
 }
 
 impl Operation {
@@ -1270,6 +1318,7 @@ impl Operation {
             Operation::Select(q) | Operation::Count(q) | Operation::Exists(q) => &q.scope,
             Operation::Update(q) => &q.scope,
             Operation::Delete(q) => &q.scope,
+            Operation::Compound(q) => &q.scope,
         }
     }
 }

@@ -37,6 +37,7 @@ use monorm_core::dialect::{Capabilities, Dialect, Target};
 use monorm_core::schema::{Model, Schema};
 use monorm_core::writes::{AssignValue, WriteKind as AssignKind};
 
+mod compound;
 mod nested;
 mod update;
 use update::RowUpdate;
@@ -974,10 +975,14 @@ impl<'s> Planner<'s> {
     }
 
     fn plan_op(schema: &'s Schema, target: Target, op: &Operation, params: &'s dyn Params) -> Result<Plan> {
+        if let Operation::Compound(c) = op {
+            return compound::plan(schema, target, c, params);
+        }
         let (model, bypass) = match op {
             Operation::Select(q) | Operation::Count(q) | Operation::Exists(q) => (&q.model, &q.without_defaults),
             Operation::Update(q) => (&q.model, &q.without_defaults),
             Operation::Delete(q) => (&q.model, &q.without_defaults),
+            Operation::Compound(_) => unreachable!("planned above"),
         };
         validate_named_bypass(schema, model, bypass)?;
         Ok(match op {
@@ -1044,6 +1049,7 @@ impl<'s> Planner<'s> {
                 within_param_cap(target, &stmt)?;
                 Plan::Delete(stmt, p.returned(types)?)
             }
+            Operation::Compound(_) => unreachable!("planned above"),
         })
     }
 
