@@ -10,7 +10,7 @@ use crate::ext::{ExtensionDef, TypeDef};
 use crate::ir::{
     ClientCall, ClientDefaultIr, ColType, ConstraintIr, Deferrable, EnumIr, EnumStorage, EnumValueIr, ExcludeElementIr, ExtensionIr, FieldIr,
     ForEach, FunctionIr, GeneratedIr, IndexColumnIr, IndexIr, ModelIr, Nulls, OnDelete, RelKind, RelationIr, SchemaIr,
-    ThroughIr, TriggerEvent, TriggerIr, TriggerTiming, PartitionIr, PartitionKeyIr,
+    ThroughIr, TriggerEvent, TriggerIr, TriggerTiming, PartitionIr, PartitionKeyIr, SqlViewIr,
 };
 use crate::migrate::pg::ident;
 
@@ -612,8 +612,10 @@ fn model_fields(m: &ModelDecl, models: &HashMap<&str, &ModelDecl>, ctx: &Ctx<'_>
         query_set: None,
         model_methods: None,
         classes_from: None,
+        sql_view: None,
     };
     // model-level attributes that aren't schema objects; the rest come after relations
+    let mut view = SqlViewIr { body: String::new(), materialized: false, depends_on: vec![] };
     for a in &m.blocks {
         let text = |a: &Attr| -> Result<String> {
             match a.args.positional.as_slice() {
@@ -629,8 +631,24 @@ fn model_fields(m: &ModelDecl, models: &HashMap<&str, &ModelDecl>, ctx: &Ctx<'_>
             "protected_write" => return err(a.pos, format!("{}: @@protected_write takes no arguments", m.name)),
             "query_set" => ir.query_set = Some(text(a)?),
             "model_methods" => ir.model_methods = Some(text(a)?),
+            "materialized" | "depends_on" if !m.is_view => return err(a.pos, format!("{}: @@{} belongs on a `view` block", m.name, a.name)),
+            "materialized" if a.args.positional.is_empty() && a.args.named.is_empty() => view.materialized = true,
+            "materialized" => return err(a.pos, format!("{}: @@materialized takes no arguments", m.name)),
+            "depends_on" => {
+                let n = Named::new(format!("{}: @@depends_on", m.name), &a.args);
+                match a.args.positional.as_slice() {
+                    [(_, Value::List(items))] => for (p, v) in items { view.depends_on.push(name_of(*p, v, &n.what)?); },
+                    [(p, v)] => view.depends_on.push(name_of(*p, v, &n.what)?),
+                    _ => return err(a.pos, format!("{}: @@depends_on([View, ...]) takes a list of view names", m.name)),
+                }
+                n.finish()?;
+            }
             _ => {}
         }
+    }
+    if m.is_view {
+        view.body = m.sql_body.clone().unwrap_or_default();
+        ir.sql_view = Some(view);
     }
     let mut seen = HashSet::new();
     let mut paths = Paths::new();
@@ -1623,7 +1641,7 @@ fn model_block(m: &mut ModelIr, b: &Attr, pending: Option<&Pendings>) -> Result<
             n.finish()?;
             m.partition = Some(partition.ok_or_else(|| super::syntax::Error { pos: b.pos, msg: format!("{what}: give list:, range: or hash:") })?);
         }
-        "map" | "comment" | "renamed_from" | "protected_write" | "query_set" | "model_methods" => {}
+        "map" | "comment" | "renamed_from" | "protected_write" | "query_set" | "model_methods" | "materialized" | "depends_on" => {}
         "index" => {
             extra_positional(1)?;
             let columns: Vec<IndexColumnIr> = keys(m, pending, b.pos, first, &what, false)?.into_iter().map(|(k, _)| k).collect();

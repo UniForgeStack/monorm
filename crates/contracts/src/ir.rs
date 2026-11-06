@@ -347,6 +347,20 @@ pub struct ModelIr {
     /// Codegen looks for the classes in the package of that model's schema file; empty means this model.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub classes_from: Option<String>,
+    /// A SQL view (a `view` block): the model reads a database view and never writes. It has no table.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub sql_view: Option<SqlViewIr>,
+}
+
+/// The database view behind a `view` block. The body is opaque SQL from the sidecar file; the core never parses it.
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct SqlViewIr {
+    pub body: String,
+    #[serde(skip_serializing_if = "crate::ir::is_false", default)]
+    pub materialized: bool,
+    /// Views (by model name) that this view reads: they come first on create and last on drop.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub depends_on: Vec<String>,
 }
 
 impl ModelIr {

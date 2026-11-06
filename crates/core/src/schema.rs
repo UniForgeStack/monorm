@@ -77,6 +77,7 @@ impl Model {
             query_set: None,
             model_methods: None,
             classes_from: None,
+            sql_view: None,
         };
         Ok(Model {
             field_adapters: vec![],
@@ -191,6 +192,51 @@ fn validate_views(behavior: &crate::behavior::Requirements, models: &[Model], mo
     Ok(())
 }
 
+/// A SQL view (`view` block) is read only: it needs a key, only a materialized view on PostgreSQL has indexes,
+/// and `@@depends_on` names other SQL views with no cycle.
+pub(crate) fn validate_sql_views(ir: &SchemaIr) -> Result<()> {
+    let views: HashMap<&str, &ModelIr> = ir.models.iter().filter(|m| m.sql_view.is_some()).map(|m| (m.name.as_str(), m)).collect();
+    for m in views.values() {
+        let v = m.sql_view.as_ref().expect("filtered");
+        let name = &m.name;
+        if v.body.trim().is_empty() { return Err(format!("{name}: a view needs a SQL body")); }
+        if v.materialized && !ir.dialect.is_postgres() { return Err(format!("{name}: @@materialized requires PostgreSQL")); }
+        if m.primary_key.is_empty() && !m.fields.iter().any(|f| f.primary_key) { return Err(format!("{name}: a view needs @id or @@id on the columns that identify a row")); }
+        if m.partition.is_some() || !m.triggers.is_empty() || !m.constraints.is_empty() {
+            return Err(format!("{name}: a view takes no @@partition, trigger or constraint"));
+        }
+        if !v.materialized && (!m.indexes.is_empty() || m.fields.iter().any(|f| f.index || f.unique)) {
+            return Err(format!("{name}: an index belongs on a materialized view; add @@materialized"));
+        }
+        for dep in &v.depends_on {
+            if dep == name { return Err(format!("{name}: @@depends_on names the view itself")); }
+            if !views.contains_key(dep.as_str()) { return Err(format!("{name}: @@depends_on names `{dep}`, which is not a view of this schema")); }
+        }
+    }
+    for mv in &ir.behavior.model_views {
+        if let Some(sql) = [&mv.model, &mv.source, &mv.root].into_iter().find(|n| views.contains_key(n.as_str())) {
+            return Err(format!("{}: a model view cannot have the SQL view {sql} as its source or root; a SQL view is read only", mv.model));
+        }
+    }
+    // a cycle of @@depends_on has no creation order
+    let mut done = std::collections::HashSet::new();
+    fn visit<'a>(n: &'a str, views: &HashMap<&'a str, &'a ModelIr>, path: &mut Vec<&'a str>, done: &mut std::collections::HashSet<&'a str>) -> Result<()> {
+        if done.contains(n) { return Ok(()); }
+        if let Some(at) = path.iter().position(|p| *p == n) {
+            return Err(format!("{n}: @@depends_on makes a cycle ({})", path[at..].iter().chain([&n]).copied().collect::<Vec<_>>().join(" -> ")));
+        }
+        path.push(n);
+        for d in &views[n].sql_view.as_ref().expect("view").depends_on { visit(d.as_str(), views, path, done)?; }
+        path.pop();
+        done.insert(n);
+        Ok(())
+    }
+    let mut order: Vec<&str> = views.keys().copied().collect();
+    order.sort_unstable();
+    for n in order { visit(n, &views, &mut vec![], &mut done)?; }
+    Ok(())
+}
+
 impl Schema {
     pub fn from_ir(ir: SchemaIr) -> Result<Self> { Self::from_ir_impl(ir, true, Some(&Default::default())) }
 
@@ -208,6 +254,7 @@ impl Schema {
         crate::identity::validate(&ir, crate::behavior::manifests())?;
         if behavioral { crate::behavior::prepare(&mut ir, None)?; }
         crate::partition::validate(&ir)?;
+        validate_sql_views(&ir)?;
         let storage = match ir.behavior.storage.take() {
             Some(storage) => {
                 let physical = serde_json::from_value(serde_json::json!({

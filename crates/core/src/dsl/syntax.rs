@@ -351,6 +351,10 @@ pub struct ModelDecl {
     pub members: Vec<Member>,
     /// `@@...` attributes
     pub blocks: Vec<Attr>,
+    /// A `view` block: a SQL view. The compiler reads its body from the sidecar file.
+    pub is_view: bool,
+    /// The SQL body of a view, set by the compiler from `views/<db schema>/<Name>.sql`.
+    pub sql_body: Option<String>,
 }
 
 /// `enum Name { value @map("x") ... @@map("db_name") }`
@@ -530,11 +534,18 @@ impl<'a> Parser<'a> {
                     self.in_model = false;
                     items.push(Item::Enum(e));
                 }
-                "view" => return err(pos, "`view` blocks aren't supported yet"),
+                "view" => {
+                    let (_, name) = self.ident("a view name")?;
+                    self.in_model = true;
+                    let mut v = self.model(pos, name, "view")?;
+                    self.in_model = false;
+                    v.is_view = true;
+                    items.push(Item::Model(v));
+                }
                 _ => {
                     return err(
                         pos,
-                        format!("expected `model`, `type`, `enum`, `datasource`, `generator`, `function` or `import`, found `{keyword}`"),
+                        format!("expected `model`, `view`, `type`, `enum`, `datasource`, `generator`, `function` or `import`, found `{keyword}`"),
                     )
                 }
             }
@@ -613,7 +624,7 @@ impl<'a> Parser<'a> {
             last_line = start.line;
         }
         let mapped = blocks.iter().any(|a| a.name == "map");
-        Ok(ModelDecl { pos, name, members, blocks, mapped })
+        Ok(ModelDecl { pos, name, members, blocks, mapped, is_view: false, sql_body: None })
     }
 
     fn enum_block(&mut self, pos: Pos, name: String) -> Result<EnumDecl> {

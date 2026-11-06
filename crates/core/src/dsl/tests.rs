@@ -286,7 +286,7 @@ fn errors_point_at_the_problem() {
         ("enum Role {\n  A\n  @@storage(blob)\n}".into(), "native, text or int"),
         ("model A {\n  id BigInt @id\n  r Role @default(B)\n}\nenum Role {\n  A\n}".into(), "Role has no value B"),
         ("model A {\n  id BigInt @id\n  r Role @db.Text\n}\nenum Role {\n  A\n}".into(), "comes from the enum"),
-        ("view V {\n  a Int\n}".into(), "`view` blocks aren't supported yet"),
+        ("view V {\n  id Int @id\n}".into(), "the SQL body file views/public/V.sql is missing"),
         ("model A {\n  id BigInt[] @id\n}".into(), "an array can't be a primary key"),
         (
             format!("model A {{\n  id BigInt @id\n  b B?\n}}\nmodel B {{\n  id BigInt @id\n  a_id BigInt\n  a A @relation(fields: [a_id], references: [id])\n}}"),
@@ -1324,4 +1324,54 @@ fn a_generated_field_refuses_other_value_sources_and_bad_arguments() {
     }
     let e = fails("model Line {\n  id Int @id @generated(1)\n}\n");
     assert!(e.contains("@id"), "{e}");
+}
+
+fn views(source: &str, bodies: &[(&str, &str)]) -> Result<SchemaIr, String> {
+    let overrides = bodies.iter().map(|(path, text)| (PathBuf::from(path), text.to_string())).collect();
+    compile_with_overrides(source, None, &overrides).and_then(|ir| check(ir).map(|(ir, _)| ir))
+}
+
+#[test]
+fn a_view_block_takes_its_body_from_a_sidecar_file() {
+    let source = "model User {\n  id Int @id\n}\nview Active {\n  id Int @id\n  @@materialized\n  @@depends_on([Base])\n  @@index([id])\n}\nview Base {\n  id Int @id\n}\n";
+    let ir = views(source, &[("views/public/Active.sql", "SELECT id FROM base;\n"), ("views/public/Base.sql", "SELECT id FROM \"user\"")]).unwrap();
+    let active = ir.models.iter().find(|m| m.name == "Active").unwrap().sql_view.clone().unwrap();
+    assert_eq!((active.body.as_str(), active.materialized, active.depends_on.as_slice()), ("SELECT id FROM base", true, &["Base".to_string()][..]));
+    let user = ir.models.iter().find(|m| m.name == "User").unwrap();
+    assert!(user.sql_view.is_none());
+    let base = ir.models.iter().find(|m| m.name == "Base").unwrap().sql_view.clone().unwrap();
+    assert!(!base.materialized);
+}
+
+#[test]
+fn sqlite_reads_the_main_directory() {
+    let source = "datasource db {\n  provider = \"sqlite\"\n}\nview V {\n  id Int @id\n}\n";
+    assert!(views(source, &[("views/main/V.sql", "SELECT 1 AS id")]).is_ok());
+    assert!(views(source, &[("views/public/V.sql", "SELECT 1 AS id")]).unwrap_err().contains("views/main/V.sql is missing"));
+}
+
+#[test]
+fn a_view_is_checked_at_compile_time() {
+    let one = |body: &str, sql: &str| views(&format!("{body}\n"), &[("views/public/V.sql", sql), ("views/public/W.sql", "SELECT 1 AS id")]).unwrap_err();
+    assert!(one("view V {\n  id Int @id\n}", "  ;\n").contains("the SQL body file views/public/V.sql is empty"));
+    assert!(one("view V {\n  id Int\n}", "SELECT 1").contains("model V has no @id field"));
+    assert!(one("view V {\n  id Int @id\n  @@index([id])\n}", "SELECT 1").contains("an index belongs on a materialized view"));
+    assert!(one("view V {\n  id Int @id @unique\n}", "SELECT 1").contains("an index belongs on a materialized view"));
+    assert!(one("view V {\n  id Int @id\n  @@depends_on([Nope])\n}", "SELECT 1").contains("which is not a view of this schema"));
+    assert!(one("view V {\n  id Int @id\n  @@depends_on([V])\n}", "SELECT 1").contains("names the view itself"));
+    assert!(one("view V {\n  id Int @id\n  @@depends_on([W])\n}\nview W {\n  id Int @id\n  @@depends_on([V])\n}", "SELECT 1").contains("makes a cycle"));
+    assert!(one("model V {\n  id Int @id\n  @@materialized\n}", "SELECT 1").contains("belongs on a `view` block"));
+    assert!(one("view V {\n  id Int @id\n  @@materialized(1)\n}", "SELECT 1").contains("takes no arguments"));
+    let sqlite = "datasource db {\n  provider = \"sqlite\"\n}\nview V {\n  id Int @id\n  @@materialized\n}\n";
+    assert!(views(sqlite, &[("views/main/V.sql", "SELECT 1")]).unwrap_err().contains("@@materialized requires PostgreSQL"));
+}
+
+#[test]
+fn a_model_view_cannot_take_a_sql_view_as_its_root() {
+    let source = "view V {\n  id Int @id\n}\nmodel M {\n  id Int @id\n}\n";
+    let overrides = [(PathBuf::from("views/public/V.sql"), "SELECT 1 AS id".to_string())].into();
+    let mut ir = compile_with_overrides(source, None, &overrides).unwrap();
+    ir.behavior.model_views.push(monorm::extension::ModelView { model: "M".into(), source: "V".into(), root: "V".into(), row_filter: None, insert_table: None });
+    let error = crate::schema::validate_sql_views(&ir).unwrap_err();
+    assert!(error.contains("cannot have the SQL view V as its source or root"), "{error}");
 }

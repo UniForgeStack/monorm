@@ -207,6 +207,38 @@ impl Loader<'_> {
     }
 }
 
+/// The SQL body of each `view` block: `views/<db schema>/<Name>.sql` next to the schema file that declares the view
+/// (`public` on PostgreSQL, `main` on SQLite). The text comes from the override map first, then from disk.
+/// Returns the files it read.
+fn view_bodies(items: &mut [syntax::Item], loader: &Loader<'_>) -> Result<Vec<PathBuf>, String> {
+    let sqlite = items.iter().any(|item| matches!(item, syntax::Item::Datasource { props, .. }
+        if props.iter().any(|(key, _, value)| key == "provider" && matches!(value, syntax::Value::Str(p) if p == "sqlite"))));
+    let schema = if sqlite { "main" } else { "public" };
+    let mut read = vec![];
+    for item in items {
+        let syntax::Item::Model(m) = item else { continue };
+        if !m.is_view { continue; }
+        let owner = loader.units.iter().find(|unit| unit.models.contains(&m.name)).map(|unit| unit.path.clone()).unwrap_or_default();
+        let path = owner.parent().unwrap_or(Path::new("")).join("views").join(schema).join(format!("{}.sql", m.name));
+        let text = loader.overrides.get(&path).or_else(|| path.canonicalize().ok().and_then(|c| loader.overrides.get(&c))).cloned()
+            .map(Ok).unwrap_or_else(|| std::fs::read_to_string(&path)).map_err(|_| loader.located(syntax::Error { pos: m.pos,
+                msg: format!("view {}: the SQL body file {} is missing; write the SELECT of the view there", m.name, path.display()) }))?;
+        let body = text.trim().trim_end_matches(';').trim_end().to_owned();
+        if body.is_empty() {
+            return Err(loader.located(syntax::Error { pos: m.pos, msg: format!("view {}: the SQL body file {} is empty", m.name, path.display()) }));
+        }
+        m.sql_body = Some(body);
+        read.push(path);
+    }
+    Ok(read)
+}
+
+/// [`compile`] with source text for files that the compiler would read: `overrides` maps the path of a view body
+/// (`views/<db schema>/<Name>.sql`, as the compiler builds it) to its text. Pull and drift use it for a schema with no files.
+pub fn compile_with_overrides(source: &str, origin: Option<&Path>, overrides: &std::collections::BTreeMap<PathBuf, String>) -> Result<SchemaIr, String> {
+    compile_project_overlay(source, origin, None, &Installed::new(), overrides).map(|project| project.ir)
+}
+
 pub fn compile_project(source: &str, origin: Option<&Path>) -> Result<CompiledProject, String> {
     compile_project_mode(source, origin, None, &Installed::new())
 }
@@ -226,6 +258,7 @@ fn compile_project_overlay(source: &str, origin: Option<&Path>, update: Option<I
     let mut loader = Loader { overrides, apps: &installed.apps, units: vec![], seen: Default::default(), active: vec![], locations: vec![], lines: 0, sourceless: origin.is_none() };
     let origin = origin.unwrap_or(Path::new("<schema>"));
     let mut items = loader.expand(source, origin, "the root schema", "", true, None)?;
+    let sidecars = view_bodies(&mut items, &loader)?;
     let mut declared = std::collections::HashMap::new();
     for item in &items {
         let (name, pos) = match item {
@@ -337,6 +370,7 @@ fn compile_project_overlay(source: &str, origin: Option<&Path>, update: Option<I
     crate::identity::validate(&ir, manifests)?;
     let mut inputs: Vec<_> = loader.units.iter().map(|unit| unit.path.clone()).collect();
     inputs.extend(catalog_inputs.into_inner());
+    inputs.extend(sidecars);
     if ir.identities.is_some() { inputs.push(path); }
     Ok(CompiledProject { ir, units: loader.units, inputs, warnings })
 }
