@@ -790,19 +790,30 @@ latest.params                                   # frozenset({'user', 'n', 'skip'
 latest.sql(user=1, n=20, skip=0)                # the SQL with these values, for debugging
 ```
 
-A call copies the stored parameter list, fills in the values and hands the stored IR
-JSON to the engine. It skips building the query set, the expression tree, the IR and
-its JSON: −22% on `get` by primary key and −13% to −31% on a 50-row read with two filters
-(measured; `git show 493e2472:bench/RESULTS.md`, "Prepared queries"). Rust still plans each call, and Postgres
-reuses the statement, which is prepared once per connection.
+`prepare()` plans the query once and keeps the SQL text and a map of the slots in
+Rust. A call converts the values, binds them and runs the statement: no JSON parse and
+no planning. `get()`, `first()`, `count()`, `exists()` and the plain call all use the
+held statement. `sql()` and `inspect()` show what a call sends. A call inside
+`db.transaction()` runs on the transaction's connection, and a hook runs on each call.
+Query defaults, the soft-delete filter and `lock()` are fixed when you prepare.
 
 * A `param()` stands for one value: in comparisons and arithmetic, `like` / `contains`
   / `startswith` / `endswith` (the pattern is escaped when the value is bound),
   `has()`, `limit()` and `offset()`, and in filters of relation query sets in `load()`.
 * Values can't be `None`: whether a comparison is `= $1` or `IS NULL` is fixed when the
   query is built, so write `is_null()` into the query instead.
-* `in_(param(...))` is rejected, because the number of values is part of the query. A
-  `param()` can be the index in `[param("n")]`; a query set limited by a `param()` can't be sliced.
+* `in_(param("ids"))` and `not_in(param("ids"))` take a list of any length: PostgreSQL
+  binds one array (`= ANY($1)`, `<> ALL($1)`), SQLite uses `IN (SELECT value FROM json_each(?))`.
+  `None` elements and the empty list are allowed; the whole value can't be `None`.
+  The unprepared `in_([...])` is unchanged.
+* `param(name, type)` declares the value type, for example `param("ids", list[int])`. A
+  `CASE` made only of params needs it; without it `prepare()` raises.
+* A query shape that can't become a slot raises at `prepare()`, not at a later call.
+* `scope.<name>` values are per-call. A call reads them from the `scope=` keyword
+  (`await q(id=1, scope={"shop": s})`), which wins over `monorm.scope()`; a name set in
+  neither raises "reads scope.<name>, which is not set". `prepare()` works with no scope
+  active. `scope` is not a valid `param()` name. A `param()` can be the index in
+  `[param("n")]`; a query set limited by a `param()` can't be sliced.
 * A `param()` outside a prepared query raises `QueryError`. Calls with a missing or
   unknown name raise `TypeError`.
 * Prepared queries read. Inserts and updates already send their rows to Rust without an

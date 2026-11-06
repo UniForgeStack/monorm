@@ -504,7 +504,16 @@ await q.all({ author: 1n, n: 10 }); // { author: bigint | number; n: number | bi
 ```
 
 A prepared query also has `.get(values)`, `.first(values)`, `.count(values)`,
-`.exists(values)` and `.sql(values)`.
+`.exists(values)`, `.sql(values)` and `.inspect(values)`. The engine keeps the planned
+statement, and every one of these uses it.
+
+* `Post.id.in(param("ids"))` and `notIn(param("ids"))` take an array of any length
+  (`= ANY($1)` on PostgreSQL, `json_each` on SQLite). `null` elements and `[]` are allowed.
+* `param("x", "float")` declares the value type by its engine type name (`"int"`,
+  `"big_int[]"`); a `case()` made only of params needs it.
+* A shape that can't become a slot throws at `prepare()`.
+* Scope values come from `{ scope: { shop } }` in the values object, which wins over
+  `withScope()`. `scope` is not a valid `param()` name.
 
 ## Nested types
 
