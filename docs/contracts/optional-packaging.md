@@ -103,6 +103,7 @@ It builds the one wheel and the one tarball of the checkout, packages the outsid
 `languages/python/packaging/check-wheel.py` checks the wheel content, `smoke-python.py` and `smoke-node.mjs` are the smoke scripts, and `languages/js/packaging/check-node-install.mjs` packs and installs the tarball offline.
 `scripts/check-glibc.py` fails when a Linux library needs a symbol version above glibc 2.28; with `--libc musl` it fails on any glibc symbol and needs `libc.so` or `libc.musl-<arch>.so.1`.
 Set `ORM_TEST_DATABASE_URL` to an isolated PostgreSQL database for the PostgreSQL checks; SQLite checks use in-memory databases.
+The `alpine` job of `package-builds.yml` installs the musllinux wheel in `python:3.11-alpine` to `python:3.14-alpine`, and runs the consumers with `check-assembled-consumers.py --docker <image>` in Python, `node:22-alpine` and `oven/bun:alpine` images, on x86-64 and arm64 and on both databases; this leaves out the outside extension, which ships no musl library.
 `.github/workflows/package-builds.yml` builds the wheels and the tarball on each platform, and `extension-packages.yml` runs the seam on Linux.
 Both workflows publish nothing; `release.yml` publishes (see [RELEASING.md](../../RELEASING.md)).
 CI records the size of every wheel and of the tarball in the job summary.

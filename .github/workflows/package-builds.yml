@@ -273,3 +273,57 @@ jobs:
           path: target/dist
       - name: Install the packages in fresh consumers
         run: python scripts/check-assembled-consumers.py target/dist "${{ matrix.dialects }}"
+  # The musllinux wheels and the musl addon run on Alpine only. A plain `docker run` step, not `container:`:
+  # GitHub's JavaScript actions do not run inside Alpine on the arm64 runners.
+  alpine:
+    needs: [python, npm]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+        python: ['3.11', '3.12', '3.13', '3.14']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: orm_test
+        ports: ['5432:5432']
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      ORM_TEST_DATABASE_URL: postgres://postgres:postgres@localhost/orm_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}-musl-${{ matrix.python }}
+          path: target/dist
+      - name: Python on Alpine, SQLite
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w -e ORM_TEST_DATABASE_URL= python:${{ matrix.python }}-alpine sh -c \
+            'pip install --quiet target/dist/monorm-*musllinux*.whl && python languages/python/packaging/smoke-python.py'
+      - name: Python on Alpine, PostgreSQL
+        run: |
+          docker run --rm --network host -v "$PWD:/w" -w /w -e ORM_TEST_DATABASE_URL python:${{ matrix.python }}-alpine sh -c \
+            'pip install --quiet target/dist/monorm-*musllinux*.whl && python languages/python/packaging/smoke-python.py'
+      # The consumers run once per platform: the npm package is one file for all of them.
+      - if: matrix.python == '3.14'
+        uses: actions/download-artifact@v4
+        with:
+          name: npm-package
+          path: target/dist
+      - if: matrix.python == '3.14'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - if: matrix.python == '3.14'
+        run: npm ci --ignore-scripts
+        working-directory: languages/js
+      - if: matrix.python == '3.14'
+        name: Consumers on Alpine, Python, Node and Bun
+        run: |
+          for image in python:3.14-alpine node:22-alpine oven/bun:alpine; do
+            python3 scripts/check-assembled-consumers.py target/dist sqlite,postgres --docker "$image"
+          done
