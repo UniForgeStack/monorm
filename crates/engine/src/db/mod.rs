@@ -7,6 +7,7 @@
 //! it from the URL scheme. A build compiles PostgreSQL (tokio-postgres), SQLite
 //! (rusqlite), or both.
 
+mod deadline;
 #[cfg(feature = "postgres")]
 mod numeric;
 #[cfg(feature = "postgres")]
@@ -28,6 +29,9 @@ use sea_query::SqliteQueryBuilder;
 use monorm_core::dialect::Dialect;
 use monorm_core::ir::ValueType;
 
+pub use deadline::{begin_root, Isolation, TimeoutOutcome, TransactionOptions, TxStart, CLEANUP_GRACE};
+use deadline::Root;
+
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub type DbResult<T> = Result<T, DbError>;
 
@@ -41,6 +45,8 @@ pub enum ErrorKind {
     LockNotAvailable,
     /// A statement ran in a transaction (or savepoint) that an earlier error aborted.
     TransactionAborted,
+    /// The deadline of a transaction passed; see `DbError::outcome`.
+    TransactionTimeout,
     Other,
 }
 
@@ -57,11 +63,13 @@ pub struct DbError {
     pub detail: Option<String>,
     /// For `TransactionAborted`: the first error of the transaction.
     pub cause: Option<Arc<DbError>>,
+    /// For `TransactionTimeout`: what is known about the transaction.
+    pub outcome: Option<TimeoutOutcome>,
 }
 
 impl DbError {
     pub fn new(kind: ErrorKind, message: impl Into<String>) -> Self {
-        DbError { kind, message: message.into(), sqlstate: None, constraint: None, detail: None, cause: None }
+        DbError { kind, message: message.into(), sqlstate: None, constraint: None, detail: None, cause: None, outcome: None }
     }
 
     pub fn other(message: impl Into<String>) -> Self {
@@ -144,6 +152,14 @@ pub trait Executor: Send + Sync {
     }
     /// A transaction, or a savepoint when called on a transaction.
     fn begin(&self) -> BoxFuture<'_, DbResult<Arc<dyn Transaction>>>;
+    /// An outer transaction that starts with `start.isolation`. A driver sets `start.acquired`
+    /// once it holds a connection, and a begin that fails leaves no transaction behind.
+    fn begin_with(&self, start: TxStart) -> BoxFuture<'_, DbResult<Arc<dyn Transaction>>> {
+        if start.isolation.is_some() {
+            return Box::pin(async { Err(DbError::new(ErrorKind::Query, "this database does not support transaction isolation levels")) });
+        }
+        self.begin()
+    }
     /// Bulk load: `COPY table (columns) FROM STDIN`, one value per column in each row.
     /// Gives the number of rows written.
     fn copy_in(&self, table: String, columns: Vec<String>, rows: Vec<Vec<Value>>) -> BoxFuture<'_, DbResult<u64>> {
@@ -158,6 +174,11 @@ pub trait Transaction: Executor {
     /// Marks the transaction failed as if a statement had failed with `e`
     /// (a no-op for a transaction that does not track failures).
     fn mark_failed(&self, _e: DbError) {}
+    /// The deadline passed. A driver keeps a `Fate` and swaps it first. When expiry wins, no
+    /// COMMIT was sent: stop what runs, roll back, and give `RolledBack` only if the rollback is
+    /// confirmed. When a COMMIT won, send no cancel, retire the connection, and give `Unknown`.
+    /// The cleanup ends within `grace`.
+    fn expire(&self, grace: std::time::Duration) -> BoxFuture<'_, TimeoutOutcome>;
 }
 
 /// A transaction that remembers its first failed statement, also when the caller catches
@@ -168,6 +189,9 @@ pub trait Transaction: Executor {
 struct Guarded {
     inner: Arc<dyn Transaction>,
     failed: std::sync::Mutex<Option<Arc<DbError>>>,
+    /// The deadline state of the root transaction, shared with its savepoints.
+    root: Option<Arc<Root>>,
+    is_root: bool,
 }
 
 /// Savepoints share one connection and must be used in stack order.
@@ -180,7 +204,11 @@ fn check_savepoint(stack: &[String], savepoint: &Option<String>) -> DbResult<()>
 
 /// `tx` with the failed mark; give the bindings this, never a bare driver transaction.
 pub fn guard(tx: Arc<dyn Transaction>) -> Arc<dyn Transaction> {
-    Arc::new(Guarded { inner: tx, failed: std::sync::Mutex::new(None) })
+    Arc::new(Guarded { inner: tx, failed: std::sync::Mutex::new(None), root: None, is_root: false })
+}
+
+fn guard_root(tx: Arc<dyn Transaction>, root: Arc<Root>) -> Arc<dyn Transaction> {
+    Arc::new(Guarded { inner: tx, failed: std::sync::Mutex::new(None), root: Some(root), is_root: true })
 }
 
 impl Guarded {
@@ -203,10 +231,16 @@ impl Guarded {
     }
 
     async fn guarded<T>(&self, run: impl Future<Output = DbResult<T>>) -> DbResult<T> {
+        if let Some(root) = &self.root {
+            root.admit().await?;
+        }
         if let Some(e) = self.aborted() {
             return Err(e);
         }
-        let out = run.await;
+        let out = match &self.root {
+            Some(root) => root.within(run).await,
+            None => run.await,
+        };
         if let Err(e) = &out {
             // A concurrent statement may have failed while this one waited on the
             // driver's session lock. Preserve that first error over a raw 25P02.
@@ -248,28 +282,54 @@ impl Executor for Guarded {
     fn begin(&self) -> BoxFuture<'_, DbResult<Arc<dyn Transaction>>> {
         Box::pin(async move {
             let tx = self.guarded(self.inner.begin()).await?;
-            Ok(guard(tx))
+            Ok(Arc::new(Guarded { inner: tx, failed: std::sync::Mutex::new(None), root: self.root.clone(), is_root: false }) as Arc<dyn Transaction>)
         })
     }
 }
 
 impl Transaction for Guarded {
+    fn expire(&self, grace: std::time::Duration) -> BoxFuture<'_, TimeoutOutcome> {
+        self.inner.expire(grace)
+    }
     fn commit(&self) -> BoxFuture<'_, DbResult<()>> {
         Box::pin(async move {
+            let Some(root) = &self.root else {
+                if let Some(e) = self.aborted() {
+                    let _ = self.inner.rollback().await;
+                    return Err(e);
+                }
+                return self.inner.commit().await;
+            };
+            root.admit().await?;
             if let Some(e) = self.aborted() {
-                let _ = self.inner.rollback().await;
+                let _ = if self.is_root { root.rollback().await } else { self.inner.rollback().await };
                 return Err(e);
             }
-            self.inner.commit().await
+            if self.is_root {
+                root.begin_commit().await?;
+                root.commit().await
+            } else {
+                root.within(self.inner.commit()).await
+            }
         })
     }
     fn rollback(&self) -> BoxFuture<'_, DbResult<()>> {
-        self.inner.rollback()
+        Box::pin(async move {
+            match &self.root {
+                Some(root) if self.is_root => root.rollback().await,
+                // After the deadline the cleanup has rolled everything back.
+                Some(root) if root.is_expiring_or_expired() => {
+                    root.settled().await;
+                    Ok(())
+                }
+                _ => self.inner.rollback().await,
+            }
+        })
     }
     fn mark_failed(&self, e: DbError) {
         let mut failed = self.failed.lock().unwrap();
         // Preflight query errors sent no SQL and do not abort the transaction.
-        if failed.is_none() && !matches!(e.kind, ErrorKind::TransactionAborted | ErrorKind::Query) {
+        if failed.is_none() && !matches!(e.kind, ErrorKind::TransactionAborted | ErrorKind::TransactionTimeout | ErrorKind::Query) {
             *failed = Some(Arc::new(e));
         }
     }
@@ -305,6 +365,18 @@ pub struct WithSettings {
 impl WithSettings {
     pub fn new(inner: Arc<dyn Driver>, settings: Vec<(String, String)>) -> Self {
         WithSettings { inner, settings }
+    }
+
+    /// The settings go in after `BEGIN ISOLATION LEVEL ...`, so the level comes first.
+    async fn settle(&self, tx: Arc<dyn Transaction>) -> DbResult<Arc<dyn Transaction>> {
+        for (name, value) in &self.settings {
+            let args = vec![Value::from(name.clone()), Value::from(value.clone())];
+            if let Err(e) = tx.execute("SELECT set_config($1, $2, true)".into(), args).await {
+                let _ = tx.rollback().await;
+                return Err(e);
+            }
+        }
+        Ok(tx)
     }
 }
 
@@ -365,17 +437,10 @@ impl Executor for WithSettings {
         })
     }
     fn begin(&self) -> BoxFuture<'_, DbResult<Arc<dyn Transaction>>> {
-        Box::pin(async move {
-            let tx = self.inner.begin().await?;
-            for (name, value) in &self.settings {
-                let args = vec![Value::from(name.clone()), Value::from(value.clone())];
-                if let Err(e) = tx.execute("SELECT set_config($1, $2, true)".into(), args).await {
-                    let _ = tx.rollback().await;
-                    return Err(e);
-                }
-            }
-            Ok(tx)
-        })
+        Box::pin(async move { self.settle(self.inner.begin().await?).await })
+    }
+    fn begin_with(&self, start: TxStart) -> BoxFuture<'_, DbResult<Arc<dyn Transaction>>> {
+        Box::pin(async move { self.settle(self.inner.begin_with(start).await?).await })
     }
 }
 
@@ -499,7 +564,7 @@ mod failure_tests {
     fn concurrent_abort_keeps_first_cause() {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let inner = connect("sqlite://:memory:", 1).await.unwrap().begin().await.unwrap();
-            let guarded = Guarded { inner, failed: std::sync::Mutex::new(None) };
+            let guarded = Guarded { inner, failed: std::sync::Mutex::new(None), root: None, is_root: false };
             let first = DbError::new(ErrorKind::Integrity, "first constraint failure");
             let result: DbResult<()> = guarded.guarded(async {
                 // Simulate another statement failing after this statement passed

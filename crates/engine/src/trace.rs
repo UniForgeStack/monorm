@@ -166,6 +166,9 @@ impl Executor for Traced {
     fn begin(&self) -> BoxFuture<'_, DbResult<Arc<dyn Transaction>>> {
         Box::pin(async move { Ok(self.traced_tx(self.conn.begin().await?)) })
     }
+    fn begin_with(&self, start: crate::db::TxStart) -> BoxFuture<'_, DbResult<Arc<dyn Transaction>>> {
+        Box::pin(async move { Ok(self.traced_tx(self.conn.begin_with(start).await?)) })
+    }
 }
 
 impl Transaction for Traced {
@@ -179,6 +182,12 @@ impl Transaction for Traced {
         match &self.tx {
             Some(tx) => tx.rollback(),
             None => Box::pin(async { Err(crate::db::DbError::other("not a transaction")) }),
+        }
+    }
+    fn expire(&self, grace: Duration) -> BoxFuture<'_, crate::db::TimeoutOutcome> {
+        match &self.tx {
+            Some(tx) => tx.expire(grace),
+            None => Box::pin(async { crate::db::TimeoutOutcome::Unknown }),
         }
     }
 }

@@ -64,6 +64,7 @@ fn pg_err(e: tokio_postgres::Error) -> DbError {
                 constraint: db.constraint().map(str::to_owned),
                 detail: db.detail().map(str::to_owned),
                 cause: None,
+                outcome: None,
             }
         }
         None => DbError::other(e.to_string()),
@@ -632,6 +633,28 @@ impl PgDriver {
         Ok(PgDriver { pool, config, tls })
     }
 
+    /// Takes a connection and sends `BEGIN`. The session owns the connection before the first
+    /// await that can be cancelled, so a dropped future never returns it to the pool mid-transaction.
+    async fn start_transaction(
+        &self, isolation: Option<super::Isolation>, acquired: Option<Arc<AtomicBool>>,
+    ) -> DbResult<Arc<dyn Transaction>> {
+        let client = get_client(&self.pool).await?;
+        if let Some(acquired) = acquired { acquired.store(true, Ordering::SeqCst); }
+        let session = Session { client: Some(client), finished: false, next_savepoint: 0, savepoints: vec![] };
+        let sql = match isolation {
+            Some(level) => format!("BEGIN ISOLATION LEVEL {}", level.sql()),
+            None => "BEGIN".to_owned(),
+        };
+        // A failed or cancelled BEGIN leaves the session unfinished: its drop detaches the connection.
+        session.client.as_ref().expect("the session holds the client").batch_execute(&sql).await.map_err(pg_err)?;
+        let tx: Arc<dyn Transaction> = Arc::new(PgTx {
+            session: Arc::new(Mutex::new(session)),
+            savepoint: None,
+            done: AtomicBool::new(false),
+        });
+        Ok(tx)
+    }
+
     /// A connection outside the pool, closed when dropped.
     async fn dedicated(&self) -> DbResult<tokio_postgres::Client> {
         match self.tls.clone() {
@@ -682,17 +705,11 @@ impl Executor for PgDriver {
     }
 
     fn begin(&self) -> BoxFuture<'_, DbResult<Arc<dyn Transaction>>> {
-        Box::pin(async move {
-            let client = get_client(&self.pool).await?;
-            client.batch_execute("BEGIN").await.map_err(pg_err)?;
-            let session = Session { client: Some(client), finished: false, next_savepoint: 0, savepoints: vec![] };
-            let tx: Arc<dyn Transaction> = Arc::new(PgTx {
-                session: Arc::new(Mutex::new(session)),
-                savepoint: None,
-                done: AtomicBool::new(false),
-            });
-            Ok(tx)
-        })
+        Box::pin(self.start_transaction(None, None))
+    }
+
+    fn begin_with(&self, start: super::TxStart) -> BoxFuture<'_, DbResult<Arc<dyn Transaction>>> {
+        Box::pin(self.start_transaction(start.isolation, Some(start.acquired)))
     }
 }
 

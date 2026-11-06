@@ -88,8 +88,9 @@ impl SqliteDriver {
         self.worker.call(f).await
     }
 
-    async fn transaction(&self, migration: bool) -> DbResult<Arc<dyn Transaction>> {
+    async fn transaction(&self, migration: bool, start: Option<super::TxStart>) -> DbResult<Arc<dyn Transaction>> {
         let guard = self.gate.clone().lock_owned().await;
+        if let Some(start) = &start { start.acquired.store(true, Ordering::SeqCst); }
         let state = Arc::new(TxState {
             worker: self.worker.clone(), gate: Arc::new(AsyncMutex::new(())), guard: Mutex::new(Some(guard)),
             savepoints: Arc::new(Mutex::new(vec![])), done: AtomicBool::new(false), savepoint: None, migration, parent: Mutex::new(None),
@@ -208,8 +209,10 @@ impl Executor for SqliteDriver {
     fn execute(&self, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<u64>> { Box::pin(self.with(move |c| execute(c, sql, args))) }
     fn batch(&self, sql: String) -> BoxFuture<'_, DbResult<u64>> { Box::pin(self.with(move |c| batch(c, sql))) }
     fn query_text(&self, sql: String) -> BoxFuture<'_, DbResult<Vec<Vec<Option<String>>>>> { Box::pin(self.with(move |c| query_text(c, sql))) }
-    fn begin(&self) -> BoxFuture<'_, DbResult<Arc<dyn Transaction>>> { Box::pin(self.transaction(false)) }
-    fn begin_migration(&self) -> BoxFuture<'_, DbResult<Arc<dyn Transaction>>> { Box::pin(self.transaction(true)) }
+    fn begin(&self) -> BoxFuture<'_, DbResult<Arc<dyn Transaction>>> { Box::pin(self.transaction(false, None)) }
+    // SQLite runs every isolation level as serializable (`BEGIN IMMEDIATE`).
+    fn begin_with(&self, start: super::TxStart) -> BoxFuture<'_, DbResult<Arc<dyn Transaction>>> { Box::pin(self.transaction(false, Some(start))) }
+    fn begin_migration(&self) -> BoxFuture<'_, DbResult<Arc<dyn Transaction>>> { Box::pin(self.transaction(true, None)) }
 }
 
 impl Driver for SqliteDriver {

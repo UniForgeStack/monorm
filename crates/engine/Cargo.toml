@@ -21,7 +21,7 @@ tokio-postgres-rustls = { optional = true, version = "0.14", default-features = 
 rustls = { optional = true, version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 webpki-roots = { version = "1", optional = true }
 bytes = { version = "1", optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = "0.4"
@@ -35,7 +35,7 @@ blake2 = "0.10"
 [dev-dependencies]
 # The tests generate models through the default code generators.
 monorm-core = { path = "../core", features = ["testing"] }
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["time", "test-util"] }
 
 [features]
 default = ["postgres", "sqlite"]
