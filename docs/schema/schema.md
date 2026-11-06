@@ -827,6 +827,31 @@ recorded in the database is missing from the directory, or if two migrations sha
 number. `create_tables()` / `drop_tables()` remain as development helpers (idempotent
 DDL of the whole schema; drop with `CASCADE`).
 
+### No-transaction migrations
+
+`CREATE INDEX CONCURRENTLY` cannot run in a transaction. A migration folder whose
+`up.sql` starts with `-- monorm: no-transaction [create-index <name> | drop-index <name>]`
+runs without one, on PostgreSQL only. A `down.sql` can carry the same first line.
+
+* **One statement per folder.** The runner sends the file in one call and does not split
+  it. A file with two statements fails with the PostgreSQL error.
+* **The lock**: the runner holds the migration advisory lock on a session of its own, so
+  other migrators wait. It records the migration in a statement of its own after the SQL.
+* **A failed build** leaves an invalid index. With `create-index <name>`, the next run
+  drops an invalid index of that name (`DROP INDEX CONCURRENTLY`) and builds it again.
+* **The name** in the header is one identifier. `app.idx` is an index with a dot in its
+  name, not the index `idx` in schema `app`. A name in double quotes stays as written.
+* **A crash** between the SQL and the record leaves the index without a row.
+  Write `IF NOT EXISTS` (`IF EXISTS` in a `down.sql`) in the statement, so the next run passes.
+* **Refused**: a folder with a data step (`data.py` / `data.ts`), and any use on SQLite.
+  The error names the folder (`<folder>/down.sql` for a down file).
+* **A tenant database** (`db.tenant(...)`) runs each statement in a transaction of its own,
+  so `CONCURRENTLY` fails there. Run a `Migrator` on the plain database, not on a tenant one.
+* **A normal migrator that waits** for a no-transaction run polls the lock every 100 ms.
+  A blocked wait would hold a snapshot that the index build waits for, and the two would hang.
+* The destructive gate applies as for other migrations, but its check takes no table lock:
+  it does not wait for a concurrent writer.
+
 ### Data migrations
 
 A migration folder may hold a data step next to `up.sql`: `data.py` with
@@ -1019,7 +1044,7 @@ for the syntax and interaction with composite identity and default filters.
 
 ## Not done yet
 
-* `CREATE INDEX CONCURRENTLY` / non-transactional migrations.
+* Generated `CREATE INDEX CONCURRENTLY` (the `migrations.online` setting); a hand-written no-transaction migration works.
 * Generated columns, views, domains, row-level security, multiple
   database schemas.
 * Renaming a native enum value in place (`ALTER TYPE ... RENAME VALUE`): a renamed

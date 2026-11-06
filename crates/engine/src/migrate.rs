@@ -22,7 +22,7 @@ use monorm_core::migrate::files::{self, MigrationFolder};
 use monorm_core::migrate::pg::ident;
 use monorm_core::migrate::Destructive;
 
-use crate::db::{Driver, Executor, Transaction};
+use crate::db::{Driver, Executor, SessionLock, Transaction};
 use crate::error::{Error, Result};
 
 pub const TABLE: &str = "monorm_migrations";
@@ -288,7 +288,7 @@ async fn locked(
     let tx = conn.begin_migration().await?;
     let run = async {
         if conn.dialect() == Dialect::Postgres {
-            tx.batch(format!("SELECT pg_advisory_xact_lock({LOCK_ID})")).await?;
+            take_xact_lock(&*tx).await?;
         }
         let Some(scripts) = scripts(&applied(&*tx).await?) else { return Ok(false) };
         if let Some((what, sql)) = gated {
@@ -340,7 +340,7 @@ pub async fn pending(conn: &dyn Executor, dir: &Path, target: Option<&str>, allo
             continue;
         }
         if conn.dialect() != Dialect::Postgres {
-            return Err(Error::Migration(format!("{} is a no-transaction migration; {} has no such mode", m.name, conn.dialect().name())));
+            return Err(no_tx_refusal(&m.name, conn.dialect()));
         }
         if let Some(file) = m.data_file() {
             return Err(Error::Migration(format!("{} is a no-transaction migration and has a data step ({file}); a data step needs a transaction", m.name)));
@@ -364,7 +364,7 @@ pub async fn begin_apply(conn: &dyn Executor, m: &Migration, allow_destructive: 
     let tx = conn.begin_migration().await?;
     let run = async {
         if conn.dialect() == Dialect::Postgres {
-            tx.batch(format!("SELECT pg_advisory_xact_lock({LOCK_ID})")).await?;
+            take_xact_lock(&*tx).await?;
         }
         if applied(&*tx).await?.contains_key(&m.name) {
             return Ok(false);
@@ -400,36 +400,62 @@ pub async fn finish_apply(tx: &dyn Transaction, m: &Migration) -> Result<()> {
     }
 }
 
+/// The refusal of a no-transaction script on a database that has no such mode.
+fn no_tx_refusal(what: &str, dialect: Dialect) -> Error {
+    Error::Migration(format!("{what} is a no-transaction migration; {} has no such mode", dialect.name()))
+}
+
 /// An index name of a header as SQL: a quoted name stays as written.
 fn index_ref(name: &str) -> String {
     if name.starts_with('"') { name.to_owned() } else { ident(name) }
 }
 
 /// Runs `sql` (one statement, outside a transaction) and then `record`, under the session
-/// lock of the migration lock. `applied_before` is whether `m` must be recorded for the
-/// run to happen; otherwise it gives `false` and runs nothing.
+/// lock of the migration lock. The run happens only when `m` is recorded as applied exactly
+/// when `expect_applied` says so; otherwise it gives `false` and runs nothing.
 struct NoTxRun<'a> {
     /// Starts the error text of the destructive check.
     what: &'a str,
     sql: String,
     index: Option<NoTxIndex>,
     record: String,
-    applied_before: bool,
+    expect_applied: bool,
+}
+
+/// Takes the transaction lock of the migration lock by polling, never by a blocked
+/// `pg_advisory_xact_lock`: a blocked statement holds a snapshot, and a no-transaction
+/// `CREATE INDEX CONCURRENTLY` of the session-lock holder waits for it (`deadlock detected`).
+async fn take_xact_lock(tx: &dyn Executor) -> Result<()> {
+    loop {
+        let rows = tx.query_text(format!("SELECT CAST(pg_try_advisory_xact_lock({LOCK_ID}) AS text)")).await?;
+        if rows.first().and_then(|r| r.first()).and_then(|v| v.as_deref()) == Some("true") {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}
+
+/// Takes the migration lock by polling, never by a blocked `pg_advisory_lock`: a blocked
+/// statement holds a snapshot, and the `CREATE INDEX CONCURRENTLY` of the holder waits for it.
+async fn take_migration_lock(driver: &dyn Driver) -> Result<Arc<dyn SessionLock>> {
+    loop {
+        if let Some(lock) = driver.session_lock(LOCK_ID, true, true, None).await? {
+            return Ok(lock);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
 }
 
 async fn run_no_transaction(driver: &dyn Driver, m: &Migration, step: NoTxRun<'_>, allow_destructive: bool) -> Result<bool> {
-    let NoTxRun { what, sql, index, record, applied_before } = step;
+    let NoTxRun { what, sql, index, record, expect_applied } = step;
     if driver.dialect() != Dialect::Postgres {
-        return Err(Error::Migration(format!("{} is a no-transaction migration; {} has no such mode", m.name, driver.dialect().name())));
+        return Err(no_tx_refusal(&m.name, driver.dialect()));
     }
     // Before the lock: it may take the transaction lock, which the session lock would block.
     ensure_table(driver).await?;
-    let lock = driver
-        .session_lock(LOCK_ID, true, false, None)
-        .await?
-        .ok_or_else(|| Error::Migration("could not take the migration lock".into()))?;
+    let lock = take_migration_lock(driver).await?;
     let run = async {
-        if applied(driver).await?.contains_key(&m.name) != applied_before {
+        if applied(driver).await?.contains_key(&m.name) != expect_applied {
             return Ok(false);
         }
         if !allow_destructive {
@@ -468,7 +494,7 @@ pub async fn apply_no_transaction(driver: &dyn Driver, m: &Migration, allow_dest
         return Err(Error::Migration(format!("{} has no `{NO_TX_HEADER}` header", m.name)));
     };
     let record = format!("INSERT INTO {TABLE} (name, checksum) VALUES ({}, {})", lit(&m.name), lit(&checksum(&up)));
-    let step = NoTxRun { what: &m.name, sql: up, index: header.index, record, applied_before: false };
+    let step = NoTxRun { what: &m.name, sql: up, index: header.index, record, expect_applied: false };
     run_no_transaction(driver, m, step, allow_destructive).await
 }
 
@@ -560,8 +586,10 @@ pub async fn downgrade(conn: &dyn Driver, dir: &Path, down: Down, force: bool, a
         .iter()
         .map(|m| NoTx::parse(&m.down_sql()?).map_err(|e| Error::Migration(format!("{}/down.sql: {e}", m.name))))
         .collect::<Result<Vec<_>>>()?;
-    if conn.dialect() != Dialect::Postgres && headers.iter().any(Option::is_some) {
-        return Err(Error::Migration(format!("a down.sql is a no-transaction migration; {} has no such mode", conn.dialect().name())));
+    if conn.dialect() != Dialect::Postgres {
+        if let Some((m, _)) = revert.iter().zip(&headers).find(|(_, h)| h.is_some()) {
+            return Err(no_tx_refusal(&format!("{}/down.sql", m.name), conn.dialect()));
+        }
     }
     let mut done = vec![];
     for (m, header) in revert.into_iter().zip(headers).rev() {
@@ -569,7 +597,7 @@ pub async fn downgrade(conn: &dyn Driver, dir: &Path, down: Down, force: bool, a
         let label = what(&m);
         if let Some(header) = header {
             let [sql, record] = scripts;
-            let step = NoTxRun { what: &label, sql, index: header.index, record, applied_before: true };
+            let step = NoTxRun { what: &label, sql, index: header.index, record, expect_applied: true };
             if run_no_transaction(conn, &m, step, allow_destructive).await? {
                 done.push(m);
             }

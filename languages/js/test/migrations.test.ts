@@ -322,7 +322,7 @@ test("Node launcher converts native expressions offline and preserves pending ch
 const GATE_SQLITE = 'datasource db { provider = "sqlite" }\n';
 const GATE_KEEP = 'model Keep {\n  id BigInt @id @default(autoincrement())\n\n  @@map("keep")\n}\n';
 const GATE_SHOP = 'model Shop {\n  id   BigInt @id @default(autoincrement())\n  name String\n  note String?\n\n  @@map("shop")\n}\n';
-const GATE_TABLES = ["shop", "venue", "keep", "ghost_done", "monorm_migrations"];
+const GATE_TABLES = ["shop", "venue", "keep", "ghost_done", "after_tx", "half", "extra", "monorm_migrations"];
 const GATE_DIALECTS = ["postgres", "sqlite"] as const;
 type GateDialect = (typeof GATE_DIALECTS)[number];
 
@@ -459,4 +459,233 @@ test("destructive gate waits for a concurrent insert on postgres", async () => {
   });
   await assert.rejects(upgrade!, refusal(migration.name, "drops table shop", "shop"));
   assert.equal(await gateRows(db, "shop"), 1);
+});
+
+// -- no-transaction migrations ----------------------------------------------------------------------
+
+const NO_TX_INDEX = "-- monorm: no-transaction create-index shop_name_idx\nCREATE UNIQUE INDEX CONCURRENTLY shop_name_idx ON shop (name);\n";
+const NO_TX_DROP = "-- monorm: no-transaction drop-index shop_name_idx\nDROP INDEX CONCURRENTLY IF EXISTS shop_name_idx;\n";
+
+function noTxFolder(dir: string, extra: Record<string, string> = {}, up = NO_TX_INDEX): Migrations {
+  const folder = join(dir, "0002_shop_name_idx");
+  mkdirSync(folder);
+  writeFileSync(join(folder, "up.sql"), up);
+  writeFileSync(join(folder, "down.sql"), NO_TX_DROP);
+  for (const [file, text] of Object.entries(extra)) {
+    writeFileSync(join(folder, file), text);
+  }
+  return new Migrations(dir, models(GATE_KEEP + GATE_SHOP));
+}
+
+async function indexValid(db: Database, name = "shop_name_idx"): Promise<string | null> {
+  return scalar(db, `SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass('${name}')`);
+}
+
+test("a no-transaction migration builds an index concurrently", async () => {
+  const dir = tmp();
+  const { db } = await gateDatabase("postgres");
+  await gateApply(db, dir, GATE_KEEP + GATE_SHOP);
+  const migs = noTxFolder(dir);
+  assert.deepEqual((await new Migrator(db, migs).upgrade()).map((m) => m.name), ["0002_shop_name_idx"]);
+  assert.equal(await indexValid(db), "t");
+  assert.equal(await gateRows(db, "monorm_migrations"), 2);
+  assert.deepEqual(await new Migrator(db, migs).upgrade(), []);
+});
+
+test("a no-transaction migration repairs an invalid index", async () => {
+  const dir = tmp();
+  const { db } = await gateDatabase("postgres");
+  await gateApply(db, dir, GATE_KEEP + GATE_SHOP);
+  await db.execute("INSERT INTO shop (name) VALUES ('a'), ('a')");
+  const migs = noTxFolder(dir);
+  await assert.rejects(new Migrator(db, migs).upgrade(), (e) => e instanceof DatabaseError && /could not create unique index/.test(e.message));
+  assert.equal(await indexValid(db), "f"); // the failed build leaves an invalid index
+  assert.deepEqual((await new Migrator(db, migs).status()).map((s) => s.applied), [true, false]);
+  await db.execute("DELETE FROM shop");
+  assert.deepEqual((await new Migrator(db, migs).upgrade()).map((m) => m.name), ["0002_shop_name_idx"]);
+  assert.equal(await indexValid(db), "t");
+});
+
+test("a no-transaction migration with a data step is refused", async () => {
+  const dir = tmp();
+  const { db } = await gateDatabase("postgres");
+  await gateApply(db, dir, GATE_KEEP + GATE_SHOP);
+  const migs = noTxFolder(dir, { "data.ts": "export async function run(db) {}\n" });
+  await assert.rejects(
+    new Migrator(db, migs).upgrade(),
+    (e) => e instanceof MigrationError && e.message.includes("0002_shop_name_idx is a no-transaction migration and has a data step"),
+  );
+  assert.equal(await indexValid(db), null);
+});
+
+test("a no-transaction migration is refused on sqlite", async () => {
+  const dir = tmp();
+  const { db, prefix } = await gateDatabase("sqlite");
+  await gateApply(db, dir, prefix + GATE_KEEP + GATE_SHOP);
+  const migs = noTxFolder(dir);
+  await assert.rejects(
+    new Migrator(db, migs).upgrade(),
+    (e) => e instanceof MigrationError && e.message.includes("0002_shop_name_idx is a no-transaction migration; sqlite has no such mode"),
+  );
+});
+
+test("a no-transaction migration rolls back with its down file", async () => {
+  const dir = tmp();
+  const { db } = await gateDatabase("postgres");
+  await gateApply(db, dir, GATE_KEEP + GATE_SHOP);
+  const migrator = new Migrator(db, noTxFolder(dir));
+  await migrator.upgrade();
+  assert.deepEqual((await migrator.downgrade()).map((m) => m.name), ["0002_shop_name_idx"]);
+  assert.equal(await indexValid(db), null);
+  assert.equal(await gateRows(db, "monorm_migrations"), 1);
+});
+
+test("a no-transaction migration waits for another migrator", async () => {
+  const dir = tmp();
+  const { db } = await gateDatabase("postgres");
+  await gateApply(db, dir, GATE_KEEP + GATE_SHOP);
+  const migs = noTxFolder(dir);
+  const other = await connect(MIGRATIONS_URL, { maxConnections: 1, default: false, registry: models(GATE_KEEP + GATE_SHOP) });
+  opened.push(other);
+  let upgrade: Promise<{ name: string }[]> | undefined;
+  let settled = false;
+  await other.transaction(async () => {
+    await other.execute("SELECT pg_advisory_xact_lock(1869770093)"); // the lock of a normal migration
+    upgrade = new Migrator(db, migs).upgrade();
+    upgrade.then(
+      () => (settled = true),
+      () => (settled = true),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(settled, false);
+    assert.equal(await indexValid(db), null);
+  });
+  assert.deepEqual((await upgrade!).map((m) => m.name), ["0002_shop_name_idx"]);
+  assert.equal(await gateRows(db, "monorm_migrations"), 2);
+});
+
+test("two migrators run one no-transaction migration once", async () => {
+  const dir = tmp();
+  const { db } = await gateDatabase("postgres");
+  await gateApply(db, dir, GATE_KEEP + GATE_SHOP);
+  const migs = noTxFolder(dir);
+  const other = await connect(MIGRATIONS_URL, { maxConnections: 1, default: false, registry: models(GATE_KEEP + GATE_SHOP) });
+  opened.push(other);
+  let first: Promise<{ name: string }[]> | undefined;
+  let second: Promise<{ name: string }[]> | undefined;
+  let settled = 0;
+  await other.transaction(async () => {
+    await other.execute("SELECT pg_advisory_xact_lock(1869770093)");
+    first = new Migrator(db, migs).upgrade();
+    second = new Migrator(db, migs).upgrade();
+    for (const upgrade of [first, second]) {
+      upgrade.then(
+        () => settled++,
+        () => settled++,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(settled, 0);
+  });
+  const done = [(await first!).map((m) => m.name), (await second!).map((m) => m.name)].sort();
+  assert.deepEqual(done, [[], ["0002_shop_name_idx"]]); // the loser rechecks under the lock and does nothing
+  assert.equal(await gateRows(db, "monorm_migrations"), 2);
+  assert.equal(await indexValid(db), "t");
+});
+
+test("a normal migration waits for a session lock of a no-transaction migrator", async () => {
+  const dir = tmp();
+  const { db } = await gateDatabase("postgres");
+  await gateApply(db, dir, GATE_KEEP + GATE_SHOP);
+  const { migs, migration } = gateNext(dir, GATE_KEEP + GATE_SHOP + "\nmodel Extra {\n  id BigInt @id\n}\n");
+  const other = await connect(MIGRATIONS_URL, { maxConnections: 1, default: false, registry: models(GATE_KEEP + GATE_SHOP) });
+  opened.push(other);
+  let upgrade: Promise<{ name: string }[]> | undefined;
+  let settled = false;
+  await other.transaction(async () => {
+    await other.execute("SELECT pg_advisory_lock(1869770093)"); // one pinned connection holds the session lock
+    upgrade = new Migrator(db, migs).upgrade();
+    upgrade.then(
+      () => (settled = true),
+      () => (settled = true),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(settled, false);
+    await other.execute("SELECT pg_advisory_unlock(1869770093)");
+  });
+  assert.deepEqual((await upgrade!).map((m) => m.name), [migration.name]);
+});
+
+test("a no-transaction migration runs between normal migrations in order", async () => {
+  const dir = tmp();
+  const { db } = await gateDatabase("postgres");
+  await gateApply(db, dir, GATE_KEEP + GATE_SHOP);
+  noTxFolder(dir);
+  const after = join(dir, "0003_after");
+  mkdirSync(after);
+  writeFileSync(join(after, "up.sql"), "CREATE TABLE after_tx (id integer);\n");
+  writeFileSync(join(after, "down.sql"), "DROP TABLE after_tx;\n");
+  const names = (await new Migrator(db, new Migrations(dir, models(GATE_KEEP + GATE_SHOP))).upgrade()).map((m) => m.name);
+  assert.deepEqual(names.slice(-2), ["0002_shop_name_idx", "0003_after"]);
+  assert.equal(await gateRows(db, "monorm_migrations"), 3);
+  assert.equal(await indexValid(db), "t");
+  const bad = join(dir, "0004_bad");
+  mkdirSync(bad);
+  writeFileSync(join(bad, "up.sql"), "CREATE TABLE half (id integer);\nSELECT 1 / 0;\n");
+  writeFileSync(join(bad, "down.sql"), "DROP TABLE half;\n");
+  await assert.rejects(new Migrator(db, new Migrations(dir, models(GATE_KEEP + GATE_SHOP))).upgrade(), (e) => e instanceof DatabaseError && e.message.includes("division by zero"));
+  assert.equal(await scalar(db, "SELECT to_regclass('half')"), null); // the normal migration rolls back whole
+  assert.equal(await gateRows(db, "monorm_migrations"), 3);
+  assert.equal(await indexValid(db), "t"); // the no-transaction one stays recorded
+});
+
+test("a no-transaction down file is refused on sqlite and names the folder", async () => {
+  const dir = tmp();
+  const { db, prefix } = await gateDatabase("sqlite");
+  await gateApply(db, dir, prefix + GATE_KEEP + GATE_SHOP);
+  const migrator = new Migrator(db, noTxFolder(dir, {}, "CREATE TABLE extra (id integer);\n"));
+  assert.deepEqual((await migrator.upgrade()).map((m) => m.name), ["0002_shop_name_idx"]);
+  await assert.rejects(
+    migrator.downgrade(),
+    (e) => e instanceof MigrationError && e.message.includes("0002_shop_name_idx/down.sql is a no-transaction migration; sqlite has no such mode"),
+  );
+  assert.equal(await gateRows(db, "monorm_migrations"), 2);
+});
+
+test("a rollback waits for a no-transaction build without a deadlock", async () => {
+  const dir = tmp();
+  const { db } = await gateDatabase("postgres");
+  await gateApply(db, dir, GATE_KEEP + GATE_SHOP);
+  const after = join(dir, "0002_after");
+  mkdirSync(after);
+  writeFileSync(join(after, "up.sql"), "CREATE TABLE after_tx (id integer);\n");
+  writeFileSync(join(after, "down.sql"), "DROP TABLE after_tx;\n");
+  await new Migrator(db, new Migrations(dir, models(GATE_KEEP + GATE_SHOP))).upgrade();
+  const folder = join(dir, "0003_shop_name_idx");
+  mkdirSync(folder);
+  writeFileSync(join(folder, "up.sql"), NO_TX_INDEX);
+  writeFileSync(join(folder, "down.sql"), NO_TX_DROP);
+  const migs = new Migrations(dir, models(GATE_KEEP + GATE_SHOP));
+  const other = await connect(MIGRATIONS_URL, { maxConnections: 1, default: false, registry: models(GATE_KEEP + GATE_SHOP) });
+  opened.push(other);
+  let build: Promise<{ name: string }[]> | undefined;
+  let rollback: Promise<{ name: string }[]> | undefined;
+  let settled = 0;
+  await other.transaction(async () => {
+    await other.execute("INSERT INTO shop (name) VALUES ('w')"); // an open writer: the index build waits for it
+    build = new Migrator(db, migs).upgrade();
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    rollback = new Migrator(db, migs).downgrade(); // a normal step: waits for the migration lock
+    for (const run of [build, rollback]) {
+      run.then(
+        () => settled++,
+        () => settled++,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1500)); // longer than deadlock_timeout (1 s)
+    assert.equal(settled, 0);
+  });
+  assert.deepEqual((await build!).map((m) => m.name), ["0003_shop_name_idx"]);
+  assert.deepEqual((await rollback!).map((m) => m.name), ["0002_after"]); // chosen before the build recorded its row
+  assert.equal(await indexValid(db), "t");
 });

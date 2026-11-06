@@ -111,6 +111,13 @@ export interface NativeSchema extends NativeInspector {
 }
 
 /** One traced statement: `start` in Unix milliseconds, `duration` in milliseconds. */
+/** A migration that `migrationPending` returns; `noTransaction` is true for a no-transaction script. */
+export interface NativePendingMigration {
+  name: string;
+  path: string;
+  noTransaction: boolean;
+}
+
 export interface NativeQueryEvent {
   readonly sql: string;
   readonly start: number;
@@ -179,8 +186,9 @@ export interface NativeEngine extends NativeInspector {
   pullSchema(): Promise<string>;
   migrationDrift(dir: string): Promise<string>;
   migrateBaseline(dir: string): Promise<string>;
-  migrationPending(dir: string, target: string | null, allowDestructive: boolean): Promise<string[][]>;
+  migrationPending(dir: string, target: string | null, allowDestructive: boolean): Promise<NativePendingMigration[]>;
   migrationBegin(name: string, path: string, allowDestructive: boolean): Promise<NativeTransaction | null>;
+  migrationApplyNoTransaction(name: string, path: string, allowDestructive: boolean): Promise<boolean>;
   migrationFinish(tx: NativeTransaction, name: string, path: string): Promise<void>;
   createTables(): Promise<void>;
   dropTables(): Promise<void>;

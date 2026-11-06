@@ -256,7 +256,7 @@ async def test_enum_migrations(tmp_path):
 GATE_SQLITE = 'datasource db { provider = "sqlite" }\n'
 GATE_KEEP = 'model Keep {\n  id BigInt @id @default(autoincrement())\n\n  @@map("keep")\n}\n'
 GATE_SHOP = 'model Shop {\n  id   BigInt @id @default(autoincrement())\n  name String\n  note String?\n\n  @@map("shop")\n}\n'
-GATE_TABLES = ("shop", "venue", "keep", "ghost_done", "monorm_migrations")
+GATE_TABLES = ("shop", "venue", "keep", "ghost_done", "after_tx", "half", "extra", "monorm_migrations")
 DIALECTS = ["postgres", "sqlite"]
 
 
@@ -417,3 +417,199 @@ async def test_destructive_gate_waits_for_a_concurrent_insert_on_postgres(tmp_pa
             assert await gate_rows(db, "shop") == 1
         finally:
             await writer.close()
+
+
+NO_TX_INDEX = "-- monorm: no-transaction create-index shop_name_idx\nCREATE UNIQUE INDEX CONCURRENTLY shop_name_idx ON shop (name);\n"
+NO_TX_DROP = "-- monorm: no-transaction drop-index shop_name_idx\nDROP INDEX CONCURRENTLY IF EXISTS shop_name_idx;\n"
+
+
+def no_tx_folder(tmp_path, name="0002_shop_name_idx", up=NO_TX_INDEX, down=NO_TX_DROP, extra=None):
+    folder = tmp_path / name
+    folder.mkdir()
+    (folder / "up.sql").write_text(up)
+    (folder / "down.sql").write_text(down)
+    for file, text in (extra or {}).items():
+        (folder / file).write_text(text)
+    return Migrations(tmp_path, models(GATE_KEEP + GATE_SHOP))
+
+
+async def index_valid(db, name="shop_name_idx"):
+    return await scalar(db, f"SELECT indisvalid FROM pg_index WHERE indexrelid = to_regclass('{name}')")
+
+
+@pytest.mark.case("migrations::a_no_transaction_migration_builds_an_index_concurrently")
+async def test_a_no_transaction_migration_builds_an_index_concurrently(tmp_path):
+    async with gate_database("postgres") as (db, _):
+        await gate_apply(db, tmp_path, GATE_KEEP + GATE_SHOP)
+        migs = no_tx_folder(tmp_path)
+        done = await Migrator(db, migs).upgrade()
+        assert [m.name for m in done] == ["0002_shop_name_idx"]
+        assert await index_valid(db) == "t"
+        assert await gate_rows(db, "monorm_migrations") == 2
+        assert await Migrator(db, migs).upgrade() == []
+
+
+@pytest.mark.case("migrations::a_no_transaction_migration_repairs_an_invalid_index")
+async def test_a_no_transaction_migration_repairs_an_invalid_index(tmp_path):
+    async with gate_database("postgres") as (db, _):
+        await gate_apply(db, tmp_path, GATE_KEEP + GATE_SHOP)
+        await db.execute("INSERT INTO shop (name) VALUES ('a'), ('a')")
+        migs = no_tx_folder(tmp_path)
+        with pytest.raises(monorm.DatabaseError, match="could not create unique index"):
+            await Migrator(db, migs).upgrade()
+        assert await index_valid(db) == "f"  # the failed build leaves an invalid index
+        assert [s.applied for s in await Migrator(db, migs).status()] == [True, False]
+        await db.execute("DELETE FROM shop")
+        assert [m.name for m in await Migrator(db, migs).upgrade()] == ["0002_shop_name_idx"]
+        assert await index_valid(db) == "t"
+
+
+@pytest.mark.case("migrations::a_no_transaction_migration_with_a_data_step_is_refused")
+async def test_a_no_transaction_migration_with_a_data_step_is_refused(tmp_path):
+    async with gate_database("postgres") as (db, _):
+        await gate_apply(db, tmp_path, GATE_KEEP + GATE_SHOP)
+        migs = no_tx_folder(tmp_path, extra={"data.py": "async def run(db):\n    pass\n"})
+        with pytest.raises(MigrationError, match="0002_shop_name_idx is a no-transaction migration and has a data step"):
+            await Migrator(db, migs).upgrade()
+        assert await index_valid(db) is None
+
+
+@pytest.mark.case("migrations::a_no_transaction_migration_is_refused_on_sqlite")
+async def test_a_no_transaction_migration_is_refused_on_sqlite(tmp_path):
+    async with gate_database("sqlite") as (db, prefix):
+        await gate_apply(db, tmp_path, prefix + GATE_KEEP + GATE_SHOP)
+        migs = no_tx_folder(tmp_path)
+        with pytest.raises(MigrationError, match="0002_shop_name_idx is a no-transaction migration; sqlite has no such mode"):
+            await Migrator(db, migs).upgrade()
+
+
+@pytest.mark.case("migrations::a_no_transaction_migration_rolls_back_with_its_down_file")
+async def test_a_no_transaction_migration_rolls_back_with_its_down_file(tmp_path):
+    async with gate_database("postgres") as (db, _):
+        await gate_apply(db, tmp_path, GATE_KEEP + GATE_SHOP)
+        migs = no_tx_folder(tmp_path)
+        migrator = Migrator(db, migs)
+        await migrator.upgrade()
+        assert [m.name for m in await migrator.downgrade()] == ["0002_shop_name_idx"]
+        assert await index_valid(db) is None
+        assert await gate_rows(db, "monorm_migrations") == 1
+
+
+@pytest.mark.case("migrations::a_no_transaction_migration_waits_for_another_migrator")
+async def test_a_no_transaction_migration_waits_for_another_migrator(tmp_path):
+    async with gate_database("postgres") as (db, _):
+        await gate_apply(db, tmp_path, GATE_KEEP + GATE_SHOP)
+        migs = no_tx_folder(tmp_path)
+        other = await connect(models(GATE_KEEP + GATE_SHOP))
+        try:
+            async with other.transaction():
+                await other.execute("SELECT pg_advisory_xact_lock(1869770093)")  # the lock of a normal migration
+                upgrade = asyncio.ensure_future(Migrator(db, migs).upgrade())
+                await asyncio.sleep(0.5)
+                assert not upgrade.done()
+                assert await index_valid(db) is None
+            assert [m.name for m in await upgrade] == ["0002_shop_name_idx"]
+            assert await gate_rows(db, "monorm_migrations") == 2
+        finally:
+            await other.close()
+
+
+@pytest.mark.case("migrations::two_migrators_run_one_no_transaction_migration_once")
+async def test_two_migrators_run_one_no_transaction_migration_once(tmp_path):
+    async with gate_database("postgres") as (db, _):
+        await gate_apply(db, tmp_path, GATE_KEEP + GATE_SHOP)
+        migs = no_tx_folder(tmp_path)
+        other = await connect(models(GATE_KEEP + GATE_SHOP))
+        try:
+            async with other.transaction():
+                await other.execute("SELECT pg_advisory_xact_lock(1869770093)")
+                first = asyncio.ensure_future(Migrator(db, migs).upgrade())
+                second = asyncio.ensure_future(Migrator(db, migs).upgrade())
+                await asyncio.sleep(0.5)
+                assert not first.done() and not second.done()
+            done = sorted([[m.name for m in await first], [m.name for m in await second]])
+            assert done == [[], ["0002_shop_name_idx"]]  # the loser rechecks under the lock and does nothing
+            assert await gate_rows(db, "monorm_migrations") == 2
+            assert await index_valid(db) == "t"
+        finally:
+            await other.close()
+
+
+@pytest.mark.case("migrations::a_normal_migration_waits_for_a_session_lock_of_a_no_transaction_migrator")
+async def test_a_normal_migration_waits_for_a_session_lock_of_a_no_transaction_migrator(tmp_path):
+    async with gate_database("postgres") as (db, _):
+        await gate_apply(db, tmp_path, GATE_KEEP + GATE_SHOP)
+        migs, migration = gate_next(tmp_path, GATE_KEEP + GATE_SHOP + "\nmodel Extra {\n  id BigInt @id\n}\n")
+        other = await connect(models(GATE_KEEP + GATE_SHOP))
+        try:
+            async with other.transaction():  # one pinned connection holds the session lock
+                await other.execute("SELECT pg_advisory_lock(1869770093)")
+                upgrade = asyncio.ensure_future(Migrator(db, migs).upgrade())
+                await asyncio.sleep(0.5)
+                assert not upgrade.done()
+                await other.execute("SELECT pg_advisory_unlock(1869770093)")
+            assert [m.name for m in await upgrade] == [migration.name]
+        finally:
+            await other.close()
+
+
+@pytest.mark.case("migrations::a_no_transaction_migration_runs_between_normal_migrations_in_order")
+async def test_a_no_transaction_migration_runs_between_normal_migrations_in_order(tmp_path):
+    async with gate_database("postgres") as (db, _):
+        await gate_apply(db, tmp_path, GATE_KEEP + GATE_SHOP)
+        no_tx_folder(tmp_path)
+        after = tmp_path / "0003_after"
+        after.mkdir()
+        (after / "up.sql").write_text("CREATE TABLE after_tx (id integer);\n")
+        (after / "down.sql").write_text("DROP TABLE after_tx;\n")
+        migs = Migrations(tmp_path, models(GATE_KEEP + GATE_SHOP))
+        assert [m.name for m in await Migrator(db, migs).upgrade()][-2:] == ["0002_shop_name_idx", "0003_after"]
+        assert await gate_rows(db, "monorm_migrations") == 3
+        assert await index_valid(db) == "t"
+        bad = tmp_path / "0004_bad"
+        bad.mkdir()
+        (bad / "up.sql").write_text("CREATE TABLE half (id integer);\nSELECT 1 / 0;\n")
+        (bad / "down.sql").write_text("DROP TABLE half;\n")
+        with pytest.raises(monorm.DatabaseError, match="division by zero"):
+            await Migrator(db, Migrations(tmp_path, models(GATE_KEEP + GATE_SHOP))).upgrade()
+        assert await scalar(db, "SELECT to_regclass('half')") is None  # the normal migration rolls back whole
+        assert await gate_rows(db, "monorm_migrations") == 3
+        assert await index_valid(db) == "t"  # the no-transaction one stays recorded
+
+
+@pytest.mark.case("migrations::a_no_transaction_down_file_is_refused_on_sqlite_and_names_the_folder")
+async def test_a_no_transaction_down_file_is_refused_on_sqlite_and_names_the_folder(tmp_path):
+    async with gate_database("sqlite") as (db, prefix):
+        await gate_apply(db, tmp_path, prefix + GATE_KEEP + GATE_SHOP)
+        migs = no_tx_folder(tmp_path, up="CREATE TABLE extra (id integer);\n")
+        migrator = Migrator(db, migs)
+        assert [m.name for m in await migrator.upgrade()] == ["0002_shop_name_idx"]
+        with pytest.raises(MigrationError, match="0002_shop_name_idx/down.sql is a no-transaction migration; sqlite has no such mode"):
+            await migrator.downgrade()
+        assert await gate_rows(db, "monorm_migrations") == 2
+
+
+@pytest.mark.case("migrations::a_rollback_waits_for_a_no_transaction_build_without_a_deadlock")
+async def test_a_rollback_waits_for_a_no_transaction_build_without_a_deadlock(tmp_path):
+    async with gate_database("postgres") as (db, _):
+        await gate_apply(db, tmp_path, GATE_KEEP + GATE_SHOP)
+        after = tmp_path / "0002_after"
+        after.mkdir()
+        (after / "up.sql").write_text("CREATE TABLE after_tx (id integer);\n")
+        (after / "down.sql").write_text("DROP TABLE after_tx;\n")
+        await Migrator(db, Migrations(tmp_path, models(GATE_KEEP + GATE_SHOP))).upgrade()
+        migs = no_tx_folder(tmp_path, name="0003_shop_name_idx")
+        other = await connect(models(GATE_KEEP + GATE_SHOP))
+        try:
+            async with other.transaction():
+                await other.execute("INSERT INTO shop (name) VALUES ('w')")  # an open writer: the index build waits for it
+                build = asyncio.ensure_future(Migrator(db, migs).upgrade())
+                await asyncio.sleep(0.5)
+                rollback = asyncio.ensure_future(Migrator(db, migs).downgrade())  # a normal step: waits for the migration lock
+                await asyncio.sleep(1.5)  # longer than deadlock_timeout (1 s)
+                assert not build.done() and not rollback.done()
+            assert [m.name for m in await build] == ["0003_shop_name_idx"]
+            assert [m.name for m in await rollback] == ["0002_after"]  # chosen before the build recorded its row
+            assert await index_valid(db) == "t"
+        finally:
+            await other.close()

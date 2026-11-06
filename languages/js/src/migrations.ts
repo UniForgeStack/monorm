@@ -221,7 +221,8 @@ function emptyRegistry(dialect: string | undefined): Registry {
   return registry;
 }
 
-type Pending = [Migration, DataRun | null][];
+/** A migration, its data step, and whether it runs outside a transaction. */
+type Pending = [Migration, DataRun | null, boolean][];
 
 export interface Status {
   readonly migration: Migration;
@@ -275,21 +276,26 @@ export class Migrator {
 
   /** @internal The pending migrations with their loaded data steps; refuses before anything runs. */
   async loadPending(target: string | null, allowDestructive = false): Promise<Pending> {
-    const todo = (await wait(() => this.db.engine.migrationPending(this.dir, target, allowDestructive))).map(([name, path]) => new Migration(name!, path!));
+    const rows = await wait(() => this.db.engine.migrationPending(this.dir, target, allowDestructive));
+    const todo = rows.map((r) => new Migration(r.name, r.path));
     for (const m of todo) {
       if (existsSync(join(m.path, "data.py"))) {
         throw new MigrationError(`${m.name} has a data step (data.py); apply it with python -m monorm migrate`);
       }
     }
     const out: Pending = [];
-    for (const m of todo) out.push([m, await dataStep(m)]);
+    for (const [i, m] of todo.entries()) out.push([m, await dataStep(m), rows[i]!.noTransaction]);
     return out;
   }
 
   /** @internal */
   async apply(pending: Pending, allowDestructive = false): Promise<Migration[]> {
     const done: Migration[] = [];
-    for (const [m, run] of pending) {
+    for (const [m, run, noTransaction] of pending) {
+      if (noTransaction) {
+        if (await wait(() => this.db.engine.migrationApplyNoTransaction(m.name, m.path, allowDestructive))) done.push(m);
+        continue;
+      }
       const tx = await wait(() => this.db.engine.migrationBegin(m.name, m.path, allowDestructive));
       if (tx === null) continue;
       let after: (() => unknown)[];

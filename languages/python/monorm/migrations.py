@@ -293,24 +293,27 @@ class Migrator:
 
     async def _load_pending(
         self, target: str | None, allow_destructive: bool = False
-    ) -> list[tuple[Migration, Callable[[Database], Awaitable[Any]] | None]]:
-        """The pending migrations with their loaded data steps; refuses before anything runs."""
-        todo = [
-            Migration(name, Path(path))
-            for name, path in await self.db._engine.migration_pending(self._dir, target, allow_destructive)
-        ]
-        for m in todo:
+    ) -> list[tuple[Migration, Callable[[Database], Awaitable[Any]] | None, bool]]:
+        """The pending migrations with their loaded data steps and whether each runs outside
+        a transaction; refuses before anything runs."""
+        rows = await self.db._engine.migration_pending(self._dir, target, allow_destructive)
+        todo = [(Migration(name, Path(path)), no_tx) for name, path, no_tx in rows]
+        for m, _ in todo:
             if (m.path / "data.ts").is_file():
                 raise MigrationError(f"{m.name} has a data step (data.ts); apply it with npx monorm migrate")
-        return [(m, _data_step(m)) for m in todo]
+        return [(m, _data_step(m), no_tx) for m, no_tx in todo]
 
     async def _upgrade(
         self,
-        pending: list[tuple[Migration, Callable[[Database], Awaitable[Any]] | None]],
+        pending: list[tuple[Migration, Callable[[Database], Awaitable[Any]] | None, bool]],
         allow_destructive: bool = False,
     ) -> list[Migration]:
         done = []
-        for m, run in pending:
+        for m, run, no_tx in pending:
+            if no_tx:
+                if await self.db._engine.migration_apply_no_transaction(m.name, str(m.path), allow_destructive):
+                    done.append(m)
+                continue
             tx = await self.db._engine.migration_begin(m.name, str(m.path), allow_destructive)
             if tx is None:
                 continue

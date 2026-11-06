@@ -214,7 +214,7 @@ for (const applicationError of [false, true]) {
             await assert.rejects(c.insert("dup"), IntegrityError);
           }
           await db.onCommit(() => void seen.push("ran"));
-        }]]).catch((e: unknown) => e);
+        }, false]]).catch((e: unknown) => e);
         assert.ok(aborted instanceof TransactionAborted);
         if (applicationError) assert.equal(aborted.cause, original);
         else assert.ok(aborted.cause instanceof IntegrityError);

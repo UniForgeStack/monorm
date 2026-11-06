@@ -630,6 +630,15 @@ impl Transaction {
     }
 }
 
+/// A migration that `migrationPending` would apply; `no_transaction` is true when it runs
+/// outside a transaction.
+#[napi(object)]
+pub struct PendingMigration {
+    pub name: String,
+    pub path: String,
+    pub no_transaction: bool,
+}
+
 // -- trace ----------------------------------------------------------------------------------------
 
 /// One statement the database ran: `start` in Unix milliseconds, `duration` in milliseconds.
@@ -1142,7 +1151,7 @@ impl Engine {
         env.spawn_future(async move { Ok(engine_migrate::baseline(&*driver, Path::new(&dir)).await.map_err(engine_err)?.name) })
     }
 
-    /// The migrations `migrateUp` would apply: `[[name, path]]`.
+    /// The migrations `migrateUp` would apply.
     #[napi]
     pub fn migration_pending<'env>(
         &self,
@@ -1150,11 +1159,27 @@ impl Engine {
         dir: String,
         target: Option<String>,
         allow_destructive: bool,
-    ) -> napi::Result<PromiseRaw<'env, Vec<Vec<String>>>> {
+    ) -> napi::Result<PromiseRaw<'env, Vec<PendingMigration>>> {
         let driver = self.driver.clone();
         env.spawn_future(async move {
             let todo = engine_migrate::pending(&*driver, Path::new(&dir), target.as_deref(), allow_destructive).await.map_err(engine_err)?;
-            Ok(todo.into_iter().map(|m| vec![m.name, m.path.to_string_lossy().into_owned()]).collect())
+            todo.into_iter()
+                .map(|m| {
+                    let no_transaction = m.no_transaction().map_err(engine_err)?.is_some();
+                    Ok(PendingMigration { name: m.name, path: m.path.to_string_lossy().into_owned(), no_transaction })
+                })
+                .collect()
+        })
+    }
+
+    /// Applies one no-transaction migration (see `monorm_engine::migrate::apply_no_transaction`):
+    /// false when another migrator applied it meanwhile.
+    #[napi]
+    pub fn migration_apply_no_transaction<'env>(&self, env: &'env Env, name: String, path: String, allow_destructive: bool) -> napi::Result<PromiseRaw<'env, bool>> {
+        let driver = self.driver.clone();
+        env.spawn_future(async move {
+            let m = engine_migrate::Migration { name, path: path.into() };
+            engine_migrate::apply_no_transaction(&*driver, &m, allow_destructive).await.map_err(engine_err)
         })
     }
 

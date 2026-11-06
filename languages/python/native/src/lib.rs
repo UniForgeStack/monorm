@@ -880,13 +880,29 @@ impl Engine {
         })
     }
 
-    /// The migrations `migrate_up` would apply: `[(name, path)]`.
+    /// The migrations `migrate_up` would apply: `[(name, path, no_transaction)]`.
     #[pyo3(signature = (dir, target = None, allow_destructive = false))]
     fn migration_pending<'py>(&self, py: Python<'py>, dir: PathBuf, target: Option<String>, allow_destructive: bool) -> PyResult<Bound<'py, PyAny>> {
         let driver = self.driver.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let todo = engine_migrate::pending(&*driver, &dir, target.as_deref(), allow_destructive).await.map_err(engine_err)?;
-            Ok(todo.into_iter().map(|m| (m.name, m.path)).collect::<Vec<_>>())
+            let mut out = Vec::with_capacity(todo.len());
+            for m in todo {
+                let flag = m.no_transaction().map_err(engine_err)?.is_some();
+                out.push((m.name, m.path, flag));
+            }
+            Ok(out)
+        })
+    }
+
+    /// Applies one no-transaction migration (see `monorm_engine::migrate::apply_no_transaction`):
+    /// false when another migrator applied it meanwhile.
+    #[pyo3(signature = (name, path, allow_destructive = false))]
+    fn migration_apply_no_transaction<'py>(&self, py: Python<'py>, name: String, path: PathBuf, allow_destructive: bool) -> PyResult<Bound<'py, PyAny>> {
+        let driver = self.driver.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let m = engine_migrate::Migration { name, path };
+            engine_migrate::apply_no_transaction(&*driver, &m, allow_destructive).await.map_err(engine_err)
         })
     }
 

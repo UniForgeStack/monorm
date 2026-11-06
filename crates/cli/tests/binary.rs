@@ -615,3 +615,44 @@ fn destructive_gate_flag_on_migrate_rollback_and_makemigrations() {
     assert!(done.status.success(), "{}", text(&done.stderr));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_no_transaction_migration_runs_and_rolls_back_on_postgres() {
+    let Ok(base) = std::env::var("ORM_RUST_TEST_POSTGRES_URL") else { return };
+    let (server, _) = base.rsplit_once('/').unwrap();
+    let name = format!("monorm_cli_notx_{}", std::process::id());
+    let url = format!("{server}/{name}");
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let admin = runtime.block_on(monorm_engine::db::connect(&base, 1)).unwrap();
+    runtime.block_on(admin.batch(format!("DROP DATABASE IF EXISTS {name}"))).unwrap();
+    runtime.block_on(admin.batch(format!("CREATE DATABASE {name}"))).unwrap();
+    let dir = std::env::temp_dir().join(format!("monorm-cli-notx-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("schema.prisma"), SCHEMA).unwrap();
+    let run = |args: &[&str]| monorm(&dir, &[&["--url", url.as_str()][..], args].concat());
+    let valid = || {
+        let live = runtime.block_on(monorm_engine::db::connect(&url, 1)).unwrap();
+        let rows = runtime.block_on(live.query_text("SELECT indisvalid::text FROM pg_index WHERE indexrelid = to_regclass('book_title_idx')".into())).unwrap();
+        rows.into_iter().next().map(|r| r[0].clone().unwrap())
+    };
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        assert!(run(&["makemigrations", "--name", "initial"]).status.success());
+        assert!(run(&["migrate"]).status.success());
+        assert!(run(&["makemigrations", "--empty", "--name", "book_title_idx"]).status.success());
+        let folder = std::fs::read_dir(dir.join("migrations")).unwrap().map(|e| e.unwrap().path()).find(|p| p.ends_with("0002_book_title_idx")).unwrap();
+        std::fs::write(folder.join("up.sql"), "-- monorm: no-transaction create-index book_title_idx\nCREATE INDEX CONCURRENTLY book_title_idx ON book (title);\n").unwrap();
+        std::fs::write(folder.join("down.sql"), "-- monorm: no-transaction drop-index book_title_idx\nDROP INDEX CONCURRENTLY IF EXISTS book_title_idx;\n").unwrap();
+        let done = run(&["migrate"]);
+        assert!(done.status.success(), "{}", text(&done.stderr));
+        assert_eq!(valid().as_deref(), Some("true"));
+        let back = run(&["rollback"]);
+        assert!(back.status.success(), "{}", text(&back.stderr));
+        assert_eq!(valid(), None);
+    }));
+    let _ = runtime.block_on(admin.batch(format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)")));
+    let _ = std::fs::remove_dir_all(&dir);
+    if let Err(e) = result {
+        std::panic::resume_unwind(e);
+    }
+}
