@@ -735,7 +735,7 @@ async function instanceUpdate(this: Row, values: object): Promise<void> {
       throw new TypeError(`${meta.name}.update() cannot set the version field ${f.name}; use ${meta.name}.objects.filter({ pk: ... }).update({ ${f.name}: ... }) to override it`);
     }
   }
-  const rows = await writeOf(guardBound(this), (qs) => qs.update(values as never, { returning: true }), guardFields(meta));
+  const rows = await writeOf(guardBound(this), (qs) => qs.update(values as never), guardFields(meta));
   if (!rows.length) {
     await throwIfChanged(this);
     throw new (meta.model.DoesNotExist)(`${meta.name} ${show(this["pk"])} no longer exists`);
@@ -743,7 +743,7 @@ async function instanceUpdate(this: Row, values: object): Promise<void> {
 }
 
 async function instanceDelete(this: Row): Promise<void> {
-  const rows = await writeOf(guardBound(this), (qs) => qs.delete({ returning: true }), guardFields(metaOf(this)));
+  const rows = await writeOf(guardBound(this), (qs) => qs.delete(), guardFields(metaOf(this)));
   if (!rows.length) await throwIfChanged(this);
 }
 

@@ -52,7 +52,7 @@ for (const provider of ["sqlite", "postgresql"]) {
         distinctN: func.count(Parent.children.views, { distinct: true }),
         filteredTotal: func.sum(Parent.children.views, { filter: Parent.children.views.gt(10) }),
         otherN: func.count(Parent.others),
-      }, { returning: true });
+      }).returning();
       assert.deepStrictEqual(query.inspect().statements, [statementInspection({ scalarCorrelated: 2 })]);
       const statements: string[] = [];
       const remove = db.onQuery((e) => { statements.push(e.sql); });
@@ -80,7 +80,7 @@ for (const provider of ["sqlite", "postgresql"]) {
       assert.deepEqual(pairedRows.map((r: any) => [r.n, r.total]), [[3, 30n], [1, 7n], [0, null]]);
       const wrapped = Parent.objects.using(db).all().update({
         n: func.count(Parent.children).add(1), total: func.sum(Parent.children.views),
-      }, { returning: true });
+      }).returning();
       assert.equal(wrapped.inspect().statements[0]!.scalarCorrelated, 1);
       statements.length = 0;
       const removeWrapped = db.onQuery((e) => { statements.push(e.sql); });
@@ -94,7 +94,7 @@ for (const provider of ["sqlite", "postgresql"]) {
           { default: 99 },
         ),
         total: func.sum(Parent.children.views), otherN: func.count(Parent.others).add(1), label: "wrapped",
-      }, { returning: true });
+      }).returning();
       const shape = combined.inspect().statements[0]!;
       assert.equal(shape.scalarCorrelated, 1);
       assert.equal(shape.derivedCorrelated, 2);
@@ -102,7 +102,7 @@ for (const provider of ["sqlite", "postgresql"]) {
       assert.deepEqual(combinedRows.map((r: any) => [r.n, r.total, r.otherN, r.label]), [
         [4, 30n, 2, "wrapped"], [2, 7n, 2, "wrapped"], [99, null, 1, "wrapped"],
       ]);
-      const repeated = Parent.objects.using(db).all().update({ n: func.count(Parent.children).add(func.count(Parent.children)) }, { returning: true });
+      const repeated = Parent.objects.using(db).all().update({ n: func.count(Parent.children).add(func.count(Parent.children)) }).returning();
       assert.equal(repeated.inspect().statements[0]!.scalarCorrelated, 1);
       const repeatedRows = (await repeated).sort((a: any, b: any) => a.id - b.id);
       assert.deepEqual(repeatedRows.map((r: any) => r.n), [6, 2, 0]);

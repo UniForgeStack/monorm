@@ -5,7 +5,7 @@ import { QueryError } from "./errors.js";
 import { merge } from "./loading.js";
 import { DB, INTERNAL, fieldValue, invalidateReference, type Instance, type ModelMeta, type Row } from "./model.js";
 import type { Cte } from "./cte.js";
-import { prefetch, registerBound, QuerySet, type Allowed, type LoadAll, type LoadItem, type LockOptions, type Narrow, type RootNames } from "./query.js";
+import { prefetch, registerBound, QuerySet, type WriteStatement, type Allowed, type LoadAll, type LoadItem, type LockOptions, type Narrow, type RootNames } from "./query.js";
 import type { QueryInspection } from "./inspection.js";
 import { key } from "./value-key.js";
 import { slot, type ModelSpec } from "./meta.js";
@@ -142,7 +142,7 @@ export class BoundQuerySet<M extends ModelSpec, R = Instance<M>, S extends strin
     if (this.distinct().length > 1 && this.meta.key.some((f) => names.includes(f.name))) {
       throw new TypeError("a bound update of 2 or more objects cannot assign a key field: the rows cannot be matched to the objects afterwards");
     }
-    return this._write((qs) => qs.update(values as never, { returning: true }) as unknown as PromiseLike<Row[]>);
+    return this._write((qs) => qs.update(values as never));
   }
 
   /**
@@ -150,21 +150,23 @@ export class BoundQuerySet<M extends ModelSpec, R = Instance<M>, S extends strin
    * delete rewrite, updated), filled from the returned rows.
    */
   async delete(): Promise<R[]> {
-    return this._write((qs) => qs.delete({ returning: true }) as unknown as PromiseLike<Row[]>);
+    return this._write((qs) => qs.delete());
   }
 
-  /** @internal Run `op` on the query set of the objects' rows and fill the objects from the rows it returns; `extra` fields are read back for a partial object too. */
-  async _write(op: (qs: QuerySet<ModelSpec>) => PromiseLike<Row[]>, extra: readonly string[] = []): Promise<R[]> {
+  /** @internal Run the write `op` builds on the query set of the objects' rows and fill the objects from the rows it returns; `extra` fields are read back for a partial object too. */
+  async _write(op: (qs: QuerySet<ModelSpec>) => WriteStatement<ModelSpec>, extra: readonly string[] = []): Promise<R[]> {
     const { meta } = this;
     const first = this.distinct();
-    let query = this.inner.using(this.database()).filter(this.keyFilter(first) as never);
+    const query = this.inner.using(this.database()).filter(this.keyFilter(first) as never);
+    let names: string[] | undefined;
     if (this.objs.some((o) => o[INTERNAL])) {
       const loaded = new Set<string>();
       for (const o of this.objs) for (const f of meta.fieldList) if (Object.hasOwn(o, slot(f))) loaded.add(f.ir);
-      query = query.onlyFields([...new Set([...loaded, ...extra])]);
+      names = [...new Set([...loaded, ...extra])];
     }
+    const write = op(query);
     // one object, one row: the write may have changed the key, so the row is matched by the filter
-    return this.fill(await op(query), true);
+    return this.fill((await (names ? write.returningFields(names) : write.returning())) as Row[], true);
   }
 
   /** Merge each row into the object of its key and give the filled objects in input order. */

@@ -81,7 +81,7 @@ export interface NativeSessionLock {
 export interface NativeInspector {
   inspect(opJson: string, params: unknown[]): string;
   inspectInsert(model: string, fields: string[], rows: unknown[][], options: string, params: unknown[], batchSize: number | null, returning: boolean): string;
-  inspectUpdateMany(model: string, fields: string[], rows: unknown[][], filtersJson: string, params: unknown[], batchSize: number | null, returning: boolean, withoutDefaults: string): string;
+  inspectUpdateMany(model: string, fields: string[], rows: unknown[][], filtersJson: string, params: unknown[], batchSize: number | null, returning: boolean, withoutDefaults: string, modelFields?: readonly string[] | null): string;
 }
 
 export interface NativeSchema extends NativeInspector {
@@ -155,6 +155,7 @@ export interface NativeEngine extends NativeInspector {
     returning?: boolean,
     scope?: string | null,
     withoutDefaults?: string | null,
+    modelFields?: readonly string[] | null,
   ): Promise<unknown>;
   copyInsert(model: string, fields: string[], rows: unknown[][], tx: NativeTransaction | null, allowed?: readonly string[], trace?: NativeTrace | null): Promise<number>;
   attach(model: string, parentId: unknown, fields: string[], rows: unknown[][], tx: NativeTransaction | null, allowed?: readonly string[], trace?: NativeTrace | null): Promise<unknown>;
@@ -170,6 +171,7 @@ export interface NativeEngine extends NativeInspector {
     withoutDefaults: string,
     allowed?: readonly string[],
     trace?: NativeTrace | null,
+    modelFields?: readonly string[] | null,
   ): Promise<unknown>;
   begin(tx: NativeTransaction | null): Promise<NativeTransaction>;
   advisoryLock(key: string, name: Buffer | null, exclusive: boolean, nowait: boolean, tx: NativeTransaction, trace?: NativeTrace | null): Promise<boolean>;

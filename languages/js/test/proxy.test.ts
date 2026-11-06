@@ -29,7 +29,7 @@ for (const dialect of ["sqlite", "postgres"]) {
       assert.equal(created.active, true); assert.equal(created.volume, 7);
       const root = await User.objects.using(db).insert({ id: 5 }) as { name: null; status: string };
       assert.equal(root.name, null); assert.equal(root.status, "old");
-      const changed = await Active.objects.using(db).all().update({ name: null, status: "old" }, { returning: true }) as { name: null; status: string }[];
+      const changed = await Active.objects.using(db).all().update({ name: null, status: "old" }).returning() as { name: null; status: string }[];
       assert.ok(changed.every((r) => r.name === null && r.status === "old"));
       await Post.objects.using(db).insert({ id: 1, userId: 1 });
       const posts = await Post.objects.using(db).load(Post["user"] as never).all() as { user: { name: null; status: string } }[];

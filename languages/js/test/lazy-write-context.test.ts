@@ -32,9 +32,9 @@ const writes: Record<string, (Entry: Any, rows: () => Any) => Promise<unknown>> 
   insertMany: (_Entry, rows) => rows().insertMany([{ id: 3, name: "new" }, { id: 4, name: "bulk" }], { batchSize: 1 }).returning(),
   upsert: (Entry, rows) => rows().insert({ id: 1, name: "changed" }).onConflict(Entry.id, { update: true }).returning(),
   bulkUpsert: (Entry, rows) => rows().insertMany([{ id: 1, name: "changed" }]).onConflict(Entry.id, { update: true }),
-  update: (_Entry, rows) => rows().all().update({ name: "changed" }, { returning: true }),
+  update: (_Entry, rows) => rows().all().update({ name: "changed" }).returning(),
   updateMany: (_Entry, rows) => rows().updateMany([{ id: 1, name: "changed" }]),
-  delete: (_Entry, rows) => rows().all().delete({ returning: true }),
+  delete: (_Entry, rows) => rows().all().delete().returning(),
   hardDelete: (_Entry, rows) => hardDeleteStatement(rows().all()),
 };
 for (const [dialect, url] of [["Postgres", DATABASE_URL], ["SQLite", "sqlite://:memory:"]] as const) {

@@ -86,8 +86,8 @@ try {
     assert.equal(inserted.initials, 'GH');
     await inserted.update({ first: 'mary', last: 'shelley' });
     assert.equal(inserted.initials, 'MS');
-    assert.deepEqual((await notes.filter(Note.id.eq(5)).update({ first: 'ada', last: 'byron' }, { returning: true })).map((n) => n.initials), ['AB']);
-    assert.deepEqual((await notes.updateMany([{ id: 5, first: 'emmy', last: 'noether' }], { returning: true })).map((n) => n.initials), ['EN']);
+    assert.deepEqual((await notes.filter(Note.id.eq(5)).update({ first: 'ada', last: 'byron' }).returning()).map((n) => n.initials), ['AB']);
+    assert.deepEqual((await notes.updateMany([{ id: 5, first: 'emmy', last: 'noether' }]).returning()).map((n) => n.initials), ['EN']);
     await notes.filter(Note.id.eq(5)).delete();
     // The bindings drop a computed field from the update input, so the call can fail before the engine runs.
     await failsWith([QueryError, TypeError], notes.filter(Note.id.eq(3)).update({ initials: 'ZZ' }), 'initials');

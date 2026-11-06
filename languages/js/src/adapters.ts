@@ -8,7 +8,7 @@
  */
 import { Expression } from "./expr.js";
 import { RESERVED, type ModelMeta, type Row } from "./model.js";
-import type { BatchOptions, InsertMany, InsertOne, InspectedStatement, PreparedInsert, PreparedUpdate } from "./query.js";
+import type { BatchOptions, InsertMany, InsertOne, PreparedInsert, PreparedUpdate, WriteStatement } from "./query.js";
 import type { ModelSpec } from "./meta.js";
 import type { QueryInspection } from "./inspection.js";
 
@@ -47,18 +47,23 @@ const CONCURRENCY = 16;
 type Values = Record<string, unknown>;
 /** A batch value also holds its place (`at`). */
 type PendingFields = Map<string, { adapter: FieldAdapter; value: unknown; at?: { row: number; field: string } }>;
-type UpdateManyOptions = { readonly batchSize?: number; readonly returning?: boolean };
+type UpdateManyOptions = { readonly batchSize?: number };
 interface AdaptedQuerySet {
   prepareInsert(values: Values): PreparedInsert<ModelSpec>;
   prepareUpdate(values: Values): PreparedUpdate<ModelSpec>;
-  insert(values: never): { inspect(): QueryInspection };
-  update(values: never, options: { readonly returning: boolean }): { inspect(): QueryInspection };
+  insert(values: never): InspectableWrite;
+  update(values: never): InspectableWrite;
   checkInsertRows(rows: readonly object[], batchSize: number | null): void;
-  insertRows(rows: readonly object[], conflict: undefined, returning: boolean, batchSize: number | null): Promise<unknown[] | number>;
-  inspectInsert(rows: readonly object[], conflict: undefined, returning: boolean, batchSize: number | null): QueryInspection;
+  insertRows(rows: readonly object[], conflict: undefined, returning: boolean, batchSize: number | null, names?: readonly string[]): Promise<unknown[] | number>;
+  inspectInsert(rows: readonly object[], conflict: undefined, returning: boolean, batchSize: number | null, names?: readonly string[]): QueryInspection;
   checkUpdateRows(rows: readonly object[], options: UpdateManyOptions): void;
-  executeUpdateMany(rows: readonly object[], options: UpdateManyOptions): Promise<number | Row[]>;
-  inspectUpdateMany(rows: readonly object[], options: UpdateManyOptions): QueryInspection;
+  executeUpdateMany(rows: readonly object[], options: UpdateManyOptions, returning?: boolean, names?: readonly string[]): Promise<number | Row[]>;
+  inspectUpdateMany(rows: readonly object[], options: UpdateManyOptions, returning?: boolean, names?: readonly string[]): QueryInspection;
+}
+/** A write that plans its statement, with the `returning` fields `names` when given. */
+interface InspectableWrite {
+  inspect(): QueryInspection;
+  returningFields(names: readonly string[] | undefined): { inspect(): QueryInspection };
 }
 type Statement<T> = (stored: Values) => Promise<T>;
 
@@ -234,13 +239,16 @@ export class PreparedWrite {
 
 /** @internal `insert(values)` with a value that needs `prepare`. `inspect()` shows the statement over the
  * placeholder values and runs no `prepare` call. */
-export function adaptedInsert<M extends ModelSpec>(Insert: typeof InsertOne, qs: AdaptedQuerySet, checked: Values, pending: PendingFields): InsertOne<M> & { readonly operation: PreparedWrite; prepare(): Promise<void> } {
+export function adaptedInsert<M extends ModelSpec>(Insert: typeof InsertOne, qs: AdaptedQuerySet, checked: Values, pending: PendingFields, meta: ModelMeta): InsertOne<M> & { readonly operation: PreparedWrite; prepare(): Promise<void> } {
   const operation = new PreparedWrite(pending);
-  const insert = new Insert<M>(async () => {
+  const insert = new Insert<M>(meta, async (_conflict, _returning, names) => {
     // Statement and write protection are checked before the first `prepare` call.
     const prepared = qs.prepareInsert(checked);
-    return [await operation.execute(stored => prepared.execute({ ...checked, ...stored } as never))];
-  }, () => qs.insert(checked as never).inspect());
+    return [await operation.execute(stored => prepared.execute({ ...checked, ...stored } as never, names))];
+  }, (_conflict, _returning, names) => {
+    const planned = qs.insert(checked as never);
+    return (names ? planned.returningFields(names) : planned).inspect();
+  });
   return Object.assign(insert, {
     operation,
     /** Run the checks and the `prepare` calls now, so the awaited insert runs no `prepare` call. */
@@ -253,24 +261,27 @@ export function adaptedInsert<M extends ModelSpec>(Insert: typeof InsertOne, qs:
 }
 
 /** @internal `update(values)` with a value that needs `prepare`: one `prepare` call, and the stored value goes to every matching row. */
-export function adaptedUpdate(Statement: typeof InspectedStatement, qs: AdaptedQuerySet, checked: Values, pending: PendingFields, returning: boolean): InspectedStatement<number | Row[]> & { readonly operation: PreparedWrite } {
+export function adaptedUpdate(Statement: typeof WriteStatement, qs: AdaptedQuerySet, checked: Values, pending: PendingFields, meta: ModelMeta): WriteStatement<ModelSpec> & { readonly operation: PreparedWrite } {
   const operation = new PreparedWrite(pending);
-  const update = new Statement<number | Row[]>(async () => {
+  const update = new Statement<ModelSpec>(meta, async (names, returning) => {
     const prepared = qs.prepareUpdate(checked);
-    return (await operation.execute(stored => prepared.execute({ ...checked, ...stored } as never, { returning }))) as number | Row[];
-  }, () => qs.update(checked as never, { returning }).inspect());
+    return (await operation.execute(stored => prepared.execute({ ...checked, ...stored } as never, { returning, fields: names }))) as number | Row[];
+  }, (names, returning) => {
+    const planned = qs.update(checked as never);
+    return (returning ? planned.returningFields(names) : planned).inspect();
+  });
   return Object.assign(update, { operation });
 }
 
 /** @internal `insertMany(rows)` with a value that needs `prepare`. `inspect()` shows the statement over the
  * placeholder values and runs no `prepare` call. */
-export function adaptedInsertMany<M extends ModelSpec>(Insert: typeof InsertMany, qs: AdaptedQuerySet, rows: readonly object[], pending: PendingFields, options: BatchOptions | undefined): InsertMany<M> & { readonly operation: PreparedWrite } {
+export function adaptedInsertMany<M extends ModelSpec>(Insert: typeof InsertMany, qs: AdaptedQuerySet, rows: readonly object[], pending: PendingFields, options: BatchOptions | undefined, meta: ModelMeta): InsertMany<M> & { readonly operation: PreparedWrite } {
   const batchSize = options?.batchSize ?? null;
   const operation = new PreparedWrite(pending, CONCURRENCY);
-  const insert = new Insert<M>(async (_conflict, returning) => {
+  const insert = new Insert<M>(meta, async (_conflict, returning, names) => {
     qs.checkInsertRows(rows, batchSize); // write protection runs before the first `prepare` call
-    return operation.execute(stored => qs.insertRows(fillRows(rows, stored, pending), undefined, returning, batchSize));
-  }, (_conflict, returning) => qs.inspectInsert(rows, undefined, returning, batchSize));
+    return operation.execute(stored => qs.insertRows(fillRows(rows, stored, pending), undefined, returning, batchSize, names));
+  }, (_conflict, returning, names) => qs.inspectInsert(rows, undefined, returning, batchSize, names));
   return Object.assign(insert, {
     operation,
     onConflict(): never { throw new FieldAdapterError("a value that needs prepare is unsupported in conflict writes"); },
@@ -278,11 +289,11 @@ export function adaptedInsertMany<M extends ModelSpec>(Insert: typeof InsertMany
 }
 
 /** @internal `updateMany(rows)` with a value that needs `prepare`. */
-export function adaptedUpdateMany(Statement: typeof InspectedStatement, qs: AdaptedQuerySet, rows: readonly object[], pending: PendingFields, options: UpdateManyOptions): InspectedStatement<number | Row[]> & { readonly operation: PreparedWrite } {
+export function adaptedUpdateMany(Statement: typeof WriteStatement, qs: AdaptedQuerySet, rows: readonly object[], pending: PendingFields, options: UpdateManyOptions, meta: ModelMeta): WriteStatement<ModelSpec> & { readonly operation: PreparedWrite } {
   const operation = new PreparedWrite(pending, CONCURRENCY);
-  const update = new Statement<number | Row[]>(async () => {
+  const update = new Statement<ModelSpec>(meta, async (names, returning) => {
     qs.checkUpdateRows(rows, options);
-    return operation.execute(stored => qs.executeUpdateMany(fillRows(rows, stored, pending), options));
-  }, () => qs.inspectUpdateMany(rows, options));
+    return operation.execute(stored => qs.executeUpdateMany(fillRows(rows, stored, pending), options, returning, names));
+  }, (names, returning) => qs.inspectUpdateMany(rows, options, returning, names));
   return Object.assign(update, { operation });
 }

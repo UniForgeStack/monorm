@@ -182,9 +182,64 @@ test("a composed write returns the computed field", { skip: !enabled || !hasExte
     await scope({ shop: 1, user: "ann" }, async () => {
       const row = await Staff.objects.using(db).insert({ name: "Ada", text: "t", start: 1, end: 2, first: "grace", last: "hopper" });
       assert.equal(row["initials"], "GH");
-      const staff = Staff.objects.using(db).filter(Staff.id.eq(row["id"])) as unknown as { update(values: Row, options: { returning: true }): Promise<Row[]> };
-      const updated = await staff.update({ first: "mary", last: "shelley" }, { returning: true });
+      const staff = Staff.objects.using(db).filter(Staff.id.eq(row["id"])) as unknown as { update(values: Row): { returning(): Promise<Row[]> } };
+      const updated = await staff.update({ first: "mary", last: "shelley" }).returning();
       assert.deepEqual(updated.map((r) => r["initials"]), ["MS"]);
     });
+  } finally { await db.close(); }
+});
+
+const returnedSource = `
+model Person {
+ id Int @id @default(autoincrement())
+ name String
+ bio String?
+ @@map("composition_returned_node_people")
+}
+model Staff {
+ salary Int
+ badge String?
+ @@composition.model(parent: "Person", parentRef: "person", childRef: "staff")
+ @@query.defaults(fields: ["name", "salary"])
+ @@map("composition_returned_node_staff")
+}
+`;
+
+test("a multi-table write returns the default selection or the named columns", { skip: !enabled || !hasExtension("monorm.query-defaults") }, async () => {
+  const registry = new Registry();
+  const models = loads(`datasource db {\n provider = "sqlite"\n}\n${returnedSource}`, { registry });
+  type Returned<T> = { returning(...columns: unknown[]): Promise<T> };
+  type StaffObjects = {
+    withoutDefaults(): StaffObjects;
+    filter(...filters: unknown[]): StaffObjects;
+    count(): Promise<number>;
+    insert(values: Row): PromiseLike<Row> & Returned<Row>;
+    insertMany(rows: Row[]): Returned<Row[]>;
+    update(values: Row): Returned<Row[]>;
+    delete(): Returned<Row[]>;
+  };
+  const Staff = models["Staff"] as unknown as { objects: { using(db: unknown): StaffObjects } } & Record<string, { eq(value: unknown): unknown }>;
+  const db = await connect("sqlite://:memory:", { registry, default: false });
+  await db.createTables();
+  const sql: string[] = [];
+  db.onQuery((e: { sql: string }) => { sql.push(e.sql); });
+  const json = (rows: Row[]) => rows.map((r) => (r as unknown as { toJSON(): Row }).toJSON());
+  try {
+    const staff = Staff.objects.using(db);
+    const row = await staff.insert({ name: "Ann", salary: 1, badge: "b", bio: "x" });
+    assert.deepEqual(json([row]), [{ salary: 1, name: "Ann" }]);
+    assert.ok(!sql.at(-1)!.includes('"badge"') && !sql.at(-1)!.includes('"bio"'));
+    const named = await staff.insert({ name: "Bob", salary: 2 }).returning(Staff["badge"]);
+    assert.deepEqual(json([named]), [{ badge: null }]);
+    assert.ok(sql.at(-1)!.includes('"badge"') && !sql.at(-1)!.includes('"salary"'));
+    const everything = await staff.withoutDefaults().insert({ name: "Cid", salary: 3, bio: "z" });
+    assert.deepEqual([everything["salary"], everything["badge"], everything["name"], everything["bio"]], [3, null, "Cid", "z"]);
+    const many = await staff.insertMany([{ name: "Dee", salary: 4 }, { name: "Eve", salary: 5 }]).returning();
+    assert.deepEqual(json(many), [{ salary: 4, name: "Dee" }, { salary: 5, name: "Eve" }]);
+    const ann = () => staff.filter(Staff["name"]!.eq("Ann"));
+    assert.deepEqual(json(await ann().update({ salary: 9 }).returning()), [{ salary: 9, name: "Ann" }]);
+    assert.deepEqual(json(await ann().update({ salary: 10 }).returning(Staff["badge"])), [{ badge: "b" }]);
+    assert.deepEqual(json(await staff.filter(Staff["name"]!.eq("Dee")).delete().returning()), [{ salary: 4, name: "Dee" }]);
+    assert.equal(await staff.withoutDefaults().count(), 4);
   } finally { await db.close(); }
 });

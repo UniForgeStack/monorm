@@ -86,8 +86,8 @@ export async function boundFresh(bound: object, objs: readonly object[], ...colu
 }
 
 /** Run `op` on the query set of the rows of `bound`, fill its objects from the returned rows and give the changed objects in input order. */
-export function boundWrite<R>(bound: BoundQuerySet<ModelSpec, R>, op: (qs: QuerySet<ModelSpec>) => PromiseLike<unknown>): Promise<R[]> {
-  return (bound as unknown as { _write(op: (qs: QuerySet<ModelSpec>) => PromiseLike<Row[]>): Promise<R[]> })._write(op as never);
+export function boundWrite<R>(bound: BoundQuerySet<ModelSpec, R>, op: (qs: QuerySet<ModelSpec>) => unknown): Promise<R[]> {
+  return (bound as unknown as { _write(op: unknown): Promise<R[]> })._write(op);
 }
 
 /**

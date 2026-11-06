@@ -33,7 +33,7 @@ model Note {
         await notes.insert({ id: 2, changed: OLD });
         await note.update({ views: 1 });
         assert.ok(note.changed > OLD);
-        const [row] = await notes.filter(models.Note!.id.eq(2)).update({ views: 2 }, { returning: true });
+        const [row] = await notes.filter(models.Note!.id.eq(2)).update({ views: 2 }).returning();
         assert.ok(row.changed > OLD);
         await note.update({ changed: OLD });
         assert.equal(note.changed.getTime(), OLD.getTime());
@@ -64,7 +64,7 @@ model Book {
         await models.Book!.objects.using(db).insertMany([{ id: 1, authorId: 1 }, { id: 2, authorId: 2 }]);
         assert.equal(await authors.filter(Author.id.eq(1)).delete(), 1);
         assert.equal(await authors.filter(Author.id.eq(1)).delete(), 0);
-        const [row] = await authors.filter(Author.id.eq(2)).delete({ returning: true });
+        const [row] = await authors.filter(Author.id.eq(2)).delete().returning();
         assert.ok(row.id === 2 && row.deleted !== null);
         assert.equal(await authors.count(), 1);
         assert.deepEqual((await authors.deletedOnly().orderBy(Author.id.asc()).all()).map((a: { id: number }) => a.id), [1, 2]);
@@ -346,7 +346,7 @@ model Page {
       assert.deepEqual(await ids(pages.deletedOnly()), [1, 2, 3]);
       assert.deepEqual(await ids(pages.allWithDeleted()), [1, 2, 3, 4]);
       assert.equal(await pages.filter(Page.id.eq(1)).undelete(), 1);
-      const [back] = await pages.filter(Page.id.eq(2)).undelete({ returning: true });
+      const [back] = await pages.filter(Page.id.eq(2)).undelete().returning();
       assert.ok(back.id === 2 && back.deletedAt === null);
       const held = await pages.deletedOnly().all();
       assert.equal((await (of(held) as any).hardDelete()).length, 1);

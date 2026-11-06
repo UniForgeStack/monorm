@@ -224,15 +224,33 @@ export async function writes() {
   void User.objects.insert({ email: "a", name: "A" }).onConflict(User.email, {});
   // @ts-expect-error updateValues keys are fields
   void User.objects.insert({ email: "a", name: "A" }).onConflict(User.email, { update: true, updateValues: { nope: 1 } });
-  // @ts-expect-error a plain insert gives the instance
-  void User.objects.insert({ email: "a", name: "A" }).returning();
+  const plain = await User.objects.insert({ email: "a", name: "A" }).returning();
+  same<typeof plain, User>();
+  const narrowed = await User.objects.insert({ email: "a", name: "A" }).returning(User.email);
+  narrowed.email satisfies string;
+  // @ts-expect-error a field outside returning(...) is not on the row
+  void narrowed.name;
+  const manyKeys = await User.objects.insertMany([{ email: "a", name: "A" }]).returning(User.id);
+  manyKeys[0]!.id satisfies bigint;
+  // @ts-expect-error returning() takes columns of its own model
+  void User.objects.insert({ email: "a", name: "A" }).returning(Post.title);
   await Post.objects.insert({ author: u, title: "t", body: "b" });
   await Post.objects.insert({ authorId: 1, title: "t", body: "b" });
   await u.posts.insert({ title: "t", body: "b" });
   const n = await Post.objects.update({ views: Post.views.add(1) });
   same<typeof n, number>();
-  const rows = await Post.objects.update({ views: 0 }, { returning: true });
+  const rows = await Post.objects.update({ views: 0 }).returning();
   same<typeof rows, Post[]>();
+  const updatedTitles = await Post.objects.update({ views: 0 }).returning(Post.title);
+  // @ts-expect-error a field outside returning(...) is not on the updated row
+  void updatedTitles[0]!.views;
+  same<typeof updatedTitles[number]["title"], string>();
+  const deletedTitles = await Post.objects.filter(Post.id.eq(1)).delete().returning(Post.title);
+  // @ts-expect-error a field outside returning(...) is not on the deleted row
+  void deletedTitles[0]!.views;
+  const batchedTitles = await Post.objects.updateMany([{ id: 1, title: "x" }]).returning(Post.title);
+  // @ts-expect-error a field outside returning(...) is not on the updated row
+  void batchedTitles[0]!.views;
   await post.update({ title: "x", views: Post.views.mul(2) });
   await Post.objects.updateMany([{ id: 1, title: "x" }]);
   await post.tags.add(tag, 3n);

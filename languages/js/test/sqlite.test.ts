@@ -63,7 +63,7 @@ test("SQLite CRUD, relations, enums, JSON, bulk defaults and CASE updates", asyn
     assert.equal(await Author.objects.using(db).join(totals, totals.c.authorId.eq(Author.id)).select({ pages: totals.c.pages }).scalar(), 7n);
     const sliced = await Author.objects.using(db).load(Author.books.objects.orderBy(Book.pages.desc()).slice(1, 2)).all();
     assert.deepEqual(sliced[0]!.books.cached.map((b) => b.title), ["one"]);
-    const updated = await Book.objects.using(db).updateMany(books.map((b) => ({ id: b.id, pages: b.pages + 2 })), { returning: true });
+    const updated = await Book.objects.using(db).updateMany(books.map((b) => ({ id: b.id, pages: b.pages + 2 }))).returning();
     assert.deepEqual(updated.map((b) => b.pages), [2, 9]);
     const same = await Author.objects.using(db).insert({ email: "a", name: "Updated" }).onConflict(Author.email, { update: true }).returning();
     assert.equal(same!.id, a.id);

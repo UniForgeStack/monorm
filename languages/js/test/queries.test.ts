@@ -276,11 +276,11 @@ test("update and delete", async () => {
 
 test("update and delete returning rows", async () => {
   const { alice } = await seed();
-  const posts = await Post.objects.filter(Post.authorId.eq(alice.id)).update({ views: Post.views.add(1) }, { returning: true });
+  const posts = await Post.objects.filter(Post.authorId.eq(alice.id)).update({ views: Post.views.add(1) }).returning();
   assert.deepEqual(posts.map((p) => p.views).sort((x, y) => x - y), [6, 51]);
-  assert.deepEqual(await Post.objects.filter(Post.views.gt(1000)).update({ views: 0 }, { returning: true }), []);
-  assert.deepEqual(await Post.objects.all().update({}, { returning: true }), []); // nothing to set: no SQL
-  const gone = await Post.objects.filter(Post.views.gt(90)).delete({ returning: true });
+  assert.deepEqual(await Post.objects.filter(Post.views.gt(1000)).update({ views: 0 }).returning(), []);
+  assert.deepEqual(await Post.objects.all().update({}).returning(), []); // nothing to set: no SQL
+  const gone = await Post.objects.filter(Post.views.gt(90)).delete().returning();
   assert.deepEqual(gone.map((p) => p.title), ["bob's old"]);
   assert.equal(await Post.objects.count(), 2);
 });
@@ -319,10 +319,10 @@ test("updateMany", async () => {
   assert.deepEqual((await Post.objects.all()).map((p) => p.views).sort((x, y) => x - y), [3, 10, 20]);
 
   // Relations, NULLs, RETURNING, unknown ids.
-  const out = await Comment.objects.updateMany((await Comment.objects.all()).map((c) => ({ id: c.id, author: null })), { returning: true });
+  const out = await Comment.objects.updateMany((await Comment.objects.all()).map((c) => ({ id: c.id, author: null }))).returning();
   assert.equal(out.length, 3);
   assert.ok(out.every((c) => c.authorId === null));
-  const moved = await Post.objects.updateMany([{ id: b1.id, author: alice }, { id: 999, author: alice }], { returning: true });
+  const moved = await Post.objects.updateMany([{ id: b1.id, author: alice }, { id: 999, author: alice }]).returning();
   assert.deepEqual(moved.map((p) => [p.id, p.authorId]), [[b1.id, alice.id]]);
   assert.equal(await Post.objects.updateMany([]), 0);
   await assert.rejects(Post.objects.updateMany([{ id: a1.id, views: 1 }, { id: a1.id, views: 2 }]), /appears twice/);
@@ -334,7 +334,7 @@ test("updateMany batches are one transaction", async () => {
   const rows = [{ id: a1.id, views: 7 }, { id: a2.id, views: 8 }, { id: b1.id, views: -1 }];
   await assert.rejects(Post.objects.updateMany(rows, { batchSize: 1 }), IntegrityError); // views >= 0 fails in batch 3
   assert.deepEqual((await Post.objects.all()).map((p) => p.views).sort((x, y) => x - y), [5, 50, 100]); // nothing kept
-  assert.equal((await Post.objects.updateMany(rows.slice(0, 2), { batchSize: 1, returning: true })).length, 2);
+  assert.equal((await Post.objects.updateMany(rows.slice(0, 2), { batchSize: 1 }).returning()).length, 2);
 });
 
 test("fallback SQL runs on Postgres", async () => {
@@ -345,7 +345,7 @@ test("fallback SQL runs on Postgres", async () => {
     const got = await Post.objects.filter(Post.id.in([a1.id, b1.id])).orderBy(Post.id).all();
     assert.deepEqual(got.map((p) => [p.title, p.views]), [["x", 1], ["y", 2]]);
     assert.deepEqual(names(await User.objects.using(db).filter(User.name.icontains("ALI")).all()), ["Alice"]);
-    await assert.rejects(Post.objects.using(db).all().update({ views: 0 }, { returning: true }), /does not support update/);
+    await assert.rejects(Post.objects.using(db).all().update({ views: 0 }).returning(), /does not support update/);
   } finally {
     await db.close();
   }

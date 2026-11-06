@@ -92,7 +92,7 @@ test("inserts, upserts, mutations and bulk returning writes inspect without exec
     assert.equal(events.length, 3);
     assert.equal(await insert, tags); // one execution per statement
     events.length = 0;
-    const update = Tag.objects.updateMany(tags.map(t => ({ id: t.id, name: `${t.name}!` })), { batchSize: 2, returning: true });
+    const update = Tag.objects.updateMany(tags.map(t => ({ id: t.id, name: `${t.name}!` })), { batchSize: 2 }).returning();
     assert.deepStrictEqual(update.inspect(), { statementCount: 3, hasBatching: true, statements: [batched, batched, batched] });
     assert.deepEqual(events, []);
     assert.equal((await update).length, 5);
@@ -101,7 +101,7 @@ test("inserts, upserts, mutations and bulk returning writes inspect without exec
     const scalar = Comment.objects.filter(Comment.postId.eq(outer(Post.id))).select({ n: func.count() }).asScalar();
     const mutation = Post.objects.all().update({ views: scalar });
     assert.deepStrictEqual(mutation.inspect().statements, [statementInspection({ scalarCorrelated: 1 })]);
-    const deletion = Post.objects.filter(Post.comments.body.eq("hi")).delete({ returning: true });
+    const deletion = Post.objects.filter(Post.comments.body.eq("hi")).delete().returning();
     assert.deepStrictEqual(deletion.inspect().statements, [statementInspection({ setCorrelated: 1 })]);
     const upsert = Tag.objects.insert({ name: "t0!" }).onConflict(Tag.name, { update: false }).returning();
     assert.equal(upsert.inspect().statementCount, 1);
@@ -142,7 +142,7 @@ test("SQLite inspection and actual batched writes share the same planner", async
       const authors = await insert;
       assert.equal(events.length, 3);
       events.length = 0;
-      const update = Author.objects.using(db).updateMany(authors.map(a => ({ id: a.id, name: `${a.name}!` })), { batchSize: 2, returning: true });
+      const update = Author.objects.using(db).updateMany(authors.map(a => ({ id: a.id, name: `${a.name}!` })), { batchSize: 2 }).returning();
       assert.equal(update.inspect().statementCount, 3);
       assert.equal((await update).length, 5);
       assert.equal(events.length, 3);

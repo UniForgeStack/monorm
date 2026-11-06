@@ -105,7 +105,7 @@ test("a unique update prepares once", async () => {
     await objects.insertMany([{ id: 1, title: "a" }, { id: 2, title: "a" }]);
     assert.equal(await objects.filter(Doc.id.eq(1)).update({ body: "new" }), 1);
     assert.deepEqual(body.calls, ["new"]);
-    const rows = await objects.filter(Doc.id.eq(2)).update({ body: "again" }, { returning: true }) as Row[];
+    const rows = await objects.filter(Doc.id.eq(2)).update({ body: "again" }).returning() as Row[];
     assert.deepEqual(rows.map(r => r["body"]), [["body", { tag: "body", value: "again" }]]);
   } finally { await db.close(); }
 });
@@ -118,7 +118,7 @@ test("a filtered update prepares once and writes the same value to every row", a
     assert.deepEqual(body.calls, ["shared"]);
     const shared = ["body", { tag: "body", value: "shared" }];
     assert.deepEqual((await objects.orderBy(Doc.id).fetch() as Row[]).map(r => r["body"]), [shared, shared, null]);
-    const rows = await objects.filter(Doc.title.eq("b")).update({ body: "other" }, { returning: true }) as Row[];
+    const rows = await objects.filter(Doc.title.eq("b")).update({ body: "other" }).returning() as Row[];
     assert.deepEqual(rows.map(r => r["id"]), [3]);
     assert.deepEqual(body.calls, ["shared", "other"]);
   } finally { await db.close(); }
@@ -212,7 +212,7 @@ test("updateMany prepares each pending value", async () => {
     await objects.insertMany([{ id: 1, title: "a" }, { id: 2, title: "b" }, { id: 3, title: "c" }]);
     assert.equal(await objects.updateMany([{ id: 1, body: "one" }, { id: 2, body: { stored: 2 } }]), 2);
     assert.deepEqual(body.calls, ["one"]);
-    const done = await objects.updateMany([{ id: 2, body: "two" }, { id: 3, body: "three" }], { returning: true }) as Row[];
+    const done = await objects.updateMany([{ id: 2, body: "two" }, { id: 3, body: "three" }]).returning() as Row[];
     assert.deepEqual([...body.calls].sort(), ["one", "three", "two"]);
     assert.deepEqual(Object.fromEntries(done.map(r => [r["id"], r["body"]])), { 2: stored("body", "two"), 3: stored("body", "three") });
     assert.deepEqual(((await objects.filter(Doc.id.eq(1)).get()) as Row)["body"], stored("body", "one"));

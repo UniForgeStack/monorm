@@ -53,7 +53,7 @@ test("the decimal wire format round-trips", async () => {
   const { alice } = await users();
   await Profile.objects.insert({ user: alice });
   for (const text of ["1234567890.12", "-0.01", "0.50", "-99999999.99"]) {
-    const [p] = await Profile.objects.all().update({ balance: new Decimal(text) }, { returning: true });
+    const [p] = await Profile.objects.all().update({ balance: new Decimal(text) }).returning();
     assert.equal(p!.balance.toFixed(2), text);
   }
 });

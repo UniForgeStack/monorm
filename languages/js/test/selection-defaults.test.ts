@@ -137,14 +137,14 @@ for (const dialect of ["sqlite", "postgres"] as const) {
       const hiddenBooks = await b.withoutDefaults().orderBy(Book.id).all();
       await of(hiddenBooks).load(Book.author);
       assert.equal(hiddenBooks[0].author.name, "changed"); assert.equal(hiddenBooks[1].author, null);
-      const partialReturn = await a.load(Author.name).all().update({ name: "again" }, { returning: true });
+      const partialReturn = await a.all().update({ name: "again" }).returning(Author.name);
       assert.deepEqual(partialReturn[0].toJSON(), { name: "again" });
       const cleared = await b.withoutRelated().first(); assert.throws(() => cleared.author, NotLoaded);
       const prefetched = await a.load(Author.books).get(); assert.equal(prefetched.books.cached[0].title, "one");
       const unfiltered = await a.withoutDefaults().load(Author.books).filter(Author.id.eq(visible.pk)).get();
       assert.equal(unfiltered.books.cached[0].authorId, visible.pk);
       assert.equal((await a.inBulk()).get(visible.pk).name, "again");
-      const written = await a.load().all().update({ visible: false }, { returning: true });
+      const written = await a.all().update({ visible: false }).returning(Author.visible);
       assert.equal(written.length, 1); assert.equal(written[0].visible, false); assert.equal(await a.count(), 0);
       assert.equal(await a.withoutDefaults().updateMany([{ id: hidden.pk, name: "bulk" }]), 1);
       assert.equal(await a.updateMany([{ id: hidden.pk, name: "excluded" }]), 0);
