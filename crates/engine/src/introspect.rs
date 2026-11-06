@@ -19,7 +19,7 @@ use monorm_core::dialect::Dialect;
 use monorm_core::ir::{Deferrable, ForEach, GeneratedIr, Nulls, OnDelete, TriggerEvent, TriggerTiming};
 use monorm_core::migrate::model::{
     Check, Column, DbSchema, EnumType, Exclusion, ExclusionElement, Extension, ForeignKey, Function, Index, IndexKey,
-    PrimaryKey, Table, Trigger, Unique,
+    PrimaryKey, SqlView, Table, Trigger, Unique,
 };
 use monorm_core::migrate::{diff, Op, Step};
 
@@ -79,6 +79,10 @@ struct PgTable {
     force_rls: bool,
     unlogged: bool,
     options: Option<Vec<String>>,
+    /// The deparsed `SELECT` of a view.
+    def: Option<String>,
+    /// The views that a view reads.
+    depends: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -199,7 +203,12 @@ fn tables_sql() -> String {
     format!(
         "SELECT coalesce(json_agg(json_build_object('oid', c.oid::int8, 'name', c.relname, 'kind', c.relkind, \
          'partition', c.relispartition, 'parent', (SELECT p.relname FROM pg_inherits h JOIN pg_class p ON p.oid = h.inhparent WHERE h.inhrelid = c.oid LIMIT 1), 'bound', pg_get_expr(c.relpartbound, c.oid), 'partition_by', pg_get_partkeydef(c.oid), 'comment', obj_description(c.oid, 'pg_class'), 'rls', c.relrowsecurity, \
-         'force_rls', c.relforcerowsecurity, 'unlogged', c.relpersistence = 'u', 'options', c.reloptions) ORDER BY c.relname), '[]') \
+         'force_rls', c.relforcerowsecurity, 'unlogged', c.relpersistence = 'u', 'options', c.reloptions, \
+         'def', CASE WHEN c.relkind IN ('v', 'm') THEN pg_get_viewdef(c.oid, true) END, \
+         'depends', CASE WHEN c.relkind IN ('v', 'm') THEN (SELECT json_agg(DISTINCT dc.relname) FROM pg_rewrite r \
+             JOIN pg_depend d ON d.classid = 'pg_rewrite'::regclass AND d.objid = r.oid AND d.refclassid = 'pg_class'::regclass \
+             JOIN pg_class dc ON dc.oid = d.refobjid WHERE r.ev_class = c.oid AND dc.oid <> c.oid AND dc.relkind IN ('v', 'm')) END) \
+         ORDER BY c.relname), '[]') \
          FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
          WHERE {IN_SCHEMA} AND c.relkind IN ('r', 'p', 'v', 'm', 'f') AND c.relname <> '{MIGRATIONS_TABLE}' AND {}",
         not_extension("c.oid")
@@ -220,7 +229,7 @@ const COLUMNS_SQL: &str = "SELECT coalesce(json_agg(json_build_object('table', a
      JOIN pg_type t ON t.oid = a.atttypid LEFT JOIN pg_type et ON et.oid = t.typelem AND t.typcategory = 'A' \
      LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
      LEFT JOIN pg_collation co ON co.oid = a.attcollation \
-     WHERE n.nspname = current_schema() AND c.relkind IN ('r', 'p') AND a.attnum > 0 AND NOT a.attisdropped";
+     WHERE n.nspname = current_schema() AND c.relkind IN ('r', 'p', 'v', 'm') AND a.attnum > 0 AND NOT a.attisdropped";
 
 const CONSTRAINTS_SQL: &str = "SELECT coalesce(json_agg(json_build_object('table', con.conrelid::int8, 'name', con.conname, \
      'type', con.contype::text, \
@@ -257,7 +266,7 @@ const INDEXES_SQL: &str = "SELECT coalesce(json_agg(json_build_object('table', i
      ) ORDER BY ic.relname), '[]') \
      FROM pg_index i JOIN pg_class ic ON ic.oid = i.indexrelid JOIN pg_class c ON c.oid = i.indrelid \
      JOIN pg_namespace n ON n.oid = c.relnamespace JOIN pg_am am ON am.oid = ic.relam \
-     WHERE n.nspname = current_schema() AND c.relkind IN ('r', 'p') AND NOT EXISTS (SELECT 1 FROM pg_inherits h WHERE h.inhrelid = i.indexrelid)";
+     WHERE n.nspname = current_schema() AND c.relkind IN ('r', 'p', 'm') AND NOT EXISTS (SELECT 1 FROM pg_inherits h WHERE h.inhrelid = i.indexrelid)";
 
 const TRIGGERS_SQL: &str = "SELECT coalesce(json_agg(json_build_object('table', t.tgrelid::int8, 'name', t.tgname, \
      'type', t.tgtype::int, \
@@ -413,6 +422,8 @@ async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
     db.enums = enums.into_iter().map(|e| EnumType { name: e.name, values: e.values, comment: e.comment }).collect();
 
     let mut by_oid: BTreeMap<i64, Table> = BTreeMap::new();
+    // A view reads its columns and indexes through the same queries as a table; it keeps no constraint.
+    let mut view_tables: BTreeMap<i64, (Table, SqlView)> = BTreeMap::new();
     let mut names: BTreeMap<i64, String> = BTreeMap::new();
     for t in tables {
         names.insert(t.oid, t.name.clone());
@@ -436,13 +447,19 @@ async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
                 } else { None };
                 by_oid.insert(t.oid, Table { name: t.name, comment: t.comment, partition_by: t.partition_by, partition_of, ..Default::default() });
             }
-            "v" => gaps.push(format!("view {}: views are not supported", t.name)),
-            "m" => gaps.push(format!("materialized view {}: views are not supported", t.name)),
+            "v" | "m" => {
+                if let Some(options) = t.options.filter(|o| !o.is_empty()) {
+                    gaps.push(format!("view {} has options ({}); they are not reproduced", t.name, options.join(", ")));
+                }
+                let body = t.def.as_deref().map(view_body).unwrap_or_default();
+                let view = SqlView { name: t.name.clone(), body, materialized: t.kind == "m", depends_on: t.depends.unwrap_or_default(), ..Default::default() };
+                view_tables.insert(t.oid, (Table { name: t.name, ..Default::default() }, view));
+            }
             _ => gaps.push(format!("foreign table {}: foreign tables are not supported", t.name)),
         }
     }
     for c in columns {
-        let Some(t) = by_oid.get_mut(&c.table) else { continue };
+        let Some(t) = by_oid.get_mut(&c.table).or_else(|| view_tables.get_mut(&c.table).map(|(t, _)| t)) else { continue };
         if c.identity == "a" {
             gaps.push(format!("column {}.{} is GENERATED ALWAYS AS IDENTITY; the schema has BY DEFAULT only", t.name, c.name));
         }
@@ -539,7 +556,7 @@ async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
         }
     }
     for ix in indexes.iter().filter(|i| !i.constraint) {
-        let Some(t) = by_oid.get_mut(&ix.table) else { continue };
+        let Some(t) = by_oid.get_mut(&ix.table).or_else(|| view_tables.get_mut(&ix.table).map(|(t, _)| t)) else { continue };
         t.indexes.push(Index {
             name: ix.name.clone(),
             unique: ix.unique,
@@ -557,6 +574,10 @@ async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
         });
     }
     for tr in triggers {
+        if let Some((t, _)) = view_tables.get(&tr.table) {
+            gaps.push(format!("trigger {}.{} is on a view; a view takes no trigger, so it is left out", t.name, tr.name));
+            continue;
+        }
         let Some(t) = by_oid.get_mut(&tr.table) else { continue };
         if tr.constraint {
             gaps.push(format!("constraint trigger {}.{}: constraint triggers are not supported", t.name, tr.name));
@@ -636,7 +657,23 @@ async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
         if t.partition_of.is_some() { t.columns.clear(); }
     }
     db.tables = by_oid.into_values().collect();
+    db.views = finish_views(view_tables.into_values());
+    if !db.views.is_empty() {
+        db.version = monorm_core::migrate::model::SNAPSHOT_VERSION;
+    }
     Ok(out)
+}
+
+/// The `SELECT` of a deparsed view, without the whitespace and the `;` that `pg_get_viewdef` puts around it.
+fn view_body(def: &str) -> String {
+    def.trim().trim_end_matches(';').trim_end().to_owned()
+}
+
+/// The views with the columns and indexes that the queries found, in name order.
+fn finish_views(views: impl Iterator<Item = (Table, SqlView)>) -> Vec<SqlView> {
+    let mut out: Vec<SqlView> = views.map(|(t, v)| SqlView { columns: t.columns, indexes: t.indexes, ..v }).collect();
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
 }
 
 // ---------------------------------------------------------------------------------------
@@ -690,10 +727,12 @@ struct LiteIndexColumn {
 
 const LITE_TABLES: &str = "SELECT coalesce(json_group_array(json_object('name', name, 'sql', sql)), '[]') FROM \
      (SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> 'monorm_migrations' ORDER BY name)";
+const LITE_VIEWS: &str = "SELECT coalesce(json_group_array(json_object('name', name, 'sql', sql)), '[]') FROM \
+     (SELECT name, sql FROM sqlite_master WHERE type = 'view' ORDER BY name)";
 const LITE_COLUMNS: &str = "SELECT coalesce(json_group_array(json_object('table', m.name, 'name', c.name, 'type', c.type, \
      'notnull', c.\"notnull\", 'default', c.dflt_value, 'pk', c.pk, 'hidden', c.hidden)), '[]') \
      FROM sqlite_master m, pragma_table_xinfo(m.name) c \
-     WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%' AND m.name <> 'monorm_migrations'";
+     WHERE m.type IN ('table', 'view') AND m.name NOT LIKE 'sqlite_%' AND m.name <> 'monorm_migrations'";
 const LITE_FOREIGN_KEYS: &str = "SELECT coalesce(json_group_array(json_object('table', m.name, 'id', f.id, 'ref_table', f.\"table\", \
      'from', f.\"from\", 'to', f.\"to\", 'on_update', f.on_update, 'on_delete', f.on_delete)), '[]') \
      FROM sqlite_master m, pragma_foreign_key_list(m.name) f \
@@ -704,8 +743,8 @@ const LITE_INDEXES: &str = "SELECT coalesce(json_group_array(json_object('table'
                  FROM pragma_index_xinfo(i.name) c WHERE c.key = 1)))), '[]') \
      FROM sqlite_master m, pragma_index_list(m.name) i \
      WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%' AND m.name <> 'monorm_migrations'";
-const LITE_OTHERS: &str = "SELECT coalesce(json_group_array(json_object('kind', type, 'name', name, 'table', tbl_name)), '[]') \
-     FROM sqlite_master WHERE type IN ('view', 'trigger')";
+const LITE_OTHERS: &str = "SELECT coalesce(json_group_array(json_object('name', name, 'table', tbl_name)), '[]') \
+     FROM sqlite_master WHERE type = 'trigger'";
 
 /// `text` split at top-level commas (outside parentheses and quotes).
 pub fn split_top(text: &str) -> Vec<String> {
@@ -888,6 +927,29 @@ fn lite_generated(sql: &str, column: &str) -> Option<String> {
     Some(expr.trim().to_owned())
 }
 
+/// The `SELECT` of a view, from its `CREATE VIEW` text: what follows the first `AS` outside quotes and parentheses.
+fn lite_view_body(sql: &str) -> Option<String> {
+    let (mut quote, mut depth) = (None::<char>, 0i32);
+    let chars: Vec<(usize, char)> = sql.char_indices().collect();
+    for (n, &(i, ch)) in chars.iter().enumerate() {
+        match (quote, ch) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '\'' | '"' | '`' | '[') => quote = Some(if ch == '[' { ']' } else { ch }),
+            (None, '(') => depth += 1,
+            (None, ')') => depth -= 1,
+            (None, 'a' | 'A') if depth == 0 && sql[i..].len() >= 2 && sql[i..i + 2].eq_ignore_ascii_case("as") => {
+                let word = |c: Option<&(usize, char)>| c.is_none_or(|(_, c)| !(c.is_alphanumeric() || *c == '_'));
+                if word(n.checked_sub(1).and_then(|p| chars.get(p))) && word(chars.get(n + 2)) {
+                    return Some(view_body(&sql[i + 2..])).filter(|b| !b.is_empty());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn lite_action(a: &str) -> Option<OnDelete> {
     match a.to_ascii_uppercase().as_str() {
         "CASCADE" => Some(OnDelete::Cascade),
@@ -934,13 +996,13 @@ fn lite_index(sql: &str, columns: &[LiteIndexColumn]) -> (Vec<IndexKey>, Option<
 
 async fn sqlite(conn: &dyn Executor) -> Result<Introspection> {
     let tables: Vec<LiteTable> = json(conn, LITE_TABLES).await?;
+    let views: Vec<LiteTable> = json(conn, LITE_VIEWS).await?;
     let columns: Vec<LiteColumn> = json(conn, LITE_COLUMNS).await?;
     let all_columns = &columns;
     let fks: Vec<LiteForeignKey> = json(conn, LITE_FOREIGN_KEYS).await?;
     let indexes: Vec<LiteIndex> = json(conn, LITE_INDEXES).await?;
     #[derive(Deserialize)]
     struct Other {
-        kind: String,
         name: String,
         table: String,
     }
@@ -1091,10 +1153,27 @@ async fn sqlite(conn: &dyn Executor) -> Result<Introspection> {
         out.schema.tables.push(t);
     }
     for o in others {
-        gaps.push(match o.kind.as_str() {
-            "view" => format!("view {}: views are not supported", o.name),
-            _ => format!("trigger {} on {}: SQLite triggers are not read", o.name, o.table),
-        });
+        gaps.push(format!("trigger {} on {}: SQLite triggers are not read", o.name, o.table));
+    }
+    for v in views {
+        let Some(body) = v.sql.as_deref().and_then(lite_view_body) else {
+            gaps.push(format!("view {}: its SELECT was not found in the view text; it is left out", v.name));
+            continue;
+        };
+        let columns: Vec<Column> = columns.iter().filter(|c| c.table == v.name).map(|c| Column {
+            name: c.name.clone(),
+            ty: c.ty.clone(),
+            nullable: true,
+            default: None,
+            identity: false,
+            comment: None,
+            generated: None,
+            nested: Default::default(),
+        }).collect();
+        out.schema.views.push(SqlView { name: v.name, body, columns, ..Default::default() });
+    }
+    if !out.schema.views.is_empty() {
+        out.schema.version = monorm_core::migrate::model::SNAPSHOT_VERSION;
     }
     Ok(out)
 }
@@ -1221,6 +1300,15 @@ fn adopt(live: &DbSchema, live_again: &DbSchema, target: &DbSchema) -> DbSchema 
             }
         }
     }
+    for v in &mut out.views {
+        // the deparsed `SELECT` is the only text of a view that the diff compares
+        let (Some(a), Some(b)) = (live_again.views.iter().find(|x| x.name == v.name), target.views.iter().find(|x| x.name == v.name)) else {
+            continue;
+        };
+        if a.body == b.body {
+            v.body = b.body.clone();
+        }
+    }
     out
 }
 
@@ -1231,6 +1319,8 @@ pub struct Pull {
     pub schema: String,
     /// What the schema leaves out.
     pub gaps: Vec<String>,
+    /// The SQL body of each view, by the path the schema reads it from (`views/<db schema>/<Name>.sql`), relative to the schema file.
+    pub views: std::collections::BTreeMap<std::path::PathBuf, String>,
     /// Steps a migration from the schema would still run on the database; empty when
     /// the schema reproduces it.
     pub steps: Vec<Step>,
@@ -1240,11 +1330,11 @@ pub struct Pull {
 pub async fn pull(conn: &dyn Executor) -> Result<Pull> {
     let live = introspect(conn).await?;
     let pulled = monorm_core::migrate::pull::pull(&live.schema, &live.gaps);
-    let (_, compiled) = monorm_core::dsl::compile(&pulled.schema, None)
+    let (_, compiled) = monorm_core::dsl::compile_with_overrides(&pulled.schema, None, &pulled.views)
         .and_then(monorm_core::dsl::check)
         .map_err(|e| Error::Migration(format!("the pulled schema doesn't compile (a bug in pull): {e}")))?;
     let snapshot = monorm_core::migrate::snapshot(&compiled).map_err(Error::Migration)?;
-    let (mut gaps, schema) = (pulled.gaps, pulled.schema);
+    let (mut gaps, schema, views) = (pulled.gaps, pulled.schema, pulled.views);
     // the check needs CREATE and enough locks; the schema file does not
     let steps = match compare(conn, &snapshot).await {
         Ok((steps, _)) => steps,
@@ -1253,7 +1343,7 @@ pub async fn pull(conn: &dyn Executor) -> Result<Pull> {
             vec![]
         }
     };
-    Ok(Pull { schema, gaps, steps })
+    Ok(Pull { schema, gaps, views, steps })
 }
 
 /// What [`drift`] found.

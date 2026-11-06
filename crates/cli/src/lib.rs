@@ -748,6 +748,11 @@ async fn database(command: &str, args: &Args, dir: &Path, schema: &Path) -> Resu
                 let pulled = introspect::pull(&*driver).await?;
                 write(&out, &pulled.schema)?;
                 println!("wrote {}", out.display());
+                for (path, body) in &pulled.views {
+                    let file = out.parent().unwrap_or(Path::new("")).join(path);
+                    write(&file, body)?;
+                    println!("wrote {}", file.display());
+                }
                 if pulled.steps.is_empty() && pulled.gaps.is_empty() {
                     println!("The schema reproduces the database.");
                 } else if pulled.steps.is_empty() {

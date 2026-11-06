@@ -25,8 +25,11 @@ PULL_DB = _url.path.lstrip("/") + "_pull"
 PULL_URL = urlunsplit(_url._replace(path="/" + PULL_DB))
 
 # What the fixture holds that the schema language can't say (see the `gap:` lines).
+# the view comes back around the table step: the diff cannot know what a view body reads
 EXPECTED_DIFFERENCES = [
+    "drop view live_bundles",
     "drop column bundles_slot.during",
+    "create view live_bundles",
 ]
 
 
@@ -68,8 +71,11 @@ async def test_pull_baseline_and_drift_of_a_django_style_database(tmp_path):
         assert '@relation("BundlesBundle_parent"' in text
         assert "rank Int @default(-1)" in text
         assert "@@id([bundle_id, tag])" in text
+        # a view reads back as a view block with its SELECT in a sidecar file
+        assert "view LiveBundles {" in text
+        assert "_deleted_at IS NULL" in pulled.views["views/public/LiveBundles.sql"]
         gaps = "\n".join(pulled.gaps)
-        for what in ["rule bundles_bundle_soft_delete", "view live_bundles", "tstzrange", "uses a sequence"]:
+        for what in ["rule bundles_bundle_soft_delete", "tstzrange", "uses a sequence"]:
             assert what in gaps
             assert what in text  # also listed at the end of the file
         assert [s.summary for s in pulled.differences] == EXPECTED_DIFFERENCES
@@ -505,5 +511,29 @@ async def test_sqlite_pull_reads_column_clauses(tmp_path):
     try:
         user = await User.objects.using(db).get()
         assert user.is_staff is True and user.price == 1.5
+    finally:
+        await db.close()
+
+
+async def test_sql_views_pull_back_without_drift(tmp_path):
+    db = await fresh(
+        "CREATE TABLE view_orders (id bigint PRIMARY KEY, shop text NOT NULL, total integer NOT NULL);"
+        "CREATE VIEW view_big AS SELECT id, shop, total FROM view_orders WHERE total > 100;"
+        "CREATE MATERIALIZED VIEW view_by_shop AS SELECT shop AS id, sum(total) AS spent FROM view_big GROUP BY shop;"
+        "CREATE UNIQUE INDEX view_by_shop_id ON view_by_shop (id)"
+    )
+    try:
+        pulled = await pull(db)
+        assert "view ViewBig {" in pulled.schema and "@@materialized" in pulled.schema
+        assert "@@depends_on([ViewBig])" in pulled.schema
+        assert not any("view" in g for g in pulled.gaps)
+        assert pulled.differences == []
+        schema = tmp_path / "schema.prisma"
+        pulled.write(schema)
+        assert "total > 100" in (tmp_path / "views" / "public" / "ViewBig.sql").read_text()
+        migrator = Migrator(db, Migrations(tmp_path / "migrations", schema))
+        await migrator.baseline()
+        assert not migrator.migrations.plan()
+        assert (await migrator.drift()).steps == []
     finally:
         await db.close()

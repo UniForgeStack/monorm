@@ -24,8 +24,8 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { resolveApps } from "./apps.js";
@@ -141,10 +141,18 @@ export class Pulled {
     /** What a migration from `schema` would still change on the database; empty when the
      * schema reproduces it. */
     readonly differences: readonly Step[],
+    /** The SQL body of each view, by its path (`views/<db schema>/<Name>.sql`) next to the schema file. */
+    readonly views: Readonly<Record<string, string>> = {},
   ) {}
 
+  /** Writes the schema file and the view bodies next to it. */
   write(path: string): void {
     writeFileSync(path, this.schema);
+    for (const [name, body] of Object.entries(this.views)) {
+      const file = join(dirname(path), name);
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, body);
+    }
   }
 }
 
@@ -154,8 +162,13 @@ export class Pulled {
  * (SQLite: an in-memory database).
  */
 export async function pull(db: Database): Promise<Pulled> {
-  const out = JSON.parse(await wait(() => db.engine.pullSchema())) as { schema: string; gaps: string[]; steps: Step[] };
-  return new Pulled(out.schema, out.gaps, out.steps);
+  const out = JSON.parse(await wait(() => db.engine.pullSchema())) as {
+    schema: string;
+    gaps: string[];
+    steps: Step[];
+    views: Record<string, string>;
+  };
+  return new Pulled(out.schema, out.gaps, out.steps, out.views);
 }
 
 /** The live database against the newest migration's snapshot (`Migrator.drift()`). */

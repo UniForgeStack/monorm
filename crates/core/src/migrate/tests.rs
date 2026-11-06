@@ -1575,3 +1575,198 @@ fn make_online_writes_ordered_folders_with_headers_and_snapshots() {
     assert!(files::make(&dir, &v2, None, false, true).unwrap().is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+fn view(name: &str, body: &str, extra: Value) -> Value {
+    let mut v = json!({"name": name, "table": name.to_lowercase(), "fields": [id(), field("title", "text")],
+        "sql_view": {"body": body, "depends_on": []}});
+    if let (Value::Object(v), Value::Object(extra)) = (&mut v, extra) {
+        for (k, e) in extra {
+            if k == "sql_view" {
+                v.get_mut("sql_view").unwrap().as_object_mut().unwrap().extend(e.as_object().unwrap().clone());
+            } else {
+                v.insert(k, e);
+            }
+        }
+    }
+    v
+}
+
+fn with_views(dialect: &str, title_ty: &str, views: Vec<Value>) -> Schema {
+    let mut models = vec![json!({"name": "Post", "table": "posts", "fields": [id(), field("title", title_ty)]})];
+    models.extend(views);
+    schema(json!({"dialect": dialect, "models": models}))
+}
+
+fn plan_between(a: &Schema, b: &Schema) -> MigrationPlan {
+    super::plan(b, &snapshot(a).unwrap()).unwrap()
+}
+
+const BODY: &str = "SELECT id, title FROM posts";
+
+#[test]
+fn a_new_view_is_created_last_and_dropped_first() {
+    let s = with_views("postgres", "text", vec![view("Titles", BODY, json!({}))]);
+    let plan = super::plan(&s, &DbSchema::default()).unwrap();
+    let up = sql(&plan.up);
+    assert!(up[0].starts_with("CREATE TABLE \"posts\""));
+    assert_eq!(up[1], format!("CREATE VIEW \"titles\" AS\n{BODY}"));
+    assert_eq!(up.len(), 2, "a view has no table");
+    assert_eq!(sql(&plan.down), vec!["DROP VIEW \"titles\"", "DROP TABLE \"posts\""]);
+    assert_eq!(plan.snapshot.version, 5);
+    settled(&s, &plan);
+    let parsed = parse_snapshot(&serde_json::to_string(&plan.snapshot).unwrap()).unwrap();
+    assert_eq!(parsed, plan.snapshot);
+}
+
+#[test]
+fn a_changed_body_drops_and_creates_without_or_replace() {
+    let a = with_views("postgres", "text", vec![view("Titles", BODY, json!({}))]);
+    let b = with_views("postgres", "text", vec![view("Titles", "SELECT id, title::int AS title FROM posts", json!({}))]);
+    let plan = plan_between(&a, &b);
+    let up = sql(&plan.up);
+    assert_eq!(up[0], "DROP VIEW \"titles\"");
+    assert!(up[1].starts_with("CREATE VIEW \"titles\" AS") && !up[1].contains("OR REPLACE"));
+    assert_eq!(up.len(), 2);
+    assert_eq!(sql(&plan.down)[0], "DROP VIEW \"titles\"");
+    assert!(sql(&plan.down)[1].ends_with(BODY));
+}
+
+#[test]
+fn a_table_change_drops_a_plain_view_before_it_and_creates_it_after() {
+    let a = with_views("postgres", "text", vec![view("Titles", BODY, json!({}))]);
+    let b = with_views("postgres", "int", vec![view("Titles", BODY, json!({}))]);
+    let up = plan_between(&a, &b).up;
+    let up = sql(&up);
+    assert_eq!(up.len(), 3, "{up:?}");
+    assert_eq!(up[0], "DROP VIEW \"titles\"");
+    assert!(up[1].starts_with("ALTER TABLE \"posts\" ALTER COLUMN \"title\" TYPE"));
+    assert!(up[2].starts_with("CREATE VIEW \"titles\""));
+}
+
+#[test]
+fn an_unchanged_view_stays_when_no_table_changes() {
+    let a = with_views("postgres", "text", vec![view("Titles", BODY, json!({}))]);
+    let b = with_views("postgres", "text", vec![view("Titles", BODY, json!({})), view("Other", "SELECT id, title FROM posts WHERE id > 1", json!({}))]);
+    let up = plan_between(&a, &b).up;
+    assert_eq!(up.len(), 1);
+    assert!(up[0].sql.starts_with("CREATE VIEW \"other\""));
+}
+
+#[test]
+fn depends_on_orders_creates_and_reverses_drops() {
+    let s = with_views("postgres", "text", vec![
+        view("B", "SELECT id, title FROM a", json!({"sql_view": {"depends_on": ["A"]}})),
+        view("A", BODY, json!({})),
+    ]);
+    let plan = super::plan(&s, &DbSchema::default()).unwrap();
+    let up = sql(&plan.up);
+    assert!(up[1].starts_with("CREATE VIEW \"a\"") && up[2].starts_with("CREATE VIEW \"b\""), "{up:?}");
+    assert_eq!(&sql(&plan.down)[..2], ["DROP VIEW \"b\"", "DROP VIEW \"a\""]);
+    // A body change of A drops B first and brings it back after A.
+    let changed = with_views("postgres", "text", vec![
+        view("B", "SELECT id, title FROM a", json!({"sql_view": {"depends_on": ["A"]}})),
+        view("A", "SELECT id, title FROM posts WHERE id > 0", json!({})),
+    ]);
+    let up = plan_between(&s, &changed).up;
+    let up = sql(&up);
+    assert_eq!(up.len(), 4, "{up:?}");
+    assert_eq!((up[0], up[1]), ("DROP VIEW \"b\"", "DROP VIEW \"a\""));
+    assert!(up[2].starts_with("CREATE VIEW \"a\"") && up[3].starts_with("CREATE VIEW \"b\""));
+}
+
+fn matview(name: &str, body: &str, extra: Value) -> Value {
+    let mut extra = extra;
+    extra.as_object_mut().unwrap().entry("sql_view").or_insert(json!({})).as_object_mut().unwrap().insert("materialized".into(), json!(true));
+    view(name, body, extra)
+}
+
+fn indexed_again() -> Value {
+    json!({"indexes": [{"name": "totals_title_idx", "columns": [{"field": "title"}]}]})
+}
+
+#[test]
+fn a_materialized_view_gets_its_indexes_and_stays_on_a_table_change() {
+    let indexed = json!({"indexes": [{"name": "totals_title_idx", "columns": [{"field": "title"}]}]});
+    let a = with_views("postgres", "text", vec![matview("Totals", BODY, indexed.clone())]);
+    let plan = super::plan(&a, &DbSchema::default()).unwrap();
+    let up = sql(&plan.up);
+    assert_eq!(up[1], format!("CREATE MATERIALIZED VIEW \"totals\" AS\n{BODY}"));
+    assert!(up[2].starts_with("CREATE INDEX \"totals_title_idx\" ON \"totals\""), "{up:?}");
+    assert!(plan.up[1].warning.as_deref().unwrap().contains("materialized view totals is filled"));
+    assert_eq!(sql(&plan.down)[0], "DROP MATERIALIZED VIEW \"totals\"");
+    settled(&a, &plan);
+    // A table change leaves the materialized view alone: PostgreSQL refuses a step that it blocks.
+    let b = with_views("postgres", "text", vec![matview("Totals", BODY, indexed)]);
+    let c = schema(json!({"models": [
+        {"name": "Post", "table": "posts", "fields": [id(), field("title", "text"), field("extra", "text")]},
+        matview("Totals", BODY, indexed_again()),
+    ]}));
+    let up = plan_between(&b, &c).up;
+    assert!(up.iter().all(|s| !s.sql.contains("totals")), "{:?}", sql(&up));
+    // A new index on a kept materialized view is only an index step.
+    let d = with_views("postgres", "text", vec![matview("Totals", BODY, json!({"indexes": [{"name": "totals_id_idx", "columns": [{"field": "id"}]}]}))]);
+    let up = plan_between(&b, &d).up;
+    assert_eq!(sql(&up).len(), 2, "{:?}", sql(&up));
+    assert!(up[0].sql.starts_with("DROP INDEX \"totals_title_idx\"") && up[1].sql.starts_with("CREATE INDEX \"totals_id_idx\""));
+}
+
+#[test]
+fn a_view_that_a_materialized_view_reads_drops_after_its_dependant() {
+    let mk = |ty: &str| with_views("postgres", ty, vec![
+        view("Plain", BODY, json!({})),
+        matview("Totals", "SELECT id, title FROM plain", json!({"sql_view": {"depends_on": ["Plain"]}})),
+    ]);
+    let up = plan_between(&mk("text"), &mk("int")).up;
+    let up = sql(&up);
+    assert_eq!((up[0], up[1]), ("DROP MATERIALIZED VIEW \"totals\"", "DROP VIEW \"plain\""), "{up:?}");
+    assert!(up[3].starts_with("CREATE VIEW \"plain\"") && up[4].starts_with("CREATE MATERIALIZED VIEW \"totals\""), "{up:?}");
+}
+
+#[test]
+fn create_all_and_drop_all_cover_views() {
+    let s = with_views("postgres", "text", vec![view("Titles", BODY, json!({})), matview("Totals", BODY, json!({}))]);
+    let all = create_all(&s).unwrap();
+    assert!(all[1].starts_with("CREATE OR REPLACE VIEW \"titles\"") && all[2].starts_with("CREATE MATERIALIZED VIEW IF NOT EXISTS \"totals\""), "{all:?}");
+    let drops = drop_all(&s).unwrap();
+    assert_eq!(&drops[..2], ["DROP MATERIALIZED VIEW IF EXISTS \"totals\" CASCADE", "DROP VIEW IF EXISTS \"titles\" CASCADE"]);
+    let lite = with_views("sqlite", "text", vec![view("Titles", BODY, json!({}))]);
+    assert!(create_all(&lite).unwrap().last().unwrap().starts_with("CREATE VIEW IF NOT EXISTS \"titles\""));
+    assert_eq!(drop_all(&lite).unwrap(), ["DROP VIEW IF EXISTS \"titles\"", "DROP TABLE IF EXISTS \"posts\""]);
+}
+
+#[test]
+fn a_sqlite_rebuild_drops_the_views_first_and_creates_them_last() {
+    let a = with_views("sqlite", "text", vec![view("Titles", BODY, json!({}))]);
+    let b = with_views("sqlite", "int", vec![view("Titles", BODY, json!({}))]);
+    let plan = plan_between(&a, &b);
+    assert_eq!(plan.up.len(), 1);
+    let up = plan.up[0].sql.split(";\n").collect::<Vec<_>>();
+    let at = |needle: &str| up.iter().position(|s| s.starts_with(needle)).unwrap_or_else(|| panic!("{needle} in {up:?}"));
+    assert!(at("DROP VIEW \"titles\"") < at("CREATE TABLE \"__orm_new_posts\""));
+    assert!(at("DROP VIEW \"titles\"") < at("DROP TABLE \"posts\""));
+    assert!(at("ALTER TABLE \"__orm_new_posts\" RENAME TO") < at("CREATE VIEW \"titles\""));
+    assert!(plan.up[0].sql.contains("monorm_unmanaged_view") && plan.up[0].sql.contains("name NOT IN ('titles')"));
+    // Only the view changed: no rebuild.
+    let c = with_views("sqlite", "int", vec![view("Titles", "SELECT id FROM posts", json!({}))]);
+    let up = plan_between(&b, &c).up;
+    assert_eq!(sql(&up), vec!["DROP VIEW \"titles\"", "CREATE VIEW \"titles\" AS\nSELECT id FROM posts"]);
+}
+
+
+#[test]
+fn pull_writes_a_view_block_and_a_sidecar_that_compile_back_to_the_snapshot() {
+    use std::{collections::BTreeMap, path::PathBuf};
+    let source = "model Item {\n  id Int @id\n  qty Int\n}\n\nview Stocked {\n  id Int @id\n  qty Int\n}\n\nview Summary {\n  id Int @id\n  @@materialized\n  @@depends_on([Stocked])\n  @@index([id], unique: true)\n}\n";
+    let bodies = BTreeMap::from([
+        (PathBuf::from("views/public/Stocked.sql"), "SELECT id, qty FROM item WHERE qty > 0".to_owned()),
+        (PathBuf::from("views/public/Summary.sql"), "SELECT id FROM stocked".to_owned()),
+    ]);
+    let (_, s) = crate::dsl::compile_with_overrides(source, None, &bodies).and_then(crate::dsl::check).unwrap();
+    let snap = snapshot(&s).unwrap();
+    let pulled = pull::pull(&snap, &[]);
+    assert!(pulled.schema.contains("view Summary {") && pulled.schema.contains("@@depends_on([Stocked])"), "{}", pulled.schema);
+    assert_eq!(pulled.views.keys().map(|p| p.to_string_lossy().into_owned()).collect::<Vec<_>>(), ["views/public/Stocked.sql", "views/public/Summary.sql"]);
+    assert_eq!(pulled.views[&PathBuf::from("views/public/Stocked.sql")].trim(), "SELECT id, qty FROM item WHERE qty > 0");
+    let (_, again) = crate::dsl::compile_with_overrides(&pulled.schema, None, &pulled.views).and_then(crate::dsl::check).unwrap();
+    assert_eq!(snapshot(&again).unwrap().views, snap.views);
+}

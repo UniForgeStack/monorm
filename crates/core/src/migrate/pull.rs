@@ -6,6 +6,7 @@
 //! file, so a reader sees what the pulled schema does not reproduce.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::PathBuf;
 
 use super::model::{object_name, DbSchema, ForeignKey, Function, Index, IndexKey, Table, Unique};
 use crate::dialect::Dialect;
@@ -16,6 +17,8 @@ use crate::ir::{Deferrable, ForEach, Nulls, OnDelete, TriggerEvent, TriggerTimin
 pub struct Pulled {
     pub schema: String,
     pub gaps: Vec<String>,
+    /// The SQL body of each view, by the path the compiler reads it from (`views/<db schema>/<Name>.sql`), relative to the schema file.
+    pub views: BTreeMap<PathBuf, String>,
 }
 
 /// Type names the schema language reserves.
@@ -593,6 +596,81 @@ pub fn pull(db: &DbSchema, gaps: &[String]) -> Pulled {
         }
     }
 
+    // -- views -----------------------------------------------------------------------------
+    let view_dir = if dialect == Dialect::Sqlite { "main" } else { "public" };
+    let view_names: HashMap<&str, String> = db.views.iter().map(|v| (v.name.as_str(), unique_name(pascal(&v.name), &mut type_names))).collect();
+    let mut view_blocks: Vec<String> = vec![];
+    let mut sidecars: BTreeMap<PathBuf, String> = BTreeMap::new();
+    for v in &db.views {
+        let name = &view_names[v.name.as_str()];
+        let table = Table { name: v.name.clone(), columns: v.columns.clone(), indexes: v.indexes.clone(), ..Default::default() };
+        let mut m = ModelOut { table: &table, name: name.clone(), fields: BTreeMap::new(), used: BTreeSet::new(), lines: vec![], attrs: vec![] };
+        let mut typed = vec![];
+        for c in &v.columns {
+            let Some((ty, db_attr, array)) = field_type(&c.ty, dialect, &enums) else {
+                gaps.push(format!("column {}.{} has type {}, which the schema can't declare; it is left out", v.name, c.name, c.ty));
+                continue;
+            };
+            let field = unique_name(identifier(&c.name), &mut m.used);
+            m.fields.insert(c.name.clone(), field);
+            typed.push((c, ty, db_attr, array));
+        }
+        // A view model needs a key. The database knows none, so `id` is the key, else the first column.
+        let Some(key) = typed.iter().find(|(c, ..)| c.name == "id").or(typed.first()).map(|(c, ..)| c.name.clone()) else {
+            gaps.push(format!("view {} has no column the schema can declare; it is left out", v.name));
+            continue;
+        };
+        if key != "id" {
+            gaps.push(format!("view {}: a view has no key in the database, so column {key} is marked @id; check that it identifies a row", v.name));
+        }
+        for (c, ty, db_attr, array) in &typed {
+            let field = m.field(&c.name);
+            let mut line = format!("{field} {ty}{}{}", if *array { "[]" } else { "" }, if c.nullable && c.name != key { "?" } else { "" });
+            let mut attrs = vec![];
+            if c.name == key {
+                attrs.push("@id".to_owned());
+            }
+            if field != c.name {
+                attrs.push(format!("@map({})", quoted(&c.name)));
+            }
+            attrs.extend(db_attr.clone());
+            if !attrs.is_empty() {
+                line.push(' ');
+                line.push_str(&attrs.join(" "));
+            }
+            m.lines.push(line);
+        }
+        if v.materialized {
+            m.attrs.push("@@materialized".into());
+        }
+        let reads: Vec<&str> = v.depends_on.iter().filter_map(|d| view_names.get(d.as_str()).map(String::as_str)).collect();
+        if !reads.is_empty() {
+            m.attrs.push(format!("@@depends_on([{}])", reads.join(", ")));
+        }
+        for ix in &v.indexes {
+            match index_attr(&m, ix, &BTreeSet::new()) {
+                Some(line) => m.attrs.push(line),
+                None => gaps.push(format!("index {} uses a column that is left out", ix.name)),
+            }
+        }
+        if m.name.to_lowercase() != v.name {
+            m.attrs.insert(0, format!("@@map({})", quoted(&v.name)));
+        }
+        let mut block = format!("\nview {} {{\n", m.name);
+        for l in &m.lines {
+            block.push_str(&format!("  {l}\n"));
+        }
+        if !m.attrs.is_empty() {
+            block.push('\n');
+            for a in &m.attrs {
+                block.push_str(&format!("  {a}\n"));
+            }
+        }
+        block.push_str("}\n");
+        view_blocks.push(block);
+        sidecars.insert(PathBuf::from(format!("views/{view_dir}/{}.sql", m.name)), format!("{}\n", v.body));
+    }
+
     // -- output ----------------------------------------------------------------------------
     let mut out = String::from("// Pulled from a live database by `monorm pull`. Review it before the first migration.\n\n");
     out.push_str("datasource db {\n");
@@ -665,6 +743,9 @@ pub fn pull(db: &DbSchema, gaps: &[String]) -> Pulled {
         }
         out.push_str("}\n");
     }
+    for block in &view_blocks {
+        out.push_str(block);
+    }
     if !gaps.is_empty() {
         out.push_str("\n// Not reproduced by this schema:\n");
         for g in &gaps {
@@ -673,10 +754,10 @@ pub fn pull(db: &DbSchema, gaps: &[String]) -> Pulled {
     }
     // Compile the complete emitted schema so translation uses the final mapped
     // and disambiguated identifiers, enum types and destination context checks.
-    if let Ok(ir) = crate::dsl::compile(&out, None) {
+    if let Ok(ir) = crate::dsl::compile_with_overrides(&out, None, &sidecars) {
         if let Ok((native, _)) = crate::dsl::native::convert_source(&out, &ir) { out = native; }
     }
-    Pulled { schema: out, gaps }
+    Pulled { schema: out, gaps, views: sidecars }
 }
 
 /// Whether a function can be written as a function block.

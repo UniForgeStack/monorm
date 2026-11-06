@@ -1,5 +1,5 @@
 //! SQLite DDL and snapshot migrations. Structural changes rebuild managed tables.
-use super::{diff, model::{DbSchema, Index, Renames, Table, Trigger}, pg::ident, Step};
+use super::{diff, model::{DbSchema, Index, Renames, SqlView, Table, Trigger}, pg::ident, Step};
 use crate::ir::{Deferrable, OnDelete, TriggerEvent, TriggerTiming};
 use crate::schema::Result;
 
@@ -65,12 +65,22 @@ fn trigger(t: &str, tr: &Trigger, idempotent: bool) -> String {
     format!("CREATE TRIGGER {}{} {timing} {event} ON {} FOR EACH ROW{when} BEGIN\n{};\nEND", if idempotent { "IF NOT EXISTS " } else { "" }, ident(&name), ident(t), body.trim_end_matches(';'))
 }
 
+fn create_view(v: &SqlView, idempotent: bool) -> String {
+    format!("CREATE VIEW {}{} AS\n{}", if idempotent { "IF NOT EXISTS " } else { "" }, ident(&v.name), v.body)
+}
+
+/// All views of `views`, each after the views it reads.
+fn ordered(views: &[SqlView]) -> Vec<&SqlView> {
+    diff::view_order(views, &views.iter().map(|v| v.name.as_str()).collect())
+}
+
 pub fn create_all(db: &DbSchema, idempotent: bool) -> Vec<String> {
     let mut sql = db.tables.iter().map(|t| create_table(t, &t.name, idempotent)).collect::<Vec<_>>();
     for t in &db.tables {
         sql.extend(t.indexes.iter().map(|ix| index(&t.name, ix, idempotent)));
         sql.extend(t.triggers.iter().map(|tr| trigger(&t.name, tr, idempotent)));
     }
+    sql.extend(ordered(&db.views).into_iter().map(|v| create_view(v, idempotent)));
     sql
 }
 
@@ -94,8 +104,17 @@ pub fn steps(from: &DbSchema, to: &DbSchema, renames: &Renames) -> Result<Vec<St
 pub fn steps_with(from: &DbSchema, to: &DbSchema, renames: &Renames, fills: &[diff::Op]) -> Result<Vec<Step>> {
     let fills = fills.iter().map(json_fill_sql).collect::<Vec<_>>();
     if from.tables == to.tables {
-        if fills.is_empty() { return Ok(vec![]); }
-        return Ok(vec![Step::new("Fill new subfields of json columns".into(), fills.join(";\n"), None, vec![])]);
+        // No table changes: only the views that changed drop and come back.
+        let mut steps = vec![];
+        for op in diff::with_views(from, to, vec![]) {
+            match op {
+                diff::Op::DropView { name, .. } => steps.push(Step::new(format!("drop view {name}"), format!("DROP VIEW {}", ident(&name)), None, vec![])),
+                diff::Op::CreateView(v) => steps.push(Step::new(format!("create view {}", v.name), create_view(&v, false), None, vec![])),
+                _ => unreachable!("with_views adds only view operations to an empty plan; SQLite has no materialized view index"),
+            }
+        }
+        if !fills.is_empty() { steps.push(Step::new("Fill new subfields of json columns".into(), fills.join(";\n"), None, vec![])); }
+        return Ok(steps);
     }
     let mut sql = vec![];
     // Rebuilding drops objects attached to a table. Refuse objects absent from the
@@ -109,7 +128,14 @@ pub fn steps_with(from: &DbSchema, to: &DbSchema, renames: &Renames, fills: &[di
             sql.push(format!("INSERT INTO __orm_object_guard SELECT name FROM sqlite_schema WHERE tbl_name = {} AND type IN ('index', 'trigger') AND sql IS NOT NULL{known}", super::model::quote_literal(&t.name)));
         }
         sql.push("DROP TABLE __orm_object_guard".into());
+        // A view that the snapshot does not hold breaks the rename below and is not ours to drop.
+        sql.push("CREATE TEMP TABLE __orm_view_guard (name TEXT CONSTRAINT monorm_unmanaged_view CHECK (name IS NULL))".into());
+        let known = if from.views.is_empty() { String::new() } else { format!(" AND name NOT IN ({})", from.views.iter().map(|v| super::model::quote_literal(&v.name)).collect::<Vec<_>>().join(", ")) };
+        sql.push(format!("INSERT INTO __orm_view_guard SELECT name FROM sqlite_schema WHERE type = 'view'{known}"));
+        sql.push("DROP TABLE __orm_view_guard".into());
     }
+    // A managed view reads the old tables. It drops now and comes back over the new ones.
+    for v in ordered(&from.views).into_iter().rev() { sql.push(format!("DROP VIEW {}", ident(&v.name))); }
     // Foreign keys must be disabled BEFORE the runner starts the migration transaction.
     // Retain AUTOINCREMENT high-water marks even when their highest rows were deleted.
     let sequence = from.tables.iter().any(|t| t.columns.iter().any(|c| c.identity));
@@ -158,6 +184,7 @@ pub fn steps_with(from: &DbSchema, to: &DbSchema, renames: &Renames, fills: &[di
     for t in &to.tables {
         sql.extend(t.triggers.iter().map(|tr| trigger(&t.name, tr, false)));
     }
+    sql.extend(ordered(&to.views).into_iter().map(|v| create_view(v, false)));
     if sequence { sql.push("DROP TABLE __orm_sequence".into()); }
     let ops = diff::diff(from, to, renames)?;
     let warnings = ops.iter().filter_map(|op| op.warning()).collect::<Vec<_>>();

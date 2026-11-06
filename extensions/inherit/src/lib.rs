@@ -406,7 +406,7 @@ fn join_model(
     };
     let model = ModelIr {
         name: join_name.clone(), table: table.clone(), mapped: false, primary_key: vec![], pk_name: None, partition: None, renamed_from: None, comment: None,
-        protected_write: false, query_set: None, model_methods: None, classes_from: None, indexes: vec![], triggers: vec![],
+        protected_write: false, query_set: None, model_methods: None, classes_from: None, sql_view: None, indexes: vec![], triggers: vec![],
         relations: vec![link(&child_side, &source, child, &child_key), link(&target_side, &target, &rel.target, &target_key)],
         constraints: vec![ConstraintIr::Unique {
             name: None, fields: vec![source.name.clone(), target.name.clone()],

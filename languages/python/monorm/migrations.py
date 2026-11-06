@@ -34,7 +34,7 @@ import json
 import os
 import sys
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -168,17 +168,25 @@ class Pulled:
     #: What a migration from ``schema`` would still change on the database; empty when
     #: the schema reproduces it.
     differences: list[Step]
+    #: The SQL body of each view, by its path (``views/<db schema>/<Name>.sql``) next to the schema file.
+    views: dict[str, str] = field(default_factory=dict)
 
     def write(self, path: str | os.PathLike[str]) -> None:
-        Path(path).write_text(self.schema)
+        """Writes the schema file and the view bodies next to it."""
+        target = Path(path)
+        target.write_text(self.schema)
+        for name, body in self.views.items():
+            sidecar = target.parent / name
+            sidecar.parent.mkdir(parents=True, exist_ok=True)
+            sidecar.write_text(body)
 
 
 async def pull(db: Database) -> Pulled:
     """Reads the database ``db`` connects to (Postgres: its current schema) as a schema
     file, and checks the result by creating it again in a shadow schema that is rolled
     back (SQLite: an in-memory database)."""
-    schema, gaps, steps = await db._engine.pull_schema()
-    return Pulled(schema, gaps, [Step(*step) for step in steps])
+    schema, gaps, steps, views = await db._engine.pull_schema()
+    return Pulled(schema, gaps, [Step(*step) for step in steps], dict(views))
 
 
 @dataclass(frozen=True)

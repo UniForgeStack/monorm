@@ -13,7 +13,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 use super::model::{
-    Check, Column, DbSchema, EnumType, Exclusion, Extension, ForeignKey, Function, Index, PrimaryKey, Renames, Table,
+    Check, Column, DbSchema, EnumType, Exclusion, Extension, ForeignKey, Function, Index, PrimaryKey, Renames, SqlView, Table,
     Trigger, Unique, ShapeEntry,
 };
 
@@ -112,6 +112,10 @@ pub enum Op {
     DropTrigger { table: String, name: String },
     CommentOnTable { table: String, comment: Option<String> },
     CommentOnColumn { table: String, column: String, comment: Option<String> },
+    /// `CREATE [MATERIALIZED] VIEW`, never `OR REPLACE`: that cannot change a column type.
+    CreateView(SqlView),
+    /// `DROP [MATERIALIZED] VIEW`, without CASCADE: an unknown dependant must fail the step.
+    DropView { name: String, materialized: bool },
 }
 
 impl Op {
@@ -151,6 +155,7 @@ impl Op {
             Op::AddEnumValue { name, value, .. } => {
                 format!("adds {value:?} to enum {name}; Postgres can't use it in the same transaction")
             }
+            Op::CreateView(v) if v.materialized => format!("materialized view {} is filled when it is created; this can take long", v.name),
             _ => return None,
         })
     }
@@ -629,6 +634,90 @@ pub fn json_backfills(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Resu
 
 /// Operations turning `old` into `new`. `renames` maps new names to old ones.
 pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<Vec<Op>, String> {
+    let ops = diff_tables(old, new, renames)?;
+    if old.views.is_empty() && new.views.is_empty() { return Ok(ops); }
+    Ok(with_views(old, new, ops))
+}
+
+/// Whether the operation can block a `DROP`/`ALTER` under a view, or change what a view reads.
+/// An operation not named here counts, so a new kind of operation errs on the side of recreating views.
+fn affects_views(op: &Op) -> bool {
+    !matches!(
+        op,
+        Op::CreateExtension(_) | Op::CreateFunction(_) | Op::CreateEnum(_) | Op::AddEnumValue { .. } | Op::CommentOnType { .. }
+            | Op::CreateTable { .. } | Op::SetNotNull { .. } | Op::DropNotNull { .. } | Op::SetDefault { .. } | Op::DropDefault { .. }
+            | Op::AddIdentity { .. } | Op::DropIdentity { .. } | Op::BackfillColumn { .. } | Op::BackfillJson { .. } | Op::CopyColumns { .. }
+            | Op::AddConstraint { .. } | Op::DropConstraint { .. } | Op::RenameConstraint { .. }
+            | Op::CreateIndex { .. } | Op::DropIndex { .. } | Op::RenameIndex { .. } | Op::CreateTrigger { .. } | Op::DropTrigger { .. }
+            | Op::CommentOnTable { .. } | Op::CommentOnColumn { .. } | Op::CreateView(_) | Op::DropView { .. }
+    )
+}
+
+/// `names` of `views` with each view after the views it `depends_on`, else in schema order.
+pub(super) fn view_order<'a>(views: &'a [SqlView], names: &HashSet<&str>) -> Vec<&'a SqlView> {
+    fn visit<'a>(v: &'a SqlView, views: &'a [SqlView], names: &HashSet<&str>, seen: &mut HashSet<&'a str>, out: &mut Vec<&'a SqlView>) {
+        if !names.contains(v.name.as_str()) || !seen.insert(&v.name) { return; }
+        for d in &v.depends_on {
+            if let Some(d) = views.iter().find(|o| &o.name == d) { visit(d, views, names, seen, out); }
+        }
+        out.push(v);
+    }
+    let (mut seen, mut out) = (HashSet::new(), vec![]);
+    for v in views { visit(v, views, names, &mut seen, &mut out); }
+    out
+}
+
+/// Adds the view operations to the table operations: views drop first and come back last.
+///
+/// The body is opaque, so the diff cannot know what a view reads:
+/// - a plain view drops and comes back when its body changed or when a table operation can touch a view;
+/// - a materialized view drops and comes back only when its body or flag changed, because it holds data;
+///   PostgreSQL refuses a table step that a materialized view blocks;
+/// - a view that reads a dropped view drops first and comes back after it, whatever its kind.
+pub(super) fn with_views(old: &DbSchema, new: &DbSchema, mut ops: Vec<Op>) -> Vec<Op> {
+    let touched = ops.iter().any(affects_views);
+    let kept = |name: &str| new.views.iter().find(|n| n.name == name);
+    let mut dropped: HashSet<&str> = old.views.iter()
+        .filter(|o| match kept(&o.name) {
+            None => true,
+            Some(n) => n.body != o.body || n.materialized != o.materialized || (touched && !o.materialized),
+        })
+        .map(|o| o.name.as_str())
+        .collect();
+    loop {
+        let before = dropped.len();
+        for o in &old.views {
+            if o.depends_on.iter().any(|d| dropped.contains(d.as_str())) && kept(&o.name).is_some() { dropped.insert(&o.name); }
+        }
+        if before == dropped.len() { break; }
+    }
+    let drops = view_order(&old.views, &dropped).into_iter().rev()
+        .map(|o| Op::DropView { name: o.name.clone(), materialized: o.materialized }).collect::<Vec<_>>();
+    let created: HashSet<&str> = new.views.iter()
+        .filter(|n| dropped.contains(n.name.as_str()) || !old.views.iter().any(|o| o.name == n.name))
+        .map(|n| n.name.as_str()).collect();
+    let mut creates = vec![];
+    for v in view_order(&new.views, &created) {
+        creates.push(Op::CreateView(v.clone()));
+        creates.extend(v.indexes.iter().map(|ix| Op::CreateIndex { table: v.name.clone(), index: ix.clone() }));
+    }
+    // A materialized view that stays keeps its data; only its indexes change.
+    for n in new.views.iter().filter(|n| n.materialized && !created.contains(n.name.as_str())) {
+        let Some(o) = old.views.iter().find(|o| o.name == n.name) else { continue };
+        creates.extend(o.indexes.iter().filter(|i| !n.indexes.contains(i)).map(|i| Op::DropIndex { name: i.name.clone() }));
+        creates.extend(n.indexes.iter().filter(|i| !o.indexes.contains(i)).map(|i| Op::CreateIndex { table: n.name.clone(), index: i.clone() }));
+    }
+    // Drops go before the first table step; creates after the last, before enum, function and extension drops.
+    let head = ops.iter().position(|op| !matches!(op, Op::CreateExtension(_) | Op::CreateFunction(_) | Op::CreateEnum(_) | Op::AddEnumValue { .. } | Op::CommentOnType { .. })).unwrap_or(ops.len());
+    let tail = ops.iter().rposition(|op| !matches!(op, Op::DropEnum(_) | Op::DropFunction(_) | Op::DropExtension(_))).map_or(0, |i| i + 1).max(head);
+    let rest = ops.split_off(tail);
+    ops.extend(creates);
+    ops.extend(rest);
+    ops.splice(head..head, drops);
+    ops
+}
+
+fn diff_tables(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<Vec<Op>, String> {
     let mut changed = HashSet::new();
     for n in &new.tables {
         let previous = renames.tables.get(&n.name).unwrap_or(&n.name);
@@ -663,8 +752,8 @@ pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<Vec<Op>
         let mut intermediate = old.clone();
         intermediate.tables.retain(|t| !rebuilt.contains(&t.name));
         for t in &mut intermediate.tables { t.foreign_keys.retain(|fk| !rebuilt.contains(&fk.ref_table)); }
-        let mut ops = diff(old, &intermediate, &Renames::default())?;
-        ops.extend(diff(&intermediate, new, renames)?);
+        let mut ops = diff_tables(old, &intermediate, &Renames::default())?;
+        ops.extend(diff_tables(&intermediate, new, renames)?);
         return Ok(ops);
     }
     let mut ops = vec![];

@@ -395,6 +395,13 @@ pub fn render_with(op: &Op, idempotent: bool, online: Online) -> String {
         Op::CommentOnColumn { table, column, comment: c } => {
             format!("COMMENT ON COLUMN {}.{} IS {}", ident(table), ident(column), comment(c))
         }
+        Op::CreateView(v) => match (v.materialized, idempotent) {
+            (true, true) => format!("CREATE MATERIALIZED VIEW IF NOT EXISTS {} AS\n{}", ident(&v.name), v.body),
+            (true, false) => format!("CREATE MATERIALIZED VIEW {} AS\n{}", ident(&v.name), v.body),
+            (false, true) => format!("CREATE OR REPLACE VIEW {} AS\n{}", ident(&v.name), v.body),
+            (false, false) => format!("CREATE VIEW {} AS\n{}", ident(&v.name), v.body),
+        },
+        Op::DropView { name, materialized } => format!("DROP {}VIEW {}", if *materialized { "MATERIALIZED " } else { "" }, ident(name)),
     }
 }
 
@@ -438,5 +445,7 @@ pub fn summary(op: &Op) -> String {
         Op::DropTrigger { table, name } => format!("drop trigger {name} on {table}"),
         Op::CommentOnTable { table, .. } => format!("comment on table {table}"),
         Op::CommentOnColumn { table, column, .. } => format!("comment on column {table}.{column}"),
+        Op::CreateView(v) => format!("create {}view {}", if v.materialized { "materialized " } else { "" }, v.name),
+        Op::DropView { name, materialized } => format!("drop {}view {name}", if *materialized { "materialized " } else { "" }),
     }
 }

@@ -20,7 +20,7 @@ use crate::ir::{
 };
 use crate::schema::{Model, Result, Schema};
 
-pub const SNAPSHOT_VERSION: u32 = 4;
+pub const SNAPSHOT_VERSION: u32 = 5;
 /// Postgres truncates identifiers longer than this (NAMEDATALEN - 1).
 const MAX_IDENT: usize = 63;
 
@@ -45,6 +45,27 @@ pub struct DbSchema {
     pub enums: Vec<EnumType>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tables: Vec<Table>,
+    /// SQL views and materialized views. An engine older than version 5 would ignore them, so a snapshot with views has version 5.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub views: Vec<SqlView>,
+}
+
+/// A SQL view or materialized view. The body is the user's `SELECT`; the core renders the DDL around it.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct SqlView {
+    pub name: String,
+    pub body: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub materialized: bool,
+    /// Names of the views that this view reads. They order the DDL; they do not change the database.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<String>,
+    /// The columns the model reads. Pull and drift use them; the diff does not compare them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub columns: Vec<Column>,
+    /// Indexes of a materialized view, including its unique constraints as unique indexes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub indexes: Vec<Index>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -935,6 +956,21 @@ impl Builder<'_> {
 }
 
 /// The database schema the ORM schema describes, plus its rename hints.
+fn sql_view(schema: &Schema, m: &Model, v: &crate::ir::SqlViewIr, table: Table) -> Result<SqlView> {
+    if m.ir.renamed_from.is_some() {
+        return Err(format!("view {}: a view takes no @@renamed_from hint; a changed view drops and comes back", m.ir.name));
+    }
+    let depends_on = v.depends_on.iter().map(|d| Ok(schema.model(schema.model_idx(d)?).table().to_owned())).collect::<Result<Vec<_>>>()?;
+    let mut indexes = table.indexes;
+    // A materialized view has no constraints; a unique key is a unique index.
+    for u in table.uniques {
+        let keys = u.columns.iter().map(|c| IndexKey { column: Some(c.clone()), expr: None, collation: None, opclass: None, desc: false, nulls: None }).collect();
+        indexes.push(Index { name: u.name, unique: true, method: None, keys, include: vec![], where_: None, with: vec![], nulls_not_distinct: u.nulls_not_distinct });
+    }
+    let columns = table.columns.into_iter().map(|c| Column { default: None, identity: false, ..c }).collect();
+    Ok(SqlView { name: table.name, body: v.body.clone(), materialized: v.materialized, depends_on, columns, indexes })
+}
+
 pub fn build(schema: &Schema) -> Result<(DbSchema, Renames)> {
     let mut b = Builder {
         schema,
@@ -944,13 +980,17 @@ pub fn build(schema: &Schema) -> Result<(DbSchema, Renames)> {
         local_names: BTreeSet::new(),
         trigger_functions: vec![],
     };
-    let mut db = DbSchema { identities: schema.identities.clone(), dialect: schema.dialect, version: if !schema.partitions.is_empty() { SNAPSHOT_VERSION } else if schema.identities.is_some() { 3 } else if schema.dialect.is_postgres() { 1 } else { 2 }, ..Default::default() };
+    let mut db = DbSchema { identities: schema.identities.clone(), dialect: schema.dialect, version: if schema.models.iter().any(|m| m.ir.sql_view.is_some()) { SNAPSHOT_VERSION } else if !schema.partitions.is_empty() { 4 } else if schema.identities.is_some() { 3 } else if schema.dialect.is_postgres() { 1 } else { 2 }, ..Default::default() };
     let mut renames = Renames::default();
     let mut tables = BTreeSet::new();
     for m in &schema.models {
         let table = b.table(m)?;
         if !tables.insert(table.name.clone()) {
             return Err(format!("two models use table {:?}", table.name));
+        }
+        if let Some(v) = &m.ir.sql_view {
+            db.views.push(sql_view(schema, m, v, table)?);
+            continue;
         }
         // One old name renames to one new name, as `diff::diff` does on every dialect.
         if let Some(old) = &m.ir.renamed_from {

@@ -172,7 +172,7 @@ fn pg_plan(previous: &DbSchema, p: Prepared, up: &[Op], down: &[Op]) -> Migratio
 /// Compare their checked structure so pull and drift do not report those as changes.
 pub fn reconcile_introspection(previous: &DbSchema, current: &mut DbSchema) {
     let pulled = pull::pull(current, &[]);
-    if let Ok(schema) = crate::dsl::compile(&pulled.schema, None).and_then(Schema::from_ir) {
+    if let Ok(schema) = crate::dsl::compile_with_overrides(&pulled.schema, None, &pulled.views).and_then(Schema::from_ir) {
         reconcile::reconcile(&schema, previous, current);
     }
 }
@@ -206,14 +206,18 @@ pub fn create_statements(db: &DbSchema) -> Vec<String> {
 pub fn drop_all(schema: &Schema) -> Result<Vec<String>> {
     let current = snapshot(schema)?;
     if current.dialect == crate::dialect::Dialect::Sqlite {
-        return Ok(current.tables.iter().rev().map(|t| format!("DROP TABLE IF EXISTS {}", pg::ident(&t.name))).collect());
+        let mut out: Vec<String> = current.views.iter().rev().map(|v| format!("DROP VIEW IF EXISTS {}", pg::ident(&v.name))).collect();
+        out.extend(current.tables.iter().rev().map(|t| format!("DROP TABLE IF EXISTS {}", pg::ident(&t.name))));
+        return Ok(out);
     }
-    let mut out: Vec<String> = current
+    let mut out: Vec<String> = current.views.iter().rev()
+        .map(|v| format!("DROP {}VIEW IF EXISTS {} CASCADE", if v.materialized { "MATERIALIZED " } else { "" }, pg::ident(&v.name)))
+        .collect();
+    out.extend(current
         .tables
         .iter()
         .rev()
-        .map(|t| format!("DROP TABLE IF EXISTS {} CASCADE", pg::ident(&t.name)))
-        .collect();
+        .map(|t| format!("DROP TABLE IF EXISTS {} CASCADE", pg::ident(&t.name))));
     out.extend(
         current.functions.iter().map(|f| format!("DROP FUNCTION IF EXISTS {}({}) CASCADE", pg::ident(&f.name), f.args)),
     );

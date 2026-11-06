@@ -18,8 +18,11 @@ const PULL_DB = new URL(DATABASE_URL).pathname.slice(1) + "_pull_js";
 const PULL_URL = Object.assign(new URL(DATABASE_URL), { pathname: "/" + PULL_DB }).toString();
 
 // What the fixture holds that the schema language can't say (see the `gap:` lines).
+// the view comes back around the table step: the diff cannot know what a view body reads
 const EXPECTED = [
+  "drop view live_bundles",
   "drop column bundles_slot.during",
+  "create view live_bundles",
 ];
 
 before(async () => {
@@ -122,6 +125,28 @@ test("sqlite generated columns pull back without drift", async () => {
       total INTEGER GENERATED ALWAYS AS (quantity * price) ${kind})`);
     await assertGeneratedPullIsClean(db, dir, kind === "STORED" ? "@generated((quantity * price))" : "@generated((quantity * price), stored: false)");
   }
+});
+
+test("sql views pull back without drift", async () => {
+  const db = await connect(PULL_URL, { maxConnections: 2, default: false, registry: new Registry() });
+  opened.push(db);
+  await db.execute(`DROP SCHEMA public CASCADE; CREATE SCHEMA public;
+    CREATE TABLE view_orders (id bigint PRIMARY KEY, shop text NOT NULL, total integer NOT NULL);
+    CREATE VIEW view_big AS SELECT id, shop, total FROM view_orders WHERE total > 100;
+    CREATE MATERIALIZED VIEW view_by_shop AS SELECT shop AS id, sum(total) AS spent FROM view_big GROUP BY shop;
+    CREATE UNIQUE INDEX view_by_shop_id ON view_by_shop (id)`);
+  const dir = mkdtempSync(join(tmpdir(), "monorm-views-"));
+  const pulled = await pull(db);
+  assert.ok(pulled.schema.includes("view ViewBig {") && pulled.schema.includes("@@materialized"));
+  assert.ok(pulled.schema.includes("@@depends_on([ViewBig])"));
+  assert.ok(!pulled.gaps.some((g) => g.includes("view")), pulled.gaps.join("\n"));
+  assert.deepEqual(pulled.differences, []);
+  const schema = join(dir, "schema.prisma");
+  pulled.write(schema);
+  assert.ok(readFileSync(join(dir, "views", "public", "ViewBig.sql"), "utf8").includes("total > 100"));
+  const migrator = new Migrator(db, new Migrations(join(dir, "migrations"), schema));
+  await migrator.baseline();
+  assert.deepEqual((await migrator.drift()).steps, []);
 });
 
 test("rollback refuses a baselined migration unless forced", async () => {

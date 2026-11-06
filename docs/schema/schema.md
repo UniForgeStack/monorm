@@ -78,7 +78,7 @@ row triggers with one INSERT, UPDATE or DELETE event. Statement triggers, TRUNCA
 INSTEAD OF on tables, trigger functions, languages and arguments are unsupported.
 Row/advisory locks and DISTINCT ON fail query validation. Raw SQL expressions and
 trigger bodies must use SQLite syntax. Generated columns (`@generated`) work on both
-databases; views remain out of scope.
+databases. SQL views (`view` blocks) work on both; a materialized view needs PostgreSQL.
 
 Any schema change currently rebuilds every managed table in one transaction.
 Rebuilds copy rows, apply table/column rename hints, preserve AUTOINCREMENT high
@@ -175,8 +175,8 @@ END;
   `plpgsql`), `volatility` (`immutable` / `stable` / `volatile`), `security_definer`,
   `body`. The formatter removes the indentation inside it, which SQL doesn't mind.
 * `generator` blocks (Prisma Client's) are read, and only `extensions = ["id", ...]` has an effect:
-  it selects installed extension libraries by id (see [Installed extension libraries](#installed-extension-libraries)). `type` and `view`
-  aren't supported yet; `enum` is below.
+  it selects installed extension libraries by id (see [Installed extension libraries](#installed-extension-libraries)). `type`
+  isn't supported yet; `enum` is below and `view` is in [SQL views](#sql-views).
 
 A model's table is the model name in lower case, or `@@map("name")`.
 `@@comment("...")` and `@@renamed_from("old_table")` set its comment and previous name.
@@ -406,6 +406,38 @@ An insert returns the computed value.
 SQLite cannot add a STORED generated column with `ADD COLUMN`, so the migration rebuilds the table and the copy step leaves the column out.
 A changed expression drops and adds the column on Postgres (the stored values are computed again) and rebuilds the table on SQLite.
 `pull` writes `@generated(raw("..."))` with the text that the database keeps, and `drift` right after it reports no difference.
+
+### SQL views
+
+A `view` block declares a read-only model over a SQL `SELECT`. It uses model syntax: fields, `@id`, `@map`, `@@map`.
+The `SELECT` lives in a sidecar file, `views/<db schema>/<Name>.sql`, next to the schema file (`public` on PostgreSQL, `main` on SQLite).
+The file holds the `SELECT` only: no `CREATE VIEW`. A trailing `;` is ignored.
+
+```prisma
+view ActiveUser {
+  id    Int    @id
+  email String
+
+  @@materialized
+  @@depends_on([Account])
+  @@index([id], unique: true)
+}
+```
+
+* The view needs an `@id` field: it names the row for the client, the database has no key.
+* `@@materialized` makes a PostgreSQL materialized view. `@@index` and `@@index(unique: true)` are valid only on a materialized view.
+  A view takes no relation constraint, `@unique` or `@@unique`.
+* `@@depends_on([Other])` names the views this view reads. It orders the migration: a view drops first and comes back last.
+  Tables need no `@@depends_on`.
+* A view refuses every write (`insert`, `update`, `delete`, `save`, copy) with `ReadOnlyModel`. The generated types have no write inputs.
+* `db.refresh(Model, concurrently=...)` (TypeScript: `db.refresh(Model, { concurrently })`) runs `REFRESH MATERIALIZED VIEW`.
+  `concurrently` needs a unique index on the view. A plain view and SQLite refuse it.
+* A migration drops and creates a view when its `SELECT` or its `@@materialized` flag changes.
+  A materialized view keeps its data when only its indexes change.
+  **A drop loses the grants and the comment of the view**; set them again in the migration after the change.
+* `pull` writes each view as a `view` block and a sidecar file. The database has no key for a view, so the column `id` is the `@id`,
+  or the first column, with a gap line. `drift` compares the view `SELECT` in the form PostgreSQL prints, so a reformatted `SELECT` is not drift.
+  View comments are not tracked. SQLite `pull` writes no `@@depends_on`.
 
 ### Nested types
 
@@ -965,7 +997,7 @@ out, printed, and listed at the end of the file as `// gap:` lines:
 
 * rules (`CREATE RULE`; a gap that changes behaviour: a database made from the schema
   runs the statement that a rule rewrote, for example it deletes rows that a soft-delete
-  rule keeps), views, row-level security policies, domains, composite and
+  rule keeps), row-level security policies, domains, composite and
   range types, column collations;
 * tables without a primary key, columns of a type
   without a schema type (`tstzrange`, `interval`, ...);
@@ -1009,7 +1041,7 @@ change ignores the marker and still reverts a baselined row.
 `monorm drift` compares the database with the snapshot of the newest migration. It exits 1
 when they differ and prints the steps that bring the database to the snapshot. A
 pending migration is part of the newest snapshot, so it shows as drift until it is
-applied. Rules, views and the other gaps above are listed as not compared.
+applied. Rules and the other gaps above are listed as not compared. Views are compared (see [SQL views](#sql-views)).
 
 Postgres prints expressions in its own form (`CHECK ((views >= 0))`,
 `'x'::character varying`, `role = ANY (ARRAY[...])`), so the snapshot is never compared
@@ -1091,7 +1123,7 @@ for the syntax and interaction with composite identity and default filters.
 
 ## Not done yet
 
-* Views, domains, row-level security, multiple
+* Domains, row-level security, multiple
   database schemas.
 * Renaming a native enum value in place (`ALTER TYPE ... RENAME VALUE`): a renamed
   value is a removal plus an addition today.
