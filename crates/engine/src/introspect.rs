@@ -1161,21 +1161,21 @@ pub fn differences(live: &DbSchema, target: &DbSchema) -> Vec<Step> {
         // SQLite rebuilds tables: one step with SQLite's SQL that names every change
         let sql = monorm_core::migrate::sqlite::steps(&a, &b, &Default::default()).unwrap_or_default();
         let warnings: Vec<String> = ops.iter().filter_map(|op| op.warning()).collect();
-        vec![Step {
-            summary: ops.iter().map(monorm_core::migrate::pg::summary).collect::<Vec<_>>().join("; "),
-            sql: sql.into_iter().map(|s| s.sql).collect::<Vec<_>>().join("\n"),
-            warning: (!warnings.is_empty()).then(|| warnings.join("; ")),
-            destructive: vec![],
-        }]
+        vec![Step::new(
+            ops.iter().map(monorm_core::migrate::pg::summary).collect::<Vec<_>>().join("; "),
+            sql.into_iter().map(|s| s.sql).collect::<Vec<_>>().join("\n"),
+            (!warnings.is_empty()).then(|| warnings.join("; ")),
+            vec![],
+        )]
     } else {
         ops.iter()
-            .map(|op| Step { summary: monorm_core::migrate::pg::summary(op), sql: monorm_core::migrate::pg::render(op, false), warning: op.warning(), destructive: vec![] })
+            .map(|op| Step::new(monorm_core::migrate::pg::summary(op), monorm_core::migrate::pg::render(op, false), op.warning(), vec![]))
             .collect()
     };
     for e in &target.extensions {
         if !live.extensions.iter().any(|x| x.name == e.name) {
             let op = Op::CreateExtension(e.clone());
-            steps.insert(0, Step { summary: monorm_core::migrate::pg::summary(&op), sql: monorm_core::migrate::pg::render(&op, false), warning: None, destructive: vec![] });
+            steps.insert(0, Step::new(monorm_core::migrate::pg::summary(&op), monorm_core::migrate::pg::render(&op, false), None, vec![]));
         }
     }
     steps

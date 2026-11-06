@@ -1328,3 +1328,166 @@ fn sqlite_rebuilds_for_a_generated_column_and_copies_only_plain_columns() {
     let all = p4.up.iter().map(|s| s.sql.as_str()).collect::<Vec<_>>().join("\n");
     assert!(all.contains("INSERT INTO \"__orm_new_line\" (\"id\", \"quantity\", \"price\") SELECT"), "{all}");
 }
+
+// -- online (concurrent) generation -------------------------------------------------------
+
+fn kinds(plans: &[MigrationPlan]) -> Vec<String> {
+    plans
+        .iter()
+        .map(|p| match &p.kind {
+            FolderKind::Main => "main".to_owned(),
+            FolderKind::DropIndex(n) => format!("drop {n}"),
+            FolderKind::CreateIndex(n) => format!("create {n}"),
+            FolderKind::Validate => "validate".to_owned(),
+        })
+        .collect()
+}
+
+fn views() -> Value {
+    field("views", "int")
+}
+
+fn posts_v1() -> (Schema, DbSchema) {
+    let s = schema(blog(vec![], json!({})));
+    let snap = super::plan(&s, &DbSchema::default()).unwrap().snapshot;
+    (s, snap)
+}
+
+#[test]
+fn online_moves_a_new_index_of_an_existing_table_to_a_concurrent_folder() {
+    let (_, v1) = posts_v1();
+    let v2 = schema(blog(vec![views()], json!({"indexes": [{"columns": [{"field": "title"}]}]})));
+    let plans = plan_online(&v2, &v1).unwrap();
+    assert_eq!(kinds(&plans), ["main", "create \"posts_title_idx\""]);
+    assert_eq!(sql(&plans[0].up), ["ALTER TABLE \"posts\" ADD COLUMN \"views\" integer NOT NULL"]);
+    let index = &plans[1];
+    assert_eq!(sql(&index.up), ["CREATE INDEX CONCURRENTLY IF NOT EXISTS \"posts_title_idx\" ON \"posts\" (\"title\")"]);
+    assert!(index.up.iter().all(|s| !s.transaction));
+    assert!(plans[0].up.iter().all(|s| s.transaction));
+    // down: the main folder leaves the index to its own folder
+    assert_eq!(sql(&plans[0].down), ["ALTER TABLE \"posts\" DROP COLUMN \"views\""]);
+    assert_eq!(sql(&index.down), ["DROP INDEX CONCURRENTLY IF EXISTS \"posts_title_idx\""]);
+    assert!(index.down.iter().all(|s| !s.transaction));
+}
+
+#[test]
+fn online_moves_a_dropped_index_before_the_main_folder() {
+    let with_index = schema(blog(vec![], json!({"indexes": [{"columns": [{"field": "title"}]}]})));
+    let v1 = super::plan(&with_index, &DbSchema::default()).unwrap().snapshot;
+    let v2 = schema(blog(vec![views()], json!({})));
+    let plans = plan_online(&v2, &v1).unwrap();
+    assert_eq!(kinds(&plans), ["drop \"posts_title_idx\"", "main"]);
+    assert_eq!(sql(&plans[0].up), ["DROP INDEX CONCURRENTLY IF EXISTS \"posts_title_idx\""]);
+    assert!(!plans[0].up[0].transaction);
+    assert_eq!(sql(&plans[0].down), ["CREATE INDEX CONCURRENTLY IF NOT EXISTS \"posts_title_idx\" ON \"posts\" (\"title\")"]);
+    assert_eq!(sql(&plans[1].down), ["ALTER TABLE \"posts\" DROP COLUMN \"views\""]);
+}
+
+#[test]
+fn online_changes_an_index_definition_as_drop_then_create() {
+    let before = schema(blog(vec![], json!({"indexes": [{"name": "p_title", "columns": [{"field": "title"}]}]})));
+    let v1 = super::plan(&before, &DbSchema::default()).unwrap().snapshot;
+    let after = schema(blog(vec![], json!({"indexes": [{"name": "p_title", "columns": [{"field": "title"}, {"field": "id"}]}]})));
+    let plans = plan_online(&after, &v1).unwrap();
+    assert_eq!(kinds(&plans), ["drop \"p_title\"", "create \"p_title\""]);
+    // rollback: drop the new index, then build the old one; the folders hold no other step
+    assert_eq!(sql(&plans[1].down), ["DROP INDEX CONCURRENTLY IF EXISTS \"p_title\""]);
+    assert_eq!(sql(&plans[0].down), ["CREATE INDEX CONCURRENTLY IF NOT EXISTS \"p_title\" ON \"posts\" (\"title\")"]);
+}
+
+#[test]
+fn online_adds_a_foreign_key_and_a_check_not_valid_and_validates_them_in_a_folder() {
+    let users_only = json!({"models": [
+        {"name": "User", "table": "users", "fields": [id()]},
+        {"name": "Post", "table": "posts", "fields": [id(), field("author_id", "big_int"), views()]},
+    ]});
+    let v1 = super::plan(&schema(users_only), &DbSchema::default()).unwrap().snapshot;
+    let v2 = schema(blog(vec![views()], json!({"constraints": [{"kind": "check", "name": "views_positive", "expr": "views >= 0"}]})));
+    let plans = plan_online(&v2, &v1).unwrap();
+    assert_eq!(kinds(&plans).last().map(String::as_str), Some("validate"));
+    let main = sql(&plans[0].up);
+    assert!(main.iter().any(|s| s.ends_with("CHECK (views >= 0) NOT VALID")), "{main:?}");
+    assert!(main.iter().any(|s| s.contains("FOREIGN KEY") && s.ends_with("ON DELETE CASCADE NOT VALID")), "{main:?}");
+    let validate = plans.last().unwrap();
+    assert!(validate.up.iter().all(|s| s.transaction));
+    assert_eq!(validate.up.len(), 2);
+    assert!(sql(&validate.up).iter().all(|s| s.starts_with("ALTER TABLE \"posts\" VALIDATE CONSTRAINT ")));
+    assert!(validate.down.is_empty());
+}
+
+#[test]
+fn online_leaves_a_new_table_a_unique_index_and_a_partitioned_table_alone() {
+    // a new table with an index and a foreign key
+    let v0 = DbSchema::default();
+    let new_table = schema(blog(vec![], json!({"indexes": [{"columns": [{"field": "title"}]}]})));
+    let plans = plan_online(&new_table, &v0).unwrap();
+    assert_eq!(kinds(&plans), ["main"]);
+    let plain = super::plan(&new_table, &v0).unwrap();
+    assert_eq!(sql(&plans[0].up), sql(&plain.up));
+    assert_eq!(sql(&plans[0].down), sql(&plain.down));
+    assert_eq!(plans[0].snapshot, plain.snapshot);
+
+    // a unique index on an existing table keeps its shape
+    let (_, v1) = posts_v1();
+    let unique = schema(blog(vec![], json!({"indexes": [{"columns": [{"field": "title"}], "unique": true}]})));
+    let plans = plan_online(&unique, &v1).unwrap();
+    assert_eq!(kinds(&plans), ["main"]);
+    assert_eq!(sql(&plans[0].up), sql(&super::plan(&unique, &v1).unwrap().up));
+
+    // an index on a partitioned table keeps its shape: PostgreSQL refuses CONCURRENTLY there
+    let (_, mut v1) = posts_v1();
+    v1.tables.iter_mut().find(|t| t.name == "posts").unwrap().partition_by = Some("RANGE (\"id\")".into());
+    let indexed = schema(blog(vec![], json!({"indexes": [{"columns": [{"field": "title"}]}]})));
+    assert_eq!(kinds(&plan_online(&indexed, &v1).unwrap()), ["main"]);
+}
+
+#[test]
+fn online_gives_the_same_plan_as_plan_when_nothing_moves() {
+    let (_, v1) = posts_v1();
+    let v2 = schema(blog(vec![views()], json!({})));
+    let plain = super::plan(&v2, &v1).unwrap();
+    let plans = plan_online(&v2, &v1).unwrap();
+    assert_eq!(plans.len(), 1);
+    assert_eq!((sql(&plans[0].up), sql(&plans[0].down)), (sql(&plain.up), sql(&plain.down)));
+    assert_eq!(plans[0].snapshot, plain.snapshot);
+    assert!(plain.up.iter().chain(&plain.down).all(|s| s.transaction));
+
+    let v1 = super::plan(&v2, &DbSchema::default()).unwrap().snapshot;
+    assert!(plan_online(&v2, &v1).unwrap().iter().all(|p| p.up.is_empty()), "no change, no step");
+}
+
+#[test]
+fn online_folders_carry_the_snapshot_after_each_of_them() {
+    let before = schema(blog(vec![], json!({"indexes": [{"name": "old_idx", "columns": [{"field": "title"}]}]})));
+    let v1 = super::plan(&before, &DbSchema::default()).unwrap().snapshot;
+    let after = schema(blog(
+        vec![views()],
+        json!({"indexes": [{"name": "a_idx", "columns": [{"field": "views"}]}, {"name": "b_idx", "columns": [{"field": "title"}, {"field": "views"}]}],
+               "constraints": [{"kind": "check", "name": "views_positive", "expr": "views >= 0"}]}),
+    ));
+    let plans = plan_online(&after, &v1).unwrap();
+    assert_eq!(kinds(&plans), ["drop \"old_idx\"", "main", "create \"a_idx\"", "create \"b_idx\"", "validate"]);
+    let names = |p: &MigrationPlan| -> Vec<String> {
+        p.snapshot.tables.iter().find(|t| t.name == "posts").unwrap().indexes.iter().map(|i| i.name.clone()).collect()
+    };
+    assert_eq!(names(&plans[0]), Vec::<String>::new(), "after the drop");
+    assert_eq!(names(&plans[1]), Vec::<String>::new(), "the main folder builds no index");
+    assert_eq!(names(&plans[2]), ["a_idx"]);
+    assert_eq!(names(&plans[3]), ["a_idx", "b_idx"]);
+    // the last folder is the whole schema, exactly: the drift check and the next makemigrations read it
+    assert_eq!(plans.last().unwrap().snapshot, super::plan(&after, &v1).unwrap().snapshot);
+    settled(&after, plans.last().unwrap());
+    // a NOT VALID constraint is in the snapshot of the main folder
+    assert_eq!(plans[1].snapshot.tables.iter().find(|t| t.name == "posts").unwrap().checks.len(), 1);
+}
+
+#[test]
+fn online_does_nothing_on_sqlite() {
+    let mut ir = blog(vec![], json!({"indexes": [{"columns": [{"field": "title"}]}]}));
+    ir["dialect"] = json!("sqlite");
+    let s = schema(ir);
+    let plain = super::plan(&s, &DbSchema::default()).unwrap();
+    let plans = plan_online(&s, &DbSchema::default()).unwrap();
+    assert_eq!((plans.len(), sql(&plans[0].up)), (1, sql(&plain.up)));
+    assert!(plans[0].up.iter().all(|s| s.transaction));
+}

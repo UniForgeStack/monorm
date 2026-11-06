@@ -95,7 +95,7 @@ pub fn steps_with(from: &DbSchema, to: &DbSchema, renames: &Renames, fills: &[di
     let fills = fills.iter().map(json_fill_sql).collect::<Vec<_>>();
     if from.tables == to.tables {
         if fills.is_empty() { return Ok(vec![]); }
-        return Ok(vec![Step { summary: "Fill new subfields of json columns".into(), sql: fills.join(";\n"), warning: None, destructive: vec![] }]);
+        return Ok(vec![Step::new("Fill new subfields of json columns".into(), fills.join(";\n"), None, vec![])]);
     }
     let mut sql = vec![];
     // Rebuilding drops objects attached to a table. Refuse objects absent from the
@@ -162,5 +162,5 @@ pub fn steps_with(from: &DbSchema, to: &DbSchema, renames: &Renames, fills: &[di
     let ops = diff::diff(from, to, renames)?;
     let warnings = ops.iter().filter_map(|op| op.warning()).collect::<Vec<_>>();
     let destructive = diff::destructive_ops(&ops).into_iter().flatten().collect();
-    Ok(vec![Step { summary: "Rebuild SQLite schema and preserve existing rows".into(), sql: sql.join(";\n"), warning: if warnings.is_empty() { None } else { Some(warnings.join("; ")) }, destructive }])
+    Ok(vec![Step::new("Rebuild SQLite schema and preserve existing rows".into(), sql.join(";\n"), if warnings.is_empty() { None } else { Some(warnings.join("; ")) }, destructive)])
 }

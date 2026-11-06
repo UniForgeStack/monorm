@@ -11,6 +11,7 @@ pub mod diff;
 pub mod files;
 pub mod model;
 pub mod nested_copy;
+pub mod online;
 pub mod pg;
 pub mod pull;
 mod reconcile;
@@ -20,6 +21,7 @@ use serde::Serialize;
 
 pub use diff::{Destructive, DestructiveKind, Op};
 pub use model::DbSchema;
+pub use online::{plan_online, FolderKind};
 
 use crate::schema::{Result, Schema};
 
@@ -32,6 +34,14 @@ pub struct Step {
     /// The data the step can delete; serialized as a flag for the bindings.
     #[serde(serialize_with = "any")]
     pub destructive: Vec<Destructive>,
+    /// `false` for a step that PostgreSQL refuses inside a transaction (`CREATE INDEX CONCURRENTLY`).
+    pub transaction: bool,
+}
+
+impl Step {
+    pub fn new(summary: String, sql: String, warning: Option<String>, destructive: Vec<Destructive>) -> Step {
+        Step { summary, sql, warning, destructive, transaction: true }
+    }
 }
 
 fn any<S: serde::Serializer>(list: &[Destructive], s: S) -> std::result::Result<S::Ok, S::Error> {
@@ -44,9 +54,17 @@ pub struct MigrationPlan {
     pub down: Vec<Step>,
     /// The schema after `up`: the snapshot to store with the migration.
     pub snapshot: DbSchema,
+    /// What the folder of this plan is. Not serialized: the bindings see the merged plan.
+    #[serde(skip)]
+    pub kind: FolderKind,
 }
 
 fn steps(ops: &[Op], target: &DbSchema) -> Vec<Step> {
+    steps_with(ops, target, |_| pg::Online::default())
+}
+
+/// The steps of `ops`; `online` chooses the form of each operation.
+fn steps_with(ops: &[Op], target: &DbSchema, online: impl Fn(&Op) -> pg::Online) -> Vec<Step> {
     let destructive = diff::destructive_ops(ops);
     ops.iter()
         .zip(destructive)
@@ -64,7 +82,10 @@ fn steps(ops: &[Op], target: &DbSchema) -> Vec<Step> {
                     warning = Some(match warning { Some(w) => format!("{w}; {message}"), None => message });
                 }
             }
-            Step { summary: pg::summary(op), sql: pg::render(op, false), warning, destructive: destructive.into_iter().collect() }
+            let online = online(op);
+            let mut step = Step::new(pg::summary(op), pg::render_with(op, false, online), warning, destructive.into_iter().collect());
+            step.transaction = !online.concurrently;
+            step
         })
         .collect()
 }
@@ -86,9 +107,16 @@ pub fn snapshot(schema: &Schema) -> Result<DbSchema> {
     model::build(schema).map(|(s, _)| s)
 }
 
-/// The migration from `previous` (an earlier snapshot; empty for the first migration)
-/// to `schema`.
-pub fn plan(schema: &Schema, previous: &DbSchema) -> Result<MigrationPlan> {
+/// What `plan` and `plan_online` both start from: the schema after the change and its checks.
+struct Prepared {
+    current: DbSchema,
+    renames: model::Renames,
+    identity_changed: bool,
+    /// The ops that fill new nested subfields; they follow the diff in `up`.
+    fills: Vec<Op>,
+}
+
+fn prepare(schema: &Schema, previous: &DbSchema) -> Result<Prepared> {
     let schema = schema.physical();
     let (mut current, renames) = model::build(schema)?;
     reconcile::reconcile(schema, previous, &mut current);
@@ -104,19 +132,40 @@ pub fn plan(schema: &Schema, previous: &DbSchema) -> Result<MigrationPlan> {
     diff::check_copies(previous, &current, &renames)?;
     diff::check_generated_to_plain(previous, &current, &renames)?;
     diff::check_copies(&current, previous, &renames.reversed())?;
-    if current.dialect == crate::dialect::Dialect::Sqlite {
-        let mut up = sqlite::steps_with(previous, &current, &renames, &fills)?;
-        let mut down = sqlite::steps(&current, previous, &renames.reversed())?;
-        if identity_changed { identity_step(&mut up); identity_step(&mut down); }
-        return Ok(MigrationPlan { up, down, snapshot: current });
+    Ok(Prepared { current, renames, identity_changed, fills })
+}
+
+/// The PostgreSQL ops of the change and of its reverse.
+fn pg_ops(previous: &DbSchema, p: &Prepared) -> Result<(Vec<Op>, Vec<Op>)> {
+    let mut up = diff::diff(previous, &p.current, &p.renames)?;
+    up.extend(p.fills.iter().cloned());
+    let down = diff::diff(&p.current, previous, &p.renames.reversed())?;
+    Ok((up, down))
+}
+
+/// The migration from `previous` (an earlier snapshot; empty for the first migration)
+/// to `schema`.
+pub fn plan(schema: &Schema, previous: &DbSchema) -> Result<MigrationPlan> {
+    let p = prepare(schema, previous)?;
+    if p.current.dialect == crate::dialect::Dialect::Sqlite {
+        return sqlite_plan(previous, p);
     }
-    let mut up = diff::diff(previous, &current, &renames)?;
-    up.extend(fills);
-    let down = diff::diff(&current, previous, &renames.reversed())?;
-    let mut up = steps(&up, &current);
-    let mut down = steps(&down, previous);
-    if identity_changed { identity_step(&mut up); identity_step(&mut down); }
-    Ok(MigrationPlan { up, down, snapshot: current })
+    let (up, down) = pg_ops(previous, &p)?;
+    Ok(pg_plan(previous, p, &up, &down))
+}
+
+fn sqlite_plan(previous: &DbSchema, p: Prepared) -> Result<MigrationPlan> {
+    let mut up = sqlite::steps_with(previous, &p.current, &p.renames, &p.fills)?;
+    let mut down = sqlite::steps(&p.current, previous, &p.renames.reversed())?;
+    if p.identity_changed { identity_step(&mut up); identity_step(&mut down); }
+    Ok(MigrationPlan { up, down, snapshot: p.current, kind: FolderKind::Main })
+}
+
+fn pg_plan(previous: &DbSchema, p: Prepared, up: &[Op], down: &[Op]) -> MigrationPlan {
+    let mut up = steps(up, &p.current);
+    let mut down = steps(down, previous);
+    if p.identity_changed { identity_step(&mut up); identity_step(&mut down); }
+    MigrationPlan { up, down, snapshot: p.current, kind: FolderKind::Main }
 }
 
 /// Shadow databases can add parentheses to equivalent native expressions.
@@ -129,7 +178,7 @@ pub fn reconcile_introspection(previous: &DbSchema, current: &mut DbSchema) {
 }
 
 fn identity_step(steps: &mut Vec<Step>) {
-    steps.push(Step { summary: "Record frozen ContentType identities".into(), sql: "-- Frozen ContentType identity mapping recorded in snapshot.json".into(), warning: None, destructive: vec![] });
+    steps.push(Step::new("Record frozen ContentType identities".into(), "-- Frozen ContentType identity mapping recorded in snapshot.json".into(), None, vec![]));
 }
 
 /// The whole schema as idempotent DDL (`IF NOT EXISTS` / `OR REPLACE`), for

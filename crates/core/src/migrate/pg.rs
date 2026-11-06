@@ -114,21 +114,25 @@ fn fk_def(fk: &ForeignKey) -> String {
     s
 }
 
-fn constraint_def(c: &Constraint) -> String {
+/// `not_valid` adds a foreign key or check without scanning the table; `VALIDATE CONSTRAINT` does that later.
+fn constraint_def(c: &Constraint, not_valid: bool) -> String {
+    let tail = if not_valid { " NOT VALID" } else { "" };
     match c {
         Constraint::PrimaryKey(pk) => pk_def(pk),
         Constraint::Unique(u) => unique_def(u),
-        Constraint::Check(c) => format!("CONSTRAINT {} CHECK ({})", ident(&c.name), c.expr),
+        Constraint::Check(c) => format!("CONSTRAINT {} CHECK ({}){tail}", ident(&c.name), c.expr),
         Constraint::Exclusion(e) => exclusion_def(e),
-        Constraint::ForeignKey(fk) => fk_def(fk),
+        Constraint::ForeignKey(fk) => format!("{}{tail}", fk_def(fk)),
     }
 }
 
-fn index_def(table: &str, ix: &Index, idempotent: bool) -> String {
+/// `concurrently` builds the index without a write lock; it needs a script outside a transaction.
+fn index_def(table: &str, ix: &Index, idempotent: bool, concurrently: bool) -> String {
     let mut s = format!(
-        "CREATE {}INDEX {}{} ON {}",
+        "CREATE {}INDEX {}{}{} ON {}",
         if ix.unique { "UNIQUE " } else { "" },
-        if idempotent { "IF NOT EXISTS " } else { "" },
+        if concurrently { "CONCURRENTLY " } else { "" },
+        if idempotent || concurrently { "IF NOT EXISTS " } else { "" },
         ident(&ix.name),
         ident(table)
     );
@@ -223,9 +227,23 @@ fn comment(c: &Option<String>) -> String {
     c.as_deref().map(quote_literal).unwrap_or_else(|| "NULL".into())
 }
 
+/// The online forms of an operation: shapes that hold no long lock on a table with rows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Online {
+    /// `CREATE INDEX CONCURRENTLY IF NOT EXISTS` and `DROP INDEX CONCURRENTLY IF EXISTS`.
+    pub concurrently: bool,
+    /// `ADD CONSTRAINT ... NOT VALID` for a foreign key or a check.
+    pub not_valid: bool,
+}
+
 /// SQL for one operation. `idempotent` renders `IF NOT EXISTS` / `OR REPLACE` forms
 /// where Postgres has them (used by `create_tables`).
 pub fn render(op: &Op, idempotent: bool) -> String {
+    render_with(op, idempotent, Online::default())
+}
+
+/// [`render`] with the online forms of `online`.
+pub fn render_with(op: &Op, idempotent: bool, online: Online) -> String {
     let alter = |t: &str| format!("ALTER TABLE {}", ident(t));
     match op {
         Op::CreateExtension(e) => {
@@ -362,12 +380,13 @@ pub fn render(op: &Op, idempotent: bool) -> String {
             )
         }
         Op::DropIdentity { table, column } => format!("{} ALTER COLUMN {} DROP IDENTITY", alter(table), ident(column)),
-        Op::AddConstraint { table, constraint } => format!("{} ADD {}", alter(table), constraint_def(constraint)),
+        Op::AddConstraint { table, constraint } => format!("{} ADD {}", alter(table), constraint_def(constraint, online.not_valid)),
         Op::DropConstraint { table, name } => format!("{} DROP CONSTRAINT {}", alter(table), ident(name)),
         Op::RenameConstraint { table, from, to } => {
             format!("{} RENAME CONSTRAINT {} TO {}", alter(table), ident(from), ident(to))
         }
-        Op::CreateIndex { table, index } => index_def(table, index, idempotent),
+        Op::CreateIndex { table, index } => index_def(table, index, idempotent, online.concurrently),
+        Op::DropIndex { name } if online.concurrently => format!("DROP INDEX CONCURRENTLY IF EXISTS {}", ident(name)),
         Op::DropIndex { name } => format!("DROP INDEX {}", ident(name)),
         Op::RenameIndex { from, to } => format!("ALTER INDEX {} RENAME TO {}", ident(from), ident(to)),
         Op::CreateTrigger { table, trigger } => trigger_def(table, trigger, idempotent),

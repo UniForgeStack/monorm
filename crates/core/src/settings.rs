@@ -90,6 +90,29 @@ impl Settings {
         }
     }
 
+    /// The `migrations` setting: a directory (`migrations = "db"`) or a table (`[migrations]`) with the keys
+    /// `dir` (the directory) and `online` (a boolean, default `false`: PostgreSQL migrations in the online form).
+    pub fn migrations(&self) -> Result<MigrationsSettings, String> {
+        match self.section("migrations") {
+            None => Ok(MigrationsSettings::default()),
+            Some(Value::String(dir)) => Ok(MigrationsSettings { dir: Some(dir.clone()), online: false }),
+            Some(Value::Object(table)) => {
+                let mut out = MigrationsSettings::default();
+                for (name, value) in table {
+                    match (name.as_str(), value) {
+                        ("dir", Value::String(s)) => out.dir = Some(s.clone()),
+                        ("dir", _) => return Err(self.wrong("migrations.dir", "must be a string")),
+                        ("online", Value::Bool(b)) => out.online = *b,
+                        ("online", _) => return Err(self.wrong("migrations.online", "must be true or false")),
+                        _ => return Err(self.wrong(&format!("migrations.{name}"), "is not a setting; the keys are `dir` and `online`")),
+                    }
+                }
+                Ok(out)
+            }
+            Some(_) => Err(self.wrong("migrations", "must be a directory or a table")),
+        }
+    }
+
     /// `key` as a table of strings (for example `query_sets`: model to target), empty when it is not set.
     pub fn string_table(&self, key: &str) -> Result<BTreeMap<String, String>, String> {
         match self.section(key) {
@@ -119,6 +142,13 @@ impl Settings {
             None => format!("`{key}` {what}"),
         }
     }
+}
+
+/// The `migrations` setting, see [`Settings::migrations`].
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct MigrationsSettings {
+    pub dir: Option<String>,
+    pub online: bool,
 }
 
 /// The settings table of `text`, or `None` when the file holds none (only `pyproject.toml` and `package.json` can).
@@ -202,6 +232,19 @@ mod tests {
         assert_eq!(settings.string("schema").unwrap(), None, "the schema of pyproject.toml must not leak in");
 
         assert_eq!(load(&[("package.json", PACKAGE)]).unwrap().string("schema").unwrap().as_deref(), Some("js.prisma"));
+    }
+
+    #[test]
+    fn migrations_is_a_directory_or_a_table() {
+        let migrations = |file: &str, text: &str| load(&[(file, text)]).and_then(|s| s.migrations());
+        assert_eq!(load(&[]).unwrap().migrations().unwrap(), MigrationsSettings::default());
+        assert_eq!(migrations("monorm.toml", "migrations = \"db\"\n").unwrap(), MigrationsSettings { dir: Some("db".into()), online: false });
+        assert_eq!(migrations("monorm.toml", "[migrations]\nonline = true\n").unwrap(), MigrationsSettings { dir: None, online: true });
+        assert_eq!(migrations("pyproject.toml", "[tool.monorm.migrations]\ndir = \"db\"\nonline = true\n").unwrap(), MigrationsSettings { dir: Some("db".into()), online: true });
+        assert_eq!(migrations("package.json", "{\"monorm\": {\"migrations\": {\"online\": true}}}").unwrap().online, true);
+        assert!(migrations("monorm.toml", "[migrations]\nonline = \"yes\"\n").unwrap_err().contains("migrations.online"));
+        assert!(migrations("monorm.toml", "[migrations]\nonlien = true\n").unwrap_err().contains("migrations.onlien"));
+        assert!(migrations("monorm.toml", "migrations = 3\n").unwrap_err().contains("directory or a table"));
     }
 
     #[test]
