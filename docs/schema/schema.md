@@ -894,7 +894,7 @@ async def run(db):
 The step runs after `up.sql`, in the same transaction and under the same advisory lock,
 before the migration's `monorm_migrations` row. Queries on `db` inside it, and ORM queries
 on that database, go into that transaction, so they see the new columns. A
-`db.transaction()` block in the step is a savepoint, and `db.on_commit()` callbacks run
+`db.transaction()` block in the step is a savepoint that inherits the migration's transaction (an explicit `isolation` or `timeout` there raises `QueryError`), and `db.on_commit()` callbacks run
 after the migration commits. An error rolls back the SQL, the data changes and the row,
 and drops the callbacks. `makemigrations --empty name` gives a folder for a step without
 schema changes.

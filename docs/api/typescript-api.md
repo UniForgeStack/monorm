@@ -845,6 +845,47 @@ An error in a callback rejects the `transaction()` promise, and the later callba
 Transactions and callbacks are kept for each database: a callback on `a` inside a transaction on `b` inside a transaction on `a` waits for `a`'s commit.
 A call that the transaction started and that calls `onCommit` after the transaction ended throws `TransactionRequired`.
 
+#### Isolation and timeout
+
+```ts
+await db.transaction(async () => { ... }, { isolation: "serializable", timeout: 5 });
+```
+
+`isolation` is `"read_committed"`, `"repeatable_read"` or `"serializable"`.
+Omit it to use the database default.
+Postgres starts the transaction with `BEGIN ISOLATION LEVEL ...`, before the tenant settings.
+SQLite accepts each level and runs every transaction as serializable (`BEGIN IMMEDIATE`).
+The ORM does not retry a serialization failure (`40001`).
+
+`timeout` is a number of seconds, greater than zero and finite.
+It is one deadline for the whole outermost transaction.
+The deadline starts when `transaction()` is called, before the wait for a pool connection (or for the SQLite connection).
+It covers the setup, each statement (raw SQL, `COPY` and locks too), the time the callback is idle, and the commit.
+It is a client-side deadline kept by the Rust engine, not a Postgres `statement_timeout`.
+Without `timeout`, the ORM sets no deadline and the server limits stay as they are.
+Your JavaScript code is not stopped: the engine stops the database work and rolls back, and the next statement of the callback throws the error.
+
+When the deadline passes, the engine cancels the statement that runs, rolls back, and gives the connection back only after the rollback is confirmed.
+No statement and no `COMMIT` starts after the deadline.
+Statements and `transaction()` calls that run later in the same transaction throw the error too, also when the callback caught the first one.
+A savepoint does not survive a timeout: it ends the whole transaction.
+`onCommit` callbacks run only after a confirmed commit, and outside the deadline.
+
+Only the outermost `transaction()` takes options.
+A nested call with an explicit `isolation` or `timeout` (also with `savepoint: false`) throws `QueryError` before it sends any SQL, and it uses the options of the outermost transaction.
+An outermost `savepoint: false` accepts the options.
+A bad value (a boolean or string `timeout`, zero, a negative number, `NaN`, `Infinity`, a value too large for a duration, an unknown isolation name) throws `QueryError` before the ORM takes a connection or sends SQL.
+A migration data step runs inside a transaction of the migrator, so a `db.transaction()` call there takes no options.
+
+`TransactionTimeoutError` is a `DatabaseError`.
+Its `outcome` is `"rolled_back"` after a confirmed rollback, or when the deadline passed before a transaction began; the database holds none of the changes.
+It is `"unknown"` when the deadline passed while a sent `COMMIT` was in flight: the commit may have happened.
+The engine does not wait for that `COMMIT` past the deadline: the error comes at the deadline, no cancel goes to the `COMMIT`, the connection is closed in the background, and the engine does not retry.
+After `"unknown"`, read the data to learn the result.
+If the callback or the database threw another error first, that error stays the one you get.
+`sqlstate` is the SQLSTATE of the server if it sent one, otherwise `null`.
+A `57014` that the server sent for another reason (an administrator's cancel, a server `statement_timeout`) stays a `DatabaseError`.
+
 #### Failed statements
 
 A statement that fails marks its transaction (or savepoint) failed, also when the callback catches the error.
@@ -1084,7 +1125,7 @@ const post = await postFactory.create();
 ## Errors
 
 Errors map to classes with Python's names: `ORMError`, plus `DatabaseError`,
-`IntegrityError`, `LockNotAvailable`, `TransactionAborted`, `QueryError`, `SchemaError`, `NotConnected`,
+`IntegrityError`, `LockNotAvailable`, `TransactionAborted`, `TransactionTimeoutError`, `QueryError`, `SchemaError`, `NotConnected`,
 `NotLoaded`, `TransactionRequired`, `DoesNotExist`, `MultipleObjectsReturned`,
 `MigrationError`, `WriteProtected`, `VersionConflict` and `ValidationError`. Values of the wrong type throw a `TypeError` before any SQL runs.
 

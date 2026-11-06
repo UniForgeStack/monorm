@@ -1338,6 +1338,48 @@ An error in a callback goes to the caller of `transaction()`, and the later call
 Transactions and callbacks are kept for each database: a callback on `a` inside a transaction on `b` inside a transaction on `a` waits for `a`'s commit.
 A task that the transaction started and that calls `on_commit` after the transaction ended raises `TransactionRequired`.
 
+#### Isolation and timeout
+
+```python
+async with db.transaction(isolation="serializable", timeout=5.0):
+    ...
+```
+
+`isolation` is `"read_committed"`, `"repeatable_read"` or `"serializable"`.
+Omit it to use the database default.
+Postgres starts the transaction with `BEGIN ISOLATION LEVEL ...`, before the tenant settings.
+SQLite accepts each level and runs every transaction as serializable (`BEGIN IMMEDIATE`).
+The ORM does not retry a serialization failure (`40001`).
+
+`timeout` is a number of seconds, greater than zero and finite.
+It is one deadline for the whole outermost transaction.
+The deadline starts when `transaction()` is entered, before the wait for a pool connection (or for the SQLite connection).
+It covers the setup, each statement (raw SQL, `COPY` and locks too), the time the block is idle, and the commit.
+It is a client-side deadline kept by the Rust engine, not a Postgres `statement_timeout`.
+Without `timeout`, the ORM sets no deadline and the server limits stay as they are.
+Your Python code is not stopped: the engine stops the database work and rolls back, and the next statement of the block raises the error.
+
+When the deadline passes, the engine cancels the statement that runs, rolls back, and gives the connection back only after the rollback is confirmed.
+No statement and no `COMMIT` starts after the deadline.
+Statements and `transaction()` blocks that run later in the same transaction raise the error too, also when the block caught the first one.
+A savepoint does not survive a timeout: it ends the whole transaction.
+`on_commit` callbacks run only after a confirmed commit, and outside the deadline.
+
+Only the outermost `transaction()` takes options.
+A nested call with an explicit `isolation` or `timeout` (also with `savepoint=False`) raises `QueryError` before it sends any SQL, and it uses the options of the outermost transaction.
+An outermost `savepoint=False` accepts the options.
+A bad value (a bool, zero, a negative number, NaN, infinity, a value too large for a duration, an unknown isolation name) raises `QueryError` before the ORM takes a connection or sends SQL.
+A migration data step runs inside a transaction of the migrator, so a `db.transaction()` block there takes no options.
+
+`monorm.TransactionTimeoutError` is a `DatabaseError`.
+Its `outcome` is `"rolled_back"` after a confirmed rollback, or when the deadline passed before a transaction began; the database holds none of the changes.
+It is `"unknown"` when the deadline passed while a sent `COMMIT` was in flight: the commit may have happened.
+The engine does not wait for that `COMMIT` past the deadline: the error comes at the deadline, no cancel goes to the `COMMIT`, the connection is closed in the background, and the engine does not retry.
+After `"unknown"`, read the data to learn the result.
+If the block or the database raised another error first, that error stays the one you get.
+`sqlstate` is the SQLSTATE of the server if it sent one, otherwise `None`.
+A `57014` that the server sent for another reason (an administrator's cancel, a server `statement_timeout`) stays a `DatabaseError`.
+
 #### Failed statements
 
 A statement that fails marks its transaction (or savepoint) failed, also when your code catches the error.
@@ -1366,7 +1408,7 @@ Outside a transaction it runs in a transaction of its own.
 
 ### Database errors
 
-An `monorm.DatabaseError` (and its subclasses `IntegrityError`, `LockNotAvailable`, `TransactionAborted`) has three attributes:
+An `monorm.DatabaseError` (and its subclasses `IntegrityError`, `LockNotAvailable`, `TransactionAborted`, `TransactionTimeoutError`) has three attributes:
 
 * `sqlstate`: the five-character SQLSTATE, for example `"23505"` (unique), `"23503"` (foreign key), `"23502"` (not null), `"23514"` (check).
   SQLite constraint failures get the same Postgres codes; other SQLite errors give `None`.

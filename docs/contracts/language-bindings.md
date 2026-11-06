@@ -25,8 +25,13 @@ Both shipped bindings (`languages/python/native/src/lib.rs`, `languages/js/nativ
   The two shipped bindings have a `convert.rs` for this.
 - **Error mapping.** The engine returns `Error` and `DbError` values.
   The binding maps each kind to an error type of the language.
-  The kinds in both bindings are `QueryError`, `SchemaError`, `MigrationError`, `WriteProtected`, `DatabaseError`, `IntegrityError`, `LockNotAvailable` and `TransactionAborted`.
+  The kinds in both bindings are `QueryError`, `SchemaError`, `MigrationError`, `WriteProtected`, `DatabaseError`, `IntegrityError`, `LockNotAvailable`, `TransactionAborted` and `TransactionTimeoutError`.
+  `TransactionTimeoutError` carries `outcome` (`rolled_back` or `unknown`) and the real server SQLSTATE, if any.
   Look at `errors.rs` (Python) and `engine_err` (Node).
+- **Transaction options.**
+  `isolation` and `timeout` of `transaction()` go to the engine as plain values (a string and seconds).
+  `TransactionOptions::parse` validates them, `begin_root` starts the transaction and its deadline, and the engine writes all `BEGIN ISOLATION LEVEL ...` SQL.
+  A binding checks only what the language blurs (a bool or string `timeout`) and rejects an explicit option on a nested call before it calls the engine.
 - **Async bridge.** The engine is async and runs on a Tokio runtime.
   Python uses `pyo3_async_runtimes::tokio::future_into_py`.
   Node uses the `tokio_rt` feature of `napi`.
