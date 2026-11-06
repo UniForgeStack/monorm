@@ -57,10 +57,15 @@ pub fn list(dir: &Path) -> Result<Vec<MigrationFolder>> {
 
 pub fn find(dir: &Path, name: &str) -> Result<MigrationFolder> {
     let padded = format!("{:0>4}", name);
-    list(dir)?
-        .into_iter()
-        .find(|m| m.name == name || m.name[..4] == padded)
-        .ok_or_else(|| format!("no migration {name:?} in {}", dir.display()))
+    let all = list(dir)?;
+    if let Some(m) = all.iter().find(|m| m.name == name || m.name[..4] == padded) {
+        return Ok(m.clone());
+    }
+    let replaced_by = all.iter().find(|m| std::fs::read_to_string(m.path.join("up.sql")).ok().and_then(|up| parse_replaces(&up).ok()).is_some_and(|r| r.iter().any(|(n, _)| n == name)));
+    Err(match replaced_by {
+        Some(m) => format!("migration {name:?} was replaced by the squash folder {}; use that name", m.name),
+        None => format!("no migration {name:?} in {}", dir.display()),
+    })
 }
 
 pub fn latest_snapshot(dir: &Path) -> Result<DbSchema> {
@@ -251,7 +256,13 @@ fn hand_edited(up: &str, previous: &DbSchema, snapshot: &DbSchema, name: &str) -
         return Ok(false);
     }
     let fresh = plan_between(previous, snapshot, &Default::default())?;
-    Ok(render(&fresh.up, &format!("{name}: up")) != up)
+    Ok(statements(&render(&fresh.up, &format!("{name}: up"))) != statements(up))
+}
+
+/// The SQL lines of a script, trimmed: no comment line (header, step summary, markers) and no blank line. A
+/// final newline, a header of an older release or a renamed folder then do not count as an edit.
+fn statements(script: &str) -> Vec<&str> {
+    script.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("--")).collect()
 }
 
 /// Folds the first migrations up to `to` into one folder, `<first number>_<name>` (`name` is `squashed_<last
@@ -295,26 +306,66 @@ pub fn squash(dir: &Path, to: &str, name: Option<&str>) -> Result<MigrationFolde
     let folder = format!("{}_{}", &range[0].name[..4], name.map_or_else(|| format!("squashed_{}", &last.name[..4]), slug));
     let up = format!("{replaces}{}", render(&plan.up, &format!("{folder}: up")));
     let snapshot = serde_json::to_string_pretty(&plan.snapshot).map_err(|e| e.to_string())? + "\n";
-    // The new folder can take the name of a replaced one, so it is written beside them and moved after the delete.
-    let staging = dir.join(".squash");
+    // The new folder can take the name of a replaced one, so it is staged beside them. The replaced folders move
+    // aside with one atomic rename each, so that a failure puts them back.
+    let (staging, parked) = (dir.join(".squash"), dir.join(".squash-replaced"));
+    if parked.exists() {
+        return Err(format!("{} holds the folders of an interrupted squash; move them back into {}, then run the squash again", parked.display(), dir.display()));
+    }
     let _ = std::fs::remove_dir_all(&staging);
     let write = |file: &str, text: String| std::fs::create_dir_all(&staging).map_err(|e| io(&staging, e)).and_then(|_| std::fs::write(staging.join(file), text).map_err(|e| io(&staging.join(file), e)));
-    let written = write("up.sql", up).and_then(|_| write("down.sql", render(&plan.down, &format!("{folder}: down")))).and_then(|_| write("snapshot.json", snapshot));
-    if let Err(e) = written {
-        let _ = std::fs::remove_dir_all(&staging);
-        return Err(e);
-    }
-    for m in &range {
-        std::fs::remove_dir_all(&m.path).map_err(|e| io(&m.path, e))?;
-    }
     let path = dir.join(&folder);
-    std::fs::rename(&staging, &path).map_err(|e| io(&path, e))?;
+    let swapped = write("up.sql", up)
+        .and_then(|_| write("down.sql", render(&plan.down, &format!("{folder}: down"))))
+        .and_then(|_| write("snapshot.json", snapshot))
+        .and_then(|_| swap(&staging, &parked, &path, &range));
+    let _ = std::fs::remove_dir_all(&staging);
+    // After an error the parked folders stay unless every one went back: `remove_dir` refuses a directory that holds one.
+    let _ = if swapped.is_ok() { std::fs::remove_dir_all(&parked) } else { std::fs::remove_dir(&parked) };
+    swapped?;
     Ok(MigrationFolder { name: folder, path })
+}
+
+/// Moves the folders of `range` into `parked`, then `staging` to `path`. On an error the moved folders go back,
+/// so the directory holds the old folders or the new one, never a mix.
+fn swap(staging: &Path, parked: &Path, path: &Path, range: &[MigrationFolder]) -> Result<()> {
+    std::fs::create_dir_all(parked).map_err(|e| io(parked, e))?;
+    let mut moved = vec![];
+    let result = range
+        .iter()
+        .try_for_each(|m| {
+            std::fs::rename(&m.path, parked.join(&m.name)).map_err(|e| io(&m.path, e))?;
+            moved.push(m);
+            Ok(())
+        })
+        .and_then(|_| std::fs::rename(staging, path).map_err(|e| io(path, e)));
+    if result.is_err() {
+        for m in moved.into_iter().rev() {
+            let _ = std::fs::rename(parked.join(&m.name), &m.path);
+        }
+    }
+    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_swap_puts_the_replaced_folders_back() {
+        let dir = std::env::temp_dir().join(format!("monorm-swap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let folder = |n: &str| MigrationFolder { name: n.into(), path: dir.join(n) };
+        let (staging, parked) = (dir.join(".squash"), dir.join(".squash-replaced"));
+        std::fs::create_dir_all(dir.join("0001_a")).unwrap();
+        std::fs::create_dir_all(&staging).unwrap();
+        // the second folder does not exist, so its rename fails after the first moved
+        let err = swap(&staging, &parked, &dir.join("0001_new"), &[folder("0001_a"), folder("0002_b")]).unwrap_err();
+        assert!(err.contains("0002_b"), "{err}");
+        assert!(dir.join("0001_a").is_dir() && staging.is_dir() && !dir.join("0001_new").exists());
+        assert!(std::fs::read_dir(&parked).unwrap().next().is_none(), "nothing stays parked");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn slugs() {

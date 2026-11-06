@@ -250,7 +250,7 @@ pub async fn status(conn: &dyn Executor, dir: &Path) -> Result<Vec<Status>> {
         if replaces.is_empty() {
             at = done.remove(&m.name).map(|(_, at)| at);
         } else {
-            match squash_state(&m, &replaces, &m.checksum()?, &done) {
+            match squash_state(&m, &replaces, &done) {
                 Squash::Own => at = done.remove(&m.name).map(|(_, at)| at),
                 Squash::Fresh => {}
                 Squash::Replaced => at = replaces.iter().filter_map(|(r, _)| done.remove(r)).map(|(_, at)| at).max(),
@@ -287,11 +287,12 @@ enum Squash {
     Partial(usize),
 }
 
-/// `own_sum` is the checksum of the squash folder. A squash named like one of the migrations it replaces
-/// shares a row with it: the checksum tells the two apart.
-fn squash_state(m: &Migration, replaces: &[(String, String)], own_sum: &str, done: &BTreeMap<String, (String, String)>) -> Squash {
+/// A squash named like one of the migrations it replaces shares a row with it: the checksum of the replaced
+/// migration (from its `replaces` line) tells the two apart.
+fn squash_state(m: &Migration, replaces: &[(String, String)], done: &BTreeMap<String, (String, String)>) -> Squash {
     if let Some((sum, _)) = done.get(&m.name) {
-        if sum == own_sum || !replaces.iter().any(|(r, _)| *r == m.name) {
+        // A row that is not the replaced migration of this name is the squash row, even after its `up.sql` changed.
+        if replaces.iter().find(|(r, _)| *r == m.name).is_none_or(|(_, replaced)| sum != replaced) {
             return Squash::Own;
         }
     }
@@ -318,7 +319,7 @@ fn verify(statuses: &[Status], applied: &BTreeMap<String, (String, String)>) -> 
             let m = &s.migration;
             let replaces = m.replaces()?;
             let sum = m.checksum()?;
-            if squash_state(m, &replaces, &sum, applied) == Squash::Replaced {
+            if squash_state(m, &replaces, applied) == Squash::Replaced {
                 for (name, expected) in &replaces {
                     if applied[name].0 != *expected {
                         return Err(Error::Migration(format!("{name}/up.sql changed after it was applied (the checksum differs from the replaces line of {})", m.name)));
@@ -356,7 +357,7 @@ pub async fn adopt(conn: &dyn Executor, dir: &Path) -> Result<Vec<Migration>> {
             lit(&sum)
         );
         let forget = format!("DELETE FROM {TABLE} WHERE name IN ({names}) AND name <> {}", lit(&m.name));
-        let ran = locked(conn, None, |now| (squash_state(&m, &replaces, &sum, now) == Squash::Replaced).then(|| [record, forget])).await?;
+        let ran = locked(conn, None, |now| (squash_state(&m, &replaces, now) == Squash::Replaced).then_some([record, forget])).await?;
         if ran {
             done.push(m);
         }
@@ -741,5 +742,15 @@ mod tests {
     fn unknown_header_words_are_an_error() {
         assert!(NoTx::parse("-- monorm: no-transaction create-index").is_err());
         assert!(NoTx::parse("-- monorm: no-transaction vacuum t").is_err());
+    }
+
+    #[test]
+    fn an_edited_squash_row_with_the_name_of_a_replaced_migration_is_still_the_squash_row() {
+        let m = Migration { name: "0001_init".into(), path: PathBuf::new() };
+        let replaces = vec![("0001_init".to_owned(), "old".to_owned()), ("0002_b".to_owned(), "b".to_owned())];
+        let row = |sum: &str| BTreeMap::from([("0001_init".to_owned(), (sum.to_owned(), String::new()))]);
+        assert_eq!(squash_state(&m, &replaces, &row("edited-squash")), Squash::Own);
+        // the row of the replaced migration itself is one of the replaced rows
+        assert_eq!(squash_state(&m, &replaces, &row("old")), Squash::Partial(1));
     }
 }

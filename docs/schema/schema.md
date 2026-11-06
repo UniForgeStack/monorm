@@ -1074,10 +1074,22 @@ refused, and nothing is written; migrate it with a release from before the squas
 The checksum of each replaced row must still equal the checksum in its `replaces` line, as for any
 applied migration.
 
+Adoption is one-way for code. After a database adopts the folder, a checkout from before the squash
+(or a revert of the squash commit) fails every command with "the database has migrations missing from
+the directory". So deploy the squash only after every environment applied 1..N, and do not revert it.
+To undo an adoption by hand, delete the squash row from `monorm_migrations` and insert one row per
+`replaces` line, with its name and checksum.
+
 `rollback` of an adopted folder runs its `down.sql`, which drops the whole schema of migrations 1..N.
+`rollback --steps 1` does this when the squash is the newest applied migration; a database with no rows
+and no baseline is dropped with no prompt. `rollback --to` a replaced name fails with "not found": name
+the squash folder instead.
+
+Squash folds at least two migrations: `--to` the first migration is refused.
 Squash refuses, and writes nothing, for a range with a data step (`data.py`, `data.ts`), a folder of
 hand-written SQL only, a squash folder or a no-transaction folder, and a folder whose `up.sql` differs
-from the SQL its snapshots give (a hand edit the fresh build would lose). That last check skips folders
+from the SQL its snapshots give (a hand edit the fresh build would lose). That check compares the SQL
+lines only, so comments, blank lines and a final newline do not count as an edit. It skips folders
 with rename hints and folders with `NOT VALID` constraints, so a hand edit in one of them is not found.
 
 ### Why not SeaORM's or Refinery's tooling
