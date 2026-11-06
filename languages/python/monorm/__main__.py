@@ -8,6 +8,7 @@
     python -m monorm migrate [target]                  # runs data.py steps through Migrator
     python -m monorm rollback [--steps N | --to <migration>|zero]
     python -m monorm showmigrations
+    python -m monorm squashmigrations --to <migration> [--name X]
     python -m monorm pull [-o schema.prisma] [--force]
     python -m monorm baseline
     python -m monorm drift

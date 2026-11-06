@@ -750,7 +750,7 @@ async def test_squash_refuses_a_partly_applied_database(tmp_path, dialect):
         await Migrator(db, migs).upgrade(target="2")
         before = await migration_names(db)
         squashed = migs.squash(to="3")
-        message = re.escape(f"applied 2 of the 3 migrations that {squashed.name} replaces")
+        message = re.escape(f"applied 2 of the 3 migrations that {squashed.name} replaces; migrate it with a release before the squash")
         with pytest.raises(MigrationError, match=message):
             await Migrator(db, migs).upgrade()
         with pytest.raises(MigrationError, match=message):

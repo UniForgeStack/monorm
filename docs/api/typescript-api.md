@@ -1217,7 +1217,7 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
 `npx monorm` is the one `monorm` command line (Rust, `crates/cli/`), run through the addon: the same
 program as `python -m monorm` and the standalone `monorm` binary, with the same commands
 (`check`, `generate`, `makemigrations [--check]`, `sqlmigrate`, `migrate`, `rollback`,
-`showmigrations`, `pull`, `baseline`, `drift`; see [`schema.md`](../schema/schema.md#migrations)).
+`showmigrations`, `squashmigrations`, `pull`, `baseline`, `drift`; see [`schema.md`](../schema/schema.md#migrations)).
 Under `npx`, `generate` writes TypeScript and `package.json`'s `"monorm"` key is read first.
 The command line resolves `import "app:<name>"` in a schema from `node_modules/<name>/package.json` (`"monorm": {"app": "./schema.prisma"}`)
 and passes it to the Rust loader as `--app <name>=<file>`; the standalone binary takes that flag from you

@@ -904,7 +904,7 @@ for (const dialect of GATE_DIALECTS) {
     await new Migrator(db, migs).upgrade("2");
     const before = await migrationNames(db);
     const squashed = migs.squash({ to: "3" });
-    const refused = (e: unknown) => e instanceof MigrationError && e.message.includes(`applied 2 of the 3 migrations that ${squashed.name} replaces`);
+    const refused = (e: unknown) => e instanceof MigrationError && e.message.includes(`applied 2 of the 3 migrations that ${squashed.name} replaces; migrate it with a release before the squash`);
     await assert.rejects(new Migrator(db, migs).upgrade(), refused);
     await assert.rejects(new Migrator(db, migs).status(), refused);
     assert.deepEqual(await migrationNames(db), before);
