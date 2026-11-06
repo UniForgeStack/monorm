@@ -1099,10 +1099,16 @@ impl Engine {
 
     /// Applies pending migrations (up to `target`); the names applied.
     #[napi]
-    pub fn migrate_up<'env>(&self, env: &'env Env, dir: String, target: Option<String>) -> napi::Result<PromiseRaw<'env, Vec<String>>> {
+    pub fn migrate_up<'env>(
+        &self,
+        env: &'env Env,
+        dir: String,
+        target: Option<String>,
+        allow_destructive: bool,
+    ) -> napi::Result<PromiseRaw<'env, Vec<String>>> {
         let driver = self.driver.clone();
         env.spawn_future(async move {
-            let done = engine_migrate::upgrade(&*driver, Path::new(&dir), target.as_deref()).await.map_err(engine_err)?;
+            let done = engine_migrate::upgrade(&*driver, Path::new(&dir), target.as_deref(), allow_destructive).await.map_err(engine_err)?;
             Ok(done.into_iter().map(|m| m.name).collect())
         })
     }
@@ -1138,10 +1144,16 @@ impl Engine {
 
     /// The migrations `migrateUp` would apply: `[[name, path]]`.
     #[napi]
-    pub fn migration_pending<'env>(&self, env: &'env Env, dir: String, target: Option<String>) -> napi::Result<PromiseRaw<'env, Vec<Vec<String>>>> {
+    pub fn migration_pending<'env>(
+        &self,
+        env: &'env Env,
+        dir: String,
+        target: Option<String>,
+        allow_destructive: bool,
+    ) -> napi::Result<PromiseRaw<'env, Vec<Vec<String>>>> {
         let driver = self.driver.clone();
         env.spawn_future(async move {
-            let todo = engine_migrate::pending(&*driver, Path::new(&dir), target.as_deref()).await.map_err(engine_err)?;
+            let todo = engine_migrate::pending(&*driver, Path::new(&dir), target.as_deref(), allow_destructive).await.map_err(engine_err)?;
             Ok(todo.into_iter().map(|m| vec![m.name, m.path.to_string_lossy().into_owned()]).collect())
         })
     }
@@ -1149,11 +1161,17 @@ impl Engine {
     /// Starts applying one migration: its transaction, with the lock taken and `up.sql`
     /// run; null when another migrator applied it meanwhile.
     #[napi]
-    pub fn migration_begin<'env>(&self, env: &'env Env, name: String, path: String) -> napi::Result<PromiseRaw<'env, Option<Transaction>>> {
+    pub fn migration_begin<'env>(
+        &self,
+        env: &'env Env,
+        name: String,
+        path: String,
+        allow_destructive: bool,
+    ) -> napi::Result<PromiseRaw<'env, Option<Transaction>>> {
         let driver = self.driver.clone();
         env.spawn_future(async move {
             let m = engine_migrate::Migration { name, path: path.into() };
-            let tx = engine_migrate::begin_apply(&*driver, &m).await.map_err(engine_err)?;
+            let tx = engine_migrate::begin_apply(&*driver, &m, allow_destructive).await.map_err(engine_err)?;
             Ok(tx.map(|inner| Transaction { inner: db::guard(inner) }))
         })
     }
@@ -1176,6 +1194,7 @@ impl Engine {
         steps: u32,
         target: Option<String>,
         force: bool,
+        allow_destructive: bool,
     ) -> napi::Result<PromiseRaw<'env, Vec<String>>> {
         let driver = self.driver.clone();
         let down = match target {
@@ -1183,7 +1202,7 @@ impl Engine {
             None => engine_migrate::Down::Steps(steps as usize),
         };
         env.spawn_future(async move {
-            let done = engine_migrate::downgrade(&*driver, Path::new(&dir), down, force).await.map_err(engine_err)?;
+            let done = engine_migrate::downgrade(&*driver, Path::new(&dir), down, force, allow_destructive).await.map_err(engine_err)?;
             Ok(done.into_iter().map(|m| m.name).collect())
         })
     }
@@ -1299,13 +1318,14 @@ pub fn cli_schema(argv: Vec<String>) -> String {
     monorm_cli::schema_path(&argv).to_string_lossy().into_owned()
 }
 
-/// For `npx monorm migrate`: `[schema, dir, url, target]` as the CLI resolves them (null
-/// entries for a missing URL or target), or null for any other command line.
+/// For `npx monorm migrate`: `[schema, dir, url, target, allowDestructive]` as the CLI resolves
+/// them (null for a missing URL or target; "true" or null for the flag), or null for any other
+/// command line.
 #[cfg(feature = "cli")]
 #[napi]
 pub fn cli_migrate_args(argv: Vec<String>) -> Option<Vec<Option<String>>> {
-    monorm_cli::migrate_args(&argv).map(|(schema, dir, url, target)| {
-        vec![Some(schema.to_string_lossy().into_owned()), Some(dir.to_string_lossy().into_owned()), url, target]
+    monorm_cli::migrate_args(&argv).map(|(schema, dir, url, target, allow)| {
+        vec![Some(schema.to_string_lossy().into_owned()), Some(dir.to_string_lossy().into_owned()), url, target, allow.then(|| "true".to_owned())]
     })
 }
 

@@ -34,10 +34,10 @@ export async function main(rawArgv: readonly string[]): Promise<number> {
   }
   const found = addon.cliMigrateArgs(argv);
   if (found !== null) {
-    const [schema, dir, url, target] = found;
+    const [schema, dir, url, target, allowDestructive] = found;
     // data.ts runs in TypeScript, so this migrator applies the directory; without a URL the CLI reports the usage error
     if (url && hasDataSteps(dir!)) {
-      return migrateCommand(schema!, dir!, url, target ?? null).catch((e: unknown) => {
+      return migrateCommand(schema!, dir!, url, target ?? null, allowDestructive === "true").catch((e: unknown) => {
         process.stderr.write(`error: ${e instanceof Error ? e.message : String(e)}\n`);
         return 1;
       });

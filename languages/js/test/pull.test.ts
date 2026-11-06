@@ -91,7 +91,7 @@ test("rollback refuses a baselined migration unless forced", async () => {
   await migrator.baseline();
   await assert.rejects(migrator.downgrade(), /0001_initial was baselined/);
   assert.deepEqual(await db.fetchText("SELECT count(*) FROM keep"), [["1"]]);
-  assert.deepEqual((await migrator.downgrade({ force: true })).map((m) => m.name), ["0001_initial"]);
+  assert.deepEqual((await migrator.downgrade({ force: true, allowDestructive: true })).map((m) => m.name), ["0001_initial"]);
 });
 
 test("SQLite pull, baseline and drift", async () => {

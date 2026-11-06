@@ -200,10 +200,10 @@ async def test_offline_native_conversion_preserves_live_rules_and_later_migratio
         await runner.upgrade()
         with pytest.raises(monorm.IntegrityError):
             await db.execute('INSERT INTO conversion_item (id, "Qty") VALUES (3, 1)')
-        await runner.downgrade()
+        await runner.downgrade(allow_destructive=True)
         await db.execute('INSERT INTO conversion_item (id, "Qty") VALUES (3, 1)')
         assert await db._fetch_text("SELECT count(*) FROM conversion_item") == [("3",)]
-        await runner.downgrade(target="zero")
+        await runner.downgrade(target="zero", allow_destructive=True)
         await db.execute('CREATE TABLE conversion_item (id INTEGER PRIMARY KEY, "Qty" INTEGER NOT NULL CHECK ("Qty" > 0))')
         pulled = await pull(db)
         pulled.write(pulled_path)

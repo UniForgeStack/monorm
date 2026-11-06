@@ -184,7 +184,7 @@ async def test_rollback_refuses_a_baselined_migration_unless_forced(tmp_path):
         with pytest.raises(monorm.migrations.MigrationError, match="0001_initial was baselined"):
             await migrator.downgrade()
         assert await db._fetch_text("SELECT count(*) FROM keep") == [("1",)]
-        assert [m.name for m in await migrator.downgrade(force=True)] == ["0001_initial"]
+        assert [m.name for m in await migrator.downgrade(force=True, allow_destructive=True)] == ["0001_initial"]
         assert await db._fetch_text("SELECT to_regclass('keep')::text") == [(None,)]
     finally:
         await db.close()

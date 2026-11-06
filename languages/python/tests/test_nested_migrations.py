@@ -245,7 +245,7 @@ async def database(dialect, registry):
 async def migrate(db, tmp_path, source):
     migs = Migrations(tmp_path, models(source))
     assert migs.make() is not None
-    await Migrator(db, migs).upgrade()
+    await Migrator(db, migs).upgrade(allow_destructive=True)
 
 
 async def insert_addresses(db, rows):
@@ -338,7 +338,7 @@ async def test_a_downgrade_refills_a_required_leaf_it_re_adds(tmp_path, dialect)
         await migrate(db, tmp_path, source)
         await db.execute("INSERT INTO shop (id, address_city, address_zip) VALUES (1, 'A', 'q'), (2, NULL, NULL)")
         await migrate(db, tmp_path, removed)
-        await Migrator(db, Migrations(tmp_path, models(removed))).downgrade()
+        await Migrator(db, Migrations(tmp_path, models(removed))).downgrade(allow_destructive=True)
         rows = {r["id"]: (r["address_city"], r["address_zip"]) for r in await db.fetch("SELECT * FROM shop")}
         assert rows == {1: ("A", "z"), 2: (None, None)}
 
@@ -470,7 +470,7 @@ async def test_a_columns_to_json_change_copies_every_leaf_type_and_down_reverses
         before = await column_rows(db, dialect)
         await migrate(db, tmp_path, storage(dialect, "json"))
         assert await json_rows(db) == expected(dialect)
-        await Migrator(db, Migrations(tmp_path, models(storage(dialect, "json")))).downgrade()
+        await Migrator(db, Migrations(tmp_path, models(storage(dialect, "json")))).downgrade(allow_destructive=True)
         assert await column_rows(db, dialect) == before
 
 
@@ -483,7 +483,7 @@ async def test_a_json_to_columns_change_copies_every_leaf_type_and_down_reverses
         await db.execute(f"INSERT INTO shop (id, data) VALUES {values}")
         await migrate(db, tmp_path, storage(dialect, "columns"))
         assert await column_rows(db, dialect) == {i: as_columns(d, dialect) for i, d in docs.items()}
-        await Migrator(db, Migrations(tmp_path, models(storage(dialect, "columns")))).downgrade()
+        await Migrator(db, Migrations(tmp_path, models(storage(dialect, "columns")))).downgrade(allow_destructive=True)
         assert await json_rows(db) == docs
 
 
@@ -590,7 +590,7 @@ async def test_rows_written_through_the_orm_read_and_filter_after_a_storage_chan
             rows, hits = await read(dialect, sources[other], tmp_path)
             assert rows == first_seen
             assert hits == {i: [i] for i, *_ in STAMPS}
-            await Migrator(db, Migrations(migrations, models(sources[other]))).downgrade()
+            await Migrator(db, Migrations(migrations, models(sources[other]))).downgrade(allow_destructive=True)
             rows, hits = await read(dialect, sources[first], tmp_path)
             assert rows == first_seen
             assert hits == {i: [i] for i, *_ in STAMPS}

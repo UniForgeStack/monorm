@@ -202,7 +202,7 @@ async def test_a_caught_data_migration_failure_rolls_back_sql_data_history_and_c
     migrator = Migrator(c.db, Migrations(tmp_path, c.db._registry))
     await migrator._load_pending(None)
     with pytest.raises(monorm.TransactionAborted) as aborted:
-        await migrator._upgrade(None, [(migration, run)])
+        await migrator._upgrade([(migration, run)])
     if application_error:
         assert aborted.value.__cause__ is original
     else:

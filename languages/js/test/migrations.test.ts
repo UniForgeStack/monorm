@@ -2,7 +2,7 @@
  * database of their own (migrations create and drop extensions, which are per database). */
 
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -240,7 +240,7 @@ test("upgrade and downgrade round trip", async () => {
 
   new Migrations(dir, reg2).make("v2");
   assert.deepEqual((await migrator.status()).map((s) => s.applied), [true, false]);
-  await migrator.upgrade();
+  await migrator.upgrade(undefined, { allowDestructive: true });
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const [Author, Book] = [reg2.get("Author").model, reg2.get("Book").model] as any[];
@@ -255,11 +255,11 @@ test("upgrade and downgrade round trip", async () => {
   await assert.rejects(Book.objects.using(db).insert({ authorId: 1, name: "Dune" }), IntegrityError);
 
   // back to zero and up again: the down migrations are valid DDL too
-  assert.deepEqual((await migrator.downgrade({ target: "zero" })).map((m) => m.name), ["0002_v2", "0001_initial"]);
+  assert.deepEqual((await migrator.downgrade({ target: "zero", allowDestructive: true })).map((m) => m.name), ["0002_v2", "0001_initial"]);
   assert.equal(await scalar(db, "SELECT to_regclass('books')::text"), null);
   assert.equal((await migrator.upgrade()).length, 2);
   assert.deepEqual(await migrator.upgrade(), []);
-  assert.deepEqual((await migrator.downgrade()).map((m) => m.name), ["0002_v2"]);
+  assert.deepEqual((await migrator.downgrade({ allowDestructive: true })).map((m) => m.name), ["0002_v2"]);
   assert.equal(await scalar(db, "SELECT data_type::text FROM information_schema.columns WHERE table_name = 'books' AND column_name = 'title'"), "character varying");
 });
 
@@ -315,4 +315,148 @@ test("Node launcher converts native expressions offline and preserves pending ch
   assert.equal(cli(["fmt", "--native"], dir).code, 0);
   assert.equal(readFileSync(path, "utf8"), converted);
   assert.equal(readFileSync(join(dir, "migrations/0001_initial/snapshot.json"), "utf8"), history);
+});
+
+// -- the destructive gate ---------------------------------------------------------------------------
+
+const GATE_SQLITE = 'datasource db { provider = "sqlite" }\n';
+const GATE_KEEP = 'model Keep {\n  id BigInt @id @default(autoincrement())\n\n  @@map("keep")\n}\n';
+const GATE_SHOP = 'model Shop {\n  id   BigInt @id @default(autoincrement())\n  name String\n  note String?\n\n  @@map("shop")\n}\n';
+const GATE_TABLES = ["shop", "venue", "keep", "ghost_done", "monorm_migrations"];
+const GATE_DIALECTS = ["postgres", "sqlite"] as const;
+type GateDialect = (typeof GATE_DIALECTS)[number];
+
+async function gateDatabase(dialect: GateDialect): Promise<{ db: Database; prefix: string }> {
+  const prefix = dialect === "sqlite" ? GATE_SQLITE : "";
+  const registry = models(prefix + GATE_KEEP);
+  const db = await connect(dialect === "sqlite" ? "sqlite://:memory:" : MIGRATIONS_URL, { maxConnections: 2, default: false, registry });
+  opened.push(db);
+  await db.execute(GATE_TABLES.map((t) => `DROP TABLE IF EXISTS ${t}`).join("; "));
+  return { db, prefix };
+}
+
+/** Writes the next migration for `source` without applying it. */
+function gateNext(dir: string, source: string) {
+  const migs = new Migrations(dir, models(source));
+  const migration = migs.make();
+  assert.ok(migration);
+  return { migs, migration };
+}
+
+async function gateApply(db: Database, dir: string, source: string) {
+  const { migs, migration } = gateNext(dir, source);
+  await new Migrator(db, migs).upgrade();
+  return migration;
+}
+
+async function gateRows(db: Database, table: string): Promise<number> {
+  return (await db.fetchText(`SELECT * FROM ${table}`)).length;
+}
+
+async function gateHasTable(db: Database, dialect: GateDialect, table: string): Promise<boolean> {
+  const sql = dialect === "sqlite" ? `SELECT name FROM sqlite_master WHERE name = '${table}'` : `SELECT tablename FROM pg_tables WHERE tablename = '${table}'`;
+  return (await db.fetchText(sql)).length > 0;
+}
+
+const refusal = (lead: string, step: string, table: string) => (e: unknown) =>
+  e instanceof MigrationError && e.message.includes(`${lead} ${step}, and ${table} has rows; pass --allow-destructive (Python: allow_destructive=True, TypeScript: { allowDestructive: true })`);
+
+for (const dialect of GATE_DIALECTS) {
+  test(`destructive gate refuses a drop on a table with rows (${dialect})`, async () => {
+    const dir = tmp();
+    const { db, prefix } = await gateDatabase(dialect);
+    await gateApply(db, dir, prefix + GATE_KEEP + GATE_SHOP);
+    await db.execute("INSERT INTO shop (name) VALUES ('a')");
+    const { migs, migration } = gateNext(dir, prefix + GATE_KEEP);
+    assert.ok(migration.upSql.includes("-- monorm: destructive drop-table shop\n"));
+    await assert.rejects(new Migrator(db, migs).upgrade(), refusal(migration.name, "drops table shop", "shop"));
+    assert.equal(await gateRows(db, "shop"), 1);
+    assert.deepEqual((await new Migrator(db, migs).status()).map((s) => s.applied), [true, false]);
+  });
+
+  test(`destructive gate allows the drop with the flag (${dialect})`, async () => {
+    const dir = tmp();
+    const { db, prefix } = await gateDatabase(dialect);
+    await gateApply(db, dir, prefix + GATE_KEEP + GATE_SHOP);
+    await db.execute("INSERT INTO shop (name) VALUES ('a')");
+    const { migs, migration } = gateNext(dir, prefix + GATE_KEEP);
+    const done = await new Migrator(db, migs).upgrade(undefined, { allowDestructive: true });
+    assert.deepEqual(done.map((m) => m.name), [migration.name]);
+    assert.equal(await gateHasTable(db, dialect, "shop"), false);
+  });
+
+  test(`destructive gate allows the drop on an empty or missing table (${dialect})`, async () => {
+    const dir = tmp();
+    const { db, prefix } = await gateDatabase(dialect);
+    await gateApply(db, dir, prefix + GATE_KEEP + GATE_SHOP);
+    const { migs, migration } = gateNext(dir, prefix + GATE_KEEP);
+    assert.deepEqual((await new Migrator(db, migs).upgrade()).map((m) => m.name), [migration.name]); // empty table
+    // a marker for a table that does not exist: nothing to lose
+    mkdirSync(join(dir, "0003_ghost"));
+    writeFileSync(join(dir, "0003_ghost", "up.sql"), "-- monorm: destructive drop-table ghost\nCREATE TABLE ghost_done (id integer);\n");
+    assert.deepEqual((await new Migrator(db, migs).upgrade()).map((m) => m.name), ["0003_ghost"]);
+  });
+
+  test(`destructive gate ignores a migration with no marker (${dialect})`, async () => {
+    const dir = tmp();
+    const { db, prefix } = await gateDatabase(dialect);
+    await gateApply(db, dir, prefix + GATE_KEEP + GATE_SHOP);
+    await db.execute("INSERT INTO shop (name) VALUES ('a')");
+    const wider = GATE_SHOP.replace("  note String?", "  note String?\n  extra String?");
+    const added = await gateApply(db, dir, prefix + GATE_KEEP + wider);
+    assert.ok(!added.upSql.includes("-- monorm: destructive"));
+    assert.equal(await gateRows(db, "shop"), 1);
+  });
+
+  test(`destructive gate sees a drop after a table rename (${dialect})`, async () => {
+    const dir = tmp();
+    const { db, prefix } = await gateDatabase(dialect);
+    await gateApply(db, dir, prefix + GATE_KEEP + GATE_SHOP);
+    await db.execute("INSERT INTO shop (name, note) VALUES ('a', 'n')");
+    const venue = GATE_SHOP.replace('@@map("shop")', '@@map("venue")\n  @@renamed_from("shop")').replace("model Shop", "model Venue").replace("  note String?\n", "");
+    const { migs, migration } = gateNext(dir, prefix + GATE_KEEP + venue);
+    // the marker names the table as the database has it before the migration
+    assert.ok(migration.upSql.includes("-- monorm: destructive drop-column shop.note\n"));
+    await assert.rejects(new Migrator(db, migs).upgrade(), refusal(migration.name, "drops column shop.note", "shop"));
+    assert.equal(await gateRows(db, "shop"), 1);
+    await new Migrator(db, migs).upgrade(undefined, { allowDestructive: true });
+    assert.equal(await gateRows(db, "venue"), 1);
+  });
+
+  test(`rollback gate refuses a down drop on a table with rows (${dialect})`, async () => {
+    const dir = tmp();
+    const { db, prefix } = await gateDatabase(dialect);
+    await gateApply(db, dir, prefix + GATE_KEEP);
+    const { migs, migration } = gateNext(dir, prefix + GATE_KEEP + GATE_SHOP);
+    const migrator = new Migrator(db, migs);
+    await migrator.upgrade(); // creating a table is not destructive
+    await db.execute("INSERT INTO shop (name) VALUES ('a')");
+    assert.ok(migration.downSql.includes("-- monorm: destructive drop-table shop\n"));
+    await assert.rejects(migrator.downgrade(), refusal(`rolling back ${migration.name}`, "drops table shop", "shop"));
+    assert.equal(await gateRows(db, "shop"), 1);
+    assert.deepEqual((await migrator.downgrade({ allowDestructive: true })).map((m) => m.name), [migration.name]);
+  });
+}
+
+test("destructive gate waits for a concurrent insert on postgres", async () => {
+  const dir = tmp();
+  const { db } = await gateDatabase("postgres");
+  await gateApply(db, dir, GATE_KEEP + GATE_SHOP);
+  const { migs, migration } = gateNext(dir, GATE_KEEP);
+  const writer = await connect(MIGRATIONS_URL, { maxConnections: 1, default: false, registry: models(GATE_KEEP + GATE_SHOP) });
+  opened.push(writer);
+  let upgrade: Promise<unknown> | undefined;
+  let settled = false;
+  await writer.transaction(async () => {
+    await writer.execute("INSERT INTO shop (name) VALUES ('a')"); // not committed yet
+    upgrade = new Migrator(db, migs).upgrade();
+    upgrade.then(
+      () => (settled = true),
+      () => (settled = true),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(settled, false); // the gate waits for the table lock
+  });
+  await assert.rejects(upgrade!, refusal(migration.name, "drops table shop", "shop"));
+  assert.equal(await gateRows(db, "shop"), 1);
 });

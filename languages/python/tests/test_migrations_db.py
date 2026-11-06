@@ -4,6 +4,9 @@ These run in a database of their own: migrations create and drop extensions, whi
 are per database, and the blog tables of the other tests depend on some of them.
 """
 
+import asyncio
+import contextlib
+import re
 import uuid
 from urllib.parse import urlsplit, urlunsplit
 
@@ -77,7 +80,7 @@ async def test_upgrade_downgrade_round_trip(tmp_path):
 
         Migrations(tmp_path, reg2).make("v2")
         assert [s.applied for s in await migrator.status()] == [True, False]
-        await migrator.upgrade()
+        await migrator.upgrade(allow_destructive=True)  # varchar to citext
 
         Author, Book = reg2.get("Author"), reg2.get("Book")
         # renamed column kept its data; citext compares case-insensitively
@@ -96,7 +99,7 @@ async def test_upgrade_downgrade_round_trip(tmp_path):
             await Book.objects.using(db).insert(author_id=1, name="Dune")
 
         # back to zero and up again: the down migrations are valid DDL too
-        assert [m.name for m in await migrator.downgrade(target="zero")] == ["0002_v2", "0001_initial"]
+        assert [m.name for m in await migrator.downgrade(target="zero", allow_destructive=True)] == ["0002_v2", "0001_initial"]
         assert await scalar(db, "SELECT to_regclass('books')::text") is None
         assert len(await migrator.upgrade()) == 2
         assert await migrator.upgrade() == []
@@ -243,8 +246,174 @@ async def test_enum_migrations(tmp_path):
             await migrator.upgrade()
         assert await scalar(db, labels) == "draft,review,published,archived"
         await db.execute("UPDATE docs SET status = 'draft'")
-        await migrator.downgrade(target="zero")
+        await migrator.downgrade(target="zero", allow_destructive=True)
         assert await scalar(db, "SELECT to_regtype('status')::text") is None
     finally:
         await drop()
         await db.close()
+
+
+GATE_SQLITE = 'datasource db { provider = "sqlite" }\n'
+GATE_KEEP = 'model Keep {\n  id BigInt @id @default(autoincrement())\n\n  @@map("keep")\n}\n'
+GATE_SHOP = 'model Shop {\n  id   BigInt @id @default(autoincrement())\n  name String\n  note String?\n\n  @@map("shop")\n}\n'
+GATE_TABLES = ("shop", "venue", "keep", "ghost_done", "monorm_migrations")
+DIALECTS = ["postgres", "sqlite"]
+
+
+@contextlib.asynccontextmanager
+async def gate_database(dialect):
+    """A database, and the schema-file prefix of its dialect."""
+    prefix = GATE_SQLITE if dialect == "sqlite" else ""
+    reg = models(prefix + GATE_KEEP)
+    if dialect == "sqlite":
+        db = await monorm.connect("sqlite://:memory:", max_connections=2, default=False, registry=reg)
+    else:
+        db = await connect(reg)
+    drop = "; ".join(f"DROP TABLE IF EXISTS {t}" for t in GATE_TABLES)
+    try:
+        await db.execute(drop)
+        yield db, prefix
+    finally:
+        await db.execute(drop)
+        await db.close()
+
+
+async def gate_apply(db, tmp_path, source):
+    """Writes the next migration for `source` and applies it (no flag: it must not be destructive)."""
+    migs = Migrations(tmp_path, models(source))
+    migration = migs.make()
+    assert migration is not None
+    await Migrator(db, migs).upgrade()
+    return migration
+
+
+def gate_next(tmp_path, source):
+    """Writes the next migration for `source` without applying it."""
+    migs = Migrations(tmp_path, models(source))
+    migration = migs.make()
+    assert migration is not None
+    return migs, migration
+
+
+async def gate_has_table(db, dialect, table):
+    sql = (
+        f"SELECT name FROM sqlite_master WHERE name = '{table}'"
+        if dialect == "sqlite"
+        else f"SELECT tablename FROM pg_tables WHERE tablename = '{table}'"
+    )
+    return len(await db.fetch(sql)) > 0
+
+
+def gate_refusal(lead, step, table):
+    """The refusal text: what `lead` and `step` do, the table, and the flag."""
+    return re.escape(f"{lead} {step}, and {table} has rows; pass --allow-destructive (Python: allow_destructive=True")
+
+
+async def gate_rows(db, table):
+    return len(await db.fetch(f"SELECT * FROM {table}"))
+
+
+@pytest.mark.case("migrations::destructive_gate_refuses_a_drop_on_a_table_with_rows")
+@pytest.mark.parametrize("dialect", DIALECTS)
+async def test_destructive_gate_refuses_a_drop_on_a_table_with_rows(tmp_path, dialect):
+    async with gate_database(dialect) as (db, prefix):
+        await gate_apply(db, tmp_path, prefix + GATE_KEEP + GATE_SHOP)
+        await db.execute("INSERT INTO shop (name) VALUES ('a')")
+        migs, dropped = gate_next(tmp_path, prefix + GATE_KEEP)
+        assert "-- monorm: destructive drop-table shop\n" in dropped.up_sql
+        with pytest.raises(MigrationError, match=gate_refusal(dropped.name, "drops table shop", "shop")):
+            await Migrator(db, migs).upgrade()
+        assert await gate_rows(db, "shop") == 1
+        assert [s.applied for s in await Migrator(db, migs).status()] == [True, False]
+
+
+@pytest.mark.case("migrations::destructive_gate_allows_the_drop_with_the_flag")
+@pytest.mark.parametrize("dialect", DIALECTS)
+async def test_destructive_gate_allows_the_drop_with_the_flag(tmp_path, dialect):
+    async with gate_database(dialect) as (db, prefix):
+        await gate_apply(db, tmp_path, prefix + GATE_KEEP + GATE_SHOP)
+        await db.execute("INSERT INTO shop (name) VALUES ('a')")
+        migs, dropped = gate_next(tmp_path, prefix + GATE_KEEP)
+        done = await Migrator(db, migs).upgrade(allow_destructive=True)
+        assert [m.name for m in done] == [dropped.name]
+        assert not await gate_has_table(db, dialect, "shop")
+
+
+@pytest.mark.case("migrations::destructive_gate_allows_the_drop_on_an_empty_or_missing_table")
+@pytest.mark.parametrize("dialect", DIALECTS)
+async def test_destructive_gate_allows_the_drop_on_an_empty_or_missing_table(tmp_path, dialect):
+    async with gate_database(dialect) as (db, prefix):
+        await gate_apply(db, tmp_path, prefix + GATE_KEEP + GATE_SHOP)
+        migs, dropped = gate_next(tmp_path, prefix + GATE_KEEP)
+        assert [m.name for m in await Migrator(db, migs).upgrade()] == [dropped.name]  # empty table
+        # a marker for a table that does not exist: nothing to lose
+        ghost = tmp_path / "0003_ghost"
+        ghost.mkdir()
+        (ghost / "up.sql").write_text("-- monorm: destructive drop-table ghost\nCREATE TABLE ghost_done (id integer);\n")
+        assert [m.name for m in await Migrator(db, migs).upgrade()] == ["0003_ghost"]
+
+
+@pytest.mark.case("migrations::destructive_gate_ignores_a_migration_with_no_marker")
+@pytest.mark.parametrize("dialect", DIALECTS)
+async def test_destructive_gate_ignores_a_migration_with_no_marker(tmp_path, dialect):
+    async with gate_database(dialect) as (db, prefix):
+        await gate_apply(db, tmp_path, prefix + GATE_KEEP + GATE_SHOP)
+        await db.execute("INSERT INTO shop (name) VALUES ('a')")
+        wider = GATE_SHOP.replace("  note String?", "  note String?\n  extra String?")
+        added = await gate_apply(db, tmp_path, prefix + GATE_KEEP + wider)
+        assert "-- monorm: destructive" not in added.up_sql
+        assert await gate_rows(db, "shop") == 1
+
+
+@pytest.mark.case("migrations::destructive_gate_sees_a_drop_after_a_table_rename")
+@pytest.mark.parametrize("dialect", DIALECTS)
+async def test_destructive_gate_sees_a_drop_after_a_table_rename(tmp_path, dialect):
+    async with gate_database(dialect) as (db, prefix):
+        await gate_apply(db, tmp_path, prefix + GATE_KEEP + GATE_SHOP)
+        await db.execute("INSERT INTO shop (name, note) VALUES ('a', 'n')")
+        venue = (
+            GATE_SHOP.replace('@@map("shop")', '@@map("venue")\n  @@renamed_from("shop")').replace("model Shop", "model Venue").replace("  note String?\n", "")
+        )
+        migs, step = gate_next(tmp_path, prefix + GATE_KEEP + venue)
+        # the marker names the table as the database has it before the migration
+        assert "-- monorm: destructive drop-column shop.note\n" in step.up_sql
+        with pytest.raises(MigrationError, match=gate_refusal(step.name, "drops column shop.note", "shop")):
+            await Migrator(db, migs).upgrade()
+        assert await gate_rows(db, "shop") == 1
+        await Migrator(db, migs).upgrade(allow_destructive=True)
+        assert await gate_rows(db, "venue") == 1
+
+
+@pytest.mark.case("migrations::rollback_gate_refuses_a_down_drop_on_a_table_with_rows")
+@pytest.mark.parametrize("dialect", DIALECTS)
+async def test_rollback_gate_refuses_a_down_drop_on_a_table_with_rows(tmp_path, dialect):
+    async with gate_database(dialect) as (db, prefix):
+        await gate_apply(db, tmp_path, prefix + GATE_KEEP)
+        migs, created = gate_next(tmp_path, prefix + GATE_KEEP + GATE_SHOP)
+        migrator = Migrator(db, migs)
+        await migrator.upgrade()  # creating a table is not destructive
+        await db.execute("INSERT INTO shop (name) VALUES ('a')")
+        assert "-- monorm: destructive drop-table shop\n" in created.down_sql
+        with pytest.raises(MigrationError, match=gate_refusal(f"rolling back {created.name}", "drops table shop", "shop")):
+            await migrator.downgrade()
+        assert await gate_rows(db, "shop") == 1
+        assert [m.name for m in await migrator.downgrade(allow_destructive=True)] == [created.name]
+
+
+@pytest.mark.case("migrations::destructive_gate_waits_for_a_concurrent_insert_on_postgres")
+async def test_destructive_gate_waits_for_a_concurrent_insert_on_postgres(tmp_path):
+    async with gate_database("postgres") as (db, prefix):
+        await gate_apply(db, tmp_path, prefix + GATE_KEEP + GATE_SHOP)
+        migs, dropped = gate_next(tmp_path, prefix + GATE_KEEP)
+        writer = await connect(models(GATE_KEEP + GATE_SHOP))
+        try:
+            async with writer.transaction():
+                await writer.execute("INSERT INTO shop (name) VALUES ('a')")  # not committed yet
+                upgrade = asyncio.ensure_future(Migrator(db, migs).upgrade())
+                await asyncio.sleep(0.5)
+                assert not upgrade.done()  # the gate waits for the table lock
+            with pytest.raises(MigrationError, match=gate_refusal(dropped.name, "drops table shop", "shop")):
+                await upgrade
+            assert await gate_rows(db, "shop") == 1
+        finally:
+            await writer.close()

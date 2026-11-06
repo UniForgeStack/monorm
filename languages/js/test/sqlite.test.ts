@@ -115,7 +115,7 @@ test("SQLite migrations, target checks and file persistence", async () => {
     const reopened = await connect(url, { registry: reg, default: false });
     try {
       assert.equal((await reopened.fetchText("SELECT name FROM author"))[0]![0], "Persisted");
-      await new Migrator(reopened, migrations).downgrade({ target: "zero" });
+      await new Migrator(reopened, migrations).downgrade({ target: "zero", allowDestructive: true });
     } finally { await reopened.close(); }
     await assert.rejects(connect("sqlite://:memory:", { registry: new Registry(), default: false }), SchemaError);
     assert.throws(() => loads(source.replace("provider = \"sqlite\"", "provider = \"postgresql\""), { registry: reg }), /same database/);
@@ -151,7 +151,7 @@ test("kept rename hints do not redirect later rebuilds", async () => {
     assert.deepEqual(await db.fetchText("PRAGMA foreign_key_check"), []);
     await db.execute("INSERT INTO writer (email, name) VALUES ('next', 'next')");
     assert.equal((await db.fetchText("SELECT max(id) FROM writer"))[0]![0], "102");
-    await runner.downgrade();
+    await runner.downgrade({ allowDestructive: true });
     assert.deepEqual(await db.fetchText("SELECT w.email, b.name FROM writer w JOIN book b ON b.author_id = w.id"), [["kept", "kept"]]);
   } finally {
     await db.close();

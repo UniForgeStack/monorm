@@ -575,3 +575,43 @@ fn the_spelling_of_another_file_format_is_an_error_that_names_the_file_and_the_k
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn destructive_gate_flag_on_migrate_rollback_and_makemigrations() {
+    let dir = std::env::temp_dir().join(format!("monorm-cli-gate-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let url = format!("sqlite://{}", dir.join("live.db").display());
+    let source = format!("datasource db {{\n  provider = \"sqlite\"\n}}\n\n{SCHEMA}\nmodel Note {{\n  id   BigInt @id @default(autoincrement())\n  body String\n}}\n");
+    std::fs::write(dir.join("schema.prisma"), &source).unwrap();
+    let run = |args: &[&str]| monorm(&dir, &[&["--url", url.as_str()][..], args].concat());
+    assert!(run(&["makemigrations", "--name", "initial"]).status.success());
+    assert!(run(&["migrate"]).status.success());
+    // a hand-written migration puts a row in each table
+    assert!(run(&["makemigrations", "--empty", "--name", "seed"]).status.success());
+    let seed = std::fs::read_dir(dir.join("migrations")).unwrap().map(|e| e.unwrap().path()).find(|p| p.ends_with("0002_seed")).unwrap();
+    std::fs::write(seed.join("up.sql"), "INSERT INTO book (title) VALUES ('a');\nINSERT INTO note (body) VALUES ('a');\n").unwrap();
+    assert!(run(&["migrate"]).status.success());
+
+    // makemigrations prints the flag next to the destructive step
+    std::fs::write(dir.join("schema.prisma"), source.split("\nmodel Note").next().unwrap()).unwrap();
+    let made = run(&["makemigrations", "--name", "drop_note"]);
+    assert!(made.status.success(), "{}", text(&made.stderr));
+    assert!(text(&made.stdout).contains("needs --allow-destructive"), "{}", text(&made.stdout));
+
+    // migrate refuses without the flag, and applies with it
+    let refused = run(&["migrate"]);
+    assert_eq!(refused.status.code(), Some(1), "{}", text(&refused.stderr));
+    let message = text(&refused.stderr);
+    assert!(message.contains("0003_drop_note") && message.contains("drops table note") && message.contains("--allow-destructive"), "{message}");
+    assert!(run(&["migrate", "--allow-destructive"]).status.success());
+
+    // rollback: the down of the first migration drops `book`, which has a row
+    let refused = run(&["rollback", "--to", "zero"]);
+    assert_eq!(refused.status.code(), Some(1), "{}", text(&refused.stderr));
+    let message = text(&refused.stderr);
+    assert!(message.contains("0001_initial") && message.contains("drops table book") && message.contains("--allow-destructive"), "{message}");
+    let done = run(&["rollback", "--to", "zero", "--allow-destructive"]);
+    assert!(done.status.success(), "{}", text(&done.stderr));
+    let _ = std::fs::remove_dir_all(&dir);
+}

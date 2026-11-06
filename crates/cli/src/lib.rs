@@ -12,8 +12,8 @@
 //!   generate [python|typescript|rust] [-o FILE] [--import MODULE] [--query-set Model=TARGET]... [--model-methods Model=TARGET]...
 //!   makemigrations [name] [--empty] [--check]
 //!   sqlmigrate <migration> [--down]
-//!   migrate [target]
-//!   rollback [--steps N | --to <migration>|zero]
+//!   migrate [target] [--allow-destructive]
+//!   rollback [--steps N | --to <migration>|zero] [--allow-destructive]
 //!   showmigrations
 //!   pull [-o FILE] [--force]
 //!   baseline
@@ -86,8 +86,8 @@ const COMMANDS: &str = "  init [dir] [--lang python|typescript] [--tool uv|pip|n
   makemigrations [name] [--empty] [--check]
                                            write the next migration from schema changes
   sqlmigrate <migration> [--down]          print a migration's SQL
-  migrate [target]                         apply pending migrations
-  rollback [--steps N | --to <migration>|zero]
+  migrate [target] [--allow-destructive]   apply pending migrations; a drop on a table with rows needs the flag
+  rollback [--steps N | --to <migration>|zero] [--allow-destructive]
                                            revert applied migrations (default: the last one)
   showmigrations                           list migrations and whether they are applied
   pull [-o FILE] [--force]                 write the schema file from the live database
@@ -132,7 +132,7 @@ struct Args {
     options: Vec<(String, Option<String>)>,
 }
 
-const FLAGS: [&str; 8] = ["--native", "--empty", "--check", "--down", "--force", "--yes", "-h", "--help"];
+const FLAGS: [&str; 9] = ["--native", "--empty", "--check", "--down", "--force", "--allow-destructive", "--yes", "-h", "--help"];
 const VALUED: [&str; 21] = ["--lang", "--tool", "--db", "--ext", "--schema", "--dir", "--url", "-o", "--out", "--import", "--name", "--steps", "--to", "--rename", "--restore", "--query-set", "--model-methods", "--ext-dir", "--app", "--extension", "--extension-module"];
 
 impl Args {
@@ -278,15 +278,18 @@ fn write(path: &Path, text: &str) -> Result<()> {
     std::fs::write(path, text).map_err(|e| failed(format!("{}: {e}", path.display())))
 }
 
+/// Schema file, migrations directory, database URL, target and `--allow-destructive`.
+pub type MigrateArgs = (PathBuf, PathBuf, Option<String>, Option<String>, bool);
+
 /// For a `migrate` command line: the schema file, the migrations directory, the database
-/// URL and the target, as [`run`] resolves them; `None` for anything else. The Python
-/// and Node hosts use it to apply migrations with a data step themselves.
-pub fn migrate_args(argv: &[String]) -> Option<(PathBuf, PathBuf, Option<String>, Option<String>)> {
+/// URL, the target and `--allow-destructive`, as [`run`] resolves them; `None` for anything
+/// else. The Python and Node hosts use it to apply migrations with a data step themselves.
+pub fn migrate_args(argv: &[String]) -> Option<MigrateArgs> {
     let args = Args::parse(argv).ok()?;
     if args.positional.first().map(String::as_str) != Some("migrate") || args.flag("-h") || args.flag("--help") {
         return None;
     }
-    args.allow("migrate", &[], 1).ok()?;
+    args.allow("migrate", &["--allow-destructive"], 1).ok()?;
     let settings = settings().ok()?;
     let (schema, dir) = (
         schema_file(&args, &settings).ok()?,
@@ -294,7 +297,7 @@ pub fn migrate_args(argv: &[String]) -> Option<(PathBuf, PathBuf, Option<String>
     );
     let env = std::env::var("MONORM_DATABASE_URL").ok().filter(|u| !u.is_empty());
     let url = args.opt(&["--url"]).map(String::from).or(env);
-    Some((schema, dir, url, args.arg(0).map(String::from)))
+    Some((schema, dir, url, args.arg(0).map(String::from), args.flag("--allow-destructive")))
 }
 
 /// The schema file a command line reads, as [`run`] resolves it. The Python and Node hosts
@@ -451,6 +454,9 @@ async fn command(argv: &[String], host: Host) -> Result<i32> {
                         if let Some(w) = &s.warning {
                             println!("    ! {w}");
                         }
+                        if !s.destructive.is_empty() {
+                            println!("    needs --allow-destructive");
+                        }
                     }
                 }
             }
@@ -463,8 +469,8 @@ async fn command(argv: &[String], host: Host) -> Result<i32> {
         }
         "migrate" | "rollback" | "showmigrations" | "pull" | "baseline" | "drift" => {
             match command {
-                "migrate" => args.allow(command, &[], 1)?,
-                "rollback" => args.allow(command, &["--steps", "--to", "--force"], 0)?,
+                "migrate" => args.allow(command, &["--allow-destructive"], 1)?,
+                "rollback" => args.allow(command, &["--steps", "--to", "--force", "--allow-destructive"], 0)?,
                 "pull" => args.allow(command, &["-o", "--out", "--force"], 0)?,
                 _ => args.allow(command, &[], 0)?,
             }
@@ -697,7 +703,7 @@ async fn database(command: &str, args: &Args, dir: &Path, schema: &Path) -> Resu
     let result = async {
         match command {
             "migrate" => {
-                let done = migrate::upgrade(&*driver, dir, args.arg(0)).await?;
+                let done = migrate::upgrade(&*driver, dir, args.arg(0), args.flag("--allow-destructive")).await?;
                 for m in &done {
                     println!("Applied {}", m.name);
                 }
@@ -713,7 +719,7 @@ async fn database(command: &str, args: &Args, dir: &Path, schema: &Path) -> Resu
                         steps.map_or(Ok(1), str::parse).map_err(|_| Failure::Usage("--steps takes a number".into()))?,
                     ),
                 };
-                let done = migrate::downgrade(&*driver, dir, down, args.flag("--force")).await?;
+                let done = migrate::downgrade(&*driver, dir, down, args.flag("--force"), args.flag("--allow-destructive")).await?;
                 for m in &done {
                     println!("Reverted {}", m.name);
                 }

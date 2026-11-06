@@ -843,11 +843,11 @@ impl Engine {
     }
 
     /// Applies pending migrations (up to `target`); the names applied.
-    #[pyo3(signature = (dir, target = None))]
-    fn migrate_up<'py>(&self, py: Python<'py>, dir: PathBuf, target: Option<String>) -> PyResult<Bound<'py, PyAny>> {
+    #[pyo3(signature = (dir, target = None, allow_destructive = false))]
+    fn migrate_up<'py>(&self, py: Python<'py>, dir: PathBuf, target: Option<String>, allow_destructive: bool) -> PyResult<Bound<'py, PyAny>> {
         let driver = self.driver.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let done = engine_migrate::upgrade(&*driver, &dir, target.as_deref()).await.map_err(engine_err)?;
+            let done = engine_migrate::upgrade(&*driver, &dir, target.as_deref(), allow_destructive).await.map_err(engine_err)?;
             Ok(done.into_iter().map(|m| m.name).collect::<Vec<_>>())
         })
     }
@@ -881,22 +881,23 @@ impl Engine {
     }
 
     /// The migrations `migrate_up` would apply: `[(name, path)]`.
-    #[pyo3(signature = (dir, target = None))]
-    fn migration_pending<'py>(&self, py: Python<'py>, dir: PathBuf, target: Option<String>) -> PyResult<Bound<'py, PyAny>> {
+    #[pyo3(signature = (dir, target = None, allow_destructive = false))]
+    fn migration_pending<'py>(&self, py: Python<'py>, dir: PathBuf, target: Option<String>, allow_destructive: bool) -> PyResult<Bound<'py, PyAny>> {
         let driver = self.driver.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let todo = engine_migrate::pending(&*driver, &dir, target.as_deref()).await.map_err(engine_err)?;
+            let todo = engine_migrate::pending(&*driver, &dir, target.as_deref(), allow_destructive).await.map_err(engine_err)?;
             Ok(todo.into_iter().map(|m| (m.name, m.path)).collect::<Vec<_>>())
         })
     }
 
     /// Starts applying one migration: its transaction, with the lock taken and `up.sql`
     /// run; None when another migrator applied it meanwhile.
-    fn migration_begin<'py>(&self, py: Python<'py>, name: String, path: PathBuf) -> PyResult<Bound<'py, PyAny>> {
+    #[pyo3(signature = (name, path, allow_destructive = false))]
+    fn migration_begin<'py>(&self, py: Python<'py>, name: String, path: PathBuf, allow_destructive: bool) -> PyResult<Bound<'py, PyAny>> {
         let driver = self.driver.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let m = engine_migrate::Migration { name, path };
-            let tx = engine_migrate::begin_apply(&*driver, &m).await.map_err(engine_err)?;
+            let tx = engine_migrate::begin_apply(&*driver, &m, allow_destructive).await.map_err(engine_err)?;
             Ok(tx.map(|inner| Transaction { inner: db::guard(inner), failure: Default::default() }))
         })
     }
@@ -910,7 +911,7 @@ impl Engine {
     }
 
     /// Reverts the last `steps` migrations, or every one after `target`; the names reverted.
-    #[pyo3(signature = (dir, steps = 1, target = None, force = false))]
+    #[pyo3(signature = (dir, steps = 1, target = None, force = false, allow_destructive = false))]
     fn migrate_down<'py>(
         &self,
         py: Python<'py>,
@@ -918,6 +919,7 @@ impl Engine {
         steps: usize,
         target: Option<String>,
         force: bool,
+        allow_destructive: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let driver = self.driver.clone();
         let down = match target {
@@ -925,7 +927,7 @@ impl Engine {
             None => engine_migrate::Down::Steps(steps),
         };
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let done = engine_migrate::downgrade(&*driver, &dir, down, force).await.map_err(engine_err)?;
+            let done = engine_migrate::downgrade(&*driver, &dir, down, force, allow_destructive).await.map_err(engine_err)?;
             Ok(done.into_iter().map(|m| m.name).collect::<Vec<_>>())
         })
     }
@@ -1096,11 +1098,11 @@ fn cli_schema(argv: Vec<String>) -> PathBuf {
     monorm_cli::schema_path(&argv)
 }
 
-/// For `python -m monorm migrate`: `(schema, dir, url, target)` as the CLI resolves them,
+/// For `python -m monorm migrate`: `(schema, dir, url, target, allow_destructive)` as the CLI resolves them,
 /// or None for any other command line.
 #[cfg(feature = "cli")]
 #[pyfunction]
-fn cli_migrate_args(argv: Vec<String>) -> Option<(PathBuf, PathBuf, Option<String>, Option<String>)> {
+fn cli_migrate_args(argv: Vec<String>) -> Option<monorm_cli::MigrateArgs> {
     monorm_cli::migrate_args(&argv)
 }
 

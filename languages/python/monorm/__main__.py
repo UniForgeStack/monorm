@@ -54,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
         args += ["--extension-module", f"{ident}={module}"]
     found = _native.cli_migrate_args(args)
     if found is not None:
-        schema, directory, url, target = found
+        schema, directory, url, target, allow_destructive = found
         from .migrations import has_data_steps, migrate_command
 
         if url:
@@ -63,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 # data.py runs in Python, so this migrator applies the directory
                 if has_data_steps(directory):
-                    return asyncio.run(migrate_command(schema, directory, url, target))
+                    return asyncio.run(migrate_command(schema, directory, url, target, allow_destructive))
             except Exception as e:  # the CLI reports errors, not tracebacks
                 print(f"error: {e}", file=sys.stderr)
                 return 1

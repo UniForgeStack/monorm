@@ -63,7 +63,7 @@ test("a data step runs in the migration's transaction", async () => {
   const migrator = new Migrator(db, migrations);
   assert.deepEqual((await migrator.upgrade("1")).map((m) => m.name), ["0001_initial"]);
   await db.execute("INSERT INTO author (name) VALUES ('Ann'), ('Bob')");
-  await assert.rejects(db.engine.migrateUp(migrations.directory, null), /0002_slug has a data step \(data\.ts\)/);
+  await assert.rejects(db.engine.migrateUp(migrations.directory, null, false), /0002_slug has a data step \(data\.ts\)/);
   assert.deepEqual((await migrator.upgrade()).map((m) => m.name), ["0002_slug"]);
   assert.deepEqual(await db.fetchText("SELECT slug FROM author ORDER BY id"), [["ann"], ["bob"]]);
 

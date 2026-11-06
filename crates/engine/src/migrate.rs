@@ -15,6 +15,8 @@ use sha2::{Digest, Sha256};
 
 use monorm_core::dialect::Dialect;
 use monorm_core::migrate::files::{self, MigrationFolder};
+use monorm_core::migrate::pg::ident;
+use monorm_core::migrate::Destructive;
 
 use crate::db::{Executor, Transaction};
 use crate::error::{Error, Result};
@@ -91,6 +93,48 @@ fn lit(text: &str) -> String {
     format!("'{}'", text.replace('\'', "''"))
 }
 
+const ALLOW_HINT: &str = "pass --allow-destructive (Python: allow_destructive=True, TypeScript: { allowDestructive: true })";
+
+/// One cell of a one-row query as a flag: `1` is true. A missing row is false.
+async fn flag(conn: &dyn Executor, sql: String) -> Result<bool> {
+    let rows = conn.query_text(sql).await?;
+    Ok(rows.into_iter().next().and_then(|r| r.into_iter().next().flatten()).is_some_and(|v| v == "1"))
+}
+
+/// Whether `table` exists. A missing table counts as empty, so a replay on a fresh
+/// database needs no flag.
+async fn exists(conn: &dyn Executor, table: &str) -> Result<bool> {
+    let sql = match conn.dialect() {
+        Dialect::Postgres => format!("SELECT CAST(to_regclass({}) IS NOT NULL AS integer)", lit(&ident(table))),
+        Dialect::Sqlite => format!("SELECT CAST(EXISTS (SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = {}) AS integer)", lit(table)),
+    };
+    flag(conn, sql).await
+}
+
+/// Refuses `sql` when a step it marks as destructive touches a table with rows.
+/// `what` starts the error text: the migration, and for a rollback its direction.
+/// `in_tx` is true for a migration transaction: on PostgreSQL the check then locks the
+/// table first, as the step itself will, so a write that commits later cannot slip past.
+/// SQLite holds the write lock for the whole transaction already.
+async fn gate(conn: &dyn Executor, what: &str, sql: &str, in_tx: bool) -> Result<()> {
+    let mut seen: Vec<String> = vec![];
+    for d in sql.lines().filter_map(Destructive::parse_marker) {
+        if seen.contains(&d.table) {
+            continue;
+        }
+        if exists(conn, &d.table).await? {
+            if in_tx && conn.dialect() == Dialect::Postgres {
+                conn.batch(format!("LOCK TABLE {} IN ACCESS EXCLUSIVE MODE", ident(&d.table))).await?;
+            }
+            if flag(conn, format!("SELECT CAST(EXISTS (SELECT 1 FROM {}) AS integer)", ident(&d.table))).await? {
+                return Err(Error::Migration(format!("{what} {}, and {} has rows; {ALLOW_HINT}", d.describe(), d.table)));
+            }
+        }
+        seen.push(d.table);
+    }
+    Ok(())
+}
+
 async fn ensure_table(conn: &dyn Executor) -> Result<()> {
     let (timestamp, flag) = match conn.dialect() {
         Dialect::Postgres => ("timestamptz NOT NULL DEFAULT now()", "boolean NOT NULL DEFAULT false"),
@@ -110,7 +154,7 @@ async fn ensure_table(conn: &dyn Executor) -> Result<()> {
     };
     if conn.query_text(has).await?.is_empty() {
         let add = format!("ALTER TABLE {TABLE} ADD COLUMN {}baseline {flag}", if conn.dialect() == Dialect::Postgres { "IF NOT EXISTS " } else { "" });
-        locked(conn, |_| Some(["SELECT 1".to_owned(), add])).await?;
+        locked(conn, None, |_| Some(["SELECT 1".to_owned(), add])).await?;
     }
     Ok(())
 }
@@ -187,9 +231,12 @@ fn verify(statuses: &[Status], applied: &BTreeMap<String, (String, String)>) -> 
 }
 
 /// In one transaction holding the migration lock: runs the scripts `scripts` gives for
-/// the migrations applied by then (none: nothing to do), and commits.
+/// the migrations applied by then (none: nothing to do), and commits. With `gated`
+/// (error text start, SQL), the destructive markers of that SQL are checked first, in the
+/// transaction.
 async fn locked(
     conn: &dyn Executor,
+    gated: Option<(&str, &str)>,
     scripts: impl FnOnce(&BTreeMap<String, (String, String)>) -> Option<[String; 2]>,
 ) -> Result<bool> {
     let tx = conn.begin_migration().await?;
@@ -198,6 +245,9 @@ async fn locked(
             tx.batch(format!("SELECT pg_advisory_xact_lock({LOCK_ID})")).await?;
         }
         let Some(scripts) = scripts(&applied(&*tx).await?) else { return Ok(false) };
+        if let Some((what, sql)) = gated {
+            gate(&*tx, what, sql, true).await?;
+        }
         for sql in scripts {
             tx.batch(sql).await?;
         }
@@ -226,22 +276,32 @@ impl Migration {
 }
 
 /// The migrations [`upgrade`] would apply, in order: pending ones up to and including
-/// `target` (default: all), after the same checks.
-pub async fn pending(conn: &dyn Executor, dir: &Path, target: Option<&str>) -> Result<Vec<Migration>> {
+/// `target` (default: all), after the same checks. Unless `allow_destructive`, a pending
+/// migration that marks a step destructive on a table with rows is refused. This check
+/// holds no lock: [`begin_apply`] checks again in its transaction.
+pub async fn pending(conn: &dyn Executor, dir: &Path, target: Option<&str>, allow_destructive: bool) -> Result<Vec<Migration>> {
     let statuses = status(conn, dir).await?;
     verify(&statuses, &applied(conn).await?)?;
     let stop = target.map(|t| find(dir, t)).transpose()?.map(|m| m.name);
-    Ok(statuses
+    let todo: Vec<Migration> = statuses
         .into_iter()
         .filter(|s| !s.applied && stop.as_ref().is_none_or(|stop| s.migration.name <= *stop))
         .map(|s| s.migration)
-        .collect())
+        .collect();
+    if !allow_destructive {
+        for m in &todo {
+            gate(conn, &m.name, &m.up_sql()?, false).await?;
+        }
+    }
+    Ok(todo)
 }
 
 /// Starts applying `m`: a migration transaction holding the migration lock, with
 /// `up.sql` run in it. `None` when another migrator applied `m` meanwhile. The caller
 /// runs the data step in the transaction, then [`finish_apply`] (or rolls back).
-pub async fn begin_apply(conn: &dyn Executor, m: &Migration) -> Result<Option<Arc<dyn Transaction>>> {
+/// Unless `allow_destructive`, a destructive step on a table with rows is refused here,
+/// after the lock, so a row inserted since [`pending`] still counts.
+pub async fn begin_apply(conn: &dyn Executor, m: &Migration, allow_destructive: bool) -> Result<Option<Arc<dyn Transaction>>> {
     let up = m.up_sql()?;
     let tx = conn.begin_migration().await?;
     let run = async {
@@ -250,6 +310,9 @@ pub async fn begin_apply(conn: &dyn Executor, m: &Migration) -> Result<Option<Ar
         }
         if applied(&*tx).await?.contains_key(&m.name) {
             return Ok(false);
+        }
+        if !allow_destructive {
+            gate(&*tx, &m.name, &up, true).await?;
         }
         tx.batch(up).await?;
         Ok::<_, Error>(true)
@@ -282,15 +345,15 @@ pub async fn finish_apply(tx: &dyn Transaction, m: &Migration) -> Result<()> {
 /// Applies pending migrations up to and including `target` (default: all); gives the
 /// ones it applied. A migration with a data step (`data.py`, `data.ts`) is refused
 /// before anything runs: the Python or TypeScript migrator applies it.
-pub async fn upgrade(conn: &dyn Executor, dir: &Path, target: Option<&str>) -> Result<Vec<Migration>> {
-    let todo = pending(conn, dir, target).await?;
+pub async fn upgrade(conn: &dyn Executor, dir: &Path, target: Option<&str>, allow_destructive: bool) -> Result<Vec<Migration>> {
+    let todo = pending(conn, dir, target, allow_destructive).await?;
     if let Some((m, file)) = todo.iter().find_map(|m| m.data_file().map(|f| (m, f))) {
         let tool = if file == "data.py" { "python -m monorm migrate (or Migrator.upgrade())" } else { "npx monorm migrate (or Migrator.upgrade())" };
         return Err(Error::Migration(format!("{} has a data step ({file}); apply it with {tool}", m.name)));
     }
     let mut done = vec![];
     for m in todo {
-        if let Some(tx) = begin_apply(conn, &m).await? {
+        if let Some(tx) = begin_apply(conn, &m, allow_destructive).await? {
             finish_apply(&*tx, &m).await?;
             done.push(m);
         }
@@ -316,7 +379,7 @@ pub async fn baseline(conn: &dyn Executor, dir: &Path) -> Result<Migration> {
         if conn.dialect() == Dialect::Postgres { "true" } else { "1" }
     );
     let mut applied = vec![];
-    let ran = locked(conn, |now| {
+    let ran = locked(conn, None, |now| {
         applied = now.keys().cloned().collect();
         now.is_empty().then(|| ["SELECT 1".to_owned(), record])
     })
@@ -329,8 +392,10 @@ pub async fn baseline(conn: &dyn Executor, dir: &Path) -> Result<Migration> {
 
 /// Reverts applied migrations, newest first; gives the ones it reverted. A baselined
 /// migration was never run here, so its `down.sql` would drop live tables: refused
-/// unless `force`, before anything is reverted.
-pub async fn downgrade(conn: &dyn Executor, dir: &Path, down: Down, force: bool) -> Result<Vec<Migration>> {
+/// unless `force`, before anything is reverted. Unless `allow_destructive`, a `down.sql`
+/// that marks a destructive step on a table with rows is refused too: checked first for
+/// every migration to revert, then again in the transaction of each.
+pub async fn downgrade(conn: &dyn Executor, dir: &Path, down: Down, force: bool, allow_destructive: bool) -> Result<Vec<Migration>> {
     let applied: Vec<Migration> = status(conn, dir).await?.into_iter().filter(|s| s.applied).map(|s| s.migration).collect();
     let revert: Vec<Migration> = match down {
         Down::To(t) => {
@@ -351,10 +416,19 @@ pub async fn downgrade(conn: &dyn Executor, dir: &Path, down: Down, force: bool)
             )));
         }
     }
+    let what = |m: &Migration| format!("rolling back {}", m.name);
+    if !allow_destructive {
+        for m in &revert {
+            gate(conn, &what(m), &m.down_sql()?, false).await?;
+        }
+    }
     let mut done = vec![];
     for m in revert.into_iter().rev() {
         let scripts = [m.down_sql()?, format!("DELETE FROM {TABLE} WHERE name = {}", lit(&m.name))];
-        if locked(conn, |now| now.contains_key(&m.name).then_some(scripts)).await? {
+        let label = what(&m);
+        let gated = (!allow_destructive).then(|| (label.as_str(), scripts[0].as_str()));
+        let known = |now: &BTreeMap<String, (String, String)>| now.contains_key(&m.name).then(|| scripts.clone());
+        if locked(conn, gated, known).await? {
             done.push(m);
         }
     }

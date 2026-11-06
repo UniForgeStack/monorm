@@ -213,7 +213,11 @@ def has_data_steps(directory: str | os.PathLike[str]) -> bool:
 
 
 async def migrate_command(
-    schema: str | os.PathLike[str], directory: str | os.PathLike[str], url: str, target: str | None
+    schema: str | os.PathLike[str],
+    directory: str | os.PathLike[str],
+    url: str,
+    target: str | None,
+    allow_destructive: bool = False,
 ) -> int:
     """``python -m monorm migrate`` for a directory with data steps: applies with
     :meth:`Migrator.upgrade`. The data modules of the pending migrations are imported
@@ -224,7 +228,7 @@ async def migrate_command(
     dialect = "sqlite" if url.startswith("sqlite:") else None
     probe = await monorm_connect(url, max_connections=1, default=False, registry=Registry(dialect=dialect))
     try:
-        pending = await Migrator(probe, Migrations(directory, schema))._load_pending(target)
+        pending = await Migrator(probe, Migrations(directory, schema))._load_pending(target, allow_destructive)
     finally:
         await probe.close()
     if not any(registry) and Path(schema).is_file():
@@ -235,7 +239,7 @@ async def migrate_command(
         # data steps that use db.execute only, and no schema file (e.g. a deploy image)
         db = await monorm_connect(url, max_connections=2, registry=Registry(dialect=dialect))
     try:
-        done = await Migrator(db, Migrations(directory, schema))._upgrade(target, pending)
+        done = await Migrator(db, Migrations(directory, schema))._upgrade(pending, allow_destructive)
     finally:
         await db.close()
     for m in done:
@@ -273,22 +277,27 @@ class Migrator:
         rows = await self.db._engine.migration_status(self._dir)
         return [Status(Migration(name, self.migrations.directory / name), applied, at) for name, applied, at in rows]
 
-    async def upgrade(self, target: str | None = None) -> list[Migration]:
+    async def upgrade(self, target: str | None = None, *, allow_destructive: bool = False) -> list[Migration]:
         """Apply pending migrations up to and including ``target`` (default: all).
+
+        A migration that drops a table or a column, or changes a column type so that data
+        can be lost, is marked in its ``up.sql``. It raises :class:`MigrationError` when the
+        table has rows, unless ``allow_destructive=True``. A missing or empty table passes.
 
         A migration folder may hold a ``data.py`` with ``async def run(db)``. It runs after
         ``up.sql``, in the same transaction and under the same lock, before the migration
         is recorded; queries on ``db`` inside it go into that transaction. An error rolls
         back the SQL, the data changes and the record.
         """
-        return await self._upgrade(target, await self._load_pending(target))
+        return await self._upgrade(await self._load_pending(target, allow_destructive), allow_destructive)
 
     async def _load_pending(
-        self, target: str | None
+        self, target: str | None, allow_destructive: bool = False
     ) -> list[tuple[Migration, Callable[[Database], Awaitable[Any]] | None]]:
         """The pending migrations with their loaded data steps; refuses before anything runs."""
         todo = [
-            Migration(name, Path(path)) for name, path in await self.db._engine.migration_pending(self._dir, target)
+            Migration(name, Path(path))
+            for name, path in await self.db._engine.migration_pending(self._dir, target, allow_destructive)
         ]
         for m in todo:
             if (m.path / "data.ts").is_file():
@@ -296,11 +305,13 @@ class Migrator:
         return [(m, _data_step(m)) for m in todo]
 
     async def _upgrade(
-        self, target: str | None, pending: list[tuple[Migration, Callable[[Database], Awaitable[Any]] | None]]
+        self,
+        pending: list[tuple[Migration, Callable[[Database], Awaitable[Any]] | None]],
+        allow_destructive: bool = False,
     ) -> list[Migration]:
         done = []
         for m, run in pending:
-            tx = await self.db._engine.migration_begin(m.name, str(m.path))
+            tx = await self.db._engine.migration_begin(m.name, str(m.path), allow_destructive)
             if tx is None:
                 continue
             root = self.db._root
@@ -340,9 +351,12 @@ class Migrator:
         name = await self.db._engine.migrate_baseline(self._dir)
         return Migration(name, self.migrations.directory / name)
 
-    async def downgrade(self, steps: int = 1, *, target: str | None = None, force: bool = False) -> list[Migration]:
+    async def downgrade(
+        self, steps: int = 1, *, target: str | None = None, force: bool = False, allow_destructive: bool = False
+    ) -> list[Migration]:
         """Revert the last ``steps`` applied migrations, or every one after ``target``
         (``target="zero"`` reverts all). A baselined migration (:meth:`baseline`) is
-        refused unless ``force``: its ``down.sql`` would drop the live tables."""
-        names = await self.db._engine.migrate_down(self._dir, max(steps, 0), target, force)
+        refused unless ``force``: its ``down.sql`` would drop the live tables. A ``down.sql``
+        that drops a table with rows is refused unless ``allow_destructive``."""
+        names = await self.db._engine.migrate_down(self._dir, max(steps, 0), target, force, allow_destructive)
         return [Migration(n, self.migrations.directory / n) for n in names]

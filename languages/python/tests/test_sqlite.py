@@ -247,7 +247,7 @@ async def test_migrations_rebuild_preserve_rows_and_sequences(tmp_path):
         assert await db._fetch_text("PRAGMA foreign_key_check") == []
         await db.execute("INSERT INTO author (email, name) VALUES ('next', 'next')")
         assert (await db._fetch_text("SELECT max(id) FROM author"))[0][0] == "102"
-        await runner.downgrade()
+        await runner.downgrade(allow_destructive=True)
         assert (await db._fetch_text("SELECT title FROM book"))[0][0] == "kept"
         assert all(s.applied for s in (await runner.status())[:1])
     finally:
@@ -289,7 +289,7 @@ async def test_kept_rename_hints_do_not_redirect_later_rebuilds(tmp_path):
         assert await db._fetch_text("PRAGMA foreign_key_check") == []
         await db.execute("INSERT INTO writer (email, name) VALUES ('next', 'next')")
         assert (await db._fetch_text("SELECT max(id) FROM writer"))[0][0] == "102"
-        await runner.downgrade()
+        await runner.downgrade(allow_destructive=True)
         assert await db._fetch_text("SELECT w.email, b.name FROM writer w JOIN book b ON b.author_id = w.id") == [
             ("kept", "kept")
         ]
@@ -538,7 +538,7 @@ async def test_migration_refuses_unmanaged_objects(tmp_path, object_sql):
         assert await db._fetch_text("SELECT name FROM sqlite_schema WHERE name LIKE 'custom_%'")
         await db.execute("DROP INDEX custom_index" if "INDEX" in object_sql else "DROP TRIGGER custom_trigger")
         await runner.upgrade()
-        await runner.downgrade()
+        await runner.downgrade(allow_destructive=True)
     finally:
         await db.close()
 
@@ -571,7 +571,7 @@ async def test_failed_rebuild_rolls_back_schema_rows_and_history(tmp_path):
         assert (await db._fetch_text("PRAGMA foreign_keys"))[0][0] == "1"
         await db.execute("UPDATE book SET pages=10")
         await runner.upgrade()
-        await runner.downgrade()
+        await runner.downgrade(allow_destructive=True)
     finally:
         await db.close()
 

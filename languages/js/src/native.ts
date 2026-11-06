@@ -174,13 +174,13 @@ export interface NativeEngine extends NativeInspector {
   fetchText(sql: string, tx: NativeTransaction | null): Promise<(string | null)[][]>;
   executeScript(statements: string[], tx: NativeTransaction | null): Promise<void>;
   migrationStatus(dir: string): Promise<string>;
-  migrateUp(dir: string, target: string | null): Promise<string[]>;
-  migrateDown(dir: string, steps: number, target: string | null, force: boolean): Promise<string[]>;
+  migrateUp(dir: string, target: string | null, allowDestructive: boolean): Promise<string[]>;
+  migrateDown(dir: string, steps: number, target: string | null, force: boolean, allowDestructive: boolean): Promise<string[]>;
   pullSchema(): Promise<string>;
   migrationDrift(dir: string): Promise<string>;
   migrateBaseline(dir: string): Promise<string>;
-  migrationPending(dir: string, target: string | null): Promise<string[][]>;
-  migrationBegin(name: string, path: string): Promise<NativeTransaction | null>;
+  migrationPending(dir: string, target: string | null, allowDestructive: boolean): Promise<string[][]>;
+  migrationBegin(name: string, path: string, allowDestructive: boolean): Promise<NativeTransaction | null>;
   migrationFinish(tx: NativeTransaction, name: string, path: string): Promise<void>;
   createTables(): Promise<void>;
   dropTables(): Promise<void>;

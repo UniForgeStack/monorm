@@ -731,8 +731,8 @@ python -m monorm makemigrations [name]          # migrations/NNNN_name/{up.sql,d
 python -m monorm makemigrations --check         # exit 1 if the schema changed without a migration (CI)
 python -m monorm makemigrations --empty data    # an empty migration for hand-written SQL or a data step
 python -m monorm sqlmigrate 2 [--down]
-python -m monorm migrate [target]               # apply pending migrations
-python -m monorm rollback [--steps N | --to 0002_x | --to zero] [--force]
+python -m monorm migrate [target] [--allow-destructive]   # apply pending migrations
+python -m monorm rollback [--steps N | --to 0002_x | --to zero] [--force] [--allow-destructive]
 python -m monorm showmigrations
 python -m monorm pull [-o schema.prisma] [--force]   # the schema file from a live database
 python -m monorm baseline                       # mark the first migration applied (after pull)
@@ -798,6 +798,24 @@ not a live database, so it works offline and gives the same files everywhere.
   fail on existing rows: drops, type changes, `SET NOT NULL`, a `NOT NULL` column
   without a default, new unique / check / exclusion / foreign-key constraints,
   dropping an extension.
+* **Destructive markers** mark steps that can delete data. A step that drops a table,
+  drops a column, or changes a column type so that values can be lost gets one line in
+  `up.sql` and `down.sql`: `-- monorm: destructive <kind> <table>[.<column>]`.
+  The kind is `drop-table`, `drop-column` or `alter-type`. The table is the name before
+  the migration. A widening change has no marker, for example `varchar(20)` to
+  `varchar(40)` or `int4` to `int8`. The checksum covers the marker lines, so edit them
+  together with the SQL.
+* **The gate**: `migrate` and `rollback` refuse a migration with a marker when the marked
+  table exists and has rows. A missing or empty table passes. The error names the
+  migration, the step, the table and the flag. Pass `--allow-destructive` (Python:
+  `allow_destructive=True`, TypeScript: `{ allowDestructive: true }`) to run it anyway.
+  The first check reads the database as it is before the run. A later migration of the
+  same run can therefore be refused after an earlier one has committed, for example when
+  the earlier one renames the table.
+  A second check runs in the migration lock and the transaction. On PostgreSQL it locks
+  the table first, so a concurrent insert cannot pass it.
+  `--force` for a baselined row does not lift the gate. Each `Step` in a plan has a
+  `destructive` field with the same information.
 
 ### Applying
 

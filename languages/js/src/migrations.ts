@@ -186,12 +186,18 @@ export function hasDataSteps(directory: string): boolean {
 /** @internal `npx monorm migrate` for a directory with data steps: applies with
  * `Migrator.upgrade()`. The data modules are imported first, so the models they import
  * are in the default registry when the database connects. */
-export async function migrateCommand(schema: string, directory: string, url: string, target: string | null): Promise<number> {
+export async function migrateCommand(
+  schema: string,
+  directory: string,
+  url: string,
+  target: string | null,
+  allowDestructive = false,
+): Promise<number> {
   const dialect = url.startsWith("sqlite:") ? "sqlite" : undefined;
   const probe = await connect(url, { maxConnections: 1, default: false, registry: emptyRegistry(dialect) });
   let pending: Pending;
   try {
-    pending = await new Migrator(probe, new Migrations(directory, schema)).loadPending(target);
+    pending = await new Migrator(probe, new Migrations(directory, schema)).loadPending(target, allowDestructive);
   } finally {
     await probe.close();
   }
@@ -200,7 +206,7 @@ export async function migrateCommand(schema: string, directory: string, url: str
   const registry = [...defaultRegistry].length === 0 ? emptyRegistry(dialect) : defaultRegistry;
   const db = await connect(url, { maxConnections: 2, registry });
   try {
-    const done = await new Migrator(db, new Migrations(directory, schema)).apply(pending);
+    const done = await new Migrator(db, new Migrations(directory, schema)).apply(pending, allowDestructive);
     for (const m of done) process.stdout.write(`Applied ${m.name}\n`);
     if (done.length === 0) process.stdout.write("Nothing to apply.\n");
   } finally {
@@ -257,14 +263,19 @@ export class Migrator {
    * after `up.sql`, in the same transaction and under the same lock, before the migration
    * is recorded; queries on `db` inside it go into that transaction. An error rolls back
    * the SQL, the data changes and the record.
+   *
+   * A migration that drops a table or a column, or changes a column type so that data can
+   * be lost, is marked in its `up.sql`. It throws a `MigrationError` when the table has
+   * rows, unless `{ allowDestructive: true }`. A missing or empty table passes.
    */
-  async upgrade(target?: string): Promise<Migration[]> {
-    return this.apply(await this.loadPending(target ?? null));
+  async upgrade(target?: string, options: { readonly allowDestructive?: boolean } = {}): Promise<Migration[]> {
+    const allow = options.allowDestructive ?? false;
+    return this.apply(await this.loadPending(target ?? null, allow), allow);
   }
 
   /** @internal The pending migrations with their loaded data steps; refuses before anything runs. */
-  async loadPending(target: string | null): Promise<Pending> {
-    const todo = (await wait(() => this.db.engine.migrationPending(this.dir, target))).map(([name, path]) => new Migration(name!, path!));
+  async loadPending(target: string | null, allowDestructive = false): Promise<Pending> {
+    const todo = (await wait(() => this.db.engine.migrationPending(this.dir, target, allowDestructive))).map(([name, path]) => new Migration(name!, path!));
     for (const m of todo) {
       if (existsSync(join(m.path, "data.py"))) {
         throw new MigrationError(`${m.name} has a data step (data.py); apply it with python -m monorm migrate`);
@@ -276,10 +287,10 @@ export class Migrator {
   }
 
   /** @internal */
-  async apply(pending: Pending): Promise<Migration[]> {
+  async apply(pending: Pending, allowDestructive = false): Promise<Migration[]> {
     const done: Migration[] = [];
     for (const [m, run] of pending) {
-      const tx = await wait(() => this.db.engine.migrationBegin(m.name, m.path));
+      const tx = await wait(() => this.db.engine.migrationBegin(m.name, m.path, allowDestructive));
       if (tx === null) continue;
       let after: (() => unknown)[];
       try {
@@ -318,9 +329,12 @@ export class Migrator {
 
   /** Reverts the last `steps` applied migrations (default 1), or every one after
    * `target` (`"zero"` reverts all). A baselined migration is refused unless `force`:
-   * its `down.sql` would drop the live tables. */
-  async downgrade(options: { readonly steps?: number; readonly target?: string; readonly force?: boolean } = {}): Promise<Migration[]> {
+   * its `down.sql` would drop the live tables. A `down.sql` that drops a table with rows is
+   * refused unless `allowDestructive`. */
+  async downgrade(
+    options: { readonly steps?: number; readonly target?: string; readonly force?: boolean; readonly allowDestructive?: boolean } = {},
+  ): Promise<Migration[]> {
     const steps = Math.max(0, options.steps ?? 1);
-    return this.named(await wait(() => this.db.engine.migrateDown(this.dir, steps, options.target ?? null, options.force ?? false)));
+    return this.named(await wait(() => this.db.engine.migrateDown(this.dir, steps, options.target ?? null, options.force ?? false, options.allowDestructive ?? false)));
   }
 }

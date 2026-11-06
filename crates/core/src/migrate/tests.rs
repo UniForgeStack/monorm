@@ -1054,8 +1054,12 @@ fn widening_type_changes_are_not_destructive() {
     for (from, to) in [
         ("integer", "bigint"),
         ("int", "bigint"),
+        ("int4", "int8"),
+        ("int4", "bigint"),
+        ("integer", "int8"),
         ("varchar(10)", "text"),
         ("character varying(10)", "varchar"),
+        ("character varying(10)", "character varying(20)"),
         ("varchar(10)", "varchar(11)"),
         ("varchar(10)", "VARCHAR( 255 )"),
         ("numeric(8,2)", "numeric(10,2)"),
@@ -1150,10 +1154,9 @@ fn a_marker_names_the_table_before_its_rename() {
         assert!(up.contains("-- monorm: destructive drop-column posts.views\n"), "{dialect}: {up}");
         assert!(!up.contains("destructive drop-column articles"), "{dialect}: {up}");
         let down = files::render(&p2.down, "down");
-        assert!(down.contains("monorm: destructive") == false, "{dialect}: {down}");
+        assert!(!down.contains("monorm: destructive"), "{dialect}: {down}");
         assert!(p2.up.iter().any(|s| !s.destructive.is_empty()));
         let json = serde_json::to_value(&p2.up).unwrap();
         assert!(json.as_array().unwrap().iter().any(|s| s["destructive"] == json!(true)), "{json}");
-        assert!(json.as_array().unwrap().iter().any(|s| s["destructive"] == json!(false)) || p2.up.len() == 1, "{json}");
     }
 }
