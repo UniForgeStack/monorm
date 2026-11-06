@@ -10,7 +10,7 @@ The registries match the workflow file name `release.yml`, so every publish step
 
 - PyPI, 1 project: `monorm`, 16 wheels (Linux x86-64, Linux arm64, macOS arm64 and Windows x86-64, for CPython 3.11 to 3.14). It has no sdist, because an sdist would lack the extension libraries and the auth app.
   The wheel holds the engine (`monorm._native`), the 9 built-in extension libraries of its platform and the auth app (`monorm_auth`).
-- npm, 1 package: `monorm`, one tarball with the addon and the extension libraries of the 4 platforms (`prebuilt/<platform>/` and `extensions/<name>/<platform>/`), the CLI and the auth app.
+- npm, 1 package: `@ufstack/monorm` (npm refused the unscoped name `monorm`), one tarball with the addon and the extension libraries of the 4 platforms (`prebuilt/<platform>/` and `extensions/<name>/<platform>/`), the CLI and the auth app.
 - `scripts/release/publish-lists.py` holds these lists.
   The `collect` job fails if a file is missing or extra, and records the size of each file in the job summary.
 - The jobs: `version`, `builds` (`package-builds.yml`), `extensions` (`extension-packages.yml`), `collect`, then `publish-pypi` and `publish-npm`, then `release-notes`.
@@ -29,8 +29,8 @@ Common values: owner `UniForgeStack`, repository `monorm`, workflow `release.yml
 | 4 | Optional: tag ruleset for `v*` | Admin | only the owner creates `v*` tags |
 | 5 | Create the PyPI pending publisher of `monorm` | Owner | pypi.org → organization `ufstack` → Publishing (or Account → Publishing while the organization is not approved); project name `monorm`; the common values. PyPI has no token and the workflow has no token path. |
 | 6 | Create the TestPyPI pending publisher of `monorm` | Owner | test.pypi.org → Account → Publishing; the same values |
-| 7 | First npm publish | Owner, Admin | A granular token with read and write access to the new package `monorm` (a scope token does not cover an unscoped name), and a 7-day expiry. The Admin stores it as the secret `NPM_TOKEN` of the environment `release`. |
-| 8 | Create the npm trusted publisher | Owner | After v0.1.0: `npm trust github monorm --file release.yml --repo UniForgeStack/monorm --env release --allow-publish`. This needs npm 11.15.0 or newer and 2FA. |
+| 7 | First npm publish | Owner, Admin | A granular token with read and write access to the package `@ufstack/monorm`, and a 7-day expiry. The Admin stores it as the secret `NPM_TOKEN` of the environment `release`. |
+| 8 | Create the npm trusted publisher | Owner | After v0.1.0: `npm trust github @ufstack/monorm --file release.yml --repo UniForgeStack/monorm --env release --allow-publish`. This needs npm 11.15.0 or newer and 2FA. |
 | 9 | Remove the npm token | Owner, Admin | Delete the secret `NPM_TOKEN`, revoke the token, and set the package to "Require two-factor authentication and disallow tokens". |
 
 Keep these points in mind:
