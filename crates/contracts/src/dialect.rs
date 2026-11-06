@@ -43,6 +43,10 @@ pub struct Capabilities {
     pub distinct_on: bool,
     /// `LEFT JOIN LATERAL (SELECT ...) ON TRUE`: relation aggregates share one subquery.
     pub lateral_join: bool,
+    /// `col = ANY($1)` with one array bind: a list of any length with one SQL text.
+    pub any_array: bool,
+    /// `col IN (SELECT value FROM json_each(?))` with one JSON text bind.
+    pub json_each: bool,
     /// Most bound parameters one statement can take (the wire protocol's limit).
     /// Statements with more values are split: `update_many` batches, prefetch keys.
     pub max_params: usize,
@@ -65,6 +69,7 @@ impl Dialect {
                 lock_exclusive: false, lock_shared: false, lock_of: false,
                 lock_nowait: false, lock_skip_locked: false,
                 update_from_values: false, savepoints: true, distinct_on: false, lateral_join: false,
+                any_array: false, json_each: true,
                 max_params: 32_766,
             },
             Dialect::Postgres => Capabilities {
@@ -80,6 +85,7 @@ impl Dialect {
                 savepoints: true,
                 distinct_on: true,
                 lateral_join: true,
+                any_array: true, json_each: false,
                 max_params: 65_535,
             },
         }
@@ -121,6 +127,8 @@ impl Target {
                 "savepoints" => &mut self.caps.savepoints,
                 "distinct_on" => &mut self.caps.distinct_on,
                 "lateral_join" => &mut self.caps.lateral_join,
+                "any_array" => &mut self.caps.any_array,
+                "json_each" => &mut self.caps.json_each,
                 other => return Err(format!("unknown capability {other:?}")),
             };
             *flag = false;

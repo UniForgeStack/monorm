@@ -118,7 +118,7 @@ pub struct PrefetchPlan {
     pub output: Output,
     /// Computed fields of hook point 5, filled after the statement returns.
     pub computed: Vec<crate::hooks::Computed>,
-    pub children: Vec<PrefetchPlan>,
+    pub children: Vec<std::sync::Arc<PrefetchPlan>>,
 }
 
 impl PrefetchPlan {
@@ -131,6 +131,23 @@ impl PrefetchPlan {
             let rows = keys.into_iter().map(|row| row.into_iter().zip(&self.key_field).map(|(k, f)| bind(k, Some(f))).collect()).collect();
             stmt.and_where(row_in(self.dialect, self.key.clone(), rows));
         }
+        self.slice_wrap(stmt)
+    }
+
+    /// The statement for the keys of one array parameter (`key = ANY($n)`): a single column of a
+    /// simple type on a database with arrays. `None` for the other shapes, which use [`statement`](Self::statement).
+    pub fn statement_any(&self, keys: sea_query::Value) -> Option<SelectStatement> {
+        let ([key], [field]) = (self.key.as_slice(), self.key_field.as_slice()) else { return None };
+        let simple = matches!(self.key_type[0].ty, ColType::BigInt | ColType::Int | ColType::String | ColType::Text | ColType::Uuid | ColType::Date | ColType::DateTime);
+        if self.dialect != Dialect::Postgres || !simple || self.key_type[0].enum_idx.is_some() || param_template(field).is_some() {
+            return None;
+        }
+        let mut stmt = self.stmt.clone();
+        stmt.and_where(template(self.dialect, "$1 = ANY($2)", vec![key.clone(), SExpr::val(keys)]));
+        Some(self.slice_wrap(stmt))
+    }
+
+    fn slice_wrap(&self, stmt: SelectStatement) -> SelectStatement {
         let Some((offset, limit)) = self.slice else { return stmt };
         let mut outer = Query::select();
         outer.column(sea_query::Asterisk).from_subquery(stmt, Alias::new("p"));
@@ -153,7 +170,7 @@ pub struct SelectPlan {
     pub filtered: bool,
     /// Computed fields of hook point 5, filled after the statement returns.
     pub computed: Vec<crate::hooks::Computed>,
-    pub prefetch: Vec<PrefetchPlan>,
+    pub prefetch: Vec<std::sync::Arc<PrefetchPlan>>,
 }
 
 pub enum Plan {
@@ -268,6 +285,30 @@ fn key_literal(s: &str) -> Result<String> {
     }
     out.push('\'');
     Ok(out)
+}
+
+/// A list bound as one JSON text for `json_each`: each element in the form the column stores,
+/// so the comparison matches the scalar `IN (...)` form.
+pub(crate) fn json_list(list: sea_query::Value) -> Result<sea_query::Value> {
+    use sea_query::Value as V;
+    let V::Array(_, items) = list else { return Err(query_err("in_(param()) needs a list".to_string())) };
+    let mut out = Vec::new();
+    for v in items.map(|b| *b).unwrap_or_default() {
+        out.push(match v {
+            V::Bool(Some(b)) => serde_json::Value::from(i64::from(b)),
+            V::Int(Some(n)) => n.into(),
+            V::BigInt(Some(n)) => n.into(),
+            V::Double(Some(n)) => serde_json::Number::from_f64(n).map(Into::into).ok_or_else(|| query_err("in_(param()) cannot take a NaN or infinite float".to_string()))?,
+            V::String(Some(s)) => serde_json::Value::String(s.to_string()),
+            V::Uuid(Some(u)) => serde_json::Value::String(u.to_string()),
+            V::ChronoDate(Some(d)) => serde_json::Value::String(d.to_string()),
+            V::ChronoDateTimeWithTimeZone(Some(t)) => serde_json::Value::String(t.with_timezone(&chrono::Utc).format("%Y-%m-%d %H:%M:%S%.f").to_string()),
+            V::Json(Some(j)) => serde_json::Value::String(j.to_string()),
+            v if v == v.as_null() => serde_json::Value::Null,
+            _ => return Err(query_err("in_(param()) cannot take this element type on this database".to_string())),
+        });
+    }
+    Ok(sea_query::Value::String(Some(serde_json::Value::Array(out).to_string())))
 }
 
 /// Internal expression templates use numbered slots. SQLite's builder consumes
@@ -448,7 +489,7 @@ fn has_window(e: &Expr) -> bool {
         Expr::Cmp { l, r, .. } | Expr::Arith { l, r, .. } => has_window(l) || has_window(r),
         Expr::And { items } | Expr::Or { items } => items.iter().any(has_window),
         Expr::In { item, values, .. } => has_window(item) || values.iter().any(has_window),
-        Expr::Not { item } | Expr::IsNull { item, .. } | Expr::Like { item, .. } | Expr::InSelect { item, .. } => {
+        Expr::Not { item } | Expr::IsNull { item, .. } | Expr::Like { item, .. } | Expr::InSelect { item, .. } | Expr::InParam { item, .. } => {
             has_window(item)
         }
         Expr::Case { whens, default } => case_parts(whens, default).any(has_window),
@@ -542,7 +583,7 @@ fn nested_aggregates<'e>(e: &'e Expr, out: &mut Vec<&'e Expr>) {
             nested_aggregates(item, out);
             values.iter().for_each(|v| nested_aggregates(v, out));
         }
-        Expr::Not { item } | Expr::IsNull { item, .. } | Expr::Like { item, .. } => nested_aggregates(item, out),
+        Expr::Not { item } | Expr::IsNull { item, .. } | Expr::Like { item, .. } | Expr::InParam { item, .. } => nested_aggregates(item, out),
         Expr::Case { whens, default } => case_parts(whens, default).for_each(|c| nested_aggregates(c, out)),
         _ => {}
     }
@@ -728,7 +769,7 @@ fn col_refs<'e>(e: &'e Expr, out: &mut Vec<(&'e [String], &'e [u32])>, has_not: 
                 col_refs(v, out, has_not);
             }
         }
-        Expr::IsNull { item, .. } | Expr::JsonPath { item, .. } => col_refs(item, out, has_not),
+        Expr::IsNull { item, .. } | Expr::JsonPath { item, .. } | Expr::InParam { item, .. } => col_refs(item, out, has_not),
         Expr::Case { whens, default } => {
             for part in case_parts(whens, default) {
                 col_refs(part, out, has_not);
@@ -1568,6 +1609,27 @@ impl<'s> Planner<'s> {
                     item.is_in(values)
                 }
             }
+            Expr::InParam { item, i, neg } => {
+                let hint = self.hint_of(item);
+                if hint.field.is_some_and(|f| param_template(f).is_some()) {
+                    return Err(query_err("in_(param()) does not take a column with a write_sql or char(n) type".to_string()));
+                }
+                let elem = match hint.ty {
+                    Some(t) => t,
+                    None => self.expr_type(item).map_err(|_| query_err("in_(param()) needs a column or a typed value on the left".to_string()))?,
+                };
+                let item = self.value(item, hint)?;
+                let list = self.params.value(self.param(*i)?, Some(ValueType { array: true, ..elem }))?;
+                if self.caps.any_array {
+                    let op = if *neg { "$1 <> ALL($2)" } else { "$1 = ANY($2)" };
+                    template(self.target.dialect, op, vec![item, SExpr::val(list)])
+                } else if self.caps.json_each {
+                    let op = if *neg { "$1 NOT IN (SELECT value FROM json_each($2))" } else { "$1 IN (SELECT value FROM json_each($2))" };
+                    template(self.target.dialect, op, vec![item, SExpr::val(json_list(list)?)])
+                } else {
+                    return Err(query_err("this database has no array or JSON list form for in_(param())".to_string()));
+                }
+            }
             Expr::InSelect { item, select, neg } => {
                 let hint = self.hint_of(item);
                 let item = self.value(item, hint)?;
@@ -1936,7 +1998,7 @@ impl<'s> Planner<'s> {
         let mut all_i32 = true;
         for v in values() {
             let Expr::Param { i } = v else { continue };
-            let Some(value) = self.params.value(*i, None).ok() else { continue };
+            let Some(value) = self.params.probe(*i) else { continue };
             let Some(t) = crate::params::type_of(&value) else { continue };
             if let Value::BigInt(Some(n)) = &value {
                 all_i32 &= i32::try_from(*n).is_ok();
@@ -2031,6 +2093,7 @@ impl<'s> Planner<'s> {
             | Expr::Or { .. }
             | Expr::Not { .. }
             | Expr::In { .. }
+            | Expr::InParam { .. }
             | Expr::IsNull { .. }
             | Expr::Like { .. }
             | Expr::Const { .. }
@@ -2946,7 +3009,7 @@ impl<'s> Planner<'s> {
         for node in &q.prefetch {
             let mut plan = plan_prefetch(self.schema, self.target, self.params, self.root, node, &q.without_defaults)?;
             plan.key_pos = plan.key_pos.iter().map(|&k| positions.iter().position(|f| f == k).expect("selected relation helper")).collect();
-            prefetch.push(plan);
+            prefetch.push(std::sync::Arc::new(plan));
         }
         Ok(SelectPlan { stmt, types, output: Output::Instances { model: self.root, shape, joins, annotations }, filtered: self.root_filtered, prefetch, computed })
     }
@@ -3450,11 +3513,11 @@ pub fn plan_select(schema: &Schema, target: Target, q: &Select, params: &dyn Par
 /// The prefetch plans of `q` for parent rows the caller already has (`prefetch()` on
 /// loaded instances): no statement for the parents, whose rows hold the root model's
 /// fields in schema order.
-pub fn plan_prefetch_only(schema: &Schema, target: Target, q: &Select, params: &dyn Params) -> Result<Vec<PrefetchPlan>> {
+pub fn plan_prefetch_only(schema: &Schema, target: Target, q: &Select, params: &dyn Params) -> Result<Vec<std::sync::Arc<PrefetchPlan>>> {
     let root = schema.model_idx(&q.model).map_err(query_err)?;
     let scoped = crate::params::Scoped { params, scope: &q.scope };
     let params: &dyn Params = if q.scope.is_empty() { params } else { &scoped };
-    q.prefetch.iter().map(|node| plan_prefetch(schema, target, params, root, node, &q.without_defaults)).collect()
+    q.prefetch.iter().map(|node| plan_prefetch(schema, target, params, root, node, &q.without_defaults).map(std::sync::Arc::new)).collect()
 }
 
 /// The query loading `node` (a relation of `parent`) for a set of parent keys. A slice

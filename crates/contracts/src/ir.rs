@@ -843,6 +843,8 @@ pub enum Expr {
     Or { items: Vec<Expr> },
     Not { item: Box<Expr> },
     In { item: Box<Expr>, values: Vec<Expr>, #[serde(default)] neg: bool },
+    /// `item IN (<param i>)` where parameter `i` is a list of any length (`in_(param("ids"))`): one array or JSON bind.
+    InParam { item: Box<Expr>, i: usize, #[serde(default)] neg: bool },
     IsNull { item: Box<Expr>, #[serde(default)] neg: bool },
     Like { item: Box<Expr>, pattern: Box<Expr>, #[serde(default)] ci: bool, #[serde(default)] neg: bool },
     /// `EXCLUDED.<field>`: the row proposed for insertion, in an upsert's `DO UPDATE`.

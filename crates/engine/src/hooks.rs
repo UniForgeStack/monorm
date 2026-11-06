@@ -78,7 +78,7 @@ impl<'a> Contexts<'a> {
     }
 }
 
-pub(crate) fn context(params: &dyn Params) -> Result<Context> {
+pub fn context(params: &dyn Params) -> Result<Context> {
     let mut values = Vec::new();
     for (name, i) in params.scope_values() {
         let value = params.value(i, None)?;
@@ -250,6 +250,11 @@ pub fn expression(model: &Model, position: usize, insert: bool, contexts: &Conte
 /// A computed field (point 5) of a read: the hook runs on each returned row, on the dependency columns of the same statement.
 pub struct Computed { column: usize, hook: HookRef, ty: ValueType, nullable: bool, label: String, args: Vec<(String, usize, ValueType)>, context: Context }
 
+impl Computed {
+    /// The hook reads the request context, which a reused plan must rebuild for each call.
+    pub fn reads_context(&self) -> bool { self.hook.reads_context() }
+}
+
 /// The computed fields among the result columns `positions` of `model`, which start at column `start`.
 pub fn computations(model: &Model, start: usize, positions: &[usize], params: &dyn Params) -> Result<Vec<Computed>> {
     let Some(plan) = model.hooks.as_deref().filter(|p| !p.computed.is_empty()) else { return Ok(vec![]) };
@@ -300,6 +305,11 @@ impl RowSet for ComputedRows {
 
 /// `rows` with the computed columns filled: one hook call for each row.
 pub fn compute(rows: Box<dyn RowSet>, computed: &[Computed]) -> DbResult<Box<dyn RowSet>> {
+    compute_with(rows, computed, None)
+}
+
+/// [`compute`]; `context` replaces the context the plan was built with, for a plan reused by several calls.
+pub fn compute_with(rows: Box<dyn RowSet>, computed: &[Computed], context: Option<&Context>) -> DbResult<Box<dyn RowSet>> {
     if computed.is_empty() { return Ok(rows); }
     let mut values = vec![None; computed.iter().map(|c| c.column + 1).max().unwrap_or(0)];
     for c in computed {
@@ -312,7 +322,7 @@ pub fn compute(rows: Box<dyn RowSet>, computed: &[Computed]) -> DbResult<Box<dyn
                 let value = abi_of(&value).ok_or_else(|| DbError::other(format!("{}: hooks do not support the type of {name}", c.label)))?;
                 args.push(Arg { name: name.clone(), value });
             }
-            let out = c.hook.compute(&args, &c.context).map_err(|m| DbError::other(format!("{}: {m}", c.label)))?;
+            let out = c.hook.compute(&args, if c.hook.reads_context() { context.unwrap_or(&c.context) } else { &c.context }).map_err(|m| DbError::other(format!("{}: {m}", c.label)))?;
             column.push(convert(&c.label, c.nullable, &original, out).map_err(|e| DbError::other(e.to_string()))?);
         }
         values[c.column] = Some(column);

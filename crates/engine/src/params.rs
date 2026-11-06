@@ -30,6 +30,11 @@ pub trait Params {
     /// Parameter `i` as a row count (`LIMIT` / `OFFSET`). `i` is in range.
     fn count(&self, i: usize) -> Result<u64>;
 
+    /// The value of parameter `i` when only its type matters (a `CASE` made of parameters).
+    fn probe(&self, i: usize) -> Option<Value> {
+        self.value(i, None).ok()
+    }
+
     /// The parameter that holds the `scope.<name>` value, if the statement has one.
     fn scope(&self, _name: &str) -> Option<usize> {
         None
@@ -59,6 +64,9 @@ impl Params for Scoped<'_> {
     }
     fn count(&self, i: usize) -> Result<u64> {
         self.params.count(i)
+    }
+    fn probe(&self, i: usize) -> Option<Value> {
+        self.params.probe(i)
     }
     fn scope(&self, name: &str) -> Option<usize> {
         self.scope.get(name).copied()

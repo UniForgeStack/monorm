@@ -18,7 +18,7 @@ use monorm_core::schema::Schema;
 
 /// A related set fetched for parent rows, and the sets fetched for its own rows.
 pub struct Fetched {
-    pub plan: PrefetchPlan,
+    pub plan: Arc<PrefetchPlan>,
     pub rows: Box<dyn RowSet>,
     pub children: Vec<Fetched>,
 }
@@ -26,7 +26,7 @@ pub struct Fetched {
 /// The rows of a SELECT and of its prefetch queries.
 pub struct Selected {
     pub rows: Box<dyn RowSet>,
-    pub plan: SelectPlan,
+    pub plan: Arc<SelectPlan>,
     pub prefetched: Vec<Fetched>,
 }
 
@@ -168,18 +168,19 @@ async fn count_or_rows(
     })
 }
 
-async fn run_select(conn: &dyn Executor, target: Target, mut plan: SelectPlan) -> DbResult<Selected> {
+async fn run_select(conn: &dyn Executor, target: Target, plan: SelectPlan) -> DbResult<Selected> {
     let (sql, args) = db::build(target.dialect, &plan.stmt);
     let rows = conn.query(sql, args).await?;
-    let prefetched = run_prefetch(conn, target, rows.as_ref(), std::mem::take(&mut plan.prefetch)).await?;
+    let plan = Arc::new(plan);
+    let prefetched = run_prefetch(conn, target, rows.as_ref(), plan.prefetch.clone(), None).await?;
     let rows = crate::hooks::compute(rows, &plan.computed)?;
     Ok(Selected { rows, plan, prefetched })
 }
 
 /// Runs only the prefetch queries of `plans` ([`plan::plan_prefetch_only`]) for parent
 /// rows the caller already has: no statement reads the parents.
-pub async fn prefetch(conn: &dyn Executor, target: Target, parents: Box<dyn RowSet>, plans: Vec<PrefetchPlan>) -> Result<Outcome> {
-    let prefetched = run_prefetch(conn, target, parents.as_ref(), plans).await?;
+pub async fn prefetch(conn: &dyn Executor, target: Target, parents: Box<dyn RowSet>, plans: Vec<Arc<PrefetchPlan>>) -> Result<Outcome> {
+    let prefetched = run_prefetch(conn, target, parents.as_ref(), plans, None).await?;
     Ok(Outcome::Prefetched { parents, prefetched })
 }
 
@@ -222,15 +223,26 @@ impl RowSet for ValueRows {
 /// Each key column is one bound parameter, so keys beyond the dialect's parameter limit (less
 /// what the query binds itself) go to further queries. The chunks split the parents,
 /// never one parent's rows, so ordering and slices per parent hold.
-fn run_prefetch<'a>(
+/// What a prepared call hands to its prefetch queries: the held statements, the call's slot
+/// values and the request context a computed field reads.
+#[derive(Clone, Copy)]
+pub struct PrefetchCall<'a> {
+    pub runs: &'a [crate::prepared::PrefetchRun],
+    pub values: &'a [Value],
+    pub context: Option<&'a monorm::abi::Context>,
+}
+
+pub(crate) fn run_prefetch<'a>(
     conn: &'a dyn Executor,
     target: Target,
     parent: &'a dyn RowSet,
-    plans: Vec<PrefetchPlan>,
+    plans: Vec<Arc<PrefetchPlan>>,
+    call: Option<PrefetchCall<'a>>,
 ) -> BoxFuture<'a, DbResult<Vec<Fetched>>> {
     Box::pin(async move {
         let mut out = Vec::with_capacity(plans.len());
-        for mut p in plans {
+        for (n, p) in plans.into_iter().enumerate() {
+            let run = call.map(|c| &c.runs[n]);
             let nulls: Vec<Value> = p.key_type.iter().map(|t| null_of(Some(*t))).collect();
             let mut seen = std::collections::HashSet::new();
             let mut keys = vec![];
@@ -242,12 +254,19 @@ fn run_prefetch<'a>(
             }
             let rows = match keys.first() {
                 None => Box::new(EmptyRows) as Box<dyn RowSet>,
+                Some(_) if run.is_some_and(|r| r.has_any()) => {
+                    let (sql, args) = run.expect("a run").any_statement(call.expect("a call").values, keys);
+                    conn.query(sql, args).await?
+                }
                 Some(k) => {
                     let own = db::build(target.dialect, &p.statement(vec![k.clone()])).1.len() - 1;
                     let chunk = (target.caps.max_params.saturating_sub(own) / k.len()).max(1);
                     let mut parts = Vec::with_capacity(keys.len().div_ceil(chunk));
                     for keys in keys.chunks(chunk) {
-                        let (sql, args) = db::build(target.dialect, &p.statement(keys.to_vec()));
+                        let (sql, mut args) = db::build(target.dialect, &p.statement(keys.to_vec()));
+                        if let (Some(run), Some(call)) = (run, call) {
+                            run.swap(call.values, &mut args);
+                        }
                         parts.push(conn.query(sql, args).await?);
                     }
                     if parts.len() == 1 {
@@ -257,9 +276,10 @@ fn run_prefetch<'a>(
                     }
                 }
             };
-            let nested = std::mem::take(&mut p.children);
-            let children = run_prefetch(conn, target, rows.as_ref(), nested).await?;
-            let rows = crate::hooks::compute(rows, &p.computed)?;
+            let nested = p.children.clone();
+            let child_call = call.zip(run).map(|(c, r)| PrefetchCall { runs: &r.children, ..c });
+            let children = run_prefetch(conn, target, rows.as_ref(), nested, child_call).await?;
+            let rows = crate::hooks::compute_with(rows, &p.computed, call.and_then(|c| c.context))?;
             out.push(Fetched { plan: p, rows, children });
         }
         Ok(out)

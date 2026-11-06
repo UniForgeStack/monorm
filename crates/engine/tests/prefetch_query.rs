@@ -12,7 +12,7 @@ fn schema() -> Schema {
     Schema::from_ir(serde_json::from_value(raw).unwrap()).unwrap()
 }
 
-fn plans(dialect: Dialect, query: Value) -> Result<Vec<PrefetchPlan>, String> {
+fn plans(dialect: Dialect, query: Value) -> Result<Vec<std::sync::Arc<PrefetchPlan>>, String> {
     let item = json!({"op":"select","model":"Author","prefetch":[query]});
     let Operation::Select(q) = serde_json::from_value(item).unwrap() else { panic!("select") };
     plan_prefetch_only(&schema(), Target::new(dialect), &q, &NoParams).map_err(|e| e.to_string())
