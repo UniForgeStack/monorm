@@ -357,8 +357,19 @@ fn convert_rows(
     rows: Unknown<'_>,
     defaults: bool,
 ) -> napi::Result<Vec<Vec<Option<sea_query::Value>>>> {
-    let c = conv(env)?;
     let types = exec::field_types(schema, model, fields).map_err(engine_err)?;
+    convert_cells(env, &types, rows, defaults)
+}
+
+/// `rows` (arrays aligned with `types`) as bind values; `undefined` is `None` (the column's
+/// default) when `defaults`.
+fn convert_cells(
+    env: &Env,
+    types: &[ValueType],
+    rows: Unknown<'_>,
+    defaults: bool,
+) -> napi::Result<Vec<Vec<Option<sea_query::Value>>>> {
+    let c = conv(env)?;
     let mut out = vec![];
     for row in c.js.elements(rows.raw())? {
         let items = c.js.elements(row)?;
@@ -366,7 +377,7 @@ fn convert_rows(
             return Err(query_err("row length does not match fields"));
         }
         let mut values = Vec::with_capacity(items.len());
-        for (item, ty) in items.into_iter().zip(&types) {
+        for (item, ty) in items.into_iter().zip(types) {
             let undefined = c.js.type_of(item)? == sys::ValueType::napi_undefined;
             values.push(if defaults && undefined { None } else { Some(c.value(item, Some(*ty)).map_err(engine_err)?) });
         }
@@ -452,6 +463,28 @@ impl JsSchema {
     #[napi]
     pub fn prepare_read(&self, op_json: String, n: u32, declared: Vec<Option<String>>) -> napi::Result<PreparedRead> {
         prepared_read(&self.inner, Target::new(self.inner.dialect), &op_json, n, &declared, None)
+    }
+
+    /// `Engine.prepareWrite` without a connection: `sql()` and `inspect()` only.
+    #[napi]
+    pub fn prepare_write(&self, op_json: String, n: u32, declared: Vec<Option<String>>) -> napi::Result<PreparedWrite> {
+        prepared_write(&self.inner, Target::new(self.inner.dialect), &op_json, n, &declared, None)
+    }
+
+    /// `Engine.prepareInsert` without a connection.
+    #[napi]
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_insert(&self, model: String, fields: Vec<String>, options: String, n: u32, declared: Vec<Option<String>>,
+        returning: bool, batch_size: Option<u32>) -> napi::Result<PreparedRows> {
+        prepared_rows(&self.inner, Target::new(self.inner.dialect), "insert", &model, fields, &options, returning, batch_size, n, &declared, None)
+    }
+
+    /// `Engine.prepareUpdateMany` without a connection.
+    #[napi]
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_update_many(&self, model: String, fields: Vec<String>, options: String, n: u32, declared: Vec<Option<String>>,
+        returning: bool, batch_size: Option<u32>) -> napi::Result<PreparedRows> {
+        prepared_rows(&self.inner, Target::new(self.inner.dialect), "update_many", &model, fields, &options, returning, batch_size, n, &declared, None)
     }
 
     /// The static read flags of each model (JSON `{model: {filtered, fields, related}}`).
@@ -731,6 +764,31 @@ fn prepared_read(schema: &Arc<schema::Schema>, target: Target, op_json: &str, n:
     Ok(PreparedRead { inner: Arc::new(inner), driver, schema: schema.clone() })
 }
 
+fn declared_types(declared: &[Option<String>]) -> napi::Result<Vec<Option<ValueType>>> {
+    declared.iter().map(|d| d.as_deref().map(declared_type).transpose()).collect()
+}
+
+fn prepared_write(schema: &Arc<schema::Schema>, target: Target, op_json: &str, n: u32, declared: &[Option<String>],
+    driver: Option<Arc<dyn Driver>>) -> napi::Result<PreparedWrite> {
+    let op = parse_op(op_json).map_err(engine_err)?;
+    let model = match &op {
+        ir::Operation::Update(ir::Update { model, .. }) | ir::Operation::Delete(ir::Delete { model, .. }) => model.clone(),
+        _ => return Err(query_err("prepare() takes an update or a delete")),
+    };
+    let inner = monorm_engine::prepared_write::PreparedWrite::prepare(schema, target, &op, n as usize, &declared_types(declared)?).map_err(engine_err)?;
+    Ok(PreparedWrite { inner: Arc::new(inner), driver, schema: schema.clone(), model })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepared_rows(schema: &Arc<schema::Schema>, target: Target, kind: &str, model: &str, fields: Vec<String>, options: &str,
+    returning: bool, batch_size: Option<u32>, n: u32, declared: &[Option<String>], driver: Option<Arc<dyn Driver>>) -> napi::Result<PreparedRows> {
+    use monorm_engine::prepared_write::RowsSpec;
+    let spec = RowsSpec::from_options(kind, model, fields, options, returning, batch_size.map(|b| b as usize), n as usize, declared_types(declared)?)
+        .map_err(engine_err)?;
+    let inner = monorm_engine::prepared_write::PreparedRows::prepare(schema.clone(), target, spec).map_err(engine_err)?;
+    Ok(PreparedRows { inner: Arc::new(inner), driver, schema: schema.clone(), model: model.to_string() })
+}
+
 // -- prepared reads ---------------------------------------------------------------------------
 
 /// A read planned once (`Engine.prepareRead`): the SQL text and the slot map live in Rust.
@@ -767,6 +825,94 @@ impl PreparedRead {
     pub fn sql(&self, env: &Env, params_: Unknown<'_>) -> napi::Result<String> {
         let call = self.inner.call(&params(env, params_)?).map_err(engine_err)?;
         Ok(self.inner.sql(&call))
+    }
+
+    #[napi]
+    pub fn inspect(&self) -> String {
+        self.inner.inspection().to_string()
+    }
+}
+
+// -- prepared writes --------------------------------------------------------------------------
+
+/// An update or a delete planned once (`Engine.prepareWrite`).
+#[napi]
+pub struct PreparedWrite {
+    inner: Arc<monorm_engine::prepared_write::PreparedWrite>,
+    /// None on a schema without a connection: `sql()` and `inspect()` only.
+    driver: Option<Arc<dyn Driver>>,
+    schema: Arc<schema::Schema>,
+    model: String,
+}
+
+#[napi]
+impl PreparedWrite {
+    /// Checks the write guard (`allowed`), converts `params_` and runs the held statement.
+    #[napi(ts_return_type = "Promise<unknown>")]
+    pub fn run<'env>(&self, env: &'env Env, params_: Unknown<'_>, tx: Option<&Transaction>, allowed: Option<Vec<String>>,
+        trace: Option<&Trace>) -> napi::Result<PromiseRaw<'env, Raw>> {
+        protect::ensure_writable(&self.schema, &self.model, allowed.as_deref().unwrap_or_default()).map_err(engine_err)?;
+        let call = self.inner.call(&params(env, params_)?).map_err(engine_err)?;
+        let conn: Arc<dyn Executor> = match (tx, &self.driver) {
+            (Some(tx), _) => tx.inner.clone(),
+            (None, Some(driver)) => driver.clone(),
+            (None, None) => return Err(query_err("the schema has no connection")),
+        };
+        let conn = monorm_engine::trace::wrap(conn, trace.map(|t| &t.0));
+        let inner = self.inner.clone();
+        let schema = self.schema.clone();
+        env.spawn_future_with_callback(
+            async move { inner.run(conn.as_ref(), call).await.map_err(engine_err) },
+            move |env, out| outcome_js(env, &schema, out),
+        )
+    }
+
+    /// The statement of a call with its values inlined.
+    #[napi]
+    pub fn sql(&self, env: &Env, params_: Unknown<'_>) -> napi::Result<String> {
+        let call = self.inner.call(&params(env, params_)?).map_err(engine_err)?;
+        Ok(self.inner.sql(&call))
+    }
+
+    #[napi]
+    pub fn inspect(&self) -> String {
+        self.inner.inspection().to_string()
+    }
+}
+
+/// An insert or `updateMany` of rows planned once (`Engine.prepareInsert`,
+/// `Engine.prepareUpdateMany`): the statement for a row count is chosen per call.
+#[napi]
+pub struct PreparedRows {
+    inner: Arc<monorm_engine::prepared_write::PreparedRows>,
+    driver: Option<Arc<dyn Driver>>,
+    schema: Arc<schema::Schema>,
+    model: String,
+}
+
+#[napi]
+impl PreparedRows {
+    /// Checks the write guard, converts `rows` (arrays aligned with the fields) and runs
+    /// the write. `params_` holds the values the conflict `set` reads, then the scope values.
+    #[napi(ts_return_type = "Promise<unknown>")]
+    pub fn run<'env>(&self, env: &'env Env, rows: Unknown<'_>, params_: Unknown<'_>, tx: Option<&Transaction>,
+        allowed: Option<Vec<String>>, trace: Option<&Trace>) -> napi::Result<PromiseRaw<'env, Raw>> {
+        protect::ensure_writable(&self.schema, &self.model, allowed.as_deref().unwrap_or_default()).map_err(engine_err)?;
+        let rows = convert_cells(env, self.inner.field_types(), rows, true)?;
+        let conn: Arc<dyn Executor> = match (tx, &self.driver) {
+            (Some(tx), _) => tx.inner.clone(),
+            (None, Some(driver)) => driver.clone(),
+            (None, None) => return Err(query_err("the schema has no connection")),
+        };
+        let own_tx = tx.is_none();
+        let conn = monorm_engine::trace::wrap(conn, trace.map(|t| &t.0));
+        let inner = self.inner.clone();
+        let schema = self.schema.clone();
+        let call = inner.call(&params(env, params_)?, rows).map_err(engine_err)?;
+        env.spawn_future_with_callback(
+            async move { inner.execute(conn.as_ref(), call, own_tx).await.map_err(engine_err) },
+            move |env, out| outcome_js(env, &schema, out),
+        )
     }
 
     #[napi]
@@ -817,6 +963,28 @@ impl Engine {
     #[napi]
     pub fn prepare_read(&self, op_json: String, n: u32, declared: Vec<Option<String>>) -> napi::Result<PreparedRead> {
         prepared_read(&self.schema, self.target, &op_json, n, &declared, Some(self.driver.clone()))
+    }
+
+    /// Plans an update or a delete once for `n` parameters, scope values included.
+    #[napi]
+    pub fn prepare_write(&self, op_json: String, n: u32, declared: Vec<Option<String>>) -> napi::Result<PreparedWrite> {
+        prepared_write(&self.schema, self.target, &op_json, n, &declared, Some(self.driver.clone()))
+    }
+
+    /// Plans an insert (`insertMany`, an upsert) of rows once. `options`: the insert options JSON.
+    #[napi]
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_insert(&self, model: String, fields: Vec<String>, options: String, n: u32, declared: Vec<Option<String>>,
+        returning: bool, batch_size: Option<u32>) -> napi::Result<PreparedRows> {
+        prepared_rows(&self.schema, self.target, "insert", &model, fields, &options, returning, batch_size, n, &declared, Some(self.driver.clone()))
+    }
+
+    /// Plans `updateMany` once. `options`: `{"filters", "model_fields", "without_defaults"}` JSON.
+    #[napi]
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_update_many(&self, model: String, fields: Vec<String>, options: String, n: u32, declared: Vec<Option<String>>,
+        returning: bool, batch_size: Option<u32>) -> napi::Result<PreparedRows> {
+        prepared_rows(&self.schema, self.target, "update_many", &model, fields, &options, returning, batch_size, n, &declared, Some(self.driver.clone()))
     }
 
     /// Inspect planned templates without executing or collecting statement events.
@@ -1374,6 +1542,7 @@ pub fn connect<'env>(
 impl Engine {
     /// Attach local values to an existing shared-key parent.
     #[napi(ts_return_type = "Promise<unknown>")]
+    #[allow(clippy::too_many_arguments)]
     pub fn attach<'env>(&self, env: &'env Env, model: String, parent_id: Unknown<'_>, fields: Vec<String>, rows: Unknown<'_>, tx: Option<&Transaction>, allowed: Option<Vec<String>>, trace: Option<&Trace>) -> napi::Result<PromiseRaw<'env, Raw>> {
         protect::ensure_writable(&self.schema, &model, allowed.as_deref().unwrap_or_default()).map_err(engine_err)?;
         let model_idx = self.schema.model_idx(&model).map_err(schema_err)?;

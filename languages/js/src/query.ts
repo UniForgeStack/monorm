@@ -21,6 +21,8 @@ import {
   Ordering,
   PATH,
   ParamRef,
+  RowsRef,
+  type RowOf,
   RelationPath,
   Slot,
   SlotParams,
@@ -47,11 +49,12 @@ import {
 import { NotLoaded, QueryError, TransactionRequired, UnfilteredWriteError } from "./errors.js";
 import { irNames, type DefaultNames, type DeleteArgs, type Hop, type HopKind, type In, type ModelSpec, type RelationMeta } from "./meta.js";
 import { DB, IndexRef, columnOf, fieldValue, RELATED, registerQueries, type Instance, type ModelClass, type ModelMeta } from "./model.js";
-import { call, wait, type NativeInspector, type NativePreparedRead, type NativeReturned, type NativeSelect, type NativeTrace, type NativeTransaction } from "./native.js";
+import { call, wait, type NativeInspector, type NativePreparedRead, type NativePreparedWrite, type NativeReturned, type NativeSelect, type NativeTrace, type NativeTransaction } from "./native.js";
 import { adaptedInsert, adaptedInsertMany, adaptedUpdate, adaptedUpdateMany, FieldAdapterError, prepareValues, splitAdapted, splitBatch } from "./adapters.js";
 import { assignments, lookupValues, prepareRows, prepareUpdateRows, prepareAttach } from "./write.js";
 import { after, checkPaging, decodeCursor, encodeCursor, fingerprint, keyset, type Page, type PageOptions } from "./pagination.js";
 import { allowedWrites } from "./protection.js";
+import { PreparedWrite, prepareInsertMany, prepareInsertOne, prepareSet, prepareUpdateManyRows, type WriteShape } from "./prepared-write.js";
 import { active as debugging, internalLoop, relationLoad } from "./debug.js";
 import type { Cte, CteColumnsOf, CteSelf } from "./cte.js";
 import type { Select, SelectItems, SelectRow, ItemsParams, ItemsOuter } from "./select.js";
@@ -1523,19 +1526,34 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    * `UPDATE` every matching row; values may be expressions (`{ views: Post.views.add(1) }`).
    * Gives the number of rows updated, or with `.returning(...columns)` the updated rows.
    */
-  update(values: M["update"], removed?: never): WriteStatement<M> {
+  update(values: M["update"], removed?: never): WriteStatement<M, P>;
+  /** `param()` values make the statement a template: `.prepare()` compiles it, and `run({ ... })` binds the values. */
+  update<const W extends WithParams<M["update"]>>(values: W & Known<W, M["update"]>, removed?: never): WriteStatement<M, P & SetParams<M["update"], W>>;
+  update(values: M["update"], removed?: never): WriteStatement<M, P> {
     noReturningOption("update", removed);
     const adapted = splitAdapted(this.meta, values);
-    if (adapted?.pending.size) return adaptedUpdate(WriteStatement, this as never, adapted.checked, adapted.pending, this.meta) as unknown as WriteStatement<M>;
+    if (adapted?.pending.size) return adaptedUpdate(WriteStatement, this as never, adapted.checked, adapted.pending, this.meta) as unknown as WriteStatement<M, P>;
     if (adapted) values = adapted.checked as M["update"];
-    return new WriteStatement<M>(this.meta, (names, returning) => this.updateValues(values, returning, names), (names, returning) => {
+    return new WriteStatement<M, P>(this.meta, (names, returning) => this.updateValues(values, returning, names), (names, returning) => {
       const params: unknown[] = [];
       const ir = this.mutationIr("update", params, values);
       if (!(ir["set"] as unknown[]).length) return emptyInspection();
       if (returning) ir["returning"] = true;
       if (returning && names) ir["model_fields"] = names;
       return this.inspectIr(ir, params);
-    });
+    }, (names, returning) => this.heldUpdate(values, returning, names));
+  }
+
+  private heldUpdate(values: M["update"], returning: boolean, names: readonly string[] | undefined): PreparedWrite<unknown> {
+    this.db();
+    const params = new SlotParams();
+    const ir = this.mutationIr("update", params, values);
+    const empty = !(ir["set"] as unknown[]).length;
+    if (returning) {
+      ir["returning"] = true;
+      if (names) ir["model_fields"] = names;
+    }
+    return prepareSet(this as never, empty ? null : ir, params, returning);
   }
 
   private async updateValues(values: M["update"], returning: boolean, names?: readonly string[]): Promise<number | M["row"][]> {
@@ -1568,20 +1586,26 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    * `DELETE` every matching row. Gives the number of rows deleted, or with
    * `.returning(...columns)` the deleted rows.
    */
-  delete(...[removed]: DeleteArgs<M>): WriteStatement<M> {
+  delete(...[removed]: DeleteArgs<M>): WriteStatement<M, P> {
     noReturningOption("delete", removed);
     const plan = (names: readonly string[] | undefined, returning: boolean) => {
       const params: unknown[] = [];
       const ir: IR = { ...this.mutationIr("delete", params), returning };
       return { ir, params, names };
     };
-    return new WriteStatement<M>(this.meta, (names, returning) => {
+    return new WriteStatement<M, P>(this.meta, (names, returning) => {
       const p = plan(names, returning);
       return this.write(p.ir, p.params, returning, names);
     }, (names, returning) => {
       const p = plan(names, returning);
       if (returning && names) p.ir["model_fields"] = names;
       return this.inspectIr(p.ir, p.params);
+    }, (names, returning) => {
+      this.db();
+      const params = new SlotParams();
+      const ir: IR = { ...this.mutationIr("delete", params), returning };
+      if (returning && names) ir["model_fields"] = names;
+      return prepareSet(this as never, ir, params, returning);
     });
   }
 
@@ -1601,11 +1625,24 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    * alone. One statement per `batchSize` rows (by default as many as fit), all in one
    * transaction. Gives the number of rows updated, or the rows with `returning`.
    */
-  updateMany(rows: readonly M["updateRow"][], options: { readonly batchSize?: number } = {}): WriteStatement<M> {
+  updateMany(rows: readonly M["updateRow"][], options?: { readonly batchSize?: number }): WriteStatement<M, P>;
+  /** `param("rows", { fields })`: the rows come with each call of the prepared write; the primary key is among the fields. */
+  updateMany<N extends string, const C extends readonly Column<any, any, any, any>[]>(rows: RowsRef<N, C>, options?: { readonly batchSize?: number }): WriteStatement<M, P & ParamValues<N, readonly RowOf<C>[]>>;
+  updateMany(rows: readonly M["updateRow"][] | RowsRef<string, readonly Column<any, any, any, any>[]>, options: { readonly batchSize?: number } = {}): WriteStatement<M, P> {
     noReturningOption("updateMany", (options as { returning?: unknown }).returning);
+    if (rows instanceof RowsRef) {
+      const ref = rows;
+      const missing = (): never => { throw new QueryError(`${ref} is a placeholder of a prepared write; call .prepare()`); };
+      return new WriteStatement<M, P>(
+        this.meta,
+        async () => missing(),
+        () => missing(),
+        (names, returning) => prepareUpdateManyRows(this as never, ref, returning ? "list" : "count", names, options.batchSize),
+      );
+    }
     const { checked, pending } = splitBatch(this.meta, rows);
-    if (pending.size) return adaptedUpdateMany(WriteStatement, this as never, checked, pending, options, this.meta) as unknown as WriteStatement<M>;
-    return new WriteStatement<M>(
+    if (pending.size) return adaptedUpdateMany(WriteStatement, this as never, checked, pending, options, this.meta) as unknown as WriteStatement<M, P>;
+    return new WriteStatement<M, P>(
       this.meta,
       (names, returning) => this.executeUpdateMany(checked, options, returning, names),
       (names, returning) => this.inspectUpdateMany(checked, options, returning, names),
@@ -1671,13 +1708,21 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    * filled in. `.onConflict(...)` makes it an upsert that gives the affected-row count,
    * or the row with `.returning()`.
    */
-  insert(values: M["insert"]): InsertOne<M> {
+  insert(values: M["insert"]): InsertOne<M, P>;
+  /** `param()` values make the statement a template: `.prepare()` compiles it, and `run({ ... })` binds the values. */
+  insert<const W extends InsertWithParams<M["insert"]>>(values: W & Known<W, M["insert"]>): InsertOne<M, P & SetParams<M["insert"], W>>;
+  insert(values: M["insert"]): InsertOne<M, P> {
     this.assertStandalone();
     this.assertNoLoad("insert");
     const adapted = splitAdapted(this.meta, values);
-    if (adapted?.pending.size) return adaptedInsert<M>(InsertOne, this as never, adapted.checked, adapted.pending, this.meta);
+    if (adapted?.pending.size) return adaptedInsert<M>(InsertOne, this as never, adapted.checked, adapted.pending, this.meta) as unknown as InsertOne<M, P>;
     if (adapted) values = adapted.checked as M["insert"];
-    return new InsertOne(this.meta, (conflict, returning, names) => this.insertRows([values], conflict, returning, null, names), (conflict, returning, names) => this.inspectInsert([values], conflict, returning, null, names));
+    return new InsertOne<M, P>(
+      this.meta,
+      (conflict, returning, names) => this.insertRows([values], conflict, returning, null, names),
+      (conflict, returning, names) => this.inspectInsert([values], conflict, returning, null, names),
+      (conflict, shape, names) => prepareInsertOne(this as never, values, conflict, shape, names),
+    );
   }
 
   /**
@@ -1729,22 +1774,37 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   /** `INSERT` many rows; gives the number of rows inserted, or the new instances in
    * input order with `.returning()`. Rows beyond the parameter limit, or beyond
    * `batchSize`, go to further statements in one transaction. */
-  insertMany(rows: readonly M["insert"][], options?: BatchOptions): InsertMany<M>;
+  insertMany(rows: readonly M["insert"][], options?: BatchOptions): InsertMany<M, P>;
+  /** `param("rows", { fields })`: the rows come with each call of the prepared write. */
+  insertMany<N extends string, const C extends readonly Column<any, any, any, any>[]>(rows: RowsRef<N, C>, options?: BatchOptions): InsertMany<M, P & ParamValues<N, readonly RowOf<C>[]>>;
   /** `{ copy: true }`: load the rows with Postgres `COPY`, for large imports; gives the
    * row count. No `onConflict`, no instances. */
   insertMany(rows: readonly M["insert"][], options: CopyOptions): Promise<number>;
-  insertMany(rows: readonly M["insert"][], options?: BatchOptions | CopyOptions): InsertMany<M> | Promise<number> {
+  insertMany(rows: readonly M["insert"][] | RowsRef<string, readonly Column<any, any, any, any>[]>, options?: BatchOptions | CopyOptions): InsertMany<M, P> | Promise<number> {
     this.assertStandalone();
     this.assertNoLoad("insertMany");
-    const { checked, pending } = splitBatch(this.meta, rows);
+    if (rows instanceof RowsRef) {
+      const ref = rows;
+      if (options && "copy" in options && options.copy) throw new TypeError("insertMany(param(...), { copy: true }) is not supported");
+      const missing = (): never => { throw new QueryError(`${ref} is a placeholder of a prepared write; call .prepare()`); };
+      const size = (options as BatchOptions | undefined)?.batchSize;
+      return new InsertMany<M, P>(
+        this.meta,
+        async () => missing(),
+        () => missing(),
+        undefined,
+        (conflict, shape, names) => prepareInsertMany(this as never, ref, conflict, shape, names, size),
+      );
+    }
+    const { checked, pending } = splitBatch(this.meta, rows as readonly M["insert"][]);
     rows = checked;
     if (options && "copy" in options && options.copy) {
       if (pending.size) throw new FieldAdapterError("insertMany(rows, { copy: true }) takes no value that needs prepare");
       return this.copyRows(rows, options);
     }
-    if (pending.size) return adaptedInsertMany<M>(InsertMany, this as never, rows, pending, options as BatchOptions | undefined, this.meta);
+    if (pending.size) return adaptedInsertMany<M>(InsertMany, this as never, rows, pending, options as BatchOptions | undefined, this.meta) as unknown as InsertMany<M, P>;
     const batchSize = (options as BatchOptions | undefined)?.batchSize ?? null;
-    return new InsertMany(this.meta, (conflict, returning, names) => this.insertRows(rows, conflict, returning, batchSize, names), (conflict, returning, names) => this.inspectInsert(rows, conflict, returning, batchSize, names));
+    return new InsertMany<M, P>(this.meta, (conflict, returning, names) => this.insertRows(rows, conflict, returning, batchSize, names), (conflict, returning, names) => this.inspectInsert(rows, conflict, returning, batchSize, names));
   }
 
   /** @internal */
@@ -1788,12 +1848,20 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   /** @internal */
   protected insertPlan(rows: readonly object[], onConflict: Conflict | undefined, batchSize: number | null) {
     const prepared = prepareRows(this.meta, rows);
+    const params: unknown[] = [];
+    this.checkBatchSize(batchSize);
+    const { conflict, update, set, conflictIndexes } = this.conflictPlan(prepared.fields, prepared.provided, onConflict, params);
+    const [scopeJson, scopedParams] = withScope("{}", params);
+    const scope: Record<string, number> = (JSON.parse(scopeJson) as { scope?: Record<string, number> }).scope ?? {};
+    return { prepared, conflict, update, set, params: scopedParams, conflictIndexes, scope };
+  }
+
+  /** @internal The upsert part of an insert plan; `fields` are the columns and `provided` the ones the rows set. */
+  conflictPlan(fields: readonly string[], provided: ReadonlySet<string>, onConflict: Conflict | undefined, params: unknown[]) {
     let conflict: string[] | null = null;
     let update: string[] | null = null;
     let set: string | null = null;
-    const params: unknown[] = [];
     let conflictIndexes: string[] | null = null;
-    this.checkBatchSize(batchSize);
     if (onConflict) {
       const o = onConflict.options as OnConflictOptions<M>;
       conflict = ownFields(this.meta, onConflict.columns as OwnColumn<M>[], "onConflict");
@@ -1826,7 +1894,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
           o.updateFields !== undefined
             ? ownFields(this.meta, o.updateFields, "updateFields")
             : o.updateValues === undefined
-              ? prepared.fields.filter((f) => prepared.provided.has(f) && !target.includes(f) && !this.meta.key.some((k) => k.ir === f) && !this.meta.upsertDrop.has(f))
+              ? fields.filter((f) => provided.has(f) && !target.includes(f) && !this.meta.key.some((k) => k.ir === f) && !this.meta.upsertDrop.has(f))
               : [];
         if (o.updateValues !== undefined) {
           const items = assignments(this.meta, o.updateValues, new IRContext(this.meta, params));
@@ -1838,9 +1906,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
         }
       }
     }
-    const [scopeJson, scopedParams] = withScope("{}", params);
-    const scope: Record<string, number> = (JSON.parse(scopeJson) as { scope?: Record<string, number> }).scope ?? {};
-    return { prepared, conflict, update, set, params: scopedParams, conflictIndexes, scope };
+    return { conflict, update, set, conflictIndexes };
   }
 
   protected inspectInsert(rows: readonly object[], onConflict: Conflict | undefined, returning: boolean, batchSize: number | null, names?: readonly string[]): QueryInspection {
@@ -1875,6 +1941,23 @@ interface Conflict {
 
 /** Plans an insert. `names` are the model fields `returning` selects; none gives the default selection. */
 type InspectInsert = (conflict: Conflict | undefined, returning: boolean, names?: readonly string[]) => QueryInspection;
+
+/** A set of values where a `param()` may stand for a value. */
+type WithParams<T> = { [K in keyof T]?: T[K] | ParamRef<string> };
+
+/** Like `WithParams`, keeping a required field required. */
+type InsertWithParams<T> = { [K in keyof T]: T[K] | ParamRef<string> };
+
+/** Rejects a key that the model does not have, as the plain overload does. */
+type Known<W, T> = { [K in keyof W]: K extends keyof T ? unknown : never };
+
+/** The values a call takes for the `param()`s among the values `W`. */
+type SetParams<T, W> = UnionToIntersection<
+  { [K in keyof W]: W[K] extends ParamRef<infer N extends string> ? (K extends keyof T ? ParamValues<N, Exclude<T[K], undefined>> : never) : never }[keyof W]
+>;
+
+/** Compiles an insert to a prepared write: the conflict, what a call gives, the `returning` fields. */
+type HeldInsert = (conflict: Conflict | undefined, shape: WriteShape, names: readonly string[] | undefined) => unknown;
 
 /** Runs an insert: the rows with `returning`, else the affected-row count. */
 type RunInsert = (conflict: Conflict | undefined, returning: boolean, names?: readonly string[]) => Promise<unknown[] | number>;
@@ -2026,38 +2109,53 @@ export class PreparedOneRowQuery<T, P> {
 }
 
 /** A write that can be inspected without execution and runs once when awaited. */
-export class InspectedStatement<T> extends Statement<T> {
+export class InspectedStatement<T, P = {}> extends Statement<T> {
   /** @internal `withNames` runs the same write with other `returning` fields. */
   constructor(
     private readonly run: () => Promise<T>,
     private readonly inspectPlan: () => QueryInspection,
-    private readonly withNames?: (names: readonly string[] | undefined) => InspectedStatement<T>,
+    private readonly withNames?: (names: readonly string[] | undefined) => InspectedStatement<T, P>,
+    private readonly held?: () => unknown,
   ) { super(); }
   inspect(): QueryInspection { return this.inspectPlan(); }
+  /** This write compiled once, to run with `param()` values: `run(values)` gives `T`. */
+  prepare(): PreparedWrite<T, P> {
+    if (!this.held) throw new TypeError("this write can't be prepared");
+    return this.held() as PreparedWrite<T, P>;
+  }
   protected async execute(): Promise<T> { return this.run(); }
   /** @internal The same write, returning the model fields `names`. */
-  withFields(names: readonly string[] | undefined): InspectedStatement<T> {
+  withFields(names: readonly string[] | undefined): InspectedStatement<T, P> {
     if (!this.withNames) throw new TypeError("this write takes no returning fields");
     return this.withNames(names);
   }
 }
 
 /** A write that gives the row count; `.returning(...columns)` gives the rows. */
-export class WriteStatement<M extends ModelSpec> extends Statement<number> {
+export class WriteStatement<M extends ModelSpec, P = {}> extends Statement<number> {
   readonly #meta: ModelMeta;
   readonly #run: (names: readonly string[] | undefined, returning: boolean) => Promise<number | unknown[]>;
   readonly #inspect: (names: readonly string[] | undefined, returning: boolean) => QueryInspection;
+  readonly #held: ((names: readonly string[] | undefined, returning: boolean) => unknown) | undefined;
 
   /** @internal */
   constructor(
     meta: ModelMeta,
     run: (names: readonly string[] | undefined, returning: boolean) => Promise<number | unknown[]>,
     inspect: (names: readonly string[] | undefined, returning: boolean) => QueryInspection,
+    held?: (names: readonly string[] | undefined, returning: boolean) => unknown,
   ) {
     super();
     this.#meta = meta;
     this.#run = run;
     this.#inspect = inspect;
+    this.#held = held;
+  }
+
+  /** This write compiled once, to run with `param()` values: `run(values)` gives the row count. */
+  prepare(): PreparedWrite<number, P> {
+    if (!this.#held) throw new TypeError("this write can't be prepared");
+    return this.#held(undefined, false) as PreparedWrite<number, P>;
   }
 
   inspect(): QueryInspection { return this.#inspect(undefined, false); }
@@ -2070,35 +2168,45 @@ export class WriteStatement<M extends ModelSpec> extends Statement<number> {
    * columns, the key and the helper fields, and the other fields raise `NotLoaded`. A relation or
    * path is an error: load it with `monorm.of(rows).load(...)`.
    */
-  returning(): InspectedStatement<M["row"][]>;
-  returning<const C extends readonly OwnColumn<M>[]>(...columns: C): InspectedStatement<Narrow<M["row"], M, RootNames<C>>[]>;
-  returning(...columns: readonly unknown[]): InspectedStatement<unknown[]> {
+  returning(): InspectedStatement<M["row"][], P>;
+  returning<const C extends readonly OwnColumn<M>[]>(...columns: C): InspectedStatement<Narrow<M["row"], M, RootNames<C>>[], P>;
+  returning(...columns: readonly unknown[]): InspectedStatement<unknown[], P> {
     return this.returningFields(returningNames(this.#meta, columns));
   }
 
   /** @internal */
-  returningFields(names: readonly string[] | undefined): InspectedStatement<unknown[]> {
-    const rows = new InspectedStatement<unknown[]>(
+  returningFields(names: readonly string[] | undefined): InspectedStatement<unknown[], P> {
+    const held = this.#held;
+    const rows = new InspectedStatement<unknown[], P>(
       async () => (await this.#run(names, true)) as unknown[],
       () => this.#inspect(names, true),
       (n) => this.returningFields(n),
+      held && (() => held(names, true)),
     );
     return "operation" in this ? Object.assign(rows, { operation: (this as { operation?: unknown }).operation }) : rows;
   }
 }
 
 /** `insert(values)`: awaiting it gives the new instance. */
-export class InsertOne<M extends ModelSpec> extends Statement<M["row"]> {
+export class InsertOne<M extends ModelSpec, P = {}> extends Statement<M["row"]> {
   readonly #meta: ModelMeta;
   readonly #run: RunInsert;
   readonly #inspect: InspectInsert;
+  readonly #held: HeldInsert | undefined;
 
   /** @internal */
-  constructor(meta: ModelMeta, run: RunInsert, inspect: InspectInsert) {
+  constructor(meta: ModelMeta, run: RunInsert, inspect: InspectInsert, held?: HeldInsert) {
     super();
     this.#meta = meta;
     this.#run = run;
     this.#inspect = inspect;
+    this.#held = held;
+  }
+
+  /** This insert compiled once, to run with `param()` values: `run(values)` gives the new instance. */
+  prepare(): PreparedWrite<M["row"], P> {
+    if (!this.#held) throw new TypeError("this write can't be prepared");
+    return this.#held(undefined, "one", undefined) as PreparedWrite<M["row"], P>;
   }
 
   inspect(): QueryInspection {
@@ -2112,17 +2220,19 @@ export class InsertOne<M extends ModelSpec> extends Statement<M["row"]> {
 
   /** The new instance with the columns, the key and the helper fields; the other fields
    * raise `NotLoaded`. A relation or path is an error: `monorm.of(row).load(...)`. */
-  returning<const C extends readonly OwnColumn<M>[]>(...columns: C): InspectedStatement<Narrow<M["row"], M, RootNames<C>>>;
-  returning(...columns: readonly unknown[]): InspectedStatement<unknown> {
+  returning<const C extends readonly OwnColumn<M>[]>(...columns: C): InspectedStatement<Narrow<M["row"], M, RootNames<C>>, P>;
+  returning(...columns: readonly unknown[]): InspectedStatement<unknown, P> {
     return this.returningFields(returningNames(this.#meta, columns));
   }
 
   /** @internal */
-  returningFields(names: readonly string[] | undefined): InspectedStatement<unknown> {
-    const row = new InspectedStatement<unknown>(
+  returningFields(names: readonly string[] | undefined): InspectedStatement<unknown, P> {
+    const held = this.#held;
+    const row = new InspectedStatement<unknown, P>(
       async () => ((await this.#run(undefined, true, names)) as unknown[])[0],
       () => this.#inspect(undefined, true, names),
       (n) => this.returningFields(n),
+      held && (() => held(undefined, "one", names)),
     );
     return "operation" in this ? Object.assign(row, { operation: (this as { operation?: unknown }).operation }) : row;
   }
@@ -2132,25 +2242,34 @@ export class InsertOne<M extends ModelSpec> extends Statement<M["row"]> {
   onConflict<U extends boolean>(
     columns: OwnColumn<M> | readonly OwnColumn<M>[],
     options: OnConflictOptions<M, U>,
-  ): UpsertOne<M, [U] extends [true] ? M["row"] : M["row"] | null> {
-    return new UpsertOne(this.#meta, this.#run, this.#inspect, { columns: toArray(columns), options: options as OnConflictOptions<ModelSpec> });
+  ): UpsertOne<M, [U] extends [true] ? M["row"] : M["row"] | null, P> {
+    return new UpsertOne(this.#meta, this.#run, this.#inspect, { columns: toArray(columns), options: options as OnConflictOptions<ModelSpec> }, this.#held);
   }
 }
 
 /** `insert(values).onConflict(...)`: awaiting it gives the affected-row count. */
-export class UpsertOne<M extends ModelSpec, R> extends Statement<number> {
+export class UpsertOne<M extends ModelSpec, R, P = {}> extends Statement<number> {
   readonly #meta: ModelMeta;
   readonly #run: RunInsert;
   readonly #inspect: InspectInsert;
   readonly #conflict: Conflict;
+  readonly #held: HeldInsert | undefined;
 
   /** @internal */
-  constructor(meta: ModelMeta, run: RunInsert, inspect: InspectInsert, conflict: Conflict) {
+  constructor(meta: ModelMeta, run: RunInsert, inspect: InspectInsert, conflict: Conflict, held?: HeldInsert) {
     super();
     this.#meta = meta;
     this.#run = run;
     this.#inspect = inspect;
     this.#conflict = conflict;
+    this.#held = held;
+  }
+
+  /** This upsert compiled once, to run with `param()` values: `run(values)` gives the row count.
+   * The conflict fields are fixed. */
+  prepare(): PreparedWrite<number, P> {
+    if (!this.#held) throw new TypeError("this write can't be prepared");
+    return this.#held(this.#conflict, "count", undefined) as PreparedWrite<number, P>;
   }
 
   inspect(): QueryInspection {
@@ -2165,36 +2284,46 @@ export class UpsertOne<M extends ModelSpec, R> extends Statement<number> {
   /** `RETURNING` the row: the inserted or updated instance; `null` when
    * `{ update: false }` skipped the row. With columns, the row has those columns, the key
    * and the helper fields. */
-  returning(): InspectedStatement<R>;
-  returning<const C extends readonly OwnColumn<M>[]>(...columns: C): InspectedStatement<Narrow<M["row"], M, RootNames<C>> | Extract<R, null>>;
-  returning(...columns: readonly unknown[]): InspectedStatement<unknown> {
+  returning(): InspectedStatement<R, P>;
+  returning<const C extends readonly OwnColumn<M>[]>(...columns: C): InspectedStatement<Narrow<M["row"], M, RootNames<C>> | Extract<R, null>, P>;
+  returning(...columns: readonly unknown[]): InspectedStatement<unknown, P> {
     return this.returningFields(returningNames(this.#meta, columns));
   }
 
   /** @internal */
-  returningFields(names: readonly string[] | undefined): InspectedStatement<unknown> {
-    return new InspectedStatement<unknown>(
+  returningFields(names: readonly string[] | undefined): InspectedStatement<unknown, P> {
+    const held = this.#held;
+    return new InspectedStatement<unknown, P>(
       async () => ((await this.#run(this.#conflict, true, names)) as unknown[])[0] ?? null,
       () => this.#inspect(this.#conflict, true, names),
       (n) => this.returningFields(n),
+      held && (() => held(this.#conflict, "optional", names)),
     );
   }
 }
 
 /** `insertMany(rows)`: awaiting it gives the number of rows inserted or updated. */
-export class InsertMany<M extends ModelSpec> extends Statement<number> {
+export class InsertMany<M extends ModelSpec, P = {}> extends Statement<number> {
   readonly #meta: ModelMeta;
   readonly #run: RunInsert;
   readonly #inspect: InspectInsert;
   readonly #conflict: Conflict | undefined;
+  readonly #held: HeldInsert | undefined;
 
   /** @internal */
-  constructor(meta: ModelMeta, run: RunInsert, inspect: InspectInsert, conflict?: Conflict) {
+  constructor(meta: ModelMeta, run: RunInsert, inspect: InspectInsert, conflict?: Conflict, held?: HeldInsert) {
     super();
     this.#meta = meta;
     this.#run = run;
     this.#inspect = inspect;
     this.#conflict = conflict;
+    this.#held = held;
+  }
+
+  /** This batch insert compiled once, to run with `param()` values: `run(values)` gives the row count. */
+  prepare(): PreparedWrite<number, P> {
+    if (!this.#held) throw new TypeError("this write can't be prepared");
+    return this.#held(this.#conflict, "count", undefined) as PreparedWrite<number, P>;
   }
 
   inspect(): QueryInspection {
@@ -2207,27 +2336,29 @@ export class InsertMany<M extends ModelSpec> extends Statement<number> {
   }
 
   /** An upsert on the unique constraint of `columns`. */
-  onConflict(columns: OwnColumn<M> | readonly OwnColumn<M>[], options: OnConflictOptions<M>): InsertMany<M> {
+  onConflict(columns: OwnColumn<M> | readonly OwnColumn<M>[], options: OnConflictOptions<M>): InsertMany<M, P> {
     if (this.#conflict) {
       throw new TypeError("onConflict() is already given");
     }
-    return new InsertMany(this.#meta, this.#run, this.#inspect, { columns: toArray(columns), options: options as OnConflictOptions<ModelSpec> });
+    return new InsertMany(this.#meta, this.#run, this.#inspect, { columns: toArray(columns), options: options as OnConflictOptions<ModelSpec> }, this.#held);
   }
 
   /** `RETURNING` the rows in input order, with the columns, the key and the helper fields (by
    * default the default selection); rows that `{ update: false }` skipped are left out. */
-  returning(): InspectedStatement<M["row"][]>;
-  returning<const C extends readonly OwnColumn<M>[]>(...columns: C): InspectedStatement<Narrow<M["row"], M, RootNames<C>>[]>;
-  returning(...columns: readonly unknown[]): InspectedStatement<unknown[]> {
+  returning(): InspectedStatement<M["row"][], P>;
+  returning<const C extends readonly OwnColumn<M>[]>(...columns: C): InspectedStatement<Narrow<M["row"], M, RootNames<C>>[], P>;
+  returning(...columns: readonly unknown[]): InspectedStatement<unknown[], P> {
     return this.returningFields(returningNames(this.#meta, columns));
   }
 
   /** @internal */
-  returningFields(names: readonly string[] | undefined): InspectedStatement<unknown[]> {
-    const rows = new InspectedStatement<unknown[]>(
+  returningFields(names: readonly string[] | undefined): InspectedStatement<unknown[], P> {
+    const held = this.#held;
+    const rows = new InspectedStatement<unknown[], P>(
       async () => (await this.#run(this.#conflict, true, names)) as unknown[],
       () => this.#inspect(this.#conflict, true, names),
       (n) => this.returningFields(n),
+      held && (() => held(this.#conflict, "list", names)),
     );
     return "operation" in this ? Object.assign(rows, { operation: (this as { operation?: unknown }).operation }) : rows;
   }
@@ -2295,9 +2426,10 @@ export class Compiled {
   readonly slots: [number, string, ((v: unknown) => unknown) | undefined][];
   readonly names: Set<string>;
   private readonly declared: (string | null)[];
-  private readonly natives = new WeakMap<object, Map<string, NativePreparedRead>>();
+  private readonly natives = new WeakMap<object, Map<string, NativePreparedRead | NativePreparedWrite>>();
 
-  constructor(ir: IR, params: SlotParams) {
+  /** `write`: an update or a delete, held by `prepareWrite`; a set value may be null. */
+  constructor(ir: IR, params: SlotParams, private readonly write = false) {
     this.json = JSON.stringify(ir);
     this.params = [...params];
     this.slots = [];
@@ -2312,6 +2444,15 @@ export class Compiled {
 
   /** The engine's prepared read for these scope names (planned on first use). */
   native(engine: NativeInspector, scope: readonly string[]): NativePreparedRead {
+    return this.held(engine, scope) as NativePreparedRead;
+  }
+
+  /** The engine's prepared write for these scope names (planned on first use). */
+  nativeWrite(engine: NativeInspector, scope: readonly string[]): NativePreparedWrite {
+    return this.held(engine, scope) as NativePreparedWrite;
+  }
+
+  private held(engine: NativeInspector, scope: readonly string[]): NativePreparedRead | NativePreparedWrite {
     let byScope = this.natives.get(engine);
     if (byScope === undefined) this.natives.set(engine, (byScope = new Map()));
     const key = scope.join("\0");
@@ -2323,7 +2464,7 @@ export class Compiled {
         op = `${op.slice(0, -1)},"scope":${index}}`;
       }
       const declared = [...this.declared, ...scope.map(() => null)];
-      read = call(() => engine.prepareRead(op, declared.length, declared));
+      read = call(() => (this.write ? engine.prepareWrite(op, declared.length, declared) : engine.prepareRead(op, declared.length, declared)));
       byScope.set(key, read);
     }
     return read;
@@ -2332,13 +2473,8 @@ export class Compiled {
   /** The parameter list of a call with the scope values after it, and the scope names:
    * `values.scope` over the `scope()` context. */
   callValues(values: Record<string, unknown> | undefined, known: Set<string>): [unknown[], string[]] {
-    let scope: Readonly<Record<string, unknown>> = currentScope();
-    if (values !== undefined && "scope" in values) {
-      const { scope: given, ...rest } = values;
-      values = rest;
-      if (given !== undefined && given !== null) scope = { ...scope, ...(given as Record<string, unknown>) };
-    }
-    const params = this.bind(values ?? {}, known);
+    const [rest, scope] = splitScope(values);
+    const params = this.bind(rest, known);
     params.push(...Object.values(scope));
     return [params, Object.keys(scope)];
   }
@@ -2347,7 +2483,7 @@ export class Compiled {
    * A scope that is not set yet waits for the first call. */
   validate(engine: NativeInspector): void {
     try {
-      this.native(engine, Object.keys(currentScope()));
+      this.held(engine, Object.keys(currentScope()));
     } catch (e) {
       if (!(e instanceof QueryError) || !e.message.includes("which is not set")) throw e;
     }
@@ -2365,13 +2501,24 @@ export class Compiled {
     const params = [...this.params];
     for (const [i, name, transform] of this.slots) {
       const v = values[name];
-      if (v === null || v === undefined) {
-        throw new TypeError(`param(${JSON.stringify(name)}) can't be null; compare with null (IS NULL) in the query itself`);
+      if (v === undefined || (v === null && !this.write)) {
+        throw new TypeError(`param(${JSON.stringify(name)}) can't be ${v === null ? "null; compare with null (IS NULL) in the query itself" : "undefined"}`);
       }
-      params[i] = transform ? transform(v) : v;
+      params[i] = transform && v !== null ? transform(v) : v;
     }
     return params;
   }
+}
+
+/** @internal The values of a call without `scope`, and the scope values: `values.scope` over the `scope()` context. */
+export function splitScope(values: Record<string, unknown> | undefined): [Record<string, unknown>, Readonly<Record<string, unknown>>] {
+  let scope: Readonly<Record<string, unknown>> = currentScope();
+  if (values !== undefined && "scope" in values) {
+    const { scope: given, ...rest } = values;
+    if (given !== undefined && given !== null) scope = { ...scope, ...(given as Record<string, unknown>) };
+    return [rest, scope];
+  }
+  return [values ?? {}, scope];
 }
 
 /** The `scope.<name>` values of one call: they win over the `scope()` context. */
@@ -2531,8 +2678,10 @@ export class RelatedSet<M extends ModelSpec, L extends string = never> extends Q
 
   /** Inserts related rows pointing at this instance. */
   override insertMany(rows: readonly DistributiveOmit<M["insert"], L>[], options?: BatchOptions): InsertMany<M>;
+  override insertMany(rows: RowsRef<any, any>, options?: BatchOptions): InsertMany<M>;
   override insertMany(rows: readonly DistributiveOmit<M["insert"], L>[], options: CopyOptions): Promise<number>;
-  override insertMany(rows: readonly DistributiveOmit<M["insert"], L>[], options?: BatchOptions | CopyOptions): InsertMany<M> | Promise<number> {
+  override insertMany(rows: readonly DistributiveOmit<M["insert"], L>[] | RowsRef<any, any>, options?: BatchOptions | CopyOptions): InsertMany<M> | Promise<number> {
+    if (rows instanceof RowsRef) throw new TypeError("a related set can't prepare insertMany(param(...)); use the model's own insertMany");
     const link = this.link();
     const linked = rows.map((r) => ({ ...r, ...link }));
     if (options && "copy" in options && options.copy) {

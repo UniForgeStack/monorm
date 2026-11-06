@@ -711,8 +711,37 @@ export class ParamRef<N extends string> {
   }
 }
 
-export function param<N extends string>(name: N, type?: string): ParamRef<N> {
-  return new ParamRef(name, type);
+export function param<N extends string>(name: N, type?: string): ParamRef<N>;
+/** `param("rows", { fields })`: the rows of a prepared `insertMany()` or `updateMany()`. Each row of a
+ * call has exactly these columns (`updateMany`: the primary key first). */
+export function param<N extends string, const C extends readonly Column<any, any, any, any>[]>(name: N, options: { readonly fields: C }): RowsRef<N, C>;
+export function param(name: string, arg?: string | { readonly fields: readonly Column<any, any, any, any>[] }): ParamRef<string> | RowsRef<string, readonly Column<any, any, any, any>[]> {
+  if (arg !== undefined && typeof arg === "object") return new RowsRef(name, arg.fields);
+  return new ParamRef(name, arg);
+}
+
+/** The row type of `param(name, { fields })`: each column's name with its value type. */
+export type RowOf<C extends readonly Column<any, any, any, any>[]> = {
+  [K in C[number] as K extends Column<any, any, infer N, any> ? N : never]: K extends Column<infer T, any, any, any> ? T : never;
+};
+
+/** `param(name, { fields })`: a list of rows in a prepared batch write. */
+export class RowsRef<N extends string, C extends readonly Column<any, any, any, any>[]> {
+  /** @internal Phantom: the row type. */
+  declare readonly "~rows"?: RowOf<C>;
+
+  constructor(
+    readonly name: N,
+    readonly fields: C,
+  ) {
+    new ParamRef(name); // the same name rules
+    if (!fields.length) throw new TypeError(`param(${JSON.stringify(name)}, { fields }) needs at least one column`);
+    if (new Set(fields.map((f) => f.field.ir)).size !== fields.length) throw new TypeError(`param(${JSON.stringify(name)}, { fields }) names a column twice`);
+  }
+
+  toString(): string {
+    return `param(${JSON.stringify(this.name)}, { fields })`;
+  }
 }
 
 /** A `param()` whose value goes through `transform` when bound (LIKE patterns, ...). */

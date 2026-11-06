@@ -12,7 +12,10 @@ function normalize(meta: ModelMeta, row: object, what: string, expressions: bool
     if (value === undefined) {
       continue;
     }
-    if (!expressions && (value instanceof Expression || value instanceof ParamRef)) {
+    if (!expressions && value instanceof ParamRef) {
+      throw new TypeError(`${meta.name}.${key}: param() is a placeholder of a prepared write; call .prepare()`);
+    }
+    if (!expressions && value instanceof Expression) {
       throw new TypeError(`${meta.name}.${key}: ${what} takes plain values, not expressions`);
     }
     // The engine refuses a generated column, so a write that names one goes on to it.
@@ -42,6 +45,43 @@ function normalize(meta: ModelMeta, row: object, what: string, expressions: bool
   return values;
 }
 
+/** Throws for the first input field that `has` does not find and that has no default. */
+export function requireFields(meta: ModelMeta, has: (ir: string) => boolean): void {
+  for (const f of meta.inputFieldList) {
+    const parts = f.nested?.storage === "columns" ? f.nested.leaves.map((l) => meta.fieldByIr.get(l.ir)!) : [f];
+    if (parts.some((p) => !has(p.ir) && !(p.hasInsertDefault || p.nullable))) {
+      throw new TypeError(`${meta.name}.${f.name} is required`);
+    }
+  }
+}
+
+/**
+ * The row of a prepared `insert(values)`: the columns in schema order, and per column a
+ * plain value, a `ParamRef` (filled per call) or `undefined` (the column's default).
+ */
+export function prepareInsertTemplate(meta: ModelMeta, row: object): { fields: string[]; cells: unknown[]; provided: Set<string> } {
+  const plain: Record<string, unknown> = {};
+  const refs = new Map<string, ParamRef<string>>();
+  for (const [key, value] of Object.entries(row)) {
+    if (!(value instanceof ParamRef)) {
+      plain[key] = value;
+      continue;
+    }
+    const f = meta.generated.has(key) ? meta.fields.get(key) : meta.inputFields.get(key);
+    if (!f || f.nested !== undefined) {
+      throw new TypeError(`${meta.name}.${key}: param() sets a plain column in a prepared insert`);
+    }
+    refs.set(f.ir, value);
+  }
+  const values = normalize(meta, plain, "insert", false);
+  for (const ir of refs.keys()) {
+    if (values.has(ir)) throw new TypeError(`${meta.name}.${meta.fieldByIr.get(ir)!.name} is given twice`);
+  }
+  requireFields(meta, (ir) => values.has(ir) || refs.has(ir));
+  const fields = meta.fieldList.map((f) => f.ir).filter((n) => values.has(n) || refs.has(n));
+  return { fields, cells: fields.map((n) => refs.get(n) ?? values.get(n)), provided: new Set(fields) };
+}
+
 /**
  * Validates insert rows and aligns them on one column list: the fields any row sets
  * (IR names, schema order), each row's values in that order (`undefined`: the column's
@@ -58,12 +98,7 @@ export function prepareRows(
     for (const k of values.keys()) {
       provided.add(k);
     }
-    for (const f of meta.inputFieldList) {
-      const parts = f.nested?.storage === "columns" ? f.nested.leaves.map((l) => meta.fieldByIr.get(l.ir)!) : [f];
-      if (parts.some((p) => !values.has(p.ir) && !(p.hasInsertDefault || p.nullable))) {
-        throw new TypeError(`${meta.name}.${f.name} is required`);
-      }
-    }
+    requireFields(meta, (ir) => values.has(ir));
     normalized.push(values);
   }
   const fields = meta.fieldList.map((f) => f.ir).filter((n) => normalized.some((v) => v.has(n)));

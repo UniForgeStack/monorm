@@ -43,13 +43,14 @@ export {
   param,
   window,
 } from "./expr.js";
-export type { AggregateOptions, CaseDefault, Many, Compat, Operand, OrderOptions } from "./expr.js";
+export type { AggregateOptions, CaseDefault, Many, Compat, Operand, OrderOptions, RowOf, RowsRef } from "./expr.js";
 export { IndexRef, ModelMeta, Registry, column, define, describe, load, loads, registry } from "./model.js";
 export type { FieldInfo, ModelInfo, RelationInfo } from "./model.js";
 export type { Instance, ModelClass, Row, SchemaIR } from "./model.js";
 export { BoundQuerySet, of } from "./bound.js";
 export { InspectedStatement, InsertMany, InsertOne, ManyRelatedSet, OneRowQuery, Prepared, PreparedOneRowQuery, QuerySet, RelatedSet, UpsertOne, WriteStatement, useModelMethods, useQuerySet } from "./query.js";
 export type { Page, PageOptions } from "./pagination.js";
+export type { PreparedWrite as PreparedWriteStatement, WriteShape } from "./prepared-write.js";
 export type { AddOptions, BatchOptions, CopyOptions, FieldOrder, LoadAll, LoadItem, LoadOf, LockOptions, OnConflictOptions, PreparedInsert, PreparedUpdate, QueriesOf, QuerySetOf, Simplify, Via } from "./query.js";
 export { Select } from "./select.js";
 export { CompoundSelect } from "./compound.js";

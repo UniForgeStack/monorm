@@ -87,7 +87,26 @@ export interface NativePreparedRead {
   inspect(): string;
 }
 
+/** An update or a delete planned once (`prepareWrite`). */
+export interface NativePreparedWrite {
+  run(params: unknown[], tx: NativeTransaction | null, allowed: readonly string[], trace: NativeTrace | null): Promise<unknown>;
+  sql(params: unknown[]): string;
+  inspect(): string;
+}
+
+/** An insert or `updateMany` of rows planned once (`prepareInsert`, `prepareUpdateMany`). */
+export interface NativePreparedRows {
+  /** `rows`: arrays aligned with the fields (`undefined`: the column's default); `params`: the `set` values, then the scope values. */
+  run(rows: unknown[][], params: unknown[], tx: NativeTransaction | null, allowed: readonly string[], trace: NativeTrace | null): Promise<unknown>;
+  inspect(): string;
+}
+
 export interface NativeInspector {
+  prepareWrite(opJson: string, n: number, declared: (string | null)[]): NativePreparedWrite;
+  /** `options`: the insert options JSON (`conflict`, `update`, `set`, `indexes`, `without_defaults`, `model_fields`, `scope`). */
+  prepareInsert(model: string, fields: string[], options: string, n: number, declared: (string | null)[], returning: boolean, batchSize: number | null): NativePreparedRows;
+  /** `options`: `{ filters, model_fields, without_defaults }` JSON. */
+  prepareUpdateMany(model: string, fields: string[], options: string, n: number, declared: (string | null)[], returning: boolean, batchSize: number | null): NativePreparedRows;
   /** Plans a select, count or exists IR for `n` parameters (scope values included); `declared` holds a parameter's declared type (`"big_int"`, `"big_int[]"`) or null. */
   prepareRead(opJson: string, n: number, declared: (string | null)[]): NativePreparedRead;
   inspect(opJson: string, params: unknown[]): string;
