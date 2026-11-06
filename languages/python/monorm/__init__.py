@@ -11,7 +11,7 @@ expressions over model attributes, Django-style managers on top::
 from ._extensions import OrmStaleModelsWarning as OrmStaleModelsWarning
 from .inspection import QueryInspection, StatementInspection
 from . import debug, fields, otel
-from .db import Database, QueryEvent, connect, get_database, scope
+from .db import Database, Isolation, QueryEvent, connect, get_database, scope
 from .nested import NestedRef, NestedValue
 from .errors import (
     DatabaseError,
@@ -27,6 +27,7 @@ from .errors import (
     SchemaError,
     SchemaWarning,
     TransactionAborted,
+    TransactionTimeoutError,
     TransactionRequired,
     UnfilteredWriteError,
     ValidationError,
@@ -89,6 +90,7 @@ __all__ = [
     "load",
     "loads",
     "Database",
+    "Isolation",
     "QueryEvent",
     "connect",
     "scope",
@@ -160,6 +162,7 @@ __all__ = [
     "VersionConflict",
     "NotConnected",
     "TransactionAborted",
+    "TransactionTimeoutError",
     "TransactionRequired",
     "WriteProtected",
     "allow_writes",

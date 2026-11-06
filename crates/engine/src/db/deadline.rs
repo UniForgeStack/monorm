@@ -5,7 +5,7 @@
 //! and the commit. When it passes, the engine marks the root expired, lets the driver cancel
 //! what runs and roll back, and every later use of the transaction raises a timeout error.
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -117,12 +117,48 @@ impl TxStart {
     }
 }
 
+/// Who ends a root transaction: the COMMIT or the expiry. A driver keeps one `Fate` per root
+/// and swaps it once; the winner of that swap decides, so a COMMIT is never sent after expiry
+/// won, and an expiry that won sent no COMMIT.
+pub(super) struct Fate(AtomicU8);
+
+impl Fate {
+    const OPEN: u8 = 0;
+    const COMMIT_SENT: u8 = 1;
+    const EXPIRED: u8 = 2;
+
+    pub(super) fn new() -> Self {
+        Fate(AtomicU8::new(Self::OPEN))
+    }
+
+    /// Call before the root COMMIT goes out. `false`: expiry won, so send nothing.
+    pub(super) fn commit_sent(&self) -> bool {
+        self.0.compare_exchange(Self::OPEN, Self::COMMIT_SENT, Ordering::SeqCst, Ordering::SeqCst).is_ok()
+    }
+
+    /// Call when the deadline passes. `true`: no COMMIT was sent, so a confirmed rollback
+    /// gives `RolledBack`. `false`: a COMMIT may be on the wire, so the outcome is `Unknown`.
+    pub(super) fn expire(&self) -> bool {
+        self.0.compare_exchange(Self::OPEN, Self::EXPIRED, Ordering::SeqCst, Ordering::SeqCst).is_ok()
+    }
+
+    pub(super) fn is_expired(&self) -> bool {
+        self.0.load(Ordering::SeqCst) == Self::EXPIRED
+    }
+}
+
+impl Default for Fate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
     Active,
     Committing,
     Done,
-    Expiring { committing: bool },
+    Expiring,
     Expired(TimeoutOutcome),
 }
 
@@ -142,6 +178,7 @@ pub(super) struct Root {
     inner: Arc<dyn Transaction>,
     phase: watch::Sender<Phase>,
     timeout: Duration,
+    deadline: Instant,
     watchdog: Mutex<Option<tokio::task::AbortHandle>>,
 }
 
@@ -156,7 +193,7 @@ impl Drop for Root {
 impl Root {
     /// Wraps `inner` and starts the watchdog that expires it at `deadline`.
     pub(super) fn start(inner: Arc<dyn Transaction>, timeout: Duration, deadline: Instant) -> Arc<Root> {
-        let root = Arc::new(Root { inner, phase: watch::channel(Phase::Active).0, timeout, watchdog: Mutex::new(None) });
+        let root = Arc::new(Root { inner, phase: watch::channel(Phase::Active).0, timeout, deadline, watchdog: Mutex::new(None) });
         let weak = Arc::downgrade(&root);
         let task = tokio::spawn(async move {
             tokio::time::sleep_until(deadline).await;
@@ -177,7 +214,7 @@ impl Root {
     }
 
     pub(super) fn is_expiring_or_expired(&self) -> bool {
-        matches!(*self.phase.borrow(), Phase::Expiring { .. } | Phase::Expired(_))
+        matches!(*self.phase.borrow(), Phase::Expiring | Phase::Expired(_))
     }
 
     /// Waits until the cleanup after the deadline has ended, then gives its outcome.
@@ -197,7 +234,7 @@ impl Root {
     async fn wait_expiring(&self) {
         let mut rx = self.phase.subscribe();
         loop {
-            if matches!(*rx.borrow_and_update(), Phase::Expiring { .. } | Phase::Expired(_)) {
+            if matches!(*rx.borrow_and_update(), Phase::Expiring | Phase::Expired(_)) {
                 return;
             }
             if rx.changed().await.is_err() {
@@ -208,6 +245,10 @@ impl Root {
 
     /// An error when the deadline passed; waits out a cleanup that runs.
     pub(super) async fn admit(&self) -> DbResult<()> {
+        // The timer can lag behind the clock: a deadline that has passed expires the root here.
+        if !self.is_expiring_or_expired() && Instant::now() >= self.deadline {
+            self.expire().await;
+        }
         if self.is_expiring_or_expired() {
             return Err(self.timeout_error(self.settled().await, None));
         }
@@ -223,9 +264,18 @@ impl Root {
             out = &mut run => out,
             outcome = self.settled_after_expiry() => return Err(self.timeout_error(outcome, None)),
         };
+        self.expire_if_late(&out).await;
         match out {
             Err(e) if self.is_expiring_or_expired() => Err(self.timeout_error(self.settled().await, Some(&e))),
             out => out,
+        }
+    }
+
+    /// A lock wait that a driver stopped at the deadline fails with a lock error before the timer
+    /// runs. The deadline caused that error, so the root expires and the caller gets the timeout.
+    async fn expire_if_late<T>(&self, out: &DbResult<T>) {
+        if matches!(out, Err(e) if e.kind == ErrorKind::LockNotAvailable) && Instant::now() >= self.deadline {
+            self.expire().await;
         }
     }
 
@@ -248,8 +298,9 @@ impl Root {
         }
     }
 
-    /// Runs the root's `COMMIT`. After the deadline no `COMMIT` is sent; a wait for a sent
-    /// one is cancelled, and the outcome is unknown.
+    /// Runs the root's `COMMIT`. After the deadline no `COMMIT` is sent. The wait for a sent
+    /// one is abandoned at the deadline: the caller gets `unknown` at once, no cancel goes to
+    /// the `COMMIT`, and the cleanup retires the connection in the background.
     pub(super) async fn commit(&self) -> DbResult<()> {
         // The deadline can pass after `begin_commit`: the COMMIT is then not started at all.
         if self.is_expiring_or_expired() {
@@ -261,6 +312,9 @@ impl Root {
             out = &mut commit => Some(out),
             _ = self.wait_expiring() => None,
         };
+        if let Some(out) = &out {
+            self.expire_if_late(out).await;
+        }
         let finished = self.change(|p| if *p == Phase::Committing { *p = Phase::Done; true } else { false });
         match out {
             Some(out) if finished => {
@@ -271,8 +325,9 @@ impl Root {
             Some(out) => Err(self.timeout_error(self.settled().await, out.err().as_ref())),
             None => {
                 // Dropping the wait frees what the commit holds (a connection lock) for the cleanup.
+                // The watchdog owns the cleanup; the caller does not wait for it.
                 drop(commit);
-                Err(self.timeout_error(self.settled().await, None))
+                Err(self.timeout_error(TimeoutOutcome::Unknown, None))
             }
         }
     }
@@ -281,7 +336,7 @@ impl Root {
     pub(super) async fn rollback(&self) -> DbResult<()> {
         loop {
             match *self.phase.borrow() {
-                Phase::Expiring { .. } | Phase::Expired(_) => break,
+                Phase::Expiring | Phase::Expired(_) => break,
                 _ => {}
             }
             if self.change(|p| if *p == Phase::Active { *p = Phase::Done; true } else { false }) || matches!(*self.phase.borrow(), Phase::Committing | Phase::Done) {
@@ -299,22 +354,17 @@ impl Root {
         }
     }
 
+    /// The driver decides the outcome: its `Fate` swap tells whether a COMMIT was sent.
     async fn expire(&self) {
-        let mut committing = false;
         let moved = self.change(|p| match *p {
-            Phase::Active => { *p = Phase::Expiring { committing: false }; true }
-            Phase::Committing => { *p = Phase::Expiring { committing: true }; committing = true; true }
+            Phase::Active | Phase::Committing => { *p = Phase::Expiring; true }
             _ => false,
         });
         if !moved {
             return;
         }
-        let ran = tokio::time::timeout(CLEANUP_GRACE + Duration::from_secs(1), self.inner.expire(committing, CLEANUP_GRACE)).await;
-        let outcome = match ran {
-            Ok(o) if !committing => o,
-            _ => TimeoutOutcome::Unknown,
-        };
-        self.phase.send_replace(Phase::Expired(outcome));
+        let ran = tokio::time::timeout(CLEANUP_GRACE + Duration::from_secs(1), self.inner.expire(CLEANUP_GRACE)).await;
+        self.phase.send_replace(Phase::Expired(ran.unwrap_or(TimeoutOutcome::Unknown)));
     }
 }
 
@@ -333,7 +383,13 @@ pub async fn begin_root(exec: &dyn super::Executor, options: TransactionOptions)
     let mut begin = std::pin::pin!(exec.begin_with(start));
     let inner = tokio::select! {
         biased;
-        out = &mut begin => out?,
+        out = &mut begin => match out {
+            // A busy wait that the driver stopped at the deadline: the begin cleaned up after itself.
+            Err(e) if e.kind == ErrorKind::LockNotAvailable && Instant::now() >= deadline => {
+                return Err(error(TimeoutOutcome::RolledBack, Some(&e)));
+            }
+            out => out?,
+        },
         _ = tokio::time::sleep_until(deadline) => {
             if !acquired.load(std::sync::atomic::Ordering::SeqCst) {
                 // No connection or gate was taken: there is nothing to clean up.
@@ -342,7 +398,7 @@ pub async fn begin_root(exec: &dyn super::Executor, options: TransactionOptions)
             // The driver holds a connection. Let the begin end (it cleans up after itself on an
             // error), then roll back; a begin that does not end within the budget is dropped.
             return Err(match tokio::time::timeout(CLEANUP_GRACE, &mut begin).await {
-                Ok(Ok(tx)) => error(tx.expire(false, CLEANUP_GRACE).await, None),
+                Ok(Ok(tx)) => error(tx.expire(CLEANUP_GRACE).await, None),
                 Ok(Err(e)) => error(TimeoutOutcome::RolledBack, Some(&e)),
                 Err(_) => error(TimeoutOutcome::Unknown, None),
             });
@@ -373,11 +429,23 @@ mod tests {
         /// `expire` cannot confirm the rollback: the connection is quarantined and takes no more work.
         rollback_fails: bool,
         quarantined: Arc<std::sync::atomic::AtomicBool>,
+        /// The root's swap, like a driver's: `begin_with` gives each transaction a fresh one.
+        fate: Arc<Fate>,
+        /// A blocking wait (the thread sleeps) that ends the next `commit` or `batch("busy")` with a lock error.
+        busy: Duration,
         log: Arc<Mutex<Vec<String>>>,
         cancel: Arc<Notify>,
     }
 
     impl Script {
+        /// Blocks the thread for `busy`, then fails like a driver whose lock wait stopped at the deadline.
+        fn busy_error(&self) -> DbError {
+            std::thread::sleep(self.busy);
+            let mut e = DbError::new(ErrorKind::LockNotAvailable, "database is locked");
+            e.sqlstate = Some("55P03".into());
+            e
+        }
+
         fn log(&self) -> Vec<String> {
             self.log.lock().unwrap().clone()
         }
@@ -414,7 +482,7 @@ mod tests {
                 start.acquired.store(true, std::sync::atomic::Ordering::SeqCst);
                 self.0.log.lock().unwrap().push(format!("begin {:?}", start.isolation));
                 tokio::time::sleep(self.0.begin).await;
-                let tx: Arc<dyn Transaction> = Arc::new(FakeTx(self.0.clone()));
+                let tx: Arc<dyn Transaction> = Arc::new(FakeTx(Script { fate: Arc::new(Fate::new()), ..self.0.clone() }));
                 Ok(tx)
             })
         }
@@ -436,13 +504,16 @@ mod tests {
                         }
                     }
                 }
+                if sql == "busy" {
+                    return Err(self.0.busy_error());
+                }
                 Ok(0)
             })
         }
         fn begin(&self) -> BoxFuture<'_, DbResult<Arc<dyn Transaction>>> {
             Box::pin(async move {
                 self.0.log.lock().unwrap().push("savepoint".into());
-                let tx: Arc<dyn Transaction> = Arc::new(FakeTx(self.0.clone()));
+                let tx: Arc<dyn Transaction> = Arc::new(FakeTx(Script { fate: Arc::new(Fate::new()), ..self.0.clone() }));
                 Ok(tx)
             })
         }
@@ -451,7 +522,13 @@ mod tests {
     impl Transaction for FakeTx {
         fn commit(&self) -> BoxFuture<'_, DbResult<()>> {
             Box::pin(async move {
+                if !self.0.fate.commit_sent() {
+                    return Err(DbError::other("transaction is closed"));
+                }
                 self.0.log.lock().unwrap().push("commit".into());
+                if !self.0.busy.is_zero() {
+                    return Err(self.0.busy_error());
+                }
                 tokio::time::sleep(self.0.commit).await;
                 Ok(())
             })
@@ -462,9 +539,16 @@ mod tests {
                 Ok(())
             })
         }
-        fn expire(&self, committing: bool, _: Duration) -> BoxFuture<'_, TimeoutOutcome> {
+        fn expire(&self, _: Duration) -> BoxFuture<'_, TimeoutOutcome> {
             Box::pin(async move {
-                self.0.log.lock().unwrap().push(format!("expire committing={committing}"));
+                if !self.0.fate.expire() {
+                    self.0.log.lock().unwrap().push("expire after commit".into());
+                    if self.0.hang_expire {
+                        std::future::pending::<()>().await;
+                    }
+                    return TimeoutOutcome::Unknown;
+                }
+                self.0.log.lock().unwrap().push("expire".into());
                 self.0.cancel.notify_waiters();
                 if self.0.hang_expire {
                     std::future::pending::<()>().await;
@@ -473,7 +557,7 @@ mod tests {
                     self.0.quarantined.store(true, std::sync::atomic::Ordering::SeqCst);
                     return TimeoutOutcome::Unknown;
                 }
-                if committing { TimeoutOutcome::Unknown } else { TimeoutOutcome::RolledBack }
+                TimeoutOutcome::RolledBack
             })
         }
     }
@@ -529,7 +613,7 @@ mod tests {
         let script = Script { begin: Duration::from_secs(2), ..Default::default() };
         let e = begin(&script, secs(1.0)).await.err().unwrap();
         assert_eq!(timeout_outcome(&e), TimeoutOutcome::RolledBack);
-        assert_eq!(script.log(), ["begin None", "expire committing=false"]);
+        assert_eq!(script.log(), ["begin None", "expire"]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -547,7 +631,7 @@ mod tests {
         assert_eq!(timeout_outcome(&e), TimeoutOutcome::RolledBack);
         // The cancel error of the driver is not the primary error; its SQLSTATE is kept.
         assert_eq!(e.sqlstate.as_deref(), Some("57014"));
-        assert_eq!(script.log(), ["begin None", "batch slow", "expire committing=false"]);
+        assert_eq!(script.log(), ["begin None", "batch slow", "expire"]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -570,7 +654,7 @@ mod tests {
         tokio::time::sleep(Duration::from_secs(2)).await;
         let e = tx.batch("late".into()).await.unwrap_err();
         assert_eq!(timeout_outcome(&e), TimeoutOutcome::RolledBack);
-        assert_eq!(script.log(), ["begin None", "expire committing=false"]);
+        assert_eq!(script.log(), ["begin None", "expire"]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -587,6 +671,17 @@ mod tests {
         assert_eq!(timeout_outcome(&tx.commit().await.unwrap_err()), TimeoutOutcome::RolledBack);
         tx.rollback().await.unwrap();
         assert!(!script.log().iter().any(|l| l == "rollback" || l == "commit"), "{:?}", script.log());
+    }
+
+    #[tokio::test]
+    async fn a_deadline_that_passed_stops_the_commit_before_the_timer_runs() {
+        let script = Script::default();
+        let tx = begin(&script, secs(0.25)).await.unwrap();
+        // The thread stays busy, so the watchdog timer cannot fire: the clock alone has passed the deadline.
+        std::thread::sleep(Duration::from_millis(400));
+        let e = tx.commit().await.unwrap_err();
+        assert_eq!(timeout_outcome(&e), TimeoutOutcome::RolledBack);
+        assert!(!script.log().iter().any(|l| l == "commit"), "{:?}", script.log());
     }
 
     #[tokio::test(start_paused = true)]
@@ -614,7 +709,21 @@ mod tests {
         let tx = begin(&script, secs(1.0)).await.unwrap();
         let e = tx.commit().await.unwrap_err();
         assert_eq!(timeout_outcome(&e), TimeoutOutcome::Unknown);
-        assert_eq!(script.log(), ["begin None", "commit", "expire committing=true"]);
+        assert_eq!(script.log(), ["begin None", "commit", "expire after commit"]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_commit_wait_is_abandoned_at_the_deadline() {
+        // The COMMIT never ends and the cleanup uses the whole grace: the caller still returns at the deadline.
+        let script = Script { commit: Duration::from_secs(3600), hang_expire: true, ..Default::default() };
+        let tx = begin(&script, secs(1.0)).await.unwrap();
+        let started = tokio::time::Instant::now();
+        let e = tx.commit().await.unwrap_err();
+        assert_eq!(timeout_outcome(&e), TimeoutOutcome::Unknown);
+        assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+        // No cancel went to the sent COMMIT, and no rollback follows it.
+        tokio::time::sleep(CLEANUP_GRACE + Duration::from_secs(2)).await;
+        assert_eq!(script.log(), ["begin None", "commit", "expire after commit"]);
     }
 
     #[tokio::test(start_paused = true)]
@@ -662,7 +771,7 @@ mod tests {
                 Ok(()) => assert!(!log.iter().any(|l| l.starts_with("expire")), "{commit_ms} ms: {log:?}"),
                 Err(e) => {
                     assert_eq!(timeout_outcome(&e), TimeoutOutcome::Unknown, "{commit_ms} ms");
-                    assert!(log.contains(&"expire committing=true".to_string()), "{commit_ms} ms: {log:?}");
+                    assert!(log.contains(&"expire after commit".to_string()), "{commit_ms} ms: {log:?}");
                 }
             }
         }
@@ -676,8 +785,57 @@ mod tests {
         root.begin_commit().await.unwrap();
         tokio::time::sleep(Duration::from_secs(2)).await;
         let e = root.commit().await.unwrap_err();
+        assert_eq!(timeout_outcome(&e), TimeoutOutcome::RolledBack);
+        assert_eq!(script.log(), ["expire"]);
+    }
+
+    #[test]
+    fn fate_has_one_winner() {
+        let a = Fate::new();
+        assert!(a.commit_sent());
+        assert!(!a.expire() && !a.is_expired() && !a.commit_sent());
+        let b = Fate::new();
+        assert!(b.expire() && b.is_expired());
+        assert!(!b.commit_sent() && !b.expire());
+    }
+
+    #[tokio::test]
+    async fn a_commit_that_loses_the_swap_sends_nothing() {
+        let script = Script::default();
+        let tx = begin(&script, secs(60.0)).await.unwrap();
+        // The driver's expiry runs first, as when `finish` meets the Root-to-driver gap.
+        assert_eq!(tx.expire(CLEANUP_GRACE).await, TimeoutOutcome::RolledBack);
+        assert!(tx.commit().await.is_err());
+        assert_eq!(script.log(), ["begin None", "expire"]);
+    }
+
+    #[tokio::test]
+    async fn a_lock_wait_that_ends_at_the_deadline_in_commit_is_a_timeout() {
+        // The thread blocks past the deadline, so the timer cannot run: only the clock shows it.
+        let script = Script { busy: Duration::from_millis(80), ..Default::default() };
+        let tx = begin(&script, secs(0.03)).await.unwrap();
+        let e = tx.commit().await.unwrap_err();
+        // The COMMIT was sent, so the outcome is unknown.
         assert_eq!(timeout_outcome(&e), TimeoutOutcome::Unknown);
-        assert_eq!(script.log(), ["expire committing=true"]);
+        assert_eq!(e.sqlstate.as_deref(), Some("55P03"));
+        assert_eq!(script.log(), ["begin None", "commit", "expire after commit"]);
+    }
+
+    #[tokio::test]
+    async fn a_lock_wait_that_ends_at_the_deadline_in_a_statement_is_a_timeout() {
+        let script = Script { busy: Duration::from_millis(80), ..Default::default() };
+        let tx = begin(&script, secs(0.03)).await.unwrap();
+        let e = tx.batch("busy".into()).await.unwrap_err();
+        assert_eq!(timeout_outcome(&e), TimeoutOutcome::RolledBack);
+        assert_eq!(e.sqlstate.as_deref(), Some("55P03"));
+    }
+
+    #[tokio::test]
+    async fn a_lock_error_before_the_deadline_stays_a_lock_error() {
+        let script = Script { busy: Duration::from_millis(1), ..Default::default() };
+        let tx = begin(&script, secs(60.0)).await.unwrap();
+        let e = tx.batch("busy".into()).await.unwrap_err();
+        assert_eq!(e.kind, ErrorKind::LockNotAvailable);
     }
 
     #[tokio::test(start_paused = true)]
@@ -688,7 +846,7 @@ mod tests {
         assert_eq!(timeout_outcome(&e), TimeoutOutcome::Unknown);
         // The quarantined connection takes no more work, so a later caller cannot meet a transaction nobody ended.
         assert!(begin(&script, TransactionOptions::default()).await.is_err());
-        assert_eq!(script.log(), ["begin None", "batch slow", "expire committing=false"]);
+        assert_eq!(script.log(), ["begin None", "batch slow", "expire"]);
     }
 
     #[tokio::test(start_paused = true)]

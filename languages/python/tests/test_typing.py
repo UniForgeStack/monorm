@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
-CHECKS = [ROOT / "languages/python/tests/typing" / name for name in ("check_models.py", "check_nested.py")]
+CHECKS = [ROOT / "languages/python/tests/typing" / name for name in ("check_models.py", "check_nested.py", "check_transaction.py")]
 
 
 def error_lines(output: str, pattern: str) -> set[int]:

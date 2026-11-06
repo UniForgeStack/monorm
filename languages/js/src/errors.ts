@@ -36,6 +36,17 @@ export class TransactionAborted extends DatabaseError {
   override name = "TransactionAborted";
 }
 
+/**
+ * The deadline of a transaction (`timeout` of `db.transaction`) passed. `outcome` says
+ * what is known: `"rolled_back"` after a confirmed rollback, or when no transaction began;
+ * `"unknown"` when a COMMIT may have reached the server or the rollback is not confirmed.
+ * `sqlstate` is the real server SQLSTATE if the server sent one, otherwise null.
+ */
+export class TransactionTimeoutError extends DatabaseError {
+  override name = "TransactionTimeoutError";
+  outcome: "rolled_back" | "unknown" | null = null;
+}
+
 /** The query does not match the schema, or asks for something unsupported. */
 export class QueryError extends ORMError {
   override name = "QueryError";
@@ -203,6 +214,7 @@ const KINDS: Record<string, new (message: string) => Error> = {
   IntegrityError,
   LockNotAvailable,
   TransactionAborted,
+  TransactionTimeoutError,
   QueryError,
   SchemaError,
   TypeError,
@@ -215,6 +227,7 @@ interface NativeFields {
   sqlstate?: string | null;
   constraint?: string | null;
   detail?: string | null;
+  outcome?: "rolled_back" | "unknown";
   cause?: NativeFields & { kind: string; message: string };
 }
 
@@ -238,6 +251,9 @@ function build(cls: new (message: string) => Error, message: string, fields: Nat
     out.sqlstate = fields.sqlstate ?? null;
     out.constraint = fields.constraint ?? null;
     out.detail = fields.detail ?? null;
+  }
+  if (out instanceof TransactionTimeoutError) {
+    out.outcome = fields.outcome ?? null;
   }
   const cause = fields.cause;
   if (cause !== undefined) {

@@ -44,6 +44,32 @@ const ended = new WeakSet<(() => unknown)[]>();
 /** Set while a query hook runs: the statements it sends give no event. */
 const inHook = new AsyncLocalStorage<true>();
 
+/** The isolation levels of {@link TransactionOptions.isolation}. */
+export type Isolation = "read_committed" | "repeatable_read" | "serializable";
+
+export interface TransactionOptions {
+  /** With `false`, a nested call joins the enclosing transaction with no savepoint. */
+  readonly savepoint?: boolean;
+  /** The isolation level of an outermost transaction. SQLite accepts every level and runs it as serializable. */
+  readonly isolation?: Isolation;
+  /** Seconds, finite and above zero: one deadline for the whole transaction. */
+  readonly timeout?: number;
+}
+
+/** Rejects a bad option before any SQL; the engine checks the values themselves. */
+function checkTransactionOptions(options: TransactionOptions, nested: boolean): void {
+  const { isolation, timeout } = options;
+  if (nested && (isolation != null || timeout != null)) {
+    throw new QueryError("a nested transaction() takes no isolation or timeout; it uses those of the outermost transaction");
+  }
+  if (isolation != null && typeof isolation !== "string") {
+    throw new QueryError(`transaction isolation must be a string, got ${typeof isolation}`);
+  }
+  if (timeout != null && typeof timeout !== "number") {
+    throw new QueryError(`transaction timeout must be a number of seconds, got ${typeof timeout}`);
+  }
+}
+
 export interface LockOptions {
   /** A shared lock (any number of shared holders, but no exclusive one). */
   readonly exclusive?: boolean;
@@ -299,9 +325,19 @@ export class Database {
    * With `{ savepoint: false }` a nested call joins the enclosing transaction with no
    * savepoint: an error that leaves it marks the enclosing transaction failed. On an
    * outermost call the option has no effect.
+   *
+   * `isolation` sets the isolation level of an outermost transaction; SQLite accepts every
+   * level and runs it as serializable. `timeout` is one deadline, in seconds, for the whole
+   * transaction, counted from the call: it covers the wait for a connection, every
+   * statement, idle time in `fn`, and the commit. When it passes, the engine stops the
+   * running statement, rolls back, and throws `TransactionTimeoutError`; after that no
+   * statement runs and no commit is sent. A nested call takes no options: passing
+   * `isolation` or `timeout` throws `QueryError`, and it uses those of the outermost
+   * transaction (also with `savepoint: false`).
    */
-  async transaction<T>(fn: () => Promise<T>, options: { savepoint?: boolean } = {}): Promise<T> {
+  async transaction<T>(fn: () => Promise<T>, options: TransactionOptions = {}): Promise<T> {
     const enclosing = this.tx();
+    checkTransactionOptions(options, enclosing !== null);
     if (enclosing !== null && options.savepoint === false) {
       try {
         return await fn();
@@ -313,7 +349,7 @@ export class Database {
       }
     }
     const outer = enclosing === null;
-    const tx = await restoreCause(wait(() => this.engine.begin(enclosing)), enclosing);
+    const tx = await restoreCause(wait(() => this.engine.begin(enclosing, options.isolation ?? null, options.timeout ?? null)), enclosing);
     const mine: (() => unknown)[] = [];
     const scoped = new Map(callbacks.getStore() ?? []).set(this.root, mine);
     let result: T;

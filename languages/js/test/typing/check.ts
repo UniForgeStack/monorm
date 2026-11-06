@@ -4,7 +4,7 @@
  * two types are identical. Never run.
  */
 
-import { describe, of, Decimal, exists, func, outer, param, window, type JsonValue, type OneRowQuery, type PreparedOneRowQuery, type Page, type QueryInspection, type StatementInspection } from "../../src/index.js";
+import { describe, of, DatabaseError, TransactionTimeoutError, type Database, type Isolation, Decimal, exists, func, outer, param, window, type JsonValue, type OneRowQuery, type PreparedOneRowQuery, type Page, type QueryInspection, type StatementInspection } from "../../src/index.js";
 import { Comment, Post, Priority, Profile, Role, Tag, User } from "../blog/models.js";
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
@@ -624,4 +624,18 @@ export async function selectReads() {
   await one.run({ n: 1 });
   // @ts-expect-error scalar() needs one column
   await Post.objects.select({ t: Post.title, v: Post.views }).prepare().scalar();
+}
+
+export async function transactionOptions(db: Database, e: TransactionTimeoutError) {
+  await db.transaction(async () => 1, { isolation: "serializable", timeout: 2.5 });
+  await db.transaction(async () => 1, { savepoint: false, timeout: 1 });
+  same<Isolation, "read_committed" | "repeatable_read" | "serializable">();
+  // @ts-expect-error not an isolation level
+  await db.transaction(async () => 1, { isolation: "snapshot" });
+  // @ts-expect-error a timeout is a number
+  await db.transaction(async () => 1, { timeout: "1" });
+  same<typeof e.outcome, "rolled_back" | "unknown" | null>();
+  same<typeof e.sqlstate, string | null>();
+  const base: DatabaseError = e;
+  return base;
 }

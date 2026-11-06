@@ -16,7 +16,10 @@ from .errors import LockNotAvailable, NotConnected, QueryError, TransactionRequi
 from .protection import allowed_writes
 from .model import Registry, registry
 
-__all__ = ["Database", "QueryEvent", "connect", "get_database", "scope"]
+__all__ = ["Database", "Isolation", "QueryEvent", "connect", "get_database", "scope"]
+
+#: The isolation levels of ``db.transaction(isolation=...)``.
+Isolation = Literal["read_committed", "repeatable_read", "serializable"]
 
 T = TypeVar("T")
 
@@ -50,6 +53,19 @@ class _Callbacks(list[Callable[[], Any]]):
     back: a task that it started can still see it after that."""
 
     ended = False
+
+
+def _check_transaction_options(isolation: object, timeout: object, *, nested: bool) -> None:
+    """Rejects a bad option before any SQL; the engine checks the values themselves."""
+    if nested and (isolation is not None or timeout is not None):
+        raise QueryError(
+            "a nested transaction() takes no isolation or timeout; it uses those of the outermost transaction"
+        )
+    if isolation is not None and not isinstance(isolation, str):
+        raise QueryError(f"transaction isolation must be a string, got {type(isolation).__name__}")
+    # A bool is an int: it must not turn into 0 or 1 seconds.
+    if timeout is not None and (isinstance(timeout, bool) or not isinstance(timeout, (int, float))):
+        raise QueryError(f"transaction timeout must be a number of seconds, got {type(timeout).__name__}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -355,7 +371,9 @@ class Database:
         )
 
     @asynccontextmanager
-    async def transaction(self, *, savepoint: bool = True) -> AsyncIterator[None]:
+    async def transaction(
+        self, *, savepoint: bool = True, isolation: Isolation | None = None, timeout: float | None = None
+    ) -> AsyncIterator[None]:
         """``async with db.transaction():`` — commits on success, rolls back on error.
 
         Queries on this database inside the block (in this task, and in tasks it starts)
@@ -370,8 +388,20 @@ class Database:
         ``savepoint=False`` makes a nested block join the enclosing transaction with no
         savepoint: an error that leaves it marks the enclosing transaction failed. On an
         outermost block it has no effect.
+
+        ``isolation`` (``"read_committed"``, ``"repeatable_read"`` or ``"serializable"``)
+        sets the isolation level of an outermost transaction. SQLite accepts every level
+        and runs it as serializable. ``timeout`` is a number of seconds, finite and above
+        zero: one deadline for the whole transaction, counted from the call of
+        ``transaction()``. It covers the wait for a connection, every statement, idle time
+        in the block, and the commit. When it passes, the engine stops the running
+        statement, rolls back, and raises :class:`~monorm.TransactionTimeoutError`; after
+        that no statement runs and no commit is sent. A nested block takes no options:
+        passing one raises :class:`~monorm.QueryError`, and it uses the options of the
+        outermost transaction (also with ``savepoint=False``).
         """
         enclosing = self._tx()
+        _check_transaction_options(isolation, timeout, nested=enclosing is not None)
         if enclosing is not None and not savepoint:
             try:
                 yield
@@ -380,7 +410,7 @@ class Database:
                 raise
             return
         outer = enclosing is None
-        tx = await self._restore_cause(self._engine.begin(enclosing), enclosing)
+        tx = await self._restore_cause(self._engine.begin(enclosing, isolation, timeout), enclosing)
         token = _current_tx.set({**_current_tx.get(), self._root: tx})
         tx_tenant_token = _tx_tenants.set({**_tx_tenants.get(), self._root: _tenant_ids.get().get(self._root)})
         callbacks = _Callbacks()

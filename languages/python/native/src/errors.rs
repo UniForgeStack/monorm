@@ -25,6 +25,12 @@ create_exception!(
     DatabaseError,
     "A statement or commit ran in a transaction that an earlier error aborted; `__cause__` is that error."
 );
+create_exception!(
+    _native,
+    TransactionTimeoutError,
+    DatabaseError,
+    "The deadline of a transaction passed; `outcome` is `\"rolled_back\"` or `\"unknown\"`."
+);
 create_exception!(_native, QueryError, PyValueError, "The query IR does not match the schema.");
 create_exception!(_native, SchemaError, PyValueError, "The schema file or IR is invalid.");
 create_exception!(_native, SchemaWarning, PyUserWarning, "A schema expression compiles, but probably does not do what it says.");
@@ -48,17 +54,19 @@ pub fn db_err(e: DbError) -> PyErr {
         ErrorKind::Integrity => IntegrityError::new_err(e.message),
         ErrorKind::LockNotAvailable => LockNotAvailable::new_err(e.message),
         ErrorKind::TransactionAborted => TransactionAborted::new_err(e.message),
+        ErrorKind::TransactionTimeout => TransactionTimeoutError::new_err(e.message),
         ErrorKind::Other => DatabaseError::new_err(e.message),
     };
     if let Some(cause) = e.cause {
         let cause = db_err((*cause).clone());
         Python::attach(|py| err.set_cause(py, Some(cause)));
     }
-    if e.sqlstate.is_none() && e.constraint.is_none() && e.detail.is_none() {
+    if e.sqlstate.is_none() && e.constraint.is_none() && e.detail.is_none() && e.outcome.is_none() {
         return err;
     }
     Python::attach(|py| {
         let value = err.value(py);
+        let _ = value.setattr("outcome", e.outcome.map(|o| o.as_str()));
         // A failed setattr leaves the class default (None); the error itself still raises.
         let _ = value.setattr("sqlstate", e.sqlstate);
         let _ = value.setattr("constraint", e.constraint);
@@ -73,6 +81,7 @@ pub fn add_defaults(py: Python<'_>) -> PyResult<()> {
     for name in ["sqlstate", "constraint", "detail"] {
         cls.setattr(name, py.None())?;
     }
+    py.get_type::<TransactionTimeoutError>().setattr("outcome", py.None())?;
     Ok(())
 }
 

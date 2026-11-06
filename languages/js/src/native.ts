@@ -173,7 +173,7 @@ export interface NativeEngine extends NativeInspector {
     trace?: NativeTrace | null,
     modelFields?: readonly string[] | null,
   ): Promise<unknown>;
-  begin(tx: NativeTransaction | null): Promise<NativeTransaction>;
+  begin(tx: NativeTransaction | null, isolation?: string | null, timeout?: number | null): Promise<NativeTransaction>;
   advisoryLock(key: string, name: Buffer | null, exclusive: boolean, nowait: boolean, tx: NativeTransaction, trace?: NativeTrace | null): Promise<boolean>;
   withSettings(names: string[], values: string[]): NativeEngine;
   sessionLock(key: string, name: Buffer | null, exclusive: boolean, nowait: boolean, timeoutMs: number | null, trace?: NativeTrace | null): Promise<NativeSessionLock | null>;

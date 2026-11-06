@@ -13,6 +13,7 @@ from ._native import (
     SchemaError,
     SchemaWarning,
     TransactionAborted,
+    TransactionTimeoutError,
     WriteProtected,
 )
 
@@ -29,6 +30,7 @@ __all__ = [
     "NotLoaded",
     "NotConnected",
     "TransactionAborted",
+    "TransactionTimeoutError",
     "TransactionRequired",
     "WriteProtected",
     "VersionConflict",

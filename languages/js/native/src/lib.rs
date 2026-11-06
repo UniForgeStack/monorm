@@ -53,6 +53,7 @@ fn db_kind(e: &DbError) -> &'static str {
         ErrorKind::Integrity => "IntegrityError",
         ErrorKind::LockNotAvailable => "LockNotAvailable",
         ErrorKind::TransactionAborted => "TransactionAborted",
+        ErrorKind::TransactionTimeout => "TransactionTimeoutError",
         ErrorKind::Other => "DatabaseError",
     }
 }
@@ -61,7 +62,7 @@ fn db_kind(e: &DbError) -> &'static str {
 /// (JSON escapes newlines, so the first line is the whole object).
 fn db_tagged(e: DbError) -> napi::Error {
     let kind = db_kind(&e);
-    if e.sqlstate.is_none() && e.constraint.is_none() && e.detail.is_none() && e.cause.is_none() {
+    if e.sqlstate.is_none() && e.constraint.is_none() && e.detail.is_none() && e.cause.is_none() && e.outcome.is_none() {
         return tagged(kind, e);
     }
     napi::Error::from_reason(format!("[monorm:{kind}+] {}\n{}", db_fields(&e), e.message))
@@ -71,6 +72,9 @@ fn db_tagged(e: DbError) -> napi::Error {
 /// message and fields) of a `TransactionAborted`.
 fn db_fields(e: &DbError) -> serde_json::Value {
     let mut fields = serde_json::json!({ "sqlstate": e.sqlstate, "constraint": e.constraint, "detail": e.detail });
+    if let Some(outcome) = e.outcome {
+        fields["outcome"] = outcome.as_str().into();
+    }
     if let Some(cause) = &e.cause {
         let mut c = db_fields(cause);
         c["kind"] = db_kind(cause).into();
@@ -940,14 +944,20 @@ impl Engine {
         )
     }
 
-    /// Starts a transaction, or a savepoint inside `tx`.
+    /// Starts a transaction, or a savepoint inside `tx`. `isolation` and `timeout` (seconds)
+    /// apply to an outer transaction only; a savepoint rejects them.
     #[napi]
-    pub fn begin<'env>(&self, env: &'env Env, tx: Option<&Transaction>) -> napi::Result<PromiseRaw<'env, Transaction>> {
+    pub fn begin<'env>(
+        &self, env: &'env Env, tx: Option<&Transaction>, isolation: Option<String>, timeout: Option<f64>,
+    ) -> napi::Result<PromiseRaw<'env, Transaction>> {
         let conn = self.conn(tx);
         let outer = tx.is_none();
+        if !outer && (isolation.is_some() || timeout.is_some()) {
+            return Err(tagged("QueryError", "a nested transaction takes no isolation or timeout; it uses those of the outermost transaction"));
+        }
+        let options = db::TransactionOptions::parse(isolation.as_deref(), timeout).map_err(db_tagged)?;
         env.spawn_future(async move {
-            let inner = conn.begin().await.map_err(db_tagged)?;
-            let inner = if outer { db::guard(inner) } else { inner };
+            let inner = if outer { db::begin_root(&*conn, options).await } else { conn.begin().await }.map_err(db_tagged)?;
             Ok(Transaction { inner })
         })
     }

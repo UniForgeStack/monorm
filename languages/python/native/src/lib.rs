@@ -671,14 +671,20 @@ impl Engine {
         })
     }
 
-    /// Starts a transaction, or a savepoint inside `tx`.
-    #[pyo3(signature = (tx = None))]
-    fn begin<'py>(&self, py: Python<'py>, tx: Option<&Bound<'py, Transaction>>) -> PyResult<Bound<'py, PyAny>> {
+    /// Starts a transaction, or a savepoint inside `tx`. `isolation` and `timeout` (seconds)
+    /// apply to an outer transaction only; a savepoint rejects them.
+    #[pyo3(signature = (tx = None, isolation = None, timeout = None))]
+    fn begin<'py>(
+        &self, py: Python<'py>, tx: Option<&Bound<'py, Transaction>>, isolation: Option<String>, timeout: Option<f64>,
+    ) -> PyResult<Bound<'py, PyAny>> {
         let conn = self.conn(tx);
         let outer = tx.is_none();
+        if !outer && (isolation.is_some() || timeout.is_some()) {
+            return Err(query_err("a nested transaction takes no isolation or timeout; it uses those of the outermost transaction".into()));
+        }
+        let options = db::TransactionOptions::parse(isolation.as_deref(), timeout).map_err(db_err)?;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let inner = conn.begin().await.map_err(db_err)?;
-            let inner = if outer { db::guard(inner) } else { inner };
+            let inner = if outer { db::begin_root(&*conn, options).await } else { conn.begin().await }.map_err(db_err)?;
             Ok(Transaction { inner, failure: Default::default() })
         })
     }
@@ -1195,6 +1201,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("IntegrityError", py.get_type::<errors::IntegrityError>())?;
     m.add("LockNotAvailable", py.get_type::<errors::LockNotAvailable>())?;
     m.add("TransactionAborted", py.get_type::<errors::TransactionAborted>())?;
+    m.add("TransactionTimeoutError", py.get_type::<errors::TransactionTimeoutError>())?;
     m.add("QueryError", py.get_type::<errors::QueryError>())?;
     m.add("WriteProtected", py.get_type::<errors::WriteProtected>())?;
     m.add("SchemaError", py.get_type::<errors::SchemaError>())?;
