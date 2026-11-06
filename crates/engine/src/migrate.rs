@@ -6,6 +6,10 @@
 //! [`upgrade`]. Each migration runs in its own transaction together with its row, under
 //! an advisory lock, so a failing migration leaves the database at the previous one and
 //! concurrent migrators apply each migration once.
+//!
+//! A migration whose script starts with [`NO_TX_HEADER`] holds one statement that cannot
+//! run in a transaction (`CREATE INDEX CONCURRENTLY`). [`apply_no_transaction`] runs it
+//! on PostgreSQL under a session lock, then records it in a short transaction of its own.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -18,7 +22,7 @@ use monorm_core::migrate::files::{self, MigrationFolder};
 use monorm_core::migrate::pg::ident;
 use monorm_core::migrate::Destructive;
 
-use crate::db::{Executor, Transaction};
+use crate::db::{Driver, Executor, Transaction};
 use crate::error::{Error, Result};
 
 pub const TABLE: &str = "monorm_migrations";
@@ -46,6 +50,11 @@ impl Migration {
         self.read("down.sql")
     }
 
+    /// The no-transaction header of `up.sql`, if it has one.
+    pub fn no_transaction(&self) -> Result<Option<NoTx>> {
+        NoTx::parse(&self.up_sql()?).map_err(|e| Error::Migration(format!("{}/up.sql: {e}", self.name)))
+    }
+
     /// Hex SHA-256 of `up.sql`.
     pub fn checksum(&self) -> Result<String> {
         Ok(checksum(&self.up_sql()?))
@@ -54,6 +63,43 @@ impl Migration {
 
 pub fn checksum(text: &str) -> String {
     Sha256::digest(text.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// First line of a script that runs outside a transaction. It may end with
+/// `create-index <name>` or `drop-index <name>`.
+pub const NO_TX_HEADER: &str = "-- monorm: no-transaction";
+
+/// The index a no-transaction script builds or drops.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoTxIndex {
+    Create(String),
+    Drop(String),
+}
+
+/// A parsed [`NO_TX_HEADER`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoTx {
+    pub index: Option<NoTxIndex>,
+}
+
+impl NoTx {
+    /// The header of `sql`: `None` for a script that runs in a transaction.
+    pub fn parse(sql: &str) -> std::result::Result<Option<NoTx>, String> {
+        let first = sql.lines().next().unwrap_or("").trim_end();
+        let Some(rest) = first.strip_prefix(NO_TX_HEADER) else { return Ok(None) };
+        if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+            return Ok(None);
+        }
+        let rest = rest.trim();
+        let (word, name) = rest.split_once(char::is_whitespace).map_or((rest, ""), |(w, n)| (w, n.trim()));
+        let index = match (word, name) {
+            ("", _) => None,
+            ("create-index", n) if !n.is_empty() => Some(NoTxIndex::Create(n.to_owned())),
+            ("drop-index", n) if !n.is_empty() => Some(NoTxIndex::Drop(n.to_owned())),
+            _ => return Err(format!("unknown no-transaction header `{}`; expected `{NO_TX_HEADER} [create-index <name> | drop-index <name>]`", first.trim())),
+        };
+        Ok(Some(NoTx { index }))
+    }
 }
 
 impl From<MigrationFolder> for Migration {
@@ -278,7 +324,8 @@ impl Migration {
 /// The migrations [`upgrade`] would apply, in order: pending ones up to and including
 /// `target` (default: all), after the same checks. Unless `allow_destructive`, a pending
 /// migration that marks a step destructive on a table with rows is refused. This check
-/// holds no lock: [`begin_apply`] checks again in its transaction.
+/// holds no lock: [`begin_apply`] checks again in its transaction. A no-transaction
+/// migration (see [`apply_no_transaction`]) with a data step, or on SQLite, is refused.
 pub async fn pending(conn: &dyn Executor, dir: &Path, target: Option<&str>, allow_destructive: bool) -> Result<Vec<Migration>> {
     let statuses = status(conn, dir).await?;
     verify(&statuses, &applied(conn).await?)?;
@@ -288,6 +335,17 @@ pub async fn pending(conn: &dyn Executor, dir: &Path, target: Option<&str>, allo
         .filter(|s| !s.applied && stop.as_ref().is_none_or(|stop| s.migration.name <= *stop))
         .map(|s| s.migration)
         .collect();
+    for m in &todo {
+        if m.no_transaction()?.is_none() {
+            continue;
+        }
+        if conn.dialect() != Dialect::Postgres {
+            return Err(Error::Migration(format!("{} is a no-transaction migration; {} has no such mode", m.name, conn.dialect().name())));
+        }
+        if let Some(file) = m.data_file() {
+            return Err(Error::Migration(format!("{} is a no-transaction migration and has a data step ({file}); a data step needs a transaction", m.name)));
+        }
+    }
     if !allow_destructive {
         for m in &todo {
             gate(conn, &m.name, &m.up_sql()?, false).await?;
@@ -342,10 +400,82 @@ pub async fn finish_apply(tx: &dyn Transaction, m: &Migration) -> Result<()> {
     }
 }
 
+/// An index name of a header as SQL: a quoted name stays as written.
+fn index_ref(name: &str) -> String {
+    if name.starts_with('"') { name.to_owned() } else { ident(name) }
+}
+
+/// Runs `sql` (one statement, outside a transaction) and then `record`, under the session
+/// lock of the migration lock. `applied_before` is whether `m` must be recorded for the
+/// run to happen; otherwise it gives `false` and runs nothing.
+struct NoTxRun<'a> {
+    /// Starts the error text of the destructive check.
+    what: &'a str,
+    sql: String,
+    index: Option<NoTxIndex>,
+    record: String,
+    applied_before: bool,
+}
+
+async fn run_no_transaction(driver: &dyn Driver, m: &Migration, step: NoTxRun<'_>, allow_destructive: bool) -> Result<bool> {
+    let NoTxRun { what, sql, index, record, applied_before } = step;
+    if driver.dialect() != Dialect::Postgres {
+        return Err(Error::Migration(format!("{} is a no-transaction migration; {} has no such mode", m.name, driver.dialect().name())));
+    }
+    // Before the lock: it may take the transaction lock, which the session lock would block.
+    ensure_table(driver).await?;
+    let lock = driver
+        .session_lock(LOCK_ID, true, false, None)
+        .await?
+        .ok_or_else(|| Error::Migration("could not take the migration lock".into()))?;
+    let run = async {
+        if applied(driver).await?.contains_key(&m.name) != applied_before {
+            return Ok(false);
+        }
+        if !allow_destructive {
+            gate(driver, what, &sql, false).await?;
+        }
+        if let Some(NoTxIndex::Create(name)) = &index {
+            // A failed concurrent build leaves an INVALID index, and IF NOT EXISTS would keep it.
+            let target = index_ref(name);
+            let valid = driver.query_text(format!("SELECT CAST(indisvalid AS integer) FROM pg_index WHERE indexrelid = to_regclass({})", lit(&target))).await?;
+            if valid.into_iter().next().and_then(|r| r.into_iter().next().flatten()).is_some_and(|v| v == "0") {
+                driver.batch(format!("DROP INDEX CONCURRENTLY {target}")).await?;
+            }
+        }
+        driver.batch(sql).await?;
+        // A statement outside a transaction commits by itself. The transaction lock would wait
+        // for this process's own session lock.
+        driver.batch(record).await?;
+        Ok::<_, Error>(true)
+    };
+    let out = run.await;
+    let released = lock.release().await;
+    let ran = out?;
+    released?;
+    Ok(ran)
+}
+
+/// Applies `m`, a migration whose `up.sql` starts with [`NO_TX_HEADER`], on PostgreSQL:
+/// under a session lock, the statement runs outside any transaction and the record row goes
+/// in a transaction of its own. `false` when another migrator applied `m` meanwhile. A failed
+/// `CREATE INDEX CONCURRENTLY` leaves an INVALID index; a rerun drops it before the build.
+/// Unless `allow_destructive`, a destructive step on a table with rows is refused.
+pub async fn apply_no_transaction(driver: &dyn Driver, m: &Migration, allow_destructive: bool) -> Result<bool> {
+    let up = m.up_sql()?;
+    let header = NoTx::parse(&up).map_err(|e| Error::Migration(format!("{}/up.sql: {e}", m.name)))?;
+    let Some(header) = header else {
+        return Err(Error::Migration(format!("{} has no `{NO_TX_HEADER}` header", m.name)));
+    };
+    let record = format!("INSERT INTO {TABLE} (name, checksum) VALUES ({}, {})", lit(&m.name), lit(&checksum(&up)));
+    let step = NoTxRun { what: &m.name, sql: up, index: header.index, record, applied_before: false };
+    run_no_transaction(driver, m, step, allow_destructive).await
+}
+
 /// Applies pending migrations up to and including `target` (default: all); gives the
 /// ones it applied. A migration with a data step (`data.py`, `data.ts`) is refused
 /// before anything runs: the Python or TypeScript migrator applies it.
-pub async fn upgrade(conn: &dyn Executor, dir: &Path, target: Option<&str>, allow_destructive: bool) -> Result<Vec<Migration>> {
+pub async fn upgrade(conn: &dyn Driver, dir: &Path, target: Option<&str>, allow_destructive: bool) -> Result<Vec<Migration>> {
     let todo = pending(conn, dir, target, allow_destructive).await?;
     if let Some((m, file)) = todo.iter().find_map(|m| m.data_file().map(|f| (m, f))) {
         let tool = if file == "data.py" { "python -m monorm migrate (or Migrator.upgrade())" } else { "npx monorm migrate (or Migrator.upgrade())" };
@@ -353,7 +483,11 @@ pub async fn upgrade(conn: &dyn Executor, dir: &Path, target: Option<&str>, allo
     }
     let mut done = vec![];
     for m in todo {
-        if let Some(tx) = begin_apply(conn, &m, allow_destructive).await? {
+        if m.no_transaction()?.is_some() {
+            if apply_no_transaction(conn, &m, allow_destructive).await? {
+                done.push(m);
+            }
+        } else if let Some(tx) = begin_apply(conn, &m, allow_destructive).await? {
             finish_apply(&*tx, &m).await?;
             done.push(m);
         }
@@ -395,7 +529,7 @@ pub async fn baseline(conn: &dyn Executor, dir: &Path) -> Result<Migration> {
 /// unless `force`, before anything is reverted. Unless `allow_destructive`, a `down.sql`
 /// that marks a destructive step on a table with rows is refused too: checked first for
 /// every migration to revert, then again in the transaction of each.
-pub async fn downgrade(conn: &dyn Executor, dir: &Path, down: Down, force: bool, allow_destructive: bool) -> Result<Vec<Migration>> {
+pub async fn downgrade(conn: &dyn Driver, dir: &Path, down: Down, force: bool, allow_destructive: bool) -> Result<Vec<Migration>> {
     let applied: Vec<Migration> = status(conn, dir).await?.into_iter().filter(|s| s.applied).map(|s| s.migration).collect();
     let revert: Vec<Migration> = match down {
         Down::To(t) => {
@@ -422,10 +556,25 @@ pub async fn downgrade(conn: &dyn Executor, dir: &Path, down: Down, force: bool,
             gate(conn, &what(m), &m.down_sql()?, false).await?;
         }
     }
+    let headers = revert
+        .iter()
+        .map(|m| NoTx::parse(&m.down_sql()?).map_err(|e| Error::Migration(format!("{}/down.sql: {e}", m.name))))
+        .collect::<Result<Vec<_>>>()?;
+    if conn.dialect() != Dialect::Postgres && headers.iter().any(Option::is_some) {
+        return Err(Error::Migration(format!("a down.sql is a no-transaction migration; {} has no such mode", conn.dialect().name())));
+    }
     let mut done = vec![];
-    for m in revert.into_iter().rev() {
+    for (m, header) in revert.into_iter().zip(headers).rev() {
         let scripts = [m.down_sql()?, format!("DELETE FROM {TABLE} WHERE name = {}", lit(&m.name))];
         let label = what(&m);
+        if let Some(header) = header {
+            let [sql, record] = scripts;
+            let step = NoTxRun { what: &label, sql, index: header.index, record, applied_before: true };
+            if run_no_transaction(conn, &m, step, allow_destructive).await? {
+                done.push(m);
+            }
+            continue;
+        }
         let gated = (!allow_destructive).then(|| (label.as_str(), scripts[0].as_str()));
         let known = |now: &BTreeMap<String, (String, String)>| now.contains_key(&m.name).then(|| scripts.clone());
         if locked(conn, gated, known).await? {
@@ -433,4 +582,39 @@ pub async fn downgrade(conn: &dyn Executor, dir: &Path, down: Down, force: bool,
         }
     }
     Ok(done)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(sql: &str) -> Option<NoTx> {
+        NoTx::parse(sql).unwrap()
+    }
+
+    #[test]
+    fn header_marks_a_no_transaction_script() {
+        assert_eq!(parse("-- monorm: no-transaction\nCREATE INDEX CONCURRENTLY i ON t (a);"), Some(NoTx { index: None }));
+        assert_eq!(parse("-- monorm: no-transaction\r\nSELECT 1"), Some(NoTx { index: None }));
+    }
+
+    #[test]
+    fn header_names_the_index() {
+        assert_eq!(parse("-- monorm: no-transaction create-index post_idx\nSELECT 1").unwrap().index, Some(NoTxIndex::Create("post_idx".into())));
+        assert_eq!(parse("-- monorm: no-transaction drop-index \"Post Idx\"\nSELECT 1").unwrap().index, Some(NoTxIndex::Drop("\"Post Idx\"".into())));
+    }
+
+    #[test]
+    fn other_first_lines_run_in_a_transaction() {
+        assert_eq!(parse(""), None);
+        assert_eq!(parse("CREATE TABLE t (a int);\n-- monorm: no-transaction"), None);
+        assert_eq!(parse("-- monorm: no-transactions\nSELECT 1"), None);
+        assert_eq!(parse("-- monorm: destructive drop-table t\nDROP TABLE t;"), None);
+    }
+
+    #[test]
+    fn unknown_header_words_are_an_error() {
+        assert!(NoTx::parse("-- monorm: no-transaction create-index").is_err());
+        assert!(NoTx::parse("-- monorm: no-transaction vacuum t").is_err());
+    }
 }
