@@ -345,6 +345,7 @@ async fn fetch_upgrade<M: Model, R, L, D>(
         } = &selected.plan.output
         {
             for plan in &mut plans {
+                let plan = std::sync::Arc::get_mut(plan).expect("a new prefetch plan has one owner");
                 plan.key_pos = plan
                     .key_pos
                     .iter()
