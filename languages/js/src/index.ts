@@ -68,6 +68,7 @@ export {
   NotLoaded,
   ORMError,
   QueryError,
+  ReadOnlyModel,
   SchemaError,
   TransactionAborted,
   TransactionRequired,

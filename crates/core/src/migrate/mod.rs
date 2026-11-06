@@ -190,6 +190,20 @@ pub fn create_all(schema: &Schema) -> Result<Vec<String>> {
     Ok(ops.iter().map(|op| pg::render(op, true)).collect())
 }
 
+/// `REFRESH MATERIALIZED VIEW [CONCURRENTLY] <view>` for the materialized view model `model`.
+/// `CONCURRENTLY` needs a unique index on the view; PostgreSQL checks that.
+pub fn refresh_statement(schema: &Schema, model: &str, concurrently: bool) -> Result<String> {
+    let m = schema.model(schema.model_idx(model)?);
+    let view = m.ir.sql_view.as_ref().ok_or_else(|| format!("{model} is not a view; only a materialized view can be refreshed"))?;
+    if schema.dialect == crate::dialect::Dialect::Sqlite {
+        return Err(format!("{model}: SQLite has no materialized views to refresh"));
+    }
+    if !view.materialized {
+        return Err(format!("{model} is a plain view; only a materialized view can be refreshed"));
+    }
+    Ok(format!("REFRESH MATERIALIZED VIEW {}{}", if concurrently { "CONCURRENTLY " } else { "" }, pg::ident(m.table())))
+}
+
 /// The DDL that creates `db` in an empty Postgres schema, without its extensions (they
 /// belong to the database, not the schema). Drift detection runs it in a shadow schema.
 pub fn create_statements(db: &DbSchema) -> Vec<String> {

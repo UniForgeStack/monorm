@@ -91,6 +91,7 @@ fn engine_err(e: Error) -> napi::Error {
         Error::Migration(m) => tagged("MigrationError", m),
         Error::Db(e) => db_tagged(e),
         Error::Value(m) => tagged("TypeError", m),
+        Error::ReadOnlyModel(m) => tagged("ReadOnlyModel", format!("{m} is a view; it can't be written")),
         Error::WriteProtected(m) => tagged("WriteProtected", format!("{m} is write-protected (@@protected_write); write it inside allowWrites([{m}], ...)")),
         Error::Validation(v) => validation_tagged(&v),
         Error::Binding(e) => tagged("TypeError", e),
@@ -1169,6 +1170,19 @@ impl Engine {
         let stmts = migrate::drop_all(&self.schema).map_err(schema_err)?;
         let conn = self.conn(None);
         env.spawn_future(async move { exec::run_schema_script(conn, stmts).await.map_err(engine_err) })
+    }
+
+    /// `REFRESH MATERIALIZED VIEW [CONCURRENTLY]` for the view model `model`; a `QueryError` for any other model.
+    #[napi]
+    pub fn refresh<'env>(
+        &self,
+        env: &'env Env,
+        model: String,
+        concurrently: bool,
+        tx: Option<&Transaction>,
+    ) -> napi::Result<PromiseRaw<'env, ()>> {
+        let sql = migrate::refresh_statement(&self.schema, &model, concurrently).map_err(|m| tagged("QueryError", m))?;
+        self.script(env, vec![sql], tx)
     }
 
     /// Runs SQL statements in order, in one transaction (Postgres DDL is transactional).

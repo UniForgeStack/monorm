@@ -4,7 +4,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 import { DatabaseError, LockNotAvailable, NotConnected, QueryError, TransactionAborted, TransactionRequired } from "./errors.js";
 import type { IR } from "./expr.js";
-import { registry as defaultRegistry, type Registry } from "./model.js";
+import { registry as defaultRegistry, type ModelMeta, type Registry } from "./model.js";
 import { call, native, wait, type NativeEngine, type NativePreparedRead, type NativeTrace, type NativeTransaction } from "./native.js";
 import { allowedWrites } from "./protection.js";
 import { active as debugging, capture, record, writeKey } from "./debug.js";
@@ -504,6 +504,16 @@ export class Database {
    */
   createTables(): Promise<void> {
     return wait(() => this.engine.createTables());
+  }
+
+  /**
+   * `REFRESH MATERIALIZED VIEW` for a materialized view model (PostgreSQL only).
+   * `{ concurrently: true }` keeps the view readable during the refresh; PostgreSQL needs a
+   * unique index on the view for it. Rejects with `QueryError` for a plain view, any other
+   * model, and SQLite. Runs in the current transaction.
+   */
+  refresh(model: { readonly _meta: ModelMeta }, options: { concurrently?: boolean } = {}): Promise<void> {
+    return wait(() => this.engine.refresh(model._meta.name, options.concurrently ?? false, this.tx()));
   }
 
   /** `DROP TABLE ... CASCADE` every model table and drop generated functions;

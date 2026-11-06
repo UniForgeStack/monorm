@@ -18,6 +18,8 @@ pub enum Error {
     Value(String),
     /// A write to a `@@protected_write` model (named here) outside a scope that allows it.
     WriteProtected(String),
+    /// A write to a model that is a SQL view (named here); a view is read-only.
+    ReadOnlyModel(String),
     /// App code rejected a value: messages per field path, and messages with no field.
     Validation(ValidationError),
     /// An error a binding raised itself while converting its values (e.g. a Python
@@ -39,6 +41,7 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::Query(m) | Error::Schema(m) | Error::Migration(m) | Error::Value(m) => f.write_str(m),
+            Error::ReadOnlyModel(m) => write!(f, "{m} is a view; it can't be written"),
             Error::WriteProtected(m) => write!(f, "{m} is write-protected (@@protected_write); write it inside a scope that allows writes to {m}"),
             Error::Validation(e) => write!(f, "{e}"),
             Error::Db(e) => write!(f, "{e}"),

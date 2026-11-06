@@ -576,6 +576,18 @@ class Database:
         """
         await self._engine.create_tables()
 
+    async def refresh(self, model: type, *, concurrently: bool = False) -> None:
+        """``REFRESH MATERIALIZED VIEW`` for a materialized view model (PostgreSQL only).
+
+        ``concurrently=True`` keeps the view readable during the refresh; PostgreSQL needs a
+        unique index on the view for it. Raises :class:`monorm.QueryError` for a plain view,
+        any other model, and SQLite. Runs in the current transaction.
+        """
+        meta = getattr(model, "_meta", None) if isinstance(model, type) else None
+        if meta is None:
+            raise TypeError(f"refresh() takes a model class, got {model!r}")
+        await self._engine.refresh(meta.name, concurrently, self._tx())
+
     async def drop_tables(self) -> None:
         """``DROP TABLE ... CASCADE`` every model table and drop generated functions;
         extensions stay."""

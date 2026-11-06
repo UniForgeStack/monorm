@@ -187,6 +187,11 @@ export class VersionConflict extends ORMError {
   override name = "VersionConflict";
 }
 
+/** An ORM write to a SQL view model; a view is read-only. */
+export class ReadOnlyModel extends ORMError {
+  override name = "ReadOnlyModel";
+}
+
 /** An ORM write to a `@@protected_write` model outside `allowWrites(...)`. */
 export class WriteProtected extends ORMError {
   override name = "WriteProtected";
@@ -219,6 +224,7 @@ const KINDS: Record<string, new (message: string) => Error> = {
   SchemaError,
   TypeError,
   ValidationError,
+  ReadOnlyModel,
   WriteProtected,
 };
 

@@ -24,6 +24,7 @@ from .errors import (
     NotLoaded,
     ORMError,
     QueryError,
+    ReadOnlyModel,
     SchemaError,
     SchemaWarning,
     TransactionAborted,
@@ -166,6 +167,7 @@ __all__ = [
     "TransactionAborted",
     "TransactionTimeoutError",
     "TransactionRequired",
+    "ReadOnlyModel",
     "WriteProtected",
     "allow_writes",
 ]

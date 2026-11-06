@@ -1770,3 +1770,14 @@ fn pull_writes_a_view_block_and_a_sidecar_that_compile_back_to_the_snapshot() {
     let (_, again) = crate::dsl::compile_with_overrides(&pulled.schema, None, &pulled.views).and_then(crate::dsl::check).unwrap();
     assert_eq!(snapshot(&again).unwrap().views, snap.views);
 }
+
+#[test]
+fn refresh_renders_only_for_a_materialized_view_on_postgres() {
+    let pg = with_views("postgres", "text", vec![matview("Totals", BODY, json!({})), view("Titles", BODY, json!({}))]);
+    assert_eq!(super::refresh_statement(&pg, "Totals", false).unwrap(), "REFRESH MATERIALIZED VIEW \"totals\"");
+    assert_eq!(super::refresh_statement(&pg, "Totals", true).unwrap(), "REFRESH MATERIALIZED VIEW CONCURRENTLY \"totals\"");
+    assert!(super::refresh_statement(&pg, "Titles", false).unwrap_err().contains("plain view"));
+    assert!(super::refresh_statement(&pg, "Post", false).unwrap_err().contains("not a view"));
+    let lite = with_views("sqlite", "text", vec![view("Titles", BODY, json!({}))]);
+    assert!(super::refresh_statement(&lite, "Titles", false).unwrap_err().contains("SQLite"));
+}

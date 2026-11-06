@@ -216,15 +216,17 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         return Err("schema text contains \"\"\" which can't be embedded in the generated module".into());
     }
     let names: Vec<&str> = schema.models.iter().map(|m| m.ir.name.as_str()).collect();
+    // A SQL view is read-only: it has no write shapes and its write methods are typed `Never`.
+    let writable: Vec<&str> = schema.models.iter().filter(|m| m.ir.sql_view.is_none()).map(|m| m.ir.name.as_str()).collect();
     let enums: Vec<&str> = schema.enums.iter().map(|e| e.name.as_str()).collect();
     let mut exported: Vec<String> = enums.iter().map(|n| n.to_string()).collect();
     let type_names: Vec<&str> = ir.types.iter().map(|t| t.name.as_str()).collect();
     exported.extend(type_names.iter().flat_map(|n| [n.to_string(), format!("{n}Input"), format!("{n}Patch")]));
     exported.extend(names.iter().map(|n| n.to_string()));
-    exported.extend(names.iter().flat_map(|n| [format!("{n}Insert"), format!("{n}Update"), format!("{n}UpdateRow")]));
+    exported.extend(writable.iter().flat_map(|n| [format!("{n}Insert"), format!("{n}Update"), format!("{n}UpdateRow")]));
     exported.extend(names.iter().map(|n| format!("{n}QuerySet")));
     exported.extend(ir.behavior.type_models.iter().map(|t| format!("{}Fields", t.name)));
-    let attach_names: Vec<_> = schema.models.iter().filter(|m| schema.attach_fields(m).is_some()).map(|m| &m.ir.name).collect();
+    let attach_names: Vec<_> = schema.models.iter().filter(|m| m.ir.sql_view.is_none() && schema.attach_fields(m).is_some()).map(|m| &m.ir.name).collect();
     exported.extend(attach_names.iter().map(|n| format!("{n}Attach")));
     let all = exported.iter().map(|n| format!("    \"{n}\",\n")).collect::<String>();
 
@@ -308,7 +310,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     let type_stubs: Vec<String> = type_models.iter().map(|t| format!("{}Fields", t.name)).collect();
     if !type_stubs.is_empty() { writeln!(py, "{} = Model", type_stubs.join(" = ")).unwrap(); }
     let mut dicts: Vec<String> =
-        names.iter().flat_map(|n| [format!("{n}Insert"), format!("{n}Update"), format!("{n}UpdateRow")]).collect();
+        writable.iter().flat_map(|n| [format!("{n}Insert"), format!("{n}Update"), format!("{n}UpdateRow")]).collect();
     dicts.extend(attach_names.iter().map(|n| format!("{n}Attach")));
     if !dicts.is_empty() { writeln!(py, "{} = dict\n", dicts.join(" = ")).unwrap(); }
     writeln!(py, "__all__ = [\n{all}]").unwrap();
@@ -373,6 +375,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     }
     for m in &schema.models {
         let name = &m.ir.name;
+        let view = m.ir.sql_view.is_some();
         let groups = groups(m);
         writeln!(body, "{}\n", section(name)).unwrap();
         let exts = options.model_extensions(ir, name);
@@ -429,11 +432,16 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         if exts.iter().any(|(i, _)| !options.extensions[*i].members.bound_query_set.is_empty()) {
             writeln!(body, "    def qs(self) -> _{name}BoundObjects: ...  # type: ignore[override]\n").unwrap();
         }
-        writeln!(
-            body,
-            "    async def update(self, **values: Unpack[{name}Update]) -> None: ...  # type: ignore[override]\n"
-        )
-        .unwrap();
+        if view {
+            writeln!(body, "    async def update(self, _view: Never, /, *args: Never, **values: Never) -> Never: ...  # type: ignore[override]").unwrap();
+            writeln!(body, "    async def delete(self, _view: Never, /, *args: Never, **values: Never) -> Never: ...  # type: ignore[override]\n").unwrap();
+        } else {
+            writeln!(
+                body,
+                "    async def update(self, **values: Unpack[{name}Update]) -> None: ...  # type: ignore[override]\n"
+            )
+            .unwrap();
+        }
 
         writeln!(body, "class _{name}Path(RelationPath[{name}]):").unwrap();
         for f in m.fields().iter().filter(|f| f.nested.is_none()) {
@@ -457,6 +465,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         }
 
         // insert / update shapes; a to-one relation can be given instead of its key
+        if !view {
         let belongs = |field: &str| {
             m.ir.relations.iter().find(|r| r.kind == RelKind::One && r.foreign_key && r.from.iter().any(|f| f == field))
         };
@@ -535,12 +544,20 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         for g in &groups {
             writeln!(body, "    {}: {}", g.name, or_none(format!("{} | {}Input", g.ty, g.ty), g.nullable)).unwrap();
         }
+        }
         writeln!(body, "\nclass {name}QuerySet(QuerySet[{name}]):").unwrap();
         let default_names = m.read_defaults.names();
         if !default_names.is_empty() {
             let literal = default_names.iter().map(|n| format!("{n:?}")).collect::<Vec<_>>().join(", ");
             writeln!(body, "    def without_defaults(self, *names: Literal[{literal}]) -> Self: ...  # type: ignore[override]").unwrap();
         }
+        if view {
+            for method in ["insert", "insert_many", "get_or_insert", "update", "update_many", "attach", "delete"] {
+                let asyn = if matches!(method, "insert" | "insert_many" | "update" | "update_many") { "" } else { "async " };
+                writeln!(body, "    {asyn}def {method}(self, _view: Never, /, *args: Never, **kwargs: Never) -> Never: ...  # type: ignore[override]").unwrap();
+            }
+            body.push('\n');
+        } else {
         if attach_names.contains(&&m.ir.name) {
             let key_type = value_type(m.pk_field());
             writeln!(body, "    async def attach(self, parent_id: {key_type}, values: {name}Attach) -> {name}: ...  # type: ignore[override]").unwrap();
@@ -574,6 +591,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
              -> UpdateMany[{name}]: ...  # type: ignore[override]\n"
         )
         .unwrap();
+        }
         if !exts.is_empty() || inherits(name) || generic(name) {
             // the user's class first, then the extensions, last in the chain first, as at runtime
             let params = if generic(name) { format!("[{name}]") } else { String::new() };
@@ -649,6 +667,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         }
     }
     pyi.push_str("QuerySet, RelationPath, Update, UpdateMany\nfrom monorm import fields as f\n\n");
+    if body.contains(": Never") { pyi = pyi.replacen("from typing_extensions import Self, Unpack", "from typing_extensions import Never, Self, Unpack", 1); }
     for (model, (module, class)) in &model_methods {
         writeln!(pyi, "from {module} import {class} as _{model}Methods").unwrap();
     }
@@ -689,8 +708,11 @@ pub fn facade(unit: &crate::dsl::SchemaUnit, shared_path: &str, stub_import: &st
         names.extend([name.clone(), format!("{name}Input"), format!("{name}Patch")]);
     }
     for name in &unit.models {
-        names.extend([name.clone(), format!("{name}Insert"), format!("{name}Update"), format!("{name}UpdateRow"), format!("{name}QuerySet")]);
-        if schema.models.iter().any(|m| m.ir.name == *name && schema.attach_fields(m).is_some()) { names.push(format!("{name}Attach")); }
+        let view = schema.models.iter().any(|m| m.ir.name == *name && m.ir.sql_view.is_some());
+        names.push(name.clone());
+        if !view { names.extend([format!("{name}Insert"), format!("{name}Update"), format!("{name}UpdateRow")]); }
+        names.push(format!("{name}QuerySet"));
+        if !view && schema.models.iter().any(|m| m.ir.name == *name && schema.attach_fields(m).is_some()) { names.push(format!("{name}Attach")); }
     }
     let path = serde_json::to_string(shared_path).unwrap();
     let exports = serde_json::to_string(&names).unwrap();

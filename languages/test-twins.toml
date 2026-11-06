@@ -9,6 +9,7 @@
 "languages/python/tests/test_benchmark_schema.py" = "Python-only tool: the Prisma benchmark setup"
 "languages/python/tests/test_typing.py" = "Python type test: mypy and pyright run over check_models.py; TypeScript runs `npm run typecheck`"
 "languages/python/tests/test_soft_delete_typing.py" = "Python type test: mypy and pyright; the twin is the tsc test in soft-delete-typing.test.ts"
+"languages/python/tests/test_sql_view_typing.py" = "Python type test: mypy and pyright; the twin is the tsc test in sql-view-typing.test.ts"
 
 [python-only.ids]
 # languages/python/tests/test_app_imports.py
@@ -740,6 +741,8 @@
 "selection_defaults::without_defaults_names_reach_the_engine" = "change: Add the 'available defaults: []' list and the update/delete errors, and rename to the Python name."
 # languages/js/test/soft-delete-typing.test.ts
 "soft_delete_typing::the_generated_soft_delete_members_type_check_on_the_soft_delete_model_only" = "one-language: TypeScript type test: tsc over the generated models; the Python twin is test_soft_delete_typing.py (mypy and pyright)"
+# languages/js/test/sql-view-typing.test.ts
+"sql_view_typing::a_view_model_type_checks_with_no_write_call" = "one-language: TypeScript type test: tsc over the generated models; the Python twin is test_sql_view_typing.py (mypy and pyright)"
 # languages/js/test/sql.test.ts
 "sql::aggregate_filter_sql" = "change: twin sql::aggregate_filter; TS must add count({filter: to-many condition}) without a relation and the 'one relation path' QueryError."
 "sql::aggregates_over_the_same_relation_share_one_lateral_join" = "change: twin sql::same_relation_aggregates_share_one_lateral_join; TS must add the `(SELECT COUNT(*) FROM 'comments'` check and the groupBy(User.id) scalarCorrelated 2"

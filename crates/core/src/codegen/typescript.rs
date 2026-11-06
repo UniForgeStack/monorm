@@ -355,6 +355,9 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         }
         writeln!(body, "}}\n").unwrap();
 
+        // A SQL view is read-only: its spec has `never` for every write shape.
+        let view = m.ir.sql_view.is_some();
+        if !view {
         // insert: optional when the database fills it in; a required foreign key is the
         // key or the related row, exactly one of them
         writeln!(body, "export type {name}Insert = {{").unwrap();
@@ -428,7 +431,8 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         }
         writeln!(body, "}}\n").unwrap();
 
-        let attach = schema.attach_fields(m);
+        }
+        let attach = schema.attach_fields(m).filter(|_| !view);
         if let Some(attach) = &attach {
             writeln!(body, "export interface {name}Attach {{").unwrap();
             for field in attach.iter().map(|&p| &m.fields()[p]) {
@@ -442,14 +446,14 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         writeln!(body, "  readonly name: {};", quote(name)).unwrap();
         writeln!(body, "  readonly row: {name};").unwrap();
         writeln!(body, "  readonly data: {name}Data;").unwrap();
-        writeln!(body, "  readonly insert: {name}Insert;").unwrap();
+        writeln!(body, "  readonly insert: {};", if view { "never".to_string() } else { format!("{name}Insert") }).unwrap();
         let default_names = m.read_defaults.names();
         if !default_names.is_empty() {
             writeln!(body, "  readonly defaults: {};", default_names.iter().map(|n| quote(n)).collect::<Vec<_>>().join(" | ")).unwrap();
         }
         if attach.is_some() { writeln!(body, "  readonly attach: {name}Attach;").unwrap(); }
-        writeln!(body, "  readonly update: {name}Update;").unwrap();
-        writeln!(body, "  readonly updateRow: {name}UpdateRow;").unwrap();
+        writeln!(body, "  readonly update: {};", if view { "never".to_string() } else { format!("{name}Update") }).unwrap();
+        writeln!(body, "  readonly updateRow: {};", if view { "never".to_string() } else { format!("{name}UpdateRow") }).unwrap();
         match m.key_fields().as_slice() {
             [_] => writeln!(body, "  readonly pk: {};", value_type(pk)).unwrap(),
             keys => {

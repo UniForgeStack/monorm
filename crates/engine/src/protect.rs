@@ -7,10 +7,13 @@
 use crate::error::{Error, Result};
 use monorm_core::schema::Schema;
 
-/// Fails with [`Error::WriteProtected`] when a write of model `model` writes a protected
+/// Fails with [`Error::ReadOnlyModel`] for a SQL view, and with [`Error::WriteProtected`] when a write of model `model` writes a protected
 /// table that no model in `allowed` (model names) writes.
 pub fn ensure_writable(schema: &Schema, model: &str, allowed: &[String]) -> Result<()> {
     let idx = schema.model_idx(model).map_err(Error::Query)?;
+    if schema.model(idx).ir.sql_view.is_some() {
+        return Err(Error::ReadOnlyModel(model.to_owned()));
+    }
     for table in written_tables(schema, idx) {
         let Some(owner) = protector(schema, table) else { continue };
         let permitted = allowed.iter().filter_map(|name| schema.model_idx(name).ok()).any(|m| schema.model(m).table() == table);
@@ -68,5 +71,15 @@ mod tests {
         assert!(matches!(ensure_writable(&schema, "PostAlias", &[]), Err(Error::WriteProtected(m)) if m == "Post"));
         assert!(ensure_writable(&schema, "PostAlias", &["Post".into()]).is_ok());
         assert!(ensure_writable(&schema, "Post", &["PostAlias".into(), "Unknown".into()]).is_ok());
+    }
+
+    #[test]
+    fn a_sql_view_is_never_writable() {
+        let ir = serde_json::json!({"models": [
+            {"name": "Live", "table": "live", "sql_view": {"body": "SELECT 1 AS id", "depends_on": []},
+             "fields": [{"name": "id", "column": "id", "type": "int", "primary_key": true}]}
+        ]});
+        let schema = Schema::from_ir(serde_json::from_value(ir).unwrap()).unwrap();
+        assert!(matches!(ensure_writable(&schema, "Live", &["Live".into()]), Err(Error::ReadOnlyModel(m)) if m == "Live"));
     }
 }

@@ -43,6 +43,13 @@ create_exception!(
 
 create_exception!(
     _native,
+    ReadOnlyModel,
+    PyException,
+    "An ORM write to a SQL view model; a view is read-only."
+);
+
+create_exception!(
+    _native,
     WriteProtected,
     PyException,
     "An ORM write to a `@@protected_write` model outside `monorm.allow_writes(...)`."
@@ -102,6 +109,7 @@ pub fn engine_err(e: Error) -> PyErr {
         Error::Migration(m) => MigrationError::new_err(m),
         Error::Db(e) => db_err(e),
         Error::Value(m) => PyTypeError::new_err(m),
+        Error::ReadOnlyModel(m) => ReadOnlyModel::new_err(format!("{m} is a view; it can't be written")),
         Error::WriteProtected(m) => WriteProtected::new_err(format!("{m} is write-protected (@@protected_write); write it inside monorm.allow_writes({m})")),
         Error::Validation(v) => validation_to_py(&v),
         Error::Binding(e) => match e.downcast::<PyErr>() {

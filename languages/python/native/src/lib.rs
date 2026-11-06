@@ -914,6 +914,19 @@ impl Engine {
         })
     }
 
+    /// `REFRESH MATERIALIZED VIEW [CONCURRENTLY]` for the view model `model`; a `QueryError` for any other model.
+    #[pyo3(signature = (model, concurrently = false, tx = None))]
+    fn refresh<'py>(
+        &self,
+        py: Python<'py>,
+        model: &str,
+        concurrently: bool,
+        tx: Option<&Bound<'py, Transaction>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let sql = migrate::refresh_statement(&self.schema, model, concurrently).map_err(query_err)?;
+        self.run_script(py, vec![sql], tx)
+    }
+
     /// Runs SQL statements in order, in one transaction (Postgres DDL is transactional).
     #[pyo3(signature = (statements, tx = None))]
     fn execute_script<'py>(
@@ -1288,6 +1301,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("TransactionAborted", py.get_type::<errors::TransactionAborted>())?;
     m.add("TransactionTimeoutError", py.get_type::<errors::TransactionTimeoutError>())?;
     m.add("QueryError", py.get_type::<errors::QueryError>())?;
+    m.add("ReadOnlyModel", py.get_type::<errors::ReadOnlyModel>())?;
     m.add("WriteProtected", py.get_type::<errors::WriteProtected>())?;
     m.add("SchemaError", py.get_type::<errors::SchemaError>())?;
     m.add("SchemaWarning", py.get_type::<errors::SchemaWarning>())?;
