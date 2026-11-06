@@ -299,3 +299,44 @@ fn postgres_rows_write_what_the_unprepared_write_writes() {
         same_insert(d, &nulls, None, None).await;
     });
 }
+
+fn statements_of(prepared: &PreparedRows, rows: Vec<Vec<Option<Value>>>) -> Vec<String> {
+    prepared.call(&NoParams, rows).unwrap().statements().into_iter().map(String::from).collect()
+}
+
+#[test]
+fn postgres_binds_one_array_a_column_from_the_unnest_threshold() {
+    let schema = schema(json!({}));
+    let t = target(Dialect::Postgres, None);
+    let fields = ["id", "title", "views"];
+    let prepared = PreparedRows::prepare(schema.clone(), t, rows_spec(RowsKind::Insert(None), &fields)).unwrap();
+    let below = statements_of(&prepared, insert_rows(monorm_engine::prepared_write::UNNEST_ROWS - 1, 0));
+    assert!(below[0].contains(" VALUES ($1, $2, $3), ($4, $5, $6)"), "{}", below[0]);
+    let above = statements_of(&prepared, insert_rows(monorm_engine::prepared_write::UNNEST_ROWS, 0));
+    assert_eq!(above, ["INSERT INTO \"posts\" (\"id\", \"title\", \"views\") SELECT * FROM UNNEST($1::bigint[], $2::text[], $3::integer[])"]);
+    // Past the parameter limit of VALUES, one statement still holds all rows.
+    assert_eq!(statements_of(&prepared, insert_rows(30_000, 0)).len(), 1);
+    // A cell that is not set keeps the VALUES list.
+    let mut gap = insert_rows(40, 0);
+    gap[3][1] = None;
+    assert!(statements_of(&prepared, gap)[0].contains(" VALUES "));
+    let upsert = Conflict::Update { target: vec!["id".into()], index: OnConflictTarget::Infer, update: vec!["title".into()], set: vec![] };
+    let prepared = PreparedRows::prepare(schema, t, rows_spec(RowsKind::Insert(Some(upsert)), &fields)).unwrap();
+    let sql = statements_of(&prepared, insert_rows(40, 0));
+    assert!(sql[0].contains("UNNEST($1::bigint[], $2::text[], $3::integer[]) WHERE true ON CONFLICT"), "{}", sql[0]);
+}
+
+#[test]
+fn postgres_update_many_joins_unnest_from_the_threshold() {
+    let schema = schema(json!({}));
+    let t = target(Dialect::Postgres, None);
+    let prepared = PreparedRows::prepare(schema, t, rows_spec(RowsKind::UpdateMany(vec![]), &["id", "title", "views"])).unwrap();
+    let rows = |n: usize| -> Vec<Vec<Option<Value>>> { (0..n).map(|i| vec![Some(big(i as i64)), Some(text("a")), Some(int(1))]).collect() };
+    let n = monorm_engine::prepared_write::UNNEST_ROWS;
+    assert!(statements_of(&prepared, rows(n - 1))[0].contains("FROM (VALUES ($1, $2, $3), "));
+    assert_eq!(
+        statements_of(&prepared, rows(n)),
+        ["UPDATE \"posts\" SET \"title\" = \"v\".\"column2\", \"views\" = \"v\".\"column3\" FROM UNNEST($1::bigint[], $2::text[], $3::integer[]) AS \"v\"(\"column1\", \"column2\", \"column3\") WHERE \"posts\".\"id\" = \"v\".\"column1\""]
+    );
+    assert_eq!(statements_of(&prepared, rows(30_000)).len(), 1);
+}

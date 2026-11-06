@@ -816,11 +816,48 @@ Query defaults, the soft-delete filter and `lock()` are fixed when you prepare.
   `[param("n")]`; a query set limited by a `param()` can't be sliced.
 * A `param()` outside a prepared query raises `QueryError`. Calls with a missing or
   unknown name raise `TypeError`.
-* Prepared queries read. Inserts and updates already send their rows to Rust without an
-  IR, so there is nothing to prepare.
+* `prepare()` also holds writes: see [Prepared writes](#prepared-writes).
 
 `LIMIT` and `OFFSET` are parameters in the IR for every query, not only prepared ones:
 `qs[10:20]` and `qs[30:40]` are the same IR document and the same SQL text.
+
+### Prepared writes
+
+`.prepare()` works on `insert`, `insert_many`, `update`, `update_many`, `delete` and an
+upsert. The engine plans the statement once and keeps it:
+
+```python
+add = Author.objects.insert(name=param("n")).prepare()
+await add(n="Ada")                                       # the new instance
+
+rename = Author.objects.filter(Author.id == param("id")).update(name=param("n")).prepare()
+await rename(id=1, n="Grace")                            # the row count
+
+add_many = Post.objects.insert_many(param("rows", fields=(Post.author_id, Post.title))).returning().prepare()
+await add_many(rows=[{"author_id": 1, "title": "a"}, {"author_id": 1, "title": "b"}])
+
+edit = Post.objects.update_many(param("rows", fields=(Post.id, Post.title))).prepare()
+await edit(rows=[{"id": 1, "title": "x"}])               # the primary key comes first
+```
+
+* `None` in a set or insert value writes `NULL`. `None` in a filter raises.
+* A row with a missing key or an extra key raises `ValueError` before any SQL.
+* `returning(cols)` is fixed when you prepare. Without it, a call returns the row count,
+  and a prepared `insert` returns the instance.
+* Scope, hooks, timestamps and the write guard run on each call. A prepared upsert has
+  fixed conflict fields.
+* The statement depends on the row count. The engine keeps one per count (64 at most). On
+  PostgreSQL a batch of 32 rows or more binds one array for each column
+  (`INSERT ... SELECT * FROM UNNEST(...)`, `UPDATE ... FROM UNNEST(...)`), so the
+  statement text does not change with the row count and the parameter limit does not
+  split the batch. Below 32 rows, with an array column, a field with `write_sql` or an
+  enum, a row that omits a field, or on SQLite, it uses `VALUES` (and `CASE` for
+  `update_many`), in chunks.
+* `fields=` takes plain columns. A relation, `copy=True` and `returning()` of a relation
+  are not supported. A multi-table `insert` runs its statements as the unprepared write does.
+* A hook that gives a value at plan time, a single `update` on a model with change-set
+  hooks, and a multi-table `update` or `delete` raise at `prepare()`.
+* An unprepared write with `param()` raises `QueryError`.
 
 ## Columns and aggregates: `select()`
 

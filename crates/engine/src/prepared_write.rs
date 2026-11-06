@@ -20,8 +20,8 @@ use crate::plan::{self, InsertInput, Plan, Returned};
 use crate::prepared::{pass, resolve, statements, untyped_error, Arg, Call, Recorder, Resolved, Slot, Template};
 use monorm_core::behavior::ResultShape;
 use monorm_core::client_default::ClientDefault;
-use monorm_core::dialect::Target;
-use monorm_core::ir::{Bypass, Expr, Operation, ValueType};
+use monorm_core::dialect::{Dialect, Target};
+use monorm_core::ir::{Bypass, ColType, Expr, Operation, ValueType};
 use monorm_core::schema::{Model, Schema};
 use monorm_core::writes::AssignValue;
 
@@ -225,6 +225,44 @@ struct Shape {
     slots: Vec<Slot>,
 }
 
+/// The `UNNEST` statement of a batch of rows, and the type of each column's array.
+struct Unnest {
+    sql: Arc<str>,
+    types: Vec<ColType>,
+}
+
+impl Unnest {
+    /// The statement with an array of the values of each column.
+    fn bind(&self, rows: &[Vec<Option<Value>>]) -> (String, Vec<Value>) {
+        let columns = self.types.iter().enumerate().map(|(c, ty)| {
+            let items = rows.iter().map(|r| r[c].clone().expect("a cell with a value")).collect();
+            Value::Array(crate::params::array_type(*ty), Some(Box::new(items)))
+        });
+        (self.sql.to_string(), columns.collect())
+    }
+}
+
+/// The SQL type an array of a column is cast to; text for a string, as its column checks the length.
+fn unnest_type(ty: ColType) -> &'static str {
+    match ty {
+        ColType::BigInt => "bigint",
+        ColType::Int => "integer",
+        ColType::Float => "double precision",
+        ColType::Bool => "boolean",
+        ColType::String | ColType::Text => "text",
+        ColType::DateTime => "timestamp with time zone",
+        ColType::Date => "date",
+        ColType::Uuid => "uuid",
+        ColType::Json => "jsonb",
+        ColType::Decimal => "numeric",
+    }
+}
+
+/// The arrays of the columns, as `$1::bigint[], $2::text[]`.
+fn unnest_list(types: &[ColType]) -> String {
+    types.iter().enumerate().map(|(i, ty)| format!("${}::{}[]", i + 1, unnest_type(*ty))).collect::<Vec<_>>().join(", ")
+}
+
 /// A held write of rows.
 pub struct PreparedRows {
     schema: Arc<Schema>,
@@ -236,6 +274,7 @@ pub struct PreparedRows {
     inspection: String,
     types: Vec<ValueType>,
     shapes: Mutex<HashMap<Vec<u8>, Arc<Shape>>>,
+    unnests: Mutex<HashMap<Vec<u8>, Option<Arc<str>>>>,
 }
 
 type Rows = Vec<Vec<Option<Value>>>;
@@ -252,6 +291,16 @@ pub struct RowsCall {
     work: Work,
 }
 
+impl RowsCall {
+    /// The text of each statement of the call, as sent.
+    pub fn statements(&self) -> Vec<&str> {
+        match &self.work {
+            Work::Statements { statements, .. } => statements.iter().map(|(sql, _)| sql.as_str()).collect(),
+            _ => vec![],
+        }
+    }
+}
+
 impl PreparedRows {
     /// Plans the statement of one row, to refuse what cannot be held and to fix the
     /// returned columns.
@@ -260,7 +309,7 @@ impl PreparedRows {
         let m = schema.model(idx);
         let types = crate::exec::field_types(&schema, &spec.model, &spec.fields)?;
         let multi_table = crate::multi_table::is_multi_table(&schema, &spec.model)?;
-        let mut this = Self { schema: schema.clone(), target, spec, multi_table, returned: None, context: false, inspection: String::new(), types, shapes: Mutex::new(HashMap::new()) };
+        let mut this = Self { schema: schema.clone(), target, spec, multi_table, returned: None, context: false, inspection: String::new(), types, shapes: Mutex::new(HashMap::new()), unnests: Mutex::new(HashMap::new()) };
         if multi_table {
             return Ok(this);
         }
@@ -439,7 +488,10 @@ impl PreparedRows {
         let m = self.model();
         // A `write_sql` template binds its value once for each `{}`.
         let width = fields.iter().map(|f| Ok(plan::param_template(m.field(f).map_err(query_err)?).map_or(1, |t| t.matches("{}").count().max(1)))).sum::<Result<usize>>()?;
-        let mut chunk = self.target.caps.max_params.saturating_sub(params.len()) / width.max(1);
+        let total = rows.len();
+        let unnest = if total >= UNNEST_ROWS { self.unnest(&fields, &rows)? } else { None };
+        // One array a column binds the same number of parameters for any row count.
+        let mut chunk = if unnest.is_some() { total } else { self.target.caps.max_params.saturating_sub(params.len()) / width.max(1) };
         if fields.is_empty() {
             chunk = 1;
         }
@@ -448,12 +500,11 @@ impl PreparedRows {
         }
         let chunk = chunk.max(1);
         let context = if self.context { Some(crate::hooks::context(params)?) } else { None };
-        let total = rows.len();
         let mut statements = vec![];
         let mut start = 0;
         while start < total {
             let end = (start + chunk).min(total);
-            statements.push(self.insert_chunk(&fields, &rows[start..end], &forced[start..end], params)?);
+            statements.push(self.insert_chunk(&fields, &rows[start..end], &forced[start..end], unnest.as_ref(), params)?);
             start = end;
         }
         Ok(Work::Statements { statements, context })
@@ -495,16 +546,9 @@ impl PreparedRows {
         })
     }
 
-    /// The statement and binds of one batch of rows.
-    fn insert_chunk(&self, fields: &[String], rows: &[Vec<Option<Value>>], forced: &[Vec<bool>], params: &dyn Params) -> Result<(String, Vec<Value>)> {
+    /// The held statement of `n` rows with a pattern of set cells.
+    fn row_shape(&self, fields: &[String], n: usize, mut pattern: Vec<u8>) -> Result<Arc<Shape>> {
         let ncols = fields.len();
-        let n = rows.len();
-        let mut pattern = Vec::with_capacity(n * ncols);
-        for (row, mask) in rows.iter().zip(forced) {
-            for (cell, f) in row.iter().zip(mask) {
-                pattern.push(if cell.is_some() { 0 } else if *f { 2 } else { 1 });
-            }
-        }
         let mut key = fields.join("\0").into_bytes();
         key.push(1);
         key.extend((n as u64).to_le_bytes());
@@ -519,7 +563,121 @@ impl PreparedRows {
             let ((stmt, _), recorder) = self.insert_statement(fields, n, &pattern, flags)?;
             Ok((vec![db::build(self.target.dialect, &stmt)], recorder))
         };
-        let shape = self.shape(key, &build, n * ncols)?;
+        self.shape(key, &build, n * ncols)
+    }
+
+    /// What binds an array for each column, when the rows allow it: PostgreSQL, every cell set,
+    /// plain columns of a scalar type, and a statement with no parameter but the cells.
+    fn unnest(&self, fields: &[String], rows: &[Vec<Option<Value>>]) -> Result<Option<Unnest>> {
+        if self.target.dialect != Dialect::Postgres || fields.is_empty() {
+            return Ok(None);
+        }
+        let m = self.model();
+        let mut types = vec![];
+        for name in fields {
+            let f = m.field(name).map_err(query_err)?;
+            if f.array || f.db_type.is_some() || f.write_sql.is_some() || f.enum_name.is_some() {
+                return Ok(None);
+            }
+            types.push(f.ty);
+        }
+        let fits = |ty: ColType, v: &Value| match ty {
+            ColType::BigInt => matches!(v, Value::BigInt(_)),
+            ColType::Int => matches!(v, Value::Int(_)),
+            ColType::Float => matches!(v, Value::Double(_)),
+            ColType::Bool => matches!(v, Value::Bool(_)),
+            ColType::String | ColType::Text => matches!(v, Value::String(_)),
+            ColType::DateTime => matches!(v, Value::ChronoDateTimeWithTimeZone(_)),
+            ColType::Date => matches!(v, Value::ChronoDate(_)),
+            ColType::Uuid => matches!(v, Value::Uuid(_)),
+            ColType::Json => matches!(v, Value::Json(_)),
+            ColType::Decimal => matches!(v, Value::BigDecimal(_)),
+        };
+        let all = rows.iter().all(|row| row.iter().zip(&types).all(|(cell, ty)| cell.as_ref().is_some_and(|v| fits(*ty, v))));
+        if !all {
+            return Ok(None);
+        }
+        let mut key = fields.join("\0").into_bytes();
+        key.push(if matches!(self.spec.kind, RowsKind::Insert(_)) { 3 } else { 4 });
+        let cached = self.unnests.lock().expect("unnest cache").get(&key).cloned();
+        let sql = match cached {
+            Some(sql) => sql,
+            None => {
+                let sql = if matches!(self.spec.kind, RowsKind::Insert(_)) { self.unnest_insert_sql(fields, &types)? } else { self.unnest_update_sql(&types)? };
+                self.unnests.lock().expect("unnest cache").insert(key, sql.clone());
+                sql
+            }
+        };
+        Ok(sql.map(|sql| Unnest { sql, types }))
+    }
+
+    /// The statement of one row, with its `VALUES` list replaced by `UNNEST` of an array for each column.
+    fn unnest_insert_sql(&self, fields: &[String], types: &[ColType]) -> Result<Option<Arc<str>>> {
+        let ncols = fields.len();
+        let shape = self.row_shape(fields, 1, vec![0; ncols])?;
+        let only_cells = shape.slots.is_empty() && shape.template.args.len() == ncols && shape.template.args.iter().enumerate().all(|(i, a)| matches!(a, Arg::Cell(c) if *c == i));
+        if !only_cells {
+            return Ok(None);
+        }
+        let group = format!("({})", (1..=ncols).map(|i| format!("${i}")).collect::<Vec<_>>().join(", "));
+        let marker = format!(" VALUES {group}");
+        let sql = &shape.template.sql;
+        let Some(at) = sql.find(&marker) else { return Ok(None) };
+        let (head, tail) = (&sql[..at], &sql[at + marker.len()..]);
+        if tail.contains('$') {
+            return Ok(None);
+        }
+        // An explicit cast to `varchar(n)` cuts a long text; the column's assignment cast refuses it.
+        let list = unnest_list(types);
+        // Without it, `ON` after the `FROM` item could read as a join condition.
+        let guard = if tail.starts_with(" ON CONFLICT") { " WHERE true" } else { "" };
+        Ok(Some(format!("{head} SELECT * FROM UNNEST({list}){guard}{tail}").into()))
+    }
+
+    /// The held `update_many` statement of `n` rows.
+    fn update_shape(&self, n: usize) -> Result<Arc<Shape>> {
+        let build = |flags: Vec<usize>| -> Result<Built> {
+            let (stmt, _, recorder) = self.update_many_statement(n, flags)?;
+            Ok((vec![db::build(self.target.dialect, &stmt)], recorder))
+        };
+        let mut key = (n as u64).to_le_bytes().to_vec();
+        key.push(2);
+        self.shape(key, &build, n * self.spec.fields.len())
+    }
+
+    /// The statement of one row with its `VALUES` list replaced by `UNNEST` of an array for each column.
+    fn unnest_update_sql(&self, types: &[ColType]) -> Result<Option<Arc<str>>> {
+        let ncols = types.len();
+        let shape = self.update_shape(1)?;
+        let only_cells = shape.slots.is_empty() && shape.template.args.len() == ncols && shape.template.args.iter().enumerate().all(|(i, a)| matches!(a, Arg::Cell(c) if *c == i));
+        if !only_cells {
+            return Ok(None);
+        }
+        let group = format!("(VALUES ({})) AS \"v\"", (1..=ncols).map(|i| format!("${i}")).collect::<Vec<_>>().join(", "));
+        let sql = &shape.template.sql;
+        let Some(at) = sql.find(&group) else { return Ok(None) };
+        let (head, tail) = (&sql[..at], &sql[at + group.len()..]);
+        if tail.contains('$') {
+            return Ok(None);
+        }
+        let names = (1..=ncols).map(|i| format!("\"column{i}\"")).collect::<Vec<_>>().join(", ");
+        Ok(Some(format!("{head}UNNEST({}) AS \"v\"({names}){tail}", unnest_list(types)).into()))
+    }
+
+    /// The statement and binds of one batch of rows.
+    fn insert_chunk(&self, fields: &[String], rows: &[Vec<Option<Value>>], forced: &[Vec<bool>], unnest: Option<&Unnest>, params: &dyn Params) -> Result<(String, Vec<Value>)> {
+        let ncols = fields.len();
+        let n = rows.len();
+        if let (Some(u), true) = (unnest, n >= UNNEST_ROWS) {
+            return Ok(u.bind(rows));
+        }
+        let mut pattern = Vec::with_capacity(n * ncols);
+        for (row, mask) in rows.iter().zip(forced) {
+            for (cell, f) in row.iter().zip(mask) {
+                pattern.push(if cell.is_some() { 0 } else if *f { 2 } else { 1 });
+            }
+        }
+        let shape = self.row_shape(fields, n, pattern)?;
         let values = shape.slots.iter().map(|s| s.convert(params)).collect::<Result<Vec<_>>>()?;
         Ok(Self::bind(&shape, &values, ncols.max(1), rows))
     }
@@ -540,29 +698,28 @@ impl PreparedRows {
             let map = crate::hooks::input_map(m.fields().len(), &positions)?;
             crate::hooks::update_rows(m, &map, &mut rows, params)?;
         }
+        let cells: Vec<Vec<Option<Value>>> = rows.into_iter().map(|r| r.into_iter().map(Some).collect()).collect();
+        let total = cells.len();
+        let unnest = if total >= UNNEST_ROWS { self.unnest(&spec.fields, &cells)? } else { None };
         let per_row = if self.target.caps.update_from_values { ncols } else { 2 * ncols - 1 };
-        let mut chunk = self.target.caps.max_params.saturating_sub(params.len()) / per_row.max(1);
+        let mut chunk = if unnest.is_some() { total } else { self.target.caps.max_params.saturating_sub(params.len()) / per_row.max(1) };
         if let Some(n) = spec.batch_size {
             chunk = chunk.min(n);
         }
         let chunk = chunk.max(1);
         let context = if self.context { Some(crate::hooks::context(params)?) } else { None };
-        let total = rows.len();
         let mut statements = vec![];
         let mut start = 0;
         while start < total {
             let end = (start + chunk).min(total);
             let n = end - start;
-            let build = |flags: Vec<usize>| -> Result<Built> {
-                let (stmt, _, recorder) = self.update_many_statement(n, flags)?;
-                Ok((vec![db::build(self.target.dialect, &stmt)], recorder))
-            };
-            let mut key = (n as u64).to_le_bytes().to_vec();
-            key.push(2);
-            let shape = self.shape(key, &build, n * ncols)?;
-            let values = shape.slots.iter().map(|s| s.convert(params)).collect::<Result<Vec<_>>>()?;
-            let cells: Vec<Vec<Option<Value>>> = rows[start..end].iter().map(|r| r.iter().cloned().map(Some).collect()).collect();
-            statements.push(Self::bind(&shape, &values, ncols, &cells));
+            if let (Some(u), true) = (&unnest, n >= UNNEST_ROWS) {
+                statements.push(u.bind(&cells[start..end]));
+            } else {
+                let shape = self.update_shape(n)?;
+                let values = shape.slots.iter().map(|s| s.convert(params)).collect::<Result<Vec<_>>>()?;
+                statements.push(Self::bind(&shape, &values, ncols, &cells[start..end]));
+            }
             start = end;
         }
         Ok(Work::Statements { statements, context })

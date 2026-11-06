@@ -61,6 +61,20 @@ async def test_prepared_insert_many_batches(clean):
         assert await Post.objects.count() == n
 
 
+async def test_a_large_prepared_batch_keeps_row_order_with_returning_and_upsert(clean):
+    alice, *_ = await users()
+    add = Post.objects.insert_many(param("rows", fields=(Post.author_id, Post.title, Post.body))).returning().prepare()
+    rows = [{"author_id": alice.id, "title": f"t{i}", "body": ""} for i in range(40)]
+    got = await add(rows=rows)
+    assert [p.title for p in got] == [f"t{i}" for i in range(40)]
+    assert len({p.id for p in got}) == 40
+    mail = User.objects.insert_many(param("rows", fields=(User.email, User.name))).on_conflict(User.email, update=True).prepare()
+    people = [{"email": f"m{i}@example.com", "name": "a"} for i in range(40)]
+    assert await mail(rows=people) == 40
+    assert await mail(rows=[{**r, "name": "b"} for r in people]) == 40
+    assert {u.name for u in await User.objects.filter(User.email.like("m%"))} == {"b"}
+
+
 async def test_prepared_update_and_delete_match_the_plain_write(clean):
     alice, *_ = await users()
     posts = await Post.objects.insert_many(

@@ -59,6 +59,21 @@ test("prepared insert many batches", async () => {
   }
 });
 
+test("a large prepared batch keeps row order with returning and upsert", async () => {
+  const [alice] = await users();
+  const add = Post.objects.insertMany(param("rows", { fields: [Post.authorId, Post.title, Post.body] })).returning().prepare();
+  const rows = Array.from({ length: 40 }, (_, i) => ({ authorId: alice!.id, title: `t${i}`, body: "" }));
+  const got = (await add.run({ rows })) as Post[];
+  assert.deepEqual(got.map((p) => p.title), rows.map((r) => r.title));
+  assert.equal(new Set(got.map((p) => p.id)).size, 40);
+  const mail = User.objects.insertMany(param("rows", { fields: [User.email, User.name] })).onConflict(User.email, { update: true }).prepare();
+  const people = Array.from({ length: 40 }, (_, i) => ({ email: `m${i}@example.com`, name: "a" }));
+  assert.equal(await mail.run({ rows: people }), 40);
+  assert.equal(await mail.run({ rows: people.map((r) => ({ ...r, name: "b" })) }), 40);
+  const named = await User.objects.filter(User.email.like("m%"));
+  assert.deepEqual([...new Set(named.map((u) => u.name))], ["b"]);
+});
+
 test("prepared update and delete match the plain write", async () => {
   const [alice] = await users();
   const posts = (await Post.objects

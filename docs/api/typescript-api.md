@@ -515,6 +515,32 @@ statement, and every one of these uses it.
 * Scope values come from `{ scope: { shop } }` in the values object, which wins over
   `withScope()`. `scope` is not a valid `param()` name.
 
+#### Prepared writes
+
+`.prepare()` works on `insert`, `insertMany`, `update`, `updateMany`, `delete` and an
+upsert. The call is `.run(values)`:
+
+```ts
+const add = Author.objects.insert({ name: param("n") }).prepare();
+await add.run({ n: "Ada" });                                    // the new instance
+
+const rename = Author.objects.filter(Author.id.eq(param("id"))).update({ name: param("n") }).prepare();
+await rename.run({ id: 1n, n: "Grace" });                       // the row count
+
+const addMany = Post.objects.insertMany(param("rows", { fields: [Post.authorId, Post.title] })).returning().prepare();
+await addMany.run({ rows: [{ authorId: 1n, title: "a" }] });    // the row type comes from the fields
+
+const edit = Post.objects.updateMany(param("rows", { fields: [Post.id, Post.title] })).prepare();
+```
+
+`null` in a set or insert value writes `NULL` and in a filter throws. A row with a missing
+or an extra key throws before any SQL. `returning(cols)` is fixed when you prepare;
+without it a call gives the row count, and `insert` gives the instance. Scope, hooks and
+the write guard run on each call. The batch form is the same as in Python: on PostgreSQL,
+32 rows or more bind one array for each column. `.sql(values)` is not available on a
+prepared `insertMany` or `updateMany`. `RelatedSet.insertMany(param(...))` throws
+`TypeError`; the class is exported as `PreparedWriteStatement`.
+
 ## Nested types
 
 A `type` block declares a value with named subfields.
