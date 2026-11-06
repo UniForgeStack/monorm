@@ -38,6 +38,25 @@ use monorm_engine::migrate as engine_migrate;
 use monorm_engine::{parse_op, protect};
 use monorm_core::ir::Operation;
 
+/// `"big_int"` or `"big_int[]"`: the declared type of a prepared parameter.
+fn declared_type(name: &str) -> PyResult<ir::ValueType> {
+    let (base, array) = match name.strip_suffix("[]") {
+        Some(base) => (base, true),
+        None => (name, false),
+    };
+    let ty: ir::ColType = serde_json::from_value(serde_json::Value::String(base.to_string()))
+        .map_err(|_| query_err(format!("param() has no column type {name:?}")))?;
+    Ok(ir::ValueType { ty, array, enum_idx: None })
+}
+
+fn prepared_read(schema: &schema::Schema, target: Target, op_json: &str, n: usize, declared: &[Option<String>],
+    driver: Option<Arc<dyn Driver>>, classes: Arc<Classes>) -> PyResult<PreparedRead> {
+    let op = parse_op(op_json).map_err(engine_err)?;
+    let declared = declared.iter().map(|d| d.as_deref().map(declared_type).transpose()).collect::<PyResult<Vec<_>>>()?;
+    let inner = monorm_engine::prepared::PreparedRead::prepare(schema, target, &op, n, &declared).map_err(engine_err)?;
+    Ok(PreparedRead { inner: Arc::new(inner), driver, classes })
+}
+
 fn inspect_operation(schema: &schema::Schema, target: Target, op_json: &str, params: &[Bound<'_, PyAny>]) -> PyResult<String> {
     let op = parse_op(op_json).map_err(engine_err)?;
     let plan = Planner::plan(schema, target, &op, &PyParams(params)).map_err(engine_err)?;
@@ -166,6 +185,11 @@ impl PySchema {
             None => Classes::empty(),
         };
         Ok(PySchema { inner: Arc::new(inner), classes: Arc::new(classes) })
+    }
+
+    /// `Engine.prepare_read` without a connection: `sql()` and `inspect()` only.
+    fn prepare_read(&self, op_json: &str, n: usize, declared: Vec<Option<String>>) -> PyResult<PreparedRead> {
+        prepared_read(&self.inner, Target::new(self.inner.dialect), op_json, n, &declared, None, self.classes.clone())
     }
 
     /// Converts and plans a single-row insert without SQL or I/O (`monorm.hooks.prepare_insert`).
@@ -404,6 +428,56 @@ impl SessionLock {
     }
 }
 
+/// A read planned once (`Engine.prepare_read`): the SQL text and the slot map live in Rust.
+#[pyclass(frozen, module = "monorm._native")]
+struct PreparedRead {
+    inner: Arc<monorm_engine::prepared::PreparedRead>,
+    /// None on a schema without a connection: `sql()` and `inspect()` only.
+    driver: Option<Arc<dyn Driver>>,
+    classes: Arc<Classes>,
+}
+
+#[pymethods]
+impl PreparedRead {
+    /// Converts `params` and runs the held statement, in `tx` when given.
+    #[pyo3(signature = (params, tx = None, row_cls = None, db = None, trace = None))]
+    fn run<'py>(
+        &self,
+        py: Python<'py>,
+        params: Vec<Bound<'py, PyAny>>,
+        tx: Option<&Bound<'py, Transaction>>,
+        row_cls: Option<Bound<'py, PyAny>>,
+        db: Option<Bound<'py, PyAny>>,
+        trace: Option<&Bound<'py, Trace>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let call = self.inner.call(&PyParams(&params)).map_err(engine_err)?;
+        let inner = self.inner.clone();
+        let conn: Arc<dyn Executor> = match (tx, &self.driver) {
+            (Some(tx), _) => tx.get().inner.clone(),
+            (None, Some(driver)) => driver.clone(),
+            (None, None) => return Err(query_err("the schema has no connection".into())),
+        };
+        let conn = monorm_engine::trace::wrap(conn, trace.map(|t| &t.get().0));
+        let classes = self.classes.clone();
+        let row_cls = row_cls.map(Bound::unbind);
+        let db = db.map(Bound::unbind);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let out = inner.run(conn.as_ref(), call).await.map_err(engine_err)?;
+            Python::attach(|py| outcome_to_py(py, out, &classes, db, row_cls))
+        })
+    }
+
+    /// The statement of a call with its values inlined.
+    fn sql(&self, params: Vec<Bound<'_, PyAny>>) -> PyResult<String> {
+        let call = self.inner.call(&PyParams(&params)).map_err(engine_err)?;
+        Ok(self.inner.sql(&call))
+    }
+
+    fn inspect(&self) -> String {
+        self.inner.inspection().to_string()
+    }
+}
+
 #[pyclass(frozen, module = "monorm._native")]
 struct Engine {
     driver: Arc<dyn Driver>,
@@ -443,6 +517,13 @@ impl Engine {
 
 #[pymethods]
 impl Engine {
+    /// Plans a read once (`op_json`: a select, count or exists) for `n` parameters, scope
+    /// values included. `declared` holds a parameter's declared type (`"big_int"`, or
+    /// `"big_int[]"` for a list) or None.
+    fn prepare_read(&self, op_json: &str, n: usize, declared: Vec<Option<String>>) -> PyResult<PreparedRead> {
+        prepared_read(&self.schema, self.target, op_json, n, &declared, Some(self.driver.clone()), self.classes.clone())
+    }
+
     /// Planner inspection without executing or observing any statements.
     fn inspect(&self, op_json: &str, params: Vec<Bound<'_, PyAny>>) -> PyResult<String> {
         inspect_operation(&self.schema, self.target, op_json, &params)
@@ -1192,6 +1273,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(find_migration, m)?)?;
     m.add_class::<PySchema>()?;
     m.add_class::<Engine>()?;
+    m.add_class::<PreparedRead>()?;
     m.add_class::<Transaction>()?;
     m.add_class::<Trace>()?;
     m.add_class::<SessionLock>()?;

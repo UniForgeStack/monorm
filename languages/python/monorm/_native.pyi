@@ -40,7 +40,23 @@ def list_migrations(dir: str) -> list[tuple[str, Path]]: ...
 def find_migration(dir: str, name: str) -> tuple[str, Path]: ...
 
 @final
+class PreparedRead:
+    """A read planned once: it holds the SQL text and the slot map."""
+
+    def run(
+        self,
+        params: list[Any],
+        tx: Transaction | None = None,
+        row_cls: type | None = None,
+        db: Any = None,
+        trace: Trace | None = None,
+    ) -> Awaitable[Any]: ...
+    def sql(self, params: list[Any]) -> str: ...
+    def inspect(self) -> str: ...
+
+@final
 class Schema:
+    def prepare_read(self, op_json: str, n: int, declared: Sequence[str | None]) -> PreparedRead: ...
     def inspect(self, op_json: str, params: list[Any]) -> str: ...
     def inspect_insert(
         self,
@@ -106,6 +122,7 @@ class SessionLock:
 
 @final
 class Engine:
+    def prepare_read(self, op_json: str, n: int, declared: Sequence[str | None]) -> PreparedRead: ...
     def inspect(self, op_json: str, params: list[Any]) -> str: ...
     def inspect_insert(
         self,

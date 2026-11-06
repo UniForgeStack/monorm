@@ -159,8 +159,6 @@ def test_prepared_value_errors():
 def test_param_misuse():
     with pytest.raises(QueryError, match="prepare"):
         Post.objects.filter(Post.id == param("id")).sql()
-    with pytest.raises(TypeError, match="in_"):
-        Post.id.in_(param("ids"))
     with pytest.raises(QueryError, match="single slice"):
         Post.objects.limit(param("n"))[:5]
     with pytest.raises(ValueError, match="identifier"):

@@ -50,7 +50,6 @@ from .expr import (
     resolve_null_rule,
 )
 from .pagination import Key, Page
-from .protection import allowed_writes
 from .query import OneRowQuery, PreparedOneRowQuery, _Compiled, _sync_iteration_error
 
 if TYPE_CHECKING:
@@ -664,7 +663,9 @@ class PreparedSelect(Generic[Unpack[Ts]]):
     def __init__(self, select: Select[Unpack[Ts]]) -> None:
         self._select = select
         self._compiled: dict[str, _Compiled] = {}
-        self._names = self._statement("select").names
+        statement = self._statement("select")
+        self._names = statement.names
+        statement.validate(select._qs)
 
     def _statement(self, kind: str) -> _Compiled:
         c = self._compiled.get(kind)
@@ -685,77 +686,61 @@ class PreparedSelect(Generic[Unpack[Ts]]):
             c = self._compiled[kind] = _Compiled(sel._ir(params, op), params)
         return c
 
-    def _start(self, kind: str, values: Mapping[str, Any]) -> Awaitable[Any]:
-        from .db import _with_scope, resolve
-
-        c = self._statement(kind)
-        params = c.bind(values, self._names)
+    def _start(self, kind: str, values: Mapping[str, Any], scope: Mapping[str, Any] | None) -> Awaitable[Any]:
         qs = self._select._qs
         if qs._lock is not None:
             qs._check_lock()
-        db = resolve(qs._db)
-        op, params = _with_scope(c.json, params)
         row_cls = None if kind in ("count", "exists") else row_class(self._select._names)
-        engine, tx, allowed = db._reader(), db._tx(), allowed_writes()
-        return db._call(lambda t: engine.run(op, params, tx, row_cls, qs._db, allowed, t))
+        return self._statement(kind).start(qs, self._names, values, scope, row_cls)
 
     def require(self) -> RequiredPreparedSelect[Unpack[Ts]]:
         """Require at least one row from each prepared read."""
         return cast("RequiredPreparedSelect[Unpack[Ts]]", PreparedSelect(self._select.require()))
 
-    async def all(self, **values: Any) -> list[Row[Unpack[Ts]]]:
-        rows: list[Row[Unpack[Ts]]] = self._select._finish(await self._start("select", values))
+    async def all(self, *, scope: Mapping[str, Any] | None = None, **values: Any) -> list[Row[Unpack[Ts]]]:
+        rows: list[Row[Unpack[Ts]]] = self._select._finish(await self._start("select", values, scope))
         return rows
 
-    def __call__(self, **values: Any) -> Awaitable[list[Row[Unpack[Ts]]]]:
-        """The rows, like awaiting the select."""
-        return self.all(**values)
+    def __call__(self, *, scope: Mapping[str, Any] | None = None, **values: Any) -> Awaitable[list[Row[Unpack[Ts]]]]:
+        """The rows, like awaiting the select. ``scope=`` gives the ``scope.<name>`` values
+        of this call; without it the ``monorm.scope()`` context gives them."""
+        return self.all(scope=scope, **values)
 
-    async def get(self, **values: Any) -> Row[Unpack[Ts]] | None:
-        rows = self._select._finish(await self._start("get", values))
+    async def get(self, *, scope: Mapping[str, Any] | None = None, **values: Any) -> Row[Unpack[Ts]] | None:
+        rows = self._select._finish(await self._start("get", values, scope))
         if len(rows) > 1:
             raise MultipleObjectsReturned("the query returned more than one row")
         return cast("Row[Unpack[Ts]] | None", rows[0] if rows else None)
 
-    async def first(self, **values: Any) -> Row[Unpack[Ts]] | None:
-        rows = self._select._finish(await self._start("first", values))
+    async def first(self, *, scope: Mapping[str, Any] | None = None, **values: Any) -> Row[Unpack[Ts]] | None:
+        rows = self._select._finish(await self._start("first", values, scope))
         return cast("Row[Unpack[Ts]] | None", rows[0] if rows else None)
 
-    async def scalar(self: PreparedSelect[T], **values: Any) -> T | None:
+    async def scalar(self: PreparedSelect[T], *, scope: Mapping[str, Any] | None = None, **values: Any) -> T | None:
         """The single column of the first row, or ``None`` without rows."""
-        rows = self._select._finish(await self._start("scalar", values))
+        rows = self._select._finish(await self._start("scalar", values, scope))
         return cast("T | None", rows[0][0] if rows else None)
 
-    async def scalars(self: PreparedSelect[T], **values: Any) -> list[T]:
+    async def scalars(self: PreparedSelect[T], *, scope: Mapping[str, Any] | None = None, **values: Any) -> list[T]:
         """The single column of every row."""
         self._select._one_column("scalars")
-        return [r[0] for r in self._select._finish(await self._start("select", values))]
+        return [r[0] for r in self._select._finish(await self._start("select", values, scope))]
 
-    async def count(self, **values: Any) -> int:
-        n: int = await self._start("count", values)
+    async def count(self, *, scope: Mapping[str, Any] | None = None, **values: Any) -> int:
+        n: int = await self._start("count", values, scope)
         return n
 
-    async def exists(self, **values: Any) -> bool:
-        b: bool = await self._start("exists", values)
+    async def exists(self, *, scope: Mapping[str, Any] | None = None, **values: Any) -> bool:
+        b: bool = await self._start("exists", values, scope)
         return b
 
-    def inspect(self, **values: Any) -> QueryInspection:
+    def inspect(self, *, scope: Mapping[str, Any] | None = None, **values: Any) -> QueryInspection:
         """Inspect the prepared SELECT for these bound parameter values."""
-        from .db import _with_scope
-        from .inspection import _native as inspection_native
+        return self._statement("select").inspect(self._select._qs, self._names, values, scope)
 
-        c = self._statement("select")
-        return QueryInspection._from_json(
-            inspection_native(self._select._qs).inspect(*_with_scope(c.json, c.bind(values, self._names)))
-        )
-
-    def sql(self, **values: Any) -> str:
+    def sql(self, *, scope: Mapping[str, Any] | None = None, **values: Any) -> str:
         """The SELECT for these values, parameters inlined (for debugging)."""
-        from .db import _with_scope
-
-        c = self._statement("select")
-        sql: str = self._select._qs._native().sql(*_with_scope(c.json, c.bind(values, self._names)))
-        return sql
+        return self._statement("select").sql(self._select._qs, self._names, values, scope)
 
     @property
     def params(self) -> frozenset[str]:

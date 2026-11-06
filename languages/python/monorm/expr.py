@@ -14,7 +14,7 @@ from collections.abc import Callable, Iterable, Sequence
 from contextvars import ContextVar
 from datetime import datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Generic, Self, TypeVar, Union, Unpack, overload
+from typing import TYPE_CHECKING, Any, Generic, Self, TypeVar, Union, Unpack, cast, overload
 from typing import Literal as _Literal
 
 from .errors import QueryError
@@ -212,7 +212,7 @@ class Expression(Node, Generic[T]):
         if isinstance(values, Select):
             return InSelect(self, values, neg=False)
         if isinstance(values, Param):
-            raise TypeError("in_() can't take a param(); the number of values is part of the query")
+            return InParam(self, values, neg=False)
         values = list(values)
         if not values:
             return Const(False, self)
@@ -224,7 +224,7 @@ class Expression(Node, Generic[T]):
         if isinstance(values, Select):
             return InSelect(self, values, neg=True)
         if isinstance(values, Param):
-            raise TypeError("not_in() can't take a param(); the number of values is part of the query")
+            return InParam(self, values, neg=True)
         values = list(values)
         if not values:
             return Const(True, self)
@@ -471,11 +471,12 @@ class _Slot:
     """A placeholder in a prepared query's parameter list, filled in per call:
     ``transform`` turns the call's value into the parameter (a LIKE pattern, ...)."""
 
-    __slots__ = ("name", "transform")
+    __slots__ = ("name", "transform", "type")
 
-    def __init__(self, name: str, transform: Callable[[Any], Any] | None = None) -> None:
+    def __init__(self, name: str, transform: Callable[[Any], Any] | None = None, type: str | None = None) -> None:
         self.name = name
         self.transform = transform
+        self.type = type
 
     def __repr__(self) -> str:
         return f"param({self.name!r})"
@@ -491,17 +492,20 @@ class SlotParams(list[Any]):
 class Param(Expression[Any]):
     """A value supplied when a prepared query runs; see :func:`param`."""
 
-    __slots__ = ("name",)
+    __slots__ = ("name", "type")
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, type: Any = None) -> None:
         if not name.isidentifier():
             raise ValueError(f"param() takes an identifier, got {name!r}")
+        if name == "scope":
+            raise ValueError("param() can't be named 'scope': it is the keyword for the scope values")
         self.name = name
+        self.type = None if type is None else _declared_type(name, type)
 
     def _slot(self, ctx_params: list[Any], transform: Callable[[Any], Any] | None = None) -> IR:
         if not isinstance(ctx_params, SlotParams):
             raise QueryError(f"{self!r} is a placeholder of a prepared query; call .prepare() on the query set")
-        ctx_params.append(_Slot(self.name, transform))
+        ctx_params.append(_Slot(self.name, transform, self.type))
         return {"t": "param", "i": len(ctx_params) - 1}
 
     def _ir(self, ctx: IRContext) -> IR:
@@ -511,16 +515,41 @@ class Param(Expression[Any]):
         return f"param({self.name!r})"
 
 
-def param(name: str) -> Any:
+def _declared_type(name: str, tp: Any) -> str:
+    """The engine's name for the Python type given to ``param(name, tp)``: ``int``, ``float``,
+    ``str``, ``bool``, ``datetime``, ``date``, ``UUID``, ``Decimal`` or ``dict`` (JSON), or
+    ``list[...]`` of one of them."""
+    import datetime
+    import decimal
+    import typing
+    import uuid
+
+    names: dict[Any, str] = {
+        int: "big_int", float: "float", str: "text", bool: "bool", datetime.datetime: "date_time",
+        datetime.date: "date", uuid.UUID: "uuid", decimal.Decimal: "decimal", dict: "json",
+    }
+    if typing.get_origin(tp) is list:
+        (item,) = typing.get_args(tp)
+        if typing.get_origin(item) is list:
+            raise TypeError(f"param({name!r}, {tp!r}): a list of lists is not a column type")
+        return _declared_type(name, item) + "[]"
+    if tp not in names:
+        raise TypeError(f"param({name!r}, {tp!r}): the type must be int, float, str, bool, datetime, date, UUID, Decimal, dict or a list of one of them")
+    return names[tp]
+
+
+def param(name: str, type: Any = None) -> Any:
     """A placeholder for a value given each time a prepared query runs::
 
         by_author = Post.objects.filter(Post.author_id == param("author")).limit(param("n")).prepare()
         posts = await by_author(author=3, n=10)
 
     It stands for a value in comparisons, arithmetic, ``like`` / ``contains`` / ...,
-    ``has()``, ``limit()`` and ``offset()``. Typed as ``Any`` so it fits wherever a
-    value does."""
-    return Param(name)
+    ``has()``, ``limit()`` and ``offset()``, and for a whole list in ``in_()`` / ``not_in()``
+    (any length: ``Post.id.in_(param("ids"))``). ``type`` (``int``, ``list[int]``, ...) is
+    needed where the query does not give the type: a ``case()`` made only of params. Typed
+    as ``Any`` so it fits wherever a value does."""
+    return Param(name, type)
 
 
 def _same_table_model(column_root: type[Model], root: type[Model] | Cte) -> type[Model] | None:
@@ -1860,6 +1889,19 @@ class In(Condition):
 
     def __repr__(self) -> str:
         return f"{self.item!r} {'NOT IN' if self.neg else 'IN'} ({', '.join(map(repr, self.values))})"
+
+
+class InParam(In):
+    """``IN`` a list given when the prepared query runs: one bind, whatever the length."""
+
+    __slots__ = ()
+
+    def __init__(self, item: Node, values: Param, neg: bool) -> None:
+        super().__init__(item, [values], neg)
+
+    def _ir(self, ctx: IRContext) -> IR:
+        slot = cast(Param, self.values[0])._slot(ctx.params)
+        return {"t": "in_param", "item": self.item._ir(ctx), "i": slot["i"], "neg": self.neg}
 
 
 class IsNull(Condition):

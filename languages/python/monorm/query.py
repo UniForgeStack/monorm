@@ -38,7 +38,6 @@ from . import pagination
 from .fields import BelongsTo, HasMany, ManyToMany, key_items, key_value
 from .nested import NestedRef
 from .pagination import Page
-from .protection import allowed_writes
 from . import adapters, debug
 from .write import (
     CopyInsert,
@@ -1514,15 +1513,18 @@ class QuerySet(Generic[M]):
 
 class _Compiled:
     """One statement of a prepared query: its IR as JSON and its parameters, with the
-    :func:`monorm.param` slots to fill per call."""
+    :func:`monorm.param` slots to fill per call. The engine plans it once per engine and
+    set of scope names (``native``) and keeps the SQL text and the slot map."""
 
-    __slots__ = ("json", "params", "slots", "names")
+    __slots__ = ("json", "params", "slots", "names", "declared", "natives")
 
     def __init__(self, ir: IR, params: SlotParams) -> None:
         self.json = json.dumps(ir)
         self.params = list(params)
         self.slots = [(i, p.name, p.transform) for i, p in enumerate(params) if isinstance(p, _Slot)]
         self.names = frozenset(name for _, name, _ in self.slots)
+        self.declared: list[str | None] = [p.type if isinstance(p, _Slot) else None for p in params]
+        self.natives: dict[tuple[Any, tuple[str, ...]], Any] = {}
 
     def bind(self, values: Mapping[str, Any], known: frozenset[str]) -> list[Any]:
         if missing := self.names - values.keys():
@@ -1536,6 +1538,67 @@ class _Compiled:
                 raise ValueError(f"param({name!r}) can't be None; compare with None (IS NULL) in the query itself")
             params[i] = v if transform is None else transform(v)
         return params
+
+    def native(self, engine: Any, scope: Mapping[str, Any]) -> Any:
+        """The engine's prepared read for these scope names (planned on first use)."""
+        key = (engine, tuple(scope))
+        read = self.natives.get(key)
+        if read is None:
+            op = self.json
+            if scope:
+                index = json.dumps({name: len(self.params) + i for i, name in enumerate(scope)})
+                op = f'{op[:-1]},"scope":{index}}}'
+            declared = [*self.declared, *([None] * len(scope))]
+            read = self.natives[key] = engine.prepare_read(op, len(declared), declared)
+        return read
+
+    def call_values(self, values: Mapping[str, Any], known: frozenset[str], scope: Mapping[str, Any] | None) -> tuple[list[Any], dict[str, Any]]:
+        """The parameter list of a call, the scope values after it, and the scope itself:
+        ``scope=`` over the ``monorm.scope()`` context."""
+        from .db import _scope
+
+        merged = _scope.get()
+        if scope:
+            merged = {**merged, **scope}
+        params = self.bind(values, known)
+        params.extend(merged.values())
+        return params, merged
+
+    def validate(self, qs: Any) -> None:
+        """Plans the statement now, so a shape that cannot become a slot fails at ``prepare()``.
+        A scope that is not set yet waits for the first call."""
+        from .db import _scope
+        from .inspection import _native as inspection_native
+
+        try:
+            self.native(inspection_native(qs), _scope.get())
+        except QueryError as e:
+            if "which is not set" not in str(e):
+                raise
+
+    def start(self, qs: Any, known: frozenset[str], values: Mapping[str, Any], scope: Mapping[str, Any] | None, row_cls: Any = None) -> Awaitable[Any]:
+        """Starts the statement; the engine's awaitable comes back as is, without a
+        coroutine around it, unless a query hook or an N+1 scope observes it."""
+        from .db import resolve
+
+        params, merged = self.call_values(values, known, scope)
+        db = resolve(qs._db)
+        engine, tx = db._reader(), db._tx()
+        read = self.native(engine, merged)
+        return db._call(lambda t: read.run(params, tx, row_cls, qs._db, t))
+
+    def sql(self, qs: Any, known: frozenset[str], values: Mapping[str, Any], scope: Mapping[str, Any] | None) -> str:
+        from .inspection import _native as inspection_native
+
+        params, merged = self.call_values(values, known, scope)
+        sql: str = self.native(inspection_native(qs), merged).sql(params)
+        return sql
+
+    def inspect(self, qs: Any, known: frozenset[str], values: Mapping[str, Any], scope: Mapping[str, Any] | None) -> QueryInspection:
+        from .inspection import _native as inspection_native
+
+        _, merged = self.call_values(values, known, scope)
+        return QueryInspection._from_json(self.native(inspection_native(qs), merged).inspect())
 
 
 class OneRowQuery(Coroutine[Any, Any, T_co]):
@@ -1600,14 +1663,14 @@ class PreparedOneRowQuery(Generic[T_co]):
         self._query = query
         self._prepared = prepared
 
-    async def __call__(self, **values: Any) -> T_co:
-        return self._query._result(await self._prepared.all(**values))
+    async def __call__(self, *, scope: Mapping[str, Any] | None = None, **values: Any) -> T_co:
+        return self._query._result(await self._prepared.all(scope=scope, **values))
 
-    def inspect(self, **values: Any) -> QueryInspection:
-        return cast(QueryInspection, self._prepared.inspect(**values))
+    def inspect(self, *, scope: Mapping[str, Any] | None = None, **values: Any) -> QueryInspection:
+        return cast(QueryInspection, self._prepared.inspect(scope=scope, **values))
 
-    def sql(self, **values: Any) -> str:
-        return cast(str, self._prepared.sql(**values))
+    def sql(self, *, scope: Mapping[str, Any] | None = None, **values: Any) -> str:
+        return cast(str, self._prepared.sql(scope=scope, **values))
 
 
 class Prepared(Generic[M]):
@@ -1620,7 +1683,9 @@ class Prepared(Generic[M]):
     def __init__(self, qs: QuerySet[M]) -> None:
         self._qs = qs
         self._compiled: dict[str, _Compiled] = {}
-        self._names = self._statement("select").names
+        select = self._statement("select")
+        self._names = select.names
+        select.validate(qs)
 
     def _statement(self, kind: str) -> _Compiled:
         c = self._compiled.get(kind)
@@ -1639,73 +1704,53 @@ class Prepared(Generic[M]):
             c = self._compiled[kind] = _Compiled(qs._select_ir(op, params), params)
         return c
 
-    def _start(self, kind: str, values: Mapping[str, Any]) -> Awaitable[Any]:
-        """Starts the statement; the engine's awaitable comes back as is, without a
-        coroutine around it, unless a query hook or an N+1 scope observes it."""
-        from .db import _with_scope, resolve
-
-        c = self._statement(kind)
-        params = c.bind(values, self._names)
+    def _start(self, kind: str, values: Mapping[str, Any], scope: Mapping[str, Any] | None) -> Awaitable[Any]:
         qs = self._qs
         if qs._locks():
             qs._check_lock()
-        db = resolve(qs._db)
-        op, params = _with_scope(c.json, params)
-        engine, tx, allowed = db._reader(), db._tx(), allowed_writes()
-        return db._call(lambda t: engine.run(op, params, tx, None, qs._db, allowed, t))
+        return self._statement(kind).start(qs, self._names, values, scope)
 
     def require(self) -> RequiredPrepared[M]:
         """Require at least one row from each prepared read."""
         return cast("RequiredPrepared[M]", Prepared(self._qs.require()))
 
-    async def all(self, **values: Any) -> list[M]:
-        rows: list[M] = await self._start("select", values)
+    async def all(self, *, scope: Mapping[str, Any] | None = None, **values: Any) -> list[M]:
+        rows: list[M] = await self._start("select", values, scope)
         return self._qs._check_rows(rows)
 
-    def __call__(self, **values: Any) -> Awaitable[list[M]]:
-        """The rows, like awaiting the query set."""
-        return self.all(**values) if self._qs._required else self._start("select", values)
+    def __call__(self, *, scope: Mapping[str, Any] | None = None, **values: Any) -> Awaitable[list[M]]:
+        """The rows, like awaiting the query set. ``scope=`` gives the ``scope.<name>`` values
+        of this call; without it the ``monorm.scope()`` context gives them."""
+        return self.all(scope=scope, **values) if self._qs._required else self._start("select", values, scope)
 
-    async def get(self, **values: Any) -> M | None:
-        objs: list[M] = await self._start("get", values)
+    async def get(self, *, scope: Mapping[str, Any] | None = None, **values: Any) -> M | None:
+        objs: list[M] = await self._start("get", values, scope)
         self._qs._check_rows(objs)
         model = self._qs.model
         if len(objs) > 1:
             raise model.MultipleObjectsReturned(f"more than one {model.__name__} matches the query")
         return objs[0] if objs else None
 
-    async def first(self, **values: Any) -> M | None:
-        objs: list[M] = await self._start("first", values)
+    async def first(self, *, scope: Mapping[str, Any] | None = None, **values: Any) -> M | None:
+        objs: list[M] = await self._start("first", values, scope)
         self._qs._check_rows(objs)
         return objs[0] if objs else None
 
-    async def count(self, **values: Any) -> int:
-        n: int = await self._start("count", values)
+    async def count(self, *, scope: Mapping[str, Any] | None = None, **values: Any) -> int:
+        n: int = await self._start("count", values, scope)
         return n
 
-    async def exists(self, **values: Any) -> bool:
-        b: bool = await self._start("exists", values)
+    async def exists(self, *, scope: Mapping[str, Any] | None = None, **values: Any) -> bool:
+        b: bool = await self._start("exists", values, scope)
         return b
 
-    def inspect(self, **values: Any) -> QueryInspection:
+    def inspect(self, *, scope: Mapping[str, Any] | None = None, **values: Any) -> QueryInspection:
         """Inspect the prepared SELECT for these bound parameter values."""
-        from .db import _with_scope
-        from .inspection import _native as inspection_native
+        return self._statement("select").inspect(self._qs, self._names, values, scope)
 
-        c = self._statement("select")
-        return QueryInspection._from_json(
-            inspection_native(self._qs).inspect(
-                *_with_scope(c.json, c.bind(values, self._names)),
-            )
-        )
-
-    def sql(self, **values: Any) -> str:
+    def sql(self, *, scope: Mapping[str, Any] | None = None, **values: Any) -> str:
         """The SELECT for these values, parameters inlined (for debugging)."""
-        from .db import _with_scope
-
-        c = self._statement("select")
-        sql: str = self._qs._native().sql(*_with_scope(c.json, c.bind(values, self._names)))
-        return sql
+        return self._statement("select").sql(self._qs, self._names, values, scope)
 
     @property
     def params(self) -> frozenset[str]:
