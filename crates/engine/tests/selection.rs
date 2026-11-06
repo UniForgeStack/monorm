@@ -339,7 +339,7 @@ fn upsert_bypass_names_the_defaults_it_skips() {
             let conflict = if update { OnConflict::Update(vec!["id".into()], Default::default(), vec!["value".into()], vec![]) }
                 else { OnConflict::Nothing(vec!["id".into()], Default::default()) };
             plan_insert(&schema, Target::new(dialect), "Selected", &["id".into(), "value".into()],
-                vec![vec![Some(7.into()), Some("new".into())]], Some(conflict), &NoParams, false, &bypass)
+                vec![vec![Some(7.into()), Some("new".into())]], Some(conflict), &NoParams, false, None, &bypass)
                 .map(|(stmt, _)| db::build(dialect, &stmt).0)
         };
         for bypass in [Bypass::All(false), Bypass::Names(vec![])] {
@@ -379,7 +379,7 @@ fn neutral_upsert_filters_the_update_action_and_fails_closed() {
                 OnConflict::Update(vec!["id".into()], Default::default(), vec!["value".into()], vec![])
             } else { OnConflict::Nothing(vec!["id".into()], Default::default()) };
             plan_insert(&schema, Target::new(dialect), "Selected", &["id".into(), "value".into()],
-                vec![vec![Some(7.into()), Some("new".into())]], Some(conflict), params, false, &Default::default())
+                vec![vec![Some(7.into()), Some("new".into())]], Some(conflict), params, false, None, &Default::default())
         };
         let error = insert(true, &NoParams).err().expect("missing scope must fail before execution");
         assert!(error.to_string().contains("scope.tenant"), "{error}");
@@ -526,7 +526,7 @@ fn scope_errors_identify_the_prepared_default_at_each_consumer() {
         }
         check(monorm_engine::plan::plan_insert(&schema, target, "Child", &["id".into()],
             vec![vec![Some(1.into())]], Some(monorm_engine::plan::OnConflict::Update(vec!["id".into()], Default::default(), vec!["id".into()], vec![])),
-            &NoParams, false, &Default::default()).err().expect("upsert scope"));
+            &NoParams, false, None, &Default::default()).err().expect("upsert scope"));
         let Operation::Select(q) = serde_json::from_value(json!({"op":"select","model":"Selected","prefetch":[{"relation":"children","model":"Child"}]})).unwrap() else { panic!("select") };
         check(plan_prefetch_only(&schema, target, &q, &NoParams).err().expect("prefetch scope"));
         let bypass = serde_json::from_value(json!({"op":"select","model":"Child","without_defaults":true})).unwrap();
@@ -717,4 +717,28 @@ fn an_unknown_bypass_name_lists_the_model_defaults() {
     let operation: Operation = serde_json::from_value(json!({"op":"select","model":"Selected","without_defaults":["tennant"]})).unwrap();
     let err = Planner::plan(&schema, Target::new(Dialect::Postgres), &operation, &NoParams).err().expect("unknown name").to_string();
     assert!(err.contains("tennant") && err.contains("tenant") && err.contains("active"), "{err}");
+}
+
+#[test]
+fn writes_return_the_default_selection_or_the_named_columns() {
+    use monorm_core::ir::Bypass;
+    use monorm_engine::{db, plan::plan_insert};
+    let schema = Schema::from_ir(serde_json::from_value(schema(true)).unwrap()).unwrap();
+    let fields: Vec<String> = vec!["id".into(), "value".into(), "active".into()];
+    let row = vec![Some(1.into()), Some("v".into()), Some(true.into())];
+    for dialect in [Dialect::Postgres, Dialect::Sqlite] {
+        let target = Target::new(dialect);
+        let returning = |names: Option<&[String]>, bypass: &Bypass| {
+            let (stmt, columns) = plan_insert(&schema, target, "Selected", &fields, vec![row.clone()], None, &NoParams, true, names, bypass).unwrap();
+            let sql = db::build(dialect, &stmt).0;
+            (sql.split_once("RETURNING ").expect("RETURNING").1.to_owned(), columns.expect("columns").1.is_some())
+        };
+        let (default, shaped) = returning(None, &Bypass::default());
+        assert!(shaped && default.contains("value") && default.contains("id") && !default.contains("active"), "{default}");
+        let (all, shaped) = returning(None, &Bypass::All(true));
+        assert!(!shaped && all.contains("active"), "{all}");
+        let (only, shaped) = returning(Some(&["active".to_owned()]), &Bypass::default());
+        assert!(shaped && only.contains("active") && only.contains("id") && !only.contains("value"), "{only}");
+
+    }
 }

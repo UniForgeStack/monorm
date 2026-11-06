@@ -157,7 +157,7 @@ pub enum Plan {
     /// The model and column types of the returned rows when the delete has `RETURNING`.
     Delete(DeleteStatement, Option<Returned>),
     /// The model and column types of the returned rows when the insert has `RETURNING`.
-    Insert(InsertStatement, Option<(usize, Vec<ValueType>, Vec<crate::hooks::Computed>)>),
+    Insert(InsertStatement, Option<Returned>),
     MultiTableInsert(Box<crate::multi_table::Insert>),
     MultiTableMutation(Box<crate::multi_table::Mutation>),
 }
@@ -949,7 +949,7 @@ impl<'s> Planner<'s> {
                 let virt = derive_ctes(schema, target, &q.with, params)?;
                 let mut p = Planner::new(schema, &virt, target, &q.model, None, params, vec![], 0)?;
                 if crate::multi_table::is_multi_table(schema, &q.model)? {
-                    let mut select: Select = serde_json::from_value(serde_json::json!({"model":q.model,"without_defaults":q.without_defaults,"without_root_filter":q.without_root_filter})).map_err(|e| query_err(e.to_string()))?;
+                    let mut select = crate::multi_table::matched_select(schema, &q.model, q.without_defaults.clone(), q.without_root_filter)?;
                     select.filters = q.filters.clone(); select.with = q.with.clone();
                     let mut matched = p.build_select(&select)?.stmt;
                     let prior_joins = p.joins.len();
@@ -3320,7 +3320,7 @@ fn active_filter(model: &Model, bypass: &Bypass) -> Option<Expr> {
     match filters.len() { 0 => None, 1 => filters.pop(), _ => Some(Expr::And { items: filters }) }
 }
 
-fn active_fields<'a>(model: &'a Model, bypass: &Bypass) -> Option<&'a [String]> {
+pub(crate) fn active_fields<'a>(model: &'a Model, bypass: &Bypass) -> Option<&'a [String]> {
     model.read_defaults.fields_owner.as_ref().filter(|o| !bypass.skips(&o.name))
         .and(model.read_flags.fields.as_deref())
 }
@@ -3767,7 +3767,10 @@ pub enum OnConflict {
     Update(Vec<String>, OnConflictTarget, Vec<String>, Vec<Assignment>),
 }
 
-/// `INSERT INTO <table> (<fields>) VALUES ... [ON CONFLICT ...] [RETURNING <all columns>]`.
+/// `INSERT INTO <table> (<fields>) VALUES ... [ON CONFLICT ...] [RETURNING <selection>]`.
+///
+/// With `returning`, the row holds the model's default selection (minus `without_defaults`),
+/// or the `model_fields` and the key and helper fields an instance needs.
 ///
 /// `rows` hold a value per field (converted by `field_types`); `None` is the SQL
 /// `DEFAULT` keyword.
@@ -3781,8 +3784,9 @@ pub fn plan_insert(
     on_conflict: Option<OnConflict>,
     params: &dyn Params,
     returning: bool,
+    model_fields: Option<&[String]>,
     without_defaults: &Bypass,
-) -> Result<(InsertStatement, Vec<ValueType>)> {
+) -> Result<(InsertStatement, Option<ReturnColumns>)> {
     crate::db::require_dialect(target.dialect)?;
     let idx = schema.model_idx(model).map_err(query_err)?;
     let m = schema.model(idx);
@@ -3914,10 +3918,14 @@ pub fn plan_insert(
         };
         stmt.on_conflict(clause);
     }
-    if returning {
-        stmt.returning(Query::returning().exprs(m.fields().iter().enumerate().map(|(pos, f)| if m.computed(pos) { SExpr::cust("NULL") } else { returning_col(f) })));
+    if !returning {
+        return Ok((stmt, None));
     }
-    Ok((stmt, m.fields().iter().map(|f| f.value_type()).collect()))
+    let planner = Planner::new(schema, &[], target, model, None, params, vec![], 0)?;
+    let shape = planner.return_shape(model_fields, without_defaults)?;
+    let positions = shape_positions(m, shape.as_ref());
+    stmt.returning(Query::returning().exprs(positions.iter().map(|pos| if m.computed(pos) { SExpr::cust("NULL") } else { returning_col(&m.fields()[pos]) })));
+    Ok((stmt, Some((positions.iter().map(|pos| m.fields()[pos].value_type()).collect(), shape))))
 }
 
 /// `UPDATE ... SET` each row to its own values, matched by primary key, as one
@@ -3944,8 +3952,9 @@ pub fn plan_update_many(
     filters: &[Expr],
     params: &dyn Params,
     returning: bool,
+    model_fields: Option<&[String]>,
     without_defaults: &Bypass,
-) -> Result<(Vec<UpdateStatement>, Option<Vec<ValueType>>)> {
+) -> Result<(Vec<UpdateStatement>, Option<ReturnColumns>)> {
     let mut planner = Planner::new(schema, &[], target, model, None, params, vec![], 0)?;
     let m = schema.model(planner.root);
     crate::ownership::require_local_write(m)?;
@@ -3963,6 +3972,8 @@ pub fn plan_update_many(
         planner.require(planner.caps.returning, "update_many().returning()")?;
     }
     validate_bypass(m, without_defaults)?;
+    let selection = if returning { Some(planner.return_shape(model_fields, without_defaults)?) } else { None };
+    let positions = selection.as_ref().map(|shape| shape_positions(m, shape.as_ref()));
     let where_ = planner.apply_filters(filters, without_defaults, false)?;
     let key_cols: Vec<SExpr> = cols[..width].iter().map(|c| col(&table, &c.column)).collect();
     let mut stmts = vec![];
@@ -3999,12 +4010,13 @@ pub fn plan_update_many(
         for w in &where_ {
             stmt.and_where(w.clone());
         }
-        if returning {
-            stmt.returning(Query::returning().exprs(m.fields().iter().enumerate().map(|(pos, f)| if m.computed(pos) { SExpr::cust("NULL") } else { read_col(&table, f) })));
+        if let Some(positions) = &positions {
+            stmt.returning(Query::returning().exprs(positions.iter().map(|pos| if m.computed(pos) { SExpr::cust("NULL") } else { read_col(&table, &m.fields()[pos]) })));
         }
         stmts.push(stmt);
     }
-    Ok((stmts, returning.then(|| m.fields().iter().map(|f| f.value_type()).collect())))
+    let columns = selection.zip(positions).map(|(shape, positions)| (positions.iter().map(|pos| m.fields()[pos].value_type()).collect(), shape));
+    Ok((stmts, columns))
 }
 
 /// The positions of the fields `names`, in order.
@@ -4053,7 +4065,7 @@ fn write_expr(e: SExpr, f: &FieldIr) -> SExpr {
 }
 
 /// Selected field positions in output order; a whole-model row needs no allocation.
-enum Positions {
+pub(crate) enum Positions {
     All(usize),
     Shaped(Vec<usize>),
 }
@@ -4064,10 +4076,10 @@ impl Positions {
         all.chain(shaped.iter().copied())
     }
 
-    fn to_vec(&self) -> Vec<usize> { self.iter().collect() }
+    pub(crate) fn to_vec(&self) -> Vec<usize> { self.iter().collect() }
 }
 
-fn shape_positions(model: &Model, shape: Option<&monorm_core::behavior::ResultShape>) -> Positions {
+pub(crate) fn shape_positions(model: &Model, shape: Option<&monorm_core::behavior::ResultShape>) -> Positions {
     match shape { Some(shape) => Positions::Shaped(shape.fields.iter().map(|f| f.field.position).collect()), None => Positions::All(model.fields().len()) }
 }
 

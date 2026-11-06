@@ -103,7 +103,7 @@ fn read_fetched(fetched: &[exec::Fetched]) {
 async fn call(db: &dyn Driver, schema: &Schema, c: &Case, k: usize) -> u64 {
     let target = Target::new(db.dialect());
     if let Some((model, fields, rows)) = &c.insert {
-        let plans = exec::plan_inserts(schema, target, model, fields, rows.clone(), None, &Bound(vec![]), None, true, &Bypass::default()).unwrap();
+        let plans = exec::plan_inserts(schema, target, model, fields, rows.clone(), None, &Bound(vec![]), None, true, None, &Bypass::default()).unwrap();
         return match exec::run_inserts(db, target, plans, true, true).await.unwrap() {
             Outcome::Rows { rows, .. } => rows.len() as u64,
             Outcome::Affected(n) => n,

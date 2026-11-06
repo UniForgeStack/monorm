@@ -161,7 +161,7 @@ fn update_many_rejects_a_computed_field_in_every_build() {
     let fields = ["id".to_owned(), "slug".to_owned()];
     for dialect in [Dialect::Postgres, Dialect::Sqlite] {
         let rows = vec![vec![Value::Int(Some(1)), Value::String(Some("x".to_owned()))]];
-        let error = exec::plan_update_many(&schema, Target::new(dialect), "Post", &fields, rows, &[], &Ints(vec![]), false, None, &Default::default()).err().unwrap();
+        let error = exec::plan_update_many(&schema, Target::new(dialect), "Post", &fields, rows, &[], &Ints(vec![]), false, None, None, &Default::default()).err().unwrap();
         assert!(error.to_string().contains("computed fields are read-only"), "{error}");
     }
 }

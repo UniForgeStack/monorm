@@ -381,6 +381,7 @@ fn update_many_plan(
     filters_json: &str,
     params_: Unknown<'_>,
     returning: bool,
+    model_fields: Option<&[String]>,
     batch_size: Option<u32>,
     without_defaults: &str,
 ) -> napi::Result<(Vec<sea_query::UpdateStatement>, exec::UpdateMany)> {
@@ -391,7 +392,7 @@ fn update_many_plan(
     let (filters, scope) = monorm_engine::params::scoped_filters(filters_json).map_err(engine_err)?;
     let p = params(env, params_)?;
     let p = monorm_engine::params::Scoped { params: &p, scope: &scope };
-    exec::plan_update_many(schema, target, model, fields, values, &filters, &p, returning, batch_size.map(|n| n as usize), &serde_json::from_str(without_defaults).map_err(|e| query_err(format!("invalid bypass: {e}")))?)
+    exec::plan_update_many(schema, target, model, fields, values, &filters, &p, returning, model_fields, batch_size.map(|n| n as usize), &serde_json::from_str(without_defaults).map_err(|e| query_err(format!("invalid bypass: {e}")))?)
         .map_err(engine_err)
 }
 
@@ -416,15 +417,15 @@ fn inspect_insert(env: &Env, schema: &schema::Schema, target: Target, model: &st
     let values = convert_rows(env, schema, model, fields, rows, true)?;
     let p = params(env, params_)?;
     let scoped = monorm_engine::params::Scoped { params: &p, scope: &opts.scope };
-    let plans = exec::plan_inserts(schema, target, model, fields, values, conflict, &scoped, batch_size.map(|n| n as usize), returning, &opts.without_defaults).map_err(engine_err)?;
+    let plans = exec::plan_inserts(schema, target, model, fields, values, conflict, &scoped, batch_size.map(|n| n as usize), returning, opts.model_fields.as_deref(), &opts.without_defaults).map_err(engine_err)?;
     let batching = plans.len() > 1;
     inspection_json(monorm_engine::inspect::Inspection::plans(&plans, batching))
 }
 
 #[allow(clippy::too_many_arguments)]
 fn inspect_updates(env: &Env, schema: &schema::Schema, target: Target, model: &str, fields: &[String], rows: Unknown<'_>,
-    filters_json: &str, params_: Unknown<'_>, batch_size: Option<u32>, returning: bool, without_defaults: &str) -> napi::Result<String> {
-    let (stmts, _) = update_many_plan(env, schema, target, model, fields, rows, filters_json, params_, returning, batch_size, without_defaults)?;
+    filters_json: &str, params_: Unknown<'_>, batch_size: Option<u32>, returning: bool, model_fields: Option<Vec<String>>, without_defaults: &str) -> napi::Result<String> {
+    let (stmts, _) = update_many_plan(env, schema, target, model, fields, rows, filters_json, params_, returning, model_fields.as_deref(), batch_size, without_defaults)?;
     let batching = stmts.len() > 1;
     inspection_json(monorm_engine::inspect::Inspection::new(stmts.into_iter().map(|s| {
         use sea_query::QueryStatementBuilder;
@@ -476,8 +477,8 @@ impl JsSchema {
     #[napi]
     #[allow(clippy::too_many_arguments)]
     pub fn inspect_update_many(&self, env: &Env, model: String, fields: Vec<String>, rows: Unknown<'_>, filters_json: String,
-        params_: Unknown<'_>, batch_size: Option<u32>, returning: bool, without_defaults: String) -> napi::Result<String> {
-        inspect_updates(env, &self.inner, Target::new(self.inner.dialect), &model, &fields, rows, &filters_json, params_, batch_size, returning, &without_defaults)
+        params_: Unknown<'_>, batch_size: Option<u32>, returning: bool, without_defaults: String, model_fields: Option<Vec<String>>) -> napi::Result<String> {
+        inspect_updates(env, &self.inner, Target::new(self.inner.dialect), &model, &fields, rows, &filters_json, params_, batch_size, returning, model_fields, &without_defaults)
     }
 
     /// Converts and plans a single-row insert without SQL or I/O (`prepareInsert`); the
@@ -555,7 +556,7 @@ impl JsSchema {
     ) -> napi::Result<Vec<String>> {
         let target = Target::new(self.inner.dialect).without(&disable).map_err(query_err)?;
         let (stmts, _) =
-            update_many_plan(env, &self.inner, target, &model, &fields, rows, &filters_json, params_, false, batch_size, "false")?;
+            update_many_plan(env, &self.inner, target, &model, &fields, rows, &filters_json, params_, false, None, batch_size, "false")?;
         Ok(stmts.iter().map(|s| db::to_string(target.dialect, s)).collect())
     }
 
@@ -751,8 +752,8 @@ impl Engine {
     #[napi]
     #[allow(clippy::too_many_arguments)]
     pub fn inspect_update_many(&self, env: &Env, model: String, fields: Vec<String>, rows: Unknown<'_>, filters_json: String,
-        params_: Unknown<'_>, batch_size: Option<u32>, returning: bool, without_defaults: String) -> napi::Result<String> {
-        inspect_updates(env, &self.schema, self.target, &model, &fields, rows, &filters_json, params_, batch_size, returning, &without_defaults)
+        params_: Unknown<'_>, batch_size: Option<u32>, returning: bool, without_defaults: String, model_fields: Option<Vec<String>>) -> napi::Result<String> {
+        inspect_updates(env, &self.schema, self.target, &model, &fields, rows, &filters_json, params_, batch_size, returning, model_fields, &without_defaults)
     }
 
     /// Runs one query IR document (see `outcome_js` for what the promise gives).
@@ -852,6 +853,7 @@ impl Engine {
         returning: Option<bool>,
         scope: Option<String>,
         without_defaults: Option<String>,
+        model_fields: Option<Vec<String>>,
     ) -> napi::Result<PromiseRaw<'env, Raw>> {
         let returning = returning.unwrap_or(true);
         let without_defaults: ir::Bypass = serde_json::from_str(without_defaults.as_deref().unwrap_or("false")).map_err(|e| query_err(format!("invalid bypass: {e}")))?;
@@ -869,7 +871,7 @@ impl Engine {
         let p = params(env, params_)?;
         let scope = serde_json::from_str(scope.as_deref().unwrap_or("{}")).map_err(|e| query_err(format!("invalid scope IR: {e}")))?;
         let scoped = monorm_engine::params::Scoped { params: &p, scope: &scope };
-        let plans = exec::plan_inserts(&self.schema, self.target, &model, &fields, values, conflict, &scoped, batch_size.map(|n| n as usize), returning, &without_defaults)
+        let plans = exec::plan_inserts(&self.schema, self.target, &model, &fields, values, conflict, &scoped, batch_size.map(|n| n as usize), returning, model_fields.as_deref(), &without_defaults)
             .map_err(engine_err)?;
         let target = self.target;
         let conn = self.traced(tx, trace);
@@ -922,10 +924,11 @@ impl Engine {
         without_defaults: Option<String>,
         allowed: Option<Vec<String>>,
         trace: Option<&Trace>,
+        model_fields: Option<Vec<String>>,
     ) -> napi::Result<PromiseRaw<'env, Raw>> {
         protect::ensure_writable(&self.schema, &model, allowed.as_deref().unwrap_or_default()).map_err(engine_err)?;
         let (_, um) = update_many_plan(
-            env, &self.schema, self.target, &model, &fields, rows, &filters_json, params_, returning, batch_size,
+            env, &self.schema, self.target, &model, &fields, rows, &filters_json, params_, returning, model_fields.as_deref(), batch_size,
             without_defaults.as_deref().unwrap_or("false"),
         )?;
         let conn = self.traced(tx, trace);

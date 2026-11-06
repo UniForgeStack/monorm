@@ -1199,7 +1199,7 @@ pub struct Update {
     #[serde(default)]
     pub filters: Vec<Expr>,
     pub set: Vec<Assignment>,
-    /// Return the updated rows (every column) instead of a row count.
+    /// Return the updated rows (`model_fields`, else the default selection) instead of a row count.
     #[serde(default)]
     pub returning: bool,
 }
@@ -1221,7 +1221,7 @@ pub struct Delete {
     pub with: Vec<Cte>,
     #[serde(default)]
     pub filters: Vec<Expr>,
-    /// Return the deleted rows (every column) instead of a row count.
+    /// Return the deleted rows (`model_fields`, else the default selection) instead of a row count.
     #[serde(default)]
     pub returning: bool,
     /// Send `DELETE` to a soft-delete model instead of setting its soft-delete field.

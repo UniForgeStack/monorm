@@ -122,7 +122,7 @@ fn update_many_runs_the_hook_4_on_the_value_that_the_caller_sets() {
         vec![Value::Int(Some(1)), string("first")],
         vec![Value::Int(Some(2)), string("second")],
     ];
-    let (_, plan) = exec::plan_update_many(&schema, Target::new(Dialect::Postgres), "Note", &fields(&["id", "updated_by"]), rows, &[], &Args::of(vec![]), false, None, &Default::default()).unwrap();
+    let (_, plan) = exec::plan_update_many(&schema, Target::new(Dialect::Postgres), "Note", &fields(&["id", "updated_by"]), rows, &[], &Args::of(vec![]), false, None, None, &Default::default()).unwrap();
     let sent: Vec<String> = plan.statements.iter().flat_map(|(_, values)| texts(values)).collect();
     assert_eq!(sent, [HOOK_VALUE, HOOK_VALUE]);
 }

@@ -13,7 +13,7 @@ model Item {
 fn batches(target: Target, rows: usize, batch_size: Option<usize>) -> Vec<usize> {
     let (_, schema) = dsl::check(dsl::compile(SOURCE, None).unwrap()).unwrap();
     let rows = (0..rows).map(|i| vec![Some(Value::String(Some(format!("n{i}"))))]).collect();
-    let plans = exec::plan_inserts(&schema, target, "Item", &["name".into()], rows, None, &NoParams, batch_size, true, &Default::default()).unwrap();
+    let plans = exec::plan_inserts(&schema, target, "Item", &["name".into()], rows, None, &NoParams, batch_size, true, None, &Default::default()).unwrap();
     plans
         .iter()
         .map(|p| match p {
@@ -36,7 +36,7 @@ fn batch_size_caps_the_rows_per_statement() {
     assert_eq!(batches(Target::new(Dialect::Postgres), 5, Some(3)), vec![3, 2]);
     assert_eq!(batches(Target::new(Dialect::Postgres), 2, Some(3)), vec![2]);
     let (_, schema) = dsl::check(dsl::compile(SOURCE, None).unwrap()).unwrap();
-    let err = exec::plan_inserts(&schema, Target::new(Dialect::Postgres), "Item", &[], vec![], None, &NoParams, Some(0), true, &Default::default());
+    let err = exec::plan_inserts(&schema, Target::new(Dialect::Postgres), "Item", &[], vec![], None, &NoParams, Some(0), true, None, &Default::default());
     assert!(err.is_err());
 }
 
@@ -124,7 +124,7 @@ fn a_count_insert_has_no_returning_clause() {
     let target = Target::new(Dialect::Postgres);
     let plan = |returning| {
         let rows = vec![vec![Some(Value::String(Some("a".into())))]];
-        let plans = exec::plan_inserts(&schema, target, "Item", &["name".into()], rows, None, &NoParams, None, returning, &Default::default()).unwrap();
+        let plans = exec::plan_inserts(&schema, target, "Item", &["name".into()], rows, None, &NoParams, None, returning, None, &Default::default()).unwrap();
         exec::statement(target, &plans[0])
     };
     assert!(!plan(false).contains("RETURNING"), "{}", plan(false));
@@ -132,8 +132,8 @@ fn a_count_insert_has_no_returning_clause() {
     // SQLite before 3.35 has no RETURNING; a count insert does not need it.
     let old = Target::new(Dialect::Sqlite).without(&["returning".into()]).unwrap();
     let rows = vec![vec![Some(Value::String(Some("a".into())))]];
-    assert!(exec::plan_inserts(&schema, old, "Item", &["name".into()], rows.clone(), None, &NoParams, None, false, &Default::default()).is_ok());
-    assert!(exec::plan_inserts(&schema, old, "Item", &["name".into()], rows, None, &NoParams, None, true, &Default::default()).is_err());
+    assert!(exec::plan_inserts(&schema, old, "Item", &["name".into()], rows.clone(), None, &NoParams, None, false, None, &Default::default()).is_ok());
+    assert!(exec::plan_inserts(&schema, old, "Item", &["name".into()], rows, None, &NoParams, None, true, None, &Default::default()).is_err());
 }
 
 /// One parameter that the statement does not use: it still counts toward the limit.
@@ -155,7 +155,7 @@ impl monorm_engine::params::Params for OneParam {
 }
 
 fn statements(schema: &monorm_core::schema::Schema, target: Target, model: &str, fields: &[String], rows: Vec<Vec<Option<Value>>>, params: &dyn monorm_engine::params::Params) -> Vec<usize> {
-    exec::plan_inserts(schema, target, model, fields, rows, None, params, None, true, &Default::default())
+    exec::plan_inserts(schema, target, model, fields, rows, None, params, None, true, None, &Default::default())
         .unwrap()
         .iter()
         .map(|p| match p {

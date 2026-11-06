@@ -9,7 +9,7 @@ use crate::{
 use monorm_core::{
     behavior::{OwnerId, PreparedOwnerLink},
     dialect::Target,
-    ir::{Delete, FieldIr, Select, Update, ValueType},
+    ir::{Bypass, Delete, FieldIr, Select, Update, ValueType},
     schema::Schema,
 };
 use sea_query::{
@@ -30,6 +30,7 @@ pub struct Insert {
     key: FieldIr,
     model: usize,
     types: Vec<ValueType>,
+    shape: Option<monorm_core::behavior::ResultShape>,
     computed: Vec<crate::hooks::Computed>,
 }
 
@@ -83,11 +84,42 @@ fn owner_chain(schema: &Schema, owner: OwnerId) -> Vec<&PreparedOwnerLink> {
     chain
 }
 
-/// An unfiltered select of the whole logical model. The identity reads skip the default
-/// filters: they read back rows by key, which a filter (or an unset `scope.<name>`) must not hide.
-fn model_select(model: &str, without_defaults: monorm_core::ir::Bypass, without_root_filter: bool) -> Result<Select> {
-    serde_json::from_value(serde_json::json!({ "model": model, "without_defaults": without_defaults, "without_root_filter": without_root_filter }))
-        .map_err(|e| query_err(e.to_string()))
+/// Every field of the model, in order, and no related load: the identity capture of a
+/// mutation reads whole rows (the key and the assigned values sit at fixed columns), with
+/// the default filters of `without_defaults` and `without_root_filter`.
+pub(crate) fn matched_select(schema: &Schema, model: &str, without_defaults: Bypass, without_root_filter: bool) -> Result<Select> {
+    let logical = schema.model(schema.model_idx(model).map_err(query_err)?);
+    let names: Vec<_> = logical.fields().iter().map(|f| &f.name).collect();
+    serde_json::from_value(serde_json::json!({
+        "model": model, "model_fields": names, "without_defaults": without_defaults,
+        "without_root_filter": without_root_filter, "without_related": true,
+    }))
+    .map_err(|e| query_err(e.to_string()))
+}
+
+/// The read-back of a write: the named fields, else the default selection, with every
+/// read default bypassed so that a filter cannot hide the row that was just written.
+fn returned_read(
+    schema: &Schema,
+    target: Target,
+    model: &str,
+    model_fields: Option<&[String]>,
+    without_defaults: &Bypass,
+) -> Result<plan::SelectPlan> {
+    let logical = schema.model(schema.model_idx(model).map_err(query_err)?);
+    let names = model_fields.or_else(|| plan::active_fields(logical, without_defaults));
+    let select: Select = serde_json::from_value(serde_json::json!({
+        "model": model, "model_fields": names, "without_defaults": true, "without_related": true,
+    }))
+    .map_err(|e| query_err(e.to_string()))?;
+    plan::plan_select(schema, target, &select, &NoParams)
+}
+
+fn returned_shape(read: &mut plan::SelectPlan) -> Option<monorm_core::behavior::ResultShape> {
+    match &mut read.output {
+        plan::Output::Instances { shape, .. } => shape.take(),
+        plan::Output::Rows { .. } => None,
+    }
 }
 
 /// Ends the own transaction `tx` by the result. Without one (`conn` is a transaction of
@@ -107,6 +139,7 @@ async fn finish<T>(tx: Option<std::sync::Arc<dyn Transaction>>, result: Result<T
 }
 
 /// Complete-child creation. The physical identity is allocated only at the root.
+#[allow(clippy::too_many_arguments)]
 pub fn prepare_insert(
     schema: &Schema,
     target: Target,
@@ -114,6 +147,8 @@ pub fn prepare_insert(
     fields: &[String],
     rows: Vec<Vec<Option<Value>>>,
     params: &dyn crate::Params,
+    model_fields: Option<&[String]>,
+    without_defaults: &Bypass,
 ) -> Result<Insert> {
     let model_idx = schema.model_idx(model).map_err(query_err)?;
     let logical = schema.model(model_idx);
@@ -175,15 +210,18 @@ pub fn prepare_insert(
         }
         prepared.push(steps);
     }
-    let read = plan::plan_select(schema, target, &model_select(model, true.into(), false)?, &NoParams)?.stmt;
+    let mut read = returned_read(schema, target, model, model_fields, without_defaults)?;
+    let shape = returned_shape(&mut read);
+    let positions = plan::shape_positions(logical, shape.as_ref()).to_vec();
     Ok(Insert {
         rows: prepared,
-        read,
         table: logical.table().into(),
         key: logical.pk_field().clone(),
         model: model_idx,
-        types: logical.fields().iter().map(|f| f.value_type()).collect(),
-        computed: crate::exec::all_computed(schema, model_idx, params)?,
+        types: read.types,
+        computed: crate::hooks::computations(logical, 0, &positions, params)?,
+        read: read.stmt,
+        shape,
     })
 }
 
@@ -247,7 +285,7 @@ pub async fn run_insert(conn: &dyn Executor, target: Target, insert: Insert, own
             model: insert.model,
             types: insert.types,
             rows: crate::hooks::compute(Box::new(ChainedRows::new(fetched)), &insert.computed)?,
-            shape: None,
+            shape: insert.shape,
         })
     }
     .await;
@@ -269,6 +307,7 @@ pub struct Mutation {
     key_position: usize,
     model: usize,
     types: Vec<ValueType>,
+    shape: Option<monorm_core::behavior::ResultShape>,
     computed: Vec<crate::hooks::Computed>,
     assignments: Vec<Assignment>,
     returning: bool,
@@ -281,7 +320,12 @@ impl Mutation {
     pub(crate) fn inspection(&self) -> Vec<crate::inspect::Statement> {
         use sea_query::QueryStatementBuilder;
         let mut statements = vec![crate::inspect::statement(&self.matched.clone().into_sub_query_statement(), false)];
+        let read = || crate::inspect::statement(&self.read.clone().into_sub_query_statement(), true);
         if self.delete {
+            // A delete reads its rows before it removes them.
+            if self.returning {
+                statements.push(read());
+            }
             let mut delete = Query::delete();
             delete.from_table(Alias::new(&self.table)).and_where(Expr::col(Alias::new(&self.key.column)).eq(0));
             statements.push(crate::inspect::statement(&delete.into_sub_query_statement(), true));
@@ -299,7 +343,7 @@ impl Mutation {
                 statements.push(crate::inspect::statement(&update.into_sub_query_statement(), true));
             }
             if self.returning {
-                statements.push(crate::inspect::statement(&self.read.clone().into_sub_query_statement(), true));
+                statements.push(read());
             }
         }
         statements
@@ -315,6 +359,7 @@ fn mutation(
     with: Vec<monorm_core::ir::Cte>,
     params: &dyn crate::Params,
     returning: bool,
+    model_fields: Option<&[String]>,
     delete: bool,
     without_defaults: monorm_core::ir::Bypass,
     without_root_filter: bool,
@@ -322,8 +367,9 @@ fn mutation(
 ) -> Result<Mutation> {
     let model_idx = schema.model_idx(model).map_err(query_err)?;
     let logical = schema.model(model_idx);
-    let read = plan::plan_select(schema, target, &model_select(model, true.into(), false)?, &NoParams)?.stmt;
-    let mut query = model_select(model, without_defaults, without_root_filter)?;
+    let mut read = returned_read(schema, target, model, model_fields, &without_defaults)?;
+    let shape = returned_shape(&mut read);
+    let mut query = matched_select(schema, model, without_defaults, without_root_filter)?;
     query.filters = filters;
     query.with = with;
     let mut matched = match prepared_match {
@@ -357,15 +403,17 @@ fn mutation(
         }
         matched.lock_with_tables(LockType::Update, locks);
     }
+    let positions = plan::shape_positions(logical, shape.as_ref()).to_vec();
     Ok(Mutation {
         matched,
-        read,
+        read: read.stmt,
         table: logical.table().into(),
         key: logical.pk_field().clone(),
         key_position: logical.pk,
         model: model_idx,
-        types: logical.fields().iter().map(|f| f.value_type()).collect(),
-        computed: if returning { crate::exec::all_computed(schema, model_idx, params)? } else { vec![] },
+        types: read.types,
+        shape,
+        computed: if returning { crate::hooks::computations(logical, 0, &positions, params)? } else { vec![] },
         assignments: vec![],
         returning,
         delete,
@@ -386,6 +434,7 @@ pub fn prepare_delete(
         query.with.clone(),
         params,
         query.returning,
+        query.model_fields.as_deref(),
         true,
         query.without_defaults.clone(),
         query.without_root_filter,
@@ -409,6 +458,7 @@ pub fn prepare_update(
         query.with.clone(),
         params,
         query.returning,
+        query.model_fields.as_deref(),
         false,
         query.without_defaults.clone(),
         query.without_root_filter,
@@ -441,6 +491,22 @@ pub fn prepare_update(
     Ok(plan)
 }
 
+/// The returned form of each captured row, read by key (`what`: the verb of the error).
+async fn read_rows(exec: &dyn Executor, target: Target, plan: &Mutation, keys: &[Value], what: &str) -> Result<Vec<Box<dyn crate::db::RowSet>>> {
+    let mut rows = vec![];
+    for key in keys {
+        let mut read = plan.read.clone();
+        read.and_where(Expr::col((Alias::new(&plan.table), Alias::new(&plan.key.column))).eq(plan::bind(key.clone(), Some(&plan.key))));
+        let (sql, args) = db::build(target.dialect, &read);
+        let row = exec.query(sql, args).await?;
+        if row.len() != 1 {
+            return Err(Error::query(format!("{what} multi-table identity disappeared")));
+        }
+        rows.push(row);
+    }
+    Ok(rows)
+}
+
 pub async fn run_mutation(conn: &dyn Executor, target: Target, plan: Mutation, own_tx: bool) -> Result<Outcome> {
     let tx = if own_tx { Some(conn.begin().await?) } else { None };
     let exec: &dyn Executor = match &tx {
@@ -454,6 +520,8 @@ pub async fn run_mutation(conn: &dyn Executor, target: Target, plan: Mutation, o
         for row in 0..matched.len() {
             keys.push(matched.value(row, plan.key_position, plan.key.value_type())?);
         }
+        // A deleted row is read before it goes.
+        let before = if plan.delete && plan.returning { read_rows(exec, target, &plan, &keys, "deleted").await? } else { vec![] };
         for (row, key) in keys.iter().enumerate() {
             if plan.delete {
                 let mut delete = Query::delete();
@@ -494,33 +562,12 @@ pub async fn run_mutation(conn: &dyn Executor, target: Target, plan: Mutation, o
         if !plan.returning {
             return Ok(Outcome::Affected(keys.len() as u64));
         }
-        if plan.delete {
-            return Ok(Outcome::Rows {
-                model: plan.model,
-                types: plan.types,
-                rows: crate::hooks::compute(matched, &plan.computed)?,
-                shape: None,
-            });
-        }
-        let mut returned = vec![];
-        for key in keys {
-            let mut read = plan.read.clone();
-            read.and_where(
-                Expr::col((Alias::new(&plan.table), Alias::new(&plan.key.column)))
-                    .eq(plan::bind(key, Some(&plan.key))),
-            );
-            let (sql, args) = db::build(target.dialect, &read);
-            let row = exec.query(sql, args).await?;
-            if row.len() != 1 {
-                return Err(Error::query("updated multi-table identity disappeared"));
-            }
-            returned.push(row);
-        }
+        let returned = if plan.delete { before } else { read_rows(exec, target, &plan, &keys, "updated").await? };
         Ok(Outcome::Rows {
             model: plan.model,
             types: plan.types,
             rows: crate::hooks::compute(Box::new(ChainedRows::new(returned)), &plan.computed)?,
-            shape: None,
+            shape: plan.shape,
         })
     }
     .await;
@@ -560,7 +607,7 @@ pub fn prepare_attach(
             row
         })
         .collect();
-    let mut insert = prepare_insert(schema, target, model, &fields, rows, &NoParams)?;
+    let mut insert = prepare_insert(schema, target, model, &fields, rows, &NoParams, None, &Bypass::All(true))?;
     for row in &mut insert.rows {
         let mut leaf = row.pop().expect("prepared multi-table leaf");
         // Complete creates place a supplied shared key at the root. Attach places

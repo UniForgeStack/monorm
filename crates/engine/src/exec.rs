@@ -79,7 +79,7 @@ pub async fn run_in(conn: &dyn Executor, target: Target, plan: Plan, own_tx: boo
         Plan::Insert(s, returned) => {
             let (sql, args) = db::build(d, &s);
             match returned {
-                Some((model, types, computed)) => Outcome::Rows { model, rows: crate::hooks::compute(conn.query(sql, args).await?, &computed)?, types, shape: None },
+                Some((model, types, shape, computed)) => Outcome::Rows { model, rows: crate::hooks::compute(conn.query(sql, args).await?, &computed)?, types, shape },
                 None => Outcome::Affected(conn.execute(sql, args).await?),
             }
         }
@@ -359,12 +359,6 @@ pub fn index_target(indexes: Option<Vec<String>>) -> OnConflictTarget {
     indexes.map_or(OnConflictTarget::Infer, OnConflictTarget::Indexes)
 }
 
-/// The hook-computed fields (point 5) of rows that return every column of the model.
-pub(crate) fn all_computed(schema: &Schema, model: usize, params: &dyn Params) -> Result<Vec<crate::hooks::Computed>> {
-    let m = schema.model(model);
-    crate::hooks::computations(m, 0, &(0..m.fields().len()).collect::<Vec<_>>(), params)
-}
-
 /// `INSERT ... RETURNING` every column. `rows` hold a value per field (`None`: the
 /// column's default), converted by [`field_types`]. `without_defaults` names the read
 /// defaults an upsert's DO UPDATE condition skips (an unknown name is an error).
@@ -379,7 +373,7 @@ pub fn plan_insert(
     params: &dyn Params,
     without_defaults: &ir::Bypass,
 ) -> Result<Plan> {
-    plan_insert_with(schema, target, model, fields, rows, conflict, params, true, without_defaults)
+    plan_insert_with(schema, target, model, fields, rows, conflict, params, true, None, without_defaults)
 }
 
 /// [`plan_insert`]; without `returning` the insert gives the affected-row count. A
@@ -394,21 +388,29 @@ fn plan_insert_with(
     conflict: Option<Conflict>,
     params: &dyn Params,
     returning: bool,
+    model_fields: Option<&[String]>,
     without_defaults: &ir::Bypass,
 ) -> Result<Plan> {
     if crate::multi_table::is_multi_table(schema, model)? {
         if conflict.is_some() { return Err(Error::query("multi-table inserts do not support on_conflict")); }
-        return Ok(Plan::MultiTableInsert(Box::new(crate::multi_table::prepare_insert(schema, target, model, fields, rows, params)?)));
+        return Ok(Plan::MultiTableInsert(Box::new(crate::multi_table::prepare_insert(schema, target, model, fields, rows, params, model_fields, without_defaults)?)));
     }
     let model_idx = schema.model_idx(model).map_err(query_err)?;
     let on_conflict = conflict.map(|c| match c {
         Conflict::Nothing { target, index } => plan::OnConflict::Nothing(target, index),
         Conflict::Update { target, index, update, set } => plan::OnConflict::Update(target, index, update, set),
     });
-    let (stmt, types): (InsertStatement, _) =
-        plan::plan_insert(schema, target, model, fields, rows, on_conflict, params, returning, without_defaults)?;
-    let computed = if returning { all_computed(schema, model_idx, params)? } else { vec![] };
-    Ok(Plan::Insert(stmt, returning.then_some((model_idx, types, computed))))
+    let (stmt, columns): (InsertStatement, _) =
+        plan::plan_insert(schema, target, model, fields, rows, on_conflict, params, returning, model_fields, without_defaults)?;
+    let returned = match columns {
+        Some((types, shape)) => {
+            let m = schema.model(model_idx);
+            let positions = plan::shape_positions(m, shape.as_ref()).to_vec();
+            Some((model_idx, types, shape, crate::hooks::computations(m, 0, &positions, params)?))
+        }
+        None => None,
+    };
+    Ok(Plan::Insert(stmt, returned))
 }
 
 /// `insert_many`'s plans: [`plan_insert`] for each batch of rows. A batch holds as many
@@ -426,13 +428,14 @@ pub fn plan_inserts(
     params: &dyn Params,
     batch_size: Option<usize>,
     returning: bool,
+    model_fields: Option<&[String]>,
     without_defaults: &ir::Bypass,
 ) -> Result<Vec<Plan>> {
     if batch_size == Some(0) {
         return Err(Error::query("batch_size must be at least 1"));
     }
     if crate::multi_table::is_multi_table(schema, model)? {
-        return Ok(vec![plan_insert_with(schema, target, model, fields, rows, conflict, params, returning, without_defaults)?]);
+        return Ok(vec![plan_insert_with(schema, target, model, fields, rows, conflict, params, returning, model_fields, without_defaults)?]);
     }
     let m = schema.model(schema.model_idx(model).map_err(query_err)?);
     // Client defaults can add columns, so the row width is known only after them.
@@ -451,13 +454,13 @@ pub fn plan_inserts(
     }
     let chunk = chunk.max(1);
     if rows.len() <= chunk {
-        return Ok(vec![plan_insert_with(schema, target, model, &fields, rows, conflict, params, returning, without_defaults)?]);
+        return Ok(vec![plan_insert_with(schema, target, model, &fields, rows, conflict, params, returning, model_fields, without_defaults)?]);
     }
     let mut plans = Vec::with_capacity(rows.len().div_ceil(chunk));
     while !rows.is_empty() {
         let rest = rows.split_off(chunk.min(rows.len()));
         let conflict = conflict.clone();
-        plans.push(plan_insert_with(schema, target, model, &fields, std::mem::replace(&mut rows, rest), conflict, params, returning, without_defaults)?);
+        plans.push(plan_insert_with(schema, target, model, &fields, std::mem::replace(&mut rows, rest), conflict, params, returning, model_fields, without_defaults)?);
     }
     Ok(plans)
 }
@@ -483,9 +486,9 @@ pub async fn run_inserts(conn: &dyn Executor, target: Target, mut plans: Vec<Pla
     let mut failed = None;
     for plan in plans {
         match run_in(exec, target, plan, false).await {
-            Ok(Outcome::Rows { model, rows, types, .. }) => {
+            Ok(Outcome::Rows { model, rows, types, shape }) => {
                 affected += rows.len() as u64;
-                returned = Some((model, types));
+                returned = Some((model, types, shape));
                 parts.push(rows);
             }
             Ok(Outcome::Affected(n)) => affected += n,
@@ -508,8 +511,8 @@ pub async fn run_inserts(conn: &dyn Executor, target: Target, mut plans: Vec<Pla
         return Err(e);
     }
     Ok(match returned {
-        Some((model, types)) if returning => {
-            Outcome::Rows { model, rows: Box::new(ChainedRows::new(parts)), types, shape: None }
+        Some((model, types, shape)) if returning => {
+            Outcome::Rows { model, rows: Box::new(ChainedRows::new(parts)), types, shape }
         }
         _ => Outcome::Affected(affected),
     })
@@ -586,7 +589,7 @@ pub async fn run_copy(conn: &dyn Executor, copy: BulkCopy) -> Result<u64> {
 pub struct UpdateMany {
     pub statements: Vec<(String, Vec<Value>)>,
     /// The model and column types of the returned rows, with `returning`.
-    pub returning: Option<(usize, Vec<ValueType>, Vec<crate::hooks::Computed>)>,
+    pub returning: Option<crate::plan::Returned>,
 }
 
 /// Plans `update_many`: `rows` (aligned with `fields`, primary key first, converted by
@@ -602,6 +605,7 @@ pub fn plan_update_many(
     filters: &[ir::Expr],
     params: &dyn Params,
     returning: bool,
+    model_fields: Option<&[String]>,
     batch_size: Option<usize>,
     without_defaults: &ir::Bypass,
 ) -> Result<(Vec<UpdateStatement>, UpdateMany)> {
@@ -625,11 +629,18 @@ pub fn plan_update_many(
     if let Some(n) = batch_size {
         chunk = chunk.min(n);
     }
-    let (stmts, types) = plan::plan_update_many(schema, target, model, fields, &rows, chunk, filters, params, returning, without_defaults)?;
+    let (stmts, columns) = plan::plan_update_many(schema, target, model, fields, &rows, chunk, filters, params, returning, model_fields, without_defaults)?;
     let model_idx = schema.model_idx(model).map_err(query_err)?;
     let statements = stmts.iter().map(|s| db::build(target.dialect, s)).collect();
-    let computed = if types.is_some() { all_computed(schema, model_idx, params)? } else { vec![] };
-    Ok((stmts, UpdateMany { statements, returning: types.map(|t| (model_idx, t, computed)) }))
+    let returning = match columns {
+        Some((types, shape)) => {
+            let m = schema.model(model_idx);
+            let computed = crate::hooks::computations(m, 0, &plan::shape_positions(m, shape.as_ref()).to_vec(), params)?;
+            Some((model_idx, types, shape, computed))
+        }
+        None => None,
+    };
+    Ok((stmts, UpdateMany { statements, returning }))
 }
 
 /// Runs `update_many`'s statements, in a transaction of their own when there are several
@@ -666,7 +677,7 @@ pub async fn run_update_many(conn: &dyn Executor, um: UpdateMany, own_tx: bool) 
     }
     Ok(match um.returning {
         None => Outcome::Affected(count),
-        Some((model, types, computed)) => Outcome::Rows { model, rows: crate::hooks::compute(Box::new(ChainedRows::new(fetched)), &computed)?, types, shape: None },
+        Some((model, types, shape, computed)) => Outcome::Rows { model, rows: crate::hooks::compute(Box::new(ChainedRows::new(fetched)), &computed)?, types, shape },
     })
 }
 

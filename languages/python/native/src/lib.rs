@@ -56,14 +56,14 @@ fn inspect_insert(schema: &schema::Schema, target: Target, model: &str, fields: 
     });
     let values = convert_rows(schema, model, fields, rows, true)?;
     let params = monorm_engine::params::Scoped { params: &PyParams(params), scope: &opts.scope };
-    let plans = exec::plan_inserts(schema, target, model, fields, values, conflict, &params, batch_size, returning, &opts.without_defaults).map_err(engine_err)?;
+    let plans = exec::plan_inserts(schema, target, model, fields, values, conflict, &params, batch_size, returning, opts.model_fields.as_deref(), &opts.without_defaults).map_err(engine_err)?;
     let batching = plans.len() > 1;
     inspection_json(monorm_engine::inspect::Inspection::plans(&plans, batching))
 }
 #[allow(clippy::too_many_arguments)]
 fn inspect_updates(schema: &schema::Schema, target: Target, model: &str, fields: &[String], rows: &Bound<'_, PyList>,
-    filters_json: &str, params: &[Bound<'_, PyAny>], batch_size: Option<usize>, returning: bool, without_defaults: &str) -> PyResult<String> {
-    let (stmts, _) = update_many_plan(schema, target, model, fields, rows, filters_json, params, returning, batch_size, without_defaults)?;
+    filters_json: &str, params: &[Bound<'_, PyAny>], batch_size: Option<usize>, returning: bool, model_fields: Option<Vec<String>>, without_defaults: &str) -> PyResult<String> {
+    let (stmts, _) = update_many_plan(schema, target, model, fields, rows, filters_json, params, returning, model_fields.as_deref(), batch_size, without_defaults)?;
     let batching = stmts.len() > 1;
     inspection_json(monorm_engine::inspect::Inspection::new(stmts.into_iter().map(|s| {
         use sea_query::QueryStatementBuilder;
@@ -123,6 +123,7 @@ fn update_many_plan<'py>(
     filters_json: &str,
     params: &[Bound<'py, PyAny>],
     returning: bool,
+    model_fields: Option<&[String]>,
     batch_size: Option<usize>,
     without_defaults: &str,
 ) -> PyResult<(Vec<sea_query::UpdateStatement>, exec::UpdateMany)> {
@@ -132,7 +133,7 @@ fn update_many_plan<'py>(
         .collect();
     let (filters, scope) = monorm_engine::params::scoped_filters(filters_json).map_err(engine_err)?;
     let params = monorm_engine::params::Scoped { params: &PyParams(params), scope: &scope };
-    exec::plan_update_many(schema, target, model, fields, values, &filters, &params, returning, batch_size, &serde_json::from_str(without_defaults).map_err(|e| query_err(format!("invalid bypass: {e}")))?)
+    exec::plan_update_many(schema, target, model, fields, values, &filters, &params, returning, model_fields, batch_size, &serde_json::from_str(without_defaults).map_err(|e| query_err(format!("invalid bypass: {e}")))?)
         .map_err(engine_err)
 }
 
@@ -198,11 +199,11 @@ impl PySchema {
         inspect_insert(&self.inner, Target::new(self.inner.dialect), model, &fields, rows, options, &params, batch_size, returning)
     }
 
-    #[pyo3(signature = (model, fields, rows, filters_json, params, batch_size = None, returning = false, without_defaults = "false"))]
+    #[pyo3(signature = (model, fields, rows, filters_json, params, batch_size = None, returning = false, model_fields = None, without_defaults = "false"))]
     #[allow(clippy::too_many_arguments)]
     fn inspect_update_many(&self, model: &str, fields: Vec<String>, rows: &Bound<'_, PyList>, filters_json: &str,
-        params: Vec<Bound<'_, PyAny>>, batch_size: Option<usize>, returning: bool, without_defaults: &str) -> PyResult<String> {
-        inspect_updates(&self.inner, Target::new(self.inner.dialect), model, &fields, rows, filters_json, &params, batch_size, returning, without_defaults)
+        params: Vec<Bound<'_, PyAny>>, batch_size: Option<usize>, returning: bool, model_fields: Option<Vec<String>>, without_defaults: &str) -> PyResult<String> {
+        inspect_updates(&self.inner, Target::new(self.inner.dialect), model, &fields, rows, filters_json, &params, batch_size, returning, model_fields, without_defaults)
     }
 
     /// SQL for an operation with parameters inlined. For debugging and tests only.
@@ -237,7 +238,7 @@ impl PySchema {
     ) -> PyResult<Vec<String>> {
         let target = Target::new(self.inner.dialect).without(&disable).map_err(query_err)?;
         let (stmts, _) =
-            update_many_plan(&self.inner, target, model, &fields, rows, filters_json, &params, false, batch_size, "false")?;
+            update_many_plan(&self.inner, target, model, &fields, rows, filters_json, &params, false, None, batch_size, "false")?;
         Ok(stmts.iter().map(|s| db::to_string(target.dialect, s)).collect())
     }
 
@@ -454,11 +455,11 @@ impl Engine {
         inspect_insert(&self.schema, self.target, model, &fields, rows, options, &params, batch_size, returning)
     }
 
-    #[pyo3(signature = (model, fields, rows, filters_json, params, batch_size = None, returning = false, without_defaults = "false"))]
+    #[pyo3(signature = (model, fields, rows, filters_json, params, batch_size = None, returning = false, model_fields = None, without_defaults = "false"))]
     #[allow(clippy::too_many_arguments)]
     fn inspect_update_many(&self, model: &str, fields: Vec<String>, rows: &Bound<'_, PyList>, filters_json: &str,
-        params: Vec<Bound<'_, PyAny>>, batch_size: Option<usize>, returning: bool, without_defaults: &str) -> PyResult<String> {
-        inspect_updates(&self.schema, self.target, model, &fields, rows, filters_json, &params, batch_size, returning, without_defaults)
+        params: Vec<Bound<'_, PyAny>>, batch_size: Option<usize>, returning: bool, model_fields: Option<Vec<String>>, without_defaults: &str) -> PyResult<String> {
+        inspect_updates(&self.schema, self.target, model, &fields, rows, filters_json, &params, batch_size, returning, model_fields, without_defaults)
     }
 
 
@@ -541,7 +542,7 @@ impl Engine {
     /// Rows beyond the parameter limit, or beyond `batch_size`, go to further statements
     /// in one transaction (inside `tx` when given). `without_defaults` (JSON: `false`,
     /// `true` or a list of names) skips defaults of the model in the DO UPDATE condition.
-    #[pyo3(signature = (model, fields, rows, conflict = None, update = None, set = None, params = vec![], tx = None, db = None, allowed = vec![], batch_size = None, conflict_indexes = None, trace = None, returning = true, scope = None, without_defaults = "false"))]
+    #[pyo3(signature = (model, fields, rows, conflict = None, update = None, set = None, params = vec![], tx = None, db = None, allowed = vec![], batch_size = None, conflict_indexes = None, trace = None, returning = true, scope = None, without_defaults = "false", model_fields = None))]
     #[allow(clippy::too_many_arguments)]
     fn insert<'py>(
         &self,
@@ -562,6 +563,7 @@ impl Engine {
         returning: bool,
         scope: Option<&str>,
         without_defaults: &str,
+        model_fields: Option<Vec<String>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         protect::ensure_writable(&self.schema, model, &allowed).map_err(engine_err)?;
         let without_defaults: ir::Bypass = serde_json::from_str(without_defaults).map_err(|e| query_err(format!("invalid bypass: {e}")))?;
@@ -578,7 +580,7 @@ impl Engine {
         let scope = serde_json::from_str(scope.unwrap_or("{}")).map_err(|e| query_err(format!("invalid scope IR: {e}")))?;
         let params = monorm_engine::params::Scoped { params: &PyParams(&params), scope: &scope };
         let plans =
-            exec::plan_inserts(&self.schema, self.target, model, &fields, values, conflict, &params, batch_size, returning, &without_defaults)
+            exec::plan_inserts(&self.schema, self.target, model, &fields, values, conflict, &params, batch_size, returning, model_fields.as_deref(), &without_defaults)
                 .map_err(engine_err)?;
         let target = self.target;
         let conn = self.traced(tx, trace);
@@ -636,7 +638,7 @@ impl Engine {
     /// own values, among the rows matching `filters_json` (JSON list of filter IR, values
     /// in `params`). Big inputs run as several statements in one transaction (inside `tx`
     /// when given). Returns the number of rows updated, or the rows with `returning`.
-    #[pyo3(signature = (model, fields, rows, filters_json, params, returning = false, batch_size = None, tx = None, db = None, without_defaults = "false", allowed = vec![], trace = None))]
+    #[pyo3(signature = (model, fields, rows, filters_json, params, returning = false, batch_size = None, tx = None, db = None, without_defaults = "false", allowed = vec![], trace = None, model_fields = None))]
     #[allow(clippy::too_many_arguments)]
     fn update_many<'py>(
         &self,
@@ -653,12 +655,13 @@ impl Engine {
         without_defaults: &str,
         allowed: Vec<String>,
         trace: Option<&Bound<'py, Trace>>,
+        model_fields: Option<Vec<String>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         protect::ensure_writable(&self.schema, model, &allowed).map_err(engine_err)?;
         let classes = self.classes.clone();
         let db = db.map(Bound::unbind);
         let (_, um) = update_many_plan(
-            &self.schema, self.target, model, &fields, rows, filters_json, &params, returning, batch_size, without_defaults,
+            &self.schema, self.target, model, &fields, rows, filters_json, &params, returning, model_fields.as_deref(), batch_size, without_defaults,
         )?;
         let conn = self.traced(tx, trace);
         let own_tx = tx.is_none();

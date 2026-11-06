@@ -18,6 +18,9 @@ pub struct InsertOptions {
     pub indexes: Option<Vec<String>>,
     #[serde(default)]
     pub without_defaults: monorm_core::ir::Bypass,
+    /// The columns `returning(...)` names; None is the model's default selection.
+    #[serde(default)]
+    pub model_fields: Option<Vec<String>>,
 }
 
 #[derive(Default, Debug, PartialEq, Eq, Serialize)]
