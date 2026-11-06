@@ -15,7 +15,7 @@ MODULES = (
 LIBRARY = re.compile(r"[^/]*\.(so|pyd|dylib|dll)$")
 
 wheel = Path(sys.argv[1])
-assert re.fullmatch(r"monorm-[^-]+-.*(macosx|manylinux|win)[^-]*\.whl", wheel.name), f"{wheel.name} is not a platform wheel of monorm"
+assert re.fullmatch(r"monorm-[^-]+-.*(macosx|manylinux|musllinux|win)[^-]*\.whl", wheel.name), f"{wheel.name} is not a platform wheel of monorm"
 with ZipFile(wheel) as archive:
     names = archive.namelist()
     libraries = [n for n in names if LIBRARY.search(n)]

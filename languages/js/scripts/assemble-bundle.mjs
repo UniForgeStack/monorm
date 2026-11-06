@@ -14,13 +14,15 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const PLATFORMS = ["darwin-arm64", "linux-arm64", "linux-x64", "win32-x64"];
+import { platformOf } from "./platform.mjs";
+
+const PLATFORMS = ["darwin-arm64", "linux-arm64", "linux-arm64-musl", "linux-x64", "linux-x64-musl", "win32-x64"];
 const here = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = join(here, "..");
 const repo = join(pkgRoot, "..", "..");
 const pkg = JSON.parse(readFileSync(join(pkgRoot, "package.json"), "utf8"));
 const shorts = Object.values(pkg.monorm.bundled.extensions).map((dir) => dir.replace(/^extensions\//, ""));
-const host = `${process.platform}-${process.arch}`;
+const host = platformOf();
 const args = process.argv.slice(2);
 const option = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
 const run = (command, argv, options = {}) => execFileSync(command, argv, { cwd: repo, stdio: ["ignore", "inherit", "inherit"], ...options });

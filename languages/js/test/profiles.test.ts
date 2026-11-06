@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { addonPath } from "../src/native.js";
+import { addonPath, platformKey } from "../src/native.js";
 import { test } from "node:test";
 
 // The version of this package, so `versions.py set` needs no edit here.
@@ -42,7 +42,7 @@ test("an unsupported platform names the bundled platforms and the source build",
   try {
     for (const platform of ["freebsd-x64", "linux-riscv64"]) {
       assert.throws(() => addonPath(platform, root), (e: unknown) => e instanceof Error
-        && ["darwin-arm64", "linux-arm64", "linux-x64", "win32-x64", platform, "MONORM_NATIVE"].every((word) => e.message.includes(word)));
+        && ["darwin-arm64", "linux-arm64", "linux-arm64-musl", "linux-x64", "linux-x64-musl", "win32-x64", platform, "MONORM_NATIVE"].every((word) => e.message.includes(word)));
     }
     assert.throws(() => addonPath("linux-x64", root), /linux-x64 is missing.*MONORM_NATIVE/);
     mkdirSync(join(root, "prebuilt", "linux-x64"), { recursive: true });
@@ -51,6 +51,15 @@ test("an unsupported platform names the bundled platforms and the source build",
     writeFileSync(join(root, "monorm.node"), "");
     assert.equal(addonPath("freebsd-x64", root), join(root, "monorm.node"));
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("the platform key adds -musl on a Linux whose report has no glibc version", () => {
+  assert.equal(platformKey("linux", "x64", () => ({ header: { glibcVersionRuntime: "2.39" } })), "linux-x64");
+  assert.equal(platformKey("linux", "x64", () => ({ header: {} })), "linux-x64-musl");
+  assert.equal(platformKey("linux", "arm64", () => ({ header: {} })), "linux-arm64-musl");
+  assert.equal(platformKey("darwin", "arm64", () => ({ header: {} })), "darwin-arm64");
+  assert.equal(platformKey("win32", "x64", () => { throw new Error("no report"); }), "win32-x64");
+  assert.equal(platformKey("linux", "x64", () => { throw new Error("no report"); }), "linux-x64");
 });
 
 test("the loaded native artifact embeds its build record", async () => {

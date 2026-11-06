@@ -18,25 +18,45 @@ const USAGE: &str = "usage:
 
 /// Platform key, library file prefix and suffix, and whether an outside package ships the platform.
 /// The keys name the platform directories of the prebuilt libraries.
-const PLATFORMS: [(&str, &str, &str, bool); 4] = [
+const PLATFORMS: [(&str, &str, &str, bool); 6] = [
     ("darwin-arm64", "lib", ".dylib", true),
     ("linux-arm64", "lib", ".so", false),
+    ("linux-arm64-musl", "lib", ".so", false),
     ("linux-x64", "lib", ".so", true),
+    ("linux-x64-musl", "lib", ".so", false),
     ("win32-x64", "", ".dll", true),
 ];
 
-fn host_platform() -> Result<&'static str, Error> {
-    match (env::consts::OS, env::consts::ARCH) {
-        ("macos", "aarch64") => Ok("darwin-arm64"),
-        ("linux", "x86_64") => Ok("linux-x64"),
-        ("linux", "aarch64") => Ok("linux-arm64"),
-        ("windows", "x86_64") => Ok("win32-x64"),
-        _ => Err(format!(
+/// The platform key of the library that a build makes: the Linux target of `--zigbuild` when there is one, else the host.
+/// A musl build runs on a glibc host (or on a Mac), so the host cannot name it.
+fn host_platform(zigbuild: Option<&str>) -> Result<&'static str, Error> {
+    let (os, arch, musl) = match zigbuild {
+        Some(target) if target.contains("-linux-") => (
+            "linux",
+            target.split('-').next().unwrap_or_default(),
+            target.contains("-musl"),
+        ),
+        _ => (env::consts::OS, env::consts::ARCH, cfg!(target_env = "musl")),
+    };
+    platform_of(os, arch, musl).ok_or_else(|| {
+        format!(
             "no platform key for this host; the keys are {}",
             PLATFORMS.map(|p| p.0).join(", ")
         )
-        .into()),
-    }
+        .into()
+    })
+}
+
+fn platform_of(os: &str, arch: &str, musl: bool) -> Option<&'static str> {
+    Some(match (os, arch, musl) {
+        ("macos", "aarch64", false) => "darwin-arm64",
+        ("linux", "x86_64", false) => "linux-x64",
+        ("linux", "x86_64", true) => "linux-x64-musl",
+        ("linux", "aarch64", false) => "linux-arm64",
+        ("linux", "aarch64", true) => "linux-arm64-musl",
+        ("windows", "x86_64", false) => "win32-x64",
+        _ => return None,
+    })
 }
 
 #[derive(Default)]
@@ -108,6 +128,11 @@ fn build_library(
     zigbuild: Option<&str>,
 ) -> Result<PathBuf, Error> {
     let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    // A Linux target makes a `.so`, also when a Mac builds it.
+    let extension = match zigbuild {
+        Some(target) if target.contains("-linux-") => "so",
+        _ => env::consts::DLL_EXTENSION,
+    };
     let mut build = Command::new(cargo);
     match zigbuild {
         Some(target) => build.args(["zigbuild", "--target", target]),
@@ -139,10 +164,7 @@ fn build_library(
         })
         .flat_map(|v| v["filenames"].as_array().cloned().unwrap_or_default())
         .filter_map(|v| v.as_str().map(PathBuf::from))
-        .find(|p| {
-            p.extension()
-                .is_some_and(|e| e == env::consts::DLL_EXTENSION)
-        })
+        .find(|p| p.extension().is_some_and(|e| e == extension))
         .ok_or_else(|| {
             "crate did not build a cdylib; add crate-type = [\"cdylib\", \"rlib\"]".into()
         })
@@ -203,7 +225,7 @@ fn run() -> Result<(), Error> {
             write_packages(&dir, &out, &manifest, &[(artifact, name)], "host", &tsc)
         }
         "library" => {
-            let key = host_platform()?;
+            let key = host_platform(args.zigbuild.as_deref())?;
             let (_, prefix, suffix, _) = PLATFORMS.iter().find(|p| p.0 == key).unwrap();
             require_plain(&library)?;
             let artifact = build_library(&dir, args.features.as_deref(), args.zigbuild.as_deref())?;
@@ -239,5 +261,30 @@ fn main() {
     if let Err(error) = run() {
         eprintln!("{error}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_musl_target_gets_the_musl_key_and_ships_no_outside_library() {
+        assert_eq!(platform_of("linux", "x86_64", true), Some("linux-x64-musl"));
+        assert_eq!(platform_of("linux", "aarch64", true), Some("linux-arm64-musl"));
+        assert_eq!(platform_of("linux", "x86_64", false), Some("linux-x64"));
+        assert_eq!(platform_of("macos", "aarch64", true), None);
+        for key in ["linux-x64-musl", "linux-arm64-musl"] {
+            assert!(PLATFORMS.iter().any(|p| p.0 == key && !p.3), "{key}");
+        }
+        // The key of a build follows its Linux target, whatever the host is.
+        for (target, key) in [
+            ("x86_64-unknown-linux-musl", "linux-x64-musl"),
+            ("aarch64-unknown-linux-musl", "linux-arm64-musl"),
+            ("x86_64-unknown-linux-gnu.2.28", "linux-x64"),
+            ("aarch64-unknown-linux-gnu.2.28", "linux-arm64"),
+        ] {
+            assert_eq!(host_platform(Some(target)).ok(), Some(key), "{target}");
+        }
     }
 }

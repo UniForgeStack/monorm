@@ -1,11 +1,13 @@
 // Builds the Rust addon (languages/js/native) for this platform and writes it twice:
 // prebuilt/<platform>/monorm.node (where the published package keeps it) and monorm.node (a source checkout).
 //   node scripts/build-native.mjs [--release] [--profile tooling]
-// MONORM_CARGO_TARGET=<triple>[.<glibc>] builds with `cargo zigbuild` for that target (the Linux release uses x86_64-unknown-linux-gnu.2.28 and aarch64-unknown-linux-gnu.2.28).
+// MONORM_CARGO_TARGET=<triple>[.<glibc>] builds with `cargo zigbuild` for that target (the Linux release uses x86_64-unknown-linux-gnu.2.28, aarch64-unknown-linux-gnu.2.28, and the musl targets x86_64-unknown-linux-musl and aarch64-unknown-linux-musl with RUSTFLAGS="-C target-feature=-crt-static").
 import { execFileSync } from "node:child_process";
 import { copyFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { platformOf } from "./platform.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, "..", "..", "..");
@@ -18,9 +20,9 @@ if ((profileIndex >= 0 && !["postgres", "sqlite", "combined", "tooling"].include
 const release = process.argv.includes("--release");
 const target = process.env.MONORM_CARGO_TARGET || undefined;
 execFileSync("cargo", [target ? "zigbuild" : "build", "-p", "monorm-node", ...(target ? ["--target", target] : []), ...(release ? ["--release"] : []), ...(profile || features ? ["--no-default-features", "--features", profile ? `profile-${profile}` : features] : [])], { cwd: root, stdio: "inherit" });
-const lib = { darwin: "libmonorm_node.dylib", win32: "monorm_node.dll" }[process.platform] ?? "libmonorm_node.so";
+const platform = platformOf(target);
+const lib = { darwin: "libmonorm_node.dylib", win32: "monorm_node.dll" }[platform.split("-")[0]] ?? "libmonorm_node.so";
 const built = join(process.env.CARGO_TARGET_DIR ?? join(root, "target"), ...(target ? [target.replace(/\.\d+(\.\d+)?$/, "")] : []), release ? "release" : "debug", lib);
-const platform = `${process.platform}-${process.arch}`;
 mkdirSync(join(here, "..", "prebuilt", platform), { recursive: true });
 copyFileSync(built, join(here, "..", "prebuilt", platform, "monorm.node"));
 copyFileSync(built, join(here, "..", "monorm.node"));

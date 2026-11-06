@@ -319,7 +319,7 @@ def test_define_needs_the_library_of_a_package_whose_hooks_the_schema_binds(site
     schema = json.loads(_native.compile_schema_file(str(source), {}, resolve_extensions()))
     monorm.define(schema, registry=monorm.Registry())
     (manifest.parent / outside_library.name).unlink()
-    with pytest.raises(SchemaError, match=r"extension acme\.outside: library .*No such file or directory"):
+    with pytest.raises(SchemaError, match=r"extension acme\.outside: no library for platform .*No such file or directory"):
         monorm.define(schema, registry=monorm.Registry())
 
 

@@ -259,15 +259,22 @@ impl Plan {
     }
 }
 
-/// The platform keys of the bundled libraries; they match `${process.platform}-${process.arch}` and `monorm-extension-package`.
+/// The platform keys of the bundled libraries; they match `platformKey()` of the npm package and `monorm-extension-package`.
+/// A musl build adds `-musl`: a musl process cannot load a glibc library.
 fn platform_key() -> Option<&'static str> {
-    match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("macos", "aarch64") => Some("darwin-arm64"),
-        ("linux", "x86_64") => Some("linux-x64"),
-        ("linux", "aarch64") => Some("linux-arm64"),
-        ("windows", "x86_64") => Some("win32-x64"),
-        _ => None,
-    }
+    key_of(std::env::consts::OS, std::env::consts::ARCH, cfg!(target_env = "musl"))
+}
+
+fn key_of(os: &str, arch: &str, musl: bool) -> Option<&'static str> {
+    Some(match (os, arch, musl) {
+        ("macos", "aarch64", false) => "darwin-arm64",
+        ("linux", "x86_64", false) => "linux-x64",
+        ("linux", "x86_64", true) => "linux-x64-musl",
+        ("linux", "aarch64", false) => "linux-arm64",
+        ("linux", "aarch64", true) => "linux-arm64-musl",
+        ("windows", "x86_64", false) => "win32-x64",
+        _ => return None,
+    })
 }
 
 fn library_path(d: &Dynamic) -> PathBuf {
@@ -285,7 +292,7 @@ fn library_in(dir: &Path, name: &str, key: Option<&str>) -> PathBuf {
 fn open(d: &Dynamic) -> Result<Arc<Native>, String> {
     let id = &d.manifest.id;
     let path = library_path(d);
-    let path = path.canonicalize().map_err(|e| format!("extension {id}: library {}: {e}; build or reinstall the package", path.display()))?;
+    let path = path.canonicalize().map_err(|e| format!("extension {id}: no library for platform {} at {}: {e}; build or reinstall the package", platform_key().unwrap_or("(unknown)"), path.display()))?;
     let mut cache = LIBRARIES.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(native) = cache.get(&path) {
         native.check_manifest(d)?;
@@ -593,6 +600,26 @@ mod tests {
         assert_eq!(library_in(&dir, "x", Some("linux-x64")), dir.join(&file));
         assert_eq!(library_in(&dir, "x", None), dir.join(&file));
         assert_eq!(library_in(&dir, "x.bin", Some("linux-arm64")), dir.join("x.bin"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_platform_key_adds_musl_for_a_musl_linux_build() {
+        assert_eq!(key_of("linux", "x86_64", false), Some("linux-x64"));
+        assert_eq!(key_of("linux", "x86_64", true), Some("linux-x64-musl"));
+        assert_eq!(key_of("linux", "aarch64", true), Some("linux-arm64-musl"));
+        assert_eq!(key_of("macos", "aarch64", false), Some("darwin-arm64"));
+        assert_eq!(key_of("macos", "aarch64", true), None);
+        // On a musl build (the musl CI job) the key of this process is a musl key.
+        assert_eq!(platform_key().is_some_and(|key| key.ends_with("-musl")), cfg!(target_env = "musl"));
+    }
+
+    #[test]
+    fn a_missing_library_error_names_the_platform_key() {
+        let dir = scratch("missing-library");
+        let error = open(&manifest_with_exports(&dir, &["a.one"])).err().unwrap();
+        let key = platform_key().expect("the test platform has a key");
+        assert!(error.starts_with("extension acme.audit: no library for platform ") && error.contains(key), "{error}");
         std::fs::remove_dir_all(&dir).ok();
     }
 

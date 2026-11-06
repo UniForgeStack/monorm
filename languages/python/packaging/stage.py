@@ -4,7 +4,7 @@ Each extension becomes a top-level package `<module>/` with its runtime source, 
 and the library of this platform. The libraries come from `--libraries DIR` (laid out `<name>/<platform>/<file>` as `assemble-bundle.mjs --collect` writes them, or
 `<platform>/<file>` as the `monorm-extension-package library` mode writes them) or are built here with `cargo`.
 
-    python languages/python/packaging/stage.py [--libraries DIR]
+    python languages/python/packaging/stage.py [--libraries DIR] [--platform KEY]
 """
 
 import argparse
@@ -23,7 +23,14 @@ TARGET = ROOT / "languages" / "python"
 EXTENSIONS = ("timestamps", "soft-delete", "locking", "inherit", "query-defaults", "generic", "proxy", "model-composition", "file-storage")
 AUTH = ROOT / "apps" / "auth" / "python" / "monorm_auth"
 # Platform key, library file prefix and suffix; the keys match `monorm-extension-package`.
-PLATFORMS = {("Darwin", "arm64"): ("darwin-arm64", "lib", ".dylib"), ("Linux", "x86_64"): ("linux-x64", "lib", ".so"), ("Linux", "aarch64"): ("linux-arm64", "lib", ".so"), ("Windows", "AMD64"): ("win32-x64", "", ".dll")}
+PLATFORMS = {
+    ("Darwin", "arm64"): ("darwin-arm64", "lib", ".dylib"),
+    ("Linux", "x86_64"): ("linux-x64", "lib", ".so"),
+    ("Linux", "aarch64"): ("linux-arm64", "lib", ".so"),
+    ("Windows", "AMD64"): ("win32-x64", "", ".dll"),
+}
+# A musl wheel builds on a glibc host, so the key comes from `--platform`; on Alpine `host()` finds it.
+MUSL_PLATFORMS = {"linux-x64-musl": ("linux-x64-musl", "lib", ".so"), "linux-arm64-musl": ("linux-arm64-musl", "lib", ".so")}
 IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc")
 
 
@@ -31,7 +38,18 @@ def host() -> tuple[str, str, str]:
     key = (platform.system(), platform.machine())
     if key not in PLATFORMS:
         raise SystemExit(f"no platform key for {key}; the keys are {sorted(PLATFORMS)}")
-    return PLATFORMS[key]
+    found = PLATFORMS[key]
+    if key[0] == "Linux" and platform.libc_ver()[0] != "glibc":
+        # `libc_ver` finds no glibc on musl; the musl key exists for the two Linux architectures.
+        return MUSL_PLATFORMS[found[0] + "-musl"]
+    return found
+
+
+def platform_named(name: str) -> tuple[str, str, str]:
+    for entry in (*PLATFORMS.values(), *MUSL_PLATFORMS.values()):
+        if entry[0] == name:
+            return entry
+    raise SystemExit(f"no platform key {name}; the keys are {sorted(e[0] for e in (*PLATFORMS.values(), *MUSL_PLATFORMS.values()))}")
 
 
 def module_of(ident: str) -> str:
@@ -76,8 +94,9 @@ def stage_extension(name: str, libraries: Path, key: str, prefix: str, suffix: s
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--libraries", type=Path, help="prebuilt libraries, laid out <platform>/<file>")
+    parser.add_argument("--platform", help="the platform key of the libraries (default: this host); a musl wheel builds on a glibc host")
     args = parser.parse_args()
-    key, prefix, suffix = host()
+    key, prefix, suffix = platform_named(args.platform) if args.platform else host()
     for old in TARGET.glob("monorm_*/"):
         shutil.rmtree(old)
     with tempfile.TemporaryDirectory(prefix="monorm-stage-") as temporary:

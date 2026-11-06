@@ -13,7 +13,7 @@ SCRIPT = Path(__file__).resolve().parents[1] / "check-glibc.py"
 
 
 class CheckGlibcTest(unittest.TestCase):
-    def run_script(self, symbols: str, wheel: bool = False, member: str = "pkg/_native.so") -> subprocess.CompletedProcess[str]:
+    def run_script(self, symbols: str, wheel: bool = False, member: str = "pkg/_native.so", libc: str | None = None) -> subprocess.CompletedProcess[str]:
         root = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
         fake = root / "objdump"
@@ -27,7 +27,8 @@ class CheckGlibcTest(unittest.TestCase):
             with zipfile.ZipFile(target, "w") as archive:
                 archive.write(library, member)
         env = {**os.environ, "PATH": f"{root}:{os.environ['PATH']}"}
-        return subprocess.run([sys.executable, str(SCRIPT), str(target)], capture_output=True, text=True, env=env)
+        flags = ["--libc", libc] if libc else []
+        return subprocess.run([sys.executable, str(SCRIPT), *flags, str(target)], capture_output=True, text=True, env=env)
 
     def test_floor_passes(self):
         result = self.run_script("0 DF *UND* 0 (GLIBC_2.17) memcpy\n0 DF *UND* 0 (GLIBC_2.28) fcntl64")
@@ -47,6 +48,40 @@ class CheckGlibcTest(unittest.TestCase):
         result = self.run_script("0 DF *UND* 0 (GLIBC_2.17) a", wheel=True, member="pkg/__init__.py")
         self.assertEqual(result.returncode, 1)
         self.assertIn("no library", result.stdout)
+
+    def test_a_zig_musl_library_needs_libc_so(self):
+        result = self.run_script("  NEEDED               libc.so\n", libc="musl")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_a_library_that_needs_the_glibc_libc_fails_in_musl_mode(self):
+        result = self.run_script("  NEEDED               libc.so.6\n", libc="musl")
+        self.assertEqual(result.returncode, 1)
+
+    def test_musl_library_passes(self):
+        for arch in ("x86_64", "aarch64"):
+            result = self.run_script(f"Dynamic Section:\n  NEEDED               libc.musl-{arch}.so.1\n", libc="musl")
+            self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_musl_mode_fails_on_a_glibc_library(self):
+        result = self.run_script("0 DF *UND* 0 (GLIBC_2.17) memcpy\n  NEEDED               libc.so.6\n", libc="musl")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("needs glibc 2.17", result.stdout)
+
+    def test_musl_mode_fails_on_a_library_that_needs_no_musl_libc(self):
+        result = self.run_script("  NEEDED               libgcc_s.so.1\n", libc="musl")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("libc.musl", result.stdout)
+
+    def test_musl_mode_reads_libraries_inside_a_wheel(self):
+        result = self.run_script("  NEEDED               libc.musl-x86_64.so.1\n", wheel=True, libc="musl")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_the_default_mode_accepts_a_musl_library(self):
+        result = self.run_script("  NEEDED               libc.musl-x86_64.so.1\n")
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_an_unknown_libc_is_a_usage_error(self):
+        self.assertEqual(self.run_script("", libc="uclibc").returncode, 2)
 
 
 if __name__ == "__main__":

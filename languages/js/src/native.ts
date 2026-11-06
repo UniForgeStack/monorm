@@ -6,7 +6,7 @@
  * `MONORM_NATIVE` names a file that replaces both.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 
@@ -232,8 +232,24 @@ interface Addon {
   findMigration(dir: string, name: string): string[];
 }
 
-/** The platforms of the bundled libraries: `${process.platform}-${process.arch}`. */
-export const PLATFORMS = ["darwin-arm64", "linux-arm64", "linux-x64", "win32-x64"] as const;
+/** The platforms of the bundled libraries: `${process.platform}-${process.arch}`, and `-musl` after a Linux key on a musl system. */
+export const PLATFORMS = ["darwin-arm64", "linux-arm64", "linux-arm64-musl", "linux-x64", "linux-x64-musl", "win32-x64"] as const;
+
+type Report = { header?: { glibcVersionRuntime?: string } } | undefined;
+const nodeReport = (): Report => process.report?.getReport() as Report;
+
+/** The platform key of this process: `linux-x64-musl` on Alpine, `linux-x64` on glibc Linux, `${process.platform}-${process.arch}` elsewhere.
+ * Node's report holds no glibc version on musl; Bun has no report, so the musl loader file decides there. */
+export function platformKey(platform: string = process.platform, arch: string = process.arch, report: () => Report = nodeReport): string {
+  if (platform !== "linux") return `${platform}-${arch}`;
+  let musl: boolean;
+  try {
+    const header = report()?.header;
+    musl = header !== undefined ? typeof header.glibcVersionRuntime !== "string"
+      : readdirSync("/lib").some((name) => name.startsWith("ld-musl-"));
+  } catch { musl = false; }
+  return musl ? `${platform}-${arch}-musl` : `${platform}-${arch}`;
+}
 
 /** The artifact's embedded Cargo features, rustc, target, profile and git revision. */
 function buildRecord(build: unknown): boolean {
@@ -262,7 +278,7 @@ function validate(addon: Addon): void {
 }
 
 /** The addon file of this platform: the bundled one, else the one a source build writes next to `package.json`. */
-export function addonPath(platform = `${process.platform}-${process.arch}`, root = packageRoot): string {
+export function addonPath(platform = platformKey(), root = packageRoot): string {
   const candidates = [join(root, "prebuilt", platform, "monorm.node"), join(root, "monorm.node")];
   const found = candidates.find(existsSync);
   if (found !== undefined) return found;
