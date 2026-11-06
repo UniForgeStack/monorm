@@ -137,6 +137,19 @@ def test_second_migration_alters_in_place(tmp_path):
     assert migs.make() is None
 
 
+def test_plan_steps_say_which_ones_lose_data(tmp_path):
+    first = Migrations(tmp_path, models(V1))
+    assert not any(s.destructive for s in first.plan().up)
+    assert any(s.destructive for s in first.plan().down)
+    first.make()
+    plan = Migrations(tmp_path, models(V2)).plan()
+    flagged = [s.sql for s in plan.up if s.destructive]
+    assert flagged == ['ALTER TABLE "authors" ALTER COLUMN "email" TYPE citext USING "email"::citext']
+    m = Migrations(tmp_path, models(V2)).make("catalog")
+    assert m is not None and "-- monorm: destructive alter-type authors.email\n" in m.up_sql
+    assert "-- monorm: destructive alter-type authors.email\n" in m.down_sql
+
+
 def test_table_rename_renames_generated_constraint_names(tmp_path):
     Migrations(tmp_path, models(V1)).make()
     v1b = V1.replace('@@map("authors")', '@@map("writers")\n  @@renamed_from("authors")')

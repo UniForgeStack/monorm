@@ -41,6 +41,8 @@ export interface Step {
   readonly summary: string;
   readonly sql: string;
   readonly warning?: string | null;
+  /** The step can lose rows; `allowDestructive` lets it run on a table with rows. */
+  readonly destructive: boolean;
 }
 
 export interface Plan {

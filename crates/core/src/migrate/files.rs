@@ -84,6 +84,10 @@ pub fn render(steps: &[Step], title: &str) -> String {
         if let Some(w) = &s.warning {
             out.push_str(&format!("-- WARNING: {w}\n"));
         }
+        for d in &s.destructive {
+            out.push_str(&d.marker());
+            out.push('\n');
+        }
         out.push_str(s.sql.trim_end());
         out.push_str(";\n\n");
     }

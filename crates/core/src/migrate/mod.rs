@@ -18,7 +18,7 @@ pub mod sqlite;
 
 use serde::Serialize;
 
-pub use diff::Op;
+pub use diff::{Destructive, DestructiveKind, Op};
 pub use model::DbSchema;
 
 use crate::schema::{Result, Schema};
@@ -29,6 +29,13 @@ pub struct Step {
     pub sql: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
+    /// The data the step can delete; serialized as a flag for the bindings.
+    #[serde(serialize_with = "any")]
+    pub destructive: Vec<Destructive>,
+}
+
+fn any<S: serde::Serializer>(list: &[Destructive], s: S) -> std::result::Result<S::Ok, S::Error> {
+    s.serialize_bool(!list.is_empty())
 }
 
 #[derive(Serialize, Debug)]
@@ -40,8 +47,10 @@ pub struct MigrationPlan {
 }
 
 fn steps(ops: &[Op], target: &DbSchema) -> Vec<Step> {
+    let destructive = diff::destructive_ops(ops);
     ops.iter()
-        .map(|op| {
+        .zip(destructive)
+        .map(|(op, destructive)| {
             let mut warning = op.warning();
             let parent = match op {
                 Op::CreateTable { table, .. } => table.partition_of.as_ref()
@@ -55,7 +64,7 @@ fn steps(ops: &[Op], target: &DbSchema) -> Vec<Step> {
                     warning = Some(match warning { Some(w) => format!("{w}; {message}"), None => message });
                 }
             }
-            Step { summary: pg::summary(op), sql: pg::render(op, false), warning }
+            Step { summary: pg::summary(op), sql: pg::render(op, false), warning, destructive: destructive.into_iter().collect() }
         })
         .collect()
 }
@@ -119,7 +128,7 @@ pub fn reconcile_introspection(previous: &DbSchema, current: &mut DbSchema) {
 }
 
 fn identity_step(steps: &mut Vec<Step>) {
-    steps.push(Step { summary: "Record frozen ContentType identities".into(), sql: "-- Frozen ContentType identity mapping recorded in snapshot.json".into(), warning: None });
+    steps.push(Step { summary: "Record frozen ContentType identities".into(), sql: "-- Frozen ContentType identity mapping recorded in snapshot.json".into(), warning: None, destructive: vec![] });
 }
 
 /// The whole schema as idempotent DDL (`IF NOT EXISTS` / `OR REPLACE`), for

@@ -126,6 +126,20 @@ test("the second migration alters in place", () => {
   assert.match(m.checksum, /^[0-9a-f]{64}$/);
 });
 
+test("plan steps say which ones lose data", () => {
+  const dir = tmp();
+  const first = new Migrations(dir, models(V1));
+  assert.ok(!first.plan().up.some((s) => s.destructive));
+  assert.ok(first.plan().down.some((s) => s.destructive));
+  first.make();
+  const second = new Migrations(dir, models(V2));
+  const flagged = second.plan().up.filter((s) => s.destructive).map((s) => s.sql);
+  assert.deepEqual(flagged, ['ALTER TABLE "authors" ALTER COLUMN "email" TYPE citext USING "email"::citext']);
+  const m = second.make("catalog")!;
+  assert.ok(m.upSql.includes("-- monorm: destructive alter-type authors.email\n"));
+  assert.ok(m.downSql.includes("-- monorm: destructive alter-type authors.email\n"));
+});
+
 test("migrations from a schema file", () => {
   const dir = tmp();
   writeFileSync(join(dir, "schema.prisma"), V1);

@@ -54,6 +54,7 @@ class Step:
     summary: str
     sql: str
     warning: str | None = None
+    destructive: bool = False  # the step can lose rows; `allow_destructive` lets it run on a table with rows
 
 
 @dataclass(frozen=True)

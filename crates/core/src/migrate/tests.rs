@@ -1017,3 +1017,143 @@ fn pull_retains_cast_operator_and_predicate_fallbacks() {
     let schema = Schema::from_ir(crate::dsl::compile(&result.schema, None).unwrap()).unwrap();
     assert!(plan(&schema, &old).unwrap().up.is_empty());
 }
+
+fn destructive(kind: DestructiveKind, table: &str, column: Option<&str>) -> Destructive {
+    Destructive { kind, table: table.into(), column: column.map(String::from) }
+}
+
+#[test]
+fn only_data_losing_ops_are_destructive() {
+    let (t, c) = ("post".to_string(), "body".to_string());
+    let alter = |from: &str, to: &str| Op::AlterColumnType { table: t.clone(), column: c.clone(), from: from.into(), to: to.into() };
+    assert_eq!(Op::DropTable { table: t.clone() }.destructive(), Some(destructive(DestructiveKind::DropTable, "post", None)));
+    assert_eq!(Op::DropColumn { table: t.clone(), column: c.clone() }.destructive(), Some(destructive(DestructiveKind::DropColumn, "post", Some("body"))));
+    assert_eq!(alter("text", "integer").destructive(), Some(destructive(DestructiveKind::AlterType, "post", Some("body"))));
+    assert_eq!(alter("integer", "bigint").destructive(), None);
+    let quiet = [
+        Op::RenameTable { from: t.clone(), to: "article".into() },
+        Op::RenameColumn { table: t.clone(), from: c.clone(), to: "text".into() },
+        Op::SetNotNull { table: t.clone(), column: c.clone() },
+        Op::DropNotNull { table: t.clone(), column: c.clone() },
+        Op::SetDefault { table: t.clone(), column: c.clone(), default: "1".into() },
+        Op::DropDefault { table: t.clone(), column: c.clone() },
+        Op::DropConstraint { table: t.clone(), name: "k".into() },
+        Op::DropIndex { name: "i".into() },
+        Op::DropTrigger { table: t.clone(), name: "g".into() },
+        Op::CopyColumns { table: t.clone(), sets: vec![] },
+        Op::DropExtension(crate::migrate::model::Extension { name: "x".into(), schema: None, version: None }),
+        Op::CommentOnTable { table: t, comment: None },
+    ];
+    for op in quiet {
+        assert_eq!(op.destructive(), None, "{op:?}");
+    }
+}
+
+#[test]
+fn widening_type_changes_are_not_destructive() {
+    for (from, to) in [
+        ("integer", "bigint"),
+        ("int", "bigint"),
+        ("varchar(10)", "text"),
+        ("character varying(10)", "varchar"),
+        ("varchar(10)", "varchar(11)"),
+        ("varchar(10)", "VARCHAR( 255 )"),
+        ("numeric(8,2)", "numeric(10,2)"),
+        ("decimal(8)", "numeric(9)"),
+    ] {
+        assert!(diff::widens(from, to), "{from} -> {to}");
+    }
+    for (from, to) in [
+        ("bigint", "integer"),
+        ("text", "varchar(10)"),
+        ("text", "varchar"),
+        ("varchar", "text"),
+        ("varchar(10)", "varchar(10)"),
+        ("varchar(10)", "varchar(9)"),
+        ("numeric(10,2)", "numeric(8,2)"),
+        ("numeric(8,2)", "numeric(10,3)"),
+        ("numeric(8,2)", "numeric"),
+        ("numeric", "numeric(10,2)"),
+        ("integer", "text"),
+        ("integer[]", "bigint[]"),
+        ("varchar(x)", "text"),
+        ("mystery", "bigint"),
+    ] {
+        assert!(!diff::widens(from, to), "{from} -> {to}");
+    }
+}
+
+#[test]
+fn marker_lines_round_trip() {
+    for d in [
+        destructive(DestructiveKind::DropTable, "post", None),
+        destructive(DestructiveKind::DropColumn, "post", Some("body")),
+        destructive(DestructiveKind::AlterType, "my table", Some("a b")),
+    ] {
+        assert_eq!(Destructive::parse_marker(&d.marker()), Some(d));
+    }
+    assert_eq!(Destructive::parse_marker("-- WARNING: drops table post"), None);
+    assert_eq!(Destructive::parse_marker("-- monorm: destructive drop-column post"), None);
+    assert_eq!(Destructive::parse_marker("-- monorm: destructive truncate post"), None);
+}
+
+fn marked(dialect: &str, before: Vec<Value>, after: Vec<Value>) -> MigrationPlan {
+    let make = |extra: Vec<Value>| {
+        let mut ir = blog(extra, json!({}));
+        ir["dialect"] = json!(dialect);
+        schema(ir)
+    };
+    let p1 = super::plan(&make(before), &DbSchema::default()).unwrap();
+    super::plan(&make(after), &p1.snapshot).unwrap()
+}
+
+#[test]
+fn migration_files_mark_each_destructive_step() {
+    for dialect in ["postgres", "sqlite"] {
+        let p = marked(dialect, vec![field("bio", "text"), field("views", "int")], vec![field("views", "text")]);
+        let up = files::render(&p.up, "up");
+        assert!(up.contains("-- monorm: destructive drop-column posts.bio\n"), "{dialect}: {up}");
+        assert!(up.contains("-- monorm: destructive alter-type posts.views\n"), "{dialect}: {up}");
+        assert_eq!(up.matches("-- monorm: destructive").count(), 2, "{dialect}: {up}");
+        // the down plan adds a column and converts one back: only the type change loses data
+        let down = files::render(&p.down, "down");
+        assert!(down.contains("-- monorm: destructive alter-type posts.views\n"), "{dialect}: {down}");
+        assert!(!down.contains("drop-column"), "{dialect}: {down}");
+        // the line follows the warning of its step
+        if dialect == "postgres" {
+            assert!(up.contains("-- WARNING: drops column posts.bio and its data\n-- monorm: destructive drop-column posts.bio\nALTER TABLE"), "{up}");
+        }
+    }
+    let first = super::plan(&schema(blog(vec![], json!({}))), &DbSchema::default()).unwrap();
+    let up = files::render(&first.up, "up");
+    assert!(!up.contains("monorm: destructive"), "{up}");
+    let down = files::render(&first.down, "down");
+    assert!(down.contains("-- monorm: destructive drop-table users\n"), "{down}");
+    assert!(down.contains("-- monorm: destructive drop-table posts\n"), "{down}");
+}
+
+#[test]
+fn a_marker_names_the_table_before_its_rename() {
+    for dialect in ["postgres", "sqlite"] {
+        let make = |table: &str, hint: bool, extra: Vec<Value>| {
+            let mut ir = blog(extra, json!({}));
+            ir["dialect"] = json!(dialect);
+            ir["models"][1]["table"] = json!(table);
+            if hint {
+                ir["models"][1]["renamed_from"] = json!("posts");
+            }
+            schema(ir)
+        };
+        let p1 = super::plan(&make("posts", false, vec![field("views", "int")]), &DbSchema::default()).unwrap();
+        let p2 = super::plan(&make("articles", true, vec![]), &p1.snapshot).unwrap();
+        let up = files::render(&p2.up, "up");
+        assert!(up.contains("-- monorm: destructive drop-column posts.views\n"), "{dialect}: {up}");
+        assert!(!up.contains("destructive drop-column articles"), "{dialect}: {up}");
+        let down = files::render(&p2.down, "down");
+        assert!(down.contains("monorm: destructive") == false, "{dialect}: {down}");
+        assert!(p2.up.iter().any(|s| !s.destructive.is_empty()));
+        let json = serde_json::to_value(&p2.up).unwrap();
+        assert!(json.as_array().unwrap().iter().any(|s| s["destructive"] == json!(true)), "{json}");
+        assert!(json.as_array().unwrap().iter().any(|s| s["destructive"] == json!(false)) || p2.up.len() == 1, "{json}");
+    }
+}

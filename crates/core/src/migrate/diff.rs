@@ -152,6 +152,175 @@ impl Op {
             _ => return None,
         })
     }
+
+    /// The data loss of the operation, if it has any: a dropped table or column, or a type
+    /// change that is not a widening. Steps that only fail on existing rows are not destructive:
+    /// the migration transaction rolls them back.
+    pub fn destructive(&self) -> Option<Destructive> {
+        match self {
+            Op::DropTable { table } => Some(Destructive { kind: DestructiveKind::DropTable, table: table.clone(), column: None }),
+            Op::DropColumn { table, column } => {
+                Some(Destructive { kind: DestructiveKind::DropColumn, table: table.clone(), column: Some(column.clone()) })
+            }
+            Op::AlterColumnType { table, column, from, to } if !widens(from, to) => {
+                Some(Destructive { kind: DestructiveKind::AlterType, table: table.clone(), column: Some(column.clone()) })
+            }
+            _ => None,
+        }
+    }
+}
+
+/// How a destructive step loses data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DestructiveKind {
+    DropTable,
+    DropColumn,
+    AlterType,
+}
+
+impl DestructiveKind {
+    fn word(self) -> &'static str {
+        match self {
+            DestructiveKind::DropTable => "drop-table",
+            DestructiveKind::DropColumn => "drop-column",
+            DestructiveKind::AlterType => "alter-type",
+        }
+    }
+}
+
+/// A step that deletes data or can truncate it. `table` is the table as the database holds it
+/// before the migration runs; `column` is set for column steps.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Destructive {
+    pub kind: DestructiveKind,
+    pub table: String,
+    pub column: Option<String>,
+}
+
+/// The prefix of the line that marks a destructive step in `up.sql` and `down.sql`.
+pub const DESTRUCTIVE_MARKER: &str = "-- monorm: destructive ";
+
+impl Destructive {
+    /// The marker line: `-- monorm: destructive <kind> <table>[.<column>]`.
+    pub fn marker(&self) -> String {
+        match &self.column {
+            Some(c) => format!("{DESTRUCTIVE_MARKER}{} {}.{c}", self.kind.word(), self.table),
+            None => format!("{DESTRUCTIVE_MARKER}{} {}", self.kind.word(), self.table),
+        }
+    }
+
+    /// Reads one line of a migration file; `None` unless it is a marker line.
+    pub fn parse_marker(line: &str) -> Option<Destructive> {
+        let rest = line.trim().strip_prefix(DESTRUCTIVE_MARKER.trim_end())?.strip_prefix(' ')?;
+        let (kind, target) = rest.trim().split_once(' ')?;
+        let target = target.trim();
+        let kind = [DestructiveKind::DropTable, DestructiveKind::DropColumn, DestructiveKind::AlterType]
+            .into_iter()
+            .find(|k| k.word() == kind)?;
+        if kind == DestructiveKind::DropTable {
+            return (!target.is_empty()).then(|| Destructive { kind, table: target.to_owned(), column: None });
+        }
+        let (table, column) = target.rsplit_once('.')?;
+        (!table.is_empty() && !column.is_empty())
+            .then(|| Destructive { kind, table: table.to_owned(), column: Some(column.to_owned()) })
+    }
+
+    /// What the step does, for an error message: `drops column post.body`.
+    pub fn describe(&self) -> String {
+        let column = self.column.as_deref().unwrap_or_default();
+        match self.kind {
+            DestructiveKind::DropTable => format!("drops table {}", self.table),
+            DestructiveKind::DropColumn => format!("drops column {}.{column}", self.table),
+            DestructiveKind::AlterType => format!("changes the type of column {}.{column}", self.table),
+        }
+    }
+}
+
+/// A column type, as far as the widening list needs it.
+#[derive(Debug, PartialEq)]
+enum TypeShape {
+    Int,
+    BigInt,
+    Varchar(Option<u64>),
+    Text,
+    Numeric(Option<(u64, u64)>),
+    Other,
+}
+
+fn type_shape(text: &str) -> TypeShape {
+    let t = text.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+    if t.ends_with(']') {
+        return TypeShape::Other;
+    }
+    let (base, args) = match t.split_once('(') {
+        Some((b, a)) => match a.strip_suffix(')') {
+            Some(a) => (b.trim(), Some(a)),
+            None => return TypeShape::Other,
+        },
+        None => (t.as_str(), None),
+    };
+    let numbers = |a: &str| a.split(',').map(|n| n.trim().parse::<u64>().ok()).collect::<Option<Vec<_>>>();
+    match (base, args) {
+        ("integer" | "int" | "int4", None) => TypeShape::Int,
+        ("bigint" | "int8", None) => TypeShape::BigInt,
+        ("text", None) => TypeShape::Text,
+        ("varchar" | "character varying", None) => TypeShape::Varchar(None),
+        ("varchar" | "character varying", Some(a)) => match numbers(a).as_deref() {
+            Some(&[n]) => TypeShape::Varchar(Some(n)),
+            _ => TypeShape::Other,
+        },
+        ("numeric" | "decimal", None) => TypeShape::Numeric(None),
+        ("numeric" | "decimal", Some(a)) => match numbers(a).as_deref() {
+            Some(&[p]) => TypeShape::Numeric(Some((p, 0))),
+            Some(&[p, s]) => TypeShape::Numeric(Some((p, s))),
+            _ => TypeShape::Other,
+        },
+        _ => TypeShape::Other,
+    }
+}
+
+/// Whether every value of type `from` converts to `to` unchanged:
+/// `int` to `bigint`, `varchar(n)` to `text` or `varchar`, `varchar(n)` to `varchar(m)` with
+/// m > n, and `numeric(p,s)` to `numeric(q,s)` with q > p. An unknown type is not widening.
+pub fn widens(from: &str, to: &str) -> bool {
+    match (type_shape(from), type_shape(to)) {
+        (TypeShape::Int, TypeShape::BigInt) => true,
+        (TypeShape::Varchar(Some(_)), TypeShape::Text | TypeShape::Varchar(None)) => true,
+        (TypeShape::Varchar(Some(n)), TypeShape::Varchar(Some(m))) => m > n,
+        (TypeShape::Numeric(Some((p, s))), TypeShape::Numeric(Some((q, t)))) => s == t && q > p,
+        _ => false,
+    }
+}
+
+/// The destructive steps of each op of one plan, in order. A table name is the name the
+/// database holds before the plan runs, so a `RenameTable` or `RenameColumn` earlier in
+/// the plan maps the names of the later ops back.
+pub fn destructive_ops(ops: &[Op]) -> Vec<Option<Destructive>> {
+    let mut tables: HashMap<String, String> = HashMap::new(); // current name -> name before the plan
+    let mut columns: HashMap<(String, String), String> = HashMap::new(); // (current table, current column) -> column before
+    ops.iter()
+        .map(|op| {
+            if let Op::RenameTable { from, to } = op {
+                let origin = tables.get(from).cloned().unwrap_or_else(|| from.clone());
+                tables.insert(to.clone(), origin);
+            }
+            if let Op::RenameColumn { table, from, to } = op {
+                let origin = columns.get(&(table.clone(), from.clone())).cloned().unwrap_or_else(|| from.clone());
+                columns.insert((table.clone(), to.clone()), origin);
+            }
+            let mut d = op.destructive()?;
+            let current = d.table.clone();
+            if let Some(t) = tables.get(&current) {
+                d.table = t.clone();
+            }
+            if let Some(c) = d.column.as_mut() {
+                if let Some(o) = columns.get(&(current, c.clone())) {
+                    *c = o.clone();
+                }
+            }
+            Some(d)
+        })
+        .collect()
 }
 
 /// `items` of `new` matched against `old`: by name, then by definition (a rename).

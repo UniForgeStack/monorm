@@ -1135,16 +1135,17 @@ pub fn differences(live: &DbSchema, target: &DbSchema) -> Vec<Step> {
             summary: ops.iter().map(monorm_core::migrate::pg::summary).collect::<Vec<_>>().join("; "),
             sql: sql.into_iter().map(|s| s.sql).collect::<Vec<_>>().join("\n"),
             warning: (!warnings.is_empty()).then(|| warnings.join("; ")),
+            destructive: vec![],
         }]
     } else {
         ops.iter()
-            .map(|op| Step { summary: monorm_core::migrate::pg::summary(op), sql: monorm_core::migrate::pg::render(op, false), warning: op.warning() })
+            .map(|op| Step { summary: monorm_core::migrate::pg::summary(op), sql: monorm_core::migrate::pg::render(op, false), warning: op.warning(), destructive: vec![] })
             .collect()
     };
     for e in &target.extensions {
         if !live.extensions.iter().any(|x| x.name == e.name) {
             let op = Op::CreateExtension(e.clone());
-            steps.insert(0, Step { summary: monorm_core::migrate::pg::summary(&op), sql: monorm_core::migrate::pg::render(&op, false), warning: None });
+            steps.insert(0, Step { summary: monorm_core::migrate::pg::summary(&op), sql: monorm_core::migrate::pg::render(&op, false), warning: None, destructive: vec![] });
         }
     }
     steps
