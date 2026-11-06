@@ -17,7 +17,7 @@ from . import _extensions, _native
 from ._apps import resolve_apps
 from ._packages import package_dirs, resolve_extensions
 from .errors import DoesNotExist, MultipleObjectsReturned, NotLoaded, VersionConflict
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 
 from .expr import ColumnRef, Condition, RelationPath, and_, differs
 from .index import _Indexes
@@ -105,6 +105,8 @@ class ModelMeta:
         # Row tuples from the engine follow this order.
         self.field_names: tuple[str, ...] = tuple(self.fields)
         self.input_fields: dict[str, Field[Any]] = self.fields
+        # Fields the database computes (`@generated`): left out of `input_fields`, and a write names them.
+        self.generated: frozenset[str] = frozenset()
         self.leaf_group: dict[str, str] = {}
         self.public_names: tuple[str, ...] = self.field_names
         self.decoders: tuple[tuple[str, tuple[str, ...], Any], ...] = ()
@@ -130,6 +132,12 @@ class ModelMeta:
         # The bound-safe query-set classes of extensions (same order) and their composed class.
         self.bound_extension_sets: tuple[type[BoundQuerySet[Any]], ...] = ()
         self.composed_bound: type[BoundQuerySet[Any]] | None = None
+
+    def hide_computed(self, computed: Collection[str], field_irs: Iterable[dict[str, Any]]) -> None:
+        """Set `generated` and `input_fields`: result fields and `@generated` fields are not write input."""
+        self.generated = frozenset(f["name"] for f in field_irs if f.get("generated"))
+        hidden = self.generated | set(computed)
+        self.input_fields = {k: v for k, v in self.fields.items() if k not in hidden} if hidden else self.fields
 
     def index_nested(self) -> None:
         """The leaf-to-group map, the instance attribute names and the row decoders; run again when ``fields`` changes."""
@@ -368,7 +376,7 @@ class Registry:
                 {name: fields[name] for name in multi_table[meta.name][0]} if meta.name in multi_table else None
             )
             computed = {f["field"] for f in snapshot._behavior.get("result_fields", ()) if f["model"] == meta.name}
-            meta.input_fields = {k: v for k, v in fields.items() if k not in computed} if computed else fields
+            meta.hide_computed(computed, ir["fields"])
             meta.registry = snapshot
             if _reference_adapter is not None:
                 _reference_adapter.install(model)
@@ -632,8 +640,7 @@ def define(
         cls._meta.schema_ir = m
         cls._meta.key = tuple(cls._meta.fields[f.name] for f in cls._meta.key)
         computed = {f["field"] for f in ir.get("behavior", {}).get("result_fields", ()) if f["model"] == m["name"]}
-        if computed:
-            cls._meta.input_fields = {k: v for k, v in cls._meta.fields.items() if k not in computed}
+        cls._meta.hide_computed(computed, m["fields"])
         out[m["name"]] = cls
     for key in ("types", "extensions", "functions", "catalog", "partitions", "native_expression_slots"):
         items = reg._schema_extra.setdefault(key, [])

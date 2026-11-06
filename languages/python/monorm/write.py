@@ -96,7 +96,7 @@ def prepare_rows(model: type[Model], rows: Iterable[Mapping[str, Any]]) -> tuple
                 )
             if (nested := _nested_values(meta, key, value)) is not None:
                 values.update(nested)
-            elif key in meta.input_fields:
+            elif key in meta.input_fields or key in meta.generated:
                 values[key] = value
             elif isinstance(rel := meta.relations.get(key), BelongsTo):
                 values.update(_link(rel, value))
@@ -128,7 +128,7 @@ def lookup_values(model: type[Model], values: Mapping[str, Any]) -> dict[str, An
             raise TypeError(f"get_or_insert: {meta.name}.{key} is a nested field; look up by a plain field of a unique constraint")
         if isinstance(rel := meta.relations.get(key), BelongsTo):
             items = _link(rel, value)
-        elif key not in meta.input_fields:
+        elif key not in meta.input_fields and key not in meta.generated:
             raise TypeError(f"{meta.name} has no field {key!r}")
         else:
             items = {key: value}
@@ -165,7 +165,7 @@ def prepare_update_rows(model: type[Model], rows: Iterable[Mapping[str, Any]]) -
                 )
             if (nested := _nested_values(meta, key, value)) is not None:
                 values.update(nested)
-            elif key in meta.input_fields:
+            elif key in meta.input_fields or key in meta.generated:
                 values[key] = value
             elif isinstance(rel := meta.relations.get(key), BelongsTo):
                 values.update(_link(rel, value))
@@ -205,7 +205,7 @@ def assignments(model: type[Model], values: Mapping[str, Any], ctx: IRContext) -
             raise TypeError(f"{meta.name}.{name} is a part of {owner!r}; set {owner!r} instead")
         rel = meta.relations.get(name)
         for name, value in (_link(rel, value) if isinstance(rel, BelongsTo) else {name: value}).items():
-            if name not in meta.input_fields:
+            if name not in meta.input_fields and name not in meta.generated:
                 raise TypeError(f"{meta.name} has no field {name!r}")
             if isinstance(value, Ordering):
                 raise TypeError(

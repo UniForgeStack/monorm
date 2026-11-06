@@ -15,7 +15,8 @@ function normalize(meta: ModelMeta, row: object, what: string, expressions: bool
     if (!expressions && (value instanceof Expression || value instanceof ParamRef)) {
       throw new TypeError(`${meta.name}.${key}: ${what} takes plain values, not expressions`);
     }
-    const f = meta.inputFields.get(key);
+    // The engine refuses a generated column, so a write that names one goes on to it.
+    const f = meta.generated.has(key) ? meta.fields.get(key) : meta.inputFields.get(key);
     if (f) {
       if (f.nested !== undefined && what === "getOrInsert") {
         throw new TypeError(`getOrInsert: ${meta.name}.${key} is a nested field; look up by a plain field of a unique constraint`);

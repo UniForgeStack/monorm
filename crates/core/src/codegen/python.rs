@@ -463,7 +463,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         // a relation of several key fields is listed once, after its last one
         let last = |r: &RelationIr, field: &str| r.from.last().is_some_and(|f| f == field);
         writeln!(body, "class {name}Insert(TypedDict):").unwrap();
-        for f in m.fields().iter().filter(|f| f.nested.is_none()) {
+        for f in m.fields().iter().filter(|f| f.is_writable_column()) {
             let t = input_type(m, f);
             match belongs(&f.name) {
                 Some(r) => {
@@ -493,7 +493,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
             }
         }
         writeln!(body, "\nclass {name}Update(TypedDict, total=False):").unwrap();
-        for (position, f) in m.fields().iter().enumerate().filter(|(_, f)| f.nested.is_none()) {
+        for (position, f) in m.fields().iter().enumerate().filter(|(_, f)| f.is_writable_column()) {
             let t = input_type(m, f);
             let expression = !m.hooks.as_ref().is_some_and(|h| h.required.contains(&position));
             let expression = expression && m.adapter_for(&f.name).is_none();
@@ -509,7 +509,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         }
         // update_many rows: the primary key plus plain values (no expressions)
         writeln!(body, "\nclass {name}UpdateRow(TypedDict, total=False):").unwrap();
-        for f in m.fields().iter().filter(|f| f.nested.is_none()) {
+        for f in m.fields().iter().filter(|f| f.is_writable_column()) {
             let t = field_type(m, f);
             if f.primary_key {
                 writeln!(body, "    {}: Required[{t}]", f.name).unwrap();

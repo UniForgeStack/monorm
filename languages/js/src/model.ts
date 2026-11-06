@@ -48,6 +48,8 @@ export type IRField = {
   default?: unknown;
   default_now?: boolean;
   default_sql?: string;
+  /** Set on a generated column: the database computes it, so writes refuse it. */
+  generated?: { sql: string; stored: boolean };
   /** Set on a stored field of a nested type: the group it belongs to. */
   nested?: IRNested;
   /** The ORM insert default (`@client_default`); native insert preparation fills it. */
@@ -149,6 +151,8 @@ export class ModelMeta implements Source {
   readonly groups: FieldMeta[] = [];
   inputFields: ReadonlyMap<string, FieldMeta> = this.fields;
   inputFieldList: readonly FieldMeta[] = this.publicList;
+  /** The generated columns by TypeScript name: no write takes them. */
+  generated: ReadonlySet<string> = new Set();
   readonly relations = new Map<string, RelationMeta>();
   readonly relationByIr = new Map<string, RelationMeta>();
   /** The primary key fields in key order. */
@@ -1051,8 +1055,9 @@ export function define(
     const checks = (ir.behavior as { result_checks?: { model: string; field: string; non_null?: boolean }[] } | undefined)?.result_checks ?? [];
     meta.narrowed = new Set(checks.filter((c) => c.model === m.name && c.non_null).map((c) => c.field));
     const computed = new Set(((ir.behavior as { result_fields?: { model: string; field: string }[] } | undefined)?.result_fields ?? []).filter((f) => f.model === m.name).map((f) => f.field));
-    if (computed.size) {
-      meta.inputFieldList = meta.publicList.filter((f) => !computed.has(f.ir));
+    meta.generated = new Set(m.fields.filter((f) => f.generated).flatMap((f) => meta.fieldByIr.get(f.name)?.name ?? []));
+    if (computed.size || meta.generated.size) {
+      meta.inputFieldList = meta.publicList.filter((f) => !computed.has(f.ir) && !meta.generated.has(f.name));
       meta.inputFields = new Map(meta.inputFieldList.map((f) => [f.name, f]));
     }
     const ids = members[m.name];

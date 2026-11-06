@@ -119,6 +119,11 @@ impl Model {
         self.hooks.as_ref().is_some_and(|h| h.computed_at(position).is_some())
     }
 
+    /// True when the database computes the value of the field at `position` (`@generated`): a write is an error.
+    pub fn generated(&self, position: usize) -> bool {
+        self.fields().get(position).is_some_and(|f| f.generated.is_some())
+    }
+
     /// The positions of the fields that a read must select to compute the field at `position`; empty for a stored field.
     pub fn dependencies(&self, position: usize) -> Vec<usize> {
         if let Some((_, deps)) = self.hooks.as_ref().and_then(|h| h.computed_at(position)) { return deps.to_vec(); }

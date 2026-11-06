@@ -542,6 +542,7 @@ pub fn plan_copy(schema: &Schema, target: Target, model: &str, fields: &[String]
     if m.hooks.as_deref().is_some_and(monorm_core::hooks::HookPlan::changes_set) {
         return Err(Error::query(format!("insert_many(copy=True): {} has change-set hooks; use insert_many()", m.ir.name)));
     }
+    crate::plan::refuse_generated(m, fields.iter())?;
     let (fields, rows) = crate::client_default::fill(m, fields, rows)?;
     let mut columns = vec![];
     let mut keep = vec![];
@@ -617,6 +618,7 @@ pub fn plan_update_many(
         let mut rows = rows;
         let positions = plan::field_positions(m, fields)?;
         if positions.iter().skip(1).any(|p| m.computed(*p)) { return Err(Error::query("computed fields are read-only")); }
+        plan::refuse_generated(m, fields.iter())?;
         if m.hooks.is_some() {
             let map = crate::hooks::input_map(m.fields().len(), &positions)?;
             crate::hooks::update_rows(m, &map, &mut rows, params)?;
