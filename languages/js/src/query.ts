@@ -6,7 +6,7 @@
 import { inspection, inspector, emptyInspection, type QueryInspection } from "./inspection.js";
 import { Builder } from "./build.js";
 import type { BoundQuerySet, BoundQuerySetOf } from "./bound.js";
-import { resolve, withScope, type Database } from "./db.js";
+import { currentScope, resolve, withScope, type Database } from "./db.js";
 import {
   asCondition,
   Column,
@@ -47,7 +47,7 @@ import {
 import { NotLoaded, QueryError, TransactionRequired, UnfilteredWriteError } from "./errors.js";
 import { irNames, type DefaultNames, type Hop, type HopKind, type In, type ModelSpec, type RelationMeta } from "./meta.js";
 import { DB, IndexRef, columnOf, fieldValue, RELATED, registerQueries, type Instance, type ModelClass, type ModelMeta } from "./model.js";
-import { call, wait, type NativeReturned, type NativeSelect, type NativeTrace, type NativeTransaction } from "./native.js";
+import { call, wait, type NativeInspector, type NativePreparedRead, type NativeReturned, type NativeSelect, type NativeTrace, type NativeTransaction } from "./native.js";
 import { adaptedInsert, adaptedInsertMany, adaptedUpdate, adaptedUpdateMany, FieldAdapterError, prepareValues, splitAdapted, splitBatch } from "./adapters.js";
 import { assignments, lookupValues, prepareRows, prepareUpdateRows, prepareAttach } from "./write.js";
 import { after, checkPaging, decodeCursor, encodeCursor, fingerprint, keyset, type Page, type PageOptions } from "./pagination.js";
@@ -2282,13 +2282,16 @@ function modelOf(x: unknown): boolean {
 // -- prepared queries -------------------------------------------------------------------------------
 
 /** One statement of a prepared query: its IR JSON and parameters, with the `param()`
- * slots to fill per call. */
+ * slots to fill per call. The engine plans it once per engine and set of scope names
+ * (`native`) and keeps the SQL text and the slot map. */
 /** @internal */
 export class Compiled {
   readonly json: string;
   readonly params: unknown[];
   readonly slots: [number, string, ((v: unknown) => unknown) | undefined][];
   readonly names: Set<string>;
+  private readonly declared: (string | null)[];
+  private readonly natives = new WeakMap<object, Map<string, NativePreparedRead>>();
 
   constructor(ir: IR, params: SlotParams) {
     this.json = JSON.stringify(ir);
@@ -2300,6 +2303,50 @@ export class Compiled {
       }
     });
     this.names = new Set(this.slots.map(([, n]) => n));
+    this.declared = params.map((p) => (p instanceof Slot ? p.type ?? null : null));
+  }
+
+  /** The engine's prepared read for these scope names (planned on first use). */
+  native(engine: NativeInspector, scope: readonly string[]): NativePreparedRead {
+    let byScope = this.natives.get(engine);
+    if (byScope === undefined) this.natives.set(engine, (byScope = new Map()));
+    const key = scope.join("\0");
+    let read = byScope.get(key);
+    if (read === undefined) {
+      let op = this.json;
+      if (scope.length) {
+        const index = JSON.stringify(Object.fromEntries(scope.map((n, i) => [n, this.params.length + i])));
+        op = `${op.slice(0, -1)},"scope":${index}}`;
+      }
+      const declared = [...this.declared, ...scope.map(() => null)];
+      read = call(() => engine.prepareRead(op, declared.length, declared));
+      byScope.set(key, read);
+    }
+    return read;
+  }
+
+  /** The parameter list of a call with the scope values after it, and the scope names:
+   * `values.scope` over the `scope()` context. */
+  callValues(values: Record<string, unknown> | undefined, known: Set<string>): [unknown[], string[]] {
+    let scope: Readonly<Record<string, unknown>> = currentScope();
+    if (values !== undefined && "scope" in values) {
+      const { scope: given, ...rest } = values;
+      values = rest;
+      if (given !== undefined && given !== null) scope = { ...scope, ...(given as Record<string, unknown>) };
+    }
+    const params = this.bind(values ?? {}, known);
+    params.push(...Object.values(scope));
+    return [params, Object.keys(scope)];
+  }
+
+  /** Plans the statement now, so a shape that cannot become a slot fails at `prepare()`.
+   * A scope that is not set yet waits for the first call. */
+  validate(engine: NativeInspector): void {
+    try {
+      this.native(engine, Object.keys(currentScope()));
+    } catch (e) {
+      if (!(e instanceof QueryError) || !e.message.includes("which is not set")) throw e;
+    }
   }
 
   bind(values: Record<string, unknown>, known: Set<string>): unknown[] {
@@ -2323,8 +2370,11 @@ export class Compiled {
   }
 }
 
+/** The `scope.<name>` values of one call: they win over the `scope()` context. */
+export type CallScope = { readonly scope?: Readonly<Record<string, unknown>> };
+
 /** @internal */
-export type Values<P> = [keyof P] extends [never] ? [values?: Record<string, never>] : [values: { readonly [K in keyof P]: P[K] }];
+export type Values<P> = [keyof P] extends [never] ? [values?: CallScope] : [values: { readonly [K in keyof P]: P[K] } & CallScope];
 
 /**
  * A query compiled by `QuerySet.prepare()`. Each call skips building the query (the
@@ -2337,7 +2387,9 @@ export class Prepared<M extends ModelSpec, R, P> {
 
   /** @internal */
   constructor(private readonly qs: QuerySet<M, R>) {
-    this.params = this.statement("select").names;
+    const select = this.statement("select");
+    this.params = select.names;
+    select.validate(inspector(qs.meta, qs.state.db));
   }
 
   private statement(kind: string): Compiled {
@@ -2362,9 +2414,9 @@ export class Prepared<M extends ModelSpec, R, P> {
 
   private start(kind: string, values: Record<string, unknown> | undefined): Promise<unknown> {
     const c = this.statement(kind);
-    const params = c.bind(values ?? {}, this.params as Set<string>);
+    const [params, scope] = c.callValues(values, this.params as Set<string>);
     checkRunnable(this.qs.meta, this.qs.state);
-    return this.qs.db().runJson(c.json, params);
+    return this.qs.db().runPrepared((engine) => c.native(engine, scope), params);
   }
 
   /** The rows. */
@@ -2400,15 +2452,15 @@ export class Prepared<M extends ModelSpec, R, P> {
   /** Inspect the prepared SELECT with these bound values. */
   inspect(...[values]: Values<P>): QueryInspection {
     const c = this.statement("select");
-    const params = c.bind(values ?? {}, this.params as Set<string>);
-    return call(() => inspection(inspector(this.qs.meta, this.qs.state.db).inspect(...withScope(c.json, params))));
+    const [, scope] = c.callValues(values, this.params as Set<string>);
+    return call(() => inspection(c.native(inspector(this.qs.meta, this.qs.state.db), scope).inspect()));
   }
 
   /** The SELECT for these values, parameters inlined (for debugging). */
   sql(...[values]: Values<P>): string {
     const c = this.statement("select");
-    const params = c.bind(values ?? {}, this.params as Set<string>);
-    return call(() => this.qs.meta.registry.native().sql(...withScope(c.json, params)));
+    const [params, scope] = c.callValues(values, this.params as Set<string>);
+    return call(() => c.native(this.qs.meta.registry.native(), scope).sql(params));
   }
 }
 

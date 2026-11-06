@@ -78,7 +78,18 @@ export interface NativeSessionLock {
   release(trace?: NativeTrace | null): Promise<void>;
 }
 
+/** A read planned once: the SQL text and the slot map live in Rust (`prepareRead`). */
+export interface NativePreparedRead {
+  /** Runs the statement for these values (the `param()` values, then the scope values), in `tx` when given. */
+  run(params: unknown[], tx: NativeTransaction | null, trace?: NativeTrace | null): Promise<unknown>;
+  /** The statement of a call with its values inlined. */
+  sql(params: unknown[]): string;
+  inspect(): string;
+}
+
 export interface NativeInspector {
+  /** Plans a select, count or exists IR for `n` parameters (scope values included); `declared` holds a parameter's declared type (`"big_int"`, `"big_int[]"`) or null. */
+  prepareRead(opJson: string, n: number, declared: (string | null)[]): NativePreparedRead;
   inspect(opJson: string, params: unknown[]): string;
   inspectInsert(model: string, fields: string[], rows: unknown[][], options: string, params: unknown[], batchSize: number | null, returning: boolean): string;
   inspectUpdateMany(model: string, fields: string[], rows: unknown[][], filtersJson: string, params: unknown[], batchSize: number | null, returning: boolean, withoutDefaults: string, modelFields?: readonly string[] | null): string;

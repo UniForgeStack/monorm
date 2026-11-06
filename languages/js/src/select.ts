@@ -701,7 +701,9 @@ export class PreparedSelect<Row extends object, P> implements PreparedRows<P> {
   /** @internal */
   constructor(select: Select<ModelSpec, Row, string, P, string, unknown>) {
     this.select = select;
-    this.params = this.statement("select").names;
+    const statement = this.statement("select");
+    this.params = statement.names;
+    statement.validate(inspector(select.qs.meta, select.qs.state.db));
   }
 
   private statement(kind: string): Compiled {
@@ -728,9 +730,9 @@ export class PreparedSelect<Row extends object, P> implements PreparedRows<P> {
 
   private start(kind: string, values: Record<string, unknown> | undefined): Promise<unknown> {
     const c = this.statement(kind);
-    const params = c.bind(values ?? {}, this.params as Set<string>);
+    const [params, scope] = c.callValues(values, this.params as Set<string>);
     checkRunnable(this.select.qs.meta, this.select.qs.state);
-    return this.select.qs.db().runJson(c.json, params);
+    return this.select.qs.db().runPrepared((engine) => c.native(engine, scope), params);
   }
 
   private async rows(kind: string, values: Record<string, unknown> | undefined): Promise<Row[]> {
@@ -780,16 +782,16 @@ export class PreparedSelect<Row extends object, P> implements PreparedRows<P> {
   /** Inspect the prepared SELECT with these bound values. */
   inspect(...[values]: Values<P>): QueryInspection {
     const c = this.statement("select");
-    const params = c.bind(values ?? {}, this.params as Set<string>);
+    const [, scope] = c.callValues(values, this.params as Set<string>);
     const { meta, state } = this.select.qs;
-    return call(() => inspection(inspector(meta, state.db).inspect(...withScope(c.json, params))));
+    return call(() => inspection(c.native(inspector(meta, state.db), scope).inspect()));
   }
 
   /** The SELECT for these values, parameters inlined (for debugging). */
   sql(...[values]: Values<P>): string {
     const c = this.statement("select");
-    const params = c.bind(values ?? {}, this.params as Set<string>);
-    return call(() => this.select.qs.meta.registry.native().sql(...withScope(c.json, params)));
+    const [params, scope] = c.callValues(values, this.params as Set<string>);
+    return call(() => c.native(this.select.qs.meta.registry.native(), scope).sql(params));
   }
 }
 

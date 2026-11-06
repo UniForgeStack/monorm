@@ -5,7 +5,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { DatabaseError, LockNotAvailable, NotConnected, QueryError, TransactionAborted, TransactionRequired } from "./errors.js";
 import type { IR } from "./expr.js";
 import { registry as defaultRegistry, type Registry } from "./model.js";
-import { call, native, wait, type NativeEngine, type NativeTrace, type NativeTransaction } from "./native.js";
+import { call, native, wait, type NativeEngine, type NativePreparedRead, type NativeTrace, type NativeTransaction } from "./native.js";
 import { allowedWrites } from "./protection.js";
 import { active as debugging, capture, record, writeKey } from "./debug.js";
 
@@ -303,6 +303,12 @@ export class Database {
     return this.runJson(JSON.stringify(ir), params);
   }
 
+  /** @internal Runs a prepared read on the reader engine; `read(engine)` gives that engine's statement. */
+  runPrepared(read: (engine: NativeEngine) => NativePreparedRead, params: unknown[]): Promise<unknown> {
+    const prepared = read(this.reader());
+    return this.send((tx, trace) => prepared.run(params, tx, trace));
+  }
+
   /** @internal */
   runJson(json: string, params: unknown[]): Promise<unknown> {
     [json, params] = withScope(json, params);
@@ -587,6 +593,11 @@ export function getDatabase(): Database {
 export function scope<T>(values: Readonly<Record<string, unknown>>, fn: () => Promise<T>): Promise<T> {
   // `await` inside: a returned thenable (a query set) must run while the values are set.
   return scopeValues.run({ ...scopeValues.getStore(), ...values }, async () => await fn());
+}
+
+/** @internal The values `scope.<name>` reads in this async context. */
+export function currentScope(): Readonly<Record<string, unknown>> {
+  return scopeValues.getStore() ?? {};
 }
 
 /** @internal `json` (a statement's IR, or with `key` a list wrapped under it) with the

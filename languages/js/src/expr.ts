@@ -87,6 +87,8 @@ export class Slot {
   constructor(
     readonly name: string,
     readonly transform: ((value: unknown) => unknown) | undefined,
+    /** The engine type name (`"float"`, `"big_int[]"`, ...) a `param(name, type)` declares. */
+    readonly type?: string,
   ) {}
 }
 
@@ -232,15 +234,19 @@ export abstract class Expression<T, S extends string = never, P = {}> extends No
    * false. */
   in<S2 extends string = never, P2 = {}>(
     values: readonly In<NonNullable<T>>[] | SingleColumn<Compat<T>, S2, P2>,
-  ): Condition<S | S2, P & P2> {
-    return inValues(this, values, false) as Condition<S | S2, P & P2>;
+  ): Condition<S | S2, P & P2>;
+  in<N extends string>(values: ParamRef<N>): Condition<S, P & ParamValues<N, readonly In<NonNullable<T>>[]>>;
+  in(values: unknown): Condition<string, unknown> {
+    return inValues(this, values, false);
   }
 
   /** `NOT IN (values)` / `NOT IN (SELECT ...)`. An empty list is true. */
   notIn<S2 extends string = never, P2 = {}>(
     values: readonly In<NonNullable<T>>[] | SingleColumn<Compat<T>, S2, P2>,
-  ): Condition<S | S2, P & P2> {
-    return inValues(this, values, true) as Condition<S | S2, P & P2>;
+  ): Condition<S | S2, P & P2>;
+  notIn<N extends string>(values: ParamRef<N>): Condition<S, P & ParamValues<N, readonly In<NonNullable<T>>[]>>;
+  notIn(values: unknown): Condition<string, unknown> {
+    return inValues(this, values, true);
   }
 
   isNull(): Condition<S, P> {
@@ -594,7 +600,7 @@ export interface SingleColumn<T, S extends string, P> extends Subquery {
 
 function inValues(item: Expression<unknown, string, unknown>, values: unknown, neg: boolean): Condition<string, unknown> {
   if (values instanceof ParamRef) {
-    throw new TypeError(`${neg ? "notIn" : "in"}() can't take a param(); the number of values is part of the query`);
+    return new InParam(item, values, neg);
   }
   if (!Array.isArray(values)) {
     return new InSelect(item, values as Subquery, neg);
@@ -678,9 +684,16 @@ export class Literal extends Expression<unknown, never, {}> {
  * ```
  */
 export class ParamRef<N extends string> {
-  constructor(readonly name: N) {
+  constructor(
+    readonly name: N,
+    /** The engine type name, where the query does not give the type (a `case()` of params). */
+    readonly type?: string,
+  ) {
     if (!/^[A-Za-z_$][\w$]*$/.test(name)) {
       throw new TypeError(`param() takes an identifier, got ${JSON.stringify(name)}`);
+    }
+    if (name === "scope") {
+      throw new TypeError('param("scope") is reserved: `scope` carries the scope values of a call');
     }
   }
 
@@ -689,7 +702,7 @@ export class ParamRef<N extends string> {
     if (!(params instanceof SlotParams)) {
       throw new QueryError(`param(${JSON.stringify(this.name)}) is a placeholder of a prepared query; call .prepare() on the query`);
     }
-    params.push(new Slot(this.name, transform));
+    params.push(new Slot(this.name, transform, this.type));
     return { t: "param", i: params.length - 1 };
   }
 
@@ -698,8 +711,8 @@ export class ParamRef<N extends string> {
   }
 }
 
-export function param<N extends string>(name: N): ParamRef<N> {
-  return new ParamRef(name);
+export function param<N extends string>(name: N, type?: string): ParamRef<N> {
+  return new ParamRef(name, type);
 }
 
 /** A `param()` whose value goes through `transform` when bound (LIKE patterns, ...). */
@@ -1790,6 +1803,26 @@ class InList extends Condition<any, any> {
 
   ir(ctx: IRContext): IR {
     return { t: "in", item: this.item.ir(ctx), values: this.values.map((v) => v.ir(ctx)), neg: this.neg };
+  }
+
+  override nullValues(method: string): Node[] {
+    return nullableValues(method, [this.item]);
+  }
+}
+
+/** `IN (param)` / `NOT IN (param)`: the param is a whole list of any length. */
+class InParam extends Condition<any, any> {
+  constructor(
+    readonly item: Node,
+    readonly values: ParamRef<string>,
+    readonly neg: boolean,
+  ) {
+    super();
+  }
+
+  ir(ctx: IRContext): IR {
+    const slot = this.values.slot(ctx.params);
+    return { t: "in_param", item: this.item.ir(ctx), i: slot["i"], neg: this.neg };
   }
 
   override nullValues(method: string): Node[] {

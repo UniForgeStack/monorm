@@ -447,6 +447,12 @@ pub struct JsSchema {
 
 #[napi]
 impl JsSchema {
+    /// `Engine.prepareRead` without a connection: `sql()` and `inspect()` only.
+    #[napi]
+    pub fn prepare_read(&self, op_json: String, n: u32, declared: Vec<Option<String>>) -> napi::Result<PreparedRead> {
+        prepared_read(&self.inner, Target::new(self.inner.dialect), &op_json, n, &declared, None)
+    }
+
     /// The static read flags of each model (JSON `{model: {filtered, fields, related}}`).
     #[napi]
     pub fn read_flags(&self) -> String {
@@ -704,6 +710,69 @@ impl SessionLock {
     }
 }
 
+/// `"big_int"` or `"big_int[]"`: the declared type of a prepared parameter.
+fn declared_type(name: &str) -> napi::Result<ValueType> {
+    let (base, array) = match name.strip_suffix("[]") {
+        Some(base) => (base, true),
+        None => (name, false),
+    };
+    let ty: ir::ColType = serde_json::from_value(serde_json::Value::String(base.to_string()))
+        .map_err(|_| query_err(format!("param() has no column type {name:?}")))?;
+    Ok(ValueType { ty, array, enum_idx: None })
+}
+
+fn prepared_read(schema: &Arc<schema::Schema>, target: Target, op_json: &str, n: u32, declared: &[Option<String>],
+    driver: Option<Arc<dyn Driver>>) -> napi::Result<PreparedRead> {
+    let op = parse_op(op_json).map_err(engine_err)?;
+    let declared = declared.iter().map(|d| d.as_deref().map(declared_type).transpose()).collect::<napi::Result<Vec<_>>>()?;
+    let inner = monorm_engine::prepared::PreparedRead::prepare(schema, target, &op, n as usize, &declared).map_err(engine_err)?;
+    Ok(PreparedRead { inner: Arc::new(inner), driver, schema: schema.clone() })
+}
+
+// -- prepared reads ---------------------------------------------------------------------------
+
+/// A read planned once (`Engine.prepareRead`): the SQL text and the slot map live in Rust.
+#[napi]
+pub struct PreparedRead {
+    inner: Arc<monorm_engine::prepared::PreparedRead>,
+    /// None on a schema without a connection: `sql()` and `inspect()` only.
+    driver: Option<Arc<dyn Driver>>,
+    schema: Arc<schema::Schema>,
+}
+
+#[napi]
+impl PreparedRead {
+    /// Converts `params_` and runs the held statement, in `tx` when given (see `outcome_js`).
+    #[napi(ts_return_type = "Promise<unknown>")]
+    pub fn run<'env>(&self, env: &'env Env, params_: Unknown<'_>, tx: Option<&Transaction>, trace: Option<&Trace>) -> napi::Result<PromiseRaw<'env, Raw>> {
+        let call = self.inner.call(&params(env, params_)?).map_err(engine_err)?;
+        let conn: Arc<dyn Executor> = match (tx, &self.driver) {
+            (Some(tx), _) => tx.inner.clone(),
+            (None, Some(driver)) => driver.clone(),
+            (None, None) => return Err(query_err("the schema has no connection")),
+        };
+        let conn = monorm_engine::trace::wrap(conn, trace.map(|t| &t.0));
+        let inner = self.inner.clone();
+        let schema = self.schema.clone();
+        env.spawn_future_with_callback(
+            async move { inner.run(conn.as_ref(), call).await.map_err(engine_err) },
+            move |env, out| outcome_js(env, &schema, out),
+        )
+    }
+
+    /// The statement of a call with its values inlined.
+    #[napi]
+    pub fn sql(&self, env: &Env, params_: Unknown<'_>) -> napi::Result<String> {
+        let call = self.inner.call(&params(env, params_)?).map_err(engine_err)?;
+        Ok(self.inner.sql(&call))
+    }
+
+    #[napi]
+    pub fn inspect(&self) -> String {
+        self.inner.inspection().to_string()
+    }
+}
+
 // -- engine ---------------------------------------------------------------------------------------
 
 #[napi]
@@ -740,6 +809,14 @@ impl Engine {
 
 #[napi]
 impl Engine {
+    /// Plans a read once (`op_json`: a select, count or exists) for `n` parameters, scope
+    /// values included. `declared` holds a parameter's declared type (`"big_int"`, or
+    /// `"big_int[]"` for a list) or null.
+    #[napi]
+    pub fn prepare_read(&self, op_json: String, n: u32, declared: Vec<Option<String>>) -> napi::Result<PreparedRead> {
+        prepared_read(&self.schema, self.target, &op_json, n, &declared, Some(self.driver.clone()))
+    }
+
     /// Inspect planned templates without executing or collecting statement events.
     #[napi]
     pub fn inspect(&self, env: &Env, op_json: String, params_: Unknown<'_>) -> napi::Result<String> {
