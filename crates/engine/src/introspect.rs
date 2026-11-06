@@ -16,7 +16,7 @@ use std::path::Path;
 use serde::Deserialize;
 
 use monorm_core::dialect::Dialect;
-use monorm_core::ir::{Deferrable, ForEach, Nulls, OnDelete, TriggerEvent, TriggerTiming};
+use monorm_core::ir::{Deferrable, ForEach, GeneratedIr, Nulls, OnDelete, TriggerEvent, TriggerTiming};
 use monorm_core::migrate::model::{
     Check, Column, DbSchema, EnumType, Exclusion, ExclusionElement, Extension, ForeignKey, Function, Index, IndexKey,
     PrimaryKey, Table, Trigger, Unique,
@@ -443,10 +443,6 @@ async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
     }
     for c in columns {
         let Some(t) = by_oid.get_mut(&c.table) else { continue };
-        if !c.generated.is_empty() {
-            gaps.push(format!("column {}.{} is generated ({}); generated columns are not supported", t.name, c.name, c.default.unwrap_or_default()));
-            continue;
-        }
         if c.identity == "a" {
             gaps.push(format!("column {}.{} is GENERATED ALWAYS AS IDENTITY; the schema has BY DEFAULT only", t.name, c.name));
         }
@@ -462,14 +458,17 @@ async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
                 c.default.as_deref().unwrap_or("")
             ));
         }
+        // For a generated column `pg_attrdef` holds the expression, not a default.
+        let generated = (!c.generated.is_empty()).then(|| GeneratedIr { sql: c.default.clone().unwrap_or_default(), stored: c.generated == "s" });
+        let default = if serial || generated.is_some() { None } else { c.default };
         t.columns.push(Column {
             name: c.name,
             ty: c.ty,
             nullable: !c.notnull,
-            default: if serial { None } else { c.default },
+            default,
             identity: serial || !c.identity.is_empty(),
             comment: c.comment,
-            generated: None,
+            generated,
             nested: Default::default(),
         });
     }
@@ -871,6 +870,24 @@ fn lite_autoincrement(sql: &str) -> Vec<String> {
         .collect()
 }
 
+/// The expression of generated column `column`, from its `CREATE TABLE` text.
+fn lite_generated(sql: &str, column: &str) -> Option<String> {
+    let (body, _) = parens_body(sql)?;
+    let item = split_top(body).into_iter().find(|i| !i.to_ascii_uppercase().starts_with("CONSTRAINT") && first_word(i).0 == column)?;
+    let upper = item.to_ascii_uppercase();
+    // `AS` is a word of its own; a comment or no space may sit around it: `INT/*c*/AS/*c*/(...)`.
+    let at = upper.match_indices("AS").find_map(|(i, _)| {
+        let before = upper[..i].chars().next_back().is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
+        let mut after = upper[i + 2..].trim_start();
+        while let Some(rest) = after.strip_prefix("/*") {
+            after = rest.split_once("*/").map_or("", |(_, r)| r).trim_start();
+        }
+        (before && after.starts_with('(')).then(|| i + 2 + (upper[i + 2..].len() - after.len()))
+    })?;
+    let (expr, _) = parens_body(&item[at..])?;
+    Some(expr.trim().to_owned())
+}
+
 fn lite_action(a: &str) -> Option<OnDelete> {
     match a.to_ascii_uppercase().as_str() {
         "CASCADE" => Some(OnDelete::Cascade),
@@ -940,10 +957,21 @@ async fn sqlite(conn: &dyn Executor) -> Result<Introspection> {
         let mut t = Table { name: lt.name.clone(), ..Default::default() };
         let mut pk: Vec<(i64, String)> = vec![];
         for c in columns.iter().filter(|c| c.table == lt.name) {
-            if c.hidden != 0 {
-                gaps.push(format!("column {}.{} is generated; generated columns are not supported", t.name, c.name));
-                continue;
-            }
+            // `hidden` is 2 for a VIRTUAL and 3 for a STORED generated column; 1 is a virtual-table column.
+            let generated = match c.hidden {
+                0 => None,
+                2 | 3 => match lite_generated(&sql, &c.name) {
+                    Some(expr) => Some(GeneratedIr { sql: expr, stored: c.hidden == 3 }),
+                    None => {
+                        gaps.push(format!("column {}.{} is generated, but its expression was not found in the table text", t.name, c.name));
+                        continue;
+                    }
+                },
+                _ => {
+                    gaps.push(format!("column {}.{} is a hidden column; it is left out", t.name, c.name));
+                    continue;
+                }
+            };
             if c.pk > 0 {
                 pk.push((c.pk, c.name.clone()));
             }
@@ -954,7 +982,7 @@ async fn sqlite(conn: &dyn Executor) -> Result<Introspection> {
                 default: c.default.as_deref().map(|d| strip_parens(d).to_owned()),
                 identity: autoinc.contains(&c.name),
                 comment: None,
-                generated: None,
+                generated,
                 nested: Default::default(),
             });
         }
@@ -1297,5 +1325,16 @@ mod tests {
         assert_eq!(keys[0].expr.as_deref(), Some("lower(a)"));
         assert_eq!(keys[1].collation.as_deref(), Some("NOCASE"));
         assert_eq!(w.as_deref(), Some("b > 0"));
+    }
+
+    #[test]
+    fn sqlite_generated_expression_with_odd_spacing() {
+        for body in ["INT AS (a * 2) STORED", "INT AS(a * 2) STORED", "INT/*c*/AS(a * 2) STORED", "INT AS/*c*/ (a * 2) VIRTUAL", "INT\nAS\n(a * 2)"] {
+            let sql = format!("CREATE TABLE t (a INT, b {body})");
+            assert_eq!(lite_generated(&sql, "b").as_deref(), Some("a * 2"), "{body}");
+        }
+        // Words that only contain `as` are not the keyword.
+        assert_eq!(lite_generated("CREATE TABLE t (a INT, alias INT DEFAULT (1))", "alias"), None);
+        assert_eq!(lite_generated("CREATE TABLE t (a INT, b INT)", "b"), None);
     }
 }

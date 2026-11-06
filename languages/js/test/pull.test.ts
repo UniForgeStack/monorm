@@ -81,6 +81,49 @@ test("owned serials read as identity; a shared sequence stays a raw default", as
   assert.deepEqual(pulled.differences, []);
 });
 
+async function assertGeneratedPullIsClean(db: Database, dir: string, wanted: string): Promise<void> {
+  const pulled = await pull(db);
+  assert.ok(pulled.schema.includes(wanted), pulled.schema);
+  assert.ok(!pulled.gaps.some((g) => g.includes("generated")));
+  assert.deepEqual(pulled.differences, []);
+  pulled.write(join(dir, "schema.prisma"));
+  const migrator = new Migrator(db, new Migrations(join(dir, "migrations"), join(dir, "schema.prisma")));
+  await migrator.baseline();
+  assert.deepEqual((await migrator.drift()).steps, []);
+}
+
+test("generated columns pull back without drift", async () => {
+  const db = await connect(PULL_URL, { maxConnections: 2, default: false, registry: new Registry() });
+  opened.push(db);
+  await db.execute(`DROP SCHEMA public CASCADE; CREATE SCHEMA public;
+    CREATE TABLE gen_lines (id bigint PRIMARY KEY, quantity integer NOT NULL, price integer NOT NULL,
+      total integer GENERATED ALWAYS AS (quantity * price) STORED)`);
+  await assertGeneratedPullIsClean(db, mkdtempSync(join(tmpdir(), "monorm-generated-")), "@generated(((quantity * price)))");
+});
+
+test("a virtual generated column pulls back without drift on postgres", async (t) => {
+  const db = await connect(PULL_URL, { maxConnections: 2, default: false, registry: new Registry() });
+  opened.push(db);
+  if (Number((await db.fetchText("SHOW server_version_num"))[0]![0]) < 180000) return t.skip("VIRTUAL generated columns need PostgreSQL 18");
+  await db.execute(`DROP SCHEMA public CASCADE; CREATE SCHEMA public;
+    CREATE TABLE gen_lines (id bigint PRIMARY KEY, quantity integer NOT NULL, price integer NOT NULL,
+      total integer GENERATED ALWAYS AS (quantity * price) VIRTUAL)`);
+  await assertGeneratedPullIsClean(db, mkdtempSync(join(tmpdir(), "monorm-generated-")), "@generated(((quantity * price)), stored: false)");
+});
+
+test("sqlite generated columns pull back without drift", async () => {
+  for (const kind of ["STORED", "VIRTUAL"]) {
+    const dir = mkdtempSync(join(tmpdir(), "monorm-generated-sqlite-"));
+    const registry = new Registry();
+    loads('datasource db { provider = "sqlite" }\nmodel Keep { id Int @id }', { registry });
+    const db = await connect(`sqlite://${join(dir, "live.db")}`, { default: false, registry });
+    opened.push(db);
+    await db.execute(`CREATE TABLE gen_lines (id INTEGER PRIMARY KEY, quantity INTEGER NOT NULL, price INTEGER NOT NULL,
+      total INTEGER GENERATED ALWAYS AS (quantity * price) ${kind})`);
+    await assertGeneratedPullIsClean(db, dir, kind === "STORED" ? "@generated((quantity * price))" : "@generated((quantity * price), stored: false)");
+  }
+});
+
 test("rollback refuses a baselined migration unless forced", async () => {
   const db = await connect(PULL_URL, { maxConnections: 2, default: false, registry: new Registry() });
   opened.push(db);

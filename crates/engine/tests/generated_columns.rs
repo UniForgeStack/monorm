@@ -43,7 +43,7 @@ fn every_write_path_refuses_a_generated_field_before_sql() {
     let upsert = Conflict::Update { target: names(&["id"]), index: Default::default(), update: names(&["total"]), set: vec![] };
     assert_eq!(refusal(exec::plan_insert(&schema, target, "Line", &names(&["id"]), vec![vec![int(1)]], Some(upsert), &NoParams, &Default::default())), wanted);
     let rows = vec![vec![Value::Int(Some(1)), Value::Int(Some(2))]];
-    assert_eq!(refusal(exec::plan_update_many(&schema, target, "Line", &fields, rows, &[], &NoParams, false, None, &Default::default())), wanted);
+    assert_eq!(refusal(exec::plan_update_many(&schema, target, "Line", &fields, rows, &[], &NoParams, false, None, None, &Default::default())), wanted);
     assert_eq!(refusal(exec::plan_copy(&schema, target, "Line", &fields, row())), wanted);
     let op: Operation = serde_json::from_value(json!({"op":"update","model":"Line","filters":[],"set":[{"field":"total","value":{"t":"param","i":0}}]})).unwrap();
     assert_eq!(refusal(Planner::plan(&schema, target, &op, &One)), wanted);
@@ -73,4 +73,38 @@ fn sqlite_insert_returns_the_generated_value() {
 fn postgres_insert_returns_the_generated_value() {
     let url = std::env::var("ORM_RUST_TEST_POSTGRES_URL").or_else(|_| std::env::var("ORM_TEST_DATABASE_URL")).unwrap_or_else(|_| "postgres://postgres:postgres@localhost/orm_test".into());
     tokio::runtime::Runtime::new().unwrap().block_on(returns_the_generated_value(&url, Dialect::Postgres));
+}
+
+async fn pulls_back_and_matches(url: &str, dialect: Dialect, create: &str, expected: &[&str]) {
+    let db = db::connect(url, 1).await.unwrap();
+    let conn = db.begin().await.unwrap();
+    conn.batch(create.to_owned()).await.unwrap();
+    let pulled = monorm_engine::introspect::pull(conn.as_ref()).await.unwrap();
+    for want in expected {
+        assert!(pulled.schema.contains(want), "{dialect:?}: missing {want} in\n{}", pulled.schema);
+    }
+    assert!(!pulled.gaps.iter().any(|g| g.contains("generated")), "{:?}", pulled.gaps);
+    assert!(pulled.steps.is_empty(), "{dialect:?}: {:?}", pulled.steps);
+    conn.rollback().await.unwrap();
+    db.close().await;
+}
+
+#[test]
+fn sqlite_pull_writes_the_generated_expression_and_matches() {
+    let create = "CREATE TABLE pulled_lines (id INTEGER PRIMARY KEY, quantity INTEGER NOT NULL, price INTEGER NOT NULL, \
+                  total INTEGER GENERATED ALWAYS AS (quantity * price) STORED, double INTEGER AS (quantity * 2) VIRTUAL)";
+    tokio::runtime::Runtime::new().unwrap().block_on(pulls_back_and_matches(
+        "sqlite://:memory:",
+        Dialect::Sqlite,
+        create,
+        &["@generated((quantity * price))", "@generated((quantity * 2), stored: false)"],
+    ));
+}
+
+#[test]
+fn postgres_pull_writes_the_generated_expression_and_matches() {
+    let url = std::env::var("ORM_RUST_TEST_POSTGRES_URL").or_else(|_| std::env::var("ORM_TEST_DATABASE_URL")).unwrap_or_else(|_| "postgres://postgres:postgres@localhost/orm_test".into());
+    let create = "CREATE TABLE pulled_lines (id bigint PRIMARY KEY, quantity integer NOT NULL, price integer NOT NULL, \
+                  total integer GENERATED ALWAYS AS (quantity * price) STORED)";
+    tokio::runtime::Runtime::new().unwrap().block_on(pulls_back_and_matches(&url, Dialect::Postgres, create, &["@generated(((quantity * price)))"]));
 }

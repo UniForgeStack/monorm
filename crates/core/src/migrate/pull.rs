@@ -408,7 +408,10 @@ pub fn pull(db: &DbSchema, gaps: &[String]) -> Pulled {
             }
             // An owned serial arrives as an identity column; a `nextval` default left here is a shared or unowned sequence.
             let shared = !c.identity && c.default.as_deref().is_some_and(|d| d.starts_with("nextval("));
-            if c.identity {
+            if let Some(g) = &c.generated {
+                let stored = if g.stored { "" } else { ", stored: false" };
+                attrs.push(format!("@generated(raw({}){stored})", quoted(&g.sql)));
+            } else if c.identity {
                 attrs.push("@default(autoincrement())".into());
             } else if let Some(d) = &c.default {
                 if shared {

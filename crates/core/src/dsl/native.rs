@@ -10,6 +10,9 @@ fn predicate(attr: &Attr, edits: &mut Vec<Edit>, reports: &mut Vec<String>) {
     if attr.name == "check" {
         if let Some((pos, value)) = attr.args.positional.first() { add(*pos, value, Context::Check, edits); }
     }
+    if attr.name == "generated" {
+        if let Some((pos, value)) = attr.args.positional.first() { add(*pos, value, Context::Generated, edits); }
+    }
     for (i, (name, _, value)) in attr.args.named.iter().enumerate() {
         if name == "where" && matches!(attr.name.as_str(), "index" | "unique" | "exclude") {
             add(attr.args.named_values[i], value, Context::IndexFilter, edits);

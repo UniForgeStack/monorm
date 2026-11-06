@@ -76,8 +76,8 @@ parameters, deferrable uniqueness and NULLS NOT DISTINCT. SQLite supports inline
 row triggers with one INSERT, UPDATE or DELETE event. Statement triggers, TRUNCATE,
 INSTEAD OF on tables, trigger functions, languages and arguments are unsupported.
 Row/advisory locks and DISTINCT ON fail query validation. Raw SQL expressions and
-trigger bodies must use SQLite syntax. Generated/computed columns remain out of
-scope.
+trigger bodies must use SQLite syntax. Generated columns (`@generated`) work on both
+databases; views remain out of scope.
 
 Any schema change currently rebuilds every managed table in one transaction.
 Rebuilds copy rows, apply table/column rename hints, preserve AUTOINCREMENT high
@@ -375,8 +375,36 @@ value, and says so in a warning.
 | `@map("db_name")` | column name, if different from the field name |
 | `@db.*` | the SQL type (above) |
 | `@check("views >= 0")` | column check constraint |
+| `@generated(quantity * price)` | generated column (below) |
 | `@comment("...")` | column comment |
 | `@renamed_from("old")` | previous column name: the migration renames it instead of dropping |
+
+### Generated columns
+
+`@generated(expr)` makes the database compute the column: `GENERATED ALWAYS AS (expr) STORED`.
+`@generated(expr, stored: false)` gives `VIRTUAL`.
+Postgres supports `VIRTUAL` from version 18.
+The expression is native (field names, operators, immutable functions) or `raw("...")`.
+It can use other fields of the same model, but not a generated field.
+`@generated(now())` is a compile error: the expression must be immutable.
+A generated field cannot have `@id`, `@default`, `@client_default` or `@check`.
+
+```prisma
+model Line {
+  id       Int @id
+  quantity Int
+  price    Int
+  total    Int @generated(quantity * price)
+}
+```
+
+The ORM never writes a generated column.
+A value for it in `insert`, `insert_many`, `update`, `update_many` or `upsert` raises before any SQL runs (Python `TypeError`, TypeScript `Error`).
+The generated `{Model}Insert`, `{Model}Update` and `{Model}UpdateRow` types leave the field out.
+An insert returns the computed value.
+SQLite cannot add a STORED generated column with `ADD COLUMN`, so the migration rebuilds the table and the copy step leaves the column out.
+A changed expression drops and adds the column on Postgres (the stored values are computed again) and rebuilds the table on SQLite.
+`pull` writes `@generated(raw("..."))` with the text that the database keeps, and `drift` right after it reports no difference.
 
 ### Nested types
 
@@ -919,7 +947,7 @@ out, printed, and listed at the end of the file as `// gap:` lines:
 * rules (`CREATE RULE`; a gap that changes behaviour: a database made from the schema
   runs the statement that a rule rewrote, for example it deletes rows that a soft-delete
   rule keeps), views, row-level security policies, domains, composite and
-  range types, generated columns, column collations;
+  range types, column collations;
 * tables without a primary key, columns of a type
   without a schema type (`tstzrange`, `interval`, ...);
 * a `serial` column (a `nextval` default on a sequence that the column owns) is read as
@@ -1045,7 +1073,7 @@ for the syntax and interaction with composite identity and default filters.
 ## Not done yet
 
 * Generated `CREATE INDEX CONCURRENTLY` (the `migrations.online` setting); a hand-written no-transaction migration works.
-* Generated columns, views, domains, row-level security, multiple
+* Views, domains, row-level security, multiple
   database schemas.
 * Renaming a native enum value in place (`ALTER TYPE ... RENAME VALUE`): a renamed
   value is a removal plus an addition today.

@@ -145,6 +145,61 @@ async def test_owned_serials_pull_as_identity_and_shared_sequences_stay_defaults
         await db.close()
 
 
+async def _assert_generated_pull_is_clean(db, tmp_path, wanted):
+    pulled = await pull(db)
+    assert wanted in pulled.schema
+    assert not any("generated" in g for g in pulled.gaps)
+    assert pulled.differences == []
+    schema = tmp_path / "schema.prisma"
+    pulled.write(schema)
+    migrator = Migrator(db, Migrations(tmp_path / "migrations", schema))
+    await migrator.baseline()
+    assert (await migrator.drift()).steps == []
+
+
+async def test_generated_columns_pull_back_without_drift(tmp_path):
+    db = await fresh(
+        "CREATE TABLE gen_lines (id bigint PRIMARY KEY, quantity integer NOT NULL, price integer NOT NULL, "
+        "total integer GENERATED ALWAYS AS (quantity * price) STORED)"
+    )
+    try:
+        await _assert_generated_pull_is_clean(db, tmp_path, "@generated(((quantity * price)))")
+    finally:
+        await db.close()
+
+
+async def test_a_virtual_generated_column_pulls_back_without_drift_on_postgres(tmp_path):
+    db = await fresh("SELECT 1")
+    try:
+        if int((await db._fetch_text("SHOW server_version_num"))[0][0]) < 180000:
+            pytest.skip("VIRTUAL generated columns need PostgreSQL 18")
+        await db.execute(
+            "CREATE TABLE gen_lines (id bigint PRIMARY KEY, quantity integer NOT NULL, price integer NOT NULL, "
+            "total integer GENERATED ALWAYS AS (quantity * price) VIRTUAL)"
+        )
+        await _assert_generated_pull_is_clean(db, tmp_path, "@generated(((quantity * price)), stored: false)")
+    finally:
+        await db.close()
+
+
+async def test_sqlite_generated_columns_pull_back_without_drift(tmp_path):
+    for kind in ("STORED", "VIRTUAL"):
+        folder = tmp_path / kind
+        folder.mkdir()
+        registry = Registry()
+        monorm.loads('datasource db { provider = "sqlite" }\nmodel Keep { id Int @id }', registry=registry)
+        db = await monorm.connect(f"sqlite://{folder / 'live.db'}", default=False, registry=registry)
+        try:
+            await db.execute(
+                "CREATE TABLE gen_lines (id INTEGER PRIMARY KEY, quantity INTEGER NOT NULL, price INTEGER NOT NULL, "
+                f"total INTEGER GENERATED ALWAYS AS (quantity * price) {kind})"
+            )
+            wanted = "@generated((quantity * price))" if kind == "STORED" else "@generated((quantity * price), stored: false)"
+            await _assert_generated_pull_is_clean(db, folder, wanted)
+        finally:
+            await db.close()
+
+
 async def test_add_identity_refuses_a_column_that_owns_a_sequence_but_defaults_to_another(tmp_path):
     db = await fresh(
         "CREATE SEQUENCE other_seq; CREATE TABLE t_owns (id serial PRIMARY KEY); "
