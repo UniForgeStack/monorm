@@ -3,8 +3,12 @@
 //! * Parameters are sent in Postgres's binary format with their types stated in the
 //!   `Parse` message (from the sea-query [`Value`] variant, which the planner picked from
 //!   the column type), so the server never has to guess them.
-//! * Statements are prepared once per connection and cached; the cache is cleared when
-//!   it grows past [`STATEMENT_CACHE_MAX`] (e.g. many different `IN (...)` lengths).
+//! * Statements are prepared once per connection and cached (deadpool's per-connection
+//!   cache). A per-connection [`StatementLru`] beside it records the last use of each
+//!   statement; past [`STATEMENT_CACHE_MAX`] statements, the least recently used one is
+//!   dropped from the cache and closed on the server (e.g. many different `IN (...)`
+//!   lengths push out one-shot statements, never the hot ones). The order lives in the
+//!   pooled [`PgConn`], so it is lock-free across connections and freed with the connection.
 //! * Transactions pin one pooled connection and run `BEGIN` / `SAVEPOINT` on it. A
 //!   transaction dropped without commit or rollback closes its connection instead of
 //!   returning it to the pool mid-transaction.
@@ -12,13 +16,18 @@
 //!   encrypt without verifying the certificate; `verify-ca` / `verify-full` verify it
 //!   against the webpki roots, hostname included.
 
+use std::borrow::Cow;
+use std::cell::Cell as StdCell;
+use std::collections::HashMap;
 use std::error::Error as StdError;
+use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 
 use bytes::BytesMut;
 use chrono::{DateTime, NaiveDateTime, Utc};
-use deadpool_postgres::{ClientWrapper, Manager, ManagerConfig, Object, Pool, RecyclingMethod};
+use deadpool::managed::{self, Metrics, RecycleResult};
+use deadpool_postgres::{ClientWrapper, Manager, ManagerConfig, RecyclingMethod};
 use sea_query::{ArrayType, Value};
 use tokio::sync::Mutex;
 use tokio_postgres::types::{to_sql_checked, FromSql, IsNull, Kind, ToSql, Type};
@@ -155,27 +164,29 @@ pub(super) fn wire_key(v: &Value) -> Option<(Type, Option<Vec<u8>>)> {
     Some((ty, matches!(null, IsNull::No).then(|| out.to_vec())))
 }
 
-async fn prepare(c: &ClientWrapper, sql: &str, args: &[Value]) -> DbResult<Statement> {
+async fn prepare(c: &PgConn, sql: &str, args: &[Value]) -> DbResult<Statement> {
     let types = args.iter().map(pg_type).collect::<DbResult<Vec<_>>>()?;
     let stmt = c.prepare_typed_cached(sql, &types).await.map_err(pg_err)?;
-    if c.statement_cache.size() > STATEMENT_CACHE_MAX {
-        c.statement_cache.clear();
+    // Dropping the removed `Statement` closes it on the server (tokio-postgres sends `Close`).
+    for key in c.lru().touch(sql, &types) {
+        drop(c.statement_cache.remove(&key.sql, &key.types));
     }
     Ok(stmt)
 }
 
 /// Drops the cached statement of a call that failed with `0A000` (a changed table made the
 /// plan stale), so the next call prepares it again.
-fn forget_stale(c: &ClientWrapper, sql: &str, args: &[Value], e: tokio_postgres::Error) -> DbError {
+fn forget_stale(c: &PgConn, sql: &str, args: &[Value], e: tokio_postgres::Error) -> DbError {
     if e.code().is_some_and(|code| code.code() == "0A000") {
         if let Ok(types) = args.iter().map(pg_type).collect::<DbResult<Vec<_>>>() {
             c.statement_cache.remove(sql, &types);
+            c.lru().forget(sql, &types);
         }
     }
     pg_err(e)
 }
 
-async fn query(c: &ClientWrapper, sql: &str, args: &[Value]) -> DbResult<Box<dyn RowSet>> {
+async fn query(c: &PgConn, sql: &str, args: &[Value]) -> DbResult<Box<dyn RowSet>> {
     let stmt = prepare(c, sql, args).await?;
     let params: Vec<Param<'_>> = args.iter().map(Param).collect();
     let refs: Vec<&(dyn ToSql + Sync)> = params.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
@@ -183,7 +194,7 @@ async fn query(c: &ClientWrapper, sql: &str, args: &[Value]) -> DbResult<Box<dyn
     Ok(Box::new(PgRows(rows)))
 }
 
-async fn fetch(c: &ClientWrapper, sql: &str, args: &[Value]) -> DbResult<Box<dyn RawRows>> {
+async fn fetch(c: &PgConn, sql: &str, args: &[Value]) -> DbResult<Box<dyn RawRows>> {
     let stmt = prepare(c, sql, args).await?;
     let params: Vec<Param<'_>> = args.iter().map(Param).collect();
     let refs: Vec<&(dyn ToSql + Sync)> = params.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
@@ -261,7 +272,7 @@ impl RawRows for PgRawRows {
     }
 }
 
-async fn execute(c: &ClientWrapper, sql: &str, args: &[Value]) -> DbResult<u64> {
+async fn execute(c: &PgConn, sql: &str, args: &[Value]) -> DbResult<u64> {
     let stmt = prepare(c, sql, args).await?;
     let params: Vec<Param<'_>> = args.iter().map(Param).collect();
     let refs: Vec<&(dyn ToSql + Sync)> = params.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
@@ -269,11 +280,11 @@ async fn execute(c: &ClientWrapper, sql: &str, args: &[Value]) -> DbResult<u64> 
 }
 
 /// Simple-query protocol: several statements, no parameters, text results.
-async fn simple(c: &ClientWrapper, sql: &str) -> DbResult<Vec<SimpleQueryMessage>> {
+async fn simple(c: &PgConn, sql: &str) -> DbResult<Vec<SimpleQueryMessage>> {
     c.simple_query(sql).await.map_err(pg_err)
 }
 
-async fn batch(c: &ClientWrapper, sql: &str) -> DbResult<u64> {
+async fn batch(c: &PgConn, sql: &str) -> DbResult<u64> {
     Ok(simple(c, sql)
         .await?
         .iter()
@@ -284,7 +295,7 @@ async fn batch(c: &ClientWrapper, sql: &str) -> DbResult<u64> {
         .sum())
 }
 
-async fn query_text(c: &ClientWrapper, sql: &str) -> DbResult<Vec<Vec<Option<String>>>> {
+async fn query_text(c: &PgConn, sql: &str) -> DbResult<Vec<Vec<Option<String>>>> {
     Ok(simple(c, sql)
         .await?
         .iter()
@@ -324,7 +335,7 @@ fn fit<'a>(v: &'a Value, ty: &Type) -> DbResult<std::borrow::Cow<'a, Value>> {
 
 /// Binary `COPY ... FROM STDIN`. The column types come from the server, so enums,
 /// `json` and arrays encode as the columns expect.
-async fn copy_in(c: &ClientWrapper, table: &str, columns: &[String], rows: &[Vec<Value>]) -> DbResult<u64> {
+async fn copy_in(c: &PgConn, table: &str, columns: &[String], rows: &[Vec<Value>]) -> DbResult<u64> {
     let cols = columns.iter().map(|c| quote(c)).collect::<Vec<_>>().join(", ");
     let table = quote(table);
     let probe = c.prepare(&format!("SELECT {cols} FROM {table} LIMIT 0")).await.map_err(pg_err)?;
@@ -484,6 +495,106 @@ impl RowSet for PgRows {
     }
 }
 
+// -- statement cache order ---------------------------------------------------------------
+
+/// A cached statement: its SQL text and parameter types, as deadpool's cache keys it.
+#[derive(PartialEq, Eq, Hash, Clone)]
+struct StmtKey<'a> {
+    sql: Cow<'a, str>,
+    types: Cow<'a, [Type]>,
+}
+
+impl StmtKey<'static> {
+    fn owned(sql: &str, types: &[Type]) -> Self {
+        StmtKey { sql: Cow::Owned(sql.to_owned()), types: Cow::Owned(types.to_owned()) }
+    }
+}
+
+/// The last use of each statement in one connection's cache. A hit allocates nothing; the
+/// least recently used statement is found by a scan, only on a miss past the bound (one
+/// scan of at most `max + 1` entries next to a `Parse` round trip).
+struct StatementLru {
+    max: usize,
+    tick: u64,
+    used: HashMap<StmtKey<'static>, StdCell<u64>>,
+}
+
+impl StatementLru {
+    fn new(max: usize) -> Self {
+        StatementLru { max, tick: 0, used: HashMap::new() }
+    }
+
+    /// Marks `sql` as just used. Returns the statements to drop from the cache so it holds
+    /// at most `max` (never the one just used).
+    fn touch(&mut self, sql: &str, types: &[Type]) -> Vec<StmtKey<'static>> {
+        self.tick += 1;
+        let probe = StmtKey { sql: Cow::Borrowed(sql), types: Cow::Borrowed(types) };
+        if let Some(last) = self.used.get(&probe) {
+            last.set(self.tick);
+            return Vec::new();
+        }
+        self.used.insert(StmtKey::owned(sql, types), StdCell::new(self.tick));
+        let mut evicted = Vec::new();
+        while self.used.len() > self.max.max(1) {
+            let oldest = self.used.iter().min_by_key(|(_, last)| last.get()).map(|(k, _)| k.clone());
+            let Some(oldest) = oldest else { break };
+            self.used.remove(&oldest);
+            evicted.push(oldest);
+        }
+        evicted
+    }
+
+    fn forget(&mut self, sql: &str, types: &[Type]) {
+        self.used.remove(&StmtKey::owned(sql, types));
+    }
+}
+
+/// A pooled connection with the order of its statement cache.
+pub(super) struct PgConn {
+    client: ClientWrapper,
+    lru: StdMutex<StatementLru>,
+}
+
+impl PgConn {
+    fn lru(&self) -> std::sync::MutexGuard<'_, StatementLru> {
+        // The order is a hint for eviction: a panic while it was held leaves it usable.
+        self.lru.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+impl Deref for PgConn {
+    type Target = ClientWrapper;
+    fn deref(&self) -> &ClientWrapper {
+        &self.client
+    }
+}
+
+struct PgManager {
+    inner: Manager,
+    statement_cache_max: usize,
+}
+
+impl managed::Manager for PgManager {
+    type Type = PgConn;
+    type Error = tokio_postgres::Error;
+
+    async fn create(&self) -> Result<PgConn, Self::Error> {
+        let client = managed::Manager::create(&self.inner).await?;
+        Ok(PgConn { client, lru: StdMutex::new(StatementLru::new(self.statement_cache_max)) })
+    }
+
+    async fn recycle(&self, conn: &mut PgConn, metrics: &Metrics) -> RecycleResult<Self::Error> {
+        managed::Manager::recycle(&self.inner, &mut conn.client, metrics).await
+    }
+
+    fn detach(&self, conn: &mut PgConn) {
+        managed::Manager::detach(&self.inner, &mut conn.client)
+    }
+}
+
+type Pool = managed::Pool<PgManager>;
+type Object = managed::Object<PgManager>;
+
 // -- pool --------------------------------------------------------------------------------
 
 pub struct PgDriver {
@@ -496,6 +607,11 @@ pub struct PgDriver {
 
 impl PgDriver {
     pub async fn connect(url: &str, max_connections: usize) -> DbResult<Self> {
+        Self::connect_with_cache(url, max_connections, STATEMENT_CACHE_MAX).await
+    }
+
+    /// `connect` with another statement cache bound per connection (for tests).
+    async fn connect_with_cache(url: &str, max_connections: usize, statement_cache_max: usize) -> DbResult<Self> {
         let (mut config, tls) = tls::parse(url)?;
         // DateTime fields are UTC instants, including when stored in a timestamp
         // without time zone. Keep Postgres's timestamptz -> timestamp cast in UTC
@@ -503,10 +619,11 @@ impl PgDriver {
         let options = format!("{} -c TimeZone=UTC", config.get_options().unwrap_or(""));
         config.options(&options);
         let mgr_config = ManagerConfig { recycling_method: RecyclingMethod::Fast };
-        let manager = match tls.clone() {
+        let inner = match tls.clone() {
             Some(tls) => Manager::from_config(config.clone(), tls, mgr_config),
             None => Manager::from_config(config.clone(), NoTls, mgr_config),
         };
+        let manager = PgManager { inner, statement_cache_max };
         let pool = Pool::builder(manager)
             .max_size(max_connections.max(1))
             .build()
@@ -706,7 +823,7 @@ impl PgTx {
     /// Runs `f` on the transaction's connection, unless it already ended.
     async fn with<T>(
         &self,
-        f: impl for<'c> FnOnce(&'c ClientWrapper) -> BoxFuture<'c, DbResult<T>>,
+        f: impl for<'c> FnOnce(&'c PgConn) -> BoxFuture<'c, DbResult<T>>,
     ) -> DbResult<T> {
         if self.done.load(Ordering::Acquire) {
             return Err(closed());
@@ -1015,6 +1132,68 @@ mod failure_tests {
             assert_eq!(db.pool.status().available, 0);
             assert_eq!(db.pool.status().size, 0);
             db.batch("SELECT 1".into()).await.unwrap();
+        });
+    }
+
+    fn key(sql: &str) -> (String, Vec<Type>) {
+        (sql.to_owned(), vec![Type::INT8])
+    }
+
+    fn touch(lru: &mut StatementLru, sql: &str) -> Vec<String> {
+        let (sql, types) = key(sql);
+        lru.touch(&sql, &types).into_iter().map(|k| k.sql.into_owned()).collect()
+    }
+
+    #[test]
+    fn lru_evicts_the_least_recently_used_statement() {
+        let mut lru = StatementLru::new(3);
+        assert!(touch(&mut lru, "a").is_empty());
+        assert!(touch(&mut lru, "b").is_empty());
+        assert!(touch(&mut lru, "c").is_empty());
+        assert!(touch(&mut lru, "a").is_empty()); // a is now newer than b
+        assert_eq!(touch(&mut lru, "d"), ["b"]);
+        assert_eq!(touch(&mut lru, "e"), ["c"]);
+        assert_eq!(lru.used.len(), 3);
+        // The same SQL with other parameter types is another statement.
+        assert_eq!(lru.touch("a", &[Type::TEXT]).len(), 1);
+    }
+
+    #[test]
+    fn lru_forget_removes_a_statement_from_the_order() {
+        let mut lru = StatementLru::new(2);
+        touch(&mut lru, "a");
+        touch(&mut lru, "b");
+        let (sql, types) = key("a");
+        lru.forget(&sql, &types);
+        assert!(touch(&mut lru, "c").is_empty()); // room again: a left the order
+        assert_eq!(lru.used.len(), 2);
+    }
+
+    #[test]
+    fn eviction_keeps_hot_statements_prepared() {
+        runtime().block_on(async {
+            let url = std::env::var("ORM_RUST_TEST_POSTGRES_URL")
+                .or_else(|_| std::env::var("ORM_TEST_DATABASE_URL"))
+                .unwrap_or_else(|_| "postgres://postgres:postgres@localhost/orm_test".into());
+            let db = PgDriver::connect_with_cache(&url, 1, 3).await.unwrap(); // one connection: one cache
+            let run = |n: &str| db.query(format!("SELECT {n}::int8 AS monorm_lru_{n}"), vec![]);
+            let prepared = || async {
+                let rows = db
+                    .query_text("SELECT name, statement FROM pg_prepared_statements WHERE statement LIKE '%monorm_lru_%'".into())
+                    .await
+                    .unwrap();
+                rows.into_iter().map(|r| (r[0].clone().unwrap(), r[1].clone().unwrap())).collect::<Vec<_>>()
+            };
+            run("0").await.unwrap(); // the hot statement
+            let hot_name = prepared().await[0].0.clone();
+            for n in 1..=6 {
+                run(&n.to_string()).await.unwrap(); // a one-shot statement
+                run("0").await.unwrap();
+            }
+            let after = prepared().await;
+            assert_eq!(after.len(), 3, "the cache holds the bound: {after:?}");
+            assert!(after.iter().any(|(name, _)| *name == hot_name), "the hot statement stayed prepared: {after:?}");
+            assert!(!after.iter().any(|(_, sql)| sql.contains("monorm_lru_1")), "an old one-shot statement was closed: {after:?}");
         });
     }
 }

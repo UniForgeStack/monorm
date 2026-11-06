@@ -756,6 +756,7 @@ dependencies = [
  "blake2",
  "bytes",
  "chrono",
+ "deadpool",
  "deadpool-postgres",
  "monorm",
  "monorm-core",
