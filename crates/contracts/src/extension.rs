@@ -5,7 +5,7 @@ use crate::ir::{ColType, SchemaIr, ValueType};
 pub use crate::version::ContractVersion;
 
 /// The IR records. A library of the same major and a lower or equal minor fits.
-pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(5, 0);
+pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(5, 1);
 /// The C ABI that `monorm::extension!` writes.
 pub const ABI_VERSION: ContractVersion = ContractVersion::new(0, 2);
 /// The stamps of an IR and an artifact keep the major only.
@@ -1410,6 +1410,15 @@ mod tests {
         assert_eq!(minor(&stamped(serde_json::json!({}), none.clone())), 0);
         assert_eq!(minor(&stamped(assign(serde_json::json!("now")), none.clone())), 0);
         assert_eq!(stamped(hooked(2), none.clone()).behavior.schema_contract, 0);
+        // a generated field needs contract 5.1: the minor is set, and the major with it
+        let mut generated: SchemaIr = serde_json::from_value(serde_json::json!({
+            "models": [{"name": "Line", "table": "line", "fields": [
+                {"name": "id", "column": "id", "type": "int", "primary_key": true},
+                {"name": "total", "column": "total", "type": "int", "generated": {"sql": "quantity * price", "stored": true}}]}],
+        })).unwrap();
+        generated.stamp_expression_records();
+        assert_eq!((generated.behavior.schema_contract, minor(&generated)), (SCHEMA_CONTRACT, 1));
+        assert!(check_requirements(&generated, &Artifact { schema_contract: SCHEMA_CONTRACT, ..Artifact::default() }).is_ok());
         for (what, ir) in [
             ("an expression default", stamped(serde_json::json!({}), serde_json::json!({"expr": expr}))),
             ("a hook default", stamped(serde_json::json!({}), serde_json::json!({"hook": {"export": "acme.lib.x"}}))),

@@ -9,7 +9,7 @@ use crate::behavior::ArgumentKind;
 use crate::ext::{ExtensionDef, TypeDef};
 use crate::ir::{
     ClientCall, ClientDefaultIr, ColType, ConstraintIr, Deferrable, EnumIr, EnumStorage, EnumValueIr, ExcludeElementIr, ExtensionIr, FieldIr,
-    ForEach, FunctionIr, IndexColumnIr, IndexIr, ModelIr, Nulls, OnDelete, RelKind, RelationIr, SchemaIr,
+    ForEach, FunctionIr, GeneratedIr, IndexColumnIr, IndexIr, ModelIr, Nulls, OnDelete, RelKind, RelationIr, SchemaIr,
     ThroughIr, TriggerEvent, TriggerIr, TriggerTiming, PartitionIr, PartitionKeyIr,
 };
 use crate::migrate::pg::ident;
@@ -328,7 +328,7 @@ fn expression(pending: Option<&Pendings>, model: &str, context: Context, what: &
     }
 }
 
-const FIELD_ATTRS: &str = "@id, @unique, @default, @client_default, @map, @db.*, @check, @comment, @renamed_from";
+const FIELD_ATTRS: &str = "@id, @unique, @default, @client_default, @map, @db.*, @check, @generated, @comment, @renamed_from";
 
 pub struct Lowering<'l> {
     /// Reads an imported file (path as written in the schema).
@@ -750,6 +750,7 @@ fn field(m: &ModelDecl, member: &Member, ctx: &Ctx<'_>, pending: Option<&Pending
         read_sql: None,
         write_sql: None,
         check: None,
+        generated: None,
         renamed_from: None,
         comment: None,
         requires: vec![],
@@ -916,6 +917,22 @@ fn field(m: &ModelDecl, member: &Member, ctx: &Ctx<'_>, pending: Option<&Pending
                 let (pos, v) = &a.args.positional[0];
                 f.check = Some(expression(pending, &m.name, Context::Check, &format!("{what}: @check"), *pos, v)?);
             }
+            "generated" => {
+                if f.generated.is_some() { return err(a.pos, format!("{what}: @generated is given twice")); }
+                let [(pos, v)] = a.args.positional.as_slice() else {
+                    return err(a.pos, format!("{what}: @generated takes one expression and an optional stored: true|false"));
+                };
+                let mut stored = true;
+                for (name, p, v) in &a.args.named {
+                    match (name.as_str(), v) {
+                        ("stored", Value::Bool(b)) => stored = *b,
+                        ("stored", _) => return err(*p, format!("{what}: stored: takes true or false")),
+                        (other, _) => return err(*p, format!("{what}: @generated has no argument {other}:")),
+                    }
+                }
+                let sql = expression(pending, &m.name, Context::Generated, &format!("{what}: @generated"), *pos, v)?;
+                f.generated = Some(GeneratedIr { sql, stored });
+            }
             "comment" => f.comment = Some(text(a)?),
             "map" => f.column = text(a)?,
             "renamed_from" => f.renamed_from = Some(text(a)?),
@@ -1023,6 +1040,18 @@ fn field(m: &ModelDecl, member: &Member, ctx: &Ctx<'_>, pending: Option<&Pending
     }
     if f.primary_key && f.nullable {
         return err(member.pos, format!("{what}: a primary key can't be optional"));
+    }
+    if f.generated.is_some() {
+        let clash = [
+            (f.primary_key, "@id"),
+            (f.auto_increment, "@default(autoincrement())"),
+            (f.default.is_some() || f.default_now || f.default_sql.is_some(), "@default"),
+            (f.client_default.is_some(), "@client_default"),
+            (f.check.is_some(), "@check"),
+        ];
+        if let Some((_, attribute)) = clash.iter().find(|(on, _)| *on) {
+            return err(member.pos, format!("{what}: a generated column can't have {attribute}; the database computes the value"));
+        }
     }
     Ok(f)
 }
@@ -1538,6 +1567,7 @@ fn resolve_pending(ir: &mut SchemaIr, pending: &Pendings) -> Result<Vec<Diagnost
     for m in &mut ir.models {
         for f in &mut m.fields {
             if let Some(expr) = &mut f.check { fill(&m.name, format!("field:{}", f.name), expr); }
+            if let Some(g) = &mut f.generated { fill(&m.name, format!("generated:{}", f.name), &mut g.sql); }
         }
         for (i, ix) in m.indexes.iter_mut().enumerate() {
             for (k, key) in ix.columns.iter_mut().enumerate() {

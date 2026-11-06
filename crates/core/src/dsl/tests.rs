@@ -1286,3 +1286,42 @@ fn json_relation_keys_are_rejected_from_either_side_at_load() {
         }
     }
 }
+
+fn generated_model(field: &str) -> String {
+    format!("model Line {{\n  id Int @id\n  quantity Int\n  price Int\n  {field}\n}}\n")
+}
+
+#[test]
+fn a_generated_field_keeps_its_expression_and_storage() {
+    let ir = ok(&generated_model("total Int @generated(quantity * price)"));
+    let g = ir.models[0].fields.iter().find(|f| f.name == "total").unwrap().generated.clone().unwrap();
+    assert!(g.stored);
+    assert!(g.sql.contains("quantity") && g.sql.contains('*'), "{}", g.sql);
+    let ir = ok(&generated_model("total Int @generated(quantity * price, stored: false)"));
+    assert!(!ir.models[0].fields.iter().find(|f| f.name == "total").unwrap().generated.as_ref().unwrap().stored);
+}
+
+#[test]
+fn a_generated_column_refuses_a_volatile_or_stable_function() {
+    for f in ["now()"] {
+        let e = fails(&generated_model(&format!("total Float @generated({f})")));
+        assert!(e.contains("not immutable"), "{f}: {e}");
+    }
+}
+
+#[test]
+fn a_generated_field_refuses_other_value_sources_and_bad_arguments() {
+    for (field, needle) in [
+        ("total Int @generated(quantity * price) @default(1)", "@default"),
+        ("total Int @generated(quantity * price) @check(\"total > 0\")", "@check"),
+        ("total Int @generated(total + 1)", "cannot read another"),
+        ("total Int @generated(quantity * price, stored: 1)", "true or false"),
+        ("total Int @generated", "generated"),
+        ("total Int @generated(quantity) @generated(price)", "generated"),
+    ] {
+        let e = fails(&generated_model(field));
+        assert!(e.contains(needle), "{field}: {e}");
+    }
+    let e = fails("model Line {\n  id Int @id @generated(1)\n}\n");
+    assert!(e.contains("@id"), "{e}");
+}

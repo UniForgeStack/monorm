@@ -92,7 +92,9 @@ pub enum Op {
     /// `UPDATE <table> SET <column> = <expression over the old columns>, ...`: the data of a nested
     /// type whose storage changed between `columns` and `json`.
     CopyColumns { table: String, sets: Vec<(String, String)> },
-    DropColumn { table: String, column: String },
+    /// `generated` is set for a column that was generated and stays generated or goes away: it holds
+    /// no data of its own, so its drop is not destructive.
+    DropColumn { table: String, column: String, generated: bool },
     AlterColumnType { table: String, column: String, from: String, to: String },
     SetNotNull { table: String, column: String },
     DropNotNull { table: String, column: String },
@@ -118,7 +120,7 @@ impl Op {
         Some(match self {
             Op::DropTable { table } => format!("drops table {table} and all its rows"),
             Op::AttachPartition { table, .. } => format!("fails if rows in partition {table} do not satisfy its new bound"),
-            Op::DropColumn { table, column } => format!("drops column {table}.{column} and its data"),
+            Op::DropColumn { table, column, .. } => format!("drops column {table}.{column} and its data"),
             Op::AlterColumnType { table, column, from, to } => {
                 format!("changes {table}.{column} from {from} to {to}; existing values must convert")
             }
@@ -159,7 +161,7 @@ impl Op {
     pub fn destructive(&self) -> Option<Destructive> {
         match self {
             Op::DropTable { table } => Some(Destructive { kind: DestructiveKind::DropTable, table: table.clone(), column: None }),
-            Op::DropColumn { table, column } => {
+            Op::DropColumn { table, column, generated: false } => {
                 Some(Destructive { kind: DestructiveKind::DropColumn, table: table.clone(), column: Some(column.clone()) })
             }
             Op::AlterColumnType { table, column, from, to } if !widens(from, to) => {
@@ -363,6 +365,53 @@ fn match_named<'a, T: PartialEq + Clone>(
     });
     dropped.extend(old.iter().enumerate().filter(|(i, _)| !used_old.contains(i)).map(|(_, o)| o));
     (created, dropped, renamed)
+}
+
+/// The comment of a column that a migration adds, if it has one.
+fn column_comment(table: &str, column: &Column) -> Option<Op> {
+    column.comment.as_ref().map(|_| Op::CommentOnColumn { table: table.to_owned(), column: column.name.clone(), comment: column.comment.clone() })
+}
+
+/// A generated column cannot change in place: it is dropped and added again when its expression
+/// or kind changes, and when a type in its table changes under it.
+fn recreates(old: &Column, new: &Column, type_changes: bool) -> bool {
+    old.generated != new.generated || (new.generated.is_some() && type_changes)
+}
+
+/// `text` holds `column` as a whole identifier, quoted or not.
+fn mentions(text: &str, column: &str) -> bool {
+    let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    text.match_indices(column).any(|(i, _)| {
+        let end = i + column.len();
+        !text[..i].bytes().next_back().is_some_and(word) && !text[end..].bytes().next().is_some_and(word)
+    })
+}
+
+fn mentions_any(text: &Option<String>, columns: &HashSet<String>) -> bool {
+    text.as_deref().is_some_and(|t| columns.iter().any(|c| mentions(t, c)))
+}
+
+fn key_names(k: &super::model::IndexKey, columns: &HashSet<String>) -> bool {
+    k.column.as_ref().is_some_and(|c| columns.contains(c)) || mentions_any(&k.expr, columns)
+}
+
+/// The constraint reads one of `columns`. PostgreSQL drops it with the column.
+fn constraint_names(c: &Constraint, columns: &HashSet<String>) -> bool {
+    let listed = |cs: &[String]| cs.iter().any(|c| columns.contains(c));
+    match c {
+        Constraint::PrimaryKey(k) => listed(&k.columns),
+        Constraint::Unique(u) => listed(&u.columns),
+        Constraint::ForeignKey(f) => listed(&f.columns),
+        Constraint::Check(k) => columns.iter().any(|c| mentions(&k.expr, c)),
+        Constraint::Exclusion(e) => e.elements.iter().any(|el| key_names(&el.key, columns)) || mentions_any(&e.where_, columns),
+    }
+}
+
+/// The index reads one of `columns`. PostgreSQL drops it with the column.
+fn index_names(i: &Index, columns: &HashSet<String>) -> bool {
+    i.keys.iter().any(|k| key_names(k, columns))
+        || i.include.iter().any(|c| columns.contains(c))
+        || mentions_any(&i.where_, columns)
 }
 
 fn constraints(t: &Table) -> Vec<Constraint> {
@@ -745,6 +794,20 @@ pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<Vec<Op>
         col_pairs.push(matched);
     }
     let renamed_old: Vec<Table> = pairs.iter().map(|(o, _)| apply_renames(o, &table_map, &col_map)).collect();
+    // The generated columns that are dropped and added again, per matched table. PostgreSQL drops
+    // each index and constraint that reads such a column, so they are created again.
+    let recreated: Vec<HashSet<String>> = col_pairs
+        .iter()
+        .map(|cols| {
+            let type_changes = cols.iter().any(|pair| matches!(pair, (Some(oc), Some(nc)) if oc.ty != nc.ty));
+            cols.iter()
+                .filter_map(|pair| match pair {
+                    (Some(oc), Some(nc)) if recreates(oc, nc, type_changes) => Some(nc.name.clone()),
+                    _ => None,
+                })
+                .collect()
+        })
+        .collect();
 
     let mut drop_triggers = vec![];
     let mut drop_fks = vec![];
@@ -758,7 +821,7 @@ pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<Vec<Op>
     // Keys dropped and created again: (table, columns before the change).
     let mut rebuilt_keys: Vec<(String, Vec<String>)> = vec![];
 
-    for ((o, n), ro) in pairs.iter().zip(&renamed_old) {
+    for (((o, n), ro), rec) in pairs.iter().zip(&renamed_old).zip(&recreated) {
         let table = n.name.clone();
 
         // triggers: no rename by definition (names are user-chosen)
@@ -795,18 +858,29 @@ pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<Vec<Op>
         let (old_c, new_c) = (constraints(ro), constraints(n));
         let (c_new, c_drop, c_ren) = match_named(&old_c, &new_c, |c| c.name(), |c, nm| c.renamed(nm));
         drop_other.extend(c_drop.iter().map(|c| Op::DropConstraint { table: o.name.clone(), name: c.name().into() }));
+        let key_columns = |c: &Constraint| match c {
+            Constraint::PrimaryKey(k) => Some(k.columns.clone()),
+            Constraint::Unique(u) => Some(u.columns.clone()),
+            _ => None,
+        };
         for c in &c_drop {
-            match c {
-                Constraint::PrimaryKey(k) => rebuilt_keys.push((table.clone(), k.columns.clone())),
-                Constraint::Unique(u) => rebuilt_keys.push((table.clone(), u.columns.clone())),
-                _ => {}
+            rebuilt_keys.extend(key_columns(c).map(|cols| (table.clone(), cols)));
+        }
+        // A constraint on a recreated column goes with the column: drop it first, create it after.
+        for c in old_c.iter().filter(|c| constraint_names(c, rec) && new_c.contains(c)) {
+            drop_other.push(Op::DropConstraint { table: o.name.clone(), name: c.name().into() });
+            add_constraints.push(Op::AddConstraint { table: table.clone(), constraint: c.clone() });
+            rebuilt_keys.extend(key_columns(c).map(|cols| (table.clone(), cols)));
+        }
+        for (a, b) in &c_ren {
+            if constraint_names(a, rec) {
+                drop_other.push(Op::DropConstraint { table: o.name.clone(), name: a.name().into() });
+                add_constraints.push(Op::AddConstraint { table: table.clone(), constraint: (*b).clone() });
+                rebuilt_keys.extend(key_columns(a).map(|cols| (table.clone(), cols)));
+            } else {
+                renames_ops.push(Op::RenameConstraint { table: table.clone(), from: a.name().into(), to: b.name().into() });
             }
         }
-        renames_ops.extend(
-            c_ren
-                .iter()
-                .map(|(a, b)| Op::RenameConstraint { table: table.clone(), from: a.name().into(), to: b.name().into() }),
-        );
         add_constraints
             .extend(c_new.iter().map(|c| Op::AddConstraint { table: table.clone(), constraint: (*c).clone() }));
 
@@ -816,9 +890,26 @@ pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<Vec<Op>
             i
         });
         drop_other.extend(ix_drop.iter().map(|i| Op::DropIndex { name: i.name.clone() }));
-        renames_ops
-            .extend(ix_ren.iter().map(|(a, b)| Op::RenameIndex { from: a.name.clone(), to: b.name.clone() }));
         create_indexes.extend(ix_new.iter().map(|i| Op::CreateIndex { table: table.clone(), index: (*i).clone() }));
+        // An index on a recreated column goes with the column: drop it first, create it after.
+        let unique_key = |i: &Index| {
+            let cols = i.keys.iter().map(|k| k.column.clone()).collect::<Option<Vec<_>>>();
+            cols.filter(|_| i.unique)
+        };
+        for i in ro.indexes.iter().filter(|i| index_names(i, rec) && n.indexes.contains(i)) {
+            drop_other.push(Op::DropIndex { name: i.name.clone() });
+            create_indexes.push(Op::CreateIndex { table: table.clone(), index: i.clone() });
+            rebuilt_keys.extend(unique_key(i).map(|cols| (table.clone(), cols)));
+        }
+        for (a, b) in &ix_ren {
+            if index_names(a, rec) {
+                drop_other.push(Op::DropIndex { name: a.name.clone() });
+                create_indexes.push(Op::CreateIndex { table: table.clone(), index: (*b).clone() });
+                rebuilt_keys.extend(unique_key(a).map(|cols| (table.clone(), cols)));
+            } else {
+                renames_ops.push(Op::RenameIndex { from: a.name.clone(), to: b.name.clone() });
+            }
+        }
 
         if o.comment != n.comment {
             comments.push(Op::CommentOnTable { table: table.clone(), comment: n.comment.clone() });
@@ -826,10 +917,12 @@ pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<Vec<Op>
     }
     // A foreign key depends on the key it references, so it is dropped before that key
     // and created again after it.
-    for ((o, n), ro) in pairs.iter().zip(&renamed_old) {
+    for (((o, n), ro), rec) in pairs.iter().zip(&renamed_old).zip(&recreated) {
         for fk in &ro.foreign_keys {
             let kept = n.foreign_keys.iter().find(|x| x.name == fk.name).filter(|x| *x == fk);
-            if kept.is_some() && rebuilt_keys.iter().any(|(t, cols)| *t == fk.ref_table && *cols == fk.ref_columns) {
+            let rebuilt = fk.columns.iter().any(|c| rec.contains(c))
+                || rebuilt_keys.iter().any(|(t, cols)| *t == fk.ref_table && *cols == fk.ref_columns);
+            if kept.is_some() && rebuilt {
                 drop_fks.push(Op::DropConstraint { table: o.name.clone(), name: fk.name.clone() });
                 add_fks.push(Op::AddConstraint { table: n.name.clone(), constraint: Constraint::ForeignKey(fk.clone()) });
             }
@@ -913,12 +1006,31 @@ pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<Vec<Op>
 
     // -- columns ---------------------------------------------------------------------------
     let (mut adds, mut alters, mut drops, mut backfills) = (vec![], vec![], vec![], vec![]);
+    // A generated column is never altered. It is dropped before its table changes and added after,
+    // because PostgreSQL refuses a type change under it and a drop of a column it reads.
+    let (mut generated_drops, mut generated_adds) = (vec![], vec![]);
     for ((o, n), cols) in pairs.iter().zip(&col_pairs) {
         let table = &n.name;
         let copied = super::nested_copy::copies(o, n, new.dialect)?;
         let mut sets = vec![];
+        let type_changes = cols.iter().any(|pair| matches!(pair, (Some(oc), Some(nc)) if oc.ty != nc.ty));
         for (oc, nc) in cols {
+            if let (Some(oc), Some(nc)) = (oc, nc) {
+                if recreates(oc, nc, type_changes) {
+                    generated_drops.push(Op::DropColumn { table: table.clone(), column: nc.name.clone(), generated: oc.generated.is_some() && nc.generated.is_some() });
+                    generated_adds.push(Op::AddColumn { table: table.clone(), column: (*nc).clone() });
+                    comments.extend(column_comment(table, nc));
+                    continue;
+                }
+            }
             match (oc, nc) {
+                (None, Some(nc)) if nc.generated.is_some() => {
+                    generated_adds.push(Op::AddColumn { table: table.clone(), column: (*nc).clone() });
+                    comments.extend(column_comment(table, nc));
+                }
+                (Some(oc), None) if oc.generated.is_some() => {
+                    generated_drops.push(Op::DropColumn { table: table.clone(), column: oc.name.clone(), generated: true });
+                }
                 (None, Some(nc)) => {
                     let copy = copied.iter().find(|(c, _)| *c == nc.name);
                     if copy.is_some() && !nc.nullable {
@@ -935,15 +1047,9 @@ pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<Vec<Op>
                             backfills.push(Op::BackfillColumn { table: table.clone(), column: b.column.clone(), value: b.value.clone(), others: b.others.clone() });
                         }
                     }
-                    if nc.comment.is_some() {
-                        comments.push(Op::CommentOnColumn {
-                            table: table.clone(),
-                            column: nc.name.clone(),
-                            comment: nc.comment.clone(),
-                        });
-                    }
+                    comments.extend(column_comment(table, nc));
                 }
-                (Some(oc), None) => drops.push(Op::DropColumn { table: table.clone(), column: oc.name.clone() }),
+                (Some(oc), None) => drops.push(Op::DropColumn { table: table.clone(), column: oc.name.clone(), generated: false }),
                 (Some(oc), Some(nc)) => {
                     let column = nc.name.clone();
                     let t = || table.clone();
@@ -983,10 +1089,12 @@ pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<Vec<Op>
             backfills.push(Op::CopyColumns { table: table.clone(), sets });
         }
     }
+    ops.extend(generated_drops);
     ops.extend(adds);
     ops.extend(backfills);
     ops.extend(alters);
     ops.extend(drops);
+    ops.extend(generated_adds);
 
     // -- new dependent objects -------------------------------------------------------------
     // Primary keys and uniques first: foreign keys may reference them.
@@ -1016,6 +1124,29 @@ pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<Vec<Op>
 }
 
 /// Fails when a storage change between the two snapshots has data that no copy can move.
+/// PostgreSQL has no in-place `DROP EXPRESSION` here: a generated column that becomes plain
+/// would be dropped and added again, and every value would go. Only the forward plan asks for this.
+pub fn check_generated_to_plain(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<(), String> {
+    if new.dialect != crate::dialect::Dialect::Postgres {
+        return Ok(());
+    }
+    for n in &new.tables {
+        let Some(o) = old.tables.iter().find(|o| o.name == n.name).or_else(|| {
+            renames.tables.get(&n.name).and_then(|h| old.tables.iter().find(|o| &o.name == h))
+        }) else { continue };
+        for nc in n.columns.iter().filter(|c| c.generated.is_none()) {
+            let from = renames.columns.get(&(n.name.clone(), nc.name.clone())).unwrap_or(&nc.name);
+            if o.columns.iter().any(|oc| (oc.name == nc.name || &oc.name == from) && oc.generated.is_some()) {
+                return Err(format!(
+                    "{}.{}: PostgreSQL can't turn a generated column into a plain one without losing its values; drop the column in one migration and add it as a plain column in the next",
+                    n.name, nc.name
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn check_copies(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<(), String> {
     for n in &new.tables {
         let source = old.tables.iter().find(|o| o.name == n.name).or_else(|| {

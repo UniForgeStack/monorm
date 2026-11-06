@@ -200,7 +200,13 @@ impl Plan {
         for pass in &self.order {
             match owner_of.get(pass.id.as_str()) {
                 Some(owner) => {
+                    let generated = generated_fields(ir);
                     *ir = natives[owner].call(owner, &pass.id, ir)?;
+                    // A library built before contract 5.1 parses and writes its own `FieldIr`, which has no `generated`.
+                    let kept = generated_fields(ir);
+                    if let Some((model, field)) = generated.into_iter().find(|key| !kept.contains(key)) {
+                        return Err(format!("pass {} of {owner} removed the generated column {model}.{field}; the library was built for an older schema contract: rebuild it", pass.id));
+                    }
                     ir.behavior.packages.get_mut(*owner).expect("stamped above").passes.push(pass.id.clone());
                 }
                 None => {
@@ -821,4 +827,9 @@ mod tests {
         assert!(error.contains("acme.audit") && (error.contains("libnone") || error.contains("none.dll")), "{error}");
         std::fs::remove_dir_all(&dir).ok();
     }
+}
+
+/// The models and fields of the IR that hold a generated column.
+fn generated_fields(ir: &SchemaIr) -> std::collections::HashSet<(String, String)> {
+    ir.models.iter().flat_map(|m| m.fields.iter().filter(|f| f.generated.is_some()).map(|f| (m.name.clone(), f.name.clone()))).collect()
 }

@@ -24,6 +24,8 @@ pub enum Context {
     IndexKey,
     /// A model default filter.
     DefaultFilter,
+    /// The expression of a generated column: immutable, over the columns of its own model.
+    Generated,
 }
 
 /// A place in the source: 1-based line and column, and the length in characters.
@@ -319,7 +321,7 @@ pub(super) fn check(ir: &SchemaIr, model: &str, context: Context, pos: Pos, valu
         Context::Check => Some("a check"),
         Context::IndexFilter => Some("an index filter"),
         Context::DefaultFilter => Some("a default filter"),
-        Context::IndexKey => None,
+        Context::IndexKey | Context::Generated => None,
     };
     if let Some(what) = boolean_root {
         if root.ty != BOOL && root.ty != Ty::Unknown {
@@ -605,6 +607,9 @@ impl Checker<'_> {
                 if !last {
                     return fail(span, format!("`{step}` is a field, not a relation"));
                 }
+                if self.context == Context::Generated && field.generated.is_some() {
+                    return fail(span, format!("`{step}` is a generated column; a generated column cannot read another"));
+                }
                 return Ok(Node {
                     ty: field_ty(field),
                     span,
@@ -699,6 +704,9 @@ impl Checker<'_> {
             }
             (Context::IndexFilter | Context::IndexKey, Volatility::Stable | Volatility::Volatile) => {
                 return fail(span, format!("`{name}` is not immutable, so an index cannot use it"));
+            }
+            (Context::Generated, Volatility::Stable | Volatility::Volatile) => {
+                return fail(span, format!("`{name}` is not immutable, so a generated column cannot use it"));
             }
             _ => {}
         }

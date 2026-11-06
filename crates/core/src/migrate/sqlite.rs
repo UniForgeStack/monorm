@@ -17,7 +17,8 @@ pub fn create_table(t: &Table, name: &str, idempotent: bool) -> String {
         let mut sql = format!("{} {}", ident(&c.name), c.ty);
         if c.identity { sql.push_str(" PRIMARY KEY AUTOINCREMENT"); }
         if !c.nullable { sql.push_str(" NOT NULL"); }
-        if let Some(d) = &c.default { sql.push_str(&format!(" DEFAULT ({d})")); }
+        if let Some(g) = &c.generated { sql.push_str(&format!(" GENERATED ALWAYS AS ({}) {}", g.sql, if g.stored { "STORED" } else { "VIRTUAL" })); }
+        else if let Some(d) = &c.default { sql.push_str(&format!(" DEFAULT ({d})")); }
         sql
     }).collect::<Vec<_>>();
     if !t.columns.iter().any(|c| c.identity) {
@@ -127,7 +128,9 @@ pub fn steps_with(from: &DbSchema, to: &DbSchema, renames: &Renames, fills: &[di
         if let Some(old) = source(t) {
             let old_of = |name: &String| old.column(name).map(|_| name.clone()).or_else(|| renames.renamed_column(t, old, name).cloned());
             let copied = super::nested_copy::copies(old, t, to.dialect)?;
-            let values = t.columns.iter().map(|c| {
+            // The database computes a generated column; an INSERT cannot name it.
+            let copied_columns = t.columns.iter().filter(|c| c.generated.is_none()).collect::<Vec<_>>();
+            let values = copied_columns.iter().map(|c| {
                 if let Some(col) = old_of(&c.name) { return ident(&col) }
                 if let Some((_, e)) = copied.iter().find(|(n, _)| *n == c.name) { return e.clone() }
                 match t.backfill(&c.name) {
@@ -138,7 +141,7 @@ pub fn steps_with(from: &DbSchema, to: &DbSchema, renames: &Renames, fills: &[di
                     None => c.default.clone().unwrap_or_else(|| "NULL".into()),
                 }
             }).collect::<Vec<_>>().join(", ");
-            sql.push(format!("INSERT INTO {} ({}) SELECT {values} FROM {}", ident(&temp), ids(&t.columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>()), ident(&old.name)));
+            sql.push(format!("INSERT INTO {} ({}) SELECT {values} FROM {}", ident(&temp), ids(&copied_columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>()), ident(&old.name)));
         }
     }
     for old in &from.tables { sql.push(format!("DROP TABLE {}", ident(&old.name))); }

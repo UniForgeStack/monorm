@@ -1027,7 +1027,7 @@ fn only_data_losing_ops_are_destructive() {
     let (t, c) = ("post".to_string(), "body".to_string());
     let alter = |from: &str, to: &str| Op::AlterColumnType { table: t.clone(), column: c.clone(), from: from.into(), to: to.into() };
     assert_eq!(Op::DropTable { table: t.clone() }.destructive(), Some(destructive(DestructiveKind::DropTable, "post", None)));
-    assert_eq!(Op::DropColumn { table: t.clone(), column: c.clone() }.destructive(), Some(destructive(DestructiveKind::DropColumn, "post", Some("body"))));
+    assert_eq!(Op::DropColumn { table: t.clone(), column: c.clone(), generated: false }.destructive(), Some(destructive(DestructiveKind::DropColumn, "post", Some("body"))));
     assert_eq!(alter("text", "integer").destructive(), Some(destructive(DestructiveKind::AlterType, "post", Some("body"))));
     assert_eq!(alter("integer", "bigint").destructive(), None);
     let quiet = [
@@ -1159,4 +1159,172 @@ fn a_marker_names_the_table_before_its_rename() {
         let json = serde_json::to_value(&p2.up).unwrap();
         assert!(json.as_array().unwrap().iter().any(|s| s["destructive"] == json!(true)), "{json}");
     }
+}
+
+fn generated_schema(dialect: &str, fields: &str) -> Schema {
+    let text = format!("datasource db {{\n provider = \"{dialect}\"\n}}\nmodel Line {{\n id Int @id\n quantity Int\n price Int\n {fields}\n}}\n");
+    Schema::from_ir(crate::dsl::compile(&text, None).unwrap()).unwrap_or_else(|e| panic!("{e}"))
+}
+
+#[test]
+fn a_generated_column_is_stored_or_virtual_in_the_create_table_ddl() {
+    for (dialect, quote) in [("postgresql", "\"total\" integer GENERATED ALWAYS AS (quantity * price) STORED NOT NULL"), ("sqlite", "\"total\" INTEGER NOT NULL GENERATED ALWAYS AS (quantity * price) STORED")] {
+        let s = generated_schema(dialect, "total Int @generated(quantity * price)");
+        let plan = super::plan(&s, &DbSchema::default()).unwrap();
+        let ddl = &plan.up[0].sql;
+        assert!(ddl.contains(quote), "{dialect}: {ddl}");
+        assert!(!ddl.contains("DEFAULT"), "{dialect}: {ddl}");
+        settled(&s, &plan);
+    }
+    let s = generated_schema("sqlite", "total Int @generated(quantity * price, stored: false)");
+    let ddl = &super::plan(&s, &DbSchema::default()).unwrap().up[0].sql;
+    assert!(ddl.contains("GENERATED ALWAYS AS (quantity * price) VIRTUAL"), "{ddl}");
+}
+
+#[test]
+fn a_changed_generated_expression_drops_and_adds_the_column_on_postgres() {
+    let v1 = generated_schema("postgresql", "total Int @generated(quantity * price)");
+    let p1 = super::plan(&v1, &DbSchema::default()).unwrap();
+    let v2 = generated_schema("postgresql", "total Int @generated(quantity + price)");
+    let p2 = super::plan(&v2, &p1.snapshot).unwrap();
+    assert_eq!(
+        sql(&p2.up),
+        vec![
+            "ALTER TABLE \"line\" DROP COLUMN \"total\"",
+            "ALTER TABLE \"line\" ADD COLUMN \"total\" integer GENERATED ALWAYS AS (quantity + price) STORED NOT NULL",
+        ]
+    );
+    assert_eq!(
+        sql(&p2.down),
+        vec![
+            "ALTER TABLE \"line\" DROP COLUMN \"total\"",
+            "ALTER TABLE \"line\" ADD COLUMN \"total\" integer GENERATED ALWAYS AS (quantity * price) STORED NOT NULL",
+        ]
+    );
+    settled(&v2, &p2);
+}
+
+#[test]
+fn a_new_generated_column_is_added_after_a_type_change_it_reads() {
+    let v1 = generated_schema("postgresql", "");
+    let p1 = super::plan(&v1, &DbSchema::default()).unwrap();
+    let v2 = generated_schema("postgresql", "total Int @generated(quantity * price)");
+    let p2 = super::plan(&v2, &p1.snapshot).unwrap();
+    assert_eq!(sql(&p2.up), vec!["ALTER TABLE \"line\" ADD COLUMN \"total\" integer GENERATED ALWAYS AS (quantity * price) STORED NOT NULL"]);
+    assert_eq!(sql(&p2.down), vec!["ALTER TABLE \"line\" DROP COLUMN \"total\""]);
+    // a type change under an unchanged generated column drops it first and adds it last
+    let base = |ty: &str| format!("note String?\n total Int @generated(quantity * price)\n extra {ty}");
+    let a = generated_schema("postgresql", &base("Int"));
+    let pa = super::plan(&a, &DbSchema::default()).unwrap();
+    let b = generated_schema("postgresql", &base("BigInt"));
+    let pb = super::plan(&b, &pa.snapshot).unwrap();
+    let up = sql(&pb.up);
+    assert_eq!(up.first(), Some(&"ALTER TABLE \"line\" DROP COLUMN \"total\""), "{up:?}");
+    assert!(up.last().unwrap().contains("ADD COLUMN \"total\""), "{up:?}");
+    settled(&b, &pb);
+}
+
+#[test]
+fn a_recreated_generated_column_gets_its_unique_and_index_back_on_postgres() {
+    let body = |expr: &str| format!("total Int @generated({expr}) @unique\n @@index([total, price])");
+    let v1 = generated_schema("postgresql", &body("quantity * price"));
+    let p1 = super::plan(&v1, &DbSchema::default()).unwrap();
+    let v2 = generated_schema("postgresql", &body("quantity + price"));
+    let p2 = super::plan(&v2, &p1.snapshot).unwrap();
+    let up = sql(&p2.up);
+    let pos = |needle: &str| up.iter().position(|s| s.contains(needle)).unwrap_or_else(|| panic!("{needle}: {up:?}"));
+    // the unique and the index go before the column, and come back after it
+    assert!(pos("DROP CONSTRAINT") < pos("DROP COLUMN"), "{up:?}");
+    assert!(pos("DROP INDEX") < pos("DROP COLUMN"), "{up:?}");
+    assert!(pos("ADD COLUMN") < pos("ADD CONSTRAINT"), "{up:?}");
+    assert!(pos("ADD COLUMN") < pos("CREATE INDEX"), "{up:?}");
+    settled(&v2, &p2);
+    // the same holds for the down plan
+    let down = sql(&p2.down);
+    assert!(down.iter().any(|s| s.contains("ADD CONSTRAINT")) && down.iter().any(|s| s.contains("CREATE INDEX")), "{down:?}");
+}
+
+#[test]
+fn a_recreated_generated_column_gets_its_unique_and_index_back_after_a_type_change() {
+    let body = |ty: &str| format!("total Int @generated(quantity * price) @unique\n extra {ty}\n @@index([total, price])");
+    let a = generated_schema("postgresql", &body("Int"));
+    let pa = super::plan(&a, &DbSchema::default()).unwrap();
+    let b = generated_schema("postgresql", &body("BigInt"));
+    let pb = super::plan(&b, &pa.snapshot).unwrap();
+    let up = sql(&pb.up);
+    assert!(up.iter().any(|s| s.contains("DROP INDEX")) && up.iter().any(|s| s.contains("CREATE INDEX")), "{up:?}");
+    assert!(up.iter().any(|s| s.contains("DROP CONSTRAINT")) && up.iter().any(|s| s.contains("ADD CONSTRAINT")), "{up:?}");
+    settled(&b, &pb);
+}
+
+#[test]
+fn sqlite_keeps_the_unique_and_index_of_a_rebuilt_generated_column() {
+    let body = |expr: &str| format!("total Int @generated({expr}) @unique\n @@index([total, price])");
+    let v1 = generated_schema("sqlite", &body("quantity * price"));
+    let p1 = super::plan(&v1, &DbSchema::default()).unwrap();
+    let v2 = generated_schema("sqlite", &body("quantity + price"));
+    let p2 = super::plan(&v2, &p1.snapshot).unwrap();
+    let all = sql(&p2.up).join("\n");
+    assert!(all.contains("CREATE UNIQUE INDEX") || all.contains("UNIQUE"), "{all}");
+    assert!(all.contains("CREATE INDEX"), "{all}");
+    settled(&v2, &p2);
+}
+
+#[test]
+fn dropping_a_generated_column_is_not_destructive_but_dropping_a_plain_one_is() {
+    for dialect in ["postgresql", "sqlite"] {
+        let g = |expr: &str| generated_schema(dialect, &format!("total Int @generated({expr})"));
+        let p1 = super::plan(&g("quantity * price"), &DbSchema::default()).unwrap();
+        // a changed expression, and a removed generated column
+        let p2 = super::plan(&g("quantity + price"), &p1.snapshot).unwrap();
+        assert!(p2.up.iter().all(|s| s.destructive.is_empty()), "{dialect}: {:?}", p2.up);
+        let none = generated_schema(dialect, "");
+        let p3 = super::plan(&none, &p1.snapshot).unwrap();
+        assert!(p3.up.iter().all(|s| s.destructive.is_empty()), "{dialect}: {:?}", p3.up);
+        // a plain column that stops existing still loses data
+        let plain = generated_schema(dialect, "total Int");
+        let q1 = super::plan(&plain, &DbSchema::default()).unwrap();
+        let q2 = super::plan(&none, &q1.snapshot).unwrap();
+        assert!(q2.up.iter().any(|s| !s.destructive.is_empty()), "{dialect}: {:?}", q2.up);
+        // a plain column that becomes generated is rebuilt, and its values are lost
+        let q3 = super::plan(&g("quantity * price"), &q1.snapshot).unwrap();
+        if dialect == "postgresql" {
+            assert!(q3.up.iter().any(|s| !s.destructive.is_empty()), "{:?}", q3.up);
+        }
+    }
+}
+
+#[test]
+fn postgres_refuses_to_turn_a_generated_column_into_a_plain_one() {
+    let v1 = generated_schema("postgresql", "total Int @generated(quantity * price)");
+    let p1 = super::plan(&v1, &DbSchema::default()).unwrap();
+    let v2 = generated_schema("postgresql", "total Int");
+    let err = super::plan(&v2, &p1.snapshot).unwrap_err().to_string();
+    assert!(err.contains("generated column into a plain one"), "{err}");
+    // SQLite rebuilds the table and keeps the values
+    let s1 = generated_schema("sqlite", "total Int @generated(quantity * price)");
+    let ps1 = super::plan(&s1, &DbSchema::default()).unwrap();
+    let s2 = generated_schema("sqlite", "total Int");
+    super::plan(&s2, &ps1.snapshot).unwrap();
+}
+
+#[test]
+fn sqlite_rebuilds_for_a_generated_column_and_copies_only_plain_columns() {
+    let v1 = generated_schema("sqlite", "total Int @generated(quantity * price)");
+    let p1 = super::plan(&v1, &DbSchema::default()).unwrap();
+    let v2 = generated_schema("sqlite", "total Int @generated(quantity + price)\n note String?");
+    let p2 = super::plan(&v2, &p1.snapshot).unwrap();
+    let all = p2.up.iter().map(|s| s.sql.as_str()).collect::<Vec<_>>().join("\n");
+    assert!(all.contains("CREATE TABLE \"__orm_new_line\""), "{all}");
+    assert!(all.contains("GENERATED ALWAYS AS (quantity + price) STORED"), "{all}");
+    assert!(all.contains("INSERT INTO \"__orm_new_line\" (\"id\", \"quantity\", \"price\", \"note\") SELECT \"id\", \"quantity\", \"price\", NULL FROM \"line\""), "{all}");
+    assert!(!all.contains("(\"id\", \"quantity\", \"price\", \"total\""), "{all}");
+    settled(&v2, &p2);
+    // a plain column that becomes generated is rebuilt too, and is not copied
+    let v3 = generated_schema("sqlite", "total Int");
+    let p3 = super::plan(&v3, &DbSchema::default()).unwrap();
+    let v4 = generated_schema("sqlite", "total Int @generated(quantity * price)");
+    let p4 = super::plan(&v4, &p3.snapshot).unwrap();
+    let all = p4.up.iter().map(|s| s.sql.as_str()).collect::<Vec<_>>().join("\n");
+    assert!(all.contains("INSERT INTO \"__orm_new_line\" (\"id\", \"quantity\", \"price\") SELECT"), "{all}");
 }

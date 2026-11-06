@@ -241,6 +241,12 @@ impl SchemaIr {
         let assigns = self.behavior.write_assignments.iter().any(|a| matches!(a.value, AssignValue::Expr(_) | AssignValue::ExprHook { .. }));
         let hooks = self.behavior.hooks.iter().any(|h| (5..=7).contains(&h.point));
         if defaults || assigns || hooks { self.behavior.schema_contract = SCHEMA_CONTRACT; }
+        // Contract 5.1 holds `FieldIr.generated`. An engine of 5.0 would read the field as a plain, writable column.
+        let generated = self.models.iter().flat_map(|m| &m.fields).any(|f| f.generated.is_some());
+        if generated {
+            self.behavior.schema_contract = SCHEMA_CONTRACT;
+            self.behavior.schema_contract_minor = self.behavior.schema_contract_minor.max(1);
+        }
     }
 
     /// Parse the IR that generated models embed; an older ORM can write fields this one rejects.
@@ -354,6 +360,13 @@ impl ModelIr {
     }
 }
 
+/// A generated column: the SQL of its expression for the schema dialect, and STORED or VIRTUAL.
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct GeneratedIr {
+    pub sql: String,
+    pub stored: bool,
+}
+
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct FieldIr {
     pub name: String,
@@ -411,6 +424,9 @@ pub struct FieldIr {
     /// Column-level `CHECK` expression (raw SQL).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub check: Option<String>,
+    /// `GENERATED ALWAYS AS (sql)`: the database computes the column, so no write can set it.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub generated: Option<GeneratedIr>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub renamed_from: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -456,6 +472,11 @@ impl FieldIr {
         ValueType { ty: self.ty, array: self.array, enum_idx: self.enum_idx }
     }
 
+    /// A column a write can name: not a group of nested columns, and not computed by the database.
+    pub fn is_writable_column(&self) -> bool {
+        self.nested.is_none() && self.generated.is_none()
+    }
+
     /// A plain column: no key, default or SQL templates.
     pub fn plain(name: &str, ty: ColType) -> FieldIr {
         FieldIr {
@@ -480,6 +501,7 @@ impl FieldIr {
             read_sql: None,
             write_sql: None,
             check: None,
+            generated: None,
             renamed_from: None,
             comment: None,
             requires: vec![],
