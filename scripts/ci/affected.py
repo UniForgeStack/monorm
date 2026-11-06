@@ -46,11 +46,11 @@ RULES: list[tuple[str, set[str]]] = [
     (r"^scripts/ci/", EVERY),
     (r"^(crates/(core|engine|contracts)/|Cargo\.(lock|toml)$|pyproject\.toml$|uv\.lock$)", EVERY),
     # `documented_schemas_parse` (crates/core) compiles the `prisma` blocks of these two files.
-    (r"^docs/schema/", {"docs", "rust"}),
-    # Runnable guide examples are exercised in both language jobs.
-    (r"^docs/guides/", {"docs", "python", "node"}),
+    # Both language runners scan every Markdown file under docs/ for `run` fences, so these files can hold an example too.
+    (r"^docs/schema/", {"docs", "rust", "python", "node"}),
+    (r"^docs/", {"docs", "python", "node"}),
     # The Markdown fixtures must not fall through to the general docs-only rule.
-    (r"^fixtures/docs/", {"docs", "rust", "python", "node"}),
+    (r"^fixtures/docs/", {"docs", "python", "node"}),
     # Files that no test reads.
     (r"^CHANGELOG\.md$", {"docs", "release-scripts"}),
     (r"^scripts/tests/rename/", {"names", "python"}),

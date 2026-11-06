@@ -1,0 +1,45 @@
+[
+  {
+    "source": "",
+    "options": {}
+  },
+  {
+    "source": "<!-- docs-test: -->",
+    "options": {}
+  },
+  {
+    "source": "text\n<!-- docs-test: setup=blog-lite -->\ntext",
+    "options": {
+      "setup": "blog-lite"
+    }
+  },
+  {
+    "source": "<!-- docs-test: setup=blog-lite db=postgresql -->",
+    "options": {
+      "setup": "blog-lite",
+      "db": "postgresql"
+    }
+  },
+  {
+    "source": "<!-- docs-test: db=sqlite -->",
+    "options": {
+      "db": "sqlite"
+    }
+  },
+  {
+    "source": "<!-- docs-test: setup -->",
+    "error": "unknown option"
+  },
+  {
+    "source": "<!-- docs-test: setup= -->",
+    "error": "unknown option"
+  },
+  {
+    "source": "<!-- docs-test: color=red -->",
+    "error": "unknown option"
+  },
+  {
+    "source": "<!-- docs-test: db=postgres -->",
+    "error": "db must be"
+  }
+]

@@ -6,6 +6,7 @@ const db = await connect(docsDatabaseUrl);
 docsTestCleanup = async () => {
   try { await db.dropTables(); } finally { await db.close(); }
 };
+await db.dropTables(); // a killed earlier run can leave its tables behind
 await db.createTables();
 await User.objects.insertMany([
   { name: "A", email: "a@example.com" },

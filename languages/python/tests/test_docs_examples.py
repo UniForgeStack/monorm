@@ -10,20 +10,27 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[3]
 FIXTURES = ROOT / "fixtures/docs"
+OPTIONS = {"setup": None, "db": {"sqlite", "postgresql"}}
+POSTGRESQL_SKIPPED = "ORM_DOCS_DATABASE_URL is unset: PostgreSQL doc skipped"
+DEFAULT_TEST_URL = "postgres://postgres:postgres@localhost/orm_test"
+FENCE = re.compile(r"\s*(`{3,}|~{3,})(.*)")
 
 
 def parse_fences(source):
     blocks = []
-    opening = None
-    for line_number, line in enumerate(source.splitlines(), 1):
+    opening, opened, block, body = None, 0, {}, []
+    for line_number, line in enumerate(re.split(r"\r?\n", source), 1):
         if opening is None:
-            match = re.fullmatch(r"\s*(`{3,})([^`]*)", line)
-            if match:
-                opening = match[1]
+            match = FENCE.fullmatch(line)
+            if match and not (match[1][0] == "`" and "`" in match[2]):
                 words = match[2].split()
+                if match[1][0] == "~" and "run" in words:
+                    raise ValueError(f"line {line_number}: a ~~~ fence cannot run; use ```")
+                opening, opened = match[1], line_number
                 block = {"info": words, "line": line_number + 1, "source": ""}
                 body = []
         elif line.strip() == opening:
@@ -32,12 +39,49 @@ def parse_fences(source):
             opening = None
         else:
             body.append(line)
+    if opening is not None:
+        raise ValueError(f"line {opened}: unclosed fence")
     return blocks
 
 
 def options(source):
     match = re.search(r"<!--\s*docs-test:\s*(.*?)\s*-->", source)
-    return dict(word.split("=", 1) for word in match[1].split()) if match else {}
+    config = {}
+    for word in match[1].split() if match else []:
+        key, separator, value = word.partition("=")
+        if key not in OPTIONS or not separator or not value:
+            raise ValueError(f"docs-test: unknown option {word!r}")
+        if OPTIONS[key] and value not in OPTIONS[key]:
+            raise ValueError(f"docs-test: {key} must be one of {sorted(OPTIONS[key])}, not {value!r}")
+        config[key] = value
+    return config
+
+
+def first_line(source):
+    return source.split("\n")[0] or "<empty>"
+
+
+def is_run(block, language):
+    return block["info"][:1] == [language] and "run" in block["info"]
+
+
+def database_key(url):
+    parts = urlsplit(url)
+    return parts.hostname, parts.port or 5432, parts.path
+
+
+def database_url(config, env):
+    if config.get("db") != "postgresql":
+        return "sqlite://:memory:"
+    url = env["ORM_DOCS_DATABASE_URL"]
+    if database_key(url) == database_key(env.get("ORM_TEST_DATABASE_URL", DEFAULT_TEST_URL)):
+        raise ValueError("ORM_DOCS_DATABASE_URL must not be the test database: the doc drops its tables")
+    return url
+
+
+def skip_reason(doc):
+    if options(doc.read_text()).get("db") == "postgresql" and not os.environ.get("ORM_DOCS_DATABASE_URL"):
+        return POSTGRESQL_SKIPPED
 
 
 async def execute(source, namespace, filename):
@@ -49,9 +93,7 @@ async def execute(source, namespace, filename):
 async def run_doc(doc):
     source = doc.read_text()
     config = options(source)
-    if config.get("db", "sqlite") == "postgresql" and not os.environ.get("ORM_DOCS_DATABASE_URL"):
-        print("ORM_DOCS_DATABASE_URL is unset: PostgreSQL doc skipped")
-        return 77
+    url = database_url(config, os.environ)
     blocks = parse_fences(source)
     namespace = {"__name__": "__docs_example__"}
     with tempfile.TemporaryDirectory(prefix="monorm-docs-") as directory:
@@ -70,17 +112,13 @@ async def run_doc(doc):
                 schema = (FIXTURES / f"{setup}.prisma").read_text()
                 if config.get("db") == "postgresql":
                     schema = schema.replace('provider = "sqlite"', 'provider = "postgresql"')
-                namespace.update(docs_schema=schema, docs_database_url=(
-                    os.environ["ORM_DOCS_DATABASE_URL"] if config.get("db") == "postgresql" else "sqlite://:memory:"
-                ))
+                namespace.update(docs_schema=schema, docs_database_url=url)
                 await execute((FIXTURES / f"{setup}.py").read_text(), namespace, label)
             for block in blocks:
-                info = block["info"]
-                if not info or info[0] != "python" or "run" not in info:
+                if not is_run(block, "python"):
                     continue
-                first = block["source"].splitlines()[0] if block["source"].splitlines() else "<empty>"
-                label = f"{doc}:{block['line']}: {first}"
-                expected = next((word[5:] for word in info if word.startswith("fail=")), None)
+                label = f"{doc}:{block['line']}: {first_line(block['source'])}"
+                expected = next((word[5:] for word in block["info"] if word.startswith("fail=")), None)
                 try:
                     await execute(block["source"], namespace, label)
                 except Exception as error:
@@ -92,39 +130,50 @@ async def run_doc(doc):
         except Exception as error:
             raise RuntimeError(f"{label}\n{error}") from error
         finally:
-            if database := namespace.get("db"):
-                try:
-                    await database.drop_tables()
-                finally:
-                    await database.close()
-    return 0
+            if cleanup := namespace.get("docs_test_cleanup"):
+                await cleanup()
 
 
-def child(doc):
+def child(doc, env=None):
     return subprocess.run([sys.executable, "-I", str(Path(__file__).resolve()), str(doc)],
-                          capture_output=True, text=True, timeout=60)
+                          capture_output=True, text=True, timeout=60, env={**os.environ, **(env or {})})
 
 
 if __name__ == "__main__":
-    sys.exit(asyncio.run(run_doc(Path(sys.argv[1]).resolve())))
+    asyncio.run(run_doc(Path(sys.argv[1]).resolve()))
 else:
     import pytest
 
     DOCS = [path for path in sorted((ROOT / "docs").rglob("*.md"))
-            if any("run" in block["info"] and block["info"][0] == "python"
-                   for block in parse_fences(path.read_text()))]
+            if any(is_run(block, "python") for block in parse_fences(path.read_text()))]
 
     @pytest.mark.parametrize("doc", DOCS + [FIXTURES / "execution-cases.md", FIXTURES / "postgresql.md"],
                              ids=lambda path: str(path.relative_to(ROOT)))
     def test_runnable_doc_blocks_run(doc):
+        if reason := skip_reason(doc):
+            pytest.skip(reason)
         result = child(doc)
-        if result.returncode == 77:
-            pytest.skip(result.stdout.strip())
         assert result.returncode == 0, result.stdout + result.stderr
 
     def test_the_fence_parser_reads_the_fixture():
         assert parse_fences((FIXTURES / "parser-cases.md").read_text()) == json.loads(
             (FIXTURES / "parser-cases.json").read_text())
+
+    def test_the_fence_parser_reads_the_source_cases():
+        for case in json.loads((FIXTURES / "source-cases.json").read_text()):
+            if "error" in case:
+                with pytest.raises(ValueError, match=re.escape(case["error"])):
+                    parse_fences(case["source"])
+            else:
+                assert parse_fences(case["source"]) == case["blocks"], case["name"]
+
+    def test_the_option_parser_reads_the_fixture():
+        for case in json.loads((FIXTURES / "option-cases.json").read_text()):
+            if "error" in case:
+                with pytest.raises(ValueError, match=re.escape(case["error"])):
+                    options(case["source"])
+            else:
+                assert options(case["source"]) == case["options"], case["source"]
 
     def test_a_failing_block_names_the_doc_and_the_block():
         doc = FIXTURES / "broken.md"
@@ -134,10 +183,17 @@ else:
         assert "await User.objects.no_such_method()" in result.stderr
         with tempfile.TemporaryDirectory() as directory:
             for body, message in [("pass", "expected ValueError, block passed"),
-                                  ("raise TypeError('wrong error')", "wrong error")]:
+                                  ("raise TypeError('wrong error')", "wrong error"),
+                                  ("def (:", ":2: def (:")]:
                 expected_doc = Path(directory) / "expected-error.md"
                 expected_doc.write_text(f"```python run fail=ValueError\n{body}\n```\n")
                 result = child(expected_doc)
                 assert result.returncode != 0
                 assert str(expected_doc) in result.stderr
                 assert message in result.stderr
+
+    def test_a_doc_database_cannot_be_the_test_database():
+        url = "postgres://postgres:postgres@localhost/shared"
+        result = child(FIXTURES / "postgresql.md", {"ORM_DOCS_DATABASE_URL": url, "ORM_TEST_DATABASE_URL": url})
+        assert result.returncode != 0
+        assert "must not be the test database" in result.stderr

@@ -163,6 +163,7 @@ An instance can also load later: `await post.load(Post.author)` ([loading-instan
 
 ```python
 # Prisma Client Python
+post = await db.post.find_first(where={"title": "Hello"})
 await db.post.update(where={"id": post.id}, data={"title": "Hello again"})
 await db.post.update_many(where={"title": "Draft"}, data={"published": True})
 ```
@@ -180,6 +181,7 @@ A value can be an expression: `.update(views=Post.views + 1)`, like Prisma's `{"
 
 ```python
 # Prisma Client Python
+post = await db.post.find_first(where={"title": "Hello"})
 await db.post.delete(where={"id": post.id})
 await db.post.delete_many(where={"title": "Draft"})
 ```

@@ -1,3 +1,4 @@
+// examples/blog/schema.prisma on SQLite: no Profile, enum, Decimal or String[], and Int ids, so one schema runs on both databases.
 datasource db {
   provider = "sqlite"
 }

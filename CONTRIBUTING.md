@@ -23,6 +23,7 @@ Run these from the repository root. Keep them green before you open a pull reque
 
 ```bash
 # Start PostgreSQL first (Linux: `service postgresql start`; macOS: your own server) with the test database above.
+psql -U postgres -h localhost -c 'CREATE DATABASE orm_docs' && export ORM_DOCS_DATABASE_URL=postgres://postgres:postgres@localhost/orm_docs   # a disposable database for the PostgreSQL guide example; without it that example is skipped
 uv venv .venv && . .venv/bin/activate && uv pip install maturin pytest 'pytest-asyncio>=0.24' pydantic mypy pyright   # the wheel builder and the test tools
 python languages/python/packaging/stage.py   # the extension libraries of this platform, for the one wheel
 maturin develop                   # the one `monorm` package: engine, built-in extensions and auth
@@ -70,11 +71,13 @@ cargo run -q -p monorm-cli -- --schema examples/blog/schema.prisma generate type
 
 Mark a complete example with `python run` or `typescript run` in its fence.
 Blocks run in file order in one namespace, with top-level `await`, in a fresh process and work directory per document.
+In TypeScript a `fail=` block is a scope of its own: its `const` stays local, and it cannot hold an `import`.
 Leave fragments and comparison examples unmarked.
 Use `run fail=ValueError` (TypeScript: the error's `name`) for an expected error, and `file=schema.prisma` on a fence to write its content before execution.
 The comment `<!-- docs-test: setup=blog-lite -->` selects the shared seeded models in `fixtures/docs/`.
 SQLite is the default; `db=postgresql` in the comment requires `ORM_DOCS_DATABASE_URL` or the document is skipped.
-Point that variable at a separate, disposable database: the setup's tables are dropped after each document.
+Point that variable at a separate, disposable database: the setup's tables are dropped before and after each document, and the runner refuses the database of `ORM_TEST_DATABASE_URL`.
+The runners reject a `~~~` fence with `run`, an unclosed fence, and an unknown `docs-test` key or `db` value.
 The normal Python and Node test suites run these examples; Bun runs the TypeScript examples too.
 
 ## Pull requests

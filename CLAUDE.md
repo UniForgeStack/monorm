@@ -19,6 +19,7 @@ Outside contributors: read [CONTRIBUTING.md](CONTRIBUTING.md). It has the same c
 
 ```bash
 service postgresql start          # the test database (postgres:postgres@localhost/orm_test)
+psql -U postgres -h localhost -c 'CREATE DATABASE orm_docs' && export ORM_DOCS_DATABASE_URL=postgres://postgres:postgres@localhost/orm_docs   # a disposable database for the PostgreSQL guide example; without it that example is skipped
 . .venv/bin/activate && uv pip install maturin pytest 'pytest-asyncio>=0.24' pydantic mypy pyright   # the wheel builder and the test tools
 python languages/python/packaging/stage.py   # the extension libraries of this platform, for the one wheel
 maturin develop                   # the one `monorm` package: engine, built-in extensions and auth

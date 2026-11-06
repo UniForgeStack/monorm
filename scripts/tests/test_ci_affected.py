@@ -29,12 +29,13 @@ class PlanTest(unittest.TestCase):
     def test_docs_only(self) -> None:
         self.assertEqual(plan("README.md", "CONTRIBUTING.md"), {"names", "docs"})
 
-    def test_guides_run_both_language_runners(self) -> None:
-        self.assertEqual(plan("docs/guides/x.md"), {"names", "docs", "python", "node"})
+    def test_any_doc_runs_both_language_runners(self) -> None:
+        for path in ("docs/guides/x.md", "docs/api/x.md", "docs/contracts/x.md"):
+            self.assertEqual(plan(path), {"names", "docs", "python", "node"}, path)
 
     def test_docs_fixtures_run_both_language_runners(self) -> None:
         for suffix in ("md", "json", "prisma", "py", "ts"):
-            self.assertEqual(plan(f"fixtures/docs/example.{suffix}"), {"names", "docs", "rust", "python", "node"})
+            self.assertEqual(plan(f"fixtures/docs/example.{suffix}"), {"names", "docs", "python", "node"})
 
     def test_changelog_also_feeds_the_release_check(self) -> None:
         self.assertEqual(plan("CHANGELOG.md"), {"names", "docs", "release-scripts"})
@@ -66,8 +67,8 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(groups, {"names", "rust", "python", "node", "packages"})
 
     def test_schema_docs_run_the_documented_schema_test(self) -> None:
-        self.assertEqual(plan("docs/schema/prisma-syntax.md"), {"names", "docs", "rust"})
-        self.assertEqual(plan("docs/schema/schema.md"), {"names", "docs", "rust"})
+        self.assertEqual(plan("docs/schema/prisma-syntax.md"), {"names", "docs", "rust", "python", "node"})
+        self.assertEqual(plan("docs/schema/schema.md"), {"names", "docs", "rust", "python", "node"})
 
     def test_python_package_runs_the_cargo_typing_tests(self) -> None:
         for path in ["languages/python/monorm/client.py", "languages/python/monorm/py.typed", "languages/python/packaging/stage.py"]:
@@ -119,7 +120,7 @@ class PlanTest(unittest.TestCase):
             self.assertGreaterEqual(plan(path), affected.BASE_GROUPS, path)
 
     def test_groups_of_several_paths_add_up(self) -> None:
-        groups = plan("docs/a.md", "scripts/release/versions.py")
+        groups = plan("README.md", "scripts/release/versions.py")
         self.assertEqual(groups, {"names", "docs", "release-scripts", "python"})
 
     def test_every_rule_names_a_known_group(self) -> None:

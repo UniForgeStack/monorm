@@ -40,3 +40,8 @@ if (message !== "hello\n") throw new Error(message);
 ```typescript run fail=TypeError
 throw new TypeError(message);
 ```
+
+```typescript run
+import { LANGUAGE_CONTRACT } from "@ufstack/monorm/ext";
+if (typeof LANGUAGE_CONTRACT !== "number") throw new Error("subpath import did not resolve");
+```

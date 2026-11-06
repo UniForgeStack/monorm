@@ -1,0 +1,100 @@
+[
+  {
+    "name": "CRLF lines",
+    "source": "```python run\r\nx = 1\r\n```\r\n",
+    "blocks": [
+      {
+        "info": [
+          "python",
+          "run"
+        ],
+        "line": 2,
+        "source": "x = 1\n"
+      }
+    ]
+  },
+  {
+    "name": "form feed stays inside a line",
+    "source": "```python run\nx = '\f'\ny = 2\n```\n",
+    "blocks": [
+      {
+        "info": [
+          "python",
+          "run"
+        ],
+        "line": 2,
+        "source": "x = '\f'\ny = 2\n"
+      }
+    ]
+  },
+  {
+    "name": "indented fence",
+    "source": "  ```python run\n  x = 1\n  ```\n",
+    "blocks": [
+      {
+        "info": [
+          "python",
+          "run"
+        ],
+        "line": 2,
+        "source": "  x = 1\n"
+      }
+    ]
+  },
+  {
+    "name": "empty block",
+    "source": "```python run\n```\n",
+    "blocks": [
+      {
+        "info": [
+          "python",
+          "run"
+        ],
+        "line": 2,
+        "source": "\n"
+      }
+    ]
+  },
+  {
+    "name": "a longer fence does not close a shorter one",
+    "source": "```python run\nx = 1\n````\n```\n",
+    "blocks": [
+      {
+        "info": [
+          "python",
+          "run"
+        ],
+        "line": 2,
+        "source": "x = 1\n````\n"
+      }
+    ]
+  },
+  {
+    "name": "a tilde fence holds a backtick fence",
+    "source": "~~~markdown\n```python run\nx = 1\n```\n~~~\n",
+    "blocks": [
+      {
+        "info": [
+          "markdown"
+        ],
+        "line": 2,
+        "source": "```python run\nx = 1\n```\n"
+      }
+    ]
+  },
+  {
+    "name": "backticks in the info string are not a fence",
+    "source": "``` not a fence ```\n",
+    "blocks": []
+  },
+  {
+    "name": "unclosed fence",
+    "source": "```python run\nx = 1\n",
+    "error": "line 1: unclosed fence"
+  },
+  {
+    "name": "tilde fence with run",
+    "source": "~~~python run\nx = 1\n~~~\n",
+    "error": "a ~~~ fence cannot run"
+  }
+]

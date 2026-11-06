@@ -3,6 +3,16 @@ import monorm
 models = monorm.loads(docs_schema)
 User, Post, Comment = (models[name] for name in ("User", "Post", "Comment"))
 db = await monorm.connect(docs_database_url)
+
+
+async def docs_test_cleanup(database=db):
+    try:
+        await database.drop_tables()
+    finally:
+        await database.close()
+
+
+await db.drop_tables()  # a killed earlier run can leave its tables behind
 await db.create_tables()
 await User.objects.insert_many([
     {"name": "A", "email": "a@example.com"},
