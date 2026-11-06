@@ -59,7 +59,7 @@ pattern = '(?<![A-Za-z0-9_@/.-])orm(?![A-Za-z0-9_-])'
 
 [[allow]]
 glob = "**"
-pattern = 'ORM_(?:TEST_DATABASE_URL|DOCS_DATABASE_URL|RUST_TEST_POSTGRES_URL|BENCH_[A-Z_]+|FEATURE_CHECK_DIR)\b'
+pattern = 'ORM_(?:TEST_DATABASE_URL|DOCS_DATABASE_URL|SQL_VIEWS_DATABASE_URL|RUST_TEST_POSTGRES_URL|BENCH_[A-Z_]+|FEATURE_CHECK_DIR)\b'
 reason = "Test and bench variables stay; the owner may rename them later (Q3 in rename-spec.md)."
 
 [[allow]]

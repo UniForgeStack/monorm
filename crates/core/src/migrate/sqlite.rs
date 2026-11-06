@@ -129,7 +129,7 @@ pub fn steps_with(from: &DbSchema, to: &DbSchema, renames: &Renames, fills: &[di
         }
         sql.push("DROP TABLE __orm_object_guard".into());
         // A view that the snapshot does not hold breaks the rename below and is not ours to drop.
-        sql.push("CREATE TEMP TABLE __orm_view_guard (name TEXT CONSTRAINT monorm_unmanaged_view CHECK (name IS NULL))".into());
+        sql.push("CREATE TEMP TABLE __orm_view_guard (name TEXT CONSTRAINT monorm_unmanaged_view_in_database_declare_it_or_drop_it CHECK (name IS NULL))".into());
         let known = if from.views.is_empty() { String::new() } else { format!(" AND name NOT IN ({})", from.views.iter().map(|v| super::model::quote_literal(&v.name)).collect::<Vec<_>>().join(", ")) };
         sql.push(format!("INSERT INTO __orm_view_guard SELECT name FROM sqlite_schema WHERE type = 'view'{known}"));
         sql.push("DROP TABLE __orm_view_guard".into());

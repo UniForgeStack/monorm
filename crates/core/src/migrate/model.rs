@@ -60,8 +60,9 @@ pub struct SqlView {
     /// Names of the views that this view reads. They order the DDL; they do not change the database.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<String>,
-    /// The columns the model reads. Pull and drift use them; the diff does not compare them.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// The columns that introspection reads from a database, for pull and drift. A snapshot does not keep them:
+    /// the diff does not compare them, so a stored copy would go stale.
+    #[serde(skip)]
     pub columns: Vec<Column>,
     /// Indexes of a materialized view, including its unique constraints as unique indexes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

@@ -411,6 +411,7 @@ A changed expression drops and adds the column on Postgres (the stored values ar
 
 A `view` block declares a read-only model over a SQL `SELECT`. It uses model syntax: fields, `@id`, `@map`, `@@map`.
 The `SELECT` lives in a sidecar file, `views/<db schema>/<Name>.sql`, next to the schema file (`public` on PostgreSQL, `main` on SQLite).
+The directory name only finds the file: it does not set the database schema. The view goes to the first schema of the search path.
 The file holds the `SELECT` only: no `CREATE VIEW`. A trailing `;` is ignored.
 
 ```prisma
@@ -429,14 +430,17 @@ view ActiveUser {
   A view takes no relation constraint, `@unique` or `@@unique`.
 * `@@depends_on([Other])` names the views this view reads. It orders the migration: a view drops first and comes back last.
   Tables need no `@@depends_on`.
+  A materialized view that reads a plain view must name it in `@@depends_on`: without it, PostgreSQL refuses to drop the plain view with "cannot drop view ... because other objects depend on it".
 * A view refuses every write (`insert`, `update`, `delete`, `save`, copy) with `ReadOnlyModel`. The generated types have no write inputs.
 * `db.refresh(Model, concurrently=...)` (TypeScript: `db.refresh(Model, { concurrently })`) runs `REFRESH MATERIALIZED VIEW`.
   `concurrently` needs a unique index on the view. A plain view and SQLite refuse it.
 * A migration drops and creates a view when its `SELECT` or its `@@materialized` flag changes.
-  A materialized view keeps its data when only its indexes change.
-  **A drop loses the grants and the comment of the view**; set them again in the migration after the change.
+  A plain view also drops and comes back around every migration that has a table step, for any table, so a view always sees the new table.
+  A materialized view is recreated only when its `SELECT` or flag changes; it keeps its data when only its indexes change.
+  **A drop loses the grants and the comment of the view**, so after any migration with a table step set the grants of a plain view again.
+  A `DROP VIEW` in a migration has no `IF EXISTS`: a missing view fails the step.
 * `pull` writes each view as a `view` block and a sidecar file. The database has no key for a view, so the column `id` is the `@id`,
-  or the first column, with a gap line. `drift` compares the view `SELECT` in the form PostgreSQL prints, so a reformatted `SELECT` is not drift.
+  or the first column, with a gap line. A materialized view that is not filled (`WITH NO DATA`) also gets a gap line: it is pulled as a filled view. `drift` compares the view `SELECT` in the form PostgreSQL prints, so a reformatted `SELECT` is not drift.
   View comments are not tracked. SQLite `pull` writes no `@@depends_on`.
 
 ### Nested types

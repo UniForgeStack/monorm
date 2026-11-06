@@ -1615,7 +1615,10 @@ fn a_new_view_is_created_last_and_dropped_first() {
     assert_eq!(plan.snapshot.version, 5);
     settled(&s, &plan);
     let parsed = parse_snapshot(&serde_json::to_string(&plan.snapshot).unwrap()).unwrap();
-    assert_eq!(parsed, plan.snapshot);
+    assert!(parsed.views.iter().all(|v| v.columns.is_empty()), "a snapshot does not keep view columns");
+    let mut kept = plan.snapshot.clone();
+    kept.views.iter_mut().for_each(|v| v.columns.clear());
+    assert_eq!(parsed, kept);
 }
 
 #[test]

@@ -83,6 +83,8 @@ struct PgTable {
     def: Option<String>,
     /// The views that a view reads.
     depends: Option<Vec<String>>,
+    /// A materialized view only: whether it holds data (`WITH NO DATA` leaves it empty).
+    populated: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -207,7 +209,8 @@ fn tables_sql() -> String {
          'def', CASE WHEN c.relkind IN ('v', 'm') THEN pg_get_viewdef(c.oid, true) END, \
          'depends', CASE WHEN c.relkind IN ('v', 'm') THEN (SELECT json_agg(DISTINCT dc.relname) FROM pg_rewrite r \
              JOIN pg_depend d ON d.classid = 'pg_rewrite'::regclass AND d.objid = r.oid AND d.refclassid = 'pg_class'::regclass \
-             JOIN pg_class dc ON dc.oid = d.refobjid WHERE r.ev_class = c.oid AND dc.oid <> c.oid AND dc.relkind IN ('v', 'm')) END) \
+             JOIN pg_class dc ON dc.oid = d.refobjid WHERE r.ev_class = c.oid AND dc.oid <> c.oid AND dc.relkind IN ('v', 'm')) END, \
+         'populated', CASE WHEN c.relkind = 'm' THEN c.relispopulated END) \
          ORDER BY c.relname), '[]') \
          FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
          WHERE {IN_SCHEMA} AND c.relkind IN ('r', 'p', 'v', 'm', 'f') AND c.relname <> '{MIGRATIONS_TABLE}' AND {}",
@@ -450,6 +453,9 @@ async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
             "v" | "m" => {
                 if let Some(options) = t.options.filter(|o| !o.is_empty()) {
                     gaps.push(format!("view {} has options ({}); they are not reproduced", t.name, options.join(", ")));
+                }
+                if t.populated == Some(false) {
+                    gaps.push(format!("materialized view {} was created WITH NO DATA; it is pulled as a filled view, so a migration that creates it again fills it", t.name));
                 }
                 let body = t.def.as_deref().map(view_body).unwrap_or_default();
                 let view = SqlView { name: t.name.clone(), body, materialized: t.kind == "m", depends_on: t.depends.unwrap_or_default(), ..Default::default() };
@@ -929,25 +935,8 @@ fn lite_generated(sql: &str, column: &str) -> Option<String> {
 
 /// The `SELECT` of a view, from its `CREATE VIEW` text: what follows the first `AS` outside quotes and parentheses.
 fn lite_view_body(sql: &str) -> Option<String> {
-    let (mut quote, mut depth) = (None::<char>, 0i32);
-    let chars: Vec<(usize, char)> = sql.char_indices().collect();
-    for (n, &(i, ch)) in chars.iter().enumerate() {
-        match (quote, ch) {
-            (Some(q), c) if c == q => quote = None,
-            (Some(_), _) => {}
-            (None, '\'' | '"' | '`' | '[') => quote = Some(if ch == '[' { ']' } else { ch }),
-            (None, '(') => depth += 1,
-            (None, ')') => depth -= 1,
-            (None, 'a' | 'A') if depth == 0 && sql[i..].len() >= 2 && sql[i..i + 2].eq_ignore_ascii_case("as") => {
-                let word = |c: Option<&(usize, char)>| c.is_none_or(|(_, c)| !(c.is_alphanumeric() || *c == '_'));
-                if word(n.checked_sub(1).and_then(|p| chars.get(p))) && word(chars.get(n + 2)) {
-                    return Some(view_body(&sql[i + 2..])).filter(|b| !b.is_empty());
-                }
-            }
-            _ => {}
-        }
-    }
-    None
+    let at = *top_keyword(sql, "AS").first()?;
+    Some(view_body(&sql[at + 2..])).filter(|b| !b.is_empty())
 }
 
 fn lite_action(a: &str) -> Option<OnDelete> {

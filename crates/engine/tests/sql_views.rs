@@ -54,3 +54,15 @@ fn a_pulled_view_without_an_id_column_gets_the_first_column_as_key_and_a_gap() {
     let pulled = tokio::runtime::Runtime::new().unwrap().block_on(pulls_back_and_matches(&postgres_url(), Dialect::Postgres, &statements, &["view PvAView {", "@id"], &[]));
     assert!(pulled.gaps.iter().any(|g| g.contains("pv_a_view") && g.contains("@id")), "{:?}", pulled.gaps);
 }
+
+#[test]
+fn a_materialized_view_created_with_no_data_pulls_with_a_gap_line() {
+    let statements = [
+        "CREATE TABLE pv_n (id bigint PRIMARY KEY)",
+        "CREATE MATERIALIZED VIEW pv_n_empty AS SELECT id FROM pv_n WITH NO DATA",
+        "CREATE MATERIALIZED VIEW pv_n_full AS SELECT id FROM pv_n",
+    ];
+    let pulled = tokio::runtime::Runtime::new().unwrap().block_on(pulls_back_and_matches(&postgres_url(), Dialect::Postgres, &statements, &["view PvNEmpty {", "view PvNFull {"], &[]));
+    let gaps: Vec<_> = pulled.gaps.iter().filter(|g| g.contains("WITH NO DATA")).collect();
+    assert!(gaps.len() == 1 && gaps[0].contains("pv_n_empty"), "{:?}", pulled.gaps);
+}

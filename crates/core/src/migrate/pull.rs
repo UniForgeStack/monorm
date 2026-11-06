@@ -597,7 +597,6 @@ pub fn pull(db: &DbSchema, gaps: &[String]) -> Pulled {
     }
 
     // -- views -----------------------------------------------------------------------------
-    let view_dir = if dialect == Dialect::Sqlite { "main" } else { "public" };
     let view_names: HashMap<&str, String> = db.views.iter().map(|v| (v.name.as_str(), unique_name(pascal(&v.name), &mut type_names))).collect();
     let mut view_blocks: Vec<String> = vec![];
     let mut sidecars: BTreeMap<PathBuf, String> = BTreeMap::new();
@@ -668,7 +667,7 @@ pub fn pull(db: &DbSchema, gaps: &[String]) -> Pulled {
         }
         block.push_str("}\n");
         view_blocks.push(block);
-        sidecars.insert(PathBuf::from(format!("views/{view_dir}/{}.sql", m.name)), format!("{}\n", v.body));
+        sidecars.insert(crate::dsl::view_body_path(dialect == Dialect::Sqlite, &m.name), format!("{}\n", v.body));
     }
 
     // -- output ----------------------------------------------------------------------------

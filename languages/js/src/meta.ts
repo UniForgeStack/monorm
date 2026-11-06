@@ -42,7 +42,12 @@ export interface ModelSpec {
   readonly pk: unknown;
   /** The names of the model's read defaults, as a string-literal union; generated models set it. */
   readonly defaults?: string;
+  /** Set on a SQL view: it has no write, so `delete()` takes an argument that no value fits. */
+  readonly readOnly?: true;
 }
+
+/** The arguments of `delete()`: none, or one `never` for a read-only model, so a call fails to type check. */
+export type DeleteArgs<M extends ModelSpec> = M extends { readonly readOnly: true } ? [view: never] : [removed?: never];
 
 /** The names `withoutDefaults()` takes for `M`: its read default names, or any string when `M` lists none. */
 export type DefaultNames<M extends ModelSpec> = M extends { readonly defaults: infer D extends string } ? D : string;

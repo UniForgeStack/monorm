@@ -207,19 +207,24 @@ impl Loader<'_> {
     }
 }
 
+/// The path of a view body, relative to the schema file: `views/<db schema>/<Name>.sql` (`main` on SQLite, `public` on PostgreSQL).
+/// The compiler and `pull` both build the path here, so a pulled schema always compiles.
+pub fn view_body_path(sqlite: bool, name: &str) -> PathBuf {
+    Path::new("views").join(if sqlite { "main" } else { "public" }).join(format!("{name}.sql"))
+}
+
 /// The SQL body of each `view` block: `views/<db schema>/<Name>.sql` next to the schema file that declares the view
 /// (`public` on PostgreSQL, `main` on SQLite). The text comes from the override map first, then from disk.
 /// Returns the files it read.
 fn view_bodies(items: &mut [syntax::Item], loader: &Loader<'_>) -> Result<Vec<PathBuf>, String> {
     let sqlite = items.iter().any(|item| matches!(item, syntax::Item::Datasource { props, .. }
         if props.iter().any(|(key, _, value)| key == "provider" && matches!(value, syntax::Value::Str(p) if p == "sqlite"))));
-    let schema = if sqlite { "main" } else { "public" };
     let mut read = vec![];
     for item in items {
         let syntax::Item::Model(m) = item else { continue };
         if !m.is_view { continue; }
         let owner = loader.units.iter().find(|unit| unit.models.contains(&m.name)).map(|unit| unit.path.clone()).unwrap_or_default();
-        let path = owner.parent().unwrap_or(Path::new("")).join("views").join(schema).join(format!("{}.sql", m.name));
+        let path = owner.parent().unwrap_or(Path::new("")).join(view_body_path(sqlite, &m.name));
         let text = loader.overrides.get(&path).or_else(|| path.canonicalize().ok().and_then(|c| loader.overrides.get(&c))).cloned()
             .map(Ok).unwrap_or_else(|| std::fs::read_to_string(&path)).map_err(|_| loader.located(syntax::Error { pos: m.pos,
                 msg: format!("view {}: the SQL body file {} is missing; write the SELECT of the view there", m.name, path.display()) }))?;

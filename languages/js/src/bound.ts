@@ -8,7 +8,7 @@ import type { Cte } from "./cte.js";
 import { prefetch, registerBound, QuerySet, type WriteStatement, type Allowed, type LoadAll, type LoadItem, type LockOptions, type Narrow, type RootNames } from "./query.js";
 import type { QueryInspection } from "./inspection.js";
 import { key } from "./value-key.js";
-import { slot, type ModelSpec } from "./meta.js";
+import { slot, type DeleteArgs, type ModelSpec } from "./meta.js";
 
 /** Keys in one read statement: a large set stays under the parameter cap and the expression depth limit.
  * A composite key takes half, as its OR of ANDs is two levels deep per key and SQLite stops at depth 1000. */
@@ -149,7 +149,7 @@ export class BoundQuerySet<M extends ModelSpec, R = Instance<M>, S extends strin
    * `DELETE` the rows of the objects and give the objects whose row was deleted (or, for a
    * delete rewrite, updated), filled from the returned rows.
    */
-  async delete(): Promise<R[]> {
+  async delete(..._view: DeleteArgs<M>): Promise<R[]> {
     return this._write((qs) => qs.delete());
   }
 

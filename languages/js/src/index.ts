@@ -15,7 +15,7 @@
  */
 
 export { Decimal } from "./decimal.js";
-export type { JsonValue, In, ModelSpec, Hop, HopKind, ColType, FieldMeta, RelationMeta } from "./meta.js";
+export type { JsonValue, In, DeleteArgs, ModelSpec, Hop, HopKind, ColType, FieldMeta, RelationMeta } from "./meta.js";
 export { camel } from "./meta.js";
 export {
   Column,

@@ -454,6 +454,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         if attach.is_some() { writeln!(body, "  readonly attach: {name}Attach;").unwrap(); }
         writeln!(body, "  readonly update: {};", if view { "never".to_string() } else { format!("{name}Update") }).unwrap();
         writeln!(body, "  readonly updateRow: {};", if view { "never".to_string() } else { format!("{name}UpdateRow") }).unwrap();
+        if view { writeln!(body, "  readonly readOnly: true;").unwrap(); }
         match m.key_fields().as_slice() {
             [_] => writeln!(body, "  readonly pk: {};", value_type(pk)).unwrap(),
             keys => {

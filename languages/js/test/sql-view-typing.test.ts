@@ -24,6 +24,7 @@ declare const row: ActiveUser;
 export async function reads() {
   await ActiveUser.objects.filter(ActiveUser.id.eq(1)).all();
   await User.objects.insert({ id: 1, name: "a" });
+  await User.objects.filter(User.id.eq(1)).delete();
 }
 
 export async function writes() {
@@ -33,6 +34,9 @@ export async function writes() {
   ActiveUser.objects.all().update({ name: "a" }); // E:
   ActiveUser.objects.updateMany([{ id: 1, name: "a" }]); // E:
   await row.update({ name: "a" }); // E:
+  await row.delete(); // E:
+  ActiveUser.objects.all().delete(); // E:
+  ActiveUser.objects.filter(ActiveUser.id.eq(1)).delete(); // E:
 }
 `;
 const EXPECTED = USE.split("\n").flatMap((line, i) => (line.includes("// E:") ? [i + 1] : []));

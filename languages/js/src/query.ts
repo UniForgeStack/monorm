@@ -45,7 +45,7 @@ import {
   type Subquery,
 } from "./expr.js";
 import { NotLoaded, QueryError, TransactionRequired, UnfilteredWriteError } from "./errors.js";
-import { irNames, type DefaultNames, type Hop, type HopKind, type In, type ModelSpec, type RelationMeta } from "./meta.js";
+import { irNames, type DefaultNames, type DeleteArgs, type Hop, type HopKind, type In, type ModelSpec, type RelationMeta } from "./meta.js";
 import { DB, IndexRef, columnOf, fieldValue, RELATED, registerQueries, type Instance, type ModelClass, type ModelMeta } from "./model.js";
 import { call, wait, type NativeInspector, type NativePreparedRead, type NativeReturned, type NativeSelect, type NativeTrace, type NativeTransaction } from "./native.js";
 import { adaptedInsert, adaptedInsertMany, adaptedUpdate, adaptedUpdateMany, FieldAdapterError, prepareValues, splitAdapted, splitBatch } from "./adapters.js";
@@ -1568,7 +1568,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    * `DELETE` every matching row. Gives the number of rows deleted, or with
    * `.returning(...columns)` the deleted rows.
    */
-  delete(removed?: never): WriteStatement<M> {
+  delete(...[removed]: DeleteArgs<M>): WriteStatement<M> {
     noReturningOption("delete", removed);
     const plan = (names: readonly string[] | undefined, returning: boolean) => {
       const params: unknown[] = [];

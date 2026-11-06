@@ -11,7 +11,7 @@ import { isAbsent } from "./reference-absence.js";
 import { DoesNotExist, MultipleObjectsReturned, NotLoaded, VersionConflict } from "./errors.js";
 import { Column, PATH, RelationPath, and, differs, type Condition, type NullRule, type PathState, type Source } from "./expr.js";
 import { NestedColumn, buildTypes, decodeJsonCell, type IRNested, type IRType, type NestedInfo, type NestedType } from "./nested.js";
-import { camel, type ColType, type FieldMeta, type ModelSpec, type RelationKind, type RelationMeta } from "./meta.js";
+import { camel, type ColType, type FieldMeta, type DeleteArgs, type ModelSpec, type RelationKind, type RelationMeta } from "./meta.js";
 
 import { resolveApps } from "./apps.js";
 import { hookPackages, resolveExtensions } from "./packages.js";
@@ -123,7 +123,7 @@ export interface Instance<M extends ModelSpec> {
    * returned row (a delete rewrite shows its stored value). With an instance guard field, throws
    * `VersionConflict` when the row has a newer value.
    */
-  delete(): Promise<void>;
+  delete(...view: DeleteArgs<M>): Promise<void>;
 }
 
 export type Row = Record<PropertyKey, unknown> & { [RELATED]?: Record<string, unknown>; [DB]?: Database | undefined };
