@@ -49,6 +49,7 @@ from .write import (
     UpdateMany,
     assignments,
     lookup_values,
+    insert_batch,
     prepare_rows,
 )
 
@@ -1354,7 +1355,7 @@ class QuerySet(Generic[M]):
             return adapters.PendingUpdate(self, checked, pending)
         return Update.build(self, checked)
 
-    def update_many(self, rows: Iterable[Mapping[str, Any]], *, batch_size: int | None = None) -> UpdateMany[M]:
+    def update_many(self, rows: Iterable[Mapping[str, Any]] | Param, *, batch_size: int | None = None) -> UpdateMany[M]:
         """``UPDATE`` each row to its own values: ``rows`` are dicts with the primary key
         and the fields to set (the same fields in every row)::
 
@@ -1362,8 +1363,12 @@ class QuerySet(Generic[M]):
 
         Rows outside this query set's filters are left alone. One statement per
         ``batch_size`` rows (by default as many as fit), all in one transaction.
-        ``await`` gives the number of rows updated; ``.returning()`` gives the rows."""
+        ``await`` gives the number of rows updated; ``.returning()`` gives the rows.
+
+        ``param("rows", fields=(Post.id, Post.title))`` as ``rows`` is for ``.prepare()``."""
         self._standalone()
+        if isinstance(rows, Param):
+            return UpdateMany(self, rows, batch_size)
         checked, pending = adapters.split_rows(self._model, rows)
         if pending:
             return adapters.PendingUpdateMany(self, checked, pending, batch_size)
@@ -1385,7 +1390,7 @@ class QuerySet(Generic[M]):
             values, pending = split
             if pending:
                 return adapters.PendingInsert(self, values, pending)
-        fields, rows, provided = prepare_rows(self._model, [values])
+        fields, rows, provided = prepare_rows(self._model, [values], slots=any(isinstance(v, Param) for v in values.values()))
         return InsertOne(self, fields, rows, provided)
 
     async def get_or_insert(self, defaults: Mapping[str, Any] | None = None, **lookup: Any) -> tuple[M, bool]:
@@ -1441,12 +1446,12 @@ class QuerySet(Generic[M]):
 
     @overload
     def insert_many(
-        self, rows: Iterable[Mapping[str, Any]], *, batch_size: int | None = None, copy: Literal[False] = False
+        self, rows: Iterable[Mapping[str, Any]] | Param, *, batch_size: int | None = None, copy: Literal[False] = False
     ) -> InsertMany[M]: ...
     @overload
     def insert_many(self, rows: Iterable[Mapping[str, Any]], *, copy: Literal[True]) -> CopyInsert[M]: ...
     def insert_many(
-        self, rows: Iterable[Mapping[str, Any]], *, batch_size: int | None = None, copy: bool = False
+        self, rows: Iterable[Mapping[str, Any]] | Param, *, batch_size: int | None = None, copy: bool = False
     ) -> InsertMany[M] | CopyInsert[M]:
         """``INSERT`` many rows; ``await`` gives the number of rows inserted, and
         ``await qs.insert_many(rows).returning()`` the new instances. One statement per
@@ -1454,9 +1459,13 @@ class QuerySet(Generic[M]):
         one transaction.
 
         ``copy=True`` loads the rows with Postgres ``COPY`` instead, for large imports:
-        ``await`` gives the row count, and ``on_conflict()`` is not available."""
+        ``await`` gives the row count, and ``on_conflict()`` is not available.
+
+        ``param("rows", fields=(Post.title, Post.body))`` as ``rows`` is for ``.prepare()``."""
         self._standalone()
         self._no_load("insert_many")
+        if isinstance(rows, Param):
+            return self._insert_many_param(rows, batch_size, copy)
         checked, pending = adapters.split_rows(self._model, rows)
         if pending:
             if copy:
@@ -1468,6 +1477,17 @@ class QuerySet(Generic[M]):
                 raise TypeError("insert_many(copy=True) takes no batch_size: COPY is one statement")
             return CopyInsert(self, fields, aligned)
         return InsertMany(self, fields, aligned, provided, batch_size=batch_size)
+
+    def _insert_many_param(self, rows: Param, batch_size: int | None, copy: bool) -> InsertMany[M]:
+        from .prepared_write import ManyRows
+
+        if copy:
+            raise TypeError("insert_many(param(...)) can't take copy=True: COPY is not prepared")
+        if rows.fields is None:
+            raise TypeError("insert_many(param(...)) needs fields=: param('rows', fields=(Model.a, Model.b))")
+        fields, given, calls = insert_batch(self._model, rows.fields)
+        plan = ManyRows(rows.name, sorted(given), fields, calls)
+        return InsertMany(self, fields, [], given, batch_size=batch_size, prep=plan)
 
     def __or__(self, other: QuerySet[M]) -> Self:
         """``qs1 | qs2``: the rows of either, as one query set with the filter
@@ -1523,7 +1543,7 @@ class _Compiled:
 
     __slots__ = ("json", "params", "slots", "names", "declared", "natives")
 
-    def __init__(self, ir: IR, params: SlotParams) -> None:
+    def __init__(self, ir: IR, params: list[Any]) -> None:
         self.json = json.dumps(ir)
         self.params = list(params)
         self.slots = [(i, p.name, p.transform) for i, p in enumerate(params) if isinstance(p, _Slot)]
@@ -2222,14 +2242,16 @@ class RelatedSet(QuerySet[M]):
 
     @overload
     def insert_many(
-        self, rows: Iterable[Mapping[str, Any]], *, batch_size: int | None = None, copy: Literal[False] = False
+        self, rows: Iterable[Mapping[str, Any]] | Param, *, batch_size: int | None = None, copy: Literal[False] = False
     ) -> InsertMany[M]: ...
     @overload
     def insert_many(self, rows: Iterable[Mapping[str, Any]], *, copy: Literal[True]) -> CopyInsert[M]: ...
     def insert_many(
-        self, rows: Iterable[Mapping[str, Any]], *, batch_size: int | None = None, copy: bool = False
+        self, rows: Iterable[Mapping[str, Any]] | Param, *, batch_size: int | None = None, copy: bool = False
     ) -> InsertMany[M] | CopyInsert[M]:
         """Insert related rows pointing at this instance."""
+        if isinstance(rows, Param):
+            raise TypeError("a related set takes no prepared insert_many(param(...))")
         link = self._link()
         linked = ({**r, **link} for r in rows)
         if copy:

@@ -28,13 +28,14 @@ from typing import TYPE_CHECKING, Any, Generic, Literal, NoReturn, TypeVar, over
 
 from .inspection import QueryInspection, _inspect, _native as _inspection_native
 from . import _native
-from .expr import ColumnRef, Expression, IRContext, Ordering
+from .expr import ColumnRef, Expression, IRContext, Ordering, Param, SlotParams, _Slot
 from .errors import QueryError
 from .index import IndexRef
 from .fields import BelongsTo
 
 if TYPE_CHECKING:
     from .model import Model
+    from .prepared_write import ManyRows, OneRow, PreparedRows, PreparedSet
     from .query import QuerySet
 
 R_co = TypeVar("R_co", covariant=True)
@@ -75,8 +76,26 @@ def _nested_values(meta: Any, key: str, value: Any) -> dict[str, Any] | None:
     return None
 
 
-def prepare_rows(model: type[Model], rows: Iterable[Mapping[str, Any]]) -> tuple[list[str], list[list[Any]], set[str]]:
-    """Validates rows and aligns them on one column list.
+class _Call:
+    """A callable default that a prepared insert runs per call, not at ``prepare()``."""
+
+    __slots__ = ("fn",)
+
+    def __init__(self, fn: Any) -> None:
+        self.fn = fn
+
+
+def _no_slots(params: Sequence[Any], what: str) -> None:
+    if any(isinstance(p, _Slot) for p in params):
+        raise QueryError(f"{what} has param() values; call .prepare() and give them in a call")
+
+
+def prepare_rows(
+    model: type[Model], rows: Iterable[Mapping[str, Any]], *, slots: bool = False
+) -> tuple[list[str], list[list[Any]], set[str]]:
+    """Validates rows and aligns them on one column list. With ``slots``, a ``param()`` is a
+    plain column's value (a prepared insert fills it per call), and a callable default stays a
+    ``_Call`` for the call to run.
 
     Returns (fields, rows, provided): the fields any row sets, each row as values in
     that order (``DEFAULT`` where a row leaves a field out), and the fields the caller
@@ -88,6 +107,11 @@ def prepare_rows(model: type[Model], rows: Iterable[Mapping[str, Any]]) -> tuple
     for row in rows:
         values: dict[str, Any] = {}
         for key, value in row.items():
+            if slots and isinstance(value, Param):
+                if key not in meta.input_fields and key not in meta.generated:
+                    raise TypeError(f"{meta.name}.{key}: param() sets a plain column in a prepared insert")
+                values[key] = value
+                continue
             if isinstance(value, Expression):
                 raise TypeError(f"{meta.name}.{key}: insert takes plain values, not expressions")
             if isinstance(value, Ordering):
@@ -107,7 +131,7 @@ def prepare_rows(model: type[Model], rows: Iterable[Mapping[str, Any]]) -> tuple
             if name in values:
                 continue
             if callable(field.default):
-                values[name] = field.default()
+                values[name] = _Call(field.default) if slots else field.default()
             elif not (field.has_insert_default or field.nullable):
                 raise ValueError(f"{meta.name}.{meta.leaf_group.get(name, name)} is required")
         normalized.append(values)
@@ -192,6 +216,51 @@ def prepare_update_rows(model: type[Model], rows: Iterable[Mapping[str, Any]]) -
     return names, [[v[f] for f in names] for v in normalized]
 
 
+def _batch_names(model: type[Model], columns: Iterable[Any], what: str) -> list[str]:
+    """The plain columns a ``param(..., fields=...)`` names, each once."""
+    meta = model._meta
+    names = _field_names(model, tuple(columns), what)
+    for name in names:
+        if name not in meta.input_fields and name not in meta.generated:
+            raise TypeError(f"{what}: {meta.name}.{name} is not a plain column; a prepared batch takes plain columns")
+    if len(set(names)) != len(names):
+        raise TypeError(f"{what}: fields= names a column twice")
+    if not names:
+        raise TypeError(f"{what}: fields= needs at least one column")
+    return names
+
+
+def insert_batch(model: type[Model], columns: Iterable[Any]) -> tuple[list[str], set[str], dict[str, Any]]:
+    """For a prepared ``insert_many(param(..., fields=...))``: the statement's fields in schema
+    order, the fields a row gives, and the callable defaults of the fields no row gives."""
+    meta = model._meta
+    names = _batch_names(model, columns, "insert_many")
+    given = set(names)
+    calls: dict[str, Any] = {}
+    for name, field in meta.input_fields.items():
+        if name in given:
+            continue
+        if callable(field.default):
+            calls[name] = field.default
+        elif not (field.has_insert_default or field.nullable):
+            raise ValueError(f"{meta.name}.{meta.leaf_group.get(name, name)} is required")
+    return [n for n in meta.field_names if n in given or n in calls], given, calls
+
+
+def update_batch(model: type[Model], columns: Iterable[Any]) -> tuple[list[str], int]:
+    """For a prepared ``update_many(param(..., fields=...))``: the fields with the primary key
+    first, and the size of the key."""
+    meta = model._meta
+    names = _batch_names(model, columns, "update_many")
+    pk = list(meta.key_names)
+    if missing := [k for k in pk if k not in names]:
+        raise ValueError(f"update_many: fields= needs the primary key ({', '.join(missing)})")
+    rest = [f for f in meta.field_names if f in names and f not in pk]
+    if not rest:
+        raise ValueError(f"update_many rows need a field to set besides {', '.join(pk)}")
+    return [*pk, *rest], len(pk)
+
+
 def assignments(model: type[Model], values: Mapping[str, Any], ctx: IRContext) -> list[dict[str, Any]]:
     """``SET`` items as IR: plain values become parameters, expressions compile in
     ``ctx``. A to-one relation (``author=user``) sets its key column."""
@@ -269,6 +338,7 @@ class _Insert:
         "_set",
         "_batch_size",
         "_names",
+        "_prep",
         "_used",
     )
 
@@ -283,6 +353,7 @@ class _Insert:
         set_: tuple[list[dict[str, Any]], list[Any]] | None = None,
         batch_size: int | None = None,
         indexes: list[str] | None = None,
+        prep: ManyRows | None = None,
     ) -> None:
         if batch_size is not None and (
             isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size < 1
@@ -298,7 +369,14 @@ class _Insert:
         self._set = set_  # DO UPDATE assignments (IR) and their parameters
         self._batch_size = batch_size
         self._names: list[str] | None = None  # returning(...) columns; None: the default selection
+        self._prep = prep  # the rows of a prepared insert_many(param(..., fields=...))
         self._used = False
+
+    def _prepared_only(self) -> None:
+        """A statement with ``param()`` values runs only through ``prepare()``."""
+        if self._prep is not None or any(isinstance(c, (Param, _Call)) for row in self._rows for c in row):
+            raise QueryError("a write with param() values runs through .prepare(): call it with the values")
+        _no_slots(self._set[1] if self._set else (), "an upsert")
 
     def _with_conflict(
         self,
@@ -325,9 +403,9 @@ class _Insert:
         indexes = _index_names(model, index)
         if not update:
             return cls(
-                self._qs, self._fields, self._rows, self._provided, target, None, None, self._batch_size, indexes
+                self._qs, self._fields, self._rows, self._provided, target, None, None, self._batch_size, indexes, self._prep
             )
-        params: list[Any] = []
+        params = SlotParams()
         set_: tuple[list[dict[str, Any]], list[Any]] | None = None
         fields = None if update_fields is None else _field_names(model, tuple(update_fields), "update_fields")
         if fields is not None and not fields:
@@ -349,7 +427,7 @@ class _Insert:
                     f"on_conflict() updates {', '.join(sorted(overlap))} in both update_fields and update_values"
                 )
         return cls(
-            self._qs, self._fields, self._rows, self._provided, target, fields or [], set_, self._batch_size, indexes
+            self._qs, self._fields, self._rows, self._provided, target, fields or [], set_, self._batch_size, indexes, self._prep
         )
 
     def inspect(self) -> QueryInspection:
@@ -358,6 +436,7 @@ class _Insert:
         return self._inspect_returning(isinstance(self, InsertOne))
 
     def _inspect_returning(self, returning: bool) -> QueryInspection:
+        self._prepared_only()
         if not self._rows:
             return QueryInspection(0, False, ())
         options = {
@@ -386,6 +465,7 @@ class _Insert:
     async def _execute(self, returning: bool) -> Any:
         from .db import resolve
 
+        self._prepared_only()
         if not self._rows:
             return [] if returning else 0
         db = resolve(self._qs._db)
@@ -468,6 +548,14 @@ class InsertOne(_Insert, Generic[M]):
         write assignments of the model unless the call sets their fields. ``await`` gives the affected-row count; ``.returning()`` the row."""
         return self._with_conflict(UpsertOne, columns, index, update, update_fields, update_values)  # type: ignore[no-any-return]
 
+    def prepare(self) -> PreparedRows[M]:
+        """Hold the statement: ``q = qs.insert(a=param("a")).prepare()``, then ``await q(a=1)``
+        gives the instance."""
+        from .prepared_write import prepare_insert
+
+        self._used = True
+        return prepare_insert(self._qs, self, "one")
+
     def returning(self, *columns: ColumnRef[Any]) -> InsertReturning[M]:
         """Give the instance with only ``columns`` (and the key) loaded; without columns, the
         default selection. Other fields raise ``NotLoaded``."""
@@ -489,6 +577,13 @@ class UpsertOne(_Insert, Generic[R_co]):
     ``.returning()`` the inserted or updated instance (``None`` for a skipped row)."""
 
     __slots__ = ()
+
+    def prepare(self) -> PreparedRows[int]:
+        """Hold the upsert; a call gives the affected-row count. The conflict columns are fixed."""
+        from .prepared_write import prepare_insert
+
+        self._used = True
+        return prepare_insert(self._qs, self, "count")
 
     def returning(self, *columns: ColumnRef[Any]) -> InsertReturning[R_co]:
         """``RETURNING`` the row: ``await`` gives the instance, ``None`` when
@@ -530,6 +625,14 @@ class InsertMany(_Insert, Generic[M]):
         neither, every given field except the conflict columns is overwritten."""
         return self._with_conflict(InsertMany, columns, index, update, update_fields, update_values)  # type: ignore[no-any-return]
 
+    def prepare(self) -> PreparedRows[int]:
+        """Hold the batch insert: ``insert_many(param("rows", fields=(...))).prepare()``; a call
+        takes ``rows=[...]`` and gives the row count."""
+        from .prepared_write import prepare_insert
+
+        self._used = True
+        return prepare_insert(self._qs, self, "count")
+
     def returning(self, *columns: ColumnRef[Any]) -> InsertReturning[list[M]]:
         """``RETURNING`` the rows: ``await`` gives the instances in input order; rows
         that ``update=False`` skipped are left out. With ``columns``, each instance holds those and
@@ -552,6 +655,17 @@ class InsertReturning(Generic[R_co]):
         self._insert = insert
         self._one = one
         self._used = False
+
+    def prepare(self) -> PreparedRows[R_co]:
+        """Hold the statement; a call gives the instance (``None`` for a skipped upsert row) or the list."""
+        from .prepared_write import prepare_insert
+
+        self._used = True
+        if not self._one:
+            shape = "list"
+        else:
+            shape = "optional" if isinstance(self._insert, UpsertOne) else "one"
+        return prepare_insert(self._insert._qs, self._insert, shape)
 
     def inspect(self) -> QueryInspection:
         self._used = True
@@ -651,12 +765,22 @@ class _SetStatement(Generic[M]):
             ir["model_fields"] = names
         return ir
 
+    def prepare(self) -> PreparedSet[int]:
+        """Hold the statement; a call binds the ``param()`` values and gives the row count:
+        ``await q(id=3, name="x")``."""
+        from .prepared_write import PreparedSet
+
+        self._used = True
+        return PreparedSet(self._qs, self._ir, self._params)
+
     def inspect(self) -> QueryInspection:
         """Inspect this mutation without executing it."""
         self._used = True
+        _no_slots(self._params, "inspect()")
         return _inspect(self._qs, self._ir, self._params)
 
     async def _count(self) -> int:
+        _no_slots(self._params, "a write")
         if self._ir is None:
             return 0
         n: int = await self._qs._run(self._ir, self._params)
@@ -682,7 +806,7 @@ class Update(_SetStatement[M]):
 
     @classmethod
     def build(cls, qs: QuerySet[M], values: Mapping[str, Any]) -> Update[M]:
-        params: list[Any] = []
+        params = SlotParams()
         ir = qs._mutation_ir("update", params, values)
         return cls(qs, ir if ir["set"] else None, params)
 
@@ -695,7 +819,7 @@ class Delete(_SetStatement[M]):
 
     @classmethod
     def build(cls, qs: QuerySet[M], *, hard: bool = False) -> Delete[M]:
-        params: list[Any] = []
+        params = SlotParams()
         ir = qs._mutation_ir("delete", params)
         if hard:
             ir["hard"] = True
@@ -713,12 +837,21 @@ class Returning(Generic[M]):
         self._params = params
         self._used = False
 
+    def prepare(self) -> PreparedSet[list[M]]:
+        """Hold the statement; a call gives the rows."""
+        from .prepared_write import PreparedSet
+
+        self._used = True
+        return PreparedSet(self._qs, self._ir, self._params)
+
     def inspect(self) -> QueryInspection:
         """Inspect this mutation without executing it."""
         self._used = True
+        _no_slots(self._params, "inspect()")
         return _inspect(self._qs, self._ir, self._params)
 
     async def _rows(self) -> list[M]:
+        _no_slots(self._params, "a write")
         if self._ir is None:
             return []
         rows: list[M] = await self._qs._run(self._ir, self._params)
@@ -741,14 +874,24 @@ class UpdateMany(Generic[M]):
     """``update_many``: ``await`` gives the number of rows updated; ``.returning()`` the
     rows."""
 
-    __slots__ = ("_qs", "_fields", "_rows", "_batch_size", "_names", "_used")
+    __slots__ = ("_qs", "_fields", "_rows", "_batch_size", "_names", "_plan", "_used")
 
-    def __init__(self, qs: QuerySet[M], rows: Iterable[Mapping[str, Any]], batch_size: int | None) -> None:
+    def __init__(self, qs: QuerySet[M], rows: Iterable[Mapping[str, Any]] | Param, batch_size: int | None) -> None:
         if batch_size is not None and batch_size < 1:
             raise ValueError("batch_size must be at least 1")
-        qs._mutation_ir("update", [], guard=False)  # rejects sliced and locked query sets
+        qs._mutation_ir("update", SlotParams(), guard=False)  # rejects sliced and locked query sets
         self._qs = qs
-        self._fields, self._rows = prepare_update_rows(qs.model, rows)
+        self._plan: ManyRows | None = None
+        if isinstance(rows, Param):
+            from .prepared_write import ManyRows
+
+            if rows.fields is None:
+                raise TypeError("update_many(param(...)) needs fields=: param('rows', fields=(Model.id, Model.a))")
+            self._fields, keys = update_batch(qs.model, rows.fields)
+            self._rows: list[list[Any]] = []
+            self._plan = ManyRows(rows.name, self._fields, self._fields, {}, keys)
+        else:
+            self._fields, self._rows = prepare_update_rows(qs.model, rows)
         self._batch_size = batch_size
         self._names: list[str] | None = None  # returning(...) columns; None: the default selection
         self._used = False
@@ -757,9 +900,22 @@ class UpdateMany(Generic[M]):
         self._used = True
         return self._inspect_returning(False)
 
+    def _prepared_only(self) -> None:
+        if self._plan is not None:
+            raise QueryError("a write with param() values runs through .prepare(): call it with the values")
+
+    def prepare(self) -> PreparedRows[int]:
+        """Hold the batch update: ``update_many(param("rows", fields=(Model.id, Model.a))).prepare()``;
+        a call takes ``rows=[...]`` and gives the row count."""
+        from .prepared_write import prepare_update_many
+
+        self._used = True
+        return prepare_update_many(self, "count")
+
     def _inspect_returning(self, returning: bool) -> QueryInspection:
         from .db import _with_scope
 
+        self._prepared_only()
         if not self._rows:
             return QueryInspection(0, False, ())
         params: list[Any] = []
@@ -784,6 +940,7 @@ class UpdateMany(Generic[M]):
     async def _run(self, returning: bool) -> Any:
         from .db import resolve
 
+        self._prepared_only()
         if not self._rows:
             return [] if returning else 0
         params: list[Any] = []
@@ -832,6 +989,12 @@ class _UpdateManyReturning(Generic[M]):
 
     def __init__(self, stmt: UpdateMany[M]) -> None:
         self._stmt = stmt
+
+    def prepare(self) -> PreparedRows[list[M]]:
+        """Hold the batch update; a call gives the updated rows."""
+        from .prepared_write import prepare_update_many
+
+        return prepare_update_many(self._stmt, "list")
 
     def inspect(self) -> QueryInspection:
         return self._stmt._inspect_returning(True)

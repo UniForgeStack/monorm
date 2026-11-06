@@ -35,6 +35,12 @@ pub trait Params {
         self.value(i, None).ok()
     }
 
+    /// The current time as a value of a `DateTime` or `Date` field: a statement that assigns
+    /// it asks here, so a prepared statement can read the clock on each call.
+    fn now(&self, ty: ColType) -> Value {
+        crate::client_default::now(ty)
+    }
+
     /// The parameter that holds the `scope.<name>` value, if the statement has one.
     fn scope(&self, _name: &str) -> Option<usize> {
         None
@@ -67,6 +73,9 @@ impl Params for Scoped<'_> {
     }
     fn probe(&self, i: usize) -> Option<Value> {
         self.params.probe(i)
+    }
+    fn now(&self, ty: ColType) -> Value {
+        self.params.now(ty)
     }
     fn scope(&self, name: &str) -> Option<usize> {
         self.scope.get(name).copied()

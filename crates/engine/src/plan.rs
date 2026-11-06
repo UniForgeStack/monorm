@@ -3295,7 +3295,7 @@ impl<'s> Planner<'s> {
         let field = &root.fields()[rewrite.field];
         let mut stmt = Query::update();
         stmt.table(Alias::new(root.table()));
-        stmt.value(Alias::new(&field.column), bind(crate::client_default::now(field.ty), Some(field)));
+        stmt.value(Alias::new(&field.column), bind(self.params.now(field.ty), Some(field)));
         for (column, v) in maintained(root, AssignKind::DeleteRewrite, |_| false, self)? {
             stmt.value(Alias::new(column), v);
         }
@@ -3871,23 +3871,53 @@ pub fn plan_insert(
 ) -> Result<(InsertStatement, Option<ReturnColumns>)> {
     crate::db::require_dialect(target.dialect)?;
     let idx = schema.model_idx(model).map_err(query_err)?;
+    validate_bypass(schema.model(idx), without_defaults)?;
+    let input = insert_input(schema, model, fields, rows, on_conflict.is_some(), params)?;
+    insert_statement(schema, target, model, input, on_conflict, params, returning, model_fields, without_defaults)
+}
+
+/// The rows of an insert after the per-call work: client defaults, nested NULLs and write hooks.
+pub(crate) struct InsertInput {
+    pub fields: Vec<String>,
+    pub rows: Vec<Vec<Option<sea_query::Value>>>,
+    /// Which cells hold a NULL of a nested field.
+    pub forced: Vec<Vec<bool>>,
+}
+
+/// The first stage of [`plan_insert`]: everything that depends on the values of this call.
+pub(crate) fn insert_input(schema: &Schema, model: &str, fields: &[String], rows: Vec<Vec<Option<sea_query::Value>>>, upsert: bool, params: &dyn Params) -> Result<InsertInput> {
+    let idx = schema.model_idx(model).map_err(query_err)?;
     let m = schema.model(idx);
-    validate_bypass(m, without_defaults)?;
     let (fields, mut rows) = crate::client_default::fill(m, fields, rows)?;
     let (fields, forced) = nested::null_nested(m, fields.as_ref(), &mut rows);
-    let fields: &[String] = &fields;
     crate::ownership::require_local_write(m)?;
-    let rows = {
-        let mut rows = rows;
-        let positions = field_positions(m, fields)?;
-        if positions.iter().any(|p| m.computed(*p)) { return Err(Error::query(COMPUTED_READ_ONLY)); }
-        refuse_generated(m, fields.iter())?;
-        if m.hooks.is_some() {
-            let map = crate::hooks::input_map(m.fields().len(), &positions)?;
-            crate::hooks::insert_rows(m, &map, &mut rows, on_conflict.is_some(), params)?;
-        }
-        rows
-    };
+    let positions = field_positions(m, &fields)?;
+    if positions.iter().any(|p| m.computed(*p)) { return Err(Error::query(COMPUTED_READ_ONLY)); }
+    refuse_generated(m, fields.iter())?;
+    if m.hooks.is_some() {
+        let map = crate::hooks::input_map(m.fields().len(), &positions)?;
+        crate::hooks::insert_rows(m, &map, &mut rows, upsert, params)?;
+    }
+    Ok(InsertInput { fields, rows, forced })
+}
+
+/// The second stage of [`plan_insert`]: the statement of the rows of `input`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn insert_statement(
+    schema: &Schema,
+    target: Target,
+    model: &str,
+    input: InsertInput,
+    on_conflict: Option<OnConflict>,
+    params: &dyn Params,
+    returning: bool,
+    model_fields: Option<&[String]>,
+    without_defaults: &Bypass,
+) -> Result<(InsertStatement, Option<ReturnColumns>)> {
+    let idx = schema.model_idx(model).map_err(query_err)?;
+    let m = schema.model(idx);
+    let InsertInput { fields, rows, forced } = input;
+    let fields: &[String] = &fields;
     let cols = fields.iter().map(|f| m.field(f)).collect::<std::result::Result<Vec<_>, _>>().map_err(query_err)?;
     let mut stmt = Query::insert();
     let table = schema.models[idx].view.as_ref().and_then(|v| v.insert_table.as_deref()).unwrap_or_else(|| m.table());
@@ -4119,7 +4149,7 @@ pub(crate) fn maintained<'s>(m: &'s Model, kind: AssignKind, is_set: impl Fn(&st
         let f = &m.fields()[a.field];
         if is_set(&f.name) { continue; }
         let v = match &a.value {
-            AssignValue::Now => bind(crate::client_default::now(f.ty), Some(f)),
+            AssignValue::Now => bind(params.now(f.ty), Some(f)),
             AssignValue::Increment => col(m.table(), &f.column).add(1),
             AssignValue::Hook { export } => {
                 let value = crate::hooks::assigned(m, a.field, &contexts)?

@@ -16,6 +16,7 @@ pub mod migrate;
 pub mod params;
 pub mod plan;
 pub mod prepared;
+pub mod prepared_write;
 pub mod protect;
 pub mod trace;
 pub mod validation;

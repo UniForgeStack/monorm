@@ -307,7 +307,7 @@ class PendingInsert(_AdaptedWrite, InsertOne[Any]):
         self._used = True
         raise FieldAdapterError("a value that needs prepare is unsupported in conflict writes")
 
-    async def prepare(self) -> None:
+    async def prepare(self) -> None:  # type: ignore[override]
         """Check write protection, then run the ``prepare`` calls now. ``await`` then runs the SQL only."""
         prepare_insert(self.qs, self.checked)
         await self.operation.prepare()

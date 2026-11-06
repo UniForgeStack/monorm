@@ -24,7 +24,9 @@ use monorm_core::schema::Schema;
 
 /// How a slot turns a parameter into a bind.
 #[derive(Clone, Debug, PartialEq)]
-enum Conv {
+pub(crate) enum Conv {
+    /// The current time at each call (`AssignValue::Now`).
+    Now(ColType),
     /// `Params::value`; `None` infers the type from the value.
     Value(Option<ValueType>),
     /// A list parameter as the JSON text of a database without arrays.
@@ -36,9 +38,9 @@ enum Conv {
 }
 
 #[derive(Clone, Debug)]
-struct Read {
-    param: usize,
-    conv: Conv,
+pub(crate) struct Read {
+    pub(crate) param: usize,
+    pub(crate) conv: Conv,
 }
 
 /// Where a bind of a held statement gets its value.
@@ -46,21 +48,28 @@ struct Read {
 pub(crate) enum Arg {
     Const(Value),
     Slot(usize),
+    /// A cell of the rows of a call (a write statement of rows).
+    Cell(usize),
     /// The parent keys of a prefetch as one array.
     Keys,
 }
 
 /// A slot: one parameter of the call, converted once and bound wherever the statement uses it.
 #[derive(Clone, Debug)]
-struct Slot {
-    param: usize,
-    conv: Conv,
+pub(crate) struct Slot {
+    pub(crate) param: usize,
+    pub(crate) conv: Conv,
     /// `scope.<name>`: a NULL value fails the call.
-    scope: Option<String>,
+    pub(crate) scope: Option<String>,
+    /// A NULL value is a value (a set or insert parameter of a write); else it fails the call.
+    pub(crate) nullable: bool,
 }
 
 impl Slot {
-    fn convert(&self, params: &dyn Params) -> Result<Value> {
+    pub(crate) fn convert(&self, params: &dyn Params) -> Result<Value> {
+        if let Conv::Now(ty) = self.conv {
+            return Ok(crate::client_default::now(ty));
+        }
         if self.param >= params.len() {
             return Err(Error::query(format!("parameter {} out of range", self.param)));
         }
@@ -70,7 +79,11 @@ impl Slot {
             Conv::Text => Value::String(Some(params.text(self.param)?)),
             Conv::TextLower => Value::String(Some(params.text(self.param)?.to_lowercase())),
             Conv::Count => Value::BigUnsigned(Some(params.count(self.param)?)),
+            Conv::Now(_) => unreachable!("a now slot returns above"),
         };
+        if !self.nullable && !value.is_some() && self.scope.is_none() {
+            return Err(Error::query(format!("parameter {} is None/null: a NULL filter value would match no rows; use a filter on the column for NULL rows", self.param)));
+        }
         if let Some(name) = &self.scope {
             if !value.is_some() {
                 return Err(Error::query(format!("scope.{name} is None/null: a NULL scope value would match no rows; use a filter on the column for NULL rows")));
@@ -83,16 +96,17 @@ impl Slot {
 /// A statement with its SQL text and the source of each bind.
 #[derive(Debug)]
 pub(crate) struct Template {
-    sql: String,
-    args: Vec<Arg>,
+    pub(crate) sql: String,
+    pub(crate) args: Vec<Arg>,
 }
 
 impl Template {
-    fn bind(&self, values: &[Value], keys: Option<Value>) -> (String, Vec<Value>) {
+    pub(crate) fn bind(&self, values: &[Value], keys: Option<Value>) -> (String, Vec<Value>) {
         let mut keys = keys;
         let args = self.args.iter().map(|a| match a {
             Arg::Const(v) => v.clone(),
             Arg::Slot(s) => values[*s].clone(),
+            Arg::Cell(_) => unreachable!("a read has no row cells"),
             Arg::Keys => keys.take().expect("a keys bind has keys"),
         });
         (self.sql.clone(), args.collect())
@@ -154,17 +168,17 @@ pub struct PreparedRead {
 
 /// What a call converted: the slot values, and the request context for hooks.
 pub struct Call {
-    values: Vec<Value>,
-    context: Option<Context>,
+    pub(crate) values: Vec<Value>,
+    pub(crate) context: Option<Context>,
 }
 
 // -- the recording parameters ------------------------------------------------------
 
-const BASE: i64 = 0x5EED_0000_0000_0000;
+pub(crate) const BASE: i64 = 0x5EED_0000_0000_0000;
 /// The read index of the parent keys of a prefetch.
 const KEYS: usize = 0x3FFF_FFFF;
 
-fn scalar(ty: ColType, k: usize, flag: bool) -> Value {
+pub(crate) fn scalar(ty: ColType, k: usize, flag: bool) -> Value {
     // The parent keys read index would overflow the 32 bit and the date sentinels.
     let k = if k == KEYS { 999_999 } else { k };
     let n = k as i64;
@@ -182,7 +196,7 @@ fn scalar(ty: ColType, k: usize, flag: bool) -> Value {
     }
 }
 
-fn sentinel(ty: Option<ValueType>, k: usize, flag: bool) -> Value {
+pub(crate) fn sentinel(ty: Option<ValueType>, k: usize, flag: bool) -> Value {
     match ty {
         None => scalar(ColType::Text, k, false),
         Some(t) if t.array => Value::Array(array_type(t.ty), Some(Box::new(vec![scalar(t.ty, k, flag)]))),
@@ -191,14 +205,14 @@ fn sentinel(ty: Option<ValueType>, k: usize, flag: bool) -> Value {
 }
 
 /// The parameters of a planning pass that records each read and answers it with a sentinel.
-struct Recorder {
-    len: usize,
-    declared: Vec<Option<ValueType>>,
-    reads: RefCell<Vec<Read>>,
+pub(crate) struct Recorder {
+    pub(crate) len: usize,
+    pub(crate) declared: Vec<Option<ValueType>>,
+    pub(crate) reads: RefCell<Vec<Read>>,
     /// Reads that answer `true` in this pass (bool parameters have two values only).
-    flags: Vec<usize>,
+    pub(crate) flags: Vec<usize>,
     /// Parameters a `CASE` of parameters needed a type for.
-    untyped: RefCell<Vec<usize>>,
+    pub(crate) untyped: RefCell<Vec<usize>>,
 }
 
 impl Recorder {
@@ -230,6 +244,10 @@ impl Params for Recorder {
     fn count(&self, i: usize) -> Result<u64> {
         Ok(BASE as u64 + self.read(i, Conv::Count) as u64)
     }
+    fn now(&self, ty: ColType) -> Value {
+        let k = self.read(usize::MAX, Conv::Now(ty));
+        scalar(ty, k, false)
+    }
     fn probe(&self, i: usize) -> Option<Value> {
         match self.declared.get(i).copied().flatten() {
             Some(t) => Some(sentinel(Some(t), 0, false)),
@@ -245,7 +263,7 @@ impl Params for Recorder {
 
 /// Every statement of a plan in a fixed order: the main one, then each prefetch, depth first.
 /// A prefetch is the `ANY` statement when it has one, else the chunked one for a dummy key.
-fn statements(plan: &Plan, target: Target) -> Vec<(String, Vec<Value>)> {
+pub(crate) fn statements(plan: &Plan, target: Target) -> Vec<(String, Vec<Value>)> {
     let d = target.dialect;
     match plan {
         Plan::Select(p) => {
@@ -260,6 +278,10 @@ fn statements(plan: &Plan, target: Target) -> Vec<(String, Vec<Value>)> {
             out
         }
         Plan::Count(s) | Plan::Exists(s) => vec![db::build(d, s)],
+        Plan::Update(s, _) => vec![db::build(d, s)],
+        Plan::RowUpdate(s, _) => vec![db::build(d, s)],
+        Plan::Delete(s, _) => vec![db::build(d, s)],
+        Plan::Insert(s, _) => vec![db::build(d, s)],
         _ => vec![],
     }
 }
@@ -269,13 +291,13 @@ fn prefetch_statement(p: &PrefetchPlan) -> sea_query::SelectStatement {
     p.statement_any(list).unwrap_or_else(|| p.statement(vec![p.key_type.iter().map(|t| null_of(Some(*t))).collect()]))
 }
 
-struct Pass {
-    plan: Plan,
-    reads: Vec<Read>,
-    untyped: Vec<usize>,
+pub(crate) struct Pass {
+    pub(crate) plan: Plan,
+    pub(crate) reads: Vec<Read>,
+    pub(crate) untyped: Vec<usize>,
 }
 
-fn pass(schema: &Schema, target: Target, op: &Operation, len: usize, declared: &[Option<ValueType>], flags: Vec<usize>) -> Result<Pass> {
+pub(crate) fn pass(schema: &Schema, target: Target, op: &Operation, len: usize, declared: &[Option<ValueType>], flags: Vec<usize>) -> Result<Pass> {
     let recorder = Recorder { len, declared: declared.to_vec(), reads: RefCell::new(vec![]), flags, untyped: RefCell::new(vec![]) };
     let plan = match plan::Planner::plan(schema, target, op, &recorder) {
         Ok(plan) => plan,
@@ -285,11 +307,11 @@ fn pass(schema: &Schema, target: Target, op: &Operation, len: usize, declared: &
     Ok(Pass { plan, reads: recorder.reads.into_inner(), untyped: recorder.untyped.into_inner() })
 }
 
-fn untyped_error(i: usize) -> Error {
+pub(crate) fn untyped_error(i: usize) -> Error {
     Error::query(format!("parameter {i} is the only source of a CASE value type: declare its type with param(name, type=...)"))
 }
 
-fn is_bool(read: &Read) -> bool {
+pub(crate) fn is_bool(read: &Read) -> bool {
     matches!(read.conv, Conv::Value(Some(t)) if t.ty == ColType::Bool)
 }
 
@@ -310,8 +332,85 @@ fn candidates(read: &Read, k: usize, any_array: bool) -> Vec<(Value, Conv)> {
             vec![(Value::String(Some(s.clone())), Conv::Text), (Value::String(Some(s.to_lowercase())), Conv::TextLower)]
         }
         Conv::Count => vec![(Value::BigUnsigned(Some(BASE as u64 + k as u64)), Conv::Count)],
+        Conv::Now(ty) => vec![(scalar(*ty, k, false), read.conv.clone())],
         _ => vec![],
     }
+}
+
+/// The slots of a held statement and the source of each of its binds, from a planning pass.
+pub(crate) struct Resolved {
+    pub(crate) slots: Vec<Slot>,
+    pub(crate) args: Vec<Vec<Arg>>,
+}
+
+/// Matches each bind of `base` (the statements of the pass) with a read, a constant, or what
+/// `cell` says. `flip` plans again with one bool read answering `true`.
+pub(crate) fn resolve(
+    reads: &[Read],
+    base: &[(String, Vec<Value>)],
+    flip: &dyn Fn(usize) -> Result<Vec<(String, Vec<Value>)>>,
+    target: Target,
+    scope: &BTreeMap<String, usize>,
+    keys_array: bool,
+    cell: &dyn Fn(&Value) -> Option<Arg>,
+) -> Result<Resolved> {
+    let flat: Vec<&Value> = base.iter().flat_map(|(_, b)| b).collect();
+    // A bool parameter has two values only: the binds that change when it flips are its own.
+    let mut owner: Vec<Option<usize>> = vec![None; flat.len()];
+    for (k, read) in reads.iter().enumerate().filter(|(_, r)| is_bool(r)) {
+        let other = flip(k)?;
+        if other.len() != base.len() || other.iter().zip(base).any(|(a, b)| a.0 != b.0) {
+            return Err(Error::query(format!("parameter {} changes the SQL text: a bool parameter must only be bound", read.param)));
+        }
+        for (p, v) in other.iter().flat_map(|(_, b)| b).enumerate() {
+            if v != flat[p] {
+                owner[p] = Some(k);
+            }
+        }
+    }
+    let any_array = target.caps.any_array;
+    let table: Vec<(usize, Value, Conv)> = reads.iter().enumerate().filter(|(_, r)| !is_bool(r))
+        .flat_map(|(k, r)| candidates(r, k, any_array).into_iter().map(move |(v, c)| (k, v, c))).collect();
+    let names: BTreeMap<usize, String> = scope.iter().map(|(n, i)| (*i, n.clone())).collect();
+    let mut slots: Vec<Slot> = vec![];
+    let mut slot_of: Vec<(usize, Conv, usize)> = vec![];
+    let mut matched = vec![false; reads.len()];
+    let mut slot_for = |k: usize, conv: Conv, slots: &mut Vec<Slot>, matched: &mut Vec<bool>| -> usize {
+        matched[k] = true;
+        if let Some((_, _, s)) = slot_of.iter().find(|(kk, c, _)| *kk == k && *c == conv) {
+            return *s;
+        }
+        let param = reads[k].param;
+        slots.push(Slot { param, conv: conv.clone(), scope: names.get(&param).cloned(), nullable: true });
+        slot_of.push((k, conv, slots.len() - 1));
+        slots.len() - 1
+    };
+    let mut position = 0;
+    let mut args: Vec<Vec<Arg>> = vec![];
+    for (_, binds) in base {
+        let mut row = Vec::with_capacity(binds.len());
+        for v in binds {
+            let arg = if let Some(c) = cell(v) {
+                c
+            } else if let Some(k) = owner[position] {
+                Arg::Slot(slot_for(k, reads[k].conv.clone(), &mut slots, &mut matched))
+            } else if let Some((k, _, conv)) = table.iter().find(|(_, s, _)| s == v) {
+                Arg::Slot(slot_for(*k, conv.clone(), &mut slots, &mut matched))
+            } else if keys_array && matches!(v, Value::Array(_, Some(list)) if list.len() == 1 && list[0] == scalar_of(v, KEYS)) {
+                Arg::Keys
+            } else {
+                Arg::Const(v.clone())
+            };
+            row.push(arg);
+            position += 1;
+        }
+        args.push(row);
+    }
+    if let Some(k) = reads.iter().enumerate().position(|(k, r)| !matched[k] && !matches!(r.conv, Conv::Value(None))) {
+        let r = &reads[k];
+        return Err(Error::query(format!("parameter {} ({:?}) is not bound as a value in the statement: a prepared query cannot use it here", r.param, r.conv)));
+    }
+    Ok(Resolved { slots, args })
 }
 
 impl PreparedRead {
@@ -327,64 +426,9 @@ impl PreparedRead {
         }
         let statements_of = |plan: &Plan| statements(plan, target);
         let base_statements = statements_of(&base.plan);
-        let flat: Vec<&Value> = base_statements.iter().flat_map(|(_, b)| b).collect();
-        // A bool parameter has two values only: the binds that change when it flips are its own.
-        let mut owner: Vec<Option<usize>> = vec![None; flat.len()];
-        for (k, read) in base.reads.iter().enumerate().filter(|(_, r)| is_bool(r)) {
-            let flipped = pass(schema, target, op, len, declared, vec![k])?;
-            let other = statements_of(&flipped.plan);
-            if other.len() != base_statements.len() || other.iter().zip(&base_statements).any(|(a, b)| a.0 != b.0) {
-                return Err(Error::query(format!("parameter {} changes the SQL text: a bool parameter must only be bound", read.param)));
-            }
-            for (p, v) in other.iter().flat_map(|(_, b)| b).enumerate() {
-                if v != flat[p] {
-                    owner[p] = Some(k);
-                }
-            }
-        }
-        // Match every bind with a read.
-        let any_array = target.caps.any_array;
-        let table: Vec<(usize, Value, Conv)> = base.reads.iter().enumerate().filter(|(_, r)| !is_bool(r))
-            .flat_map(|(k, r)| candidates(r, k, any_array).into_iter().map(move |(v, c)| (k, v, c))).collect();
         let scope = op.scope().clone();
-        let names: BTreeMap<usize, String> = scope.iter().map(|(n, i)| (*i, n.clone())).collect();
-        let mut slots: Vec<Slot> = vec![];
-        let mut slot_of: Vec<(usize, Conv, usize)> = vec![];
-        let mut matched = vec![false; base.reads.len()];
-        let mut slot_for = |k: usize, conv: Conv, slots: &mut Vec<Slot>, matched: &mut Vec<bool>| -> usize {
-            matched[k] = true;
-            if let Some((_, _, s)) = slot_of.iter().find(|(kk, c, _)| *kk == k && *c == conv) {
-                return *s;
-            }
-            let param = base.reads[k].param;
-            slots.push(Slot { param, conv: conv.clone(), scope: names.get(&param).cloned() });
-            slot_of.push((k, conv, slots.len() - 1));
-            slots.len() - 1
-        };
-        let mut position = 0;
-        let mut args: Vec<Vec<Arg>> = vec![];
-        let keys_array = base_statements.len() > 1;
-        for (_, binds) in &base_statements {
-            let mut row = Vec::with_capacity(binds.len());
-            for v in binds {
-                let arg = if let Some(k) = owner[position] {
-                    Arg::Slot(slot_for(k, base.reads[k].conv.clone(), &mut slots, &mut matched))
-                } else if let Some((k, _, conv)) = table.iter().find(|(_, s, _)| s == v) {
-                    Arg::Slot(slot_for(*k, conv.clone(), &mut slots, &mut matched))
-                } else if keys_array && matches!(v, Value::Array(_, Some(list)) if list.len() == 1 && list[0] == scalar_of(v, KEYS)) {
-                    Arg::Keys
-                } else {
-                    Arg::Const(v.clone())
-                };
-                row.push(arg);
-                position += 1;
-            }
-            args.push(row);
-        }
-        if let Some(k) = base.reads.iter().enumerate().position(|(k, r)| !matched[k] && !matches!(r.conv, Conv::Value(None))) {
-            let r = &base.reads[k];
-            return Err(Error::query(format!("parameter {} ({:?}) is not bound as a value in the statement: a prepared query cannot use it here", r.param, r.conv)));
-        }
+        let flip = |k: usize| -> Result<Vec<(String, Vec<Value>)>> { Ok(statements_of(&pass(schema, target, op, len, declared, vec![k])?.plan)) };
+        let Resolved { slots, args } = resolve(&base.reads, &base_statements, &flip, target, &scope, base_statements.len() > 1, &|_| None)?;
         // Build the held statements.
         let inspection = match &base.plan {
             Plan::Select(_) | Plan::Count(_) | Plan::Exists(_) => serde_json::to_string(&crate::inspect::Inspection::plans(std::slice::from_ref(&base.plan), false)).map_err(|e| Error::query(e.to_string()))?,

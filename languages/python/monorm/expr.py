@@ -492,15 +492,16 @@ class SlotParams(list[Any]):
 class Param(Expression[Any]):
     """A value supplied when a prepared query runs; see :func:`param`."""
 
-    __slots__ = ("name", "type")
+    __slots__ = ("name", "type", "fields")
 
-    def __init__(self, name: str, type: Any = None) -> None:
+    def __init__(self, name: str, type: Any = None, fields: tuple[Any, ...] | None = None) -> None:
         if not name.isidentifier():
             raise ValueError(f"param() takes an identifier, got {name!r}")
         if name == "scope":
             raise ValueError("param() can't be named 'scope': it is the keyword for the scope values")
         self.name = name
         self.type = None if type is None else _declared_type(name, type)
+        self.fields = fields  # the columns of the rows a prepared insert_many() or update_many() takes
 
     def _slot(self, ctx_params: list[Any], transform: Callable[[Any], Any] | None = None) -> IR:
         if not isinstance(ctx_params, SlotParams):
@@ -538,7 +539,7 @@ def _declared_type(name: str, tp: Any) -> str:
     return names[tp]
 
 
-def param(name: str, type: Any = None) -> Any:
+def param(name: str, type: Any = None, *, fields: Iterable[Any] | None = None) -> Any:
     """A placeholder for a value given each time a prepared query runs::
 
         by_author = Post.objects.filter(Post.author_id == param("author")).limit(param("n")).prepare()
@@ -548,8 +549,15 @@ def param(name: str, type: Any = None) -> Any:
     ``has()``, ``limit()`` and ``offset()``, and for a whole list in ``in_()`` / ``not_in()``
     (any length: ``Post.id.in_(param("ids"))``). ``type`` (``int``, ``list[int]``, ...) is
     needed where the query does not give the type: a ``case()`` made only of params. Typed
-    as ``Any`` so it fits wherever a value does."""
-    return Param(name, type)
+    as ``Any`` so it fits wherever a value does.
+
+    In a prepared write, a param is also the value of ``insert()``, ``update()`` and
+    ``on_conflict(update_values=...)``; ``None`` then writes NULL. ``fields`` (columns of the model) make
+    it the rows of a prepared ``insert_many()`` or ``update_many()``::
+
+        add = Author.objects.insert_many(param("rows", fields=(Author.name, Author.bio))).prepare()
+        await add(rows=[{"name": "A", "bio": "x"}, {"name": "B", "bio": "y"}])"""
+    return Param(name, type, None if fields is None else tuple(fields))
 
 
 def _same_table_model(column_root: type[Model], root: type[Model] | Cte) -> type[Model] | None:

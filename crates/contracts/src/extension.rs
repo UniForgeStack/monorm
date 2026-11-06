@@ -625,14 +625,14 @@ pub struct ResolvedField {
     pub logical_type: ValueType,
     pub physical_type: ValueType,
 }
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ResultField {
     pub field: FieldId,
     pub physical: Option<usize>,
     pub public: bool,
     pub dependencies: Vec<FieldId>,
 }
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ResultShape { pub model: ModelId, pub fields: Vec<ResultField> }
 #[derive(Debug)]
 pub struct QueryContract<'a> {
