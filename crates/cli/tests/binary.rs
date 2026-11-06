@@ -510,7 +510,7 @@ fn a_flag_overrides_a_wrong_setting_and_a_command_reads_only_the_keys_it_uses() 
     let make = monorm(&dir, &["makemigrations", "initial"]);
     assert_eq!(make.status.code(), Some(2));
     assert!(
-        text(&make.stderr).contains("monorm.toml: `migrations` must be a string"),
+        text(&make.stderr).contains("monorm.toml: `migrations` must be a directory or a table"),
         "{}",
         text(&make.stderr)
     );

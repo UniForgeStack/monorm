@@ -584,19 +584,20 @@ impl JsSchema {
     }
 
     /// The next migration for the migrations directory `dir`, as JSON, without writing.
+    /// With `online` on PostgreSQL the steps of every folder, in order.
     #[napi]
-    pub fn plan_migration(&self, dir: String) -> napi::Result<String> {
-        let plan = migrate::files::next(std::path::Path::new(&dir), &self.inner).map_err(schema_err)?;
-        serde_json::to_string(&plan).map_err(schema_err)
+    pub fn plan_migration(&self, dir: String, online: Option<bool>) -> napi::Result<String> {
+        let plans = migrate::files::next_folders(std::path::Path::new(&dir), &self.inner, online.unwrap_or(false)).map_err(schema_err)?;
+        serde_json::to_string(&migrate::files::merge(plans)).map_err(schema_err)
     }
 
-    /// Writes the next migration into `dir`; returns its folder name, or null when
-    /// nothing changed (and not `empty`).
+    /// Writes the next migration into `dir`; returns the folder names in order (one, or
+    /// more with `online`), or an empty list when nothing changed (and not `empty`).
     #[napi]
-    pub fn make_migration(&self, dir: String, name: Option<String>, empty: Option<bool>) -> napi::Result<Option<String>> {
-        let made = migrate::files::make(std::path::Path::new(&dir), &self.inner, name.as_deref(), empty.unwrap_or(false))
+    pub fn make_migration(&self, dir: String, name: Option<String>, empty: Option<bool>, online: Option<bool>) -> napi::Result<Vec<String>> {
+        let made = migrate::files::make(std::path::Path::new(&dir), &self.inner, name.as_deref(), empty.unwrap_or(false), online.unwrap_or(false))
             .map_err(schema_err)?;
-        Ok(made.map(|(folder, _)| folder.name))
+        Ok(made.into_iter().map(|(folder, _)| folder.name).collect())
     }
 
     /// The migration from `previous` (a snapshot; null for an empty database) to this

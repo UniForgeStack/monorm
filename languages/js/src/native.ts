@@ -117,8 +117,8 @@ export interface NativeSchema extends NativeInspector {
   ddl(): string[];
   snapshot(): string;
   migration(previous?: string | null): string;
-  planMigration(dir: string): string;
-  makeMigration(dir: string, name?: string | null, empty?: boolean | null): string | null;
+  planMigration(dir: string, online?: boolean | null): string;
+  makeMigration(dir: string, name?: string | null, empty?: boolean | null, online?: boolean | null): string[];
 }
 
 /** One traced statement: `start` in Unix milliseconds, `duration` in milliseconds. */

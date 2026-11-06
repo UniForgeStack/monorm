@@ -43,6 +43,8 @@ export interface Step {
   readonly warning?: string | null;
   /** The step can lose rows; `allowDestructive` lets it run on a table with rows. */
   readonly destructive: boolean;
+  /** `false` for a step PostgreSQL refuses in a transaction (`CREATE INDEX CONCURRENTLY`). */
+  readonly transaction: boolean;
 }
 
 export interface Plan {
@@ -87,11 +89,17 @@ function nativeSchema(schema: SchemaSource): NativeSchema {
   return schema;
 }
 
-/** A migrations directory and the schema it migrates to. */
+/**
+ * A migrations directory and the schema it migrates to. `online: true` writes PostgreSQL migrations
+ * in the online form (the `migrations.online` setting of the command line): an index on an existing
+ * table in its own no-transaction folder, a new foreign key or check `NOT VALID` with a later folder
+ * that validates it. It changes nothing on SQLite.
+ */
 export class Migrations {
   constructor(
     readonly directory: string,
     private readonly source: SchemaSource,
+    readonly options: { readonly online?: boolean } = {},
   ) {}
 
   get schema(): NativeSchema {
@@ -108,16 +116,18 @@ export class Migrations {
     return new Migration(found!, path!);
   }
 
-  /** What the next migration would contain (no `up` steps if the schema is unchanged). */
+  /** What the next migration would contain (no `up` steps if the schema is unchanged). With `online`
+   * the steps of every folder, in order; a step has `transaction` false when it runs outside a transaction. */
   plan(): Plan {
-    return JSON.parse(call(() => this.schema.planMigration(this.directory))) as Plan;
+    return JSON.parse(call(() => this.schema.planMigration(this.directory, this.options.online ?? false))) as Plan;
   }
 
   /** Writes the next migration; `null` if there is nothing to migrate. `empty` writes one
-   * even without schema changes (for data migrations or hand-written SQL). */
+   * even without schema changes (for data migrations or hand-written SQL). With `online` it may write
+   * more than one folder; the result is the first, and `all()` lists them all. */
   make(name?: string, options: { readonly empty?: boolean } = {}): Migration | null {
-    const folder = call(() => this.schema.makeMigration(this.directory, name ?? null, options.empty ?? false));
-    return folder === null ? null : new Migration(folder, join(this.directory, folder));
+    const folders = call(() => this.schema.makeMigration(this.directory, name ?? null, options.empty ?? false, this.options.online ?? false));
+    return folders.length === 0 ? null : new Migration(folders[0]!, join(this.directory, folders[0]!));
   }
 }
 

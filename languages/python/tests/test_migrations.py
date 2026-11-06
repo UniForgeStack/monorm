@@ -201,3 +201,105 @@ def test_the_cli(tmp_path, capfd, monkeypatch):
     (tmp_path / "schema.prisma").write_text("model X {")
     assert cli(["check"]) == 1
     assert "schema.prisma:1:1: model X is not closed" in capfd.readouterr().err
+
+
+ONLINE_SHOP = 'model Shop {\n  id   BigInt @id @default(autoincrement())\n  name String\n%s\n  @@map("shop")\n}\n'
+ONLINE_PLAIN = ONLINE_SHOP % ""
+ONLINE_INDEXED = ONLINE_SHOP % "  @@index([name])\n"
+ONLINE_ITEM = 'model Item {\n  id      BigInt @id @default(autoincrement())\n  shop_id BigInt\n%s\n  @@map("item")\n}\n'
+ONLINE_SHOP_WITH_ITEMS = 'model Shop {\n  id    BigInt @id @default(autoincrement())\n  name  String\n  items Item[]\n\n  @@map("shop")\n}\n'
+ONLINE_ITEM_FK = ONLINE_ITEM % "  shop  Shop   @relation(fields: [shop_id], references: [id])\n"
+
+
+def test_online_makemigrations_splits_an_index_on_an_existing_table(tmp_path):
+    Migrations(tmp_path, models(ONLINE_PLAIN), online=True).make()
+    migs = Migrations(tmp_path, models(ONLINE_INDEXED), online=True)
+    plan = migs.plan()
+    assert [(s.sql, s.transaction) for s in plan.up] == [
+        ('CREATE INDEX CONCURRENTLY IF NOT EXISTS "shop_name_idx" ON "shop" ("name")', False)
+    ]
+    first = migs.make()
+    assert first is not None
+    assert [m.name for m in migs.all()] == ["0001_initial", first.name]
+    assert first.name == "0002_create_index_shop_name_idx"
+    assert first.up_sql.startswith('-- monorm: no-transaction create-index "shop_name_idx"\n')
+    assert first.down_sql.startswith('-- monorm: no-transaction drop-index "shop_name_idx"\n')
+    assert "DROP INDEX CONCURRENTLY IF EXISTS" in first.down_sql
+    assert json.loads(first.snapshot)["tables"][0]["indexes"]
+    assert migs.make() is None  # nothing changed
+    # a removed index: the no-transaction folder comes before the main folder
+    gone = Migrations(tmp_path, models(ONLINE_SHOP % "  note String?\n"), online=True)
+    gone.make()
+    names = [m.name for m in gone.all()]
+    assert names[-2:] == ["0003_drop_index_shop_name_idx", "0004_add_column_shop_note"]
+    assert gone.all()[-2].up_sql.startswith('-- monorm: no-transaction drop-index "shop_name_idx"\n')
+    assert gone.plan().up == []
+
+
+def test_online_makemigrations_validates_a_foreign_key_in_its_own_folder(tmp_path):
+    v1 = ONLINE_PLAIN + ONLINE_ITEM % ""
+    Migrations(tmp_path, models(v1), online=True).make()
+    v2 = ONLINE_SHOP_WITH_ITEMS + ONLINE_ITEM_FK
+    migs = Migrations(tmp_path, models(v2), online=True)
+    plan = migs.plan()
+    sql = [s.sql for s in plan.up]
+    assert len(sql) == 2 and sql[0].endswith("NOT VALID") and "FOREIGN KEY" in sql[0], sql
+    assert sql[1] == 'ALTER TABLE "item" VALIDATE CONSTRAINT "item_shop_id_fkey"'
+    assert all(s.transaction for s in plan.up)
+    migs.make()
+    names = [m.name for m in migs.all()]
+    assert len(names) == 3 and names[-1] == "0003_validate_constraints"
+    main, validate = migs.all()[1:]
+    assert "NOT VALID" in main.up_sql and "VALIDATE" not in main.up_sql
+    assert "VALIDATE CONSTRAINT" in validate.up_sql and not validate.up_sql.startswith("-- monorm: no-transaction")
+    assert json.loads(main.snapshot) == json.loads(validate.snapshot)
+    assert migs.plan().up == []
+    assert Migrations(tmp_path, models(v2)).plan().up == []  # the folders end in the same schema
+
+
+def test_online_makemigrations_leaves_a_new_table_alone(tmp_path):
+    # first migration: a new table with an index and a foreign key stays in one folder
+    migs = Migrations(tmp_path, models(ONLINE_SHOP_WITH_ITEMS + ONLINE_ITEM_FK), online=True)
+    made = migs.make()
+    assert made is not None and [m.name for m in migs.all()] == ["0001_initial"]
+    assert "CONCURRENTLY" not in made.up_sql and "NOT VALID" not in made.up_sql
+    assert "FOREIGN KEY" in made.up_sql
+    off = tmp_path / "off"
+    off.mkdir()
+    plain = Migrations(off, models(ONLINE_SHOP_WITH_ITEMS + ONLINE_ITEM_FK)).make()
+    assert plain is not None and plain.up_sql == made.up_sql and plain.down_sql == made.down_sql
+    # a table added next to an existing one, with an index: still one folder
+    more = ONLINE_SHOP_WITH_ITEMS + ONLINE_ITEM_FK + 'model Tag {\n  id   BigInt @id\n  name String\n\n  @@index([name])\n  @@map("tag")\n}\n'
+    migs2 = Migrations(tmp_path, models(more), online=True)
+    tag = migs2.make()
+    assert tag is not None and len(migs2.all()) == 2
+    assert 'CREATE INDEX "tag_name_idx" ON "tag" ("name")' in tag.up_sql
+    assert "CONCURRENTLY" not in tag.up_sql
+
+
+def test_online_makemigrations_changes_nothing_on_sqlite(tmp_path):
+    source = 'datasource db { provider = "sqlite" }\n'
+    on, off = tmp_path / "on", tmp_path / "off"
+    on.mkdir()
+    off.mkdir()
+    for directory, flag in ((on, True), (off, False)):
+        Migrations(directory, models(source + ONLINE_PLAIN), online=flag).make()
+        Migrations(directory, models(source + ONLINE_INDEXED), online=flag).make()
+    names = [m.name for m in Migrations(on, Registry()).all()]
+    assert names == [m.name for m in Migrations(off, Registry()).all()] and len(names) == 2
+    for a, b in zip(Migrations(on, Registry()).all(), Migrations(off, Registry()).all(), strict=True):
+        assert (a.up_sql, a.down_sql, a.snapshot) == (b.up_sql, b.down_sql, b.snapshot)
+    assert "CONCURRENTLY" not in Migrations(on, Registry()).all()[1].up_sql
+
+
+def test_the_cli_online_setting(tmp_path, capfd, monkeypatch):
+    (tmp_path / "schema.prisma").write_text(ONLINE_PLAIN)
+    (tmp_path / "monorm.toml").write_text("[migrations]\nonline = true\n")
+    monkeypatch.chdir(tmp_path)
+    assert cli(["makemigrations"]) == 0
+    (tmp_path / "schema.prisma").write_text(ONLINE_INDEXED)
+    assert cli(["makemigrations", "--check"]) == 1
+    assert cli(["makemigrations"]) == 0
+    assert "0002_create_index_shop_name_idx" in capfd.readouterr().out
+    assert cli(["makemigrations", "--check"]) == 0
+    assert (tmp_path / "migrations/0002_create_index_shop_name_idx/up.sql").read_text().startswith("-- monorm: no-transaction")

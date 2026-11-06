@@ -55,6 +55,7 @@ class Step:
     sql: str
     warning: str | None = None
     destructive: bool = False  # the step can lose rows; `allow_destructive` lets it run on a table with rows
+    transaction: bool = True  # False for a step PostgreSQL refuses in a transaction (CREATE INDEX CONCURRENTLY)
 
 
 @dataclass(frozen=True)
@@ -109,11 +110,16 @@ def _native_schema(schema: Schema) -> _native.Schema:
 
 class Migrations:
     """A migrations directory and the schema it migrates to: a schema file path, a
-    :class:`~monorm.Registry` (e.g. of models from ``monorm.load``), or a compiled schema."""
+    :class:`~monorm.Registry` (e.g. of models from ``monorm.load``), or a compiled schema.
 
-    def __init__(self, directory: str | os.PathLike[str], schema: Schema) -> None:
+    ``online=True`` writes PostgreSQL migrations in the online form (the ``migrations.online`` setting
+    of the command line): an index on an existing table in its own no-transaction folder, a new
+    foreign key or check ``NOT VALID`` with a later folder that validates it. It changes nothing on SQLite."""
+
+    def __init__(self, directory: str | os.PathLike[str], schema: Schema, *, online: bool = False) -> None:
         self.directory = Path(directory)
         self._schema = schema
+        self.online = online
 
     @property
     def schema(self) -> _native.Schema:
@@ -128,8 +134,11 @@ class Migrations:
         return Migration(found, path)
 
     def plan(self) -> Plan:
-        """What the next migration would contain (empty if the schema is unchanged)."""
-        raw = json.loads(self.schema.plan_migration(str(self.directory)))
+        """What the next migration would contain (empty if the schema is unchanged).
+
+        With ``online`` the steps of every folder, in order; a step has ``transaction`` false when it runs
+        outside a transaction."""
+        raw = json.loads(self.schema.plan_migration(str(self.directory), self.online))
         return Plan(
             up=[Step(**s) for s in raw["up"]],
             down=[Step(**s) for s in raw["down"]],
@@ -141,9 +150,12 @@ class Migrations:
 
         ``empty=True`` writes one even without schema changes (for data migrations or
         hand-written SQL); its snapshot is the current schema.
+
+        With ``online`` it may write more than one folder; the result is the first, and :meth:`all`
+        lists them all.
         """
-        folder = self.schema.make_migration(str(self.directory), name, empty)
-        return None if folder is None else Migration(folder, self.directory / folder)
+        folders = self.schema.make_migration(str(self.directory), name, empty, self.online)
+        return Migration(folders[0], self.directory / folders[0]) if folders else None
 
 
 @dataclass(frozen=True)

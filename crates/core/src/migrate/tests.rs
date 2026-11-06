@@ -1491,3 +1491,29 @@ fn online_does_nothing_on_sqlite() {
     assert_eq!((plans.len(), sql(&plans[0].up)), (1, sql(&plain.up)));
     assert!(plans[0].up.iter().all(|s| s.transaction));
 }
+
+#[test]
+fn make_online_writes_ordered_folders_with_headers_and_snapshots() {
+    let dir = std::env::temp_dir().join(format!("monorm-online-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let first = files::make(&dir, &schema(blog(vec![], json!({}))), None, false, true).unwrap();
+    assert_eq!(first.iter().map(|(f, _)| f.name.as_str()).collect::<Vec<_>>(), ["0001_initial"]);
+    let v2 = schema(blog(vec![views()], json!({"indexes": [{"columns": [{"field": "title"}]}]})));
+    let made = files::make(&dir, &v2, None, false, true).unwrap();
+    let names: Vec<_> = made.iter().map(|(f, _)| f.name.clone()).collect();
+    assert_eq!(names, ["0002_add_column_posts_views", "0003_create_index_posts_title_idx"]);
+    let create = &made[1].0.path;
+    let up = std::fs::read_to_string(create.join("up.sql")).unwrap();
+    assert!(up.starts_with("-- monorm: no-transaction create-index \"posts_title_idx\"\n"), "{up}");
+    assert!(up.contains("CREATE INDEX CONCURRENTLY IF NOT EXISTS \"posts_title_idx\""), "{up}");
+    let down = std::fs::read_to_string(create.join("down.sql")).unwrap();
+    assert!(down.starts_with("-- monorm: no-transaction drop-index \"posts_title_idx\"\n"), "{down}");
+    // the main folder has the snapshot without the index, the last folder the full one
+    let main_snapshot = std::fs::read_to_string(made[0].0.path.join("snapshot.json")).unwrap();
+    let last_snapshot = std::fs::read_to_string(create.join("snapshot.json")).unwrap();
+    assert!(!main_snapshot.contains("posts_title_idx") && last_snapshot.contains("posts_title_idx"));
+    assert_eq!(files::list(&dir).unwrap().len(), 3);
+    assert!(files::next_folders(&dir, &v2, true).unwrap().iter().all(|p| p.up.is_empty()));
+    assert!(files::make(&dir, &v2, None, false, true).unwrap().is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}

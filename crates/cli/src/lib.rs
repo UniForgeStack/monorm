@@ -241,7 +241,21 @@ fn schema_file(args: &Args, settings: &Settings) -> Result<PathBuf> {
 /// The migrations directory: `--dir`, else `migrations`, else `migrations`. Only a command that uses it reads it,
 /// so a wrong `migrations` setting does not stop the others.
 fn migrations_dir(args: &Args, settings: &Settings) -> Result<PathBuf> {
-    path_option(args, settings, "--dir", "migrations", "migrations")
+    if let Some(value) = args.opt(&["--dir"]) {
+        return Ok(PathBuf::from(value));
+    }
+    let dir = settings.migrations().map_err(Failure::Setup)?.dir;
+    Ok(PathBuf::from(dir.unwrap_or_else(|| "migrations".into())))
+}
+
+/// The `migrations.online` setting: write PostgreSQL migrations in the online form.
+/// `--dir` answers a `migrations` value that is not a table, so such a value does not fail the command.
+fn migrations_online(args: &Args, settings: &Settings) -> Result<bool> {
+    match settings.migrations() {
+        Ok(found) => Ok(found.online),
+        Err(_) if args.opt(&["--dir"]).is_some() && !matches!(settings.section("migrations"), Some(serde_json::Value::Object(_))) => Ok(false),
+        Err(message) => Err(Failure::Setup(message)),
+    }
 }
 
 /// The `what` classes of the project's settings: `query_sets` (`querySets` in `package.json`) and the like.
@@ -434,29 +448,31 @@ async fn command(argv: &[String], host: Host) -> Result<i32> {
             let dir = migrations_dir(&args, &settings)?;
             let (_, compiled) = load(&schema, &args)?;
             if args.flag("--check") {
-                let plan = files::files::next(&dir, &compiled).map_err(Failure::Failed)?;
-                for s in &plan.up {
+                let plans = files::files::next_folders(&dir, &compiled, migrations_online(&args, &settings)?).map_err(Failure::Failed)?;
+                let steps: Vec<_> = plans.iter().flat_map(|p| &p.up).collect();
+                for s in &steps {
                     println!("  {}", s.summary);
                 }
-                if !plan.up.is_empty() {
+                if !steps.is_empty() {
                     eprintln!("the schema has changes without a migration");
                     return Ok(1);
                 }
                 return Ok(0);
             }
             let name = args.arg(0).or(args.opt(&["--name"]));
-            match files::files::make(&dir, &compiled, name, args.flag("--empty")).map_err(Failure::Failed)? {
-                None => println!("No changes."),
-                Some((folder, plan)) => {
-                    println!("Created {}", folder.path.display());
-                    for s in &plan.up {
-                        println!("  - {}", s.summary);
-                        if let Some(w) = &s.warning {
-                            println!("    ! {w}");
-                        }
-                        if !s.destructive.is_empty() {
-                            println!("    needs --allow-destructive");
-                        }
+            let made = files::files::make(&dir, &compiled, name, args.flag("--empty"), migrations_online(&args, &settings)?).map_err(Failure::Failed)?;
+            if made.is_empty() {
+                println!("No changes.");
+            }
+            for (folder, plan) in made {
+                println!("Created {}", folder.path.display());
+                for s in &plan.up {
+                    println!("  - {}", s.summary);
+                    if let Some(w) = &s.warning {
+                        println!("    ! {w}");
+                    }
+                    if !s.destructive.is_empty() {
+                        println!("    needs --allow-destructive");
                     }
                 }
             }
@@ -752,7 +768,7 @@ async fn database(command: &str, args: &Args, dir: &Path, schema: &Path) -> Resu
                     return Err(failed(format!("the database already has applied migrations ({}); baseline only marks the first", applied.join(", "))));
                 }
                 if files::files::list(dir).map_err(failed)?.is_empty() {
-                    if let Some((folder, _)) = files::files::make(dir, &compiled, None, false).map_err(failed)? {
+                    if let Some((folder, _)) = files::files::make(dir, &compiled, None, false, false).map_err(failed)?.into_iter().next() {
                         println!("Created {}", folder.path.display());
                     }
                 }

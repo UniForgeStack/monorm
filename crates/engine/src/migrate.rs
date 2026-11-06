@@ -65,9 +65,7 @@ pub fn checksum(text: &str) -> String {
     Sha256::digest(text.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// First line of a script that runs outside a transaction. It may end with
-/// `create-index <name>` or `drop-index <name>`.
-pub const NO_TX_HEADER: &str = "-- monorm: no-transaction";
+pub use files::NO_TX_HEADER;
 
 /// The index a no-transaction script builds or drops.
 #[derive(Debug, Clone, PartialEq, Eq)]

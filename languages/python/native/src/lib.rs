@@ -293,18 +293,20 @@ impl PySchema {
     }
 
     /// The next migration for the migrations directory `dir`, as JSON (see
-    /// `migration`), without writing anything.
-    fn plan_migration(&self, dir: &str) -> PyResult<String> {
-        let plan = migrate::files::next(std::path::Path::new(dir), &self.inner).map_err(schema_err)?;
-        serde_json::to_string(&plan).map_err(|e| schema_err(e.to_string()))
+    /// `migration`), without writing anything. With `online` on PostgreSQL the
+    /// steps of every folder, in order, each with its `transaction` flag.
+    #[pyo3(signature = (dir, online = false))]
+    fn plan_migration(&self, dir: &str, online: bool) -> PyResult<String> {
+        let plans = migrate::files::next_folders(std::path::Path::new(dir), &self.inner, online).map_err(schema_err)?;
+        serde_json::to_string(&migrate::files::merge(plans)).map_err(|e| schema_err(e.to_string()))
     }
 
-    /// Writes the next migration into `dir`; returns its folder name, or None when
-    /// nothing changed (and not `empty`).
-    #[pyo3(signature = (dir, name = None, empty = false))]
-    fn make_migration(&self, dir: &str, name: Option<&str>, empty: bool) -> PyResult<Option<String>> {
-        let made = migrate::files::make(std::path::Path::new(dir), &self.inner, name, empty).map_err(schema_err)?;
-        Ok(made.map(|(folder, _)| folder.name))
+    /// Writes the next migration into `dir`; returns the folder names in order (one,
+    /// or more with `online`), or an empty list when nothing changed (and not `empty`).
+    #[pyo3(signature = (dir, name = None, empty = false, online = false))]
+    fn make_migration(&self, dir: &str, name: Option<&str>, empty: bool, online: bool) -> PyResult<Vec<String>> {
+        let made = migrate::files::make(std::path::Path::new(dir), &self.inner, name, empty, online).map_err(schema_err)?;
+        Ok(made.into_iter().map(|(folder, _)| folder.name).collect())
     }
 
     /// The migration from `previous` (a snapshot; `None` for an empty database) to this

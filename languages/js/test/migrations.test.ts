@@ -140,6 +140,119 @@ test("plan steps say which ones lose data", () => {
   assert.ok(m.downSql.includes("-- monorm: destructive alter-type authors.email\n"));
 });
 
+// -- online migrations (migrations.online) ---------------------------------------------------------
+
+const ONLINE_SHOP = (extra = "") => `model Shop {\n  id   BigInt @id @default(autoincrement())\n  name String\n${extra}\n  @@map("shop")\n}\n`;
+const ONLINE_PLAIN = ONLINE_SHOP();
+const ONLINE_INDEXED = ONLINE_SHOP("  @@index([name])\n");
+const ONLINE_ITEM = (extra = "") => `model Item {\n  id      BigInt @id @default(autoincrement())\n  shop_id BigInt\n${extra}\n  @@map("item")\n}\n`;
+const ONLINE_SHOP_WITH_ITEMS = 'model Shop {\n  id    BigInt @id @default(autoincrement())\n  name  String\n  items Item[]\n\n  @@map("shop")\n}\n';
+const ONLINE_ITEM_FK = ONLINE_ITEM("  shop  Shop   @relation(fields: [shop_id], references: [id])\n");
+const online = { online: true };
+
+test("online makemigrations splits an index on an existing table", () => {
+  const dir = tmp();
+  new Migrations(dir, models(ONLINE_PLAIN), online).make();
+  const migs = new Migrations(dir, models(ONLINE_INDEXED), online);
+  assert.deepEqual(migs.plan().up.map((s) => [s.sql, s.transaction]), [['CREATE INDEX CONCURRENTLY IF NOT EXISTS "shop_name_idx" ON "shop" ("name")', false]]);
+  const first = migs.make()!;
+  assert.deepEqual(migs.all().map((m) => m.name), ["0001_initial", "0002_create_index_shop_name_idx"]);
+  assert.equal(first.name, "0002_create_index_shop_name_idx");
+  assert.ok(first.upSql.startsWith('-- monorm: no-transaction create-index "shop_name_idx"\n'));
+  assert.ok(first.downSql.startsWith('-- monorm: no-transaction drop-index "shop_name_idx"\n'));
+  assert.ok(first.downSql.includes("DROP INDEX CONCURRENTLY IF EXISTS"));
+  const snapshot = JSON.parse(readFileSync(join(first.path, "snapshot.json"), "utf8")) as { tables: { indexes: unknown[] }[] };
+  assert.ok(snapshot.tables[0]!.indexes.length > 0);
+  assert.equal(migs.make(), null); // nothing changed
+  // a removed index: the no-transaction folder comes before the main folder
+  const gone = new Migrations(dir, models(ONLINE_SHOP("  note String?\n")), online);
+  gone.make();
+  const all = gone.all();
+  assert.deepEqual(all.slice(-2).map((m) => m.name), ["0003_drop_index_shop_name_idx", "0004_add_column_shop_note"]);
+  assert.ok(all.at(-2)!.upSql.startsWith('-- monorm: no-transaction drop-index "shop_name_idx"\n'));
+  assert.equal(gone.plan().up.length, 0);
+});
+
+test("online makemigrations validates a foreign key in its own folder", () => {
+  const dir = tmp();
+  new Migrations(dir, models(ONLINE_PLAIN + ONLINE_ITEM()), online).make();
+  const v2 = ONLINE_SHOP_WITH_ITEMS + ONLINE_ITEM_FK;
+  const migs = new Migrations(dir, models(v2), online);
+  const plan = migs.plan();
+  const sql = plan.up.map((s) => s.sql);
+  assert.equal(sql.length, 2);
+  assert.ok(sql[0]!.endsWith("NOT VALID") && sql[0]!.includes("FOREIGN KEY"), sql[0]);
+  assert.equal(sql[1], 'ALTER TABLE "item" VALIDATE CONSTRAINT "item_shop_id_fkey"');
+  assert.ok(plan.up.every((s) => s.transaction));
+  migs.make();
+  const names = migs.all().map((m) => m.name);
+  assert.equal(names.length, 3);
+  assert.equal(names[2], "0003_validate_constraints");
+  const [, main, validate] = migs.all();
+  assert.ok(main!.upSql.includes("NOT VALID") && !main!.upSql.includes("VALIDATE"));
+  assert.ok(validate!.upSql.includes("VALIDATE CONSTRAINT") && !validate!.upSql.startsWith("-- monorm: no-transaction"));
+  assert.deepEqual(readFileSync(join(main!.path, "snapshot.json"), "utf8"), readFileSync(join(validate!.path, "snapshot.json"), "utf8"));
+  assert.equal(migs.plan().up.length, 0);
+  assert.equal(new Migrations(dir, models(v2)).plan().up.length, 0); // the folders end in the same schema
+});
+
+test("online makemigrations leaves a new table alone", () => {
+  const dir = tmp();
+  const v1 = ONLINE_SHOP_WITH_ITEMS + ONLINE_ITEM_FK;
+  const migs = new Migrations(dir, models(v1), online);
+  const made = migs.make()!;
+  assert.deepEqual(migs.all().map((m) => m.name), ["0001_initial"]);
+  assert.ok(!made.upSql.includes("CONCURRENTLY") && !made.upSql.includes("NOT VALID"));
+  assert.ok(made.upSql.includes("FOREIGN KEY"));
+  const off = join(dir, "off");
+  mkdirSync(off);
+  const plain = new Migrations(off, models(v1)).make()!;
+  assert.equal(plain.upSql, made.upSql);
+  assert.equal(plain.downSql, made.downSql);
+  // a table added next to an existing one, with an index: still one folder
+  const more = v1 + 'model Tag {\n  id   BigInt @id\n  name String\n\n  @@index([name])\n  @@map("tag")\n}\n';
+  const migs2 = new Migrations(dir, models(more), online);
+  const tag = migs2.make()!;
+  assert.equal(migs2.all().length, 2);
+  assert.ok(tag.upSql.includes('CREATE INDEX "tag_name_idx" ON "tag" ("name")'));
+  assert.ok(!tag.upSql.includes("CONCURRENTLY"));
+});
+
+test("online makemigrations changes nothing on sqlite", () => {
+  const source = 'datasource db { provider = "sqlite" }\n';
+  const [on, off] = [join(tmp(), "on"), join(tmp(), "off")];
+  mkdirSync(on);
+  mkdirSync(off);
+  for (const [dir, flag] of [[on, true], [off, false]] as const) {
+    new Migrations(dir, models(source + ONLINE_PLAIN), { online: flag }).make();
+    new Migrations(dir, models(source + ONLINE_INDEXED), { online: flag }).make();
+  }
+  const [a, b] = [new Migrations(on, models(source)).all(), new Migrations(off, models(source)).all()];
+  assert.deepEqual(a.map((m) => m.name), b.map((m) => m.name));
+  assert.equal(a.length, 2);
+  a.forEach((m, i) => {
+    assert.equal(m.upSql, b[i]!.upSql);
+    assert.equal(m.downSql, b[i]!.downSql);
+    assert.equal(readFileSync(join(m.path, "snapshot.json"), "utf8"), readFileSync(join(b[i]!.path, "snapshot.json"), "utf8"));
+  });
+  assert.ok(!a[1]!.upSql.includes("CONCURRENTLY"));
+});
+
+test("the CLI online setting", () => {
+  const dir = tmp();
+  writeFileSync(join(dir, "schema.prisma"), ONLINE_PLAIN);
+  writeFileSync(join(dir, "monorm.toml"), "[migrations]\nonline = true\n");
+  const run = (...args: string[]) => cli(args, dir);
+  assert.equal(run("makemigrations").code, 0);
+  writeFileSync(join(dir, "schema.prisma"), ONLINE_INDEXED);
+  assert.equal(run("makemigrations", "--check").code, 1);
+  const made = run("makemigrations");
+  assert.equal(made.code, 0);
+  assert.ok(made.out.includes("0002_create_index_shop_name_idx"));
+  assert.equal(run("makemigrations", "--check").code, 0);
+  assert.ok(readFileSync(join(dir, "migrations/0002_create_index_shop_name_idx/up.sql"), "utf8").startsWith("-- monorm: no-transaction"));
+});
+
 test("migrations from a schema file", () => {
   const dir = tmp();
   writeFileSync(join(dir, "schema.prisma"), V1);
@@ -322,7 +435,7 @@ test("Node launcher converts native expressions offline and preserves pending ch
 const GATE_SQLITE = 'datasource db { provider = "sqlite" }\n';
 const GATE_KEEP = 'model Keep {\n  id BigInt @id @default(autoincrement())\n\n  @@map("keep")\n}\n';
 const GATE_SHOP = 'model Shop {\n  id   BigInt @id @default(autoincrement())\n  name String\n  note String?\n\n  @@map("shop")\n}\n';
-const GATE_TABLES = ["shop", "venue", "keep", "ghost_done", "after_tx", "half", "extra", "monorm_migrations"];
+const GATE_TABLES = ["item", "shop", "venue", "keep", "ghost_done", "after_tx", "half", "extra", "monorm_migrations"];
 const GATE_DIALECTS = ["postgres", "sqlite"] as const;
 type GateDialect = (typeof GATE_DIALECTS)[number];
 
@@ -688,4 +801,49 @@ test("a rollback waits for a no-transaction build without a deadlock", async () 
   assert.deepEqual((await build!).map((m) => m.name), ["0003_shop_name_idx"]);
   assert.deepEqual((await rollback!).map((m) => m.name), ["0002_after"]); // chosen before the build recorded its row
   assert.equal(await indexValid(db), "t");
+});
+
+async function onlineSchema(db: Database): Promise<[string[], string[]]> {
+  const indexes = await db.fetchText("SELECT indexdef FROM pg_indexes WHERE tablename IN ('shop', 'item') ORDER BY 1");
+  const constraints = await db.fetchText(
+    "SELECT conname || ' ' || pg_get_constraintdef(oid) || ' ' || convalidated FROM pg_constraint WHERE conrelid IN ('shop'::regclass, 'item'::regclass) ORDER BY 1",
+  );
+  return [indexes.map((r) => r[0]!), constraints.map((r) => r[0]!)];
+}
+
+test("online migrate ends with no drift", async () => {
+  const first = ONLINE_PLAIN + ONLINE_ITEM();
+  const last = ONLINE_SHOP_WITH_ITEMS.replace("  @@map", "  @@index([name])\n  @@map") + ONLINE_ITEM_FK;
+  const ends = new Map<boolean, [string[], string[]]>();
+  const dir = tmp();
+  const { db } = await gateDatabase("postgres");
+  let migrator!: Migrator;
+  for (const flag of [false, true]) { // the database ends in the online run
+    const directory = join(dir, String(flag));
+    mkdirSync(directory);
+    await db.execute("DROP TABLE IF EXISTS item, shop, monorm_migrations");
+    new Migrations(directory, models(first)).make();
+    await new Migrator(db, new Migrations(directory, models(first))).upgrade();
+    await db.execute("INSERT INTO shop (name) VALUES ('a'), ('b'); INSERT INTO item (shop_id) VALUES (1), (2)");
+    const migs = new Migrations(directory, models(last), { online: flag });
+    assert.ok(migs.make() !== null);
+    assert.equal(migs.all().length, flag ? 4 : 2);
+    migrator = new Migrator(db, migs);
+    assert.equal((await migrator.upgrade()).length, migs.all().length - 1);
+    assert.equal((await migrator.drift()).steps.length, 0);
+    assert.equal(await gateRows(db, "shop"), 2);
+    assert.equal(await gateRows(db, "item"), 2);
+    ends.set(flag, await onlineSchema(db));
+    assert.deepEqual(await new Migrator(db, migs).upgrade(), []);
+  }
+  assert.deepEqual(ends.get(true), ends.get(false));
+  const [indexes, constraints] = ends.get(true)!;
+  assert.ok(indexes.some((i) => i.includes("shop_name_idx")));
+  assert.ok(constraints.some((c) => c.includes("item_shop_id_fkey") && c.endsWith(" true")));
+  // the folders roll back one by one
+  assert.equal((await migrator.downgrade({ steps: 3 })).length, 3);
+  const [afterIndexes, afterConstraints] = await onlineSchema(db);
+  assert.ok(!afterIndexes.some((i) => i.includes("shop_name_idx")) && !afterConstraints.some((c) => c.includes("item_shop_id_fkey")));
+  assert.equal((await migrator.upgrade()).length, 3);
+  assert.equal((await migrator.drift()).steps.length, 0);
 });

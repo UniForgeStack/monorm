@@ -787,6 +787,15 @@ The `query_sets` and `model_methods` tables come from the winning file for every
 The lookup reads the working directory only.
 The URL comes from `MONORM_DATABASE_URL`.
 `monorm init` writes a `monorm.toml` with the default `schema` and `migrations`.
+`migrations` is a directory name, or a table `{ dir = "migrations", online = true }`.
+With `online = true` on PostgreSQL, `makemigrations` writes one ordered set of folders for a change to an existing table:
+a no-transaction folder with `DROP INDEX CONCURRENTLY IF EXISTS` for each removed index (first),
+the main folder, a no-transaction folder with `CREATE INDEX CONCURRENTLY IF NOT EXISTS` for each new non-unique index,
+and one folder with `VALIDATE CONSTRAINT` for the foreign keys and checks that the main folder adds as `NOT VALID`.
+Each folder has the `snapshot.json` of the schema after it.
+New tables, unique indexes and partitioned tables stay in the main folder, and SQLite is unchanged.
+The default is `false`; the Python and TypeScript `Migrations` take `online=True` / `{ online: true }`.
+`Step.transaction` is `false` for a concurrent step.
 Exit codes: 0 success, 1 failure (including
 `makemigrations --check` finding changes and `drift` finding differences), 2 bad usage. This
 repository's `pyproject.toml` points at the blog example; its first migration is
@@ -1072,7 +1081,6 @@ for the syntax and interaction with composite identity and default filters.
 
 ## Not done yet
 
-* Generated `CREATE INDEX CONCURRENTLY` (the `migrations.online` setting); a hand-written no-transaction migration works.
 * Views, domains, row-level security, multiple
   database schemas.
 * Renaming a native enum value in place (`ALTER TYPE ... RENAME VALUE`): a renamed

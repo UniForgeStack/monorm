@@ -12,7 +12,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import pytest
 from conftest import DATABASE_URL
-from test_migrations import V1, V2, models
+from test_migrations import ONLINE_ITEM, ONLINE_ITEM_FK, ONLINE_PLAIN, ONLINE_SHOP_WITH_ITEMS, V1, V2, models
 
 import monorm
 from monorm import Registry
@@ -256,7 +256,7 @@ async def test_enum_migrations(tmp_path):
 GATE_SQLITE = 'datasource db { provider = "sqlite" }\n'
 GATE_KEEP = 'model Keep {\n  id BigInt @id @default(autoincrement())\n\n  @@map("keep")\n}\n'
 GATE_SHOP = 'model Shop {\n  id   BigInt @id @default(autoincrement())\n  name String\n  note String?\n\n  @@map("shop")\n}\n'
-GATE_TABLES = ("shop", "venue", "keep", "ghost_done", "after_tx", "half", "extra", "monorm_migrations")
+GATE_TABLES = ("item", "shop", "venue", "keep", "ghost_done", "after_tx", "half", "extra", "monorm_migrations")
 DIALECTS = ["postgres", "sqlite"]
 
 
@@ -613,3 +613,48 @@ async def test_a_rollback_waits_for_a_no_transaction_build_without_a_deadlock(tm
             assert await index_valid(db) == "t"
         finally:
             await other.close()
+
+
+async def online_schema(db):
+    """The indexes and constraints of the online test tables, as the database reports them."""
+    indexes = await db._fetch_text("SELECT indexdef FROM pg_indexes WHERE tablename IN ('shop', 'item') ORDER BY 1")
+    constraints = await db._fetch_text(
+        "SELECT conname || ' ' || pg_get_constraintdef(oid) || ' ' || convalidated FROM pg_constraint "
+        "WHERE conrelid IN ('shop'::regclass, 'item'::regclass) ORDER BY 1"
+    )
+    return [r[0] for r in indexes], [r[0] for r in constraints]
+
+
+@pytest.mark.case("migrations::online_migrate_ends_with_no_drift")
+async def test_online_migrate_ends_with_no_drift(tmp_path):
+    first = ONLINE_PLAIN + ONLINE_ITEM % ""
+    last = ONLINE_SHOP_WITH_ITEMS.replace("  @@map", "  @@index([name])\n  @@map") + ONLINE_ITEM_FK
+    ends = {}
+    async with gate_database("postgres") as (db, _):
+        for online in (False, True):  # the database ends in the online run
+            directory = tmp_path / str(online)
+            directory.mkdir()
+            await db.execute("DROP TABLE IF EXISTS item, shop, monorm_migrations")
+            Migrations(directory, models(first)).make()
+            await Migrator(db, Migrations(directory, models(first))).upgrade()
+            await db.execute("INSERT INTO shop (name) VALUES ('a'), ('b'); INSERT INTO item (shop_id) VALUES (1), (2)")
+            migs = Migrations(directory, models(last), online=online)
+            made = migs.make()
+            assert made is not None
+            assert len(migs.all()) == (4 if online else 2)
+            migrator = Migrator(db, migs)
+            assert len(await migrator.upgrade()) == len(migs.all()) - 1
+            assert not await migrator.drift()
+            assert await gate_rows(db, "shop") == 2 and await gate_rows(db, "item") == 2
+            ends[online] = await online_schema(db)
+            assert await Migrator(db, migs).upgrade() == []
+        assert ends[True] == ends[False]
+        indexes, constraints = ends[True]
+        assert any("shop_name_idx" in i for i in indexes) and any("item_shop_id_fkey" in c and c.endswith(" true") for c in constraints)
+        # the folders roll back one by one
+        migrator = Migrator(db, Migrations(tmp_path / "True", models(last), online=True))
+        assert len(await migrator.downgrade(steps=3)) == 3
+        indexes, constraints = await online_schema(db)
+        assert not any("shop_name_idx" in i for i in indexes) and not any("item_shop_id_fkey" in c for c in constraints)
+        assert len(await migrator.upgrade()) == 3
+        assert not await migrator.drift()
