@@ -418,6 +418,10 @@
 "selection_defaults::selection_defaults" = "change: twin selection_defaults::schema_query_defaults; TS adds: a field-less `load(reload=True)` gives every column, `update_many` through a relation filter returns"
 "selection_defaults::slice_combinations_raise" = "change: Python adds `@pytest.mark.case('queries::limit_offset_and_slice_combine_only_as_one_limit_and_one_offset_or_one_slice')` and moves the message lines to"
 "selection_defaults::unknown_bypass_name_lists_the_defaults_of_the_model" = "change: TS adds the '[]' list and the update/delete errors;"
+# languages/python/tests/test_sync_iteration.py
+"sync_iteration::async_iteration_await_and_slices_still_work" = "one-language: guards the Python `__iter__` guard; TypeScript has no sync iterator on a query set"
+"sync_iteration::pydantic_from_attributes_raises_at_once" = "one-language: Pydantic is Python-only"
+"sync_iteration::sync_iteration_raises_type_error" = "one-language: TypeScript has no sync iterator on a query set, so `[...qs]` already throws"
 # languages/python/tests/test_sql.py
 "sql::aggregate_filter" = "change: twin sql::aggregate_filter_sql; Both assert exact FILTER SQL for a grouped count/sum, the FILTER inside the 'a1' relation subquery and FILTER before OVER;"
 "sql::column_from_other_model_is_rejected" = "change: twin sql::rejected_queries; TS asserts the same message."

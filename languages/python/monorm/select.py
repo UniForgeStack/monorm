@@ -25,7 +25,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator, Awaitable, Generator, Mapping
 from operator import itemgetter
-from typing import TYPE_CHECKING, Any, Generic, TypeVar, TypeVarTuple, Unpack, cast, overload
+from typing import TYPE_CHECKING, Any, Generic, NoReturn, TypeVar, TypeVarTuple, Unpack, cast, overload
 
 from . import debug, pagination
 from .inspection import QueryInspection, _inspect
@@ -51,7 +51,7 @@ from .expr import (
 )
 from .pagination import Key, Page
 from .protection import allowed_writes
-from .query import OneRowQuery, PreparedOneRowQuery, _Compiled
+from .query import OneRowQuery, PreparedOneRowQuery, _Compiled, _sync_iteration_error
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -451,6 +451,12 @@ class Select(Generic[Unpack[Ts]]):
     async def __aiter__(self) -> AsyncIterator[Row[Unpack[Ts]]]:
         for row in await self:
             yield row
+
+    def __iter__(self) -> NoReturn:
+        raise _sync_iteration_error()
+
+    def __contains__(self, item: object) -> NoReturn:
+        raise _sync_iteration_error()
 
     def first(self) -> OneRowQuery[Row[Unpack[Ts]] | None]:
         """Lazy first row (by ``order_by``; unordered otherwise), or ``None``."""

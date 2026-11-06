@@ -13,7 +13,7 @@ import decimal
 import enum
 import json
 import uuid
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterable, Callable, Iterable, Iterator, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, ClassVar
 
 from .errors import DecodeError, NotLoaded
@@ -796,7 +796,8 @@ class NestedRef(ColumnRef[Any]):
         return ColumnRef.__ge__(self, self._conv(other))
 
     def _convs(self, values: Iterable[Any] | Select[Any]) -> Iterable[Any] | Select[Any]:
-        return values if isinstance(values, Node) or not isinstance(values, Iterable) else [self._conv(v) for v in values]
+        # A query set has `__iter__` only to raise; `__aiter__` marks it as a subquery, not a value list.
+        return values if isinstance(values, (Node, AsyncIterable)) or not isinstance(values, Iterable) else [self._conv(v) for v in values]
 
     def in_(self, values: Iterable[Any] | Select[Any]) -> Condition:
         return ColumnRef.in_(self, self._convs(values))

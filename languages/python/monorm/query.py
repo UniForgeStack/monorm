@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import AsyncIterator, Coroutine, Generator, Iterable, Mapping
-from typing import TYPE_CHECKING, Any, Generic, Literal, TypeAlias, TypeVar, Unpack, cast, overload
+from typing import TYPE_CHECKING, Any, Generic, Literal, NoReturn, TypeAlias, TypeVar, Unpack, cast, overload
 
 from .inspection import QueryInspection, _inspect
 from ._cache import cached
@@ -373,6 +373,11 @@ def _copy_subclass_state(source: QuerySet[Any], target: QuerySet[Any]) -> None:
     state = getattr(source, "__dict__", None)
     if state:
         target.__dict__.update(state)
+
+
+def _sync_iteration_error() -> TypeError:
+    # Without `__iter__`, Python loops over `__getitem__(0), (1), ...` and never gets `IndexError`.
+    return TypeError('a query set runs on the database; use "async for", "await qs", or ".cached" for loaded rows')
 
 
 class QuerySet(Generic[M]):
@@ -1178,6 +1183,12 @@ class QuerySet(Generic[M]):
     async def __aiter__(self) -> AsyncIterator[M]:
         for obj in await self:
             yield obj
+
+    def __iter__(self) -> NoReturn:
+        raise _sync_iteration_error()
+
+    def __contains__(self, item: object) -> NoReturn:
+        raise _sync_iteration_error()
 
     async def paginate(
         self, *, first: int | None = None, after: str | None = None, last: int | None = None, before: str | None = None

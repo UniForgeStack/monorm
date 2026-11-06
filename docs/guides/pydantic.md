@@ -96,7 +96,7 @@ When the relation is not loaded, `.cached` raises `NotLoaded` (`User.posts was n
 `model_validate` does not catch it.
 
 Do not declare a to-many field as a plain `list[...]`.
-Today Pydantic then never returns, because a query set has no `__iter__` and Python iterates it through `__getitem__` with no end.
+Pydantic then raises a `ValidationError` at once (`Input should be a valid list`), because a query set raises `TypeError` when Python iterates it: it runs on the database, so use `async for`, `await`, or `.cached`.
 
 ## FastAPI
 
