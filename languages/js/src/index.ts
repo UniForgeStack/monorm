@@ -52,6 +52,7 @@ export { InspectedStatement, InsertMany, InsertOne, ManyRelatedSet, OneRowQuery,
 export type { Page, PageOptions } from "./pagination.js";
 export type { AddOptions, BatchOptions, CopyOptions, FieldOrder, LoadAll, LoadItem, LoadOf, LockOptions, OnConflictOptions, PreparedInsert, PreparedUpdate, QueriesOf, QuerySetOf, Simplify, Via } from "./query.js";
 export { Select } from "./select.js";
+export { CompoundSelect } from "./compound.js";
 export { Cte, CteColumn } from "./cte.js";
 export type { CteSelf } from "./cte.js";
 export { Database, connect, getDatabase, scope } from "./db.js";

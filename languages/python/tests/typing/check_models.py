@@ -9,6 +9,7 @@ from blog.models import Comment, Post, PostInsert, PostQuerySet, Priority, Profi
 
 from monorm import (
     BoundQuerySet,
+    CompoundSelect,
     of,
     Case,
     ColumnRef,
@@ -365,3 +366,24 @@ async def bound_reads(post: Post, posts: list[Post]) -> None:
     Post.objects.of(posts).label("x")  # E: no label on a bound query set
     async for _ in Post.objects.of(posts):  # E: no async for on a bound query set
         pass
+
+
+async def set_operations() -> None:
+    names = User.objects.select(User.id, User.name)
+    titles = Post.objects.select(Post.id, Post.title)
+    both = names.union(titles)
+    assert_type(both, CompoundSelect[int, str])
+    assert_type(await both, list[Row[int, str]])
+    assert_type(await both.order_by("-id", "name").first(), Row[int, str] | None)
+    assert_type(await both.require().first(), Row[int, str])
+    assert_type(await both.union_all(titles).count(), int)
+    assert_type(await both.exists(), bool)
+    assert_type(both.sql(), str)
+    assert_type(await User.objects.select(User.id).union(Comment.objects.select(Comment.author_id)).scalars(), list[int | None])
+    assert_type(await User.objects.select(User.id).union_all(Post.objects.select(Post.id)).scalar(), int | None)
+    names.union(Post.objects.select(Post.id))  # E: different column count
+    names.union(Post.objects.select(Post.id, Post.title, Post.views))  # E: different column count
+    both.filter(User.id == 1)  # E: a set operation has no filter
+    both.select(User.id)  # E: a set operation has no select
+    both.group_by(User.id)  # E: a set operation has no group_by
+    both.scalar()  # E: scalar() needs one column

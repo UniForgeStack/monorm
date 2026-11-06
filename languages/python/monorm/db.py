@@ -27,7 +27,7 @@ T = TypeVar("T")
 _MAX_TIMEOUT = 2147483.647
 
 # Statements a replica may answer.
-_READS = frozenset({"select", "count", "exists"})
+_READS = frozenset({"select", "count", "exists", "compound"})
 
 _default: Database | None = None
 # For each database (its root) with an open transaction in the current task: the innermost one.

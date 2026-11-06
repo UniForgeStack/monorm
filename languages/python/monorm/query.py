@@ -380,6 +380,18 @@ def _sync_iteration_error() -> TypeError:
     return TypeError('a query set runs on the database; use "async for", "await qs", or ".cached" for loaded rows')
 
 
+def _add_cut(cuts: tuple[str, ...], kind: str) -> tuple[str, ...]:
+    """The cuts after ``kind``; a query takes one limit and one offset, or one slice."""
+    if kind in cuts or "slice" in cuts or (kind == "slice" and cuts):
+        have = " and ".join(f"{'an' if cut == 'offset' else 'a'} {cut}" for cut in cuts)
+        raise QueryError(
+            f"{kind} can't be applied to a query set that already has {have}; "
+            "use one limit() and one offset(), or a single slice; to change or clear a limit "
+            "or offset, build a new query set"
+        )
+    return (*cuts, kind)
+
+
 class QuerySet(Generic[M]):
     """A query over one model. Every method returns a new query set; nothing runs until
     the query set is awaited (``await User.objects.filter(...)`` gives a list) or a
@@ -685,14 +697,7 @@ class QuerySet(Generic[M]):
         return self._clone(_order=order)
 
     def _cut(self, kind: str) -> tuple[str, ...]:
-        if kind in self._cuts or "slice" in self._cuts or (kind == "slice" and self._cuts):
-            cuts = " and ".join(f"{'an' if cut == 'offset' else 'a'} {cut}" for cut in self._cuts)
-            raise QueryError(
-                f"{kind} can't be applied to a query set that already has {cuts}; "
-                "use one limit() and one offset(), or a single slice; to change or clear a limit "
-                "or offset, build a new query set"
-            )
-        return (*self._cuts, kind)
+        return _add_cut(self._cuts, kind)
 
     def _no_cuts(self, what: str) -> None:
         if self._cuts:

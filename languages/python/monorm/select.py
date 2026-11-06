@@ -57,6 +57,7 @@ if TYPE_CHECKING:
 
     from typing_extensions import Self
 
+    from .compound import A1, A2, A3, A4, A5, A6, A7, B1, B2, B3, B4, B5, B6, B7, CompoundSelect
     from .cte import Cte
     from .db import Database
     from .model import Model
@@ -309,6 +310,53 @@ class Select(Generic[Unpack[Ts]]):
         if any(isinstance(item, NestedRef) for item in self._items):
             raise TypeError("a select() in load() can't select a nested column")
         return self._qs._clone(_label=self._label, _rows=self)
+
+    @overload
+    def union(self: Select[A1], other: Select[B1] | CompoundSelect[B1]) -> CompoundSelect[A1 | B1]: ...
+    @overload
+    def union(self: Select[A1, A2], other: Select[B1, B2] | CompoundSelect[B1, B2]) -> CompoundSelect[A1 | B1, A2 | B2]: ...
+    @overload
+    def union(self: Select[A1, A2, A3], other: Select[B1, B2, B3] | CompoundSelect[B1, B2, B3]) -> CompoundSelect[A1 | B1, A2 | B2, A3 | B3]: ...
+    @overload
+    def union(self: Select[A1, A2, A3, A4], other: Select[B1, B2, B3, B4] | CompoundSelect[B1, B2, B3, B4]) -> CompoundSelect[A1 | B1, A2 | B2, A3 | B3, A4 | B4]: ...
+    @overload
+    def union(self: Select[A1, A2, A3, A4, A5], other: Select[B1, B2, B3, B4, B5] | CompoundSelect[B1, B2, B3, B4, B5]) -> CompoundSelect[A1 | B1, A2 | B2, A3 | B3, A4 | B4, A5 | B5]: ...
+    @overload
+    def union(self: Select[A1, A2, A3, A4, A5, A6], other: Select[B1, B2, B3, B4, B5, B6] | CompoundSelect[B1, B2, B3, B4, B5, B6]) -> CompoundSelect[A1 | B1, A2 | B2, A3 | B3, A4 | B4, A5 | B5, A6 | B6]: ...
+    @overload
+    def union(
+        self: Select[A1, A2, A3, A4, A5, A6, A7, Unpack[tuple[Any, ...]]],
+        other: Select[B1, B2, B3, B4, B5, B6, B7, Unpack[tuple[Any, ...]]] | CompoundSelect[B1, B2, B3, B4, B5, B6, B7, Unpack[tuple[Any, ...]]],
+    ) -> CompoundSelect[A1 | B1, A2 | B2, A3 | B3, A4 | B4, A5 | B5, A6 | B6, A7 | B7, Unpack[tuple[Any, ...]]]: ...
+    def union(self, other: Any) -> Any:
+        """Rows of this query and ``other`` without duplicates, in one statement.
+        Both select the same names in the same order; each keeps its own filters, order and slice."""
+        from .compound import CompoundSelect
+
+        return CompoundSelect("union", self, other)
+
+    @overload
+    def union_all(self: Select[A1], other: Select[B1] | CompoundSelect[B1]) -> CompoundSelect[A1 | B1]: ...
+    @overload
+    def union_all(self: Select[A1, A2], other: Select[B1, B2] | CompoundSelect[B1, B2]) -> CompoundSelect[A1 | B1, A2 | B2]: ...
+    @overload
+    def union_all(self: Select[A1, A2, A3], other: Select[B1, B2, B3] | CompoundSelect[B1, B2, B3]) -> CompoundSelect[A1 | B1, A2 | B2, A3 | B3]: ...
+    @overload
+    def union_all(self: Select[A1, A2, A3, A4], other: Select[B1, B2, B3, B4] | CompoundSelect[B1, B2, B3, B4]) -> CompoundSelect[A1 | B1, A2 | B2, A3 | B3, A4 | B4]: ...
+    @overload
+    def union_all(self: Select[A1, A2, A3, A4, A5], other: Select[B1, B2, B3, B4, B5] | CompoundSelect[B1, B2, B3, B4, B5]) -> CompoundSelect[A1 | B1, A2 | B2, A3 | B3, A4 | B4, A5 | B5]: ...
+    @overload
+    def union_all(self: Select[A1, A2, A3, A4, A5, A6], other: Select[B1, B2, B3, B4, B5, B6] | CompoundSelect[B1, B2, B3, B4, B5, B6]) -> CompoundSelect[A1 | B1, A2 | B2, A3 | B3, A4 | B4, A5 | B5, A6 | B6]: ...
+    @overload
+    def union_all(
+        self: Select[A1, A2, A3, A4, A5, A6, A7, Unpack[tuple[Any, ...]]],
+        other: Select[B1, B2, B3, B4, B5, B6, B7, Unpack[tuple[Any, ...]]] | CompoundSelect[B1, B2, B3, B4, B5, B6, B7, Unpack[tuple[Any, ...]]],
+    ) -> CompoundSelect[A1 | B1, A2 | B2, A3 | B3, A4 | B4, A5 | B5, A6 | B6, A7 | B7, Unpack[tuple[Any, ...]]]: ...
+    def union_all(self, other: Any) -> Any:
+        """Rows of this query and ``other``, duplicates kept."""
+        from .compound import CompoundSelect
+
+        return CompoundSelect("union_all", self, other)
 
     # -- IR -------------------------------------------------------------------------------
 

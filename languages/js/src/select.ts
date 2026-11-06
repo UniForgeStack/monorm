@@ -72,6 +72,7 @@ import {
   type Via,
 } from "./query.js";
 import { makeCte, type Cte } from "./cte.js";
+import { CompoundSelect, type SameColumns, type Widened } from "./compound.js";
 
 /** What `select()` takes: expressions over the query's sources, or the model itself. */
 export type SelectItems<M extends ModelSpec, S extends string> = {
@@ -106,7 +107,7 @@ export type CteColumnsOf<I> = UnionToIntersection<
 export type OnlyValue<R> = OnlyKey<R, keyof R>;
 type OnlyKey<R, K extends keyof R> = K extends unknown ? ([Exclude<keyof R, K>] extends [never] ? R[K] : never) : never;
 
-type OneColumn<R> = [OnlyValue<R>] extends [never] ? [error: "this needs a select() of exactly one column"] : [];
+export type OneColumn<R> = [OnlyValue<R>] extends [never] ? [error: "this needs a select() of exactly one column"] : [];
 
 /**
  * A query giving rows of chosen columns. Built by `QuerySet.select()`; every method
@@ -278,6 +279,41 @@ export class Select<M extends ModelSpec, Row extends object, S extends string, P
   /** @internal The `IN (...)` query of a relation query set: no standalone check, no prefetch. */
   relationIr(params: unknown[]): [IR, IRContext] {
     return this.build(params, undefined, undefined, "select", true);
+  }
+
+  // -- set operations -------------------------------------------------------------------------
+
+  /** Rows of this query and `other` without duplicates, in one statement. Both select the
+   * same names in the same order; each keeps its own filters, order and slice. */
+  union<R2 extends object, P2 = {}, X2 extends string = never>(
+    other: Select<ModelSpec, R2, string, P2, X2, unknown, unknown> | CompoundSelect<R2>,
+    ...check: [...SameColumns<Row, R2>, ...Runnable<P, X>, ...Runnable<P2, X2>]
+  ): CompoundSelect<Widened<Row, R2>> {
+    void check;
+    return new CompoundSelect("union", this as never, other as never) as never;
+  }
+
+  /** Rows of this query and `other`, duplicates kept. */
+  unionAll<R2 extends object, P2 = {}, X2 extends string = never>(
+    other: Select<ModelSpec, R2, string, P2, X2, unknown, unknown> | CompoundSelect<R2>,
+    ...check: [...SameColumns<Row, R2>, ...Runnable<P, X>, ...Runnable<P2, X2>]
+  ): CompoundSelect<Widened<Row, R2>> {
+    void check;
+    return new CompoundSelect("union_all", this as never, other as never) as never;
+  }
+
+  /** @internal The output names, in order. */
+  names(): string[] {
+    return this.items.map(([name]) => name);
+  }
+
+  /** @internal This select as one side of a set operation. */
+  leafIr(params: unknown[]): IR {
+    const [ir, ctx] = this.build(params);
+    if (ctx.ctes.items.length) throw new QueryError("a set operation can't use a CTE");
+    delete ir["op"];
+    ir["t"] = "leaf";
+    return ir;
   }
 
   // -- IR -------------------------------------------------------------------------------------

@@ -74,6 +74,7 @@ from .query import (
     use_query_set,
 )
 from .cte import Cte, CteColumn
+from .compound import CompoundSelect
 from .select import Row, Select
 from .write import CopyInsert, Delete, InsertMany, InsertOne, InsertReturning, Returning, Update, UpdateMany, UpsertOne
 
@@ -109,6 +110,7 @@ __all__ = [
     "param",
     "Cte",
     "CteColumn",
+    "CompoundSelect",
     "Select",
     "Row",
     "InsertOne",

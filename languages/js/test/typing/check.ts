@@ -4,7 +4,7 @@
  * two types are identical. Never run.
  */
 
-import { describe, of, DatabaseError, TransactionTimeoutError, type Database, type Isolation, Decimal, exists, func, outer, param, window, type JsonValue, type OneRowQuery, type PreparedOneRowQuery, type Page, type QueryInspection, type StatementInspection } from "../../src/index.js";
+import { CompoundSelect, describe, of, DatabaseError, TransactionTimeoutError, type Database, type Isolation, Decimal, exists, func, outer, param, window, type JsonValue, type OneRowQuery, type PreparedOneRowQuery, type Page, type QueryInspection, type StatementInspection } from "../../src/index.js";
 import { Comment, Post, Priority, Profile, Role, Tag, User } from "../blog/models.js";
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
@@ -638,4 +638,37 @@ export async function transactionOptions(db: Database, e: TransactionTimeoutErro
   same<typeof e.sqlstate, string | null>();
   const base: DatabaseError = e;
   return base;
+}
+
+export async function setOperations() {
+  const names = User.objects.select({ id: User.id, label: User.name });
+  const titles = Post.objects.select({ id: Post.id, label: Post.title });
+  const both = names.union(titles);
+  same<typeof both, CompoundSelect<{ id: bigint; label: string }>>();
+  same<Awaited<typeof both>, { id: bigint; label: string }[]>();
+  same<Awaited<ReturnType<typeof both.first>>, { id: bigint; label: string } | null>();
+  same<Awaited<ReturnType<ReturnType<typeof both.require>["first"]>>, { id: bigint; label: string }>();
+  same<Awaited<ReturnType<typeof both.count>>, number>();
+  const nullable = User.objects.select({ id: User.id }).unionAll(Comment.objects.select({ id: Comment.authorId }));
+  same<Awaited<typeof nullable>, { id: bigint | null }[]>();
+  same<Awaited<ReturnType<typeof nullable.scalars>>, (bigint | null)[]>();
+  await both.orderBy("-id", "label");
+  // @ts-expect-error orderBy takes output names only
+  both.orderBy("nope");
+  // @ts-expect-error orderBy takes names, not columns
+  both.orderBy(User.id);
+  // @ts-expect-error both sides select the same columns
+  names.union(Post.objects.select({ id: Post.id }));
+  // @ts-expect-error both sides select the same columns
+  names.union(Post.objects.select({ id: Post.id, title: Post.title }));
+  // @ts-expect-error a set operation has no filter()
+  both.filter(User.id.eq(1n));
+  // @ts-expect-error a set operation has no select()
+  both.select({ id: User.id });
+  // @ts-expect-error a set operation has no groupBy()
+  both.groupBy(User.id);
+  // @ts-expect-error scalar() needs one column
+  await both.scalar();
+  // @ts-expect-error a param() placeholder needs prepare()
+  names.union(Post.objects.filter(Post.id.eq(param("n"))).select({ id: Post.id, label: Post.title }));
 }

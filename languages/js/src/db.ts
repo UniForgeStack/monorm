@@ -118,7 +118,7 @@ export interface SessionLockOptions {
 const MAX_TIMEOUT = 2147483.647;
 
 /** Statements a replica may answer (the IR starts with its `op`). */
-const READ = /^\{"op":"(select|count|exists)"/;
+const READ = /^\{"op":"(select|count|exists|compound)"/;
 
 /** Sets `errors` as the `cause` of `error`, unless there are none or it has a cause. */
 function causedBy(error: unknown, errors: readonly unknown[]): void {
