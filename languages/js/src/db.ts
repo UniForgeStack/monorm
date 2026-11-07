@@ -143,6 +143,18 @@ export async function inTransaction(db: Database, tx: NativeTransaction, fn: () 
   return mine;
 }
 
+/** The callback list of a `bindRequest` block: a callback pushed to it throws. */
+function noCommitWork(): (() => unknown)[] {
+  const list: (() => unknown)[] = [];
+  list.push = (...fns) => {
+    if (fns.length > 0) {
+      throw new TransactionRequired("onCommit() in a bindRequest() block: the commit happens outside Node; do the work after it");
+    }
+    return 0;
+  };
+  return list;
+}
+
 /** A connection pool. Created by {@link connect}. */
 export class Database {
   /** Hooks live on the root: `primary` views share them. */
@@ -275,6 +287,42 @@ export class Database {
    * different tenant (or none) throws `QueryError`. Gives what `fn` gives.
    */
   tenant<T>(id: string | number | bigint, fn: () => Promise<T>): Promise<T> {
+    const engines = this.tenantEngines(id);
+    const root = this.root;
+    if (current.getStore()?.has(root) && txTenants.getStore()?.get(root) !== engines.id) {
+      throw new QueryError(
+        "db.tenant() inside a transaction opened under another tenant: the transaction keeps its tenant; open the transaction inside the tenant block",
+      );
+    }
+    return tenants.run(new Map(tenants.getStore() ?? []).set(root, engines), async () => await fn());
+  }
+
+  /**
+   * Runs `fn` on a transaction that something else opened and will end (commit or roll back).
+   * Statements in `fn` run on `tx`. The transaction counts as opened under `options.tenant`, so
+   * `db.tenant(sameId)` inside `fn` works, and `options.scope` sets the `scope.<name>` values.
+   * `onCommit` inside `fn` throws `TransactionRequired`: the commit happens outside it. `fn` must not end `tx`. Gives what `fn` gives.
+   */
+  bindRequest<T>(
+    tx: NativeTransaction,
+    options: { readonly scope?: Readonly<Record<string, unknown>>; readonly tenant?: string | number | bigint },
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const root = this.root;
+    const engines = options.tenant === undefined ? undefined : this.tenantEngines(options.tenant);
+    const tenantMap = new Map(tenants.getStore() ?? []);
+    if (engines === undefined) tenantMap.delete(root);
+    else tenantMap.set(root, engines);
+    const bound = new Map(callbacks.getStore() ?? []).set(root, noCommitWork());
+    const run = async (): Promise<T> => await fn();
+    return current.run(new Map(current.getStore() ?? []).set(root, tx), () =>
+      txTenants.run(new Map(txTenants.getStore() ?? []).set(root, engines?.id), () =>
+        tenants.run(tenantMap, () =>
+          callbacks.run(bound, () => scopeValues.run({ ...scopeValues.getStore(), ...options.scope }, run)))));
+  }
+
+  /** The primary and replica engines with the tenant `id` set. */
+  private tenantEngines(id: string | number | bigint) {
     if (this.url.startsWith("sqlite://")) {
       throw new QueryError("db.tenant() sets a Postgres setting for row-level security; sqlite has none");
     }
@@ -285,17 +333,11 @@ export class Database {
       throw new RangeError("tenant id must not be empty: a pooled connection reads '' for no tenant");
     }
     const root = this.root, value = [String(id)];
-    if (current.getStore()?.has(root) && txTenants.getStore()?.get(root) !== value[0]) {
-      throw new QueryError(
-        "db.tenant() inside a transaction opened under another tenant: the transaction keeps its tenant; open the transaction inside the tenant block",
-      );
-    }
-    const engines = {
+    return {
       id: value[0]!,
       primary: root.base.withSettings(["app.tenant"], value),
       replicas: root.replicas.map((r) => r.withSettings(["app.tenant"], value)),
     };
-    return tenants.run(new Map(tenants.getStore() ?? []).set(root, engines), async () => await fn());
   }
 
   /** @internal */

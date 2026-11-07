@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 import json
 import math
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -53,6 +53,21 @@ class _Callbacks(list[Callable[[], Any]]):
     back: a task that it started can still see it after that."""
 
     ended = False
+
+
+class _BoundCallbacks(_Callbacks):
+    """The callback list of a ``bind_request`` block: nothing can wait for a commit that happens
+    outside Python, so a callback registered in the block raises."""
+
+    def append(self, fn: Callable[[], Any]) -> None:
+        raise TransactionRequired(_BOUND_CALLBACKS)
+
+    def extend(self, fns: Iterable[Callable[[], Any]]) -> None:
+        if any(True for _ in fns):
+            raise TransactionRequired(_BOUND_CALLBACKS)
+
+
+_BOUND_CALLBACKS = "on_commit() in a bind_request() block: the commit happens outside Python; do the work after it"
 
 
 def _check_transaction_options(isolation: object, timeout: object, *, nested: bool) -> None:
@@ -167,6 +182,40 @@ class Database:
         finally:
             _tenant_ids.reset(id_token)
             _tenants.reset(token)
+
+    @contextmanager
+    def bind_request(
+        self, tx: _native.Transaction, *, scope: Mapping[str, Any] | None = None, tenant: str | int | None = None
+    ) -> Iterator[None]:
+        """``with db.bind_request(tx, scope={...}, tenant=id):`` — runs the block on a transaction
+        that something else opened and will end, such as the admin service for each host
+        call. Every statement of this database in the block uses ``tx``; a ``transaction()``
+        block in it is a savepoint; the caller commits or rolls back ``tx``. ``scope`` gives
+        the values of :func:`scope`. ``tenant`` is the tenant id that ``tx`` began under (leave it
+        out when there is none): ``db.tenant(id)`` with the same id in the block works, and with
+        another id raises :class:`~monorm.QueryError`, as in a transaction opened by Python.
+        ``on_commit`` in the block raises :class:`~monorm.TransactionRequired`, because the commit
+        happens outside Python.
+        Tasks started in the block get the binding."""
+        if tenant is not None and (isinstance(tenant, bool) or not isinstance(tenant, (str, int))):
+            raise TypeError(f"tenant id must be a str or an int, got {tenant!r}")
+        root, tenant_id = self._root, None if tenant is None else str(tenant)
+        tenant_ids = {k: v for k, v in _tenant_ids.get().items() if k is not root}
+        if tenant_id is not None:
+            tenant_ids[root] = tenant_id
+        tx_token = _current_tx.set({**_current_tx.get(), root: tx})
+        tx_tenant_token = _tx_tenants.set({**_tx_tenants.get(), root: tenant_id})
+        id_token = _tenant_ids.set(tenant_ids)
+        scope_token = _scope.set({**_scope.get(), **(scope or {})})
+        cb_token = _callbacks.set({**_callbacks.get(), root: _BoundCallbacks()})
+        try:
+            yield
+        finally:
+            _callbacks.reset(cb_token)
+            _scope.reset(scope_token)
+            _tenant_ids.reset(id_token)
+            _tx_tenants.reset(tx_tenant_token)
+            _current_tx.reset(tx_token)
 
     def on_query(self, hook: Callable[[QueryEvent], object]) -> Callable[[], None]:
         """Call ``hook(event)`` after each statement this database runs (prefetch queries
