@@ -123,7 +123,24 @@ class AdminSite:
     def request(
         self, engine: Engine, method: str, path: str, user_json: str | None = None, trace: Trace | None = None
     ) -> Awaitable[tuple[int, str]]: ...
-    def serve(self, engine: Engine, settings_json: str) -> Awaitable[AdminServer]: ...
+    def client(
+        self,
+        engine: Engine,
+        database: Any,
+        host: dict[str, Any],
+        secret: str | None = None,
+        options_json: str = "{}",
+        trace: Trace | None = None,
+    ) -> AdminRouter: ...
+    def serve(
+        self, engine: Engine, settings_json: str, database: Any, host: dict[str, Any], secret: str | None = None
+    ) -> Awaitable[AdminServer]: ...
+
+@final
+class AdminRouter:
+    def request(
+        self, method: str, path: str, headers: list[tuple[str, str]], body: str | None, ip: str
+    ) -> Awaitable[tuple[int, list[tuple[str, str]], str]]: ...
 
 @final
 class AdminServer:

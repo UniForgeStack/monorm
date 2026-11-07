@@ -75,7 +75,7 @@ grep -q "Alice" "$WORK/bun-all-run.out"
 admin_probe() { # name, then the command that starts the server (the project is the current directory)
   local name=$1 pid url
   shift
-  MONORM_ADMIN_PORT=0 MONORM_DATABASE_URL="sqlite://$WORK/$name.db" "$@" 2> "$WORK/$name.err" &
+  MONORM_ADMIN_SECRET=check-init-secret-of-at-least-32-bytes MONORM_ADMIN_PORT=0 MONORM_DATABASE_URL="sqlite://$WORK/$name.db" "$@" 2> "$WORK/$name.err" &
   pid=$!
   for _ in $(seq 150); do
     grep -q '"listening"' "$WORK/$name.err" && break

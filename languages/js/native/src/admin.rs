@@ -3,13 +3,58 @@
 
 use std::sync::Arc;
 
-use monorm_admin::{Config, Logger, Server, Site};
+use monorm_admin::{AuthConfig, BoxFuture, BridgeError, CallContext, Config, HostBridge, Logger, Routed, Server, Site};
 use monorm_engine::db::Executor;
-use napi::bindgen_prelude::PromiseRaw;
-use napi::Env;
+use napi::bindgen_prelude::{FnArgs, Function, Promise, PromiseRaw};
+use napi::threadsafe_function::ThreadsafeFunction;
+use napi::{Env, Status};
 use napi_derive::napi;
+use serde_json::Value;
 
-use crate::{Engine, JsSchema, Trace};
+use crate::{Engine, JsSchema, Trace, Transaction};
+
+/// `(name, transaction or null, payload JSON, scope JSON, tenant JSON or null)`, spread into five JS arguments
+/// (`FnArgs`; a plain tuple would arrive as one array). The Promise gives an envelope JSON.
+type Args = FnArgs<(String, Option<Transaction>, String, String, Option<String>)>;
+type Dispatch = ThreadsafeFunction<Args, Promise<String>, Args, Status, false, true>;
+
+/// Calls the host functions (async functions of `(database, args)`) through one JS dispatch function that runs
+/// each one in `Database.bindRequest`. A Promise cannot be cancelled: a request that times out stops waiting
+/// and the JS work runs to its end; the handler rolls the transaction back.
+struct NodeBridge {
+    dispatch: Arc<Dispatch>,
+}
+
+impl HostBridge for NodeBridge {
+    fn call(&self, name: &str, payload: Value, ctx: CallContext) -> BoxFuture<Result<Value, BridgeError>> {
+        let args: Args = (
+            name.to_owned(),
+            ctx.tx.map(|inner| Transaction { inner }),
+            payload.to_string(),
+            ctx.scope.to_string(),
+            ctx.tenant.map(|t| t.to_string()),
+        )
+            .into();
+        let dispatch = self.dispatch.clone();
+        Box::pin(async move {
+            let promise = dispatch.call_async_catch(args).await.map_err(|e| BridgeError::Bridge(e.reason.clone()))?;
+            let envelope = promise.await.map_err(|e| BridgeError::Bridge(e.reason.clone()))?;
+            let envelope: Value = serde_json::from_str(&envelope).map_err(|e| BridgeError::Bridge(e.to_string()))?;
+            if envelope["ok"].as_bool() == Some(true) {
+                return Ok(envelope["value"].clone());
+            }
+            let text = |key: &str| envelope[key].as_str().unwrap_or_default().to_owned();
+            Err(BridgeError::Host { kind: text("kind"), message: text("message") })
+        })
+    }
+}
+
+/// The login state of a served or in-memory router. The dispatch function is weak: it does not keep Node alive.
+fn auth_config(dispatch: Function<'_, Args, Promise<String>>, security: Result<Arc<monorm_admin::Security>, String>) -> napi::Result<AuthConfig> {
+    let security = security.map_err(napi::Error::from_reason)?;
+    let dispatch = dispatch.build_threadsafe_function::<Args>().callee_handled::<false>().weak::<true>().build()?;
+    Ok(AuthConfig { security, bridge: Arc::new(NodeBridge { dispatch: Arc::new(dispatch) }) })
+}
 
 /// A site: the resources of one schema and one config. It holds no connection.
 #[napi]
@@ -46,16 +91,80 @@ impl AdminSite {
         })
     }
 
-    /// Binds the socket and serves this site: `settings_json` is the text that `adminSettings` gave.
-    /// Rejects when an admin table is absent or the socket cannot bind.
+    /// The router that `serve` runs, called in memory, with login. `options_json` is `{"idle_timeout", "session_timeout", "origins"}`.
+    /// Throws when an option is wrong or the secret is missing or short. `dispatch` runs one host call.
     #[napi]
-    pub fn serve<'env>(&self, env: &'env Env, engine: &Engine, settings_json: String) -> napi::Result<PromiseRaw<'env, AdminServer>> {
+    pub fn client<'env>(
+        &self,
+        engine: &Engine,
+        dispatch: Function<'env, Args, Promise<String>>,
+        secret: Option<String>,
+        options_json: String,
+        trace: Option<&Trace>,
+    ) -> napi::Result<AdminRouter> {
+        let options = monorm_admin::security_options(&options_json).map_err(napi::Error::from_reason)?;
+        let auth = auth_config(dispatch, monorm_admin::security_with(secret.as_deref(), options))?;
+        let driver: Arc<dyn Executor> = engine.driver.clone();
+        let conn = monorm_engine::trace::wrap(driver, trace.map(|t| &t.0));
+        Ok(AdminRouter { routed: Routed::new(self.site.clone(), conn, auth, None) })
+    }
+
+    /// Binds the socket and serves this site: `settings_json` is the text that `adminSettings` gave.
+    /// Rejects when an admin table is absent or the socket cannot bind. `dispatch` runs one host call;
+    /// `secret` is `MONORM_ADMIN_SECRET`. Throws when the settings are wrong or the secret is missing or short.
+    #[napi]
+    pub fn serve<'env>(
+        &self,
+        env: &'env Env,
+        engine: &Engine,
+        settings_json: String,
+        dispatch: Function<'env, Args, Promise<String>>,
+        secret: Option<String>,
+    ) -> napi::Result<PromiseRaw<'env, AdminServer>> {
         let config: Config = serde_json::from_str(&settings_json).map_err(|e| napi::Error::from_reason(format!("settings are not JSON: {e}")))?;
+        let mut serve_config = config.serve_config();
+        serve_config.auth = Some(auth_config(dispatch, config.security(secret.as_deref()))?);
         let driver = engine.driver.clone();
         let site = self.site.clone();
         env.spawn_future(async move {
-            let server = monorm_admin::serve(site, driver, config.serve_config(), Logger::stderr()).await.map_err(napi::Error::from_reason)?;
+            let server = monorm_admin::serve(site, driver, serve_config, Logger::stderr()).await.map_err(napi::Error::from_reason)?;
             Ok(AdminServer { server: Arc::new(server) })
+        })
+    }
+}
+
+#[napi(object)]
+pub struct RouterReply {
+    pub status: u32,
+    /// `[name, value]` pairs; every `set-cookie` stays.
+    pub headers: Vec<Vec<String>>,
+    pub body: String,
+}
+
+/// The served router with login, called in memory (the guard, CSRF, cookies and headers run as on a socket).
+#[napi]
+pub struct AdminRouter {
+    routed: Routed,
+}
+
+#[napi]
+impl AdminRouter {
+    /// `headers` is a list of `[name, value]` pairs.
+    #[napi]
+    pub fn request<'env>(
+        &self,
+        env: &'env Env,
+        method: String,
+        path: String,
+        headers: Vec<Vec<String>>,
+        body: Option<String>,
+        ip: String,
+    ) -> napi::Result<PromiseRaw<'env, RouterReply>> {
+        let routed = self.routed.clone();
+        let headers: Vec<(String, String)> = headers.into_iter().filter_map(|mut p| (p.len() == 2).then(|| (std::mem::take(&mut p[0]), std::mem::take(&mut p[1])))).collect();
+        env.spawn_future(async move {
+            let reply = routed.request(&method, &path, &headers, body, &ip).await.map_err(napi::Error::from_reason)?;
+            Ok(RouterReply { status: u32::from(reply.status), headers: reply.headers.into_iter().map(|(k, v)| vec![k, v]).collect(), body: reply.body })
         })
     }
 }

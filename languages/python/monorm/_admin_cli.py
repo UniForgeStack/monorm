@@ -31,7 +31,12 @@ def _load(spec: str, what: str) -> Any:
     return obj
 
 
+class _SettingsError(Exception):
+    """A wrong setting or a missing secret: exit code 2."""
+
+
 async def _serve(config: dict[str, Any]) -> int:
+    from ._admin_host import HOST
     from .admin import Admin
     from .db import connect, get_database
     from .errors import NotConnected
@@ -54,7 +59,10 @@ async def _serve(config: dict[str, Any]) -> int:
         db = await connect(url)
     try:
         site = admin._site(db._registry)
-        server = await site.serve(db._engine, json.dumps(config))
+        try:
+            server = await site.serve(db._engine, json.dumps(config), db, HOST, os.environ.get("MONORM_ADMIN_SECRET"))
+        except ValueError as e:
+            raise _SettingsError(str(e)) from None
         loop = asyncio.get_running_loop()
         stopping = asyncio.Event()
         for name in (signal.SIGTERM, signal.SIGINT):
@@ -80,6 +88,9 @@ def run() -> int:
         sys.path.insert(0, os.getcwd())
     try:
         return asyncio.run(_serve(config))
+    except _SettingsError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
     except Exception as e:  # the command reports errors, not tracebacks
         print(f"error: {e}", file=sys.stderr)
         return 1

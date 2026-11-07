@@ -145,10 +145,7 @@ impl Config {
         let secs = |n: u64| i64::try_from(n).unwrap_or(i64::MAX);
         let trusted_proxies = self.trusted_proxies.iter().map(|a| a.parse::<IpAddr>().map_err(|_| format!("`admin.trusted_proxies` holds {a:?}, which is not an IP address"))).collect::<Result<_, _>>()?;
         let options = SecurityOptions { idle_secs: secs(self.idle_timeout_secs), absolute_secs: secs(self.session_timeout_secs), origins: self.origins.clone(), trusted_proxies };
-        let Some(secret) = secret.filter(|s| !s.is_empty()) else {
-            return Err("MONORM_ADMIN_SECRET is not set: it signs the login sessions, so set it to a random string of at least 32 characters (for example `openssl rand -hex 32`)".into());
-        };
-        Security::new(secret.as_bytes(), options)
+        security_with(secret, options)
     }
 
     pub fn serve_config(&self) -> ServeConfig {
@@ -160,6 +157,53 @@ impl Config {
             auth: None,
         }
     }
+}
+
+/// The signing and limits for `secret` and `options`; the one place that words the missing-secret error.
+pub fn security_with(secret: Option<&str>, options: SecurityOptions) -> Result<Arc<Security>, String> {
+    let Some(secret) = secret.filter(|s| !s.is_empty()) else {
+        return Err("MONORM_ADMIN_SECRET is not set: it signs the login sessions, so set it to a random string of at least 32 characters (for example `openssl rand -hex 32`)".into());
+    };
+    Security::new(secret.as_bytes(), options)
+}
+
+/// The session options of a JSON object with the keys `idle_timeout`, `session_timeout` (seconds), `origins` and `trusted_proxies`;
+/// a missing key takes its default. This is what a test client gives in place of the `[admin]` settings.
+pub fn security_options(json: &str) -> Result<SecurityOptions, String> {
+    let value: Value = serde_json::from_str(json).map_err(|e| format!("session options are not JSON: {e}"))?;
+    let Value::Object(map) = value else {
+        return Err("session options must be an object".into());
+    };
+    if let Some(key) = map.keys().find(|k| !["idle_timeout", "session_timeout", "origins", "trusted_proxies"].contains(&k.as_str())) {
+        return Err(format!("`{key}` is not a session option; the keys are idle_timeout, session_timeout, origins, trusted_proxies"));
+    }
+    let seconds = |key: &str, default: u64| match map.get(key) {
+        None => Ok(default as i64),
+        Some(v) => match v.as_u64() {
+            Some(n) if n > 0 => i64::try_from(n).map_err(|_| format!("`{key}` is too large")),
+            _ => Err(format!("`{key}` must be a whole number of seconds above 0")),
+        },
+    };
+    let origins = match map.get("origins") {
+        None => Vec::new(),
+        Some(Value::Array(list)) => list
+            .iter()
+            .map(|v| match v.as_str() {
+                Some(o) if is_origin(o) => Ok(o.trim_end_matches('/').to_string()),
+                _ => Err("`origins` must hold origins such as \"https://admin.example.com\"".to_string()),
+            })
+            .collect::<Result<_, _>>()?,
+        Some(_) => return Err("`origins` must be a list of origins".into()),
+    };
+    let trusted_proxies = match map.get("trusted_proxies") {
+        None => Vec::new(),
+        Some(Value::Array(list)) => list
+            .iter()
+            .map(|v| v.as_str().and_then(|a| a.parse::<IpAddr>().ok()).ok_or_else(|| "`trusted_proxies` must hold IP addresses such as \"10.0.0.1\"".to_string()))
+            .collect::<Result<_, _>>()?,
+        Some(_) => return Err("`trusted_proxies` must be a list of IP addresses".into()),
+    };
+    Ok(SecurityOptions { idle_secs: seconds("idle_timeout", DEFAULT_IDLE_SECS)?, absolute_secs: seconds("session_timeout", DEFAULT_SESSION_SECS)?, origins, trusted_proxies })
 }
 
 fn is_origin(text: &str) -> bool {
@@ -278,5 +322,34 @@ mod tests {
         assert!(c.security(None).unwrap_err().contains("MONORM_ADMIN_SECRET"));
         assert!(c.security(Some("short")).unwrap_err().contains("at least 32 bytes"));
         assert!(c.security(Some(&"x".repeat(32))).is_ok());
+    }
+
+    #[test]
+    fn session_options_take_defaults_and_name_a_wrong_key_or_value() {
+        let o = security_options("{}").unwrap();
+        assert_eq!((o.idle_secs, o.absolute_secs, o.origins.len()), (DEFAULT_IDLE_SECS as i64, DEFAULT_SESSION_SECS as i64, 0));
+        let o = security_options(r#"{"idle_timeout": 5, "session_timeout": 9, "origins": ["https://a.example/"]}"#).unwrap();
+        assert_eq!((o.idle_secs, o.absolute_secs, o.origins), (5, 9, vec!["https://a.example".to_string()]));
+        for (text, needle) in [
+            ("[]", "must be an object"),
+            (r#"{"idle": 1}"#, "`idle` is not a session option"),
+            (r#"{"idle_timeout": 0}"#, "`idle_timeout` must be a whole number"),
+            (r#"{"session_timeout": 1.5}"#, "`session_timeout` must be a whole number"),
+            (r#"{"origins": "https://a.example"}"#, "must be a list of origins"),
+            (r#"{"origins": ["a.example"]}"#, "must hold origins"),
+            (r#"{"origins": ["https://a.example/path"]}"#, "must hold origins"),
+        ] {
+            let e = security_options(text).unwrap_err();
+            assert!(e.contains(needle), "{text}: {e}");
+        }
+    }
+
+    #[test]
+    fn a_missing_or_short_secret_names_the_variable() {
+        for secret in [None, Some(""), Some("short")] {
+            let e = security_with(secret, SecurityOptions::default()).err().unwrap();
+            assert!(e.contains("MONORM_ADMIN_SECRET") || e.contains("32 bytes"), "{e}");
+        }
+        assert!(security_with(Some(&"s".repeat(32)), SecurityOptions::default()).is_ok());
     }
 }

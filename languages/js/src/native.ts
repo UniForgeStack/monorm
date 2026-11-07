@@ -160,8 +160,24 @@ export interface NativeQueryEvent {
 export interface NativeAdminSite {
   /** One in-memory request; `userJson` is the JSON of the user, or null. */
   request(engine: NativeEngine, method: string, path: string, userJson: string | null, trace: NativeTrace | null): Promise<{ status: number; body: string }>;
-  /** Binds the socket and serves; `settingsJson` is what `adminSettings` gave. Rejects when an admin table is absent or the socket cannot bind. */
-  serve(engine: NativeEngine, settingsJson: string): Promise<NativeAdminServer>;
+  /**
+   * The served router with login, called in memory. `optionsJson` is `{"idle_timeout", "session_timeout", "origins"}`.
+   * Throws when an option is wrong or the secret is missing or short. `dispatch` runs one host call.
+   */
+  client(engine: NativeEngine, dispatch: NativeHostDispatch, secret: string | null, optionsJson: string, trace: NativeTrace | null): NativeAdminRouter;
+  /**
+   * Binds the socket and serves; `settingsJson` is what `adminSettings` gave. Rejects when an admin table is absent or the socket cannot bind.
+   * `secret` is `MONORM_ADMIN_SECRET`. Throws when the settings are wrong or the secret is missing or short.
+   */
+  serve(engine: NativeEngine, settingsJson: string, dispatch: NativeHostDispatch, secret: string | null): Promise<NativeAdminServer>;
+}
+
+/** Runs one host function: `(name, transaction or null, payload JSON, scope JSON, tenant JSON or null)`; the Promise gives an envelope JSON. */
+export type NativeHostDispatch = (name: string, tx: NativeTransaction | null, payload: string, scope: string, tenant: string | null) => Promise<string>;
+
+/** The served router with login, called in memory. `headers` are `[name, value]` pairs; every `set-cookie` stays. */
+export interface NativeAdminRouter {
+  request(method: string, path: string, headers: string[][], body: string | null, ip: string): Promise<{ status: number; headers: string[][]; body: string }>;
 }
 
 /** A running admin server. `stop` drains it: readiness answers 503, new connections stop, open requests finish. */

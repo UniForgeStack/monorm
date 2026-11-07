@@ -11,6 +11,7 @@ import pytest
 
 from monorm.__main__ import main as cli
 
+SECRET = "s" * 40
 SCHEMA = 'datasource db {\n  provider = "sqlite"\n}\n\nmodel Book {\n  id    BigInt @id @default(autoincrement())\n  title String\n\n  @@map("books")\n}\n'
 
 
@@ -27,7 +28,7 @@ def project(tmp_path, monkeypatch, migrate=True):
 
 
 def start(tmp_path, url, **env):
-    environ = {**os.environ, "MONORM_ADMIN_PORT": "0", "MONORM_DATABASE_URL": url or "", **env}
+    environ = {**os.environ, "MONORM_ADMIN_PORT": "0", "MONORM_DATABASE_URL": url or "", "MONORM_ADMIN_SECRET": SECRET, **env}
     return subprocess.Popen([sys.executable, "-m", "monorm", "admin"], cwd=tmp_path, env=environ, stderr=subprocess.PIPE, text=True)
 
 
@@ -74,6 +75,17 @@ def test_monorm_admin_fails_with_a_clear_error_when_the_admin_tables_are_absent(
     code, err = run_to_end(start(tmp_path, url))
     assert code == 1
     assert err.startswith("error: the admin table ") and "run makemigrations and migrate" in err, err
+
+
+def test_monorm_admin_exits_2_without_a_long_enough_secret(tmp_path, monkeypatch):
+    url = project(tmp_path, monkeypatch)
+    for secret in ("", "short"):
+        code, err = run_to_end(start(tmp_path, url, MONORM_ADMIN_SECRET=secret))
+        assert code == 2 and "MONORM_ADMIN_SECRET" in err, err
+    environ = {k: v for k, v in os.environ.items() if k != "MONORM_ADMIN_SECRET"}
+    proc = subprocess.Popen([sys.executable, "-m", "monorm", "admin"], cwd=tmp_path, env={**environ, "MONORM_DATABASE_URL": url}, stderr=subprocess.PIPE, text=True)
+    code, err = run_to_end(proc)
+    assert code == 2 and "MONORM_ADMIN_SECRET" in err, err
 
 
 def test_monorm_admin_names_the_wrong_setting_and_the_missing_database(tmp_path, monkeypatch):

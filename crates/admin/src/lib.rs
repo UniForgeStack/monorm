@@ -10,6 +10,7 @@ pub mod auth;
 pub mod bridge;
 pub mod config;
 pub mod guard;
+pub mod inproc;
 pub mod json;
 pub mod list;
 pub mod revoke;
@@ -24,7 +25,8 @@ pub mod tables;
 
 pub use auth::AuthConfig;
 pub use bridge::{BoxFuture, BridgeError, CallContext, HostBridge};
-pub use config::Config;
+pub use config::{security_options, security_with, Config};
+pub use inproc::{Reply, Routed};
 pub use scope::Scoped;
 pub use security::{Security, SecurityOptions};
 pub use serve::{serve, ServeConfig, Server};

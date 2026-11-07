@@ -39,8 +39,10 @@ interface Running {
   listening(): Promise<string>;
 }
 
-function start(dir: string, url: string): Running {
-  const child = spawn(process.execPath, [CLI, "admin"], { cwd: dir, env: { ...process.env, MONORM_ADMIN_PORT: "0", MONORM_DATABASE_URL: url } });
+const SECRET = "s".repeat(40);
+
+function start(dir: string, url: string, env: Record<string, string | undefined> = {}): Running {
+  const child = spawn(process.execPath, [CLI, "admin"], { cwd: dir, env: { ...process.env, MONORM_ADMIN_PORT: "0", MONORM_DATABASE_URL: url, MONORM_ADMIN_SECRET: SECRET, ...env } });
   let err = "";
   child.stderr!.setEncoding("utf8");
   child.stderr!.on("data", (chunk: string) => (err += chunk));
@@ -80,6 +82,15 @@ test("monorm admin fails with a clear error when the admin tables are absent", a
   const run = start(dir, url);
   assert.equal(await run.ended, 1);
   assert.match(run.stderr(), /^error: the admin table .*run makemigrations and migrate/s);
+});
+
+test("monorm admin exits 2 without a long enough secret", async () => {
+  const { dir, url } = project();
+  for (const secret of ["", "short", undefined]) {
+    const run = start(dir, url, { MONORM_ADMIN_SECRET: secret });
+    assert.equal(await run.ended, 2, run.stderr());
+    assert.match(run.stderr(), /MONORM_ADMIN_SECRET/);
+  }
 });
 
 test("monorm admin names the wrong setting and the missing database", async () => {

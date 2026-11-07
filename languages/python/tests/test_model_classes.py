@@ -110,6 +110,8 @@ async def test_the_methods_module_may_import_the_models_module(tmp_path, monkeyp
     )
     assert _native.cli(["--schema", str(schema), "generate", "python"]) == 0
     monkeypatch.syspath_prepend(str(tmp_path))
+    for name in [n for n in sys.modules if n == "monorm_auth" or n.startswith("monorm_auth.")]:
+        monkeypatch.delitem(sys.modules, name)  # an earlier test may hold the real package
     registry = Registry()
     monkeypatch.setattr(monorm.model, "registry", registry)
     try:

@@ -10,7 +10,7 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import type { Admin } from "./admin.js";
+import { AdminSettingsError, type Admin } from "./admin.js";
 import { connect, getDatabase } from "./db.js";
 import { NotConnected } from "./errors.js";
 import { native } from "./native.js";
@@ -48,7 +48,7 @@ async function serve(settingsJson: string, settings: Settings): Promise<number> 
     database = await connect(url);
   }
   try {
-    const server = await admin.serve(database, settingsJson);
+    const server = await admin.serve(database, settingsJson, process.env.MONORM_ADMIN_SECRET ?? null);
     const stop = () => void server.stop().catch(() => undefined);
     process.once("SIGTERM", stop);
     process.once("SIGINT", stop);
@@ -72,6 +72,6 @@ export async function run(): Promise<number> {
     return await serve(settingsJson, JSON.parse(settingsJson) as Settings);
   } catch (e) {
     process.stderr.write(`error: ${e instanceof Error ? e.message : String(e)}\n`);
-    return 1;
+    return e instanceof AdminSettingsError ? 2 : 1;
   }
 }
