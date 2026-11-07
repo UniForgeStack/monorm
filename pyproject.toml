@@ -51,6 +51,7 @@ monorm = "monorm.__main__:main"
 
 [project.entry-points."monorm.apps"]
 monorm-auth = "monorm_auth:schema.prisma"
+monorm-admin = "monorm_admin:schema.prisma"
 
 # One platform wheel: the tooling engine as `monorm._native`, plus the packages that
 # `languages/python/packaging/stage.py` writes (the libraries of the extensions are not in git).
@@ -60,7 +61,7 @@ python-source = "languages/python"
 module-name = "monorm._native"
 no-default-features = true
 features = ["pyo3/extension-module", "profile-tooling"]
-python-packages = ["monorm_auth", "monorm_timestamps", "monorm_soft_delete", "monorm_locking", "monorm_inherit", "monorm_query_defaults", "monorm_generic", "monorm_proxy", "monorm_composition", "monorm_file_storage"]
+python-packages = ["monorm_auth", "monorm_admin", "monorm_timestamps", "monorm_soft_delete", "monorm_locking", "monorm_inherit", "monorm_query_defaults", "monorm_generic", "monorm_proxy", "monorm_composition", "monorm_file_storage"]
 include = [{ path = "languages/python/monorm_*/**/*", format = "wheel" }]
 
 [tool.pytest.ini_options]

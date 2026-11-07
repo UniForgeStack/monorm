@@ -86,6 +86,11 @@ class PlanTest(unittest.TestCase):
     def test_admin_crate_is_linked_into_both_bindings(self) -> None:
         self.assertGreaterEqual(plan("crates/admin/src/list.rs"), {"rust", "python", "node", "packages"})
 
+    def test_admin_app_schema_feeds_the_crate_tests_and_both_packages(self) -> None:
+        for path in ["apps/admin/schema.prisma", "apps/admin/python/monorm_admin/schema.prisma"]:
+            self.assertGreaterEqual(plan(path), {"rust", "python", "node", "packages"}, path)
+        self.assertGreaterEqual(plan("languages/js/admin/schema.prisma"), {"node", "packages"})
+
     def test_every_version_site_runs_the_release_check(self) -> None:
         paths = [
             "crates/cli/Cargo.toml",

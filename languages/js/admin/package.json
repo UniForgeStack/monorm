@@ -1,0 +1,6 @@
+{
+  "name": "monorm/admin-app",
+  "private": true,
+  "type": "module",
+  "description": "Marks the directory of the built-in admin app: schema.prisma sits here (the tables of the admin). The admin API is monorm/admin."
+}

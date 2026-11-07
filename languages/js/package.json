@@ -129,7 +129,8 @@
         "monorm.file-storage": "extensions/file-storage"
       },
       "apps": {
-        "auth": "auth/schema.prisma"
+        "auth": "auth/schema.prisma",
+        "admin": "admin/schema.prisma"
       }
     }
   },
@@ -158,6 +159,7 @@
     "prebuilt",
     "extensions",
     "auth",
+    "admin",
     "README.md"
   ],
   "peerDependencies": {

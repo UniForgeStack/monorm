@@ -1,0 +1,20 @@
+model AdminLogEntry {
+  id           Int      @id @default(autoincrement())
+  at           DateTime @default(now())
+  user_key     String
+  action       String
+  resource     String
+  record_key   String
+  record_label String
+  changes      Json?
+  @@index([resource, record_key])
+  @@index([user_key, at])
+}
+
+model UserPreference {
+  id       Int    @id @default(autoincrement())
+  user_key String
+  name     String
+  value    Json
+  @@unique([user_key, name])
+}

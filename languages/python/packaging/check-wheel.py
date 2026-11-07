@@ -28,6 +28,7 @@ with ZipFile(wheel) as archive:
         assert len(own) == 1 and "/" not in own[0][len(module) + 1 :], (module, own)
     assert len(libraries) == 1 + len(MODULES), libraries
     assert "monorm_auth/schema.prisma" in names and "monorm_auth/py.typed" in names
+    assert "monorm_admin/schema.prisma" in names and "monorm_admin/py.typed" in names
     assert not any("monorm_native_" in n for n in names)
     entry_points = next(archive.read(n).decode() for n in names if n.endswith(".dist-info/entry_points.txt"))
     assert entry_points.count("monorm_") >= len(MODULES) + 1 and "[monorm.apps]" in entry_points

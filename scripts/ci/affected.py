@@ -71,12 +71,14 @@ RULES: list[tuple[str, set[str]]] = [
     (r"^languages/js/create-monorm/", {"create-monorm"}),
     (r"^languages/js/test/", {"node", "test-twins"}),
     (r"^languages/js/packaging/", {"node", "packages"}),
-    (r"^languages/js/auth/", {"node", "packages"}),
+    (r"^languages/js/(auth|admin)/", {"node", "packages"}),
     # The cargo typing tests compile generated code with `tsc` against these files and node_modules/@types.
     (r"^languages/js/package(-lock)?\.json$", {"rust", "node", "create-monorm", "packages", "release-scripts"}),
     (r"^languages/js/src/(index|ext)\.ts$", {"rust", "node", "create-monorm", "packages"}),
     (r"^languages/js/", {"node", "create-monorm", "packages"}),
     (r"^apps/auth/", {"python", "node", "packages"}),
+    # crates/admin tests include the schema; the wheel and the tarball ship it.
+    (r"^apps/admin/", {"rust", "python", "node", "packages"}),
     (r"^extensions/[^/]+/", {"rust", "python", "node", "packages"}),
     (r"^(examples|fixtures)/", {"rust", "python", "node"}),
     (r"^tests/outside-extension/", {"rust", "packages"}),

@@ -656,3 +656,60 @@ fn a_no_transaction_migration_runs_and_rolls_back_on_postgres() {
         std::panic::resume_unwind(e);
     }
 }
+
+fn project(name: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("monorm-cli-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for (path, content) in files {
+        std::fs::write(dir.join(path), content).unwrap();
+    }
+    dir
+}
+
+#[test]
+fn bare_admin_in_the_binary_says_to_use_python_or_node() {
+    let dir = project("admin-bare", &[("schema.prisma", SCHEMA)]);
+    let out = monorm(&dir, &["admin"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(text(&out.stderr).contains("python -m monorm admin"), "{}", text(&out.stderr));
+    assert!(text(&out.stderr).contains("npx monorm admin"));
+}
+
+#[test]
+fn admin_init_writes_settings_a_module_and_the_import_for_every_model() {
+    let dir = project("admin-init-py", &[("schema.prisma", SCHEMA)]);
+    assert_eq!(monorm(&dir, &["admin", "init"]).status.code(), Some(2), "the binary needs --lang");
+    let out = monorm(&dir, &["admin", "init", "--lang", "python"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let module = std::fs::read_to_string(dir.join("admin.py")).unwrap();
+    assert!(module.contains("admin = Admin()") && module.contains("admin.register(Book)") && module.contains("from models import Book"), "{module}");
+    assert_eq!(std::fs::read_to_string(dir.join("monorm.toml")).unwrap(), "[admin]\napp = \"admin:admin\"\n");
+    let schema = std::fs::read_to_string(dir.join("schema.prisma")).unwrap();
+    assert!(schema.starts_with(SCHEMA) && schema.ends_with("import \"app:monorm-admin\" (prefix: \"admin_\")\n"), "{schema}");
+    // a second run changes nothing: the settings and the module exist
+    let again = monorm(&dir, &["admin", "init", "--lang", "python"]);
+    assert_eq!(again.status.code(), Some(2));
+    assert_eq!(std::fs::read_to_string(dir.join("schema.prisma")).unwrap(), schema);
+}
+
+#[test]
+fn admin_init_edits_the_first_settings_file_and_keeps_its_content() {
+    let toml = project("admin-init-toml", &[("schema.prisma", SCHEMA), ("monorm.toml", "migrations = \"db\"")]);
+    assert!(monorm(&toml, &["admin", "init", "--lang", "typescript", "--models", "./models.js"]).status.success());
+    assert_eq!(std::fs::read_to_string(toml.join("monorm.toml")).unwrap(), "migrations = \"db\"\n\n[admin]\napp = \"./admin.ts:admin\"\n");
+    let module = std::fs::read_to_string(toml.join("admin.ts")).unwrap();
+    assert!(module.contains("import { Book } from \"./models.js\";") && module.contains("admin.register(Book);"), "{module}");
+    assert!(std::fs::read_to_string(toml.join("schema.prisma")).unwrap().contains("import \"app:admin\""));
+
+    let pyproject = project("admin-init-pyproject", &[("schema.prisma", SCHEMA), ("pyproject.toml", "[tool.monorm]\nmigrations = \"db\"\n")]);
+    assert!(monorm(&pyproject, &["admin", "init", "--lang", "python", "--models", "models"]).status.success());
+    assert_eq!(std::fs::read_to_string(pyproject.join("pyproject.toml")).unwrap(), "[tool.monorm]\nmigrations = \"db\"\n\n[tool.monorm.admin]\napp = \"admin:admin\"\n");
+    assert!(std::fs::read_to_string(pyproject.join("admin.py")).unwrap().contains("from models import Book"));
+
+    let json = "{\n  \"name\": \"x\",\n  \"monorm\": {\n    \"migrations\": \"db\"\n  },\n  \"type\": \"module\"\n}\n";
+    let package = project("admin-init-package", &[("schema.prisma", SCHEMA), ("package.json", json)]);
+    assert!(monorm(&package, &["admin", "init", "--lang", "typescript"]).status.success());
+    let edited = std::fs::read_to_string(package.join("package.json")).unwrap();
+    assert_eq!(edited, "{\n  \"name\": \"x\",\n  \"monorm\": {\n    \"admin\": {\"app\": \"./admin.ts:admin\"},\n    \"migrations\": \"db\"\n  },\n  \"type\": \"module\"\n}\n");
+}

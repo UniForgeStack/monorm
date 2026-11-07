@@ -38,6 +38,7 @@
 //! (an invalid schema, a migration error, a database error, `makemigrations --check`
 //! finding changes, `drift` finding differences), 2 bad usage.
 
+mod admin;
 mod init;
 mod package_lock;
 
@@ -78,7 +79,7 @@ impl Host {
     }
 }
 
-const COMMANDS: &str = "  init [dir] [--lang python|typescript] [--tool uv|pip|npm|pnpm|yarn|bun] [--db sqlite|postgresql] [--url URL] [--ext a,b|all] [--yes]\n                                           write a starter project; it asks for what no flag answers\n  identities [--rename Old=New] [--restore Model]\n                                           explicitly update frozen ContentType IDs\n  check [-o FILE]                          compile the schema and check the package lock
+const COMMANDS: &str = "  init [dir] [--lang python|typescript] [--tool uv|pip|npm|pnpm|yarn|bun] [--db sqlite|postgresql] [--url URL] [--ext a,b|all] [--yes]\n                                           write a starter project; it asks for what no flag answers\n  admin init [--lang python|typescript] [--models MODULE]\n                                           write the admin settings, an admin module that registers every model, and the schema import\n  admin                                    serve the admin (through python -m monorm or npx monorm)\n  identities [--rename Old=New] [--restore Model]\n                                           explicitly update frozen ContentType IDs\n  check [-o FILE]                          compile the schema and check the package lock
   fmt --native                            convert supported SQL expressions offline
   compile [-o ir.json]                     print or write the compiled schema (JSON IR)
   generate [python|typescript|rust] [-o FILE] [--import MODULE] [--query-set Model=TARGET]... [--model-methods Model=TARGET]...
@@ -136,7 +137,7 @@ struct Args {
 }
 
 const FLAGS: [&str; 9] = ["--native", "--empty", "--check", "--down", "--force", "--allow-destructive", "--yes", "-h", "--help"];
-const VALUED: [&str; 21] = ["--lang", "--tool", "--db", "--ext", "--schema", "--dir", "--url", "-o", "--out", "--import", "--name", "--steps", "--to", "--rename", "--restore", "--query-set", "--model-methods", "--ext-dir", "--app", "--extension", "--extension-module"];
+const VALUED: [&str; 22] = ["--models", "--lang", "--tool", "--db", "--ext", "--schema", "--dir", "--url", "-o", "--out", "--import", "--name", "--steps", "--to", "--rename", "--restore", "--query-set", "--model-methods", "--ext-dir", "--app", "--extension", "--extension-module"];
 
 impl Args {
     fn parse(raw: &[String]) -> Result<Self> {
@@ -391,6 +392,14 @@ async fn command(argv: &[String], host: Host) -> Result<i32> {
     }
     let settings = settings()?;
     let schema = schema_file(&args, &settings)?;
+    if command == "admin" {
+        args.allow(command, &["--lang", "--models"], 1)?;
+        if args.arg(0) != Some("init") {
+            return Err(admin::other(args.arg(0), host));
+        }
+        let request = admin::Request { lang: args.opt(&["--lang"]), models: args.opt(&["--models"]), schema: &schema };
+        return admin::init(&request, host, || load(&schema, &args).map(|(_, compiled)| compiled));
+    }
     match command {
         "identities" => {
             args.allow(command, &["--rename", "--restore"], 0)?;

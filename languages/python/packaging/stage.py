@@ -1,4 +1,4 @@
-"""Stage the built-in extension packages and the auth app into `languages/python/`, so `maturin build` ships them in the `monorm` wheel.
+"""Stage the built-in extension packages and the auth and admin apps into `languages/python/`, so `maturin build` ships them in the `monorm` wheel.
 
 Each extension becomes a top-level package `<module>/` with its runtime source, `MANIFEST_HASH`, `monorm-extension.toml`
 and the library of this platform. The libraries come from `--libraries DIR` (laid out `<name>/<platform>/<file>` as `assemble-bundle.mjs --collect` writes them, or
@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[3]
 TARGET = ROOT / "languages" / "python"
 EXTENSIONS = ("timestamps", "soft-delete", "locking", "inherit", "query-defaults", "generic", "proxy", "model-composition", "file-storage")
 AUTH = ROOT / "apps" / "auth" / "python" / "monorm_auth"
+ADMIN = ROOT / "apps" / "admin" / "python" / "monorm_admin"
 # Platform key, library file prefix and suffix; the keys match `monorm-extension-package`.
 PLATFORMS = {
     ("Darwin", "arm64"): ("darwin-arm64", "lib", ".dylib"),
@@ -107,7 +108,8 @@ def main() -> None:
                 build_library(ROOT / "extensions" / name, libraries)
         modules = [stage_extension(name, libraries, key, prefix, suffix) for name in EXTENSIONS]
     shutil.copytree(AUTH, TARGET / "monorm_auth", ignore=IGNORE)
-    print("staged", *modules, "monorm_auth", file=sys.stderr)
+    shutil.copytree(ADMIN, TARGET / "monorm_admin", ignore=IGNORE)
+    print("staged", *modules, "monorm_auth", "monorm_admin", file=sys.stderr)
 
 
 if __name__ == "__main__":

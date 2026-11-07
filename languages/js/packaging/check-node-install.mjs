@@ -22,7 +22,7 @@ const names = packed.files.map((file) => file.path);
 for (const gone of ["unscoped/", "packaging/", "native/src/", "test/"]) {
   if (names.some((name) => name.startsWith(gone))) throw new Error(`the tarball holds ${gone}`);
 }
-for (const needed of ["dist/src/index.js", "dist/src/auth/index.js", "auth/schema.prisma", "extensions/locking/monorm-extension.toml", "extensions/file-storage/model.js"]) {
+for (const needed of ["dist/src/index.js", "dist/src/auth/index.js", "auth/schema.prisma", "admin/schema.prisma", "extensions/locking/monorm-extension.toml", "extensions/file-storage/model.js"]) {
   if (!names.includes(needed)) throw new Error(`the tarball lacks ${needed}`);
 }
 if (!names.some((name) => /^prebuilt\/[^/]+\/monorm\.node$/.test(name))) throw new Error("the tarball holds no native addon");
