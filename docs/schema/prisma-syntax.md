@@ -97,6 +97,7 @@ Fields are `name Type @attr...` with no colon. `Type?` is nullable, as before.
 | `@check("views >= 0")` | `@check("views >= 0")` | ours |
 | `@comment("...")` | `@comment("...")` | ours |
 | `@renamed_from("old")` | `@renamed_from("old")` | ours |
+| (none: the column is dropped with the field) | `@deprecated` | ours |
 
 ### Nested types
 

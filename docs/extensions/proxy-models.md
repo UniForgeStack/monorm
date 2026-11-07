@@ -36,6 +36,7 @@ table or index. Physical foreign keys that target a proxy refer to its root stor
 still return the proxy model. Cycles, unknown sources, stored-field additions,
 encoding changes, key changes and physical object overrides fail during definition.
 A proxy cannot override a relation; inherited relations keep their targets.
+The rules for an omitted field (primary key, `NOT NULL` without a database default, relation keys) are the core hide rules that `@deprecated` also uses ([schema.md](../schema/schema.md#backward-compatible-rollouts)).
 A proxy cannot declare `@@protected_write`; it shares the protection of its root model.
 
 **Inherited behavior.** A proxy has every member that another extension adds to its root model.
@@ -67,7 +68,7 @@ which only change the default selection and keep the field.
 
 Definition fails with the field name when an omission breaks a rule:
 
-* The primary key cannot be omitted.
+* A primary key field cannot be omitted, also one member of a composite key.
 * A `NOT NULL` field without a database `@default` cannot be omitted, because an
   insert through the proxy then fails. A `@client_default` on the source field does
   not count: the proxy insert does not contain the field.

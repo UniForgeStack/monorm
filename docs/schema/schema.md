@@ -379,6 +379,7 @@ value, and says so in a warning.
 | `@generated(quantity * price)` | generated column (below) |
 | `@comment("...")` | column comment |
 | `@renamed_from("old")` | previous column name: the migration renames it instead of dropping |
+| `@deprecated` | the field leaves the model, the generated types and every query; its column stays in the table (see [Backward-compatible rollouts](#backward-compatible-rollouts)) |
 
 ### Generated columns
 
@@ -982,6 +983,53 @@ data step; use model queries only in a step that you delete later. `data.py` and
 * SQLite runs a migration with foreign keys off (`PRAGMA foreign_keys` has no effect in
   a transaction), so `ON DELETE CASCADE` does not fire in a data step. A second migrator
   waits 5 seconds for the database lock, then fails with `database is locked`.
+
+### Backward-compatible rollouts
+
+A rollout runs old and new code against one database. A column must stay in the table until no old code reads it.
+`@deprecated` on a field removes it from the logical model and keeps its column in the physical schema.
+
+* The class, the generated types, reads, inserts and updates do not know the field. No SQL names its column.
+* DDL, the migration snapshot and `drift` still have the column.
+* Adding or removing the attribute makes no migration, so `makemigrations --check` passes.
+* Deleting the field line later makes the normal `DROP COLUMN`, with the destructive marker and gate.
+* An index, a unique constraint, an exclusion constraint or a trigger `update_of` list over the column stays in the table. The model does not know it, so such a unique is not an upsert conflict target. An index or exclusion constraint whose `where` SQL names the column or the field as a whole word stays in the table too.
+* An extension attribute that names the field, such as `@locking.version`, fails with `unknown field`, because the logical model no longer has the field.
+* A raw SQL `@check` expression stays in the model, because it is not parsed.
+
+`@deprecated` takes no arguments. It goes on a scalar, enum or nested field of a table model. These cases are schema errors:
+
+* a relation field, a view field, or a field of a `type` block;
+* `@client_default` or `@renamed_from` on the same field (a hidden field is never written, and its column cannot be renamed);
+* a primary key field (also one member of a composite key), or a partition key field;
+* a `NOT NULL` field without a database `@default` (an insert would fail). A generated column needs no `@default`, because an insert never writes it;
+* a field that a relation of the model uses as its key, unless the relation is removed first;
+* a field that a relation of another model references.
+
+The same rules decide which fields a [proxy model](../extensions/proxy-models.md) may omit.
+
+#### Add a column
+
+1. Add the field as nullable (`String?`) or with a `@default`. Old code does not name it, so its inserts still work.
+2. Run `makemigrations` and `migrate`, then deploy the new code.
+3. Make the field required in a later migration, after a backfill, if you need `NOT NULL`.
+
+#### Remove a field
+
+1. Add `@deprecated` to the field and deploy. No migration is made. The new code does not read or write the column.
+2. When no old code runs, delete the field line, run `makemigrations`, and review the `DROP COLUMN`. It is destructive, so it needs the destructive gate.
+
+The column must be nullable or have a database `@default`. Before step 1, add the default in a migration if it has none.
+
+#### Rename a field
+
+`@renamed_from` renames the column in one step, so old code that names the old column fails during the rollout. Use these steps for a rename without downtime:
+
+1. Add the new field as nullable, with no `@default`. Add a `@@trigger` on insert and on `update_of: [old]` that copies the value to the new column only when `NEW.old IS DISTINCT FROM OLD.old`, so a write that new code makes to the new column stays. Run `makemigrations`.
+2. In the same migration folder, add a data step (`data.py` or `data.ts`) that copies the existing values: `UPDATE t SET new = old WHERE new IS NULL`. See [Data migrations](#data-migrations).
+3. Deploy code that reads and writes the new field. Old code reads the old column, so it does not see these writes. If old code must see them, add a second trigger that copies the new column back to the old one.
+4. Add `@deprecated` to the old field and deploy. No migration is made.
+5. Delete the old field line and the trigger, and run `makemigrations`. It drops the column.
 
 ### Pull, baseline and drift: a live database under migrations
 
