@@ -1523,7 +1523,7 @@ pub fn connect<'env>(
 ) -> napi::Result<PromiseRaw<'env, Engine>> {
     let schema = schema.inner.clone();
     env.spawn_future(async move {
-        let driver = db::connect(&url, max_connections as usize).await.map_err(db_tagged)?;
+        let driver = db::connect_with_types(&url, max_connections as usize, schema.declared_types()).await.map_err(db_tagged)?;
         if driver.dialect() != schema.dialect {
             driver.close().await;
             return Err(schema_err(format!("schema targets {}, connection uses {}", schema.dialect.name(), driver.dialect().name())));

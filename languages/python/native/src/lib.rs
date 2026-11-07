@@ -1441,7 +1441,7 @@ fn connect<'py>(
     let classes = schema.get().classes.clone();
     let schema = schema.get().inner.clone();
     pyo3_async_runtimes::tokio::future_into_py(py, async move {
-        let driver = db::connect(&url, max_connections as usize).await.map_err(db_err)?;
+        let driver = db::connect_with_types(&url, max_connections as usize, schema.declared_types()).await.map_err(db_err)?;
         if driver.dialect() != schema.dialect {
             driver.close().await;
             return Err(schema_err(format!("schema targets {}, connection uses {}", schema.dialect.name(), driver.dialect().name())));

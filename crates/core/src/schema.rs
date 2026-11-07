@@ -396,6 +396,18 @@ impl Schema {
         self
     }
 
+    /// The distinct SQL types of the stored fields that name a type of their own (`"user_role"`,
+    /// `citext`, `vector(3)[]`). A connection behind a transaction pooler reads them once at connect.
+    pub fn declared_types(&self) -> Vec<String> {
+        let mut out = std::collections::BTreeSet::new();
+        for f in self.physical().models.iter().flat_map(|m| m.fields()) {
+            if let Some(t) = &f.db_type {
+                out.insert(if f.array { format!("{t}[]") } else { t.clone() });
+            }
+        }
+        out.into_iter().collect()
+    }
+
     pub fn model_idx(&self, name: &str) -> Result<usize> {
         self.model_index.get(name).copied().ok_or_else(|| format!("unknown model {name:?}"))
     }

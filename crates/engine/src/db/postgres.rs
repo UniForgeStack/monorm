@@ -12,6 +12,9 @@
 //! * Transactions pin one pooled connection and run `BEGIN` / `SAVEPOINT` on it. A
 //!   transaction dropped without commit or rollback closes its connection instead of
 //!   returning it to the pool mid-transaction.
+//! * With `pgbouncer=true` in the URL (a transaction pooler in front of the server) no statement
+//!   has a name: queries go through the unnamed statement (`query_typed`), a failed lookup of a
+//!   named statement becomes a clear error, and the types of the schema are read once at connect.
 //! * TLS follows libpq's `sslmode`: `disable`; `prefer` (the default) and `require`
 //!   encrypt without verifying the certificate; `verify-ca` / `verify-full` verify it
 //!   against the webpki roots, hostname included.
@@ -26,7 +29,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 
 use bytes::BytesMut;
 use chrono::{DateTime, NaiveDateTime, Utc};
-use deadpool::managed::{self, Metrics, RecycleResult};
+use deadpool::managed::{self, Metrics, RecycleError, RecycleResult};
 use deadpool_postgres::{ClientWrapper, Manager, ManagerConfig, RecyclingMethod};
 use sea_query::{ArrayType, Value};
 use tokio::sync::Mutex;
@@ -188,21 +191,62 @@ fn forget_stale(c: &PgConn, sql: &str, args: &[Value], e: tokio_postgres::Error)
     pg_err(e)
 }
 
+/// The error of a statement. Behind a pooler a missing or doubled statement name (`26000`,
+/// `42P05`) means a named statement reached another server: the connection is marked broken so
+/// the pool replaces it.
+fn run_err(c: &PgConn, sql: &str, args: &[Value], e: tokio_postgres::Error) -> DbError {
+    if c.pgbouncer { pooler_err(Some(c), e) } else { forget_stale(c, sql, args, e) }
+}
+
+fn pooler_err(c: Option<&PgConn>, e: tokio_postgres::Error) -> DbError {
+    if !pooler_code(&e) {
+        return pg_err(e);
+    }
+    let code = e.code().map(|c| c.code().to_owned()).unwrap_or_default();
+    if let Some(c) = c {
+        c.broken.store(true, Ordering::Release);
+    }
+    let mut err = pg_err(e);
+    let name = err.message.split('"').nth(1).map(str::to_owned).unwrap_or_default();
+    err.message = format!(
+        "prepared statement \"{name}\" is not known in pgbouncer mode ({code}): a type that the schema does not list needs a statement of its own; add it to the schema or use a URL without pgbouncer=true"
+    );
+    err
+}
+
+/// The parameters of a statement with their declared types, for the unnamed statement.
+fn typed<'a>(params: &'a [Param<'a>], args: &[Value]) -> DbResult<Vec<(&'a (dyn ToSql + Sync), Type)>> {
+    args.iter().zip(params).map(|(v, p)| Ok((p as &(dyn ToSql + Sync), pg_type(v)?))).collect()
+}
+
 async fn query(c: &PgConn, sql: &str, args: &[Value]) -> DbResult<Box<dyn RowSet>> {
-    let stmt = prepare(c, sql, args).await?;
     let params: Vec<Param<'_>> = args.iter().map(Param).collect();
+    if c.pgbouncer {
+        let rows = c.query_typed(sql, &typed(&params, args)?).await.map_err(|e| run_err(c, sql, args, e))?;
+        return Ok(Box::new(PgRows(rows)));
+    }
+    let stmt = prepare(c, sql, args).await?;
     let refs: Vec<&(dyn ToSql + Sync)> = params.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
-    let rows = c.query(&stmt, &refs).await.map_err(|e| forget_stale(c, sql, args, e))?;
+    let rows = c.query(&stmt, &refs).await.map_err(|e| run_err(c, sql, args, e))?;
     Ok(Box::new(PgRows(rows)))
 }
 
 async fn fetch(c: &PgConn, sql: &str, args: &[Value]) -> DbResult<Box<dyn RawRows>> {
-    let stmt = prepare(c, sql, args).await?;
     let params: Vec<Param<'_>> = args.iter().map(Param).collect();
+    if c.pgbouncer {
+        // The unnamed statement has no description to read first: the columns come from the
+        // first row, so a result with no rows has no columns.
+        let rows = c.query_typed(sql, &typed(&params, args)?).await.map_err(|e| run_err(c, sql, args, e))?;
+        let cols = rows.first().map(Row::columns).unwrap_or_default();
+        let types = cols.iter().map(|c| raw_type(c.name(), c.type_())).collect::<DbResult<Vec<_>>>()?;
+        let columns = cols.iter().map(|c| c.name().to_owned()).collect();
+        return Ok(Box::new(PgRawRows { columns, types, rows }));
+    }
+    let stmt = prepare(c, sql, args).await?;
     let refs: Vec<&(dyn ToSql + Sync)> = params.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
     let types = stmt.columns().iter().map(|c| raw_type(c.name(), c.type_())).collect::<DbResult<Vec<_>>>()?;
     let columns = stmt.columns().iter().map(|c| c.name().to_owned()).collect();
-    let rows = c.query(&stmt, &refs).await.map_err(|e| forget_stale(c, sql, args, e))?;
+    let rows = c.query(&stmt, &refs).await.map_err(|e| run_err(c, sql, args, e))?;
     Ok(Box::new(PgRawRows { columns, types, rows }))
 }
 
@@ -275,10 +319,13 @@ impl RawRows for PgRawRows {
 }
 
 async fn execute(c: &PgConn, sql: &str, args: &[Value]) -> DbResult<u64> {
-    let stmt = prepare(c, sql, args).await?;
     let params: Vec<Param<'_>> = args.iter().map(Param).collect();
+    if c.pgbouncer {
+        return c.execute_typed(sql, &typed(&params, args)?).await.map_err(|e| run_err(c, sql, args, e));
+    }
+    let stmt = prepare(c, sql, args).await?;
     let refs: Vec<&(dyn ToSql + Sync)> = params.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
-    c.execute(&stmt, &refs).await.map_err(|e| forget_stale(c, sql, args, e))
+    c.execute(&stmt, &refs).await.map_err(|e| run_err(c, sql, args, e))
 }
 
 /// Simple-query protocol: several statements, no parameters, text results.
@@ -337,21 +384,54 @@ fn fit<'a>(v: &'a Value, ty: &Type) -> DbResult<std::borrow::Cow<'a, Value>> {
 
 /// Binary `COPY ... FROM STDIN`. The column types come from the server, so enums,
 /// `json` and arrays encode as the columns expect.
+///
+/// Behind a pooler the statements it prepares are dropped before it returns: tokio-postgres
+/// sends their `Close` ahead of the next message, so the caller's `COMMIT` ends a transaction
+/// that holds no statement.
 async fn copy_in(c: &PgConn, table: &str, columns: &[String], rows: &[Vec<Value>]) -> DbResult<u64> {
+    let err = |e| if c.pgbouncer { pooler_err(Some(c), e) } else { pg_err(e) };
     let cols = columns.iter().map(|c| quote(c)).collect::<Vec<_>>().join(", ");
     let table = quote(table);
-    let probe = c.prepare(&format!("SELECT {cols} FROM {table} LIMIT 0")).await.map_err(pg_err)?;
+    let probe = c.prepare(&format!("SELECT {cols} FROM {table} LIMIT 0")).await.map_err(err)?;
     let types: Vec<Type> = probe.columns().iter().map(|c| c.type_().clone()).collect();
-    let sink = c.copy_in(&format!("COPY {table} ({cols}) FROM STDIN (FORMAT binary)")).await.map_err(pg_err)?;
+    let copy_sql = format!("COPY {table} ({cols}) FROM STDIN (FORMAT binary)");
+    // `copy_in(&str)` prepares and drops its statement inside the call; here the drop is ours.
+    let copy = if c.pgbouncer { Some(c.prepare(&copy_sql).await.map_err(err)?) } else { None };
+    let sink = match &copy {
+        Some(stmt) => c.copy_in(stmt).await,
+        None => c.copy_in(&copy_sql).await,
+    }
+    .map_err(err)?;
     let writer = BinaryCopyInWriter::new(sink, &types);
     let mut writer = std::pin::pin!(writer);
     for row in rows {
         let row = row.iter().zip(&types).map(|(v, ty)| fit(v, ty)).collect::<DbResult<Vec<_>>>()?;
         let params: Vec<Param<'_>> = row.iter().map(|v| Param(v)).collect();
         let refs: Vec<&(dyn ToSql + Sync)> = params.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
-        writer.as_mut().write(&refs).await.map_err(pg_err)?;
+        writer.as_mut().write(&refs).await.map_err(err)?;
     }
-    writer.finish().await.map_err(pg_err)
+    writer.finish().await.map_err(err)
+}
+
+/// `copy_in` as a statement of its own: behind a pooler it runs in one transaction, so the
+/// probe, the `COPY` and the `Close` of both reach one server.
+async fn copy_in_alone(c: Object, table: &str, columns: &[String], rows: &[Vec<Value>]) -> DbResult<u64> {
+    if !c.pgbouncer {
+        return copy_in(&c, table, columns, rows).await;
+    }
+    // Dropped mid-way, the session detaches the connection instead of pooling an open transaction.
+    let mut session = Session { client: Some(c), finished: false, next_savepoint: 0, savepoints: vec![] };
+    let client = || session.client.as_ref().expect("the session holds the client");
+    client().batch_execute("BEGIN").await.map_err(pg_err)?;
+    let result = match copy_in(client(), table, columns, rows).await {
+        Ok(n) => client().batch_execute("COMMIT").await.map(|()| n).map_err(pg_err),
+        Err(e) => Err(e),
+    };
+    if result.is_err() && client().batch_execute("ROLLBACK").await.is_err() {
+        return result; // unfinished: the drop of the session closes the connection
+    }
+    session.finished = true;
+    result
 }
 
 // -- rows --------------------------------------------------------------------------------
@@ -554,13 +634,17 @@ impl StatementLru {
 /// A pooled connection with the order of its statement cache.
 pub(super) struct PgConn {
     client: ClientWrapper,
-    lru: StdMutex<StatementLru>,
+    /// `None` behind a pooler: no statement has a name, so there is no cache to bound.
+    lru: Option<StdMutex<StatementLru>>,
+    pgbouncer: bool,
+    /// Set when a named statement failed behind a pooler: the pool must not hand this connection out again.
+    broken: AtomicBool,
 }
 
 impl PgConn {
     fn lru(&self) -> std::sync::MutexGuard<'_, StatementLru> {
         // The order is a hint for eviction: a panic while it was held leaves it usable.
-        self.lru.lock().unwrap_or_else(|e| e.into_inner())
+        self.lru.as_ref().expect("a connection without a pooler has a statement cache").lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -574,6 +658,9 @@ impl Deref for PgConn {
 struct PgManager {
     inner: Manager,
     statement_cache_max: usize,
+    pgbouncer: bool,
+    /// The SQL types that `create` reads once behind a pooler (see `warm_up`).
+    types: Vec<String>,
 }
 
 impl managed::Manager for PgManager {
@@ -582,16 +669,80 @@ impl managed::Manager for PgManager {
 
     async fn create(&self) -> Result<PgConn, Self::Error> {
         let client = managed::Manager::create(&self.inner).await?;
-        Ok(PgConn { client, lru: StdMutex::new(StatementLru::new(self.statement_cache_max)) })
+        if self.pgbouncer {
+            warm_up(&client, &self.types).await?;
+        }
+        Ok(PgConn {
+            client,
+            lru: (!self.pgbouncer).then(|| StdMutex::new(StatementLru::new(self.statement_cache_max))),
+            pgbouncer: self.pgbouncer,
+            broken: AtomicBool::new(false),
+        })
     }
 
     async fn recycle(&self, conn: &mut PgConn, metrics: &Metrics) -> RecycleResult<Self::Error> {
+        if conn.broken.load(Ordering::Acquire) {
+            return Err(RecycleError::message("a statement name was lost behind the pooler"));
+        }
         managed::Manager::recycle(&self.inner, &mut conn.client, metrics).await
     }
 
     fn detach(&self, conn: &mut PgConn) {
         managed::Manager::detach(&self.inner, &mut conn.client)
     }
+}
+
+/// Reads the type of every name in `types` through the unnamed statement, in one transaction on
+/// one server. tokio-postgres looks up a type it does not know with a named statement of its own
+/// (`s{N}`) and caches the answer; after this, a result of a listed type needs no lookup.
+/// The named lookup statements are then closed with `DEALLOCATE ALL`: a pooler would not send a
+/// later `Bind` to the server that holds them. A type that does not exist yet (before `migrate`)
+/// is skipped; each cast has a savepoint of its own so the transaction stays open.
+async fn warm_up(client: &tokio_postgres::Client, types: &[String]) -> Result<(), tokio_postgres::Error> {
+    if types.is_empty() {
+        return Ok(());
+    }
+    async fn read(client: &tokio_postgres::Client, list: &[&String]) -> Result<(), tokio_postgres::Error> {
+        let casts = list.iter().map(|t| format!("NULL::{t}")).collect::<Vec<_>>().join(", ");
+        client.query_typed(&format!("SELECT {casts}"), &[]).await.map(drop)
+    }
+    let missing = |e: &tokio_postgres::Error| e.as_db_error().is_some() && !pooler_code(e);
+    client.batch_execute("BEGIN").await?;
+    let result: Result<(), tokio_postgres::Error> = async {
+        client.batch_execute("SAVEPOINT warm").await?;
+        let all: Vec<&String> = types.iter().collect();
+        if let Err(e) = read(client, &all).await {
+            if !missing(&e) {
+                return Err(e);
+            }
+            client.batch_execute("ROLLBACK TO warm").await?;
+            for t in &all {
+                client.batch_execute("SAVEPOINT warm_one").await?;
+                if let Err(e) = read(client, &[t]).await {
+                    if !missing(&e) {
+                        return Err(e);
+                    }
+                    client.batch_execute("ROLLBACK TO warm_one").await?;
+                }
+                client.batch_execute("RELEASE warm_one").await?;
+            }
+        }
+        client.batch_execute("DEALLOCATE ALL").await
+    }
+    .await;
+    // On the error path the same server still gets `DEALLOCATE ALL` and the `ROLLBACK`.
+    match result {
+        Ok(()) => client.batch_execute("COMMIT").await,
+        Err(e) => {
+            let _ = client.batch_execute("DEALLOCATE ALL; ROLLBACK").await;
+            Err(e)
+        }
+    }
+}
+
+/// True for the SQLSTATE of a named statement that the connected server does not hold (`26000`) or already holds (`42P05`).
+fn pooler_code(e: &tokio_postgres::Error) -> bool {
+    e.code().is_some_and(|c| matches!(c.code(), "26000" | "42P05"))
 }
 
 type Pool = managed::Pool<PgManager>;
@@ -605,16 +756,25 @@ pub struct PgDriver {
     /// connection of a session lock, and for a cancel request.
     config: tokio_postgres::Config,
     tls: Option<tls::MakeRustlsConnect>,
+    /// The URL says a transaction pooler is in front of the server.
+    pgbouncer: bool,
 }
 
 impl PgDriver {
+    #[cfg(test)]
     pub async fn connect(url: &str, max_connections: usize) -> DbResult<Self> {
-        Self::connect_with_cache(url, max_connections, STATEMENT_CACHE_MAX).await
+        Self::connect_with_types(url, max_connections, vec![]).await
+    }
+
+    /// `connect` with the SQL types of the schema. With `pgbouncer=true` in the URL, each new
+    /// connection reads them once, so no later result needs a statement of its own.
+    pub async fn connect_with_types(url: &str, max_connections: usize, types: Vec<String>) -> DbResult<Self> {
+        Self::connect_with_cache(url, max_connections, STATEMENT_CACHE_MAX, types).await
     }
 
     /// `connect` with another statement cache bound per connection (for tests).
-    async fn connect_with_cache(url: &str, max_connections: usize, statement_cache_max: usize) -> DbResult<Self> {
-        let (mut config, tls) = tls::parse(url)?;
+    async fn connect_with_cache(url: &str, max_connections: usize, statement_cache_max: usize, types: Vec<String>) -> DbResult<Self> {
+        let (mut config, tls, pgbouncer) = tls::parse(url)?;
         // DateTime fields are UTC instants, including when stored in a timestamp
         // without time zone. Keep Postgres's timestamptz -> timestamp cast in UTC
         // on every pooled and dedicated connection, regardless of server defaults.
@@ -625,13 +785,25 @@ impl PgDriver {
             Some(tls) => Manager::from_config(config.clone(), tls, mgr_config),
             None => Manager::from_config(config.clone(), NoTls, mgr_config),
         };
-        let manager = PgManager { inner, statement_cache_max };
+        let manager = PgManager { inner, statement_cache_max, pgbouncer, types };
         let pool = Pool::builder(manager)
             .max_size(max_connections.max(1))
             .build()
             .map_err(|e| DbError::other(e.to_string()))?;
-        drop(get_client(&pool).await?); // fail at connect() on a bad URL or password
-        Ok(PgDriver { pool, config, tls })
+        let probe = get_client(&pool).await?; // fail at connect() on a bad URL or password
+        if pgbouncer {
+            // The pooler may drop the `TimeZone` startup parameter that every other pooled and dedicated connection relies on.
+            let zone = query_text(&probe, "SHOW TimeZone").await?;
+            let zone = zone.first().and_then(|r| r.first()).cloned().flatten().unwrap_or_default();
+            if zone != "UTC" {
+                return Err(DbError::other(format!(
+                    "the connection through the pooler has TimeZone {zone:?}, not \"UTC\": the pooler dropped the startup parameter; \
+                     add `options` to ignore_startup_parameters in its configuration (PgBouncer 1.20 or later) or set the server time zone to UTC"
+                )));
+            }
+        }
+        drop(probe);
+        Ok(PgDriver { pool, config, tls, pgbouncer })
     }
 
     /// Takes a connection and sends `BEGIN`. The session owns the connection before the first
@@ -677,6 +849,7 @@ impl PgDriver {
 
 async fn get_client(pool: &Pool) -> DbResult<Object> {
     pool.get().await.map_err(|e| match e {
+        deadpool_postgres::PoolError::Backend(e) if pool.manager().pgbouncer => pooler_err(None, e),
         deadpool_postgres::PoolError::Backend(e) => pg_err(e),
         other => DbError::other(other.to_string()),
     })
@@ -704,7 +877,7 @@ impl Executor for PgDriver {
     }
 
     fn copy_in(&self, table: String, columns: Vec<String>, rows: Vec<Vec<Value>>) -> BoxFuture<'_, DbResult<u64>> {
-        Box::pin(async move { let c = get_client(&self.pool).await?; copy_in(&c, &table, &columns, &rows).await })
+        Box::pin(async move { let c = get_client(&self.pool).await?; copy_in_alone(c, &table, &columns, &rows).await })
     }
 
     fn begin(&self) -> BoxFuture<'_, DbResult<Arc<dyn Transaction>>> {
@@ -725,6 +898,12 @@ impl Driver for PgDriver {
         &self, key: i64, exclusive: bool, nowait: bool, timeout_ms: Option<u64>,
     ) -> BoxFuture<'_, DbResult<Option<Arc<dyn SessionLock>>>> {
         Box::pin(async move {
+            if self.pgbouncer {
+                // The lock belongs to one server session, and a pooler hands the connection to others.
+                return Err(DbError::other(
+                    "a session lock needs a direct connection, and this URL has pgbouncer=true: use a URL without it (for migrate, set MONORM_DATABASE_URL)",
+                ));
+            }
             // `lock_timeout = 0` means no timeout in Postgres.
             let nowait = nowait || timeout_ms == Some(0);
             // A connection of its own: a lock wait never holds a pool slot.
@@ -1036,13 +1215,22 @@ mod tls {
 
     use super::{DbError, DbResult};
 
-    /// The tokio-postgres config for `url`, and the TLS connector its `sslmode` asks
-    /// for (`None` for `disable`).
-    pub fn parse(url: &str) -> DbResult<(tokio_postgres::Config, Option<MakeRustlsConnect>)> {
+    /// The tokio-postgres config for `url`, the TLS connector its `sslmode` asks for (`None`
+    /// for `disable`), and whether `pgbouncer=true` is set. tokio-postgres does not know that key.
+    pub fn parse(url: &str) -> DbResult<(tokio_postgres::Config, Option<MakeRustlsConnect>, bool)> {
         let (base, query) = url.split_once('?').unwrap_or((url, ""));
         let mut mode = String::from("prefer");
         let mut pairs = vec![];
+        let mut pgbouncer = false;
         for pair in query.split('&').filter(|p| !p.is_empty()) {
+            if let Some(v) = pair.strip_prefix("pgbouncer=") {
+                pgbouncer = match v {
+                    "true" => true,
+                    "false" => false,
+                    other => return Err(DbError::other(format!("pgbouncer must be true or false, not {other:?}"))),
+                };
+                continue;
+            }
             match pair.strip_prefix("sslmode=") {
                 Some(m) => {
                     mode = m.to_owned();
@@ -1069,7 +1257,7 @@ mod tls {
             .with_safe_default_protocol_versions()
             .map_err(|e| DbError::other(e.to_string()))?;
         let tls = match mode.as_str() {
-            "disable" => return Ok((config, None)),
+            "disable" => return Ok((config, None, pgbouncer)),
             "allow" | "prefer" | "require" => {
                 builder.dangerous().with_custom_certificate_verifier(Arc::new(NoVerify(provider))).with_no_client_auth()
             }
@@ -1079,7 +1267,7 @@ mod tls {
             }
             _ => unreachable!("checked above"),
         };
-        Ok((config, Some(MakeRustlsConnect::new(tls))))
+        Ok((config, Some(MakeRustlsConnect::new(tls)), pgbouncer))
     }
 
     /// libpq's `prefer` / `require`: encrypt, but accept any certificate. Handshake
@@ -1131,11 +1319,19 @@ mod failure_tests {
         tokio::runtime::Runtime::new().unwrap()
     }
 
-    async fn driver() -> PgDriver {
-        let url = std::env::var("ORM_RUST_TEST_POSTGRES_URL")
+    fn test_url() -> String {
+        std::env::var("ORM_RUST_TEST_POSTGRES_URL")
             .or_else(|_| std::env::var("ORM_TEST_DATABASE_URL"))
-            .unwrap_or_else(|_| "postgres://postgres:postgres@localhost/orm_test".into());
-        PgDriver::connect(&url, 1).await.unwrap()
+            .unwrap_or_else(|_| "postgres://postgres:postgres@localhost/orm_test".into())
+    }
+
+    async fn driver() -> PgDriver {
+        PgDriver::connect(&test_url(), 1).await.unwrap()
+    }
+
+    /// `url` with `pgbouncer=true`.
+    fn flagged(url: &str) -> String {
+        format!("{url}{}pgbouncer=true", if url.contains('?') { '&' } else { '?' })
     }
 
     #[test]
@@ -1259,10 +1455,8 @@ mod failure_tests {
     #[test]
     fn eviction_keeps_hot_statements_prepared() {
         runtime().block_on(async {
-            let url = std::env::var("ORM_RUST_TEST_POSTGRES_URL")
-                .or_else(|_| std::env::var("ORM_TEST_DATABASE_URL"))
-                .unwrap_or_else(|_| "postgres://postgres:postgres@localhost/orm_test".into());
-            let db = PgDriver::connect_with_cache(&url, 1, 3).await.unwrap(); // one connection: one cache
+            let url = test_url();
+            let db = PgDriver::connect_with_cache(&url, 1, 3, vec![]).await.unwrap(); // one connection: one cache
             let run = |n: &str| db.query(format!("SELECT {n}::int8 AS monorm_lru_{n}"), vec![]);
             let prepared = || async {
                 let rows = db
@@ -1281,6 +1475,127 @@ mod failure_tests {
             assert_eq!(after.len(), 3, "the cache holds the bound: {after:?}");
             assert!(after.iter().any(|(name, _)| *name == hot_name), "the hot statement stayed prepared: {after:?}");
             assert!(!after.iter().any(|(_, sql)| sql.contains("monorm_lru_1")), "an old one-shot statement was closed: {after:?}");
+        });
+    }
+    // -- pgbouncer=true ---------------------------------------------------------------------
+
+    #[test]
+    fn the_pgbouncer_flag_is_read_and_removed_from_the_url() {
+        let parse = |q: &str| tls::parse(&format!("postgres://u@h/db{q}")).map(|(_, _, flag)| flag);
+        assert!(!parse("").unwrap());
+        assert!(parse("?pgbouncer=true").unwrap());
+        assert!(parse("?sslmode=disable&pgbouncer=true").unwrap());
+        assert!(!parse("?pgbouncer=false").unwrap());
+        let e = parse("?pgbouncer=yes").unwrap_err();
+        assert!(e.message.contains("pgbouncer must be true or false"), "{}", e.message);
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn a_sqlite_url_refuses_the_pgbouncer_flag() {
+        runtime().block_on(async {
+            for url in ["sqlite://:memory:?pgbouncer=true", "sqlite://:memory:?pgbouncer=false"] {
+                let e = crate::db::connect(url, 1).await.err().expect("a sqlite URL has no pgbouncer flag");
+                assert!(e.message.contains("PostgreSQL URL flag"), "{}", e.message);
+            }
+        });
+    }
+
+    #[test]
+    fn a_session_lock_is_refused_before_any_sql() {
+        runtime().block_on(async {
+            let db = PgDriver::connect(&flagged(&test_url()), 1).await.unwrap();
+            let e = db.session_lock(1, true, false, None).await.err().expect("refused");
+            assert!(e.message.contains("pgbouncer=true") && e.message.contains("MONORM_DATABASE_URL"), "{}", e.message);
+        });
+    }
+
+    #[test]
+    fn a_lost_statement_name_becomes_a_clear_error_and_retires_the_connection() {
+        runtime().block_on(async {
+            let db = PgDriver::connect(&flagged(&test_url()), 1).await.unwrap();
+            let pid = || async { db.query_text("SELECT pg_backend_pid()".into()).await.unwrap()[0][0].clone().unwrap() };
+            let before = pid().await;
+            let c = get_client(&db.pool).await.unwrap();
+            let e = c.simple_query("EXECUTE monorm_s7").await.unwrap_err();
+            let e = pooler_err(Some(&c), e);
+            drop(c);
+            assert_eq!(e.sqlstate.as_deref(), Some("26000"));
+            assert!(e.message.contains("\"monorm_s7\"") && e.message.contains("pgbouncer mode") && !e.message.contains("typeinfo"), "{}", e.message);
+            assert_ne!(pid().await, before, "the pool made a new connection");
+        });
+    }
+
+    fn bigint(n: i64) -> Value {
+        n.into()
+    }
+
+    #[test]
+    fn pgbouncer_mode_leaves_no_prepared_statement() {
+        runtime().block_on(async {
+            let direct = driver().await;
+            direct
+                .batch(
+                    "DROP TABLE IF EXISTS monorm_pgb; DROP TYPE IF EXISTS monorm_pgb_role; DROP TYPE IF EXISTS monorm_pgb_late; \
+                     CREATE TYPE monorm_pgb_role AS ENUM ('a', 'b'); \
+                     CREATE TABLE monorm_pgb (id int8 PRIMARY KEY, role monorm_pgb_role NOT NULL, name text)"
+                        .into(),
+                )
+                .await
+                .unwrap();
+            // The enum is listed, so its first read needs no statement of its own.
+            let db = PgDriver::connect_with_types(&flagged(&test_url()), 1, vec!["\"monorm_pgb_role\"".into(), "\"monorm_pgb_role\"[]".into(), "monorm_pgb_missing".into()])
+                .await
+                .unwrap();
+            let none = || async {
+                let rows = db.query_text("SELECT name, statement FROM pg_prepared_statements".into()).await.unwrap();
+                assert!(rows.is_empty(), "a statement is still prepared: {rows:?}");
+            };
+            none().await; // the warm-up closed the lookups it made
+            let n = |sql: &str, args: Vec<Value>| db.query(sql.to_owned(), args);
+
+            n("SELECT $1::int8 AS n", vec![bigint(1)]).await.unwrap();
+            none().await;
+            let insert = "INSERT INTO monorm_pgb (id, role, name) VALUES ($1, CAST($2 AS monorm_pgb_role), $3)";
+            assert_eq!(db.execute(insert.into(), vec![bigint(1), "a".into(), "x".into()]).await.unwrap(), 1);
+            none().await;
+            let raw = db.fetch("SELECT id, role, name FROM monorm_pgb ORDER BY id".into(), vec![]).await.unwrap();
+            assert_eq!((raw.columns().to_vec(), raw.len()), (vec!["id".to_owned(), "role".into(), "name".into()], 1));
+            assert!(matches!(raw.cell(0, 1).unwrap(), Cell::Text("a")));
+            none().await;
+            let raw = db.fetch("SELECT id, role FROM monorm_pgb WHERE id < $1".into(), vec![bigint(0)]).await.unwrap();
+            assert_eq!((raw.len(), raw.columns().len()), (0, 0)); // no row, so no column list
+            none().await;
+            let rows = vec![vec![bigint(2), "b".into(), "y".into()], vec![bigint(3), "a".into(), Value::String(None)]];
+            assert_eq!(db.copy_in("monorm_pgb".into(), vec!["id".into(), "role".into(), "name".into()], rows).await.unwrap(), 2);
+            none().await;
+            let tx = db.begin().await.unwrap();
+            tx.execute(insert.into(), vec![bigint(4), "b".into(), "z".into()]).await.unwrap();
+            tx.copy_in("monorm_pgb".into(), vec!["id".into(), "role".into()], vec![vec![bigint(5), "a".into()]]).await.unwrap();
+            assert_eq!(tx.query("SELECT id FROM monorm_pgb".into(), vec![]).await.unwrap().len(), 5);
+            tx.commit().await.unwrap();
+            none().await;
+            let count = db.query_text("SELECT count(*) FROM monorm_pgb".into()).await.unwrap();
+            assert_eq!(count[0][0].as_deref(), Some("5"));
+
+            // A failed copy ends its transaction: nothing stays open or prepared.
+            let dup = vec![vec![bigint(1), "a".into(), "again".into()]];
+            let e = db.copy_in("monorm_pgb".into(), vec!["id".into(), "role".into(), "name".into()], dup).await.unwrap_err();
+            assert_eq!(e.kind, ErrorKind::Integrity);
+            none().await;
+            let status = db.query_text("SELECT count(*) FROM pg_stat_activity WHERE state LIKE 'idle in transaction%' AND datname = current_database()".into()).await.unwrap();
+            assert_eq!(status[0][0].as_deref(), Some("0"));
+
+            // The warm-up cached the client's lookup statement and then deallocated it, as a pooler
+            // would. A type the schema did not list needs a lookup, so it fails with a clear error
+            // and the pool replaces the connection.
+            direct.batch("CREATE TYPE monorm_pgb_late AS ENUM ('q')".into()).await.unwrap();
+            let before = db.query_text("SELECT pg_backend_pid()".into()).await.unwrap();
+            let e = db.query("SELECT 'q'::monorm_pgb_late".into(), vec![]).await.err().expect("the lookup statement is gone");
+            assert!(matches!(e.sqlstate.as_deref(), Some("26000" | "42P05")), "{e:?}");
+            assert!(e.message.contains("pgbouncer mode") && !e.message.contains("typeinfo"), "{}", e.message);
+            assert_ne!(db.query_text("SELECT pg_backend_pid()".into()).await.unwrap(), before);
+            direct.batch("DROP TABLE monorm_pgb; DROP TYPE monorm_pgb_role; DROP TYPE monorm_pgb_late".into()).await.unwrap();
         });
     }
 }

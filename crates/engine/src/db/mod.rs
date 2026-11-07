@@ -458,13 +458,24 @@ impl Driver for WithSettings {
 
 /// Opens the selected driver for `postgres://`, `postgresql://` or `sqlite://`.
 pub async fn connect(url: &str, max_connections: usize) -> DbResult<Arc<dyn Driver>> {
-    let _ = max_connections;
-    let scheme = url.split_once("://").map(|(s, _)| s).unwrap_or("");
+    connect_with_types(url, max_connections, vec![]).await
+}
+
+/// `connect` with the SQL types the schema declares (`Schema::declared_types`). A PostgreSQL
+/// URL with `pgbouncer=true` reads them once per connection; every other URL ignores them.
+pub async fn connect_with_types(url: &str, max_connections: usize, types: Vec<String>) -> DbResult<Arc<dyn Driver>> {
+    let _ = (max_connections, &types);
+    let (scheme, rest) = url.split_once("://").unwrap_or(("", ""));
     match scheme {
         #[cfg(feature = "sqlite")]
-        "sqlite" => Ok(Arc::new(sqlite::SqliteDriver::connect(url).await?)),
+        "sqlite" => {
+            if rest.split_once('?').is_some_and(|(_, q)| q.split('&').any(|p| p == "pgbouncer" || p.starts_with("pgbouncer="))) {
+                return Err(DbError::other("pgbouncer is a PostgreSQL URL flag; a sqlite: URL cannot have it"));
+            }
+            Ok(Arc::new(sqlite::SqliteDriver::connect(url).await?))
+        }
         #[cfg(feature = "postgres")]
-        "postgres" | "postgresql" => Ok(Arc::new(postgres::PgDriver::connect(url, max_connections).await?)),
+        "postgres" | "postgresql" => Ok(Arc::new(postgres::PgDriver::connect_with_types(url, max_connections, types).await?)),
         #[allow(unreachable_patterns)]
         "postgres" | "postgresql" | "sqlite" => Err(DbError::other(format!("database backend for {scheme:?} is not compiled into this native profile"))),
         other => Err(DbError::other(format!("unsupported database URL scheme {other:?}"))),
