@@ -2,7 +2,8 @@
 
 The admin is in progress.
 It reads model lists for a superuser, and `monorm admin` serves them over HTTP.
-It has no login, write, search, filter or count yet: until the login comes, every served API route answers 401.
+It has a password login. It has no write, search, filter or count yet.
+A served API request without a session answers 401.
 
 The admin is one Rust crate (`monorm-admin`) with a thin module for each language.
 The Python module is `monorm.admin`, and the TypeScript module is `monorm/admin`.
@@ -55,6 +56,143 @@ const page = (await client.get("/admin/api/resources/Post")).json();
 ```
 
 The response has `status`, `text`, `queries` (the statements that the request ran) and `json()`.
+
+## Login and sessions
+
+The served admin signs in a user with a password.
+The login calls `authenticate` of `app:auth` in your own process (Python or Node), through a bridge.
+The Rust service never hashes or compares a password.
+An inactive user cannot sign in.
+Only a superuser reads resources: the resources are superuser-only for now.
+
+| Route (under the API prefix, for example `/admin/api`) | Method | Meaning |
+|---|---|---|
+| `/login` | `GET` | Sets the CSRF cookie. Needs no session. |
+| `/login` | `POST` | `{"username", "password"}`. On success it sets the session cookie. |
+| `/me` | `GET` | The signed-in user. |
+| `/password` | `POST` | `{"old_password", "new_password"}`. The user changes their own password. |
+| `/logout` | `POST` | Ends the session. |
+
+A wrong password and an unknown user give the same `401` answer.
+The time of the two answers is equal because `authenticate` of `app:auth` hashes a dummy password for an unknown user.
+Three limits count failed logins in 15 minutes, and the login answers `429` with `Retry-After` when one is full, even for the right password:
+- 5 for one username from one IP address. An attacker at one address cannot lock the owner out from another address.
+- 20 from one IP address, for any username.
+- 50 for one username from any address.
+
+A counter table holds at most 10,000 keys. When it is full, it drops the oldest keys.
+Every login, failed login, password change and failed password change writes an `AdminLogEntry` row.
+A failed login keeps `user_key` empty and puts the typed name in the label, because the text is not an account.
+A `429` writes a `login_blocked` row, at most one a minute for each key. The attempts themselves are not limited by this.
+
+### `MONORM_ADMIN_SECRET`
+
+The session cookie is `s1.<payload>.<tag>`: the payload is signed with HMAC-SHA256 and the key is the environment variable `MONORM_ADMIN_SECRET`.
+The secret is at least 32 bytes.
+`monorm admin` stops with exit code 2 and a message that names the variable when it is missing or short.
+It is never a setting in a file.
+The server keeps no session in a store, so two processes with the same secret accept the same session.
+Change the secret to end every session at once.
+
+The failed-login counters are local to one process. With N processes the limits are up to N times higher.
+
+### Renewal: when a change takes effect
+
+At most every `idle_timeout / 4` seconds (never less than 1, never more than 60), a request renews the session.
+At the renewal the service reads the table `AdminSessionRevocation` and asks the host for the user again, in one short transaction.
+It ends the session (`401`, and the cookies are cleared) when:
+- the session is in the table, because the user logged out or changed the password with that session;
+- the user is gone or inactive;
+- the user was a superuser and is not any more;
+- the password hash changed. The cookie holds an HMAC of the hash, never the hash.
+
+So a change shows at the next renewal, not at once. The delay is at most `idle_timeout / 4` (at most 60 seconds).
+A logout or a password change ends the session in the same process at once, and in another process at its next renewal.
+A password change ends every other session of the user at the next renewal of each, and gives the changed session a new id, with a new CSRF token in the answer (`{"ok": true, "user", "csrf"}`).
+If the revocation write fails, the logout answers `500` and the session stays.
+If the read at a renewal fails, the request answers `500` and the cookie stays, so the next request tries again: the session is never kept alive by an error.
+The rows of the table have an end time, the end of the absolute timeout of the session.
+
+### Behind a proxy: `trusted_proxies`
+
+The client IP is the address of the socket, unless the setting `trusted_proxies` lists it.
+For a request from a listed address, the service reads `X-Forwarded-For` from the right and takes the first address that is not listed.
+A request from any other address cannot choose its IP with that header.
+The list takes exact IP addresses, not ranges. It is empty by default: behind a load balancer that you did not list, every login shares one IP counter.
+
+### Cookies, CSRF and headers
+
+The cookies are `__Host-monorm-session` (`HttpOnly`) and `__Host-monorm-csrf`.
+Both are `Secure`, `SameSite=Lax` and `Path=/`.
+A browser accepts a `__Host-` cookie only over HTTPS, or from `localhost`: serve the admin behind TLS.
+The session ends after `idle_timeout` without a request (default 30 minutes) or after `session_timeout` (default 12 hours).
+
+The API takes JSON only: a write with another content type answers `415`.
+A script or API client sends every write (`POST`) with:
+1. The CSRF token: the value of the `__Host-monorm-csrf` cookie, in the header `X-CSRF-Token`.
+2. An `Origin` (or `Referer`) header that equals the `Host` of the request, or an entry of `origins`.
+
+Without them the answer is `403` (`BadCsrfToken` or `BadOrigin`).
+The `Origin` check compares the host and the port, not the scheme.
+Behind a proxy that ends TLS, the scheme of the request differs from the scheme of the browser, so a scheme check would refuse real users.
+Set `origins` where the browser `Origin` differs from the `Host`.
+The login itself needs them: send `GET /login` first to get the CSRF cookie.
+
+```sh
+curl -c jar -s http://localhost:8000/admin/api/login > /dev/null
+token=$(awk '$6=="__Host-monorm-csrf"{print $7}' jar)
+curl -b jar -c jar -H "X-CSRF-Token: $token" -H "Origin: http://localhost:8000" \
+  -H "Content-Type: application/json" -d '{"username":"ann","password":"pw"}' \
+  http://localhost:8000/admin/api/login
+```
+
+Every response has `Content-Security-Policy` (strict), `X-Frame-Options: DENY`, `Referrer-Policy: same-origin`, `X-Content-Type-Options: nosniff` and `Cache-Control: no-store`.
+A body over 16 KiB answers `413`.
+
+### Test client with a login
+
+`test_client(db, user=...)` and `testClient(db, { user })` need no login: they use the in-memory path.
+Give a `secret` (and optional `settings` with `idle_timeout`, `session_timeout`, `origins` and `trusted_proxies`, and an `ip`) for a client that runs the full login:
+
+```python
+client = admin.test_client(db, secret="x" * 32)
+await client.login("ann", "pw")
+page = (await client.get("/admin/api/resources/Post")).json()
+```
+
+```ts
+const client = admin.testClient(db, { secret: "x".repeat(32) });
+await client.login("ann", "pw");
+```
+
+The client keeps the cookies and sends the CSRF token and `Origin` for you.
+A `user` client and a `secret` client do not mix.
+A wrong secret raises at the first request.
+
+### Host functions and the binding
+
+The login runs `auth.authenticate`, and a password change runs `auth.change_password`.
+Each is an async function of `(database, args)`, and it must use the `database` that it gets.
+The service runs it inside `Database.bind_request` (Python) or `db.bindRequest` (Node), so it sees the transaction of the request.
+A statement on another handle waits for a connection of its own.
+
+`bind_request` and `bindRequest` are public:
+
+```python
+with db.bind_request(tx, scope={"user": 1}, tenant="acme"):
+    ...  # every statement of `db` uses `tx`; the caller commits or rolls back
+```
+
+```ts
+await db.bindRequest(tx, { scope: { user: 1 }, tenant: "acme" }, async () => { /* ... */ });
+```
+
+- `tx` is a transaction that something else opened and will end.
+- A `transaction()` block in the binding is a savepoint.
+- `tenant` is the tenant id that `tx` began under: `db.tenant(sameId)` works, and another id raises `QueryError`.
+- `on_commit` in the binding raises `TransactionRequired`, because the commit happens outside.
+
+When a request times out, Python cancels the host task, and Node cannot cancel a Promise: its work runs on and the service discards the result.
 
 ## Routes and answers
 
@@ -129,6 +267,10 @@ db_settings = { "app.tenant" = "acme" }
 | `host`, `port` | `127.0.0.1`, `8000` | The address. Port `0` picks a free port. |
 | `timeout` | `30` | The request time limit in seconds. |
 | `db_settings` | none | PostgreSQL settings that every admin transaction sets (see below). |
+| `idle_timeout` | `1800` | Seconds without a request that end a session. |
+| `session_timeout` | `43200` | Seconds after login that end a session in any case. |
+| `origins` | none | Extra origins that a write may come from, such as `"https://admin.example.com"`. |
+| `trusted_proxies` | none | Peer IP addresses whose `X-Forwarded-For` the login limits believe, such as `"10.0.0.1"`. |
 
 `MONORM_ADMIN_HOST` and `MONORM_ADMIN_PORT` override `host` and `port`.
 An unknown key under `[admin]` is an error that names the key and the settings file.
@@ -179,8 +321,9 @@ A Node `setup` hook or a long query in Node code can therefore use time after th
 
 ### Several processes
 
-The admin keeps no state in the process: no session store, no cache and no queue.
-Run as many processes as you need on one database, each with its own port, behind any load balancer.
+The admin keeps no session store, cache or queue: the session is a signed cookie (see `MONORM_ADMIN_SECRET`).
+Only the failed-login counters are in the process. The revocations are rows in the database, so every process sees them at its next renewal.
+Give every process the same `MONORM_ADMIN_SECRET`. Run as many processes as you need on one database, each with its own port, behind any load balancer.
 
 ### Kubernetes
 
