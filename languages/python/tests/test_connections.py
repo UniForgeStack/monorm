@@ -251,6 +251,42 @@ async def test_a_session_lock_needs_postgres():
         await db.close()
 
 
+def pgbouncer_url(url):
+    return f"{url}{'&' if '?' in url else '?'}pgbouncer=true"
+
+
+async def test_the_pgbouncer_flag_connects_and_reads(clean):
+    db = clean
+    await User.objects.insert(email="ann@example.com", name="Ann")
+    other = await monorm.connect(pgbouncer_url(db.url), default=False, max_connections=1)
+    try:
+        assert await User.objects.using(other).filter(User.name == "Ann").count() == 1
+        async with other.transaction():
+            await User.objects.using(other).insert(email="bob@example.com", name="Bob")
+        assert await User.objects.using(other).count() == 2
+    finally:
+        await other.close()
+
+
+async def test_a_session_lock_is_refused_when_the_url_has_pgbouncer_true(db):
+    other = await monorm.connect(pgbouncer_url(db.url), default=False, max_connections=1)
+    try:
+        with pytest.raises(monorm.DatabaseError, match="pgbouncer=true"):
+            async with other.lock("import", session=True):
+                pass
+        async with other.transaction():
+            assert await other.lock("import", nowait=True)
+    finally:
+        await other.close()
+
+
+async def test_a_sqlite_url_refuses_the_pgbouncer_flag():
+    registry = monorm.Registry()
+    monorm.loads(SQLITE, registry=registry)
+    with pytest.raises(monorm.DatabaseError, match="pgbouncer"):
+        await monorm.connect("sqlite://:memory:?pgbouncer=true", registry=registry, default=False)
+
+
 async def replica_url(db, n=1):
     """Another database with the same tables, standing in for a replica: replica ``n`` holds
     ``n`` users. Its name comes from the test database, so parallel runs do not share it."""

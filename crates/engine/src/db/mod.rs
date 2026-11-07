@@ -132,6 +132,9 @@ pub trait RawRows: Send + Sync {
 /// transaction (every call uses its connection).
 pub trait Executor: Send + Sync {
     fn dialect(&self) -> Dialect { Dialect::Postgres }
+    /// True when a connection may belong to another server session after each transaction
+    /// (`pgbouncer=true`), so a session lock cannot work.
+    fn pooler_transactions(&self) -> bool { false }
     /// A migration may rebuild SQLite tables with FK checks deferred until commit.
     fn begin_migration(&self) -> BoxFuture<'_, DbResult<Arc<dyn Transaction>>> { self.begin() }
     fn query(&self, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<Box<dyn RowSet>>>;
@@ -257,6 +260,9 @@ impl Guarded {
 impl Executor for Guarded {
     fn dialect(&self) -> Dialect {
         self.inner.dialect()
+    }
+    fn pooler_transactions(&self) -> bool {
+        self.inner.pooler_transactions()
     }
     fn query(&self, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<Box<dyn RowSet>>> {
         Box::pin(self.guarded(self.inner.query(sql, args)))
@@ -393,6 +399,9 @@ async fn finish<T>(tx: Arc<dyn Transaction>, out: DbResult<T>) -> DbResult<T> {
 impl Executor for WithSettings {
     fn dialect(&self) -> Dialect {
         self.inner.dialect()
+    }
+    fn pooler_transactions(&self) -> bool {
+        self.inner.pooler_transactions()
     }
     fn query(&self, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<Box<dyn RowSet>>> {
         Box::pin(async move {

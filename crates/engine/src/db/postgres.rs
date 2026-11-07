@@ -856,6 +856,9 @@ async fn get_client(pool: &Pool) -> DbResult<Object> {
 }
 
 impl Executor for PgDriver {
+    fn pooler_transactions(&self) -> bool {
+        self.pgbouncer
+    }
     fn query(&self, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<Box<dyn RowSet>>> {
         Box::pin(async move { let c = get_client(&self.pool).await?; query(&c, &sql, &args).await })
     }
@@ -1507,6 +1510,21 @@ mod failure_tests {
             let db = PgDriver::connect(&flagged(&test_url()), 1).await.unwrap();
             let e = db.session_lock(1, true, false, None).await.err().expect("refused");
             assert!(e.message.contains("pgbouncer=true") && e.message.contains("MONORM_DATABASE_URL"), "{}", e.message);
+        });
+    }
+
+    #[test]
+    fn a_no_transaction_migration_names_its_step_when_the_pooler_refuses_the_lock() {
+        runtime().block_on(async {
+            let path = std::env::temp_dir().join(format!("monorm_pgb_{}", std::process::id()));
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("up.sql"), "-- monorm: no-transaction\nSELECT 1").unwrap();
+            let m = crate::migrate::Migration { name: "0001_concurrent".into(), path: path.clone() };
+            let db = PgDriver::connect(&flagged(&test_url()), 1).await.unwrap();
+            let e = crate::migrate::apply_no_transaction(&db, &m, true).await.unwrap_err().to_string();
+            std::fs::remove_dir_all(&path).unwrap();
+            assert!(e.contains("0001_concurrent runs outside a transaction and needs a session lock"), "{e}");
+            assert!(e.contains("pgbouncer=true") && e.contains("MONORM_DATABASE_URL"), "{e}");
         });
     }
 

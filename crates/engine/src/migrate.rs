@@ -439,6 +439,9 @@ pub async fn pending(conn: &dyn Executor, dir: &Path, target: Option<&str>, allo
         if conn.dialect() != Dialect::Postgres {
             return Err(no_tx_refusal(&m.name, conn.dialect()));
         }
+        if conn.pooler_transactions() {
+            return Err(pooler_refusal(&m.name));
+        }
         if let Some(file) = m.data_file() {
             return Err(Error::Migration(format!("{} is a no-transaction migration and has a data step ({file}); a data step needs a transaction", m.name)));
         }
@@ -502,6 +505,13 @@ fn no_tx_refusal(what: &str, dialect: Dialect) -> Error {
     Error::Migration(format!("{what} is a no-transaction migration; {} has no such mode", dialect.name()))
 }
 
+/// The refusal of a no-transaction script behind a pooler: its session lock needs a direct connection.
+fn pooler_refusal(what: &str) -> Error {
+    Error::Migration(format!(
+        "{what} runs outside a transaction and needs a session lock, and this URL has pgbouncer=true: use a URL without it (for migrate, set MONORM_DATABASE_URL)"
+    ))
+}
+
 /// An index name of a header as SQL: a quoted name stays as written.
 fn index_ref(name: &str) -> String {
     if name.starts_with('"') { name.to_owned() } else { ident(name) }
@@ -547,6 +557,9 @@ async fn run_no_transaction(driver: &dyn Driver, m: &Migration, step: NoTxRun<'_
     let NoTxRun { what, sql, index, record, expect_applied } = step;
     if driver.dialect() != Dialect::Postgres {
         return Err(no_tx_refusal(&m.name, driver.dialect()));
+    }
+    if driver.pooler_transactions() {
+        return Err(pooler_refusal(&m.name));
     }
     // Before the lock: it may take the transaction lock, which the session lock would block.
     ensure_table(driver).await?;

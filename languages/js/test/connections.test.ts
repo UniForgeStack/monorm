@@ -199,6 +199,37 @@ test('a session lock needs Postgres', async () => {
   }
 });
 
+const pgbouncerUrl = (url: string) => `${url}${url.includes('?') ? '&' : '?'}pgbouncer=true`;
+
+test('the pgbouncer flag connects and reads', async () => {
+  const db = getDatabase();
+  await User.objects.insert({ email: 'ann@example.com', name: 'Ann' });
+  const other = await connect(pgbouncerUrl(db.url), { default: false, maxConnections: 1 });
+  try {
+    assert.equal(await User.objects.using(other).filter(User.name.eq('Ann')).count(), 1);
+    await other.transaction(async () => { await User.objects.using(other).insert({ email: 'bob@example.com', name: 'Bob' }); });
+    assert.equal(await User.objects.using(other).count(), 2);
+  } finally {
+    await other.close();
+  }
+});
+
+test('a session lock is refused when the URL has pgbouncer=true', async () => {
+  const other = await connect(pgbouncerUrl(getDatabase().url), { default: false, maxConnections: 1 });
+  try {
+    await assert.rejects(other.lock('import', { session: true }, async () => {}), /pgbouncer=true/);
+    await other.transaction(async () => assert.equal(await other.lock('import', { nowait: true }), true));
+  } finally {
+    await other.close();
+  }
+});
+
+test('a sqlite URL refuses the pgbouncer flag', async () => {
+  const registry = new Registry();
+  loads(SQLITE, { registry });
+  await assert.rejects(connect('sqlite://:memory:?pgbouncer=true', { registry, default: false }), /pgbouncer/);
+});
+
 /** Another database with the same tables, standing in for a replica: replica `n` holds `n`
  * users. Its name comes from the test database, so parallel runs do not share it. */
 async function replicaUrl(n = 1): Promise<string> {

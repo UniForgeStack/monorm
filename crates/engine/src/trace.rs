@@ -137,6 +137,9 @@ impl Executor for Traced {
     fn dialect(&self) -> Dialect {
         self.conn.dialect()
     }
+    fn pooler_transactions(&self) -> bool {
+        self.conn.pooler_transactions()
+    }
     fn begin_migration(&self) -> BoxFuture<'_, DbResult<Arc<dyn Transaction>>> {
         Box::pin(async move { Ok(self.traced_tx(self.conn.begin_migration().await?)) })
     }
