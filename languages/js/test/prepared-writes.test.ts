@@ -291,6 +291,8 @@ test("timestamp hooks run per call", { skip: !hasExtension("monorm.timestamps") 
     assert.ok(second.changed >= first.changed);
     const edit = stamps.filter(Stamp.id.eq(param("i"))).update({ views: param("v") }).prepare();
     const before = (await stamps.get(Stamp.id.eq(1))).changed;
+    // The clock has millisecond steps: without a pause the update can stamp the same time.
+    await new Promise((resolve) => setTimeout(resolve, 5));
     await edit.run({ i: 1, v: 3 });
     assert.ok((await stamps.get(Stamp.id.eq(1))).changed > before);
   });
