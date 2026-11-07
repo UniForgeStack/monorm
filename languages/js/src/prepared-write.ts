@@ -70,6 +70,13 @@ export class PreparedWrite<R, P = {}> {
 }
 
 function known(names: ReadonlySet<string>, values: Record<string, unknown>): void {
+  let hits = 0;
+  let total = 0;
+  for (const k in values) {
+    total++;
+    if (names.has(k)) hits++;
+  }
+  if (hits === names.size && total === hits) return; // the keys are the declared names: the common call
   const missing = [...names].filter((n) => !(n in values));
   if (missing.length) throw new TypeError(`missing values for ${missing.sort().join(", ")}`);
   const unknown = Object.keys(values).filter((n) => !names.has(n));
@@ -253,7 +260,7 @@ class RowsCompiled {
       if (v === undefined) throw new TypeError(`param(${JSON.stringify(name)}) can't be undefined; use null for NULL`);
       params[i] = transform && v !== null ? transform(v) : v;
     }
-    params.push(...Object.values(scope));
+    for (const k in scope) params.push(scope[k]);
     return params;
   }
 

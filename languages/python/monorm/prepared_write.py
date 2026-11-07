@@ -17,6 +17,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from operator import itemgetter
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
+from .db import _scope, resolve
 from .errors import QueryError
 from .expr import Param, SlotParams, _Slot
 from .inspection import QueryInspection, _native as _inspection_native
@@ -50,8 +51,6 @@ def _known(names: frozenset[str], values: Mapping[str, Any]) -> None:
 
 def _scope_values(scope: Mapping[str, Any] | None) -> dict[str, Any]:
     """The scope values of a call: ``scope=`` over the ``monorm.scope()`` context."""
-    from .db import _scope
-
     merged = _scope.get()
     return {**merged, **scope} if scope else merged
 
@@ -88,8 +87,6 @@ class _CompiledWrite(_Compiled):
     def start(
         self, qs: Any, known: frozenset[str], values: Mapping[str, Any], scope: Mapping[str, Any] | None, row_cls: Any = None
     ) -> Awaitable[Any]:
-        from .db import resolve
-
         params, merged = self.call_values(values, known, scope)
         db = resolve(qs._db)
         write = self.native(db._engine, merged)
@@ -151,8 +148,9 @@ class OneRow:
         row = list(self.template)
         for i, name in self.slots:
             row[i] = values[name]
-        for i, fn in self.calls:
-            row[i] = fn()
+        if self.calls:
+            for i, fn in self.calls:
+                row[i] = fn()
         return [row]
 
 
@@ -287,7 +285,7 @@ class PreparedRows(Generic[R_co]):
     ``shape`` is what a call gives: the row count (``"count"``), one instance (``"one"``),
     an instance or ``None`` (``"optional"``), or the instances (``"list"``)."""
 
-    __slots__ = ("_qs", "_plan", "_compiled", "_names", "_shape", "_key")
+    __slots__ = ("_qs", "_plan", "_compiled", "_names", "_shape", "_key", "_empty", "_first")
 
     def __init__(
         self,
@@ -303,6 +301,8 @@ class PreparedRows(Generic[R_co]):
         self._names = plan.names | compiled.names
         self._shape = shape
         self._key = key
+        self._empty: Any = [] if shape in ("list", "optional") else 0
+        self._first = shape == "one" or shape == "optional"
         try:
             compiled.native(_inspection_native(qs), _scope_values(None))  # a statement that cannot be held fails here
         except QueryError as e:
@@ -310,23 +310,19 @@ class PreparedRows(Generic[R_co]):
                 raise
 
     def __call__(self, *, scope: Mapping[str, Any] | None = None, **values: Any) -> Awaitable[R_co]:
-        from .db import resolve
-
-        _known(self._names, values)
+        if values.keys() != self._names:
+            _known(self._names, values)
         c = self._compiled
         rows = self._plan.rows(values)
-        empty: Any = [] if self._shape in ("list", "optional") else 0
         if not rows:
-            return _done(empty)
+            return _done(self._empty)
         merged = _scope_values(scope)
         params = c.bind(values, merged)
         db = resolve(self._qs._db)
         held = c.native(db._engine, merged)
         tx, allowed = db._tx(), allowed_writes()
         pending = db._call(lambda t: held.run(rows, params, tx, self._qs._db, allowed, t), self._key)
-        if self._shape == "count" or self._shape == "list":
-            return pending
-        return _first(pending, required=self._shape == "one")
+        return _first(pending, required=self._shape == "one") if self._first else pending
 
     def inspect(self, *, scope: Mapping[str, Any] | None = None, **values: Any) -> QueryInspection:
         """The statements a call with these values plans, as ``inspect()`` of the same write gives them."""

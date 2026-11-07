@@ -194,6 +194,45 @@ fn a_call_with_other_cells_set_uses_another_shape() {
     });
 }
 
+#[test]
+fn a_one_row_insert_run_again_writes_the_values_of_each_call() {
+    rt().block_on(async {
+        let prepared = PreparedRows::prepare(schema(json!({})), target(Dialect::Sqlite, None), rows_spec(RowsKind::Insert(None), &["id", "title", "views"])).unwrap();
+        let conn = fresh(Dialect::Sqlite).await;
+        let one = |id: i64, title: Option<&str>, views: i32| vec![vec![Some(big(id)), title.map(text), Some(int(views))]];
+        prepared.run(&*conn, &NoParams, one(1, Some("a"), 10), true).await.unwrap();
+        prepared.run(&*conn, &NoParams, one(2, Some("b"), 20), true).await.unwrap();
+        // A call that omits a value takes the database default, then the first shape serves again.
+        prepared.run(&*conn, &NoParams, one(3, None, 30), true).await.unwrap();
+        prepared.run(&*conn, &NoParams, one(4, Some("d"), 40), true).await.unwrap();
+        let got = table(&*conn).await;
+        let want: Vec<Vec<Option<String>>> = [(1, Some("a"), 10), (2, Some("b"), 20), (3, None, 30), (4, Some("d"), 40)].iter().map(|(i, t, v)| vec![Some(i.to_string()), t.map(String::from), Some(v.to_string())]).collect();
+        assert_eq!(got, want);
+    });
+}
+
+#[test]
+fn a_one_row_insert_of_a_model_with_a_client_default_fills_it_on_each_call() {
+    rt().block_on(async {
+        let ir = json!({"models":[{"name":"Post","table":"posts","fields":[
+            {"name":"id","column":"id","type":"big_int","primary_key":true},
+            {"name":"title","column":"title","type":"text","nullable":true},
+            {"name":"views","column":"views","type":"int","client_default":{"value":7}}
+        ]}],"behavior":{"schema_contract":5}});
+        let schema = Arc::new(Schema::from_ir(serde_json::from_value(ir).unwrap()).unwrap());
+        let t = target(Dialect::Sqlite, None);
+        let conn = fresh(Dialect::Sqlite).await;
+        let omit = PreparedRows::prepare(schema.clone(), t, rows_spec(RowsKind::Insert(None), &["id", "title"])).unwrap();
+        omit.run(&*conn, &NoParams, vec![vec![Some(big(1)), Some(text("a"))]], true).await.unwrap();
+        omit.run(&*conn, &NoParams, vec![vec![Some(big(2)), Some(text("b"))]], true).await.unwrap();
+        let set = PreparedRows::prepare(schema, t, rows_spec(RowsKind::Insert(None), &["id", "title", "views"])).unwrap();
+        set.run(&*conn, &NoParams, vec![vec![Some(big(3)), Some(text("c")), Some(int(9))]], true).await.unwrap();
+        set.run(&*conn, &NoParams, vec![vec![Some(big(4)), Some(text("d")), None]], true).await.unwrap();
+        let views: Vec<_> = table(&*conn).await.into_iter().map(|r| r[2].clone().unwrap()).collect();
+        assert_eq!(views, ["7", "7", "9", "7"]);
+    });
+}
+
 fn update_many_rows(n: usize) -> Vec<Vec<Value>> {
     (0..n).map(|i| vec![big(i as i64), int(1000 + i as i32)]).collect()
 }
