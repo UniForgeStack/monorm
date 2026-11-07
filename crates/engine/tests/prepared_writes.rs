@@ -2,7 +2,7 @@
 //! write of the same values changes.
 use std::sync::Arc;
 
-use monorm_core::{dialect::{Dialect, Target}, ir::{ColType, Operation, ValueType}, schema::Schema};
+use monorm_core::{dialect::{Dialect, Target}, ir::{ColType, Expr, Operation, ValueType}, schema::Schema};
 use monorm_engine::{
     db::{self, Executor},
     exec::{self, Conflict, Outcome},
@@ -79,6 +79,9 @@ async fn fresh(d: Dialect) -> Arc<dyn Driver> {
     conn
 }
 use db::Driver;
+
+/// The PostgreSQL tests share the table `posts`.
+static POSTGRES: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 async fn table(conn: &dyn Executor) -> Vec<Vec<Option<String>>> {
     conn.query_text("SELECT id, title, views FROM posts ORDER BY id".into()).await.unwrap()
@@ -256,6 +259,33 @@ fn an_update_sets_null_from_a_set_param_and_refuses_null_in_a_filter() {
 }
 
 #[test]
+fn an_update_many_refuses_null_in_a_filter_param_and_a_set_expression_takes_null() {
+    rt().block_on(async {
+        let schema = schema(json!({}));
+        let t = target(Dialect::Sqlite, None);
+        let filter: Expr = serde_json::from_value(json!({"t":"cmp","op":"eq","l":{"t":"col","path":[],"name":"views"},"r":{"t":"param","i":0}})).unwrap();
+        let mut spec = rows_spec(RowsKind::UpdateMany(vec![filter]), &["id", "title"]);
+        spec.len = 1;
+        spec.declared = vec![ty(ColType::Int)];
+        let prepared = PreparedRows::prepare(schema.clone(), t, spec).unwrap();
+        let conn = fresh(Dialect::Sqlite).await;
+        conn.batch("INSERT INTO posts VALUES (1, 'a', 0, NULL)".into()).await.unwrap();
+        let rows = |n: usize| -> Vec<Vec<Option<Value>>> { (0..n).map(|_| vec![Some(big(1)), Some(text("b"))]).collect() };
+        for n in [1, 40] {
+            let err = prepared.run(&*conn, &Vals(vec![Value::Int(None)]), rows(n), true).await.err().expect("an error").to_string();
+            assert!(err.contains("NULL filter value"), "{n} rows: {err}");
+        }
+        assert_eq!(table(&*conn).await[0][1].as_deref(), Some("a"));
+        assert!(matches!(prepared.run(&*conn, &Vals(vec![int(0)]), rows(1), true).await.unwrap(), Outcome::Affected(1)));
+        let bump = op(json!({"op":"update","model":"Post","set":[{"field":"title","value":{"t":"func","name":"coalesce","args":[{"t":"param","i":0},{"t":"param","i":0}]}}],
+            "filters":[{"t":"cmp","op":"eq","l":{"t":"col","path":[],"name":"id"},"r":{"t":"param","i":1}}]}));
+        let w = PreparedWrite::prepare(&schema, t, &bump, 2, &[ty(ColType::Text), ty(ColType::BigInt)]).unwrap();
+        w.call(&Vals(vec![Value::String(None), big(1)])).unwrap();
+        assert!(w.call(&Vals(vec![text("x"), Value::BigInt(None)])).is_err());
+    });
+}
+
+#[test]
 fn a_prepared_update_stamps_the_clock_on_each_call() {
     let record = json!({"source":"test.a","model":"Post","field":"changed","on":["update"],"value":"now"});
     let schema = schema(json!({"write_assignments":[record]}));
@@ -285,6 +315,7 @@ fn a_prepared_delete_removes_the_rows_of_the_call() {
 
 #[test]
 fn postgres_rows_write_what_the_unprepared_write_writes() {
+    let _lock = POSTGRES.lock().unwrap_or_else(|e| e.into_inner());
     rt().block_on(async {
         let d = Dialect::Postgres;
         for n in [1, 2, 31, 32, 33, 100] {
@@ -339,4 +370,30 @@ fn postgres_update_many_joins_unnest_from_the_threshold() {
         ["UPDATE \"posts\" SET \"title\" = \"v\".\"column2\", \"views\" = \"v\".\"column3\" FROM UNNEST($1::bigint[], $2::text[], $3::integer[]) AS \"v\"(\"column1\", \"column2\", \"column3\") WHERE \"posts\".\"id\" = \"v\".\"column1\""]
     );
     assert_eq!(statements_of(&prepared, rows(30_000)).len(), 1);
+}
+
+#[test]
+fn a_scoped_update_many_of_33_rows_keeps_the_filter_on_postgres() {
+    let _lock = POSTGRES.lock().unwrap_or_else(|e| e.into_inner());
+    rt().block_on(async {
+        let schema = schema(json!({}));
+        let t = target(Dialect::Postgres, None);
+        let c = fresh(Dialect::Postgres).await;
+        // "title" stands for the tenant column: even ids belong to tenant "a", odd ids to "b".
+        let seed: Vec<_> = (0..40).map(|i| vec![Some(big(i)), Some(text(if i % 2 == 0 { "a" } else { "b" })), Some(int(0))]).collect();
+        let plans = exec::plan_inserts(&schema, t, "Post", &["id".into(), "title".into(), "views".into()], seed, None, &NoParams, None, false, None, &Default::default()).unwrap();
+        exec::run_inserts(&*c, t, plans, true, false).await.unwrap();
+        let filter: Expr = serde_json::from_value(json!({"t":"cmp","op":"eq","l":{"t":"col","path":[],"name":"title"},"r":{"t":"param","i":0}})).unwrap();
+        let mut spec = rows_spec(RowsKind::UpdateMany(vec![filter]), &["id", "views"]);
+        spec.len = 1;
+        let prepared = PreparedRows::prepare(schema, t, spec).unwrap();
+        let rows: Vec<_> = (0..33).map(|i| vec![Some(big(i)), Some(int(1000 + i as i32))]).collect();
+        let Outcome::Affected(n) = prepared.run(&*c, &Vals(vec![text("a")]), rows, true).await.unwrap() else { panic!("a row count") };
+        assert_eq!(n, 17, "the even ids of 0..33");
+        let got = table(&*c).await;
+        for (i, row) in got.iter().enumerate() {
+            let expect = if i < 33 && i % 2 == 0 { (1000 + i).to_string() } else { "0".to_string() };
+            assert_eq!(row[2].as_deref(), Some(expect.as_str()), "row {i}");
+        }
+    });
 }

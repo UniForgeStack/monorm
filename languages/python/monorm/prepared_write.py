@@ -303,7 +303,11 @@ class PreparedRows(Generic[R_co]):
         self._names = plan.names | compiled.names
         self._shape = shape
         self._key = key
-        compiled.native(_inspection_native(qs), {})  # a statement that cannot be held fails here
+        try:
+            compiled.native(_inspection_native(qs), _scope_values(None))  # a statement that cannot be held fails here
+        except QueryError as e:
+            if "which is not set" not in str(e):  # a scope that is not set yet waits for the first call
+                raise
 
     def __call__(self, *, scope: Mapping[str, Any] | None = None, **values: Any) -> Awaitable[R_co]:
         from .db import resolve

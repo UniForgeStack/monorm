@@ -14,6 +14,8 @@
  */
 
 import { Builder } from "./build.js";
+import { currentScope } from "./db.js";
+import { QueryError } from "./errors.js";
 import { Column, Slot, SlotParams, type IR, type RowsRef } from "./expr.js";
 import { emptyInspection, inspection, inspector, type QueryInspection } from "./inspection.js";
 import { call, type NativeInspector, type NativePreparedRows, type NativeReturned } from "./native.js";
@@ -297,7 +299,11 @@ class RowsWrite implements Held {
     private readonly key: readonly unknown[],
   ) {
     this.names = new Set([...plan.names, ...compiled.names]);
-    compiled.native(inspector(qs.meta, qs.state.db), []); // a statement that cannot be held fails here
+    try {
+      compiled.native(inspector(qs.meta, qs.state.db), Object.keys(currentScope())); // a statement that cannot be held fails here
+    } catch (e) {
+      if (!(e instanceof QueryError) || !e.message.includes("which is not set")) throw e; // a scope not set yet waits for the first call
+    }
   }
 
   async run(values: Record<string, unknown> | undefined): Promise<unknown> {

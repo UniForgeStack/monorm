@@ -105,6 +105,28 @@ async def test_none_is_null_in_a_value_and_an_error_in_a_filter(clean):
         await edit(id=None, b="y")
 
 
+async def test_none_is_null_in_a_set_expression(clean):
+    alice, *_ = await users()
+    post = await Post.objects.insert(author=alice, title="a", body="")
+    comment = await Comment.objects.insert(post_id=post.id, body="c", author_id=alice.id)
+    shift = Comment.objects.filter(Comment.id == param("id")).update(author_id=Comment.author_id + param("n", int)).prepare()
+    assert await shift(id=comment.id, n=0) == 1
+    assert await shift(id=comment.id, n=None) == 1
+    assert (await Comment.objects.get(Comment.id == comment.id)).author_id is None
+
+
+async def test_none_in_an_update_many_filter_param_is_an_error(clean):
+    alice, *_ = await users()
+    posts = await Post.objects.insert_many([{"author": alice, "title": "a", "body": ""} for _ in range(40)]).returning()
+    edit = Post.objects.filter(Post.views == param("v")).update_many(param("rows", fields=(Post.id, Post.title))).prepare()
+    rows = [{"id": p.id, "title": "b"} for p in posts]
+    assert await edit(v=0, rows=rows[:1]) == 1
+    for batch in (rows[:1], rows):
+        with pytest.raises(QueryError):
+            await edit(v=None, rows=batch)
+    assert [p.title for p in await Post.objects.order_by(Post.id)].count("b") == 1
+
+
 async def test_a_row_with_a_missing_or_an_extra_key_fails_before_any_sql(clean):
     alice, *_ = await users()
     add = Post.objects.insert_many(param("rows", fields=(Post.author_id, Post.title, Post.body))).prepare()
@@ -224,6 +246,21 @@ async def test_scope_binds_per_call_in_a_prepared_write(pg):
     drop = notes.filter(Note.name == param("n")).delete().prepare()
     assert await drop(n="n", scope={"shop": 1}) == 2
     assert await notes.without_defaults().count() == 1
+
+
+async def test_a_scoped_update_many_of_33_rows_keeps_the_scope_filter(pg):
+    db, models = pg
+    Note = models["Note"]
+    notes = Note.objects.using(db)
+    await notes.without_defaults().insert_many([{"shop": 1 + i % 2, "name": f"n{i}", "views": 0} for i in range(40)])
+    ids = [(r.id, r.shop) for r in await notes.without_defaults().order_by(Note.id)]
+    edit = notes.update_many(param("rows", fields=(Note.id, Note.views))).prepare()
+    rows = [{"id": id_, "views": 100 + i} for i, (id_, _) in enumerate(ids[:33])]
+    with monorm.scope(shop=1):
+        assert await edit(rows=rows) == 17
+    got = {r.id: (r.shop, r.views) for r in await notes.without_defaults().all()}
+    for i, (id_, shop) in enumerate(ids):
+        assert got[id_] == (shop, 100 + i if i < 33 and shop == 1 else 0)
 
 
 async def test_the_write_guard_and_protected_write_run_per_call(pg):

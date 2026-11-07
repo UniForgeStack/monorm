@@ -111,10 +111,12 @@ impl PreparedWrite {
         }
         let flip = |k: usize| -> Result<Vec<(String, Vec<Value>)>> { Ok(statements(&pass(schema, target, op, len, declared, vec![k])?.plan, target)) };
         let Resolved { mut slots, mut args } = resolve(&base.reads, &texts, &flip, target, &scope, false, &|_| None)?;
-        // A set value that is a parameter on its own may be NULL; a parameter used in a filter may not.
-        let direct: Vec<usize> = set.iter().filter_map(|a| if let Expr::Param { i } = &a.value { Some(*i) } else { None }).collect();
+        // A parameter that a set value reads may be NULL; one that a filter also reads may not.
+        // The needle comes from `Expr`'s own Debug text, so a change of that text keeps it in step.
+        let sets = format!("{:?}", set.iter().map(|a| &a.value).collect::<Vec<_>>());
         for s in &mut slots {
-            s.nullable = direct.contains(&s.param) && !filters.contains(&format!("Param {{ i: {} }}", s.param));
+            let needle = format!("{:?}", Expr::Param { i: s.param });
+            s.nullable = sets.contains(&needle) && !filters.contains(&needle);
         }
         let inspection = serde_json::to_string(&crate::inspect::Inspection::plans(std::slice::from_ref(&base.plan), false)).map_err(|e| Error::query(e.to_string()))?;
         let returned = match base.plan {
@@ -271,7 +273,6 @@ pub struct PreparedRows {
     multi_table: bool,
     returned: Option<Returned>,
     context: bool,
-    inspection: String,
     types: Vec<ValueType>,
     shapes: Mutex<HashMap<Vec<u8>, Arc<Shape>>>,
     unnests: Mutex<HashMap<Vec<u8>, Option<Arc<str>>>>,
@@ -309,7 +310,7 @@ impl PreparedRows {
         let m = schema.model(idx);
         let types = crate::exec::field_types(&schema, &spec.model, &spec.fields)?;
         let multi_table = crate::multi_table::is_multi_table(&schema, &spec.model)?;
-        let mut this = Self { schema: schema.clone(), target, spec, multi_table, returned: None, context: false, inspection: String::new(), types, shapes: Mutex::new(HashMap::new()), unnests: Mutex::new(HashMap::new()) };
+        let mut this = Self { schema: schema.clone(), target, spec, multi_table, returned: None, context: false, types, shapes: Mutex::new(HashMap::new()), unnests: Mutex::new(HashMap::new()) };
         if multi_table {
             return Ok(this);
         }
@@ -318,9 +319,7 @@ impl PreparedRows {
         match &this.spec.kind {
             RowsKind::Insert(_) => {
                 let pattern = vec![0u8; this.spec.fields.len()];
-                let (stmt, columns) = this.insert_statement(&this.spec.fields, 1, &pattern, vec![])?.0;
-                let plan = Plan::Insert(stmt, None);
-                this.inspection = serde_json::to_string(&crate::inspect::Inspection::plans(std::slice::from_ref(&plan), false)).map_err(|e| Error::query(e.to_string()))?;
+                let columns = this.insert_statement(&this.spec.fields, 1, &pattern, vec![])?.0.1;
                 this.returned = this.returned_of(idx, columns)?;
             }
             RowsKind::UpdateMany(_) => {
@@ -346,10 +345,6 @@ impl PreparedRows {
     /// The value types of the row fields: what a binding converts the cells by.
     pub fn field_types(&self) -> &[ValueType] {
         &self.types
-    }
-
-    pub fn inspection(&self) -> &str {
-        &self.inspection
     }
 
     fn model(&self) -> &Model {
@@ -414,7 +409,11 @@ impl PreparedRows {
             Value::BigInt(Some(x)) if (CELL_BASE..CELL_BASE + cells as i64).contains(x) => Some(Arg::Cell((x - CELL_BASE) as usize)),
             _ => None,
         };
-        let Resolved { slots, mut args } = resolve(&reads, &base, &flip, self.target, &self.spec.scope, false, &cell)?;
+        let Resolved { mut slots, mut args } = resolve(&reads, &base, &flip, self.target, &self.spec.scope, false, &cell)?;
+        // The slots of a batch are filter values: only the rows carry values that may be NULL.
+        if matches!(self.spec.kind, RowsKind::UpdateMany(_)) {
+            slots.iter_mut().for_each(|s| s.nullable = false);
+        }
         let (sql, _) = base.into_iter().next().expect("a statement");
         let shape = Arc::new(Shape { template: Template { sql, args: args.remove(0) }, slots });
         let mut shapes = self.shapes.lock().expect("shape cache");

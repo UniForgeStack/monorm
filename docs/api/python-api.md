@@ -793,7 +793,9 @@ latest.sql(user=1, n=20, skip=0)                # the SQL with these values, for
 `prepare()` plans the query once and keeps the SQL text and a map of the slots in
 Rust. A call converts the values, binds them and runs the statement: no JSON parse and
 no planning. `get()`, `first()`, `count()`, `exists()` and the plain call all use the
-held statement. `sql()` and `inspect()` show what a call sends. A call inside
+held statement. On a prepared read, update or delete, `sql()` and `inspect()` show what a call
+sends. On a prepared batch write, `inspect()` is the plan of the same unprepared write (the
+first chunk), and `sql()` is not available. A call inside
 `db.transaction()` runs on the transaction's connection, and a hook runs on each call.
 Query defaults, the soft-delete filter and `lock()` are fixed when you prepare.
 
@@ -851,12 +853,13 @@ await edit(rows=[{"id": 1, "title": "x"}])               # the primary key comes
   (`INSERT ... SELECT * FROM UNNEST(...)`, `UPDATE ... FROM UNNEST(...)`), so the
   statement text does not change with the row count and the parameter limit does not
   split the batch. Below 32 rows, with an array column, a field with `write_sql` or an
-  enum, a row that omits a field, or on SQLite, it uses `VALUES` (and `CASE` for
+  enum, a row that omits a field, a filter or scope slot in the statement, or on SQLite, it uses `VALUES` (and `CASE` for
   `update_many`), in chunks.
 * `fields=` takes plain columns. A relation, `copy=True` and `returning()` of a relation
   are not supported. A multi-table `insert` runs its statements as the unprepared write does.
-* A hook that gives a value at plan time, a single `update` on a model with change-set
-  hooks, and a multi-table `update` or `delete` raise at `prepare()`.
+* In 0.x, `prepare()` raises for a hook that gives a value at plan time (a hook assignment
+  or a hook client default), for a single `update` on a model with change-set hooks, and for
+  a multi-table `update` or `delete`. A multi-table `insert` plans its statements on each call.
 * An unprepared write with `param()` raises `QueryError`.
 
 ## Columns and aggregates: `select()`

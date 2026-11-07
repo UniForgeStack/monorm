@@ -914,11 +914,6 @@ impl PreparedRows {
             move |env, out| outcome_js(env, &schema, out),
         )
     }
-
-    #[napi]
-    pub fn inspect(&self) -> String {
-        self.inner.inspection().to_string()
-    }
 }
 
 // -- engine ---------------------------------------------------------------------------------------

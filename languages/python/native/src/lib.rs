@@ -632,10 +632,6 @@ impl PreparedRows {
             Python::attach(|py| outcome_to_py(py, out, &classes, db, None))
         })
     }
-
-    fn inspect(&self) -> String {
-        self.inner.inspection().to_string()
-    }
 }
 
 #[pyclass(frozen, module = "monorm._native")]

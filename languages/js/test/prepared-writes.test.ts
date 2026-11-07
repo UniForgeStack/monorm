@@ -103,6 +103,28 @@ test("none is null in a value and an error in a filter", async () => {
   await assert.rejects(edit.run({ id: null as Any, b: "y" }), QueryError);
 });
 
+test("none is null in a set expression", async () => {
+  const [alice] = await users();
+  const post = await Post.objects.insert({ author: alice!, title: "a", body: "" });
+  const comment = await Comment.objects.insert({ postId: post.id, body: "c", authorId: alice!.id });
+  const shift = Comment.objects.filter(Comment.id.eq(param("id"))).update({ authorId: Comment.authorId.add(param("n", "int")) as Any }).prepare();
+  assert.equal(await shift.run({ id: comment.id, n: 0 }), 1);
+  assert.equal(await shift.run({ id: comment.id, n: null as Any }), 1);
+  assert.equal((await Comment.objects.get(Comment.id.eq(comment.id)))!.authorId, null);
+});
+
+test("none in an update many filter param is an error", async () => {
+  const [alice] = await users();
+  const posts = (await Post.objects
+    .insertMany(Array.from({ length: 40 }, () => ({ author: alice!, title: "a", body: "" })))
+    .returning()) as Post[];
+  const edit = Post.objects.filter(Post.views.eq(param("v"))).updateMany(param("rows", { fields: [Post.id, Post.title] })).prepare();
+  const rows = posts.map((p) => ({ id: p.id, title: "b" }));
+  assert.equal(await edit.run({ v: 0, rows: rows.slice(0, 1) }), 1);
+  for (const batch of [rows.slice(0, 1), rows]) await assert.rejects(edit.run({ v: null as Any, rows: batch }), QueryError);
+  assert.equal((await Post.objects.orderBy(Post.id)).filter((p) => p.title === "b").length, 1);
+});
+
 test("a row with a missing or an extra key fails before any SQL", async () => {
   const [alice] = await users();
   const add = Post.objects.insertMany(param("rows", { fields: [Post.authorId, Post.title, Post.body] })).prepare();
@@ -220,6 +242,24 @@ test("scope binds per call in a prepared write", { skip: !hasExtension("monorm.q
     const drop = notes.filter(Note.name.eq(param("n"))).delete().prepare();
     assert.equal(await drop.run({ n: "n", scope: { shop: 1 } }), 2);
     assert.equal(await notes.withoutDefaults().count(), 1);
+  });
+});
+
+test("a scoped update many of 33 rows keeps the scope filter", { skip: !hasExtension("monorm.query-defaults") }, async () => {
+  await withDb(SCHEMA, async (db, models) => {
+    const Note = models["Note"];
+    const notes = Note.objects.using(db);
+    await notes.withoutDefaults().insertMany(Array.from({ length: 40 }, (_, i) => ({ shop: 1 + (i % 2), name: `n${i}`, views: 0 })));
+    const ids = ((await notes.withoutDefaults().orderBy(Note.id).all()) as Any[]).map((r) => [r.id, r.shop]);
+    const edit = notes.updateMany(param("rows", { fields: [Note.id, Note.views] })).prepare();
+    const rows = ids.slice(0, 33).map(([id], i) => ({ id, views: 100 + i }));
+    await scope({ shop: 1 }, async () => {
+      assert.equal(await edit.run({ rows }), 17);
+    });
+    const got = new Map(((await notes.withoutDefaults().all()) as Any[]).map((r) => [r.id, [r.shop, r.views]]));
+    ids.forEach(([id, shop], i) => {
+      assert.deepEqual(got.get(id), [shop, i < 33 && shop === 1 ? 100 + i : 0]);
+    });
   });
 });
 

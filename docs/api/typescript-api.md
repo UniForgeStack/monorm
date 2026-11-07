@@ -537,8 +537,12 @@ const edit = Post.objects.updateMany(param("rows", { fields: [Post.id, Post.titl
 or an extra key throws before any SQL. `returning(cols)` is fixed when you prepare;
 without it a call gives the row count, and `insert` gives the instance. Scope, hooks and
 the write guard run on each call. The batch form is the same as in Python: on PostgreSQL,
-32 rows or more bind one array for each column. `.sql(values)` is not available on a
-prepared `insertMany` or `updateMany`. `RelatedSet.insertMany(param(...))` throws
+32 rows or more bind one array for each column; a filter or scope slot in the statement,
+an array column, a `write_sql` field, an enum or a row that omits a field keeps `VALUES`.
+`.sql(values)` is not available on a prepared `insertMany` or `updateMany`, and their
+`.inspect(values)` is the plan of the same unprepared write (the first chunk). In 0.x,
+`prepare()` throws for a hook that gives a value at plan time, for a single `update` on a
+model with change-set hooks, and for a multi-table `update` or `delete`. `RelatedSet.insertMany(param(...))` throws
 `TypeError`; the class is exported as `PreparedWriteStatement`.
 
 ## Nested types
