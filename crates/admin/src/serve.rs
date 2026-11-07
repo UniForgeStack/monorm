@@ -9,6 +9,7 @@ use monorm_engine::db::{Driver, Executor, WithSettings};
 use serde_json::json;
 use tokio::sync::{watch, Notify};
 
+use crate::auth::AuthConfig;
 use crate::service::{self, Logger, Options};
 use crate::site::Site;
 use crate::tables;
@@ -21,6 +22,8 @@ pub struct ServeConfig {
     pub timeout: Duration,
     /// Each pair runs as `set_config(name, value, true)` at the start of every admin transaction.
     pub db_settings: Vec<(String, String)>,
+    /// Login and the guard. The host builds it from `MONORM_ADMIN_SECRET` and its bridge.
+    pub auth: Option<AuthConfig>,
 }
 
 /// A running server. The host stops it on SIGTERM; the library installs no signal handler.
@@ -39,7 +42,7 @@ impl Server {
         let (done_tx, done) = watch::channel(None);
         let signal = shutdown.clone();
         tokio::spawn(async move {
-            let out = axum::serve(listener, app).with_graceful_shutdown(async move { signal.notified().await }).await.map_err(|e| e.to_string());
+            let out = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).with_graceful_shutdown(async move { signal.notified().await }).await.map_err(|e| e.to_string());
             let _ = done_tx.send(Some(out));
         });
         Server { addr, stopping, shutdown, done }
@@ -87,6 +90,7 @@ pub async fn serve(site: Arc<Site>, driver: Arc<dyn Driver>, config: ServeConfig
     let addr = listener.local_addr().map_err(|e| e.to_string())?;
     let mut options = Options::new(Some(config.timeout));
     options.log = log.clone();
+    options.auth = config.auth.clone();
     let stopping = options.draining.clone();
     let app = service::service(site, conn, options);
     let server = Server::start(listener, app, stopping);

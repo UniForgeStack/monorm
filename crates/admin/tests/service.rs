@@ -121,7 +121,7 @@ async fn health_answers_without_a_user_and_a_request_id_is_made_and_echoed() {
     let schema = schema(APP);
     let driver = sqlite(&schema).await;
     let (log, lines) = capture();
-    let server = serve(real_site(&schema), driver, ServeConfig { host: "127.0.0.1".into(), port: 0, timeout: Duration::from_secs(5), db_settings: vec![] }, log).await.unwrap();
+    let server = serve(real_site(&schema), driver, ServeConfig { host: "127.0.0.1".into(), port: 0, timeout: Duration::from_secs(5), db_settings: vec![], auth: None }, log).await.unwrap();
     let addr = server.addr();
     let health = http(addr, "GET /healthz HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n").await;
     assert!(health.starts_with("HTTP/1.1 200"), "{health}");
@@ -181,7 +181,7 @@ async fn readiness_answers_503_once_draining() {
 #[tokio::test]
 async fn startup_fails_when_the_schema_has_no_admin_model_or_the_database_has_no_table() {
     let (log, _) = capture();
-    let config = || ServeConfig { host: "127.0.0.1".into(), port: 0, timeout: Duration::from_secs(1), db_settings: vec![] };
+    let config = || ServeConfig { host: "127.0.0.1".into(), port: 0, timeout: Duration::from_secs(1), db_settings: vec![], auth: None };
 
     let plain = schema("");
     let err = serve(real_site(&plain), sqlite(&plain).await, config(), log.clone()).await.err().expect("no admin model");
@@ -201,7 +201,7 @@ async fn startup_fails_when_the_schema_has_no_admin_model_or_the_database_has_no
 async fn db_settings_on_sqlite_is_ignored_with_a_startup_message() {
     let with_app = schema(APP);
     let (log, lines) = capture();
-    let config = ServeConfig { host: "127.0.0.1".into(), port: 0, timeout: Duration::from_secs(1), db_settings: vec![("app.tenant".into(), "a".into())] };
+    let config = ServeConfig { host: "127.0.0.1".into(), port: 0, timeout: Duration::from_secs(1), db_settings: vec![("app.tenant".into(), "a".into())], auth: None };
     let server = serve(real_site(&with_app), sqlite(&with_app).await, config, log).await.unwrap();
     server.stop().await.unwrap();
     assert!(lines.lock().unwrap().iter().any(|l| l["level"] == "warn" && l["msg"].as_str().unwrap().contains("db_settings")));

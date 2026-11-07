@@ -1,22 +1,29 @@
 //! The `[admin]` settings of the project, read through the settings loader.
 //!
 //! The keys: `app` (`module:attr`, the admin object), `setup` (`module:function`, the hook that connects the database,
-//! the extensions and the file storage), `host`, `port`, `timeout` (seconds) and `db_settings` (a table of strings).
+//! the extensions and the file storage), `host`, `port`, `timeout` (seconds), `db_settings` (a table of strings),
+//! `idle_timeout` and `session_timeout` (seconds, for the login session), `origins` (extra origins a write may come from) and `trusted_proxies` (peers whose X-Forwarded-For the login limits believe).
+//! The secret that signs sessions is the environment variable `MONORM_ADMIN_SECRET`, never a setting.
 //! The environment variables `MONORM_ADMIN_HOST` and `MONORM_ADMIN_PORT` override `host` and `port`.
 
 use std::collections::BTreeMap;
+use std::net::IpAddr;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use monorm_core::settings::Settings;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::security::{Security, SecurityOptions};
 use crate::serve::ServeConfig;
 
 pub const DEFAULT_HOST: &str = "127.0.0.1";
 pub const DEFAULT_PORT: u16 = 8000;
 pub const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+pub const DEFAULT_IDLE_SECS: u64 = 30 * 60;
+pub const DEFAULT_SESSION_SECS: u64 = 12 * 60 * 60;
 
 /// The settings in the form that the host reads: the host loads `app` and `setup`, and hands the rest back to the server.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -27,9 +34,14 @@ pub struct Config {
     pub port: u16,
     pub timeout_ms: u64,
     pub db_settings: BTreeMap<String, String>,
+    pub idle_timeout_secs: u64,
+    pub session_timeout_secs: u64,
+    pub origins: Vec<String>,
+    #[serde(default)]
+    pub trusted_proxies: Vec<String>,
 }
 
-const KEYS: [&str; 6] = ["app", "setup", "host", "port", "timeout", "db_settings"];
+const KEYS: [&str; 10] = ["app", "setup", "host", "port", "timeout", "db_settings", "idle_timeout", "session_timeout", "origins", "trusted_proxies"];
 
 impl Config {
     /// Reads the settings of the project in `dir`. `env` reads one environment variable.
@@ -94,7 +106,49 @@ impl Config {
                 .collect::<Result<_, _>>()?,
             Some(_) => return Err(format!("{place}`admin.db_settings` must be a table of strings")),
         };
-        Ok(Config { app, setup: text("setup")?, host, port, timeout_ms, db_settings })
+        let seconds = |key: &str, default: u64| match table.get(key) {
+            None => Ok(default),
+            Some(v) => match v.as_u64() {
+                Some(n) if n > 0 && i64::try_from(n).is_ok() => Ok(n),
+                _ => Err(format!("{place}`admin.{key}` must be a whole number of seconds above 0")),
+            },
+        };
+        let origins = match table.get("origins") {
+            None => Vec::new(),
+            Some(Value::Array(list)) => list
+                .iter()
+                .map(|v| match v.as_str() {
+                    Some(o) if is_origin(o) => Ok(o.trim_end_matches('/').to_string()),
+                    _ => Err(format!("{place}`admin.origins` must hold origins such as \"https://admin.example.com\"")),
+                })
+                .collect::<Result<_, _>>()?,
+            Some(_) => return Err(format!("{place}`admin.origins` must be a list of origins")),
+        };
+        let trusted_proxies = match table.get("trusted_proxies") {
+            None => Vec::new(),
+            Some(Value::Array(list)) => list
+                .iter()
+                .map(|v| match v.as_str().and_then(|a| a.parse::<IpAddr>().ok()) {
+                    Some(ip) => Ok(ip.to_string()),
+                    None => Err(format!("{place}`admin.trusted_proxies` must hold IP addresses such as \"10.0.0.1\"")),
+                })
+                .collect::<Result<_, _>>()?,
+            Some(_) => return Err(format!("{place}`admin.trusted_proxies` must be a list of IP addresses")),
+        };
+        let idle_timeout_secs = seconds("idle_timeout", DEFAULT_IDLE_SECS)?;
+        let session_timeout_secs = seconds("session_timeout", DEFAULT_SESSION_SECS)?;
+        Ok(Config { app, setup: text("setup")?, host, port, timeout_ms, db_settings, idle_timeout_secs, session_timeout_secs, origins, trusted_proxies })
+    }
+
+    /// The session signing and limits. `secret` is the value of `MONORM_ADMIN_SECRET`.
+    pub fn security(&self, secret: Option<&str>) -> Result<Arc<Security>, String> {
+        let secs = |n: u64| i64::try_from(n).unwrap_or(i64::MAX);
+        let trusted_proxies = self.trusted_proxies.iter().map(|a| a.parse::<IpAddr>().map_err(|_| format!("`admin.trusted_proxies` holds {a:?}, which is not an IP address"))).collect::<Result<_, _>>()?;
+        let options = SecurityOptions { idle_secs: secs(self.idle_timeout_secs), absolute_secs: secs(self.session_timeout_secs), origins: self.origins.clone(), trusted_proxies };
+        let Some(secret) = secret.filter(|s| !s.is_empty()) else {
+            return Err("MONORM_ADMIN_SECRET is not set: it signs the login sessions, so set it to a random string of at least 32 characters (for example `openssl rand -hex 32`)".into());
+        };
+        Security::new(secret.as_bytes(), options)
     }
 
     pub fn serve_config(&self) -> ServeConfig {
@@ -103,8 +157,14 @@ impl Config {
             port: self.port,
             timeout: Duration::from_millis(self.timeout_ms),
             db_settings: self.db_settings.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            auth: None,
         }
     }
+}
+
+fn is_origin(text: &str) -> bool {
+    let rest = text.strip_prefix("https://").or_else(|| text.strip_prefix("http://"));
+    rest.is_some_and(|r| !r.trim_end_matches('/').is_empty() && !r.trim_end_matches('/').contains(['/', '?', '#']))
 }
 
 #[cfg(test)]
@@ -184,5 +244,39 @@ mod tests {
         let d = dir("badenv", "monorm.toml", "[admin]\napp = \"a:b\"\n");
         let e = Config::load(&d, |k| (k == "MONORM_ADMIN_PORT").then(|| "x".to_string())).unwrap_err();
         assert!(e.contains("MONORM_ADMIN_PORT"), "{e}");
+    }
+
+    #[test]
+    fn session_keys_default_and_are_read() {
+        let d = dir("session-default", "monorm.toml", "[admin]\napp = \"a:b\"\n");
+        let c = Config::load(&d, no_env).unwrap();
+        assert_eq!((c.idle_timeout_secs, c.session_timeout_secs), (DEFAULT_IDLE_SECS, DEFAULT_SESSION_SECS));
+        assert!(c.origins.is_empty());
+        let text = "[admin]\napp = \"a:b\"\nidle_timeout = 60\nsession_timeout = 3600\norigins = [\"https://admin.example.com/\"]\n";
+        let c = Config::load(&dir("session-all", "monorm.toml", text), no_env).unwrap();
+        assert_eq!((c.idle_timeout_secs, c.session_timeout_secs), (60, 3600));
+        assert_eq!(c.origins, ["https://admin.example.com"]);
+    }
+
+    #[test]
+    fn a_wrong_session_key_names_the_key() {
+        for (text, needle) in [
+            ("[admin]\napp = \"a:b\"\nidle_timeout = 0\n", "`admin.idle_timeout`"),
+            ("[admin]\napp = \"a:b\"\nsession_timeout = \"x\"\n", "`admin.session_timeout`"),
+            ("[admin]\napp = \"a:b\"\norigins = [\"admin.example.com\"]\n", "`admin.origins`"),
+            ("[admin]\napp = \"a:b\"\norigins = \"https://a.b\"\n", "`admin.origins`"),
+        ] {
+            let e = Config::load(&dir("session-wrong", "monorm.toml", text), no_env).unwrap_err();
+            assert!(e.contains(needle), "{e}");
+        }
+    }
+
+    #[test]
+    fn the_secret_must_have_32_bytes() {
+        let d = dir("secret", "monorm.toml", "[admin]\napp = \"a:b\"\n");
+        let c = Config::load(&d, no_env).unwrap();
+        assert!(c.security(None).unwrap_err().contains("MONORM_ADMIN_SECRET"));
+        assert!(c.security(Some("short")).unwrap_err().contains("at least 32 bytes"));
+        assert!(c.security(Some(&"x".repeat(32))).is_ok());
     }
 }

@@ -18,3 +18,11 @@ model UserPreference {
   value    Json
   @@unique([user_key, name])
 }
+
+// Ended login sessions: a logout or a password change writes a row, and every process reads it at a session renewal.
+model AdminSessionRevocation {
+  id    Int    @id @default(autoincrement())
+  sid   String
+  until BigInt
+  @@index([sid])
+}

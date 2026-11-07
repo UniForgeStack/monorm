@@ -14,6 +14,8 @@ use axum::{Json, Router};
 use monorm_engine::db::Executor;
 use serde_json::{json, Map, Value};
 
+use crate::auth::AuthConfig;
+use crate::guard::{self, Guard};
 use crate::server;
 use crate::site::Site;
 
@@ -59,13 +61,17 @@ pub struct Options {
     pub log: Logger,
     /// True once the server stops: `/readyz` then answers 503.
     pub draining: Arc<AtomicBool>,
+    /// Login and the guard. None: no login routes and no guard (a request with no user then gets 401 from the routes).
+    pub auth: Option<AuthConfig>,
 }
 
 impl Options {
     pub fn new(timeout: Option<Duration>) -> Self {
-        Options { timeout, log: Logger::stderr(), draining: Arc::new(AtomicBool::new(false)) }
+        Options { timeout, log: Logger::stderr(), draining: Arc::new(AtomicBool::new(false)), auth: None }
     }
 }
+
+const CSP: &str = "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
 
 /// Health routes at the root (outside the prefix and before any user check) and the admin routes.
 pub fn service(site: Arc<Site>, conn: Arc<dyn Executor>, options: Options) -> Router {
@@ -73,12 +79,32 @@ pub fn service(site: Arc<Site>, conn: Arc<dyn Executor>, options: Options) -> Ro
         .route("/healthz", get(|| async { Json(json!({"ok": true})) }))
         .route("/readyz", get(ready))
         .with_state((conn.clone(), options.draining.clone()));
-    let app = health.merge(server::api(site, conn)).fallback(server::not_found);
+    let login_path = format!("{}/login", site.prefix);
+    let (guard_site, guard_conn) = (site.clone(), conn.clone());
+    let app = health.merge(server::api_with(site, conn, options.auth.clone())).fallback(server::not_found);
+    let app = match options.auth {
+        Some(auth) => app.layer(middleware::from_fn_with_state(Arc::new(Guard { auth, login_path, site: guard_site, conn: guard_conn }), guard::guard)),
+        None => app,
+    };
     let app = match options.timeout {
         Some(limit) => with_timeout(app, limit),
         None => app,
     };
-    with_request_log(app, options.log)
+    with_request_log(with_security_headers(app), options.log)
+}
+
+/// The headers of every response, also an error, a 401 and a timeout.
+pub fn with_security_headers(app: Router) -> Router {
+    app.layer(middleware::from_fn(|req: Request, next: Next| async move {
+        let mut response = next.run(req).await;
+        let headers = response.headers_mut();
+        headers.insert("content-security-policy", HeaderValue::from_static(CSP));
+        headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
+        headers.insert("referrer-policy", HeaderValue::from_static("same-origin"));
+        headers.insert("cache-control", HeaderValue::from_static("no-store"));
+        headers.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+        response
+    }))
 }
 
 async fn ready(State((conn, draining)): State<(Arc<dyn Executor>, Arc<AtomicBool>)>) -> Response {

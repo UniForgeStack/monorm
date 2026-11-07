@@ -26,6 +26,6 @@ def test_admin_init_writes_the_module_and_the_settings_and_the_schema_still_chec
     assert (tmp_path / "monorm.toml").read_text() == '[admin]\napp = "admin:admin"\n'
     assert 'import "app:monorm-admin" (prefix: "admin_")' in (tmp_path / "schema.prisma").read_text()
     assert cli(["check"]) == 0
-    assert "ok (3 models)" in capfd.readouterr().out
+    assert "ok (4 models)" in capfd.readouterr().out
     assert cli(["admin", "init", "--models", "books"]) == 2
     assert "already have an admin section" in capfd.readouterr().err

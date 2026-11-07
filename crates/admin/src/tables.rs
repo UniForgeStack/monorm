@@ -3,8 +3,10 @@
 use monorm_core::schema::Schema;
 use monorm_engine::db::Executor;
 
+use crate::sql::quote;
+
 /// The models of the `app:admin` schema.
-pub const MODELS: [&str; 2] = ["AdminLogEntry", "UserPreference"];
+pub const MODELS: [&str; 3] = ["AdminLogEntry", "UserPreference", "AdminSessionRevocation"];
 
 /// Fails with a clear message when the schema lacks an admin model or the database lacks its table.
 pub async fn check(schema: &Schema, conn: &dyn Executor) -> Result<(), String> {
@@ -20,8 +22,4 @@ pub async fn check(schema: &Schema, conn: &dyn Executor) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-fn quote(name: &str) -> String {
-    format!("\"{}\"", name.replace('"', "\"\""))
 }

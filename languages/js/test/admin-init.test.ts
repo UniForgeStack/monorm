@@ -38,7 +38,7 @@ test("admin init writes the module and the settings and the schema still checks"
   assert.ok(readFileSync(join(dir, "schema.prisma"), "utf8").includes('import "app:admin" (prefix: "admin_")'));
   const check = cli(["check"], dir);
   assert.equal(check.code, 0, check.err);
-  assert.match(check.out, /ok \(3 models\)/);
+  assert.match(check.out, /ok \(4 models\)/);
   const again = cli(["admin", "init", "--models", "./models.js"], dir);
   assert.equal(again.code, 2);
   assert.match(again.err, /already have an admin section/);

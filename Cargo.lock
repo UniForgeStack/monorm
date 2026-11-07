@@ -855,14 +855,18 @@ name = "monorm-admin"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64",
  "bigdecimal",
  "chrono",
+ "hmac",
  "http-body-util",
  "monorm-core",
  "monorm-engine",
  "sea-query",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
+ "subtle",
  "tokio",
  "tower",
  "uuid",

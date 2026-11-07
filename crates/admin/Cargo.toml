@@ -21,6 +21,10 @@ chrono = "0.4"
 uuid = { version = "1", features = ["v4"] }
 tokio = { version = "1", features = ["rt", "net", "time", "sync"] }
 bigdecimal = "0.4"
+hmac = "0.13"
+sha2 = "0.11"
+subtle = "2"
+base64 = "0.22"
 
 [dev-dependencies]
 monorm-engine = { path = "../engine", default-features = true }

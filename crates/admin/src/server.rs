@@ -14,6 +14,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
+use crate::auth::{self, AuthConfig};
 use crate::list::{self, ListError};
 use crate::scope::Scoped;
 use crate::service::ErrorNote;
@@ -39,11 +40,20 @@ type Shared = State<Arc<State_>>;
 
 /// The admin routes without a fallback, so a caller can merge other routes first.
 pub fn api(site: Arc<Site>, conn: Arc<dyn Executor>) -> Router {
+    api_with(site, conn, None)
+}
+
+/// `api`, plus the login, logout, session and password routes when `auth` is set.
+pub fn api_with(site: Arc<Site>, conn: Arc<dyn Executor>, auth: Option<AuthConfig>) -> Router {
     let target = Target::new(conn.dialect());
     let prefix = site.prefix.clone();
     let routes = Router::new().route("/resources", get(resources)).route("/resources/{name}", get(rows));
+    let extra = auth.map(|auth| auth::routes(auth, site.clone(), conn.clone()));
     let state = Arc::new(State_ { site, conn, target });
-    let routes = routes.with_state(state);
+    let mut routes = routes.with_state(state);
+    if let Some(extra) = extra {
+        routes = routes.merge(extra);
+    }
     if prefix.is_empty() { routes } else { Router::new().nest(&prefix, routes) }
 }
 
@@ -78,7 +88,7 @@ fn failure(kind: &str, message: &str) -> String {
     json!({"ok": false, "error": {"kind": kind, "message": message}}).to_string()
 }
 
-fn reject(status: StatusCode, kind: &str, message: &str) -> Response {
+pub(crate) fn reject(status: StatusCode, kind: &str, message: &str) -> Response {
     (status, Json(json!({"ok": false, "error": {"kind": kind, "message": message}}))).into_response()
 }
 
