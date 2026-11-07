@@ -3,7 +3,7 @@ name = "monorm-admin"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "The admin service: resources planned from the prepared schema, keyset lists and an in-memory HTTP router. No binding code."
+description = "The admin service: resources planned from the prepared schema, keyset lists, an in-memory HTTP router and the server of `monorm admin`. No binding code."
 
 [lib]
 name = "monorm_admin"
@@ -11,19 +11,20 @@ name = "monorm_admin"
 [dependencies]
 monorm-core = { path = "../core", default-features = false }
 monorm-engine = { path = "../engine", default-features = false }
-axum = { version = "0.8", default-features = false, features = ["json", "query", "matched-path"] }
+axum = { version = "0.8", default-features = false, features = ["json", "query", "matched-path", "tokio", "http1"] }
 tower = { version = "0.5", default-features = false, features = ["util"] }
 http-body-util = "0.1"
 sea-query = { version = "1.0", default-features = false, features = ["with-chrono", "with-json", "with-uuid", "with-bigdecimal", "postgres-array", "thread-safe", "hashable-value"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = "0.4"
-uuid = "1"
+uuid = { version = "1", features = ["v4"] }
+tokio = { version = "1", features = ["rt", "net", "time", "sync"] }
 bigdecimal = "0.4"
 
 [dev-dependencies]
 monorm-engine = { path = "../engine", default-features = true }
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 
 [features]
 default = ["postgres", "sqlite"]

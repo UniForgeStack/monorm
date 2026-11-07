@@ -15,6 +15,8 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 
 use crate::list::{self, ListError};
+use crate::scope::Scoped;
+use crate::service::ErrorNote;
 use crate::site::{Resource, Site};
 
 /// The user of a request: a JSON object. Only `is_superuser: true` gets in for now.
@@ -35,14 +37,22 @@ struct State_ {
 
 type Shared = State<Arc<State_>>;
 
-pub fn router(site: Arc<Site>, conn: Arc<dyn Executor>) -> Router {
+/// The admin routes without a fallback, so a caller can merge other routes first.
+pub fn api(site: Arc<Site>, conn: Arc<dyn Executor>) -> Router {
     let target = Target::new(conn.dialect());
     let prefix = site.prefix.clone();
     let routes = Router::new().route("/resources", get(resources)).route("/resources/{name}", get(rows));
     let state = Arc::new(State_ { site, conn, target });
     let routes = routes.with_state(state);
-    let routes = if prefix.is_empty() { routes } else { Router::new().nest(&prefix, routes) };
-    routes.fallback(|| async { reject(StatusCode::NOT_FOUND, "NotFound", "no such path") })
+    if prefix.is_empty() { routes } else { Router::new().nest(&prefix, routes) }
+}
+
+pub fn router(site: Arc<Site>, conn: Arc<dyn Executor>) -> Router {
+    api(site, conn).fallback(not_found)
+}
+
+pub async fn not_found() -> Response {
+    reject(StatusCode::NOT_FOUND, "NotFound", "no such path")
 }
 
 /// Sends one request to the router in memory. `user` is the JSON of the user, or none.
@@ -113,12 +123,32 @@ async fn rows(State(s): Shared, user: Option<Extension<User>>, Path(name): Path<
     let Some(resource) = s.site.resource(&name) else {
         return reject(StatusCode::NOT_FOUND, "NotFound", &format!("no resource {name:?}"));
     };
-    match list::list(&s.site, resource, s.conn.as_ref(), s.target, q.cursor.as_deref(), q.limit).await {
+    let scope = match Scoped::begin(s.conn.as_ref()).await {
+        Ok(scope) => scope,
+        Err(e) => return database_error(&e.message),
+    };
+    let out = list::list(&s.site, resource, scope.executor(), s.target, q.cursor.as_deref(), q.limit).await;
+    match out {
         Ok(page) => {
+            if let Err(e) = scope.commit().await {
+                return database_error(&e.message);
+            }
             let meta = describe(&s.site, resource);
             Json(json!({"ok": true, "resource": meta["name"], "columns": meta["columns"], "rows": page.rows, "next": page.next})).into_response()
         }
-        Err(ListError::Bad(m)) => reject(StatusCode::BAD_REQUEST, "BadRequest", &m),
-        Err(ListError::Engine(m)) => reject(StatusCode::INTERNAL_SERVER_ERROR, "DatabaseError", &m),
+        Err(ListError::Bad(m)) => {
+            scope.rollback().await;
+            reject(StatusCode::BAD_REQUEST, "BadRequest", &m)
+        }
+        Err(ListError::Engine(m)) => {
+            scope.rollback().await;
+            database_error(&m)
+        }
     }
+}
+
+fn database_error(message: &str) -> Response {
+    let mut response = reject(StatusCode::INTERNAL_SERVER_ERROR, "DatabaseError", message);
+    response.extensions_mut().insert(ErrorNote(message.to_string()));
+    response
 }
