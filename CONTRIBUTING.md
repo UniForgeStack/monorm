@@ -41,6 +41,8 @@ python extensions/query-defaults/tests/public/python.py
 (cd languages/js && node ../../extensions/query-defaults/tests/public/node.mjs)
 scripts/check-extension-packages.sh  # needs uv, maturin, node and bun; builds the one wheel and the one tarball and installs them in fresh Python, Node and Bun consumers; PostgreSQL and SQLite
 scripts/check-init.sh  # needs the local `maturin develop` and `npm run assemble` builds, node and bun; `monorm init` on SQLite: a Python project runs, a TypeScript project runs on Node and Bun, `create-monorm` wraps it
+(cd crates/admin/ui && npm ci && npm run build && npm run size && test -z "$(git status --porcelain -- dist)")   # the committed dist equals a fresh build (Node 24, as in CI)
+(cd crates/admin/ui/e2e && npm ci && npm run install-browser && npm test)   # the admin UI in a real browser (Playwright 1.65.0, Chromium): `python -m monorm admin` on SQLite, login, a list and a detail; needs the local `maturin develop` build
 python3 -m unittest scripts/tests/test_check_extension_names.py && python3 scripts/check-extension-names.py  # host crates name no extension
 cargo package -p monorm      # the crate that extension authors get from crates.io
 python3 scripts/rename/rename.py --check   # no old project name in the tree

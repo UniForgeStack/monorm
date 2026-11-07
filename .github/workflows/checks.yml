@@ -115,6 +115,17 @@ jobs:
       - run: python -m pytest -q apps/auth/python/tests
       - run: python extensions/inherit/tests/public/python.py
       - run: python extensions/query-defaults/tests/public/python.py
+      # The admin UI in a real browser; the browser download stays out of the default npm install.
+      - run: npm ci && npx playwright install --with-deps chromium && npm test
+        working-directory: crates/admin/ui/e2e
+        timeout-minutes: 15
+      # The committed crates/admin/ui/dist must equal a fresh build (checked byte for byte on Node 24).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci && npm run build && npm run size && test -z "$(git status --porcelain -- dist)"
+        working-directory: crates/admin/ui
+        timeout-minutes: 10
 
   node:
     needs: affected

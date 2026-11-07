@@ -146,7 +146,8 @@ curl -b jar -c jar -H "X-CSRF-Token: $token" -H "Origin: http://localhost:8000" 
   http://localhost:8000/admin/api/login
 ```
 
-Every response has `Content-Security-Policy` (strict), `X-Frame-Options: DENY`, `Referrer-Policy: same-origin`, `X-Content-Type-Options: nosniff` and `Cache-Control: no-store`.
+Every API response has `Content-Security-Policy` (strict), `X-Frame-Options: DENY`, `Referrer-Policy: same-origin`, `X-Content-Type-Options: nosniff` and `Cache-Control: no-store`.
+A UI file has the same headers, except `Cache-Control`: see [The UI](#the-ui).
 A body over 16 KiB answers `413`.
 
 ### Test client with a login
@@ -272,8 +273,9 @@ The path prefix is a config value, and the default is `/admin/api`.
 
 | Route | Answer |
 |---|---|
-| `GET {prefix}/resources` | The resources that the user may read, with their columns, order and page size, and the permission names that the user holds. |
-| `GET {prefix}/resources/{name}?cursor=&limit=` | One page: `columns`, `rows` and `next`. |
+| `GET {prefix}/resources` | The `brand`, the navigation groups (`nav`), and the resources that the user may read. Each resource has a `title`, its `fields`, its `key` fields, its columns (with `title`, `widget` and `choices`), order and page size. It also lists the permission names that the user holds. |
+| `GET {prefix}/resources/{name}?cursor=&limit=` | One page: `columns`, `rows`, `keys` and `next`. |
+| `GET {prefix}/resources/{name}/{key}` | One record: `fields`, `values` and `links` to the to-one targets that the user may read. A key is encoded as in [The UI](#the-ui). |
 
 A row is an array that follows `columns`.
 `next` is a cursor for the next page, or `null` on the last page.
@@ -284,10 +286,101 @@ A date and a time are ISO 8601 with an offset.
 |---|---|
 | 401 | The request has no user. |
 | 403 | The user lacks a permission (see [Permissions](#permissions)). The request writes an audit row. |
-| 404 | The resource or the path is unknown. |
-| 400 | The cursor or the limit is not valid. |
+| 404 | The resource, the path or the record is unknown. |
+| 400 | The cursor, the limit or the key is not valid. |
 
 An error body is `{"ok": false, "error": {"kind": "...", "message": "..."}}`.
+
+## The UI
+
+The server also serves a single-page app at `/admin`.
+It is React and TypeScript with TanStack Query, TanStack Table and Radix primitives, and it speaks only the routes above.
+The build output is committed in `crates/admin/ui/dist`, and the `monorm-admin` crate embeds it.
+So the wheel and the npm addon carry the UI, and no other packaging step exists.
+The files are static: a `GET` of a UI path needs no session, and a reply carries its own `Content-Security-Policy` (`script-src 'self'`).
+A hashed file in `assets/` has `Cache-Control: public, max-age=31536000, immutable`, and `index.html` has `no-store`.
+The UI path `/admin` is a constant; only the API `prefix` is configurable, and `prefix` cannot be `/admin`.
+
+| Path | Page |
+|---|---|
+| `/admin/-/login`, `/admin/-/password` | Sign in, and change the password. Logout is in the header menu. |
+| `/admin/{resource}` | The list. The first column links to the record. |
+| `/admin/{resource}/{key}` | The record: its fields and a link for each to-one relation. |
+
+A key is stable and easy to bookmark.
+Each key field is percent-encoded (only `A-Z a-z 0-9 - . _ ~` stay as they are), and a composite key joins the fields with `,` in key order.
+A date and time shows in the browser time zone.
+The header menu can switch to UTC.
+A key of `.` or `..` and a Decimal key have no page URL: `admin.url()` raises for them.
+The first `admin.url()` call builds the whole site, so it raises on any config error.
+A `Date` has no time of day, so it shows as the server sent it.
+
+To build the app, run `npm install && npm run build` in `crates/admin/ui` and commit `dist`.
+`npm run size` prints the first-load size against the budget of 300 KB gzip.
+CI rebuilds the app and fails when the committed `dist` differs (Node 24).
+
+### Brand, groups and titles
+
+`brand` sets the name, logo, colors, header links and environment label.
+The logo is a path that starts with `/`, or an `https` URL (the CSP allows no other image source).
+`groups` is the order of the navigation groups.
+A resource names its group with `group`, and its title with `title`.
+A group that `groups` does not list is an error, and so is an unknown brand key.
+The metadata is built once per process.
+
+```python
+admin = Admin(
+    brand={"name": "Acme", "logo": "/static/logo.svg", "colors": {"primary": "#0b5fff"},
+           "links": [{"label": "Site", "url": "https://acme.example"}], "environment": "staging"},
+    groups=["Content", "Access"],
+)
+admin.register(Post, {"group": "Content", "title": "Articles"})
+```
+
+```ts
+const admin = new Admin(registry, {
+  brand: { name: "Acme", environment: "staging" },
+  groups: ["Content", "Access"],
+});
+admin.register(Post, { group: "Content", title: "Articles" });
+```
+
+The sign-in page shows no brand, because the metadata route needs a session.
+
+### `admin.url`
+
+`admin.url(Model, key)` gives the path of the record page, such as `/admin/Book/7`.
+The key is one value, the key values in order, or an object of key fields.
+A model that is not registered, or a key of the wrong shape, is an error.
+
+```python
+admin.url(Book, 7)                       # "/admin/Book/7"
+admin.url(Membership, {"org": 1, "user": "a,b"})   # "/admin/Membership/1,a%2Cb"
+```
+
+```ts
+admin.url(Book, 7n);
+```
+
+Both languages also export `url` at module level for the default admin.
+
+### Browser smoke test
+
+`crates/admin/ui/e2e` holds the first browser suite of the repository.
+It starts a real `python -m monorm admin` process on SQLite (it makes a temporary project, migrates, and seeds a user and two rows), signs in, opens a list and a record, and fails on any console error, CSP violation or failed request.
+The driver is Playwright (`playwright` 1.65.0, pinned) with `node:test`.
+Playwright downloads a browser, so the install is not part of the default `npm install` of any package.
+Run it from a checkout, with the `monorm` wheel installed in the active Python (`maturin develop`):
+
+```
+cd crates/admin/ui/e2e
+npm install
+npm run install-browser     # downloads Chromium, once
+npm test
+```
+
+`MONORM_PYTHON` names another Python than `python`.
+In a source checkout the built-in apps import from the repository, so the test sets `PYTHONPATH` to the repository root.
 
 ## Start the admin
 
