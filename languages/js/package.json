@@ -38,6 +38,10 @@
       "types": "./dist/src/ext.d.ts",
       "default": "./dist/src/ext.js"
     },
+    "./admin": {
+      "types": "./dist/src/admin.d.ts",
+      "default": "./dist/src/admin.js"
+    },
     "./otel": {
       "types": "./dist/src/otel.d.ts",
       "default": "./dist/src/otel.js"

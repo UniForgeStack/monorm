@@ -156,6 +156,12 @@ export interface NativeQueryEvent {
   readonly error?: string | null;
 }
 
+/** The resources of one schema and one admin config; it holds no connection. */
+export interface NativeAdminSite {
+  /** One in-memory request; `userJson` is the JSON of the user, or null. */
+  request(engine: NativeEngine, method: string, path: string, userJson: string | null, trace: NativeTrace | null): Promise<{ status: number; body: string }>;
+}
+
 export interface NativeTrace {
   take(): NativeQueryEvent[];
 }
@@ -232,6 +238,8 @@ interface Addon {
   /** Without `packages` the hook bindings stay unresolved: migrations and code generation need no library. */
   Schema: new (schemaJson: string, packages?: Record<string, string>) => NativeSchema;
   Trace: new () => NativeTrace;
+  /** The admin service (feature `admin`): throws the precise text of a wrong config. */
+  adminSite(schema: NativeSchema, configJson: string): NativeAdminSite;
   connect(url: string, schema: NativeSchema, maxConnections: number, disable: string[]): Promise<NativeEngine>;
   prepareSchema(schemaJson: string, contextJson?: string): string;
   nativeArtifact(): string;

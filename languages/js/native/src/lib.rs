@@ -9,6 +9,8 @@
 //! Errors are thrown as JS errors whose message starts with `[monorm:<Kind>] `; the
 //! runtime turns them into its error classes.
 
+#[cfg(feature = "admin")]
+mod admin;
 mod convert;
 mod js;
 mod pack;
