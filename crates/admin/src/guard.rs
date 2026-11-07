@@ -85,6 +85,10 @@ pub async fn guard(State(g): State<Arc<Guard>>, mut req: Request, next: Next) ->
     if path == "/healthz" || path == "/readyz" {
         return next.run(req).await;
     }
+    // The page and its files hold no data: the API calls of the page need the session.
+    if matches!(*req.method(), Method::GET | Method::HEAD) && crate::ui::is_ui(path, &g.site.prefix) {
+        return next.run(req).await;
+    }
     let sec = &g.auth.security;
     let mut session = header_text(&req, header::COOKIE).and_then(|c| cookie_value(c, security::SESSION_COOKIE)).and_then(|t| sec.read_session(t));
     if session.is_none() && path != g.login_path {

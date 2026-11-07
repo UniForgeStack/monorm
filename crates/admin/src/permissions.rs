@@ -179,7 +179,7 @@ impl Site {
             .iter()
             .filter(|r| self.allows(grants, r, Op::Read))
             .map(|r| {
-                let mut meta = crate::server::describe(self, r);
+                let mut meta = r.meta.clone();
                 meta["actions"] = json!(r.actions.iter().filter(|a| self.allowed_extra(grants, r, &format!("{}.{a}_{}", r.label, r.key))).collect::<Vec<_>>());
                 meta["field_permissions"] = json!(r.field_permissions.iter().filter(|f| self.allowed_extra(grants, r, &format!("{}.{f}", r.label))).collect::<Vec<_>>());
                 meta

@@ -17,6 +17,7 @@ use serde_json::{json, Map, Value};
 use crate::auth::AuthConfig;
 use crate::guard::{self, Guard};
 use crate::server;
+use crate::ui;
 use crate::site::Site;
 
 pub const REQUEST_ID: &str = "x-request-id";
@@ -81,7 +82,12 @@ pub fn service(site: Arc<Site>, conn: Arc<dyn Executor>, options: Options) -> Ro
         .with_state((conn.clone(), options.draining.clone()));
     let login_path = format!("{}/login", site.prefix);
     let (guard_site, guard_conn) = (site.clone(), conn.clone());
-    let app = health.merge(server::api_with(site, conn, options.auth.clone())).fallback(server::not_found);
+    let prefix = site.prefix.clone();
+    let page = move |req: Request| {
+        let prefix = prefix.clone();
+        async move { ui::respond(req.method(), req.uri().path(), &prefix) }
+    };
+    let app = health.merge(server::api_with(site, conn, options.auth.clone())).fallback(page);
     let app = match options.auth {
         Some(auth) => app.layer(middleware::from_fn_with_state(Arc::new(Guard { auth, login_path, site: guard_site, conn: guard_conn }), guard::guard)),
         None => app,
@@ -98,10 +104,10 @@ pub fn with_security_headers(app: Router) -> Router {
     app.layer(middleware::from_fn(|req: Request, next: Next| async move {
         let mut response = next.run(req).await;
         let headers = response.headers_mut();
-        headers.insert("content-security-policy", HeaderValue::from_static(CSP));
+        headers.entry("content-security-policy").or_insert(HeaderValue::from_static(CSP));
         headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
         headers.insert("referrer-policy", HeaderValue::from_static("same-origin"));
-        headers.insert("cache-control", HeaderValue::from_static("no-store"));
+        headers.entry("cache-control").or_insert(HeaderValue::from_static("no-store"));
         headers.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
         response
     }))

@@ -12,7 +12,9 @@ pub mod config;
 pub mod guard;
 pub mod inproc;
 pub mod json;
+pub mod key;
 pub mod list;
+pub mod meta;
 pub mod permissions;
 pub mod revoke;
 pub mod scope;
@@ -23,6 +25,7 @@ pub mod service;
 pub mod site;
 pub mod sql;
 pub mod tables;
+pub mod ui;
 
 pub use auth::AuthConfig;
 pub use bridge::{BoxFuture, BridgeError, CallContext, HostBridge};

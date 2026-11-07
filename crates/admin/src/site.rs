@@ -2,12 +2,15 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use monorm_core::ir::{ColType, RelKind, ValueType};
 use monorm_core::schema::Schema;
 use serde::Deserialize;
 
+use crate::key;
+use crate::meta::{self, BrandConfig};
 use crate::permissions::{Op, Strategy};
 
 pub const DEFAULT_PREFIX: &str = "/admin/api";
@@ -26,7 +29,7 @@ impl fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
-fn err<T>(message: String) -> Result<T, ConfigError> {
+pub(crate) fn err<T>(message: String) -> Result<T, ConfigError> {
     Err(ConfigError(message))
 }
 
@@ -39,6 +42,11 @@ struct Config {
     permissions: Option<String>,
     /// The label of the permission names, `admin` by default.
     label: Option<String>,
+    /// The name, logo, colors, header links and environment label of the UI.
+    brand: Option<BrandConfig>,
+    /// The navigation groups in order. A resource with a `group` must name one of them.
+    #[serde(default)]
+    groups: Vec<String>,
     /// The registered resources. None: every concrete model is a read-only resource.
     #[serde(default)]
     resources: Vec<ResourceConfig>,
@@ -56,6 +64,10 @@ struct ResourceConfig {
     perms: Option<Vec<String>>,
     /// Overrides the site label in the names of this resource.
     label: Option<String>,
+    /// The name in the navigation and the page heading. The model name, spaced, by default.
+    title: Option<String>,
+    /// The navigation group of the resource.
+    group: Option<String>,
     /// Names of field permissions (`see_cost`): `<label>.<name>`.
     #[serde(default)]
     field_permissions: Vec<String>,
@@ -109,6 +121,28 @@ pub struct Resource {
     pub split_delete: bool,
     pub field_permissions: Vec<String>,
     pub actions: Vec<String>,
+    pub title: String,
+    pub group: Option<String>,
+    /// The key fields as columns, in key order.
+    pub key_columns: Vec<Column>,
+    /// Positions of the key columns in `columns`: a row names its record with them.
+    pub key_positions: Vec<usize>,
+    /// The fields of the detail page: every field of the model that the database does not generate.
+    pub detail: Vec<Column>,
+    /// To-one relations that lead to the key of another resource.
+    pub links: Vec<Link>,
+    /// The metadata that does not depend on the user, built once by `Site::build`.
+    pub meta: serde_json::Value,
+}
+
+/// A to-one relation that the detail page shows as a link to the page of the target.
+#[derive(Debug, Clone)]
+pub struct Link {
+    pub name: String,
+    /// The name of the target resource.
+    pub target: String,
+    /// Positions in `Resource::detail` of the foreign key fields, in the key order of the target.
+    pub from: Vec<usize>,
 }
 
 pub struct Site {
@@ -116,6 +150,11 @@ pub struct Site {
     pub prefix: String,
     pub strategy: Strategy,
     pub resources: Vec<Resource>,
+    /// The brand of the UI, checked.
+    pub brand: serde_json::Value,
+    /// The navigation groups in order.
+    pub groups: Vec<String>,
+    meta_builds: AtomicUsize,
 }
 
 impl Site {
@@ -152,7 +191,56 @@ impl Site {
                 resources.push(resource(&schema, idx, r, strategy, label)?);
             }
         }
-        Ok(Site { schema, prefix, strategy, resources })
+        let mut groups = config.groups.clone();
+        for g in &groups {
+            if g.trim().is_empty() || groups.iter().filter(|o| *o == g).count() > 1 {
+                return err(format!("groups: {g:?} is empty or listed twice"));
+            }
+        }
+        for r in &resources {
+            match (&r.group, groups.is_empty()) {
+                (Some(g), false) if !groups.contains(g) => return err(format!("{}: group {g:?} is not in groups", r.name)),
+                (Some(g), true) if !seen_group(&resources, g, &r.name) => groups.push(g.clone()),
+                _ => {}
+            }
+            if r.name == prefix.strip_prefix(key::UI_BASE).and_then(|p| p.strip_prefix('/')).unwrap_or("/") {
+                return err(format!("{}: its page {} is the API prefix", r.name, key::url(&r.name, "").trim_end_matches('/')));
+            }
+        }
+        let links: Vec<Vec<Link>> = (0..resources.len()).map(|i| links_of(&schema, &resources, i)).collect();
+        for (r, l) in resources.iter_mut().zip(links) {
+            r.links = l;
+        }
+        let meta_builds = AtomicUsize::new(0);
+        for r in &mut resources {
+            r.meta = meta::resource(&schema, r, &meta_builds);
+        }
+        let brand = meta::brand(config.brand.as_ref())?;
+        Ok(Site { schema, prefix, strategy, resources, brand, groups, meta_builds })
+    }
+
+    /// How many times `build` made the metadata of a resource: one per resource, and no request adds to it.
+    pub fn meta_builds(&self) -> usize {
+        self.meta_builds.load(Ordering::SeqCst)
+    }
+
+    /// The navigation of the resources in `visible` (names): ungrouped first, then each group in order.
+    pub fn nav(&self, visible: &[&str]) -> serde_json::Value {
+        let pick = |group: Option<&String>| -> Vec<&str> {
+            self.resources.iter().filter(|r| r.group.as_ref() == group && visible.contains(&r.name.as_str())).map(|r| r.name.as_str()).collect()
+        };
+        let mut out = Vec::new();
+        let loose = pick(None);
+        if !loose.is_empty() {
+            out.push(serde_json::json!({"group": null, "resources": loose}));
+        }
+        for g in &self.groups {
+            let names = pick(Some(g));
+            if !names.is_empty() {
+                out.push(serde_json::json!({"group": g, "resources": names}));
+            }
+        }
+        serde_json::Value::Array(out)
     }
 
     pub fn resource(&self, name: &str) -> Option<&Resource> {
@@ -175,7 +263,7 @@ fn concrete(m: &monorm_core::schema::Model) -> bool {
 
 impl ResourceConfig {
     fn of(model: &str) -> ResourceConfig {
-        ResourceConfig { model: model.to_owned(), list: ListConfig::default(), allow: None, perms: None, label: None, field_permissions: Vec::new(), actions: Vec::new() }
+        ResourceConfig { model: model.to_owned(), list: ListConfig::default(), allow: None, perms: None, label: None, title: None, group: None, field_permissions: Vec::new(), actions: Vec::new() }
     }
 }
 
@@ -278,6 +366,22 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
         return err(format!("{name}: list.page_size is {page_size}, between 1 and {MAX_PAGE_SIZE}"));
     }
     let key = name.to_lowercase();
+    let mut key_columns = Vec::new();
+    let mut key_positions = Vec::new();
+    for k in model.key_fields() {
+        let c = column(schema, idx, &k.name)?;
+        key_positions.push(columns.iter().position(|o| o.label == c.label).ok_or_else(|| ConfigError(format!("{name}: the key field {:?} is not a column", k.name)))?);
+        key_columns.push(c);
+    }
+    let detail = model.ir.fields.iter().filter(|f| listable(f)).map(|f| column(schema, idx, &f.name)).collect::<Result<Vec<_>, _>>()?;
+    let title = match &config.title {
+        Some(t) if t.trim().is_empty() || t.chars().count() > 80 => return err(format!("{name}: title has 1 to 80 characters")),
+        Some(t) => t.clone(),
+        None => meta::humanize(&name),
+    };
+    if config.group.as_ref().is_some_and(|g| g.trim().is_empty()) {
+        return err(format!("{name}: group is empty"));
+    }
     Ok(Resource {
         model: idx,
         name,
@@ -291,7 +395,46 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
         split_delete,
         field_permissions: config.field_permissions.clone(),
         actions: config.actions.clone(),
+        title,
+        group: config.group.clone(),
+        key_columns,
+        key_positions,
+        detail,
+        links: Vec::new(),
+        meta: serde_json::Value::Null,
     })
+}
+
+fn seen_group(resources: &[Resource], group: &str, until: &str) -> bool {
+    resources.iter().take_while(|r| r.name != until).any(|r| r.group.as_deref() == Some(group))
+}
+
+/// The to-one relations of resource `i` whose `to` columns are exactly the key of another resource.
+fn links_of(schema: &Schema, resources: &[Resource], i: usize) -> Vec<Link> {
+    let model = schema.model(resources[i].model);
+    let mut out = Vec::new();
+    for rel in &model.ir.relations {
+        let Ok((_, target_idx)) = model.relation(&rel.name) else { continue };
+        let Some(target) = resources.iter().find(|r| r.model == target_idx) else { continue };
+        if rel.kind != RelKind::One {
+            continue;
+        }
+        let target_model = schema.model(target_idx);
+        let keys = target_model.key_fields();
+        if rel.to.len() != keys.len() {
+            continue;
+        }
+        let mut from = Vec::new();
+        for k in &keys {
+            let Some(n) = rel.to.iter().position(|t| *t == k.column || *t == k.name) else { break };
+            let Some(p) = resources[i].detail.iter().position(|d| model.ir.fields.iter().any(|f| f.name == d.field && (f.column == rel.from[n] || f.name == rel.from[n]))) else { break };
+            from.push(p);
+        }
+        if from.len() == keys.len() {
+            out.push(Link { name: rel.name.clone(), target: target.name.clone(), from });
+        }
+    }
+    out
 }
 
 fn listable(f: &monorm_core::ir::FieldIr) -> bool {

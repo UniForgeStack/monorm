@@ -3,6 +3,7 @@ name = "monorm-admin"
 version = "0.1.0"
 edition = "2021"
 publish = false
+build = "build.rs"
 description = "The admin service: resources planned from the prepared schema, keyset lists, an in-memory HTTP router and the server of `monorm admin`. No binding code."
 
 [lib]

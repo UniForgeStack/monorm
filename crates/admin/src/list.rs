@@ -14,6 +14,7 @@ use sea_query::Value as Bind;
 use serde_json::{json, Value};
 
 use crate::json;
+use crate::key;
 use crate::site::{Column, Resource, Site};
 
 /// Why a list failed: the request is wrong, or the engine failed.
@@ -25,6 +26,8 @@ pub enum ListError {
 
 pub struct Page {
     pub rows: Vec<Value>,
+    /// The encoded key of each row: the path segment of its detail page.
+    pub keys: Vec<String>,
     pub next: Option<String>,
 }
 
@@ -127,5 +130,42 @@ pub async fn list(site: &Site, resource: &Resource, conn: &dyn Executor, target:
         let values: Vec<Value> = resource.order_positions.iter().map(|&p| last.map_or(Value::Null, |r| r[p].clone())).collect();
         encode(&values)
     });
-    Ok(Page { rows, next })
+    let keys = rows.iter().map(|r| key::encode(&resource.key_positions.iter().map(|&p| r[p].clone()).collect::<Vec<_>>())).collect();
+    Ok(Page { rows, keys, next })
+}
+
+/// The detail columns of the record with this key, as JSON cells, or none when no row has the key.
+pub async fn detail(site: &Site, resource: &Resource, conn: &dyn Executor, target: Target, key: &[Value]) -> Result<Option<Vec<Value>>, ListError> {
+    if key.len() != resource.key_columns.len() {
+        return Err(ListError::Bad("the key does not fit this resource".into()));
+    }
+    let mut binds = Vec::new();
+    for (c, v) in resource.key_columns.iter().zip(key) {
+        binds.push(json::bind(c.ty.ty, v).map_err(ListError::Bad)?);
+    }
+    let items: Vec<Value> = resource.key_columns.iter().enumerate().map(|(i, c)| json!({"t": "cmp", "op": "eq", "l": col(c), "r": {"t": "param", "i": i}})).collect();
+    let model = &site.schema.model(resource.model).ir.name;
+    let op = json!({
+        "op": "select",
+        "model": model,
+        "columns": resource.detail.iter().map(|c| json!({"t": "expr", "expr": col(c)})).collect::<Vec<_>>(),
+        "filters": [{"t": "and", "items": items}],
+        "limit": 1,
+    });
+    let op: Operation = serde_json::from_value(op).map_err(|e| ListError::Engine(e.to_string()))?;
+    let engine = |e: Error| ListError::Engine(e.to_string());
+    let plan = Planner::plan(&site.schema, target, &op, &Binds(binds)).map_err(engine)?;
+    let Plan::Select(_) = &plan else { return Err(ListError::Engine("a detail plans a select".into())) };
+    let Outcome::Select(selected) = exec::run(conn, target, plan).await.map_err(engine)? else {
+        return Err(ListError::Engine("a detail runs a select".into()));
+    };
+    if selected.rows.is_empty() {
+        return Ok(None);
+    }
+    let mut row = Vec::new();
+    for (c, ty) in selected.plan.types.iter().enumerate() {
+        let cell = selected.rows.cell(0, c, *ty).map_err(|e| ListError::Engine(e.to_string()))?;
+        row.push(json::cell(&site.schema, *ty, cell));
+    }
+    Ok(Some(row))
 }
