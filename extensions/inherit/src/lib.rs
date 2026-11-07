@@ -3,20 +3,16 @@ use monorm::{
     extension::{capture_storage, Declaration},
     ir::*,
 };
-use serde::{de::DeserializeOwned, Serialize};
+use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
-fn copy<T: Serialize + DeserializeOwned>(value: &T) -> Result<T, String> {
-    serde_json::from_value(serde_json::to_value(value).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
-}
-
 fn error(d: &Declaration, message: impl std::fmt::Display) -> String {
-    format!("{}:{}:{}: @@{}: {message}", d.location.file, d.location.line, d.location.column, d.attribute)
+    d.error_with("@@", message)
 }
 
 /// Work on a candidate so a rejected declaration cannot partially mutate the schema.
 pub fn expand(ir: &mut SchemaIr) -> Result<(), String> {
-    let mut candidate: SchemaIr = copy(&*ir)?;
+    let mut candidate = ir.clone();
     run(&mut candidate)?;
     *ir = candidate;
     Ok(())
@@ -158,21 +154,17 @@ fn order(p: &Parsed) -> Result<Vec<String>, Vec<String>> {
     Ok(done)
 }
 
-fn extend_from<T: Serialize + DeserializeOwned>(out: &mut Vec<T>, items: &[T], skip_equal: bool) -> Result<(), String> {
+fn extend_from<T: Serialize + Clone>(out: &mut Vec<T>, items: &[T], skip_equal: bool) {
     for item in items {
-        if !(skip_equal && out.iter().any(|o| same(o, item))) { out.push(copy(item)?); }
+        if !(skip_equal && out.iter().any(|o| same(o, item))) { out.push(item.clone()); }
     }
-    Ok(())
 }
 
 fn check_member(model: &ModelIr, name: &str) -> Result<(), String> {
-    if model.fields.iter().any(|f| f.name == name) || model.relations.iter().any(|r| r.name == name) {
-        return Err(format!("{}.{}: generated name collides with a member", model.name, name));
-    }
-    if name.is_empty() || !name.chars().enumerate().all(|(i, c)| c == '_' || c.is_ascii_alphabetic() || i > 0 && c.is_ascii_digit()) {
-        return Err(format!("invalid relation name {name}"));
-    }
-    Ok(())
+    model.check_new_member(name).map_err(|e| match e {
+        NewMemberError::Collides => format!("{}.{}: generated name collides with a member", model.name, name),
+        NewMemberError::Invalid => format!("invalid relation name {name}"),
+    })
 }
 
 /// Copy the members of `bases` into `child`; the child's own members win, and the bases must not disagree.
@@ -181,7 +173,7 @@ fn check_member(model: &ModelIr, name: &str) -> Result<(), String> {
 /// Returns the names of the inherited relations that still wait for an owning relation.
 fn merge(ir: &mut SchemaIr, child: &str, bases: &[String], override_base: Option<&str>, d: &Declaration) -> Result<Vec<String>, String> {
     let ci = index(ir, child)?;
-    let mut cm: ModelIr = copy(&ir.models[ci])?;
+    let mut cm = ir.models[ci].clone();
     let own_fields: BTreeSet<String> = cm.fields.iter().map(|f| f.name.clone()).collect();
     let own_relations: BTreeSet<String> = cm.relations.iter().map(|r| r.name.clone()).collect();
     let own_declarations: BTreeSet<(String, Option<String>)> =
@@ -202,7 +194,7 @@ fn merge(ir: &mut SchemaIr, child: &str, bases: &[String], override_base: Option
     let mut class_source: Option<String> = None;
 
     for base in bases {
-        let bm: ModelIr = copy(&ir.models[index(ir, base)?])?;
+        let bm = ir.models[index(ir, base)?].clone();
         let repeat = override_base.is_some() && Some(base.as_str()) != override_base;
         let key: Vec<String> = bm.key_fields().into_iter().map(str::to_owned).collect();
         for f in bm.fields.iter().cloned() {
@@ -224,9 +216,9 @@ fn merge(ir: &mut SchemaIr, child: &str, bases: &[String], override_base: Option
             if r.label.is_some() { waiting.push(r.name.clone()); }
             relations.push(r);
         }
-        extend_from(&mut indexes, &bm.indexes, repeat)?;
-        extend_from(&mut constraints, &bm.constraints, repeat)?;
-        extend_from(&mut triggers, &bm.triggers, repeat)?;
+        extend_from(&mut indexes, &bm.indexes, repeat);
+        extend_from(&mut constraints, &bm.constraints, repeat);
+        extend_from(&mut triggers, &bm.triggers, repeat);
         if !key.is_empty() {
             match &known_key {
                 Some((src, known)) if *known != key => {
@@ -329,20 +321,11 @@ fn resolve(ir: &mut SchemaIr, child: &str, waiting: &[String], d: &Declaration, 
         check_member(&ir.models[ti], &back)?;
         check_member(&ir.models[ti], &fk)?;
         generated.insert((rel.target.clone(), back.clone()), child.to_owned());
-        let mut field = FieldIr::plain(&fk, key_field.ty);
-        field.enum_name = key_field.enum_name.clone();
-        field.max_length = key_field.max_length;
-        field.db_type = key_field.db_type.clone();
-        field.read_sql = key_field.read_sql.clone();
-        field.write_sql = key_field.write_sql.clone();
-        field.requires = key_field.requires.clone();
+        let mut field = FieldIr::key_like(&fk, &key_field);
         field.unique = rel.kind == RelKind::One;
         let target = &mut ir.models[ti];
         target.fields.push(field);
-        target.relations.push(RelationIr {
-            name: back, kind: RelKind::One, target: child.to_owned(), from: vec![fk.clone()], to: vec![key.clone()],
-            foreign_key: true, on_delete: rel.on_delete, on_update: None, deferrable: None, fk_name: None, through: None, label: None, join_label: None,
-        });
+        target.relations.push(RelationIr { foreign_key: true, on_delete: rel.on_delete, ..RelationIr::one(&back, child, &fk, &key) });
         let owner = ir.models[ci].relations.iter_mut().find(|r| &r.name == member).ok_or("lost a relation")?;
         owner.from = vec![key];
         owner.to = vec![fk];
@@ -384,25 +367,14 @@ fn join_model(
         return Err(error(d, format!("{child}.{member}: a generated join model needs two different models; write the join model and through: yourself")));
     }
     let table = format!("{}_{member}", ir.models[ci].table);
-    let side_field = |side: &str, key: &FieldIr| {
-        let mut f = FieldIr::plain(&format!("{side}_{}", key.name), key.ty);
-        f.nullable = false;
-        f.enum_name = key.enum_name.clone();
-        f.max_length = key.max_length;
-        f.db_type = key.db_type.clone();
-        f.read_sql = key.read_sql.clone();
-        f.write_sql = key.write_sql.clone();
-        f.requires = key.requires.clone();
-        f
-    };
+    let side_field = |side: &str, key: &FieldIr| FieldIr { nullable: false, ..FieldIr::key_like(&format!("{side}_{}", key.name), key) };
     let (source, target) = (side_field(&child_side, &child_key), side_field(&target_side, &target_key));
     let mut id = FieldIr::plain("id", ColType::Int);
     id.nullable = false;
     id.primary_key = true;
     id.auto_increment = true;
     let link = |side: &str, field: &FieldIr, to: &str, key: &FieldIr| RelationIr {
-        name: side.to_owned(), kind: RelKind::One, target: to.to_owned(), from: vec![field.name.clone()], to: vec![key.name.clone()],
-        foreign_key: true, on_delete: Some(OnDelete::Cascade), on_update: None, deferrable: None, fk_name: None, through: None, label: None, join_label: None,
+        foreign_key: true, on_delete: Some(OnDelete::Cascade), ..RelationIr::one(side, to, &field.name, &key.name)
     };
     let model = ModelIr {
         name: join_name.clone(), table: table.clone(), mapped: false, primary_key: vec![], pk_name: None, partition: None, renamed_from: None, comment: None,
@@ -467,8 +439,8 @@ fn run(ir: &mut SchemaIr) -> Result<(), String> {
     // column position and its indexes, constraints and triggers, and the physical schema does not change.
     let mut physical: Option<SchemaIr> = None;
     if hides_fields(ir) {
-        let mut copied: SchemaIr = copy(&*ir)?;
-        copied.models = copy(&ir.behavior.storage.as_ref().expect("captured storage").models)?;
+        let mut copied = ir.clone();
+        copied.models = ir.behavior.storage.as_ref().expect("captured storage").models.clone();
         copied.behavior.storage = None;
         capture_storage(&mut copied)?;
         physical = Some(copied);
@@ -478,7 +450,7 @@ fn run(ir: &mut SchemaIr) -> Result<(), String> {
     let removed: BTreeSet<String> = p.abstracts.keys().cloned().chain(p.overrides.values().map(|(_, b)| b.clone())).collect();
     let source = physical.as_ref().unwrap_or(ir);
     let stored: Vec<ModelIr> = touched.iter().filter(|n| !removed.contains(*n))
-        .map(|name| copy(source.models.iter().find(|m| &m.name == name).ok_or("lost a model")?)).collect::<Result<_, String>>()?;
+        .map(|name| source.models.iter().find(|m| &m.name == name).cloned().ok_or("lost a model")).collect::<Result<_, _>>()?;
     let storage = ir.behavior.storage.as_mut().ok_or("inherit requires captured physical storage")?;
     storage.models.retain(|m| !removed.contains(&m.name));
     for model in stored {

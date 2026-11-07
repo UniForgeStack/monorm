@@ -1,28 +1,9 @@
 //! `@@timestamps.updated_at`: the model gets an `updated_at` field that the ORM sets on each
 //! update. Database mode adds a row trigger so other writers set it too.
-use monorm::{dialect::Dialect, ir::{ColType, FieldIr, ModelIr, SchemaIr, TriggerIr}, tracking::{self, error, Tracked}, writes::{AssignValue, WriteAssignment, WriteKind}};
+use monorm::{dialect::Dialect, extension::views_keeping, ir::{ColType, FieldIr, ModelIr, SchemaIr, TriggerEvent, TriggerIr, TriggerTiming}, sql::ident, tracking::{self, error, Mode, Tracked}, writes::{AssignValue, WriteAssignment, WriteKind}};
 
 const SOURCE: &str = "monorm.timestamps";
 const TRACKED: Tracked = Tracked { attribute: "timestamps.updated_at", field: "updated_at" };
-
-/// Who keeps the column current for writers outside the ORM.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Mode {
-    /// A row trigger, so every writer gets the behavior.
-    Database,
-    /// The ORM only; no DDL.
-    Application,
-}
-
-impl Mode {
-    fn parse(value: Option<&serde_json::Value>) -> Result<Self, String> {
-        match value.map(|v| v.as_str()) {
-            None | Some(Some("database")) => Ok(Self::Database),
-            Some(Some("application")) => Ok(Self::Application),
-            _ => Err("mode must be \"database\" or \"application\"".into()),
-        }
-    }
-}
 
 /// Runs before the logical passes, so a proxy of the model copies the field too.
 pub fn add_fields(ir: &mut SchemaIr) -> Result<(), String> {
@@ -31,26 +12,20 @@ pub fn add_fields(ir: &mut SchemaIr) -> Result<(), String> {
 
 const SQLITE_NOW: &str = "strftime('%Y-%m-%d %H:%M:%f','now')";
 
-fn ident(s: &str) -> String { format!("\"{}\"", s.replace('"', "\"\"")) }
-
 /// The trigger that sets `column` on an update that leaves it unchanged, so a written value
 /// wins. SQLite can't assign `NEW`, so its trigger updates the row after the update.
 fn trigger(dialect: Dialect, model: &ModelIr, column: &str) -> Result<TriggerIr, String> {
     let key: Vec<_> = model.fields.iter().filter(|f| f.primary_key).map(|f| format!("{c} = NEW.{c}", c = ident(&f.column))).collect();
     if key.is_empty() { return Err(format!("{} has no primary key", model.name)); }
     let c = ident(column);
-    let value = match dialect {
-        Dialect::Postgres => serde_json::json!({"timing": "before", "when": format!("NEW.{c} IS NOT DISTINCT FROM OLD.{c}"),
-            "body": format!("BEGIN NEW.{c} := now(); RETURN NEW; END;")}),
+    let (timing, when, body) = match dialect {
+        Dialect::Postgres => (TriggerTiming::Before, format!("NEW.{c} IS NOT DISTINCT FROM OLD.{c}"), format!("BEGIN NEW.{c} := now(); RETURN NEW; END;")),
         // The `WHEN` guard stops the trigger from firing itself under `recursive_triggers`: the
         // write it makes carries the current time, so the second pass sees a changed value.
-        Dialect::Sqlite => serde_json::json!({"timing": "after", "when": format!("NEW.{c} IS OLD.{c} AND NEW.{c} IS NOT {SQLITE_NOW}"),
-            "body": format!("UPDATE {} SET {c} = {SQLITE_NOW} WHERE {}", ident(&model.table), key.join(" AND "))}),
+        Dialect::Sqlite => (TriggerTiming::After, format!("NEW.{c} IS OLD.{c} AND NEW.{c} IS NOT {SQLITE_NOW}"),
+            format!("UPDATE {} SET {c} = {SQLITE_NOW} WHERE {}", ident(&model.table), key.join(" AND "))),
     };
-    let mut value = value;
-    value["name"] = format!("updated_at_{column}").into();
-    value["events"] = serde_json::json!(["update"]);
-    serde_json::from_value(value).map_err(|e| e.to_string())
+    Ok(TriggerIr { name: format!("updated_at_{column}"), timing, events: vec![TriggerEvent::Update], when: Some(when), body: Some(body), ..Default::default() })
 }
 
 pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
@@ -62,24 +37,20 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
         let field = model.fields.iter().find(|f| f.name == name).ok_or_else(|| error(d, "unknown field"))?;
         if ir.behavior.write_assignments.iter().any(|a| a.source == SOURCE && a.model == d.model && a.field == name) { return Err(error(d, "is given twice")); }
         if mode == Mode::Database {
-            let column = field.column.clone();
-            let models = ir.models.iter_mut().chain(ir.behavior.storage.iter_mut().flat_map(|s| s.models.iter_mut()));
-            for model in models.filter(|m| m.name == d.model) {
-                let trigger = trigger(ir.dialect, model, &column)?;
-                if model.triggers.iter().any(|t| t.name == trigger.name) { return Err(error(d, format!("{} already has a trigger {}", d.model, trigger.name))); }
-                model.triggers.push(trigger);
+            let (column, dialect) = (field.column.clone(), ir.dialect);
+            for model in ir.models_named_mut(&d.model) {
+                let trigger = trigger(dialect, model, &column)?;
+                model.push_trigger(trigger).map_err(|e| error(d, e))?;
             }
         }
         // A proxy that shares the table but hides the field would leave the column unset on its writes.
-        let proxies: Vec<String> = ir.behavior.model_views.iter().filter(|v| v.root == d.model).map(|v| v.model.clone()).collect();
         let mut targets = vec![d.model.clone()];
         if mode == Mode::Application {
-            for proxy in proxies {
-                if !ir.models.iter().find(|m| m.name == proxy).is_some_and(|m| m.fields.iter().any(|f| f.name == name)) {
-                    return Err(error(d, format!("{proxy} excludes {name}, so its writes cannot set it; keep the field in the proxy or use mode \"database\"")));
-                }
-                targets.push(proxy);
+            let split = views_keeping(ir, &d.model, &name, |_| false);
+            if let Some(view) = split.lacking.first() {
+                return Err(error(d, format!("{view} excludes {name}, so its writes cannot set it; keep the field in the proxy or use mode \"database\"")));
             }
+            targets.extend(split.keeping);
         }
         for model in targets {
             ir.behavior.write_assignments.push(WriteAssignment { source: SOURCE.into(), model, field: name.clone(),
@@ -92,13 +63,11 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
         let Some(column) = ir.models.iter().find(|m| m.name == root.model).and_then(|m| m.fields.iter().find(|f| f.name == root.field)).map(|f| f.column.clone()) else { continue };
         let trigger = format!("updated_at_{column}");
         if ir.models.iter().find(|m| m.name == root.model).is_some_and(|m| m.triggers.iter().any(|t| t.name == trigger)) { continue; }
-        let proxies: Vec<String> = ir.behavior.model_views.iter().filter(|v| v.root == root.model).map(|v| v.model.clone()).collect();
-        for proxy in proxies {
-            if ir.behavior.write_assignments.iter().any(|a| a.source == SOURCE && a.model == proxy && a.field == root.field) { continue; }
-            if !ir.models.iter().find(|m| m.name == proxy).is_some_and(|m| m.fields.iter().any(|f| f.name == root.field)) {
-                return Err(format!("{proxy}: proxy must keep the field {}, so its writes can set it", root.field));
-            }
-            ir.behavior.write_assignments.push(WriteAssignment { model: proxy, ..root.clone() });
+        let has = |model: &str| ir.behavior.write_assignments.iter().any(|a| a.source == SOURCE && a.model == model && a.field == root.field);
+        let split = views_keeping(ir, &root.model, &root.field, has);
+        if let Some(view) = split.lacking.first() { return Err(format!("{view}: proxy must keep the field {}, so its writes can set it", root.field)); }
+        for model in split.keeping {
+            ir.behavior.write_assignments.push(WriteAssignment { model, ..root.clone() });
         }
     }
     Ok(())
@@ -252,7 +221,7 @@ mod tests {
 
     fn with_proxy(mode: &str, keeps_field: bool) -> SchemaIr {
         let mut ir = schema("postgres", Some(mode));
-        let mut view: ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[0]).unwrap()).unwrap();
+        let mut view: ModelIr = ir.models[0].clone();
         view.name = "PostView".into();
         if !keeps_field { view.fields.retain(|f| f.name != "changed"); }
         ir.models.push(view);
@@ -289,7 +258,7 @@ mod tests {
             let mut ir = schema("postgres", Some(mode));
             prepared(&mut ir).unwrap();
             ir.behavior.declarations.clear();
-            let mut view: ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[0]).unwrap()).unwrap();
+            let mut view: ModelIr = ir.models[0].clone();
             view.name = "PostView".into();
             ir.models.push(view);
             ir.behavior.model_views.push(monorm::extension::ModelView { model: "PostView".into(), source: "Post".into(), root: "Post".into(), row_filter: None, insert_table: None });

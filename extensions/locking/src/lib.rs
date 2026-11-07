@@ -1,6 +1,6 @@
 //! `@@locking.version`: the model gets a `version Int @default(0)` field. ORM updates increment
 //! it, and instance writes check it. No DDL beyond the column.
-use monorm::{ir::{ColType, FieldIr, SchemaIr}, tracking::{self, error, Tracked}, writes::{AssignValue, InstanceGuard, WriteAssignment, WriteKind}};
+use monorm::{extension, ir::{ColType, FieldIr, SchemaIr}, tracking::{self, error, Tracked}, writes::{AssignValue, InstanceGuard, WriteAssignment, WriteKind}};
 
 const SOURCE: &str = "monorm.locking";
 const TRACKED: Tracked = Tracked { attribute: "locking.version", field: "version" };
@@ -24,15 +24,16 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
         versions.push(WriteAssignment { source: SOURCE.into(), model: d.model.clone(), field: name,
             on: vec![WriteKind::Update, WriteKind::Upsert, WriteKind::DeleteRewrite], value: AssignValue::Increment, upsert });
     }
-    // A view that keeps the field takes the records of its root storage owner.
-    for view in &ir.behavior.model_views {
-        if versions.iter().chain(&earlier).any(|a| a.model == view.model) { continue; }
-        let Some(root) = versions.iter().chain(&earlier).find(|a| a.model == view.root).cloned() else { continue };
-        if !ir.models.iter().find(|m| m.name == view.model).is_some_and(|m| m.fields.iter().any(|f| f.name == root.field)) {
-            return Err(format!("{}: proxy must keep the version field {}", view.model, root.field));
-        }
-        versions.push(WriteAssignment { model: view.model.clone(), ..root });
+    // A view that keeps the field takes the records of its root storage owner. Views of one root never have a view as root, so one pass finds them all.
+    let roots: Vec<WriteAssignment> = versions.iter().chain(&earlier).cloned().collect();
+    let mut copies: Vec<WriteAssignment> = vec![];
+    for root in &roots {
+        let has = |model: &str| roots.iter().chain(&copies).any(|a| a.model == model);
+        let split = extension::views_keeping(ir, &root.model, &root.field, has);
+        if let Some(view) = split.lacking.first() { return Err(format!("{view}: proxy must keep the version field {}", root.field)); }
+        copies.extend(split.keeping.into_iter().map(|model| WriteAssignment { model, ..root.clone() }));
     }
+    versions.extend(copies);
     for a in versions {
         ir.behavior.instance_guards.push(InstanceGuard { source: SOURCE.into(), model: a.model.clone(), field: a.field.clone() });
         ir.behavior.write_assignments.push(a);
@@ -153,7 +154,7 @@ mod tests {
     #[test]
     fn a_proxy_that_keeps_the_field_gets_the_records_of_its_root() {
         let mut ir = schema();
-        let mut view: monorm::ir::ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[0]).unwrap()).unwrap();
+        let mut view: monorm::ir::ModelIr = ir.models[0].clone();
         view.name = "PostView".into();
         ir.models.push(view);
         ir.behavior.model_views.push(monorm::extension::ModelView { model: "PostView".into(), source: "Post".into(), root: "Post".into(), row_filter: None, insert_table: None });
@@ -164,11 +165,36 @@ mod tests {
     }
 
     #[test]
+    fn every_proxy_of_a_root_gets_the_records_in_view_order() {
+        let mut ir = schema();
+        for name in ["PostView", "PostCopy"] {
+            let mut view: monorm::ir::ModelIr = ir.models[0].clone();
+            view.name = name.into();
+            ir.models.push(view);
+            ir.behavior.model_views.push(monorm::extension::ModelView {
+                model: name.into(),
+                source: "Post".into(),
+                root: "Post".into(),
+                row_filter: None,
+                insert_table: None,
+            });
+        }
+        prepare(&mut ir).unwrap();
+        let models: Vec<_> = ir
+            .behavior
+            .write_assignments
+            .iter()
+            .map(|a| a.model.as_str())
+            .collect();
+        assert_eq!(models, ["Post", "PostView", "PostCopy"]);
+    }
+
+    #[test]
     fn a_proxy_in_a_later_batch_gets_the_records_of_a_root_in_the_context() {
         let mut ir = schema();
         prepare(&mut ir).unwrap();
         ir.behavior.declarations.clear();
-        let mut view: monorm::ir::ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[0]).unwrap()).unwrap();
+        let mut view: monorm::ir::ModelIr = ir.models[0].clone();
         view.name = "PostView".into();
         ir.models.push(view);
         ir.behavior.model_views.push(monorm::extension::ModelView { model: "PostView".into(), source: "Post".into(), root: "Post".into(), row_filter: None, insert_table: None });
@@ -182,7 +208,7 @@ mod tests {
     #[test]
     fn a_proxy_must_keep_the_version_field() {
         let mut ir = schema();
-        let mut view: monorm::ir::ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[0]).unwrap()).unwrap();
+        let mut view: monorm::ir::ModelIr = ir.models[0].clone();
         view.name = "PostView".into();
         view.fields.retain(|f| f.name != "version");
         ir.models.push(view);

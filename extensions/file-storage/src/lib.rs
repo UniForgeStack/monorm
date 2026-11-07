@@ -1,6 +1,6 @@
 //! Compile namespaced file declarations into provider-independent binding metadata.
 use monorm::{
-    extension::{check_adapter_methods, expand_adapter_template, validate_field_adapters, FieldAdapter},
+    extension::{check_adapter_methods, expand_adapter_template, validate_field_adapters, views_keeping, FieldAdapter},
     ir::{ColType, SchemaIr},
 };
 
@@ -17,15 +17,15 @@ fn method_names(field: &str) -> Vec<String> {
 
 /// A view writes the table of its root, so its rows get the file fields of the root.
 /// The copy is idempotent: a view field that has a record keeps it.
-fn copy_to_views(ir: &mut SchemaIr) -> Result<(), String> {
+fn copy_adapters_to_views(ir: &mut SchemaIr) -> Result<(), String> {
+    let owners: Vec<FieldAdapter> = ir.behavior.field_adapters.iter().filter(|a| a.adapter == ADAPTER).cloned().collect();
     let mut copies = Vec::new();
-    for view in &ir.behavior.model_views {
-        let Some(model) = ir.models.iter().find(|m| m.name == view.model) else { continue };
-        for owner in ir.behavior.field_adapters.iter().filter(|a| a.adapter == ADAPTER && a.model == view.root) {
-            if !model.fields.iter().any(|f| f.name == owner.field) { continue; }
-            if ir.behavior.field_adapters.iter().any(|a| a.model == view.model && a.field == owner.field) { continue; }
+    for owner in owners {
+        let has = |model: &str| ir.behavior.field_adapters.iter().any(|a| a.model == model && a.field == owner.field);
+        for view in views_keeping(ir, &owner.model, &owner.field, has).keeping {
+            let model = ir.models.iter().find(|m| m.name == view).expect("a view model that holds the field");
             check_adapter_methods(model, &method_names(&owner.field))?;
-            copies.push(FieldAdapter { model: view.model.clone(), ..owner.clone() });
+            copies.push(FieldAdapter { model: view, ..owner.clone() });
         }
     }
     ir.behavior.field_adapters.extend(copies);
@@ -40,12 +40,7 @@ pub fn lower(ir: &mut SchemaIr) -> Result<(), String> {
         if declaration.attribute != "storage.file" || declaration.lowered {
             continue;
         }
-        let fail = |message: &str| {
-            format!(
-                "{}:{}:{}: @storage.file: {message}",
-                declaration.location.file, declaration.location.line, declaration.location.column
-            )
-        };
+        let fail = |message: &str| declaration.error_with("@", message);
         let name = declaration
             .field
             .as_ref()
@@ -63,12 +58,7 @@ pub fn lower(ir: &mut SchemaIr) -> Result<(), String> {
         if field.ty != ColType::Json || field.array || field.enum_name.is_some() {
             return Err(fail("scalar Json field required"));
         }
-        if field.default.is_some()
-            || field.default_sql.is_some()
-            || field.default_now
-            || field.primary_key
-            || field.auto_increment
-        {
+        if field.has_server_default() || field.primary_key {
             return Err(fail(
                 "file fields cannot be keys or have defaults",
             ));
@@ -99,7 +89,7 @@ pub fn lower(ir: &mut SchemaIr) -> Result<(), String> {
         });
     }
     ir.behavior.field_adapters.extend(contributions);
-    copy_to_views(ir)?;
+    copy_adapters_to_views(ir)?;
     validate_field_adapters(ir)
 }
 
@@ -131,7 +121,7 @@ mod tests {
     #[test]
     fn a_view_gets_the_records_of_its_root_once() {
         let mut ir = schema("json");
-        let mut view: monorm::ir::ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[0]).unwrap()).unwrap();
+        let mut view: monorm::ir::ModelIr = ir.models[0].clone();
         view.name = "Draft".into();
         ir.models.push(view);
         ir.behavior.model_views.push(monorm::extension::ModelView { model: "Draft".into(), source: "Report".into(), root: "Report".into(), row_filter: None, insert_table: None });
@@ -162,5 +152,20 @@ mod tests {
             assert!(lower(&mut ir).unwrap_err().contains("cannot be keys or have defaults"));
             assert!(ir.behavior.field_adapters.is_empty());
         }
+    }
+    /// A generated column is a server default.
+    #[test]
+    fn a_generated_column_is_rejected() {
+        let mut ir = schema("json");
+        lower(&mut ir).unwrap();
+        let mut ir = schema("json");
+        ir.models[0].fields[1].generated = Some(monorm::ir::GeneratedIr {
+            sql: "'{}'::jsonb".into(),
+            stored: true,
+        });
+        assert!(lower(&mut ir)
+            .unwrap_err()
+            .contains("cannot be keys or have defaults"));
+        assert!(ir.behavior.field_adapters.is_empty());
     }
 }

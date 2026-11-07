@@ -15,9 +15,7 @@ struct Composition {
 
 /// Work on a candidate so a rejected declaration cannot partially mutate storage.
 pub fn lower(ir: &mut SchemaIr) -> Result<(), String> {
-    let mut candidate: SchemaIr =
-        serde_json::from_value(serde_json::to_value(&*ir).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
+    let mut candidate = ir.clone();
     lower_candidate(&mut candidate)?;
     *ir = candidate;
     Ok(())
@@ -89,38 +87,13 @@ fn lower_candidate(ir: &mut SchemaIr) -> Result<(), String> {
 }
 
 fn relation(name: &str, target: &str, key: &str, foreign_key: bool) -> RelationIr {
-    RelationIr {
-        name: name.into(),
-        kind: RelKind::One,
-        target: target.into(),
-        from: vec![key.into()],
-        to: vec![key.into()],
-        foreign_key,
-        on_delete: foreign_key.then_some(OnDelete::Cascade),
-        on_update: None,
-        deferrable: None,
-        fk_name: None,
-        through: None,
-        label: None,
-        join_label: None,
-    }
+    RelationIr { foreign_key, on_delete: foreign_key.then_some(OnDelete::Cascade), ..RelationIr::one(name, target, key, key) }
 }
 fn check_member(model: &ModelIr, name: &str) -> Result<(), String> {
-    if model.fields.iter().any(|f| f.name == name) || model.relations.iter().any(|r| r.name == name)
-    {
-        return Err(format!(
-            "{}.{}: generated relation name collides",
-            model.name, name
-        ));
-    }
-    if !name
-        .chars()
-        .enumerate()
-        .all(|(i, c)| c == '_' || c.is_ascii_alphabetic() || i > 0 && c.is_ascii_digit())
-    {
-        return Err(format!("invalid relation name {name}"));
-    }
-    Ok(())
+    model.check_new_member(name).map_err(|e| match e {
+        NewMemberError::Collides => format!("{}.{}: generated relation name collides", model.name, name),
+        NewMemberError::Invalid => format!("invalid relation name {name}"),
+    })
 }
 fn lower_one(ir: &mut SchemaIr, c: &Composition) -> Result<(), String> {
     let index = |name: &str| {
@@ -179,10 +152,7 @@ fn lower_one(ir: &mut SchemaIr, c: &Composition) -> Result<(), String> {
             || declared.enum_name != key.enum_name
             || declared.max_length != key.max_length
             || declared.nullable
-            || declared.auto_increment
-            || declared.default.is_some()
-            || declared.default_sql.is_some()
-            || declared.default_now
+            || declared.has_server_default()
         {
             return Err(format!(
                 "{}: child primary key must match parent without an independent default",

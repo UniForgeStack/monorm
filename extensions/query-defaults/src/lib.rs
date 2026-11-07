@@ -1,6 +1,6 @@
 //! Optional compiler for model query policies; execution uses prepared host IR.
-use monorm::{extension::{OrderKey, ReadDefault}, ir::{Nulls, SchemaIr}};
-use serde_json::{json, Value};
+use monorm::{extension::{OrderKey, ReadDefault}, ir::{CmpOp, Expr, Nulls, SchemaIr}};
+use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 
 /// Compiler-local inheritance state; parent identities never enter the host contract.
@@ -124,10 +124,9 @@ pub fn lower(ir: &mut SchemaIr) -> Result<(), String> {
         stack.push(name.into());
         let model = ir.models.iter().find(|m| m.name == name).ok_or_else(|| format!("unknown policy parent {name}"))?;
         let given = options(ir, name)?;
-        // The view pass (logical phase) fills `model_views` before this behavior pass.
+        // The logical passes fill `model_views` and `owner_links` before this behavior pass.
         let view_parent = ir.behavior.derived_parent(name);
-        let composed_parent = ir.behavior.declarations.iter().find(|d| d.model == name && d.attribute == "composition.model").and_then(|d| d.arguments.get("parent")).and_then(Value::as_str);
-        let parent = given.get("parent").and_then(Value::as_str).or(view_parent).or(composed_parent);
+        let parent = given.get("parent").and_then(Value::as_str).or(view_parent);
         let inherited = match parent { Some(p) => resolve(ir, p, resolved, order_sources, stack)?, None => ModelPolicy::default() };
         let mut out = inherited.clone(); out.model = name.into();
         if let Some(source) = given.get("filter") {
@@ -203,47 +202,48 @@ impl<'a> Parser<'a> {
         let mut p = Self { tokens, pos: 0, parent };
         let out = p.boolean(0)?;
         if p.pos != p.tokens.len() { return Err(format!("unexpected filter token {}", p.tokens[p.pos])); }
-        Ok(out)
+        Ok(out.to_json())
     }
     fn peek(&self) -> &str { self.tokens.get(self.pos).map(String::as_str).unwrap_or("") }
     fn take(&mut self) -> Result<String, String> { let t = self.tokens.get(self.pos).cloned().ok_or("incomplete default filter")?; self.pos += 1; Ok(t) }
-    fn boolean(&mut self, min: u8) -> Result<Value, String> {
+    fn boolean(&mut self, min: u8) -> Result<Expr, String> {
         let mut left = self.unary()?;
         loop {
-            let (precedence, tag) = match self.peek() { "or" | "||" => (1, "or"), "and" | "&&" => (2, "and"), _ => break };
+            let (precedence, and) = match self.peek() { "or" | "||" => (1, false), "and" | "&&" => (2, true), _ => break };
             if precedence < min { break; }
-            self.take()?; let right = self.boolean(precedence + 1)?; left = json!({"t":tag,"items":[left,right]});
+            self.take()?; let right = self.boolean(precedence + 1)?;
+            left = if and { Expr::and(vec![left, right]) } else { Expr::or(vec![left, right]) };
         }
         Ok(left)
     }
     /// `not` binds looser than comparisons, as in Python and TypeScript.
-    fn unary(&mut self) -> Result<Value, String> {
-        if matches!(self.peek(), "!" | "not") { self.take()?; return Ok(json!({"t":"not","item":self.unary()?})); }
+    fn unary(&mut self) -> Result<Expr, String> {
+        if matches!(self.peek(), "!" | "not") { self.take()?; return Ok(Expr::not(self.unary()?)); }
         self.comparison()
     }
-    fn comparison(&mut self) -> Result<Value, String> {
+    fn comparison(&mut self) -> Result<Expr, String> {
         let left = self.atom()?;
-        let op = match self.peek() { "==" => "eq", "!=" => "ne", "<" => "lt", "<=" => "le", ">" => "gt", ">=" => "ge", _ => return Ok(left) };
+        let op = match self.peek() { "==" => CmpOp::Eq, "!=" => CmpOp::Ne, "<" => CmpOp::Lt, "<=" => CmpOp::Le, ">" => CmpOp::Gt, ">=" => CmpOp::Ge, _ => return Ok(left) };
         self.take()?; let right = self.atom()?;
-        if right.is_null() { if op != "eq" && op != "ne" { return Err("NULL only supports == and !=".into()); } return Ok(json!({"t":"is_null","item":left,"neg":op == "ne"})); }
-        if left.is_null() { return Err("put the column before null".into()); }
-        Ok(json!({"t":"cmp","op":op,"l":left,"r":right}))
+        if matches!(right, Expr::Null) { if !matches!(op, CmpOp::Eq | CmpOp::Ne) { return Err("NULL only supports == and !=".into()); } return Ok(Expr::is_null(left, op == CmpOp::Ne)); }
+        if matches!(left, Expr::Null) { return Err("put the column before null".into()); }
+        Ok(Expr::cmp(op, left, right))
     }
-    fn atom(&mut self) -> Result<Value, String> {
+    fn atom(&mut self) -> Result<Expr, String> {
         let token = self.take()?;
         Ok(match token.as_str() {
             "(" => { let value = self.boolean(0)?; if self.take()? != ")" { return Err("expected ')'".into()); } value },
-            "parent.default_filter" => self.parent.cloned().ok_or("parent.default_filter has no inherited filter")?,
+            "parent.default_filter" => serde_json::from_value(self.parent.cloned().ok_or("parent.default_filter has no inherited filter")?).map_err(|e| format!("the inherited filter is not an expression: {e}"))?,
             _ if token.starts_with("scope.") => {
                 let name = &token["scope.".len()..];
                 if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') { return Err(format!("invalid scope value {token}: write scope.<name>")); }
-                json!({"t":"scope","name":name})
+                Expr::scope(name)
             }
-            "null" => Value::Null,
-            "true" | "false" => json!({"t":"const","value":token == "true"}),
-            _ if token.starts_with('"') => json!({"t":"text","value":serde_json::from_str::<String>(&token).map_err(|e| e.to_string())?}),
-            _ if token.parse::<i64>().is_ok() => json!({"t":"int","value":token.parse::<i64>().unwrap()}),
-            _ if token.chars().all(|c| c.is_alphanumeric() || c == '_') => json!({"t":"col","path":[],"name":token}),
+            "null" => Expr::Null,
+            "true" | "false" => Expr::boolean(token == "true"),
+            _ if token.starts_with('"') => Expr::text(&serde_json::from_str::<String>(&token).map_err(|e| e.to_string())?),
+            _ if token.parse::<i64>().is_ok() => Expr::int(token.parse::<i64>().unwrap()),
+            _ if token.chars().all(|c| c.is_alphanumeric() || c == '_') => Expr::col(&token),
             _ => return Err(format!("unsupported filter token {token}")),
         })
     }
@@ -252,6 +252,7 @@ impl<'a> Parser<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     fn ir() -> SchemaIr {
         serde_json::from_value(json!({"models":[
             {"name":"Parent","table":"p","fields":[{"name":"id","column":"id","type":"int","primary_key":true},{"name":"visible","column":"visible","type":"bool"},{"name":"bio","column":"bio","type":"text"}]},
@@ -261,6 +262,46 @@ mod tests {
             {"model":"Child","attribute":"query.defaults","field":null,"arguments":{"parent":"Parent","filter":"parent.default_filter and id > 0","fields":["*"]},"positional":[],"location":{"file":"test","line":2,"column":1}},
             {"model":"Child","attribute":"query.selectOut","field":"bio","arguments":{},"positional":[],"location":{"file":"test","line":3,"column":1}}
         ]}})).unwrap()
+    }
+    /// The wire shape of a parsed filter, for every shape the parser makes, byte for byte.
+    #[test]
+    fn a_parsed_filter_keeps_the_json_of_every_shape() {
+        let col = |n: &str| json!({"t":"col","path":[],"name":n});
+        let cases = [
+            ("a == 1", json!({"t":"cmp","op":"eq","l":col("a"),"r":{"t":"int","value":1}})),
+            ("a != \"x\"", json!({"t":"cmp","op":"ne","l":col("a"),"r":{"t":"text","value":"x"}})),
+            ("a < 2", json!({"t":"cmp","op":"lt","l":col("a"),"r":{"t":"int","value":2}})),
+            ("a <= 2", json!({"t":"cmp","op":"le","l":col("a"),"r":{"t":"int","value":2}})),
+            ("a > -2", json!({"t":"cmp","op":"gt","l":col("a"),"r":{"t":"int","value":-2}})),
+            ("a >= 2", json!({"t":"cmp","op":"ge","l":col("a"),"r":{"t":"int","value":2}})),
+            ("a == true", json!({"t":"cmp","op":"eq","l":col("a"),"r":{"t":"const","value":true}})),
+            ("a == scope.tenant", json!({"t":"cmp","op":"eq","l":col("a"),"r":{"t":"scope","name":"tenant"}})),
+            ("a == null", json!({"t":"is_null","item":col("a"),"neg":false})),
+            ("a != null", json!({"t":"is_null","item":col("a"),"neg":true})),
+            ("not b", json!({"t":"not","item":col("b")})),
+            ("a and b", json!({"t":"and","items":[col("a"),col("b")]})),
+            ("a or b and c", json!({"t":"or","items":[col("a"),{"t":"and","items":[col("b"),col("c")]}]})),
+        ];
+        for (source, wire) in cases {
+            assert_eq!(Parser::parse(source, None).unwrap().to_string(), wire.to_string(), "{source}");
+        }
+    }
+    /// `parent.default_filter` puts the JSON of the parent filter into the child filter, as one `and` item.
+    #[test]
+    fn the_parent_filter_is_one_item_of_the_child_filter() {
+        let mut schema = ir();
+        lower(&mut schema).unwrap();
+        let col = |n: &str| json!({"t":"col","path":[],"name":n});
+        let parent = json!({"t":"cmp","op":"eq","l":col("visible"),"r":{"t":"const","value":true}});
+        assert_eq!(
+            schema.behavior.read_defaults[0].filter.as_ref().unwrap(),
+            &parent
+        );
+        let child = json!({"t":"and","items":[parent, {"t":"cmp","op":"gt","l":col("id"),"r":{"t":"int","value":0}}]});
+        assert_eq!(
+            schema.behavior.read_defaults[1].filter.as_ref().unwrap(),
+            &child
+        );
     }
     /// Declared effect `query-defaults`: the prepared policies only.
     #[test]
@@ -338,8 +379,9 @@ mod tests {
         assert_eq!(schema.behavior.read_defaults[1].filter, schema.behavior.read_defaults[0].filter);
         let mut schema = ir();
         schema.behavior.declarations.retain(|d| d.model != "Child");
-        schema.behavior.declarations.push(serde_json::from_value(json!({"model":"Child","attribute":"composition.model","field":null,"arguments":{"parent":"Parent","parentRef":"p","childRef":"c"},"positional":[],"location":{"file":"test","line":4,"column":1}})).unwrap());
+        schema.behavior.owner_links.push(monorm::extension::OwnerLink { child: "Child".into(), parent: "Parent".into(), child_key: "id".into(), parent_key: "id".into() });
         lower(&mut schema).unwrap();
+        assert_eq!(schema.behavior.read_defaults[1].filter, schema.behavior.read_defaults[0].filter);
         // An untyped proxy declaration is no parent source; only the lowered contract is.
         let mut schema = ir();
         schema.behavior.declarations.retain(|d| d.model != "Child");

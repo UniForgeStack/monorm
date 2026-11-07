@@ -2,31 +2,12 @@
 //! soft-deletes rows instead of deleting them.
 //! Database mode adds row triggers, so a raw `DELETE` soft-deletes too
 //! and the soft delete cascades to soft-delete children.
-use monorm::{dialect::Dialect, extension::ReadDefault, ir::{ColType, FieldIr, ModelIr, OnDelete, SchemaIr, TriggerIr}, tracking::{error, Tracked}, writes::{AssignValue, DeleteRewrite, WriteAssignment, WriteKind}};
+use monorm::{dialect::Dialect, extension::{views_keeping, ReadDefault}, ir::{ColType, Expr, FieldIr, ModelIr, OnDelete, SchemaIr, TriggerEvent, TriggerIr, TriggerTiming}, sql::ident, tracking::{error, Mode, Tracked}, writes::{AssignValue, DeleteRewrite, WriteAssignment, WriteKind}};
 
 /// The read default that hides soft-deleted rows; `without_defaults("deleted")` bypasses it.
 const SOURCE: &str = "monorm.soft-delete";
 const DEFAULT: &str = "deleted";
 const TRACKED: Tracked = Tracked { attribute: "soft_delete.deleted_at", field: "deleted_at" };
-
-/// Who keeps the column current for writers outside the ORM.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Mode {
-    /// A row trigger, so every writer gets the behavior.
-    Database,
-    /// The ORM only; no DDL.
-    Application,
-}
-
-impl Mode {
-    fn parse(value: Option<&serde_json::Value>) -> Result<Self, String> {
-        match value.map(|v| v.as_str()) {
-            None | Some(Some("database")) => Ok(Self::Database),
-            Some(Some("application")) => Ok(Self::Application),
-            _ => Err("mode must be \"database\" or \"application\"".into()),
-        }
-    }
-}
 
 /// A soft-delete field: declared on a model, or copied to a proxy of its storage owner.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,16 +50,9 @@ fn reject_leftover_filters(ir: &SchemaIr, roles: &[SoftDelete]) -> Result<(), St
     Ok(())
 }
 
-fn ident(s: &str) -> String { format!("\"{}\"", s.replace('"', "\"\"")) }
 
 fn column<'m>(model: &'m ModelIr, field: &str) -> Result<&'m str, String> {
     model.fields.iter().find(|f| f.name == field).map(|f| f.column.as_str()).ok_or_else(|| format!("{} has no field {field}", model.name))
-}
-
-fn trigger(name: &str, value: serde_json::Value) -> Result<TriggerIr, String> {
-    let mut value = value;
-    value["name"] = name.into();
-    serde_json::from_value(value).map_err(|e| e.to_string())
 }
 
 /// `, "v" = "v" + 1` for a model with a version field, else nothing.
@@ -100,7 +74,7 @@ fn delete_trigger(dialect: Dialect, model: &ModelIr, field: &str, version: Optio
         Dialect::Postgres => (format!("BEGIN UPDATE {t} SET {c} = now(){bump} WHERE {pk}; RETURN NULL; END;"), format!("OLD.{c} IS NULL AND pg_trigger_depth() = 0")),
         Dialect::Sqlite => (format!("UPDATE {t} SET {c} = CURRENT_TIMESTAMP{bump} WHERE {pk}; SELECT RAISE(IGNORE)"), format!("OLD.{c} IS NULL")),
     };
-    trigger("soft_delete", serde_json::json!({"timing": "before", "events": ["delete"], "when": when, "body": body}))
+    Ok(TriggerIr { name: "soft_delete".into(), timing: TriggerTiming::Before, events: vec![TriggerEvent::Delete], when: Some(when), body: Some(body), ..Default::default() })
 }
 
 type Child = (String, String, Option<String>, Vec<(String, String)>);
@@ -120,9 +94,12 @@ fn cascade_trigger(dialect: Dialect, parent: &ModelIr, field: &str, children: &[
         Dialect::Postgres => format!("BEGIN {}; RETURN NULL; END;", statements.join("; ")),
         Dialect::Sqlite => statements.join("; "),
     };
-    trigger("soft_delete_cascade", serde_json::json!({"timing": "after", "events": ["update"], "update_of": [field],
-        "when": format!("OLD.{c} IS NULL AND NEW.{c} IS NOT NULL"), "body": body}))
+    Ok(TriggerIr { name: "soft_delete_cascade".into(), timing: TriggerTiming::After, events: vec![TriggerEvent::Update], update_of: vec![field.into()],
+        when: Some(format!("OLD.{c} IS NULL AND NEW.{c} IS NOT NULL")), body: Some(body), ..Default::default() })
 }
+
+/// The row is live: its soft-delete field is `NULL`.
+fn live(field: &str) -> serde_json::Value { Expr::is_null(Expr::col(field), false).to_json() }
 
 pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
     // Models of an earlier batch keep their records; their mode is unknown (Application is a placeholder), and only the models of this batch use it.
@@ -140,27 +117,21 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
     }
     // A proxy follows the shared storage of its root; its logical rows need the same ORM
     // update on delete. Database triggers are generated only for declarations.
-    for proxy in &ir.behavior.model_views {
-        if roles.iter().any(|s| s.model == proxy.model) { continue; }
-        if let Some(source) = roles.iter().find(|s| s.model == proxy.root) {
-            if !ir.models.iter().find(|m| m.name == proxy.model).is_some_and(|m| m.fields.iter().any(|f| f.name == source.field)) {
-                return Err(format!("{}: proxy must keep the soft-delete field {}", proxy.model, source.field));
-            }
-            roles.push(SoftDelete { model: proxy.model.clone(), field: source.field.clone(), mode: source.mode });
-        }
+    for source in roles.clone() {
+        let has = |model: &str| roles.iter().any(|s| s.model == model);
+        let split = views_keeping(ir, &source.model, &source.field, has);
+        if let Some(view) = split.lacking.first() { return Err(format!("{view}: proxy must keep the soft-delete field {}", source.field)); }
+        roles.extend(split.keeping.into_iter().map(|model| SoftDelete { model, field: source.field.clone(), mode: source.mode }));
     }
     ir.behavior.read_defaults.retain(|d| d.source != SOURCE);
     for s in &roles {
-        let item = serde_json::json!({"t": "col", "path": [], "name": s.field});
         ir.behavior.read_defaults.push(ReadDefault { source: SOURCE.into(), name: DEFAULT.into(), model: s.model.clone(),
-            filter: Some(serde_json::json!({"t": "is_null", "item": item, "neg": false})), ..Default::default() });
+            filter: Some(live(&s.field)), ..Default::default() });
     }
     reject_leftover_filters(ir, &roles)?;
     ir.behavior.delete_rewrites.retain(|d| d.source != SOURCE);
     for s in &roles {
-        let item = serde_json::json!({"t": "col", "path": [], "name": s.field});
-        ir.behavior.delete_rewrites.push(DeleteRewrite { source: SOURCE.into(), model: s.model.clone(), field: s.field.clone(),
-            guard: serde_json::json!({"t": "is_null", "item": item, "neg": false}) });
+        ir.behavior.delete_rewrites.push(DeleteRewrite { source: SOURCE.into(), model: s.model.clone(), field: s.field.clone(), guard: live(&s.field) });
     }
     let dialect = ir.dialect;
     for s in roles.iter().filter(|s| s.mode == Mode::Database && added.contains(&s.model)) {
@@ -174,9 +145,9 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
                 children.push((child.table.clone(), column(child, &child_field.field)?.to_owned(), version, keys, r.to.clone()));
             }
         }
-        let models = ir.models.iter_mut().chain(ir.behavior.storage.iter_mut().flat_map(|st| st.models.iter_mut()));
-        for model in models.filter(|m| m.name == s.model) {
-            let version = bumped(&ir.behavior.write_assignments, &model.name);
+        let version = bumped(&ir.behavior.write_assignments, &s.model).map(str::to_owned);
+        for model in ir.models_named_mut(&s.model) {
+            let version = version.as_deref();
             let mut triggers = vec![delete_trigger(dialect, model, &s.field, version)?];
             if !children.is_empty() {
                 let resolved = children.iter().map(|(t, c, v, keys, to)| {
@@ -185,10 +156,7 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
                 }).collect::<Result<Vec<_>, String>>()?;
                 triggers.push(cascade_trigger(dialect, model, &s.field, &resolved)?);
             }
-            for t in triggers {
-                if model.triggers.iter().any(|x| x.name == t.name) { return Err(format!("{} already has a trigger {}", model.name, t.name)); }
-                model.triggers.push(t);
-            }
+            for t in triggers { model.push_trigger(t)?; }
         }
     }
     Ok(())
@@ -255,6 +223,13 @@ mod tests {
         let storage = serde_json::json!({"dialect": ir.dialect, "models": ir.behavior.storage.as_ref().unwrap().models});
         let schema = monorm_core::schema::Schema::from_ir(serde_json::from_value(storage).unwrap()).unwrap();
         monorm_core::migrate::plan(&schema, &Default::default()).unwrap().up.into_iter().map(|s| s.sql).collect()
+    }
+
+    /// The wire shape of the live filter, byte for byte.
+    #[test]
+    fn the_live_filter_keeps_its_json() {
+        let wire = serde_json::json!({"t": "is_null", "item": {"t": "col", "path": [], "name": "deleted_at"}, "neg": false});
+        assert_eq!(live("deleted_at").to_string(), wire.to_string());
     }
 
     #[test]
@@ -340,7 +315,7 @@ mod tests {
         let mut ir = schema("postgres", "application");
         monorm::extension::capture_storage(&mut ir).unwrap();
         ir.behavior.lowered_models.push("AuthorView".into());
-        let mut view: ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[0]).unwrap()).unwrap();
+        let mut view: ModelIr = ir.models[0].clone();
         view.name = "AuthorView".into();
         ir.models.push(view);
         ir.behavior.model_views.push(monorm::extension::ModelView { model: "AuthorView".into(), source: "Author".into(), root: "Author".into(), row_filter: None, insert_table: None });
@@ -361,7 +336,7 @@ mod tests {
         let mut ir = schema("postgres", "application");
         monorm::extension::capture_storage(&mut ir).unwrap();
         ir.behavior.lowered_models.push("AuthorView".into());
-        let mut view: ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[0]).unwrap()).unwrap();
+        let mut view: ModelIr = ir.models[0].clone();
         view.name = "AuthorView".into();
         view.fields.retain(|f| f.name != "deleted");
         ir.models.push(view);
@@ -449,7 +424,7 @@ mod tests {
             let mut ir = schema("postgres", mode);
             monorm::extension::capture_storage(&mut ir).unwrap();
             ir.behavior.lowered_models.push("AuthorView".into());
-            let mut view: ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[0]).unwrap()).unwrap();
+            let mut view: ModelIr = ir.models[0].clone();
             view.name = "AuthorView".into();
             ir.models.push(view);
             ir.behavior.model_views.push(monorm::extension::ModelView { model: "AuthorView".into(), source: "Author".into(), root: "Author".into(), row_filter: None, insert_table: None });

@@ -1,6 +1,6 @@
 //! Compiler contribution for type/key references. The relation records go to
 //! `extension_data["monorm.generic"]`; no host code reads them at query time.
-use monorm::{extension::Declaration, ir::{ColType, ConstraintIr, FieldIr, IndexIr, SchemaIr}};
+use monorm::{extension::Declaration, ir::{ColType, ConstraintIr, FieldIr, IndexColumnIr, IndexIr, NewMemberError, SchemaIr}, sql::ident};
 use serde::{Deserialize, Serialize};
 
 /// The id under which the pass keeps its records in `extension_data`.
@@ -35,8 +35,7 @@ pub struct GenericData {
 }
 
 fn error(d: &Declaration, message: impl std::fmt::Display) -> String {
-    let at = if d.field.is_some() { "@" } else { "@@" };
-    format!("{}:{}:{}: {at}{}: {message}", d.location.file, d.location.line, d.location.column, d.attribute)
+    d.error_with(if d.field.is_some() { "@" } else { "@@" }, message)
 }
 fn string(d: &Declaration, key: &str) -> Result<String, String> {
     d.arguments.get(key).and_then(|v| v.as_str()).map(str::to_owned).ok_or_else(|| error(d, format!("{key} must be a string")))
@@ -47,21 +46,23 @@ fn name(d: &Declaration) -> Result<String, String> {
         _ => Err(error(d, "requires one relation name")),
     }
 }
-fn ident(s: &str) -> String { format!("\"{}\"", s.replace('"', "\"\"")) }
 fn compatible(a: &FieldIr, b: &FieldIr) -> bool {
     a.ty == b.ty && !a.array && !b.array && a.enum_name.is_none() && b.enum_name.is_none()
         && a.db_type == b.db_type && a.read_sql == b.read_sql && a.write_sql == b.write_sql && a.max_length == b.max_length
 }
 fn check_name(ir: &SchemaIr, data: &GenericData, model: &str, name: &str) -> Result<(), String> {
     let m = ir.models.iter().find(|m| m.name == model).ok_or_else(|| format!("unknown model {model}"))?;
-    if name.chars().enumerate().any(|(i, c)| !(c == '_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit()))) || name.starts_with('_') {
-        return Err(format!("invalid generic relation name {name}"));
+    let collision = || format!("{model}.{name}: generic relation member collision");
+    match m.check_new_member(name) {
+        _ if name.starts_with('_') => return Err(format!("invalid generic relation name {name}")),
+        Err(NewMemberError::Invalid) => return Err(format!("invalid generic relation name {name}")),
+        Err(NewMemberError::Collides) => return Err(collision()),
+        Ok(()) => {}
     }
     if ["pk", "objects", "update", "delete", "refresh", "then"].contains(&name)
-        || m.fields.iter().any(|f| f.name == name) || m.relations.iter().any(|r| r.name == name)
         || data.relations.iter().any(|r| r.model == model && r.name == name)
         || data.reverse.iter().any(|r| r.model == model && r.name == name) {
-        return Err(format!("{model}.{name}: generic relation member collision"));
+        return Err(collision());
     }
     Ok(())
 }
@@ -125,10 +126,7 @@ fn field_form(ir: &mut SchemaIr, d: &Declaration, targets: &[String]) -> Result<
                 f
             } else {
                 // Only the storage encoding of the target key; never its identity, defaults or hints.
-                let key = &keys[0];
-                let mut f = FieldIr::plain(field, key.ty);
-                (f.db_type, f.max_length, f.read_sql, f.write_sql, f.requires) = (key.db_type.clone(), key.max_length, key.read_sql.clone(), key.write_sql.clone(), key.requires.clone());
-                f
+                FieldIr::key_like(field, &keys[0])
             };
             f.nullable = nullable;
             fields.push(f);
@@ -139,10 +137,10 @@ fn field_form(ir: &mut SchemaIr, d: &Declaration, targets: &[String]) -> Result<
         .or_else(|| created.iter().find(|(a, _)| *a == argument).map(|(_, f)| f.clone()));
     let (type_field, key_field) = (field("type").ok_or_else(|| error(d, "type must be a string"))?, field("key").ok_or_else(|| error(d, "key must be a string"))?);
     if d.arguments.get("index").is_none_or(|v| v.as_bool() != Some(false)) {
-        let index = || serde_json::from_value::<IndexIr>(serde_json::json!({"columns": [{"field": &type_field}, {"field": &key_field}]})).map_err(|e| e.to_string());
+        let index = || IndexIr { columns: [&type_field, &key_field].map(|f| IndexColumnIr { field: Some(f.clone()), ..Default::default() }).into(), ..Default::default() };
         let same = |i: &IndexIr| i.columns.iter().all(|c| c.expr.is_none()) && i.columns.iter().map(|c| c.field.as_deref()).eq([Some(type_field.as_str()), Some(key_field.as_str())]);
-        for model in ir.models.iter_mut().chain(ir.behavior.storage.iter_mut().flat_map(|s| s.models.iter_mut())).filter(|m| m.name == d.model) {
-            if !model.indexes.iter().any(same) { model.indexes.push(index()?); }
+        for model in ir.models_named_mut(&d.model) {
+            if !model.indexes.iter().any(same) { model.indexes.push(index()); }
         }
     }
     Ok((name, type_field, key_field))
@@ -177,7 +175,7 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
             return Err(error(d, "discriminator must be scalar ContentType integer; neither pair field may be a primary key"));
         }
         if ty.nullable != key.nullable { return Err(error(d, "type and key must have matching nullability")); }
-        if ty.default.is_some() || key.default.is_some() || ty.default_now || key.default_now || ty.default_sql.is_some() || key.default_sql.is_some() || ty.auto_increment || key.auto_increment {
+        if ty.has_server_default() || key.has_server_default() {
             return Err(error(d, "generic pairs cannot have independent server defaults"));
         }
         let mut ids = vec![];
@@ -286,6 +284,24 @@ mod tests {
         assert!(prepare(&mut ir).unwrap_err().contains("nullability"));
         let mut ir = schema(); ir.behavior.declarations[0].arguments.insert("targets".into(), serde_json::json!(["Unknown"]));
         assert!(prepare(&mut ir).unwrap_err().contains("active concrete"));
+    }
+    /// A generated column is a server default.
+    #[test]
+    fn a_generated_pair_field_is_rejected() {
+        prepare(&mut schema()).unwrap();
+        for field in [1, 2] {
+            let mut ir = schema();
+            ir.models[2].fields[field].generated = Some(monorm::ir::GeneratedIr {
+                sql: "1".into(),
+                stored: true,
+            });
+            assert!(
+                prepare(&mut ir)
+                    .unwrap_err()
+                    .contains("independent server defaults"),
+                "field {field}"
+            );
+        }
     }
     #[test]
     fn reverse_and_member_collisions_fail() {
@@ -424,7 +440,7 @@ mod tests {
         // `copy` is the model that the proxy or composition pass made from Tag; `keep` says whether it kept `target`.
         let with = |copy: &str, keep: bool, link: fn(&mut SchemaIr, &str)| {
             let mut ir = field_schema(serde_json::json!({}), serde_json::json!({}));
-            let mut model: monorm::ir::ModelIr = serde_json::from_value(serde_json::to_value(&ir.models[2]).unwrap()).unwrap();
+            let mut model: monorm::ir::ModelIr = ir.models[2].clone();
             model.name = copy.into();
             model.fields.retain(|f| keep || f.name != "target");
             ir.models.push(model);

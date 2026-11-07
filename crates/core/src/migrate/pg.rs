@@ -6,9 +6,7 @@ use super::model::{
 };
 use crate::ir::{Deferrable, ForEach, Nulls, OnDelete, TriggerEvent, TriggerTiming};
 
-pub fn ident(name: &str) -> String {
-    format!("\"{}\"", name.replace('"', "\"\""))
-}
+pub use monorm::sql::ident;
 
 fn idents(names: &[String]) -> String {
     names.iter().map(|n| ident(n)).collect::<Vec<_>>().join(", ")

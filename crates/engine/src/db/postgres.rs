@@ -361,9 +361,7 @@ async fn query_text(c: &PgConn, sql: &str) -> DbResult<Vec<Vec<Option<String>>>>
         .collect())
 }
 
-fn quote(ident: &str) -> String {
-    format!("\"{}\"", ident.replace('"', "\"\""))
-}
+use monorm::sql::ident;
 
 /// `v` as the server's column type `ty` wants it: binary COPY has no parameter types of
 /// its own, so an `Int` field on a `smallint` column must be sent as two bytes.
@@ -396,8 +394,8 @@ fn fit<'a>(v: &'a Value, ty: &Type) -> DbResult<std::borrow::Cow<'a, Value>> {
 /// that holds no statement.
 async fn copy_in(c: &PgConn, table: &str, columns: &[String], rows: &[Vec<Value>]) -> DbResult<u64> {
     let err = |e| if c.pgbouncer { pooler_err(Some(c), e, COPY_ADVICE) } else { pg_err(e) };
-    let cols = columns.iter().map(|c| quote(c)).collect::<Vec<_>>().join(", ");
-    let table = quote(table);
+    let cols = columns.iter().map(|c| ident(c)).collect::<Vec<_>>().join(", ");
+    let table = ident(table);
     let probe = c.prepare(&format!("SELECT {cols} FROM {table} LIMIT 0")).await.map_err(err)?;
     let types: Vec<Type> = probe.columns().iter().map(|c| c.type_().clone()).collect();
     let copy_sql = format!("COPY {table} ({cols}) FROM STDIN (FORMAT binary)");

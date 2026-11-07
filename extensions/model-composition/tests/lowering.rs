@@ -91,6 +91,56 @@ fn rejected_candidates_are_unchanged() {
     }
 }
 
+/// An empty relation name is no member name: the declaration check and the shared member check both refuse it.
+#[test]
+fn an_empty_relation_name_is_rejected() {
+    for key in ["parentRef", "childRef"] {
+        let mut v = definition();
+        v["behavior"]["declarations"][2]["arguments"][key] = json!("");
+        let mut ir: SchemaIr = serde_json::from_value(v).unwrap();
+        assert_eq!(monorm_composition::lower(&mut ir).unwrap_err(), format!("Employee: composition requires {key}"));
+    }
+    let ir: SchemaIr = serde_json::from_value(definition()).unwrap();
+    assert_eq!(ir.models[1].check_new_member(""), Err(monorm::ir::NewMemberError::Invalid));
+}
+
+/// A name that is both no identifier and a member of the model gets the "invalid" answer.
+#[test]
+fn an_invalid_name_that_collides_is_invalid() {
+    let mut ir: SchemaIr = serde_json::from_value(definition()).unwrap();
+    ir.models[1].fields.push(
+        serde_json::from_value(json!({"name":"bad name","column":"bad","type":"int"})).unwrap(),
+    );
+    assert_eq!(
+        ir.models[1].check_new_member("bad name"),
+        Err(monorm::ir::NewMemberError::Invalid)
+    );
+    assert_eq!(
+        ir.models[1].check_new_member("name"),
+        Err(monorm::ir::NewMemberError::Collides)
+    );
+}
+
+/// A generated column is a server default: a child key that the database generates is not the parent key.
+#[test]
+fn a_generated_child_key_is_rejected() {
+    let key = |generated: Value| {
+        let mut v = definition();
+        let mut field = json!({"name":"id","column":"id","type":"int","primary_key":true});
+        if !generated.is_null() {
+            field["generated"] = generated;
+        }
+        v["models"][2]["fields"].as_array_mut().unwrap().push(field);
+        serde_json::from_value::<SchemaIr>(v).unwrap()
+    };
+    monorm_composition::lower(&mut key(Value::Null)).unwrap();
+    let error = monorm_composition::lower(&mut key(json!({"sql":"1","stored":true}))).unwrap_err();
+    assert_eq!(
+        error,
+        "Employee: child primary key must match parent without an independent default"
+    );
+}
+
 /// A deprecated parent field leaves the logical models and stays in the storage that core captured first.
 #[test]
 fn a_deprecated_parent_field_keeps_the_physical_storage_and_leaves_the_children() {
