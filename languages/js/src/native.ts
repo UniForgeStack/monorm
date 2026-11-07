@@ -162,6 +162,8 @@ export interface NativeAdminSite {
   readonly permissions: string[];
   /** The labels of those names, the gate label first. */
   readonly labels: string[];
+  /** The detail URL of a record; `keyJson` is a scalar, a list in key order or an object of key fields. Throws when the key does not fit. */
+  url(resource: string, keyJson: string): string;
   /** One in-memory request; `userJson` is the JSON of the user, or null. */
   request(engine: NativeEngine, method: string, path: string, userJson: string | null, trace: NativeTrace | null): Promise<{ status: number; body: string }>;
   /**

@@ -47,6 +47,16 @@ model OrderLine {
   @@id([order_id, sku])
   @@map("order_lines")
 }
+
+model Stamp {
+  at DateTime @id
+  @@map("stamps")
+}
+
+model Dotted {
+  name String @id
+  @@map("dotted")
+}
 "#;
 
 fn schema() -> Arc<Schema> {
@@ -210,6 +220,8 @@ fn a_wrong_brand_or_group_is_a_config_error_that_names_the_setting() {
     assert!(build_error(json!({"brand": {"colors": {"primary": "red"}}, "resources": r})).contains("brand.colors.primary"));
     assert!(build_error(json!({"brand": {"colors": {"danger": "#fff"}}, "resources": r})).contains("danger"));
     assert!(build_error(json!({"brand": {"logo": "javascript:alert(1)"}, "resources": r})).contains("brand.logo"));
+    assert!(build_error(json!({"brand": {"logo": "http://example.com/a.png"}, "resources": r})).contains("brand.logo"));
+    assert!(site(json!({"brand": {"logo": "https://example.com/a.png"}, "resources": r})).brand["logo"].is_string());
     assert!(build_error(json!({"brand": {"links": [{"label": "x", "url": "//evil"}]}, "resources": r})).contains("brand.links"));
     assert!(build_error(json!({"groups": ["A"], "resources": [{"model": "Author", "group": "B"}]})).contains("group \"B\""));
     assert!(build_error(json!({"resources": [{"model": "Author", "title": ""}]})).contains("title"));
@@ -270,6 +282,49 @@ async fn the_index_names_the_api_prefix_escaped_and_assets_are_immutable() {
 }
 
 #[test]
+fn the_api_prefix_cannot_be_the_path_of_the_ui() {
+    assert!(build_error(json!({"prefix": "/admin", "resources": [{"model": "Author"}]})).contains("path of the UI"));
+    assert!(build_error(json!({"prefix": "/admin/", "resources": [{"model": "Author"}]})).contains("path of the UI"));
+}
+
+#[test]
+fn a_key_that_the_detail_route_refuses_gets_no_url() {
+    // A Decimal key needs PostgreSQL: the site builds from the schema alone.
+    let prices = r#"datasource db {
+  provider = "postgresql"
+}
+
+model Price {
+  amount Decimal @id
+  @@map("prices")
+}
+"#;
+    let prices = Site::build(Arc::new(dsl::check(dsl::compile(prices, None).unwrap()).unwrap().1), r#"{"resources": [{"model": "Price"}]}"#).unwrap();
+    assert!(prices.url("Price", &json!("1.5")).unwrap_err().contains("page URL can name"));
+    let site = site(json!({"resources": [{"model": "Stamp"}, {"model": "Dotted"}]}));
+    assert_eq!(site.url("Stamp", &json!("2026-01-02T03:04:05+00:00")).unwrap(), "/admin/Stamp/2026-01-02T03%3A04%3A05%2B00%3A00");
+    assert!(site.url("Stamp", &json!("2026-01-02 03:04:05")).unwrap_err().contains("page URL can name"));
+    assert!(site.url("Dotted", &json!("..")).unwrap_err().contains("no page URL"));
+    assert!(site.url("Dotted", &json!(".")).unwrap_err().contains("no page URL"));
+    assert_eq!(site.url("Dotted", &json!("a.b")).unwrap(), "/admin/Dotted/a.b");
+}
+
+#[test]
 fn a_resource_cannot_take_the_name_of_the_api_prefix() {
     assert!(build_error(json!({"prefix": "/admin/Author", "resources": [{"model": "Author"}]})).contains("API prefix"));
+}
+
+#[test]
+fn site_url_takes_a_scalar_a_list_or_an_object_and_rejects_a_wrong_key() {
+    let site = everything();
+    assert_eq!(site.url("Author", &json!(7)).unwrap(), "/admin/Author/7");
+    assert_eq!(site.url("Author", &json!([7])).unwrap(), "/admin/Author/7");
+    assert_eq!(site.url("Author", &json!({"id": 7})).unwrap(), "/admin/Author/7");
+    assert_eq!(site.url("OrderLine", &json!([1, "a,b/c d"])).unwrap(), "/admin/OrderLine/1,a%2Cb%2Fc%20d");
+    assert_eq!(site.url("OrderLine", &json!({"sku": "x", "order_id": 2})).unwrap(), "/admin/OrderLine/2,x");
+    assert!(site.url("OrderLine", &json!(1)).unwrap_err().contains("takes order_id, sku"));
+    assert!(site.url("Author", &json!("seven")).is_err());
+    assert!(site.url("Author", &json!({"id": 1, "x": 2})).is_err());
+    assert!(site.url("Author", &json!(null)).is_err());
+    assert!(site.url("Nope", &json!(1)).unwrap_err().contains("not an admin resource"));
 }

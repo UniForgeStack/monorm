@@ -45,8 +45,25 @@ export interface ListConfig {
   readonly pageSize?: number;
 }
 
+export interface BrandConfig {
+  /** The name in the header and the page title (`Admin` by default). */
+  readonly name?: string;
+  /** The URL of the logo image. */
+  readonly logo?: string;
+  /** `#rgb` or `#rrggbb`. */
+  readonly colors?: { readonly primary?: string; readonly accent?: string };
+  /** Links in the header. */
+  readonly links?: readonly { readonly label: string; readonly url: string }[];
+  /** A short label such as `staging`, shown in the header. */
+  readonly environment?: string;
+}
+
 export interface ResourceConfig {
   readonly list?: ListConfig;
+  /** The name in the navigation and the page heading (the model name, spaced, by default). */
+  readonly title?: string;
+  /** The navigation group: one of `groups` of the admin. */
+  readonly group?: string;
   /** The operations that the resource allows for every user, superusers too. */
   readonly allow?: readonly ("read" | "create" | "update" | "delete")[];
   /** The `page` strategy only: add `"delete"` to split the delete permission from `manage`. */
@@ -68,7 +85,15 @@ export interface AdminOptions {
   readonly label?: string;
   /** Role name to pattern grants (`{ support: ["orders.*", "-shops.see_credential"] }`) that `seedRoles` writes to the auth tables. */
   readonly roles?: Readonly<Record<string, readonly string[]>>;
+  /** The name, logo, colors, header links and environment label of the UI. */
+  readonly brand?: BrandConfig;
+  /** The order of the navigation groups; a resource names one of them with `group`. */
+  readonly groups?: readonly string[];
 }
+
+/** One key field, the key values in key order, or an object of key fields. */
+type KeyPart = string | number | bigint | boolean | Date;
+export type RecordKey = KeyPart | readonly KeyPart[] | { readonly [field: string]: KeyPart };
 
 export type { RoleSeedReport, SyncReport };
 
@@ -78,7 +103,8 @@ export interface AdminUser {
 }
 
 const LIST_KEYS = new Set(["columns", "order", "pageSize"]);
-const RESOURCE_KEYS = new Set(["list", "allow", "perms", "label", "fieldPermissions", "actions"]);
+const BRAND_KEYS = new Set(["name", "logo", "colors", "links", "environment"]);
+const RESOURCE_KEYS = new Set(["list", "title", "group", "allow", "perms", "label", "fieldPermissions", "actions"]);
 
 function label(model: AnyModel, ref: AnyColumn): string {
   if (ref.root.name !== model._meta.name) {
@@ -245,6 +271,17 @@ export class AdminTestClient {
   }
 }
 
+function keyValue(value: KeyPart): string | number | boolean {
+  if (value instanceof Date) return value.toISOString();
+  return typeof value === "bigint" ? value.toString() : value;
+}
+
+function keyJson(key: RecordKey): unknown {
+  if (Array.isArray(key)) return key.map(keyValue);
+  if (typeof key === "object" && !(key instanceof Date)) return Object.fromEntries(Object.entries(key).map(([k, v]) => [k, keyValue(v)]));
+  return keyValue(key as KeyPart);
+}
+
 /** The resources of one registry. */
 export class Admin {
   prefix: string = DEFAULT_PREFIX;
@@ -252,6 +289,9 @@ export class Admin {
   readonly #strategy: PermissionStrategy;
   readonly #label: string;
   readonly #roles: Record<string, string[]>;
+  readonly #brand: BrandConfig | undefined;
+  readonly #groups: string[];
+  #planned: { schema: unknown; site: NativeAdminSite } | null = null;
 
   constructor(
     private readonly registry: Registry = defaultRegistry,
@@ -259,6 +299,11 @@ export class Admin {
   ) {
     this.#strategy = options.permissions ?? "page";
     this.#label = options.label ?? "admin";
+    for (const key of Object.keys(options.brand ?? {})) {
+      if (!BRAND_KEYS.has(key)) throw new AdminConfigError(`unknown brand option '${key}'`);
+    }
+    this.#brand = options.brand;
+    this.#groups = [...(options.groups ?? [])];
     this.#roles = {};
     for (const [name, patterns] of Object.entries(options.roles ?? {})) {
       if (typeof patterns === "string" || !Array.isArray(patterns) || !patterns.every((p) => typeof p === "string")) {
@@ -276,19 +321,29 @@ export class Admin {
       if (!RESOURCE_KEYS.has(key)) throw new AdminConfigError(`${name}: unknown option '${key}'`);
     }
     this.#resources.set(name, { model, config });
+    this.#planned = null;
   }
 
   #configJson(): string {
     const resources = [...this.#resources].map(([model, { model: cls, config }]) => ({
       model,
       ...(config.list === undefined ? {} : { list: listJson(cls, config.list) }),
+      ...(config.title === undefined ? {} : { title: config.title }),
+      ...(config.group === undefined ? {} : { group: config.group }),
       ...(config.allow === undefined ? {} : { allow: [...config.allow] }),
       ...(config.perms === undefined ? {} : { perms: [...config.perms] }),
       ...(config.label === undefined ? {} : { label: config.label }),
       ...(config.fieldPermissions === undefined ? {} : { field_permissions: [...config.fieldPermissions] }),
       ...(config.actions === undefined ? {} : { actions: [...config.actions] }),
     }));
-    return JSON.stringify({ prefix: this.prefix, permissions: this.#strategy, label: this.#label, resources });
+    return JSON.stringify({
+      prefix: this.prefix,
+      permissions: this.#strategy,
+      label: this.#label,
+      resources,
+      ...(this.#brand === undefined ? {} : { brand: this.#brand }),
+      ...(this.#groups.length === 0 ? {} : { groups: this.#groups }),
+    });
   }
 
   #site(registry: Registry): NativeAdminSite {
@@ -304,6 +359,21 @@ export class Admin {
   /** Throws `AdminConfigError` when the config does not fit the schema. Needs no database. */
   check(): void {
     this.#site(this.registry);
+  }
+
+  /**
+   * The path of the page of one record: `/admin/<Model>/<key>`. `key` is the value of a single key field, the key values in
+   * key order, or an object of key fields. Throws `AdminConfigError` when `model` is no resource and `Error` when the key does not fit.
+   */
+  url(model: AnyModel, key: RecordKey): string {
+    const schema = this.registry.native();
+    if (this.#planned === null || this.#planned.schema !== schema) this.#planned = { schema, site: this.#site(this.registry) };
+    try {
+      return call(() => this.#planned!.site.url(model._meta.name, JSON.stringify(keyJson(key))));
+    } catch (e) {
+      if (e instanceof Error && e.message.includes("is not an admin resource")) throw new AdminConfigError(e.message);
+      throw e;
+    }
   }
 
   /** The permission names of the chosen strategy, `admin.access` first. They need a prepared registry, not a database. */
@@ -357,5 +427,6 @@ const defaultAdmin = new Admin();
 export const admin = {
   register: (model: AnyModel, config?: ResourceConfig): void => defaultAdmin.register(model, config),
   check: (): void => defaultAdmin.check(),
+  url: (model: AnyModel, key: RecordKey): string => defaultAdmin.url(model, key),
   testClient: (database: Database, options?: Parameters<Admin["testClient"]>[1]): AdminTestClient => defaultAdmin.testClient(database, options),
 };

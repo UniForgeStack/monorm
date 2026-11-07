@@ -15,6 +15,7 @@ With no ``register`` call every concrete model is a read-only resource.
 
 from __future__ import annotations
 
+import datetime
 import json
 from dataclasses import dataclass
 from json import dumps as _dumps
@@ -31,7 +32,7 @@ if TYPE_CHECKING:
     from .db import Database
     from .model import Registry
 
-__all__ = ["Admin", "AdminConfigError", "AdminResponse", "AdminTestClient", "ListConfig", "ResourceConfig", "RoleSeedReport", "SyncReport", "check", "register", "test_client"]
+__all__ = ["Admin", "AdminConfigError", "AdminResponse", "AdminTestClient", "BrandConfig", "BrandLink", "ListConfig", "ResourceConfig", "RoleSeedReport", "SyncReport", "check", "register", "test_client", "url"]
 
 DEFAULT_PREFIX = "/admin/api"
 
@@ -46,8 +47,30 @@ class ListConfig(TypedDict, total=False):
     page_size: int
 
 
+class BrandLink(TypedDict):
+    label: str
+    url: str
+
+
+class BrandConfig(TypedDict, total=False):
+    name: str
+    """The name in the header and the page title (``Admin`` by default)."""
+    logo: str
+    """The URL of the logo image."""
+    colors: Mapping[Literal["primary", "accent"], str]
+    """``#rgb`` or ``#rrggbb``."""
+    links: Sequence[BrandLink]
+    """Links in the header."""
+    environment: str
+    """A short label such as ``staging``, shown in the header."""
+
+
 class ResourceConfig(TypedDict, total=False):
     list: ListConfig
+    title: str
+    """The name in the navigation and the page heading (the model name, spaced, by default)."""
+    group: str
+    """The navigation group: one of ``groups`` of the admin."""
     allow: Sequence[Literal["read", "create", "update", "delete"]]
     """The operations that the resource allows for every user, superusers too."""
     perms: Sequence[Literal["read", "manage", "delete"]]
@@ -61,7 +84,8 @@ class ResourceConfig(TypedDict, total=False):
 
 
 _LIST_KEYS = {"columns", "order", "page_size"}
-_RESOURCE_KEYS = {"list", "allow", "perms", "label", "field_permissions", "actions"}
+_RESOURCE_KEYS = {"list", "title", "group", "allow", "perms", "label", "field_permissions", "actions"}
+_BRAND_KEYS = {"name", "logo", "colors", "links", "environment"}
 Strategy = Literal["page", "model", "access"]
 
 
@@ -92,6 +116,21 @@ def _list(model: type[Model], config: Mapping[str, Any]) -> dict[str, Any]:
     if "page_size" in config:
         out["page_size"] = config["page_size"]
     return out
+
+
+def _key_value(value: Any) -> Any:
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    # `str(datetime)` has a space where the detail route wants `T`.
+    return value.isoformat() if isinstance(value, (datetime.date, datetime.time)) else str(value)
+
+
+def _key_json(key: Any) -> Any:
+    if isinstance(key, Mapping):
+        return {str(k): _key_value(v) for k, v in key.items()}
+    if isinstance(key, (list, tuple)):
+        return [_key_value(v) for v in key]
+    return _key_value(key)
 
 
 @dataclass(frozen=True)
@@ -219,6 +258,8 @@ class Admin:
     ``"model"`` (``add_``, ``change_``, ``delete_`` and ``view_``) or ``"access"`` (only ``admin.access``).
     ``label`` is the label of the names (``admin`` by default). ``roles`` maps a role name to pattern grants
     (``{"support": ["orders.*", "-shops.see_credential"]}``) that ``seed_roles`` writes to the auth tables.
+    ``brand`` sets the name, logo, colors, header links and environment label of the UI. ``groups`` is the order of the
+    navigation groups; a resource names one of them with ``group``.
     """
 
     def __init__(
@@ -229,9 +270,16 @@ class Admin:
         permissions: Strategy = "page",
         label: str = "admin",
         roles: Mapping[str, Sequence[str]] | None = None,
+        brand: BrandConfig | None = None,
+        groups: Sequence[str] = (),
     ) -> None:
         self._registry = registry
         self.prefix = prefix
+        if unknown := sorted(set(brand or {}) - _BRAND_KEYS):
+            raise AdminConfigError(f"unknown brand option {unknown[0]!r}")
+        self._brand = dict(brand) if brand else None
+        self._groups = list(groups)
+        self._planned: tuple[object, _native.AdminSite] | None = None
         self._strategy = permissions
         self._label = label
         self._roles = {name: list(patterns) for name, patterns in (roles or {}).items()}
@@ -248,6 +296,7 @@ class Admin:
         if unknown := sorted(set(config) - _RESOURCE_KEYS):
             raise AdminConfigError(f"{model.__name__}: unknown option {unknown[0]!r}")
         self._resources[model.__name__] = (model, config)
+        self._planned = None
 
     def _config_json(self) -> str:
         resources = []
@@ -256,12 +305,17 @@ class Admin:
             if "list" in config:
                 resource["list"] = _list(model, config["list"])
             raw: dict[str, Any] = dict(config)
-            for key in ("allow", "perms", "label", "field_permissions", "actions"):
+            for key in ("title", "group", "allow", "perms", "label", "field_permissions", "actions"):
                 if key in raw:
                     value = raw[key]
                     resource[key] = value if isinstance(value, str) else list(value)
             resources.append(resource)
-        return json.dumps({"prefix": self.prefix, "permissions": self._strategy, "label": self._label, "resources": resources})
+        out: dict[str, Any] = {"prefix": self.prefix, "permissions": self._strategy, "label": self._label, "resources": resources}
+        if self._brand is not None:
+            out["brand"] = self._brand
+        if self._groups:
+            out["groups"] = self._groups
+        return json.dumps(out)
 
     def _site(self, registry: Registry) -> _native.AdminSite:
         schema = registry._native if registry._native is not None else registry.prepare()
@@ -273,6 +327,22 @@ class Admin:
     def check(self) -> None:
         """Raises :class:`AdminConfigError` when the config does not fit the schema. Needs no database."""
         self._site(self._registry)
+
+    def url(self, model: type[Model], key: Any) -> str:
+        """The path of the page of one record: ``/admin/<Model>/<key>``.
+
+        ``key`` is the value of a single key field, a sequence of the key values in key order, or a mapping of key fields.
+        Raises :class:`AdminConfigError` when ``model`` is no resource and ``ValueError`` when the key does not fit.
+        """
+        schema = self._registry._native if self._registry._native is not None else self._registry.prepare()
+        if self._planned is None or self._planned[0] is not schema:
+            self._planned = (schema, self._site(self._registry))
+        try:
+            return self._planned[1].url(model.__name__, json.dumps(_key_json(key)))
+        except ValueError as e:
+            if "is not an admin resource" in str(e):
+                raise AdminConfigError(str(e)) from None
+            raise
 
     @property
     def permissions(self) -> list[str]:
@@ -331,6 +401,10 @@ def register(model: type[Model], config: ResourceConfig | None = None) -> None:
 
 def check() -> None:
     _default.check()
+
+
+def url(model: type[Model], key: Any) -> str:
+    return _default.url(model, key)
 
 
 def test_client(

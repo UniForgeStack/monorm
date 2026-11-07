@@ -1,8 +1,7 @@
 //! The key of a record in a URL: `/admin/<resource>/<key>`.
 //!
-//! A composite key is the percent-encoded text of every key field in key order, joined with `,`.
-//! A `,` inside a value is `%2C`, so one split is exact. The same rule runs for the list, the
-//! detail route and `admin.url`, and only this file knows it.
+//! A composite key is its percent-encoded fields in key order, joined with `,` (a `,` in a value is `%2C`).
+//! The list, the detail route and `admin.url` share this rule, and only this file knows it.
 
 use monorm_core::ir::ColType;
 use serde_json::{json, Value};
@@ -75,4 +74,39 @@ pub fn decode(types: &[ColType], raw: &str) -> Result<Vec<Value>, String> {
 /// The page of a record: `/admin/<resource>/<key>`.
 pub fn url(resource: &str, key: &str) -> String {
     format!("{UI_BASE}/{resource}/{key}")
+}
+
+/// The detail URL of one record from app code. `key` is a scalar (one key field), a list in key order,
+/// or an object of `{field: value}`. A wrong shape or a value of the wrong type is an error.
+pub fn url_of(resource: &crate::site::Resource, key: &Value) -> Result<String, String> {
+    let fields: Vec<&str> = resource.key_columns.iter().map(|c| c.field.as_str()).collect();
+    let wrong = |why: &str| format!("{}: the key takes {} ({why})", resource.name, fields.join(", "));
+    let values: Vec<Value> = match key {
+        Value::Array(items) => items.clone(),
+        Value::Object(map) => {
+            if let Some(extra) = map.keys().find(|k| !fields.contains(&k.as_str())) {
+                return Err(wrong(&format!("no key field {extra:?}")));
+            }
+            fields.iter().map(|f| map.get(*f).cloned().ok_or_else(|| wrong(&format!("{f} is missing")))).collect::<Result<_, _>>()?
+        }
+        scalar => vec![scalar.clone()],
+    };
+    if values.len() != fields.len() {
+        return Err(wrong(&format!("got {} value(s)", values.len())));
+    }
+    if values.iter().any(|v| !matches!(v, Value::String(_) | Value::Number(_) | Value::Bool(_))) {
+        return Err(wrong("a value is a string, a number or a boolean"));
+    }
+    let segment = encode(&values);
+    // A browser reads a whole segment of `.` or `..` (also as `%2E`) as a path step, so the page cannot be reached.
+    if matches!(segment.as_str(), "." | "..") {
+        return Err(wrong("a key of `.` or `..` has no page URL"));
+    }
+    let types: Vec<ColType> = resource.key_columns.iter().map(|c| c.ty.ty).collect();
+    // The detail route binds the decoded values: a value that it refuses must not get a URL.
+    let decoded = decode(&types, &segment).map_err(|m| format!("{}: {m}", resource.name))?;
+    for (v, ty) in decoded.iter().zip(&types) {
+        crate::json::bind(*ty, v).map_err(|_| wrong(&format!("{v} is not a {ty:?} that a page URL can name")))?;
+    }
+    Ok(url(&resource.name, &segment))
 }

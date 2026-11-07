@@ -82,6 +82,14 @@ impl AdminSite {
         self.site.labels()
     }
 
+    /// The detail URL of a record. `key_json` is a scalar, a list in key order or an object of key fields.
+    /// Throws when the model is no resource or the key does not fit.
+    #[napi]
+    pub fn url(&self, resource: String, key_json: String) -> napi::Result<String> {
+        let key: serde_json::Value = serde_json::from_str(&key_json).map_err(|e| napi::Error::from_reason(format!("key is not JSON: {e}")))?;
+        self.site.url(&resource, &key).map_err(napi::Error::from_reason)
+    }
+
     /// One in-memory request. `user_json` is the JSON of the user, or null.
     #[napi]
     pub fn request<'env>(

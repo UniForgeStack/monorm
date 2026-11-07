@@ -8,6 +8,7 @@ use std::sync::Arc;
 use monorm_core::ir::{ColType, RelKind, ValueType};
 use monorm_core::schema::Schema;
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::key;
 use crate::meta::{self, BrandConfig};
@@ -191,6 +192,9 @@ impl Site {
                 resources.push(resource(&schema, idx, r, strategy, label)?);
             }
         }
+        if prefix == key::UI_BASE && !crate::ui::FILES.is_empty() {
+            return err(format!("prefix {prefix:?} is the path of the UI: every {prefix}/... path would be an API path and the pages would not load"));
+        }
         let mut groups = config.groups.clone();
         for g in &groups {
             if g.trim().is_empty() || groups.iter().filter(|o| *o == g).count() > 1 {
@@ -203,7 +207,7 @@ impl Site {
                 (Some(g), true) if !seen_group(&resources, g, &r.name) => groups.push(g.clone()),
                 _ => {}
             }
-            if r.name == prefix.strip_prefix(key::UI_BASE).and_then(|p| p.strip_prefix('/')).unwrap_or("/") {
+            if Some(r.name.as_str()) == prefix.strip_prefix(key::UI_BASE).and_then(|p| p.strip_prefix('/')) {
                 return err(format!("{}: its page {} is the API prefix", r.name, key::url(&r.name, "").trim_end_matches('/')));
             }
         }
@@ -241,6 +245,12 @@ impl Site {
             }
         }
         serde_json::Value::Array(out)
+    }
+
+    /// The detail URL of a record (see `key::url_of`). The error text names the resource or the key.
+    pub fn url(&self, resource: &str, key: &Value) -> Result<String, String> {
+        let resource = self.resource(resource).ok_or_else(|| format!("{resource} is not an admin resource"))?;
+        crate::key::url_of(resource, key)
     }
 
     pub fn resource(&self, name: &str) -> Option<&Resource> {

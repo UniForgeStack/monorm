@@ -130,6 +130,13 @@ impl AdminSite {
         self.site.labels()
     }
 
+    /// The detail URL of a record. `key_json` is a scalar, a list in key order or an object of key fields.
+    /// Raises `ValueError` when the model is no resource or the key does not fit.
+    fn url(&self, resource: &str, key_json: &str) -> PyResult<String> {
+        let key: Value = serde_json::from_str(key_json).map_err(|e| PyValueError::new_err(format!("key is not JSON: {e}")))?;
+        self.site.url(resource, &key).map_err(PyValueError::new_err)
+    }
+
     /// The `(status, body)` of one in-memory request. `user_json` is the JSON of the user, or None.
     #[pyo3(signature = (engine, method, path, user_json = None, trace = None))]
     fn request<'py>(
