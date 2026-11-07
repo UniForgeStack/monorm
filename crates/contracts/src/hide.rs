@@ -24,7 +24,7 @@ pub fn check(models: &[ModelIr], model: &str, source: &ModelIr, physical: &Model
             return Err(format!("{model}.{}: the primary key cannot be {verb}", f.name));
         }
         let stored = physical.fields.iter().find(|p| p.column == f.column);
-        if stored.is_some_and(|p| !p.nullable && p.default.is_none() && !p.default_now && p.default_sql.is_none() && !p.auto_increment && p.generated.is_none()) {
+        if stored.is_some_and(|p| !p.nullable && !p.has_server_default()) {
             return Err(format!("{model}.{}: a NOT NULL field without a database default cannot be {verb}, because {insert}", f.name));
         }
     }

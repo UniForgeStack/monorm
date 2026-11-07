@@ -7,6 +7,7 @@ pub mod ir;
 pub mod extension;
 pub mod features;
 pub mod hide;
+pub mod sql;
 
 pub mod identity;
 

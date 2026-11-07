@@ -4,7 +4,7 @@ use crate::{extension::{attribute_namespace, Declaration}, ir::{ColType, FieldIr
 
 /// The prefix of every tracking error: `file:line:column: @attribute: message`.
 pub fn error(d: &Declaration, message: impl std::fmt::Display) -> String {
-    format!("{}:{}:{}: @{}: {message}", d.location.file, d.location.line, d.location.column, d.attribute)
+    d.error_with("@", message)
 }
 
 fn is_snake_case(s: &str) -> bool {
@@ -19,6 +19,26 @@ fn snake_case(s: &str) -> Option<String> {
         out.push(c.to_ascii_lowercase());
     }
     is_snake_case(&out).then_some(out)
+}
+
+/// Who keeps the tracked column current for writers outside the ORM.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    /// A row trigger, so every writer gets the behavior.
+    Database,
+    /// The ORM only; no DDL.
+    Application,
+}
+
+impl Mode {
+    /// The `mode` argument; absent means `Database`.
+    pub fn parse(value: Option<&serde_json::Value>) -> Result<Self, String> {
+        match value.map(|v| v.as_str()) {
+            None | Some(Some("database")) => Ok(Self::Database),
+            Some(Some("application")) => Ok(Self::Application),
+            _ => Err("mode must be \"database\" or \"application\"".into()),
+        }
+    }
 }
 
 /// The `upsert` argument: whether the default `on_conflict(update=True)` column list keeps the field.

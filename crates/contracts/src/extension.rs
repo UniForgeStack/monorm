@@ -39,7 +39,14 @@ pub struct Declaration {
     pub lowered: bool,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
+impl Declaration {
+    /// `file:line:column: <prefix><attribute>: message`; `prefix` is `@` for a field and `@@` for a model attribute.
+    pub fn error_with(&self, prefix: &str, message: impl std::fmt::Display) -> String {
+        format!("{}:{}:{}: {prefix}{}: {message}", self.location.file, self.location.line, self.location.column, self.attribute)
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Requirements {
     /// Models that read and write the table of another model, with an optional fixed row filter.
@@ -172,6 +179,26 @@ impl Requirements {
             && self.write_assignments.is_empty() && self.delete_rewrites.is_empty() && self.instance_guards.is_empty() && self.type_models.is_empty() && self.model_overrides.is_empty() && self.schema_contract == 0
             && self.schema_contract_minor == 0 && self.hooks.is_empty() && self.extension_data.is_empty()
     }
+}
+
+/// The model views of one root, split by whether the model of the view holds a field.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ViewsKeeping {
+    /// The views whose model holds the field.
+    pub keeping: Vec<String>,
+    /// The views whose model lacks the field; the caller decides whether that is an error or a skip.
+    pub lacking: Vec<String>,
+}
+
+/// The views of `root`, split by whether their model holds `field`. A view for which `has_record` is true is in neither list.
+/// The function only selects: the caller builds and pushes its own records, for the views in `keeping`.
+pub fn views_keeping(ir: &SchemaIr, root: &str, field: &str, has_record: impl Fn(&str) -> bool) -> ViewsKeeping {
+    let mut split = ViewsKeeping::default();
+    for view in ir.behavior.model_views.iter().filter(|v| v.root == root && !has_record(&v.model)) {
+        let holds = ir.models.iter().find(|m| m.name == view.model).is_some_and(|m| m.fields.iter().any(|f| f.name == field));
+        if holds { split.keeping.push(view.model.clone()) } else { split.lacking.push(view.model.clone()) }
+    }
+    split
 }
 
 /// A build-selected binding codec identity, never a provider or import path.
@@ -649,13 +676,11 @@ pub fn attribute_namespace(attribute: &str) -> &str {
 /// The error for a declaration whose attribute no installed manifest owns.
 pub fn unowned_declaration_error(d: &Declaration) -> String {
     let prefix = if d.field.is_some() { "@" } else { "@@" };
-    format!("{}:{}:{}: @{}: not compiled into this artifact and no installed extension owns it; install its package or rebuild with its extension (namespace {prefix}{}.*, see docs/README.md)",
-        d.location.file, d.location.line, d.location.column, d.attribute, attribute_namespace(&d.attribute))
+    d.error_with("@", format!("not compiled into this artifact and no installed extension owns it; install its package or rebuild with its extension (namespace {prefix}{}.*, see docs/README.md)", attribute_namespace(&d.attribute)))
 }
 
 pub fn validate_declarations(ir: &SchemaIr, manifests: &[Manifest], language: Option<&str>) -> Result<(), String> {
-    let fail = |d: &Declaration, msg: String| format!("{}:{}:{}: @{}: {msg}",
-        d.location.file, d.location.line, d.location.column, d.attribute);
+    let fail = |d: &Declaration, msg: String| d.error_with("@", msg);
     for d in &ir.behavior.declarations {
         if d.lowered {
             if let Some((id, package)) = ir.behavior.packages.iter().find(|(_, p)| p.attributes.contains(&d.attribute)) {
@@ -853,7 +878,7 @@ fn validate_hook(ir: &SchemaIr, hook: &HookBinding, manifests: &[Manifest]) -> R
 
 /// Physical schema state is explicit. Removing or renaming a logical field does not
 /// alter this snapshot; a compiler pass must contribute physical changes here.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PhysicalSchema { pub models: Vec<crate::ir::ModelIr> }
 
@@ -878,7 +903,7 @@ pub fn pass_effects(ir: &SchemaIr, pass: impl Fn(&mut SchemaIr) -> Result<(), St
     let changed = |a: &BTreeMap<String, serde_json::Value>, b: &BTreeMap<String, serde_json::Value>| -> std::collections::BTreeSet<String> {
         a.keys().chain(b.keys()).filter(|k| a.get(*k) != b.get(*k)).cloned().collect()
     };
-    let mut lowered: SchemaIr = serde_json::from_value(serde_json::to_value(ir).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let mut lowered: SchemaIr = ir.clone();
     capture_storage(&mut lowered)?;
     let before = snapshot(&lowered)?;
     pass(&mut lowered)?;
@@ -1010,7 +1035,7 @@ pub fn merge_definition(mut context: SchemaIr, mut incoming: SchemaIr) -> Result
     Ok(context)
 }
 fn physical_models(ir: &SchemaIr) -> Result<Vec<crate::ir::ModelIr>, String> {
-    let mut models: Vec<crate::ir::ModelIr> = serde_json::from_value(serde_json::to_value(&ir.models).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let mut models = ir.models.clone();
     for model in &mut models {
         model.fields.retain(|f| !ir.behavior.result_fields.iter().any(|r| r.model == model.name && r.field == f.name));
     }
@@ -1027,9 +1052,9 @@ pub fn specialization_storage(model: &crate::ir::ModelIr, requirements: &Require
             for link in &requirements.owner_links { if names.contains(&link.child) { names.insert(link.parent.clone()); } }
             if names.len() == count { break; }
         }
-        return serde_json::from_value(serde_json::to_value(storage.models.iter().filter(|m| names.contains(&m.name)).collect::<Vec<_>>()).map_err(|e| e.to_string())?).map_err(|e| e.to_string());
+        return Ok(storage.models.iter().filter(|m| names.contains(&m.name)).cloned().collect());
     }
-    let mut physical: crate::ir::ModelIr = serde_json::from_value(serde_json::to_value(model).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let mut physical = model.clone();
     physical.fields.retain(|f| !computed.contains(&f.name));
     Ok(vec![physical])
 }
@@ -1532,5 +1557,29 @@ mod tests {
         let attribute: Attribute = serde_json::from_value(serde_json::json!({"name": "acme.view", "target": "model", "view_source": true})).unwrap();
         assert!(attribute.view_source);
         assert!(serde_json::to_string(&attribute).unwrap().contains("\"view_source\":true"));
+    }
+
+    /// A root with a field, a view that keeps it and a view that drops it.
+    fn views_of(root: &str) -> SchemaIr {
+        let model = |name: &str, field: bool| {
+            let mut m: crate::ir::ModelIr = serde_json::from_value(serde_json::json!({"name": name, "table": "t", "fields": []})).unwrap();
+            if field { m.fields.push(crate::ir::FieldIr::plain("f", crate::ir::ColType::Int)); }
+            m
+        };
+        let mut ir = SchemaIr { models: vec![model(root, true), model("Keeps", true), model("Drops", false)], ..SchemaIr::default() };
+        for view in ["Keeps", "Drops"] {
+            ir.behavior.model_views.push(ModelView { model: view.into(), source: root.into(), root: root.into(), row_filter: None, insert_table: None });
+        }
+        ir
+    }
+
+    #[test]
+    fn views_keeping_splits_the_views_by_the_field() {
+        let ir = views_of("Root");
+        let split = views_keeping(&ir, "Root", "f", |_| false);
+        assert_eq!((split.keeping, split.lacking), (vec!["Keeps".to_owned()], vec!["Drops".to_owned()]));
+        let split = views_keeping(&ir, "Root", "f", |m| m == "Drops");
+        assert_eq!((split.keeping, split.lacking), (vec!["Keeps".to_owned()], vec![]));
+        assert_eq!(views_keeping(&ir, "Other", "f", |_| false), ViewsKeeping::default());
     }
 }

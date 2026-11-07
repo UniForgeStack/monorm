@@ -192,7 +192,7 @@ pub struct NestedIr {
     pub present_with: Vec<String>,
 }
 
-#[derive(Deserialize, Serialize, Debug, Default)]
+#[derive(Deserialize, Serialize, Debug, Default, Clone)]
 pub struct SchemaIr {
     /// Native source slots for migration reconciliation. Not part of database snapshots.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -229,6 +229,11 @@ pub struct SchemaIr {
 }
 
 impl SchemaIr {
+    /// The model called `name` in the logical list, then in the storage snapshot.
+    pub fn models_named_mut<'a>(&'a mut self, name: &'a str) -> impl Iterator<Item = &'a mut ModelIr> + 'a {
+        self.models.iter_mut().chain(self.behavior.storage.iter_mut().flat_map(|s| s.models.iter_mut())).filter(move |m| m.name == name)
+    }
+
     /// Sets the contract major when a record of slice 2c is in use (a hook of point 5 to 7, an `Expr` or
     /// `ExprHook` write assignment, an `Expr` or `Hook` client default), so that an older engine refuses the IR
     /// with both versions in the text and not with a parse error.
@@ -304,7 +309,7 @@ mod schema_json {
     }
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct ModelIr {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub partition: Option<PartitionKeyIr>,
@@ -363,7 +368,31 @@ pub struct SqlViewIr {
     pub depends_on: Vec<String>,
 }
 
+/// Why a name cannot be a new field or relation of a model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NewMemberError {
+    /// Empty, or not an identifier.
+    Invalid,
+    /// A field or a relation of the model has the name.
+    Collides,
+}
+
 impl ModelIr {
+    /// Add `trigger`; a trigger of the same name is an error.
+    pub fn push_trigger(&mut self, trigger: TriggerIr) -> Result<(), String> {
+        if self.triggers.iter().any(|t| t.name == trigger.name) { return Err(format!("{} already has a trigger {}", self.name, trigger.name)); }
+        self.triggers.push(trigger);
+        Ok(())
+    }
+
+    /// `name` may become a new field or relation: a nonempty identifier that no member of the model has.
+    pub fn check_new_member(&self, name: &str) -> Result<(), NewMemberError> {
+        let identifier = !name.is_empty() && name.chars().enumerate().all(|(i, c)| c == '_' || c.is_ascii_alphabetic() || i > 0 && c.is_ascii_digit());
+        if !identifier { return Err(NewMemberError::Invalid); }
+        if self.fields.iter().any(|f| f.name == name) || self.relations.iter().any(|r| r.name == name) { return Err(NewMemberError::Collides); }
+        Ok(())
+    }
+
     /// The primary key field names in key order.
     pub fn key_fields(&self) -> Vec<&str> {
         if self.primary_key.is_empty() {
@@ -481,6 +510,32 @@ pub enum ClientCall {
     Now,
 }
 
+/// Why a client default value does not fit its column; `Display` is the text that callers show after the field name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientDefaultError {
+    NotAnArray,
+    Int32,
+    Int64,
+    Number,
+    Bool,
+    Text,
+    TextOrNumber,
+}
+
+impl std::fmt::Display for ClientDefaultError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::NotAnArray => "requires an array",
+            Self::Int32 => "requires int32",
+            Self::Int64 => "requires int64",
+            Self::Number => "requires a number",
+            Self::Bool => "requires a bool",
+            Self::Text => "requires text",
+            Self::TextOrNumber => "requires text or a number",
+        })
+    }
+}
+
 impl FieldIr {
     pub fn value_type(&self) -> ValueType {
         ValueType { ty: self.ty, array: self.array, enum_idx: self.enum_idx }
@@ -489,6 +544,53 @@ impl FieldIr {
     /// A column a write can name: not a group of nested columns, and not computed by the database.
     pub fn is_writable_column(&self) -> bool {
         self.nested.is_none() && self.generated.is_none()
+    }
+
+    /// The database fills the column when a write leaves it out: a default, a sequence or a generated expression.
+    pub fn has_server_default(&self) -> bool {
+        self.default.is_some() || self.default_now || self.default_sql.is_some() || self.auto_increment || self.generated.is_some()
+    }
+
+    /// Whether `value` has the JSON shape that a client default of this column stores: the reason when it does not.
+    /// The check covers the shape only; a null is always accepted, and the host parses the text of dates and UUIDs.
+    pub fn check_client_default(&self, value: &serde_json::Value) -> Result<(), ClientDefaultError> {
+        if value.is_null() { return Ok(()); }
+        if self.array {
+            let values = value.as_array().ok_or(ClientDefaultError::NotAnArray)?;
+            let element = FieldIr { array: false, ..self.clone() };
+            return values.iter().try_for_each(|v| element.check_client_default(v));
+        }
+        let fits = match self.ty {
+            ColType::Int => value.as_i64().is_some_and(|v| i32::try_from(v).is_ok()),
+            ColType::BigInt => value.is_i64(),
+            ColType::Float => value.is_number(),
+            ColType::Bool => value.is_boolean(),
+            ColType::Json => true,
+            ColType::Decimal => value.is_string() || value.is_number(),
+            ColType::String | ColType::Text | ColType::DateTime | ColType::Date | ColType::Uuid => value.is_string(),
+        };
+        if fits { return Ok(()); }
+        Err(match self.ty {
+            ColType::Int => ClientDefaultError::Int32,
+            ColType::BigInt => ClientDefaultError::Int64,
+            ColType::Float => ClientDefaultError::Number,
+            ColType::Bool => ClientDefaultError::Bool,
+            ColType::Decimal => ClientDefaultError::TextOrNumber,
+            _ => ClientDefaultError::Text,
+        })
+    }
+
+    /// A column named `name` that holds the key `key`: the type and the storage encoding of `key`, nothing else.
+    pub fn key_like(name: &str, key: &FieldIr) -> FieldIr {
+        FieldIr {
+            enum_name: key.enum_name.clone(),
+            max_length: key.max_length,
+            db_type: key.db_type.clone(),
+            read_sql: key.read_sql.clone(),
+            write_sql: key.write_sql.clone(),
+            requires: key.requires.clone(),
+            ..FieldIr::plain(name, key.ty)
+        }
     }
 
     /// A plain column: no key, default or SQL templates.
@@ -592,6 +694,16 @@ pub struct RelationIr {
     pub join_label: Option<String>,
 }
 
+impl RelationIr {
+    /// A to-one relation from `from` of the owner to `to` of `target`, with no foreign key and no other option.
+    pub fn one(name: &str, target: &str, from: &str, to: &str) -> RelationIr {
+        RelationIr {
+            name: name.to_owned(), kind: RelKind::One, target: target.to_owned(), from: vec![from.to_owned()], to: vec![to.to_owned()],
+            foreign_key: false, on_delete: None, on_update: None, deferrable: None, fk_name: None, through: None, label: None, join_label: None,
+        }
+    }
+}
+
 /// The fields of a model that has no table. Codegen emits a type for it and no runtime model.
 #[derive(Deserialize, Serialize, Clone, Debug)]
 pub struct TypeModel {
@@ -624,7 +736,7 @@ pub enum Nulls {
 }
 
 /// One key of an index: a field of the model or a raw SQL expression.
-#[derive(Deserialize, Serialize, Debug, Clone, PartialEq)]
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Default)]
 pub struct IndexColumnIr {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub field: Option<String>,
@@ -640,7 +752,7 @@ pub struct IndexColumnIr {
     pub nulls: Option<Nulls>,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone, Default)]
 pub struct IndexIr {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub name: Option<String>,
@@ -665,7 +777,7 @@ pub struct IndexIr {
     pub requires: Vec<String>,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ConstraintIr {
     Unique {
@@ -698,7 +810,7 @@ pub enum ConstraintIr {
     },
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct ExcludeElementIr {
     #[serde(flatten)]
     pub column: IndexColumnIr,
@@ -714,9 +826,10 @@ pub enum TriggerEvent {
     Truncate,
 }
 
-#[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum TriggerTiming {
+    #[default]
     Before,
     After,
     InsteadOf,
@@ -732,7 +845,7 @@ pub enum ForEach {
 
 /// A trigger runs either a schema-level function (`function`) or its own body
 /// (`body`), from which a function named `<table>_<trigger>` is generated.
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone, Default)]
 pub struct TriggerIr {
     pub name: String,
     pub timing: TriggerTiming,
@@ -755,7 +868,7 @@ pub struct TriggerIr {
     pub language: Option<String>,
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct FunctionIr {
     pub name: String,
     /// Argument list as SQL (`a integer, b text`); empty for trigger functions.
@@ -801,7 +914,7 @@ pub struct Provides {
 // Query IR
 // ---------------------------------------------------------------------------------------
 
-#[derive(Deserialize, Clone, Copy, Debug)]
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CmpOp {
     Eq,
@@ -822,7 +935,7 @@ pub enum CmpOp {
     Match,
 }
 
-#[derive(Deserialize, Clone, Copy, Debug)]
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ArithOp {
     Add,
@@ -835,14 +948,14 @@ pub enum ArithOp {
     JsonMerge,
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum Expr {
     /// A field reached from the query's root model through `path` (relation names).
     /// With `sub`, a subfield of a nested `json` field: `address.geo.lat` is `name: "address"`, `sub: ["geo", "lat"]`.
     /// `alias` (empty, or one entry per `path` hop) tags a hop `User.posts.alias()`: a hop with the same
     /// nonzero tag is one related row for the whole query, a different tag is another row.
-    Col { path: Vec<String>, name: String, #[serde(default)] sub: Vec<String>, #[serde(default)] alias: Vec<u32> },
+    Col { path: Vec<String>, name: String, #[serde(default, skip_serializing_if = "Vec::is_empty")] sub: Vec<String>, #[serde(default, skip_serializing_if = "Vec::is_empty")] alias: Vec<u32> },
     Param { i: usize },
     Const { value: bool },
     /// SQL `NULL`; as a whole nested field, every leaf is null.
@@ -936,29 +1049,55 @@ pub enum Expr {
     },
 }
 
+impl Expr {
+    /// A column of the query's root model.
+    pub fn col(name: &str) -> Expr { Expr::Col { path: vec![], name: name.to_owned(), sub: vec![], alias: vec![] } }
+    /// An integer literal.
+    pub fn int(value: i64) -> Expr { Expr::Int { value } }
+    /// A text literal.
+    pub fn text(value: &str) -> Expr { Expr::Text { value: value.to_owned() } }
+    /// A boolean constant: `Expr::Const`.
+    pub fn boolean(value: bool) -> Expr { Expr::Const { value } }
+    /// A named scope value that the caller of the query sets.
+    pub fn scope(name: &str) -> Expr { Expr::Scope { name: name.to_owned() } }
+    /// `l <op> r`.
+    pub fn cmp(op: CmpOp, l: Expr, r: Expr) -> Expr { Expr::Cmp { op, l: Box::new(l), r: Box::new(r) } }
+    /// All `items` hold.
+    pub fn and(items: Vec<Expr>) -> Expr { Expr::And { items } }
+    /// At least one of `items` holds.
+    pub fn or(items: Vec<Expr>) -> Expr { Expr::Or { items } }
+    /// `NOT item`.
+    #[allow(clippy::should_implement_trait)]
+    pub fn not(item: Expr) -> Expr { Expr::Not { item: Box::new(item) } }
+    /// `item IS NULL`, or `IS NOT NULL` when `neg`.
+    pub fn is_null(item: Expr, neg: bool) -> Expr { Expr::IsNull { item: Box::new(item), neg } }
+    /// The expression as the JSON that the ABI carries.
+    pub fn to_json(&self) -> serde_json::Value { serde_json::to_value(self).expect("an expression serializes") }
+}
+
 /// One subfield of an `Expr::Object`.
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct ObjectField {
     pub name: String,
     pub value: Expr,
 }
 
 /// One `WHEN <cond> THEN <value>` branch of `Expr::Case`.
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct When {
     pub cond: Expr,
     pub value: Expr,
 }
 
 /// One step of a JSON path: an object key or an array index.
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(untagged)]
 pub enum JsonKey {
     Index(i64),
     Key(String),
 }
 
-#[derive(Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum FrameKind {
     Rows,
@@ -967,7 +1106,7 @@ pub enum FrameKind {
 
 /// A window frame. Bounds: `None` is unbounded, `0` the current row, negative values
 /// rows (or values) preceding, positive ones following.
-#[derive(Deserialize, Clone, Copy, Debug)]
+#[derive(Deserialize, Serialize, Clone, Copy, Debug)]
 pub struct Frame {
     pub kind: FrameKind,
     #[serde(default)]
@@ -977,7 +1116,7 @@ pub struct Frame {
 }
 
 /// `WINDOW <name> AS (...)`: a window definition several window functions share.
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct NamedWindow {
     pub name: String,
     #[serde(default)]
@@ -990,7 +1129,7 @@ pub struct NamedWindow {
 
 /// `[LEFT] JOIN <cte> ON <on>`: a CTE of the statement joined to the root rows, so its
 /// columns (`CteCol`) can be read next to them.
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct CteJoin {
     pub cte: String,
     pub on: Expr,
@@ -1000,7 +1139,7 @@ pub struct CteJoin {
 }
 
 /// `WITH <name> AS (<query> [UNION [ALL] <recursive>])`.
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Cte {
     pub name: String,
     pub query: Select,
@@ -1018,7 +1157,7 @@ pub struct Cte {
 /// A relation loaded with a separate `IN (...)` query once the parent rows are known.
 /// `query` (on the relation's target model) filters, orders and slices the related rows
 /// (a slice applies per parent row) and nests further prefetches.
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Prefetch {
     pub relation: String,
     /// Attribute the rows are stored under; the relation's name when absent.
@@ -1036,7 +1175,7 @@ pub struct Prefetch {
 }
 
 /// One entry of `select(...)`: every column of the root model, or an expression.
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum SelectItem {
     Model,
@@ -1048,7 +1187,7 @@ pub enum SelectItem {
     },
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Order {
     pub expr: Expr,
     #[serde(default)]
@@ -1088,7 +1227,7 @@ impl Bypass {
 }
 
 /// The public fields of the model a `select_related` path joins (columns named beside a `load()` path).
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct RelatedFields {
     pub path: Vec<String>,
     pub fields: Vec<String>,
@@ -1100,7 +1239,7 @@ pub struct RelatedFields {
 /// One entry per `filter()` call. Entries are AND-ed, but each is planned on its own:
 /// conditions inside one entry that go through the same to-many relation must hold for
 /// the same related row, while separate entries are independent (Django semantics).
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Select {
     /// Public model fields; helpers are selected separately by the planner.
     #[serde(default)]
@@ -1176,7 +1315,7 @@ pub struct Select {
 }
 
 /// A labeled expression of `load()`: `name` is the attribute of the object.
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct Annotation {
     pub name: String,
     pub expr: Expr,
@@ -1184,20 +1323,20 @@ pub struct Annotation {
 
 /// A row count (`LIMIT` / `OFFSET`): a number, or a parameter holding one, so one IR
 /// document serves every page.
-#[derive(Deserialize, Debug, Clone, Copy)]
+#[derive(Deserialize, Serialize, Debug, Clone, Copy)]
 #[serde(untagged)]
 pub enum Count {
     Value(u64),
     Param(ParamRef),
 }
 
-#[derive(Deserialize, Debug, Clone, Copy)]
+#[derive(Deserialize, Serialize, Debug, Clone, Copy)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum ParamRef {
     Param { i: usize },
 }
 
-#[derive(Deserialize, Debug, Clone, Copy)]
+#[derive(Deserialize, Serialize, Debug, Clone, Copy)]
 pub struct Lock {
     /// `FOR UPDATE` when true, `FOR SHARE` otherwise.
     #[serde(default = "crate::ir::yes")]
@@ -1351,9 +1490,42 @@ pub struct PartitionKeyIr {
 }
 
 /// A physical partition shares its root model's fields; `objects` contains only local rules.
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct PartitionIr {
     pub of: String,
     pub bound: String,
     pub objects: ModelIr,
+}
+
+#[cfg(test)]
+mod key_copy {
+    use super::*;
+    #[test]
+    fn a_key_copy_keeps_the_enum_and_the_storage_encoding_only() {
+        let mut key = FieldIr::plain("id", ColType::String);
+        key.primary_key = true;
+        key.enum_name = Some("Kind".into());
+        key.db_type = Some("kind".into());
+        key.default_sql = Some("x".into());
+        let copy = FieldIr::key_like("kind_id", &key);
+        assert_eq!((copy.name.as_str(), copy.column.as_str(), copy.ty), ("kind_id", "kind_id", ColType::String));
+        assert_eq!((copy.enum_name.as_deref(), copy.db_type.as_deref()), (Some("Kind"), Some("kind")));
+        assert!(!copy.primary_key && copy.default_sql.is_none() && copy.nullable);
+    }
+
+    #[test]
+    fn a_client_default_must_have_the_json_shape_of_the_column() {
+        let field = |ty, array| FieldIr { array, ..FieldIr::plain("f", ty) };
+        let json = |text: &str| serde_json::from_str::<serde_json::Value>(text).unwrap();
+        assert_eq!(field(ColType::Int, false).check_client_default(&json("\"x\"")), Err(ClientDefaultError::Int32));
+        assert_eq!(field(ColType::Int, false).check_client_default(&json("3000000000")), Err(ClientDefaultError::Int32));
+        assert_eq!(field(ColType::Int, false).check_client_default(&json("7")), Ok(()));
+        assert_eq!(field(ColType::BigInt, false).check_client_default(&json("3000000000")), Ok(()));
+        assert_eq!(field(ColType::Bool, false).check_client_default(&json("1")), Err(ClientDefaultError::Bool));
+        assert_eq!(field(ColType::Decimal, false).check_client_default(&json("1.5")), Ok(()));
+        assert_eq!(field(ColType::Json, false).check_client_default(&json("{\"a\":1}")), Ok(()));
+        assert_eq!(field(ColType::Text, false).check_client_default(&json("null")), Ok(()));
+        assert_eq!(field(ColType::Int, true).check_client_default(&json("1")), Err(ClientDefaultError::NotAnArray));
+        assert_eq!(field(ColType::Int, true).check_client_default(&json("[1, \"x\"]")), Err(ClientDefaultError::Int32));
+    }
 }
