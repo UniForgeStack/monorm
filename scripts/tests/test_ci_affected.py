@@ -83,6 +83,9 @@ class PlanTest(unittest.TestCase):
     def test_extension_package_crate_feeds_npm_assemble(self) -> None:
         self.assertGreaterEqual(plan("crates/extension-package/src/main.rs"), {"rust", "packages", "python", "node", "create-monorm"})
 
+    def test_admin_crate_is_linked_into_both_bindings(self) -> None:
+        self.assertGreaterEqual(plan("crates/admin/src/list.rs"), {"rust", "python", "node", "packages"})
+
     def test_every_version_site_runs_the_release_check(self) -> None:
         paths = [
             "crates/cli/Cargo.toml",

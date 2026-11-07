@@ -14,6 +14,7 @@ SCANNED = [
     "crates/engine",
     "crates/contracts",
     "crates/cli",
+    "crates/admin",
     "languages/python/native",
     "languages/js/native",
 ]

@@ -28,7 +28,7 @@ uv venv .venv && . .venv/bin/activate && uv pip install maturin pytest 'pytest-a
 python languages/python/packaging/stage.py   # the extension libraries of this platform, for the one wheel
 maturin develop                   # the one `monorm` package: engine, built-in extensions and auth
 python -m pytest -q               # Python end-to-end, SQL shape and typing tests
-cargo test -q && cargo clippy -q -p monorm-core -p monorm-engine -p monorm-python -p monorm-node -p monorm -p monorm-extension-package
+cargo test -q && cargo clippy -q -p monorm-core -p monorm-engine -p monorm-python -p monorm-node -p monorm -p monorm-extension-package -p monorm-admin
 mypy --strict languages/python/monorm && pyright languages/python/monorm
 cd languages/js && npm install && npm run assemble   # the TypeScript package (languages/js/): Node addon and built-in extension libraries
 npm test && npm run test:bun && npm run typecheck

@@ -58,6 +58,7 @@ RULES: list[tuple[str, set[str]]] = [
     (r"^(docs/|LICENSE$|.*\.md$)", {"docs"}),
     # Rust crates and the bindings.
     (r"^crates/cli/", {"rust", "python", "node", "create-monorm", "packages"}),
+    (r"^crates/admin/", {"rust", "python", "node", "packages"}),
     # `npm run assemble` builds and runs monorm-extension-package for each bundled extension.
     (r"^crates/extension-package/", {"rust", "packages", "python", "node", "create-monorm"}),
     (r"^languages/rust/", {"rust"}),

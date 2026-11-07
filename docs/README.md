@@ -54,6 +54,7 @@ An app is a schema that you import with `import "app:<name>"`, and a package for
 | App | What |
 |---|---|
 | [auth.md](apps/auth.md) | The auth app: users, roles, permissions and passwords |
+| [admin.md](apps/admin.md) | The admin (in progress): read-only model lists for a superuser |
 
 ## Performance
 
