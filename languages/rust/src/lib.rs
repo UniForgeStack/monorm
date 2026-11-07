@@ -139,7 +139,7 @@ impl<S: SchemaSpec> Database<S> {
             ));
         }
         let schema = Schema::from_ir(ir).map_err(Error::Compatibility)?;
-        let driver = monorm_engine::db::connect(url, pool_size).await?;
+        let driver = monorm_engine::db::connect_with_types(url, pool_size, schema.declared_types()).await?;
         if driver.dialect() != S::Dialect::DIALECT {
             driver.close().await;
             return Err(Error::Compatibility(

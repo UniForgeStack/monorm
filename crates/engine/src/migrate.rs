@@ -508,7 +508,8 @@ fn no_tx_refusal(what: &str, dialect: Dialect) -> Error {
 /// The refusal of a no-transaction script behind a pooler: its session lock needs a direct connection.
 fn pooler_refusal(what: &str) -> Error {
     Error::Migration(format!(
-        "{what} runs outside a transaction and needs a session lock, and this URL has pgbouncer=true: use a URL without it (for migrate, set MONORM_DATABASE_URL)"
+        "{what} runs outside a transaction and needs a session lock, which needs {}",
+        crate::db::POOLER_LOCK_REFUSAL
     ))
 }
 

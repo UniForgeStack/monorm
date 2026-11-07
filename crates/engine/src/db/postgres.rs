@@ -195,10 +195,17 @@ fn forget_stale(c: &PgConn, sql: &str, args: &[Value], e: tokio_postgres::Error)
 /// `42P05`) means a named statement reached another server: the connection is marked broken so
 /// the pool replaces it.
 fn run_err(c: &PgConn, sql: &str, args: &[Value], e: tokio_postgres::Error) -> DbError {
-    if c.pgbouncer { pooler_err(Some(c), e) } else { forget_stale(c, sql, args, e) }
+    if c.pgbouncer { pooler_err(Some(c), e, STATEMENT_ADVICE) } else { forget_stale(c, sql, args, e) }
 }
 
-fn pooler_err(c: Option<&PgConn>, e: tokio_postgres::Error) -> DbError {
+/// What a statement error says behind a pooler. A late type lookup can fail after the server
+/// has run the statement, so a write may have committed.
+const STATEMENT_ADVICE: &str = "a type that the schema does not list needs a statement of its own; add it to the schema or use a URL without pgbouncer=true; \
+     the statement may have run, so check before you repeat a write";
+const WARM_UP_ADVICE: &str = "the connection failed while it read the schema types, before it ran a statement of yours; try again";
+const COPY_ADVICE: &str = "COPY failed while it prepared its statements, before it copied a row; roll back and try again";
+
+fn pooler_err(c: Option<&PgConn>, e: tokio_postgres::Error, advice: &str) -> DbError {
     if !pooler_code(&e) {
         return pg_err(e);
     }
@@ -208,13 +215,12 @@ fn pooler_err(c: Option<&PgConn>, e: tokio_postgres::Error) -> DbError {
     }
     let mut err = pg_err(e);
     let name = err.message.split('"').nth(1).map(str::to_owned).unwrap_or_default();
-    err.message = format!(
-        "prepared statement \"{name}\" is not known in pgbouncer mode ({code}): a type that the schema does not list needs a statement of its own; add it to the schema or use a URL without pgbouncer=true"
-    );
+    let state = if code == "42P05" { "already exists on the server" } else { "is not known to the server" };
+    err.message = format!("prepared statement \"{name}\" {state} in pgbouncer mode ({code}): {advice}");
     err
 }
 
-/// The parameters of a statement with their declared types, for the unnamed statement.
+/// The unnamed statement has no Describe step, so each parameter carries the type that `pg_type` gives it.
 fn typed<'a>(params: &'a [Param<'a>], args: &[Value]) -> DbResult<Vec<(&'a (dyn ToSql + Sync), Type)>> {
     args.iter().zip(params).map(|(v, p)| Ok((p as &(dyn ToSql + Sync), pg_type(v)?))).collect()
 }
@@ -389,7 +395,7 @@ fn fit<'a>(v: &'a Value, ty: &Type) -> DbResult<std::borrow::Cow<'a, Value>> {
 /// sends their `Close` ahead of the next message, so the caller's `COMMIT` ends a transaction
 /// that holds no statement.
 async fn copy_in(c: &PgConn, table: &str, columns: &[String], rows: &[Vec<Value>]) -> DbResult<u64> {
-    let err = |e| if c.pgbouncer { pooler_err(Some(c), e) } else { pg_err(e) };
+    let err = |e| if c.pgbouncer { pooler_err(Some(c), e, COPY_ADVICE) } else { pg_err(e) };
     let cols = columns.iter().map(|c| quote(c)).collect::<Vec<_>>().join(", ");
     let table = quote(table);
     let probe = c.prepare(&format!("SELECT {cols} FROM {table} LIMIT 0")).await.map_err(err)?;
@@ -706,7 +712,8 @@ async fn warm_up(client: &tokio_postgres::Client, types: &[String]) -> Result<()
         let casts = list.iter().map(|t| format!("NULL::{t}")).collect::<Vec<_>>().join(", ");
         client.query_typed(&format!("SELECT {casts}"), &[]).await.map(drop)
     }
-    let missing = |e: &tokio_postgres::Error| e.as_db_error().is_some() && !pooler_code(e);
+    // 42704: the type does not exist; 3F000: its schema does not. Any other error (a bad name, no permission) is a real failure.
+    let missing = |e: &tokio_postgres::Error| e.code().is_some_and(|c| matches!(c.code(), "42704" | "3F000"));
     client.batch_execute("BEGIN").await?;
     let result: Result<(), tokio_postgres::Error> = async {
         client.batch_execute("SAVEPOINT warm").await?;
@@ -849,7 +856,7 @@ impl PgDriver {
 
 async fn get_client(pool: &Pool) -> DbResult<Object> {
     pool.get().await.map_err(|e| match e {
-        deadpool_postgres::PoolError::Backend(e) if pool.manager().pgbouncer => pooler_err(None, e),
+        deadpool_postgres::PoolError::Backend(e) if pool.manager().pgbouncer => pooler_err(None, e, WARM_UP_ADVICE),
         deadpool_postgres::PoolError::Backend(e) => pg_err(e),
         other => DbError::other(other.to_string()),
     })
@@ -903,9 +910,7 @@ impl Driver for PgDriver {
         Box::pin(async move {
             if self.pgbouncer {
                 // The lock belongs to one server session, and a pooler hands the connection to others.
-                return Err(DbError::other(
-                    "a session lock needs a direct connection, and this URL has pgbouncer=true: use a URL without it (for migrate, set MONORM_DATABASE_URL)",
-                ));
+                return Err(DbError::other(format!("a session lock needs {}", super::POOLER_LOCK_REFUSAL)));
             }
             // `lock_timeout = 0` means no timeout in Postgres.
             let nowait = nowait || timeout_ms == Some(0);
@@ -1480,6 +1485,7 @@ mod failure_tests {
             assert!(!after.iter().any(|(_, sql)| sql.contains("monorm_lru_1")), "an old one-shot statement was closed: {after:?}");
         });
     }
+
     // -- pgbouncer=true ---------------------------------------------------------------------
 
     #[test]
@@ -1531,6 +1537,10 @@ mod failure_tests {
     /// The URL of a PgBouncer in transaction mode (CI sets it); the tests below skip without it.
     fn pooler_url() -> Option<String> {
         std::env::var("MONORM_PGBOUNCER_URL").ok()
+    }
+
+    fn bigint(n: i64) -> Value {
+        n.into()
     }
 
     /// Statements that differ in text, so the client keeps preparing new ones.
@@ -1588,19 +1598,20 @@ mod failure_tests {
         let Some(url) = pooler_url() else { return };
         runtime().block_on(async {
             let db = PgDriver::connect(&url, 4).await.unwrap();
-            let mut lost = None;
-            for round in 0..20 {
-                for i in 0..20 {
-                    let (sql, args) = workload(i);
-                    if let Err(e) = db.query(sql, args).await {
-                        lost = Some((round, e));
+            // Two loops at the same time: one client alone can stay on one server and never lose a name.
+            let run = || async {
+                for _ in 0..20 {
+                    for i in 0..20 {
+                        let (sql, args) = workload(i);
+                        if let Err(e) = db.query(sql, args).await {
+                            return Some(e);
+                        }
                     }
                 }
-                if lost.is_some() {
-                    break;
-                }
-            }
-            let (_, e) = lost.expect("the cache must lose a statement name when the pooler switches servers");
+                None
+            };
+            let (a, b) = tokio::join!(run(), run());
+            let e = a.or(b).expect("the cache must lose a statement name when the pooler switches servers");
             assert!(matches!(e.sqlstate.as_deref(), Some("26000" | "42P05")), "{e:?}");
         });
     }
@@ -1613,16 +1624,39 @@ mod failure_tests {
             let before = pid().await;
             let c = get_client(&db.pool).await.unwrap();
             let e = c.simple_query("EXECUTE monorm_s7").await.unwrap_err();
-            let e = pooler_err(Some(&c), e);
+            let e = pooler_err(Some(&c), e, STATEMENT_ADVICE);
             drop(c);
             assert_eq!(e.sqlstate.as_deref(), Some("26000"));
-            assert!(e.message.contains("\"monorm_s7\"") && e.message.contains("pgbouncer mode") && !e.message.contains("typeinfo"), "{}", e.message);
+            assert!(e.message.contains("\"monorm_s7\"") && e.message.contains("pgbouncer mode") && e.message.contains("may have run") && !e.message.contains("typeinfo"), "{}", e.message);
             assert_ne!(pid().await, before, "the pool made a new connection");
         });
     }
 
-    fn bigint(n: i64) -> Value {
-        n.into()
+    #[test]
+    fn the_warm_up_skips_only_a_type_that_does_not_exist() {
+        runtime().block_on(async {
+            let url = flagged(&test_url());
+            // 42704 (no such type) and 3F000 (no such schema) wait for `migrate`; the other errors are real.
+            let ok = PgDriver::connect_with_types(&url, 1, vec!["monorm_no_such_type".into(), "\"monorm_no_schema\".\"t\"".into()]).await;
+            assert!(ok.is_ok(), "{:?}", ok.err());
+            let bad = PgDriver::connect_with_types(&url, 1, vec!["not a (type".into()]).await.err().expect("a bad type name fails connect");
+            assert_eq!(bad.sqlstate.as_deref(), Some("42601"), "{bad:?}");
+            assert!(!bad.message.contains("pgbouncer mode"), "{}", bad.message);
+        });
+    }
+
+    #[test]
+    fn a_taken_statement_name_says_what_ran() {
+        runtime().block_on(async {
+            let db = PgDriver::connect(&flagged(&test_url()), 1).await.unwrap();
+            let c = get_client(&db.pool).await.unwrap();
+            c.simple_query("PREPARE monorm_taken AS SELECT 1").await.unwrap();
+            let e = c.simple_query("PREPARE monorm_taken AS SELECT 2").await.unwrap_err();
+            let warm_up = pooler_err(None, e, WARM_UP_ADVICE);
+            assert_eq!(warm_up.sqlstate.as_deref(), Some("42P05"));
+            assert!(warm_up.message.contains("already exists") && warm_up.message.contains("before it ran a statement of yours"), "{}", warm_up.message);
+            assert!(!warm_up.message.contains("schema does not list"), "{}", warm_up.message);
+        });
     }
 
     #[test]
@@ -1638,7 +1672,6 @@ mod failure_tests {
                 )
                 .await
                 .unwrap();
-            // The enum is listed, so its first read needs no statement of its own.
             let db = PgDriver::connect_with_types(&flagged(&test_url()), 1, vec!["\"monorm_pgb_role\"".into(), "\"monorm_pgb_role\"[]".into(), "monorm_pgb_missing".into()])
                 .await
                 .unwrap();
@@ -1646,7 +1679,7 @@ mod failure_tests {
                 let rows = db.query_text("SELECT name, statement FROM pg_prepared_statements".into()).await.unwrap();
                 assert!(rows.is_empty(), "a statement is still prepared: {rows:?}");
             };
-            none().await; // the warm-up closed the lookups it made
+            none().await;
             let n = |sql: &str, args: Vec<Value>| db.query(sql.to_owned(), args);
 
             n("SELECT $1::int8 AS n", vec![bigint(1)]).await.unwrap();

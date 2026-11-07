@@ -209,7 +209,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker exec ${{ job.services.postgres.id }} createdb -U postgres orm_test_rs
-      # PgBouncer 1.26.1 in transaction mode (scripts/ci/pgbouncer/pgbouncer.ini) in front of the service.
+      # PgBouncer in transaction mode (scripts/ci/pgbouncer/pgbouncer.ini) in front of the service; the image tag below sets the version.
       - name: Start PgBouncer
         run: |
           docker run -d --name pgbouncer --network host \

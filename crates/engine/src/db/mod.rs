@@ -128,6 +128,9 @@ pub trait RawRows: Send + Sync {
     fn cell(&self, row: usize, col: usize) -> DbResult<Cell<'_>>;
 }
 
+/// The end of a session-lock refusal behind a pooler (the engine and `migrate` both say it).
+pub const POOLER_LOCK_REFUSAL: &str = "a direct connection, and this URL has pgbouncer=true: use a URL without it (for migrate, set MONORM_DATABASE_URL)";
+
 /// Something statements run on: the pool (each call takes a connection) or an open
 /// transaction (every call uses its connection).
 pub trait Executor: Send + Sync {

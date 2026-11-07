@@ -1412,10 +1412,21 @@ The default is off. Only `true` and `false` are valid. A `sqlite:` URL refuses t
   The connect probe reads `SHOW TimeZone`. A value other than `UTC` is a connect error that names `ignore_startup_parameters`.
 * From PgBouncer 1.24, `max_prepared_statements` is 200 by default.
   There the flag is not needed, and you keep the statement cache.
+* PgBouncer 1.21 or later can track named statements when `max_prepared_statements` is more than 0.
+  There, drop the flag: the `DEALLOCATE ALL` of the type lookup can make that tracking wrong on 1.21.
+* The flag covers any transaction pooler, not only PgBouncer.
+  The `SHOW TimeZone` probe and the `DEALLOCATE ALL` step assume the PgBouncer behaviour.
+* A client without the flag leaves named statements on the pooler servers.
+  A connection with the flag can then fail one time with `42P05` while it reads the types.
+  Use the flag in every client of the same pooler, or restart the pooler.
 * List every enum and composite type in the schema.
   The engine looks them up once for each pool connection, then sends `DEALLOCATE ALL`.
   A type that the schema does not list fails with an error that names the lost statement (`sN`).
   The pool then discards that connection.
+  A write that returns such a type can have run before the error: check before you repeat it.
+  After a migration that adds a type, restart the app: the type list is read when the pool connects.
+* `options` in the URL can hold only parameters that PgBouncer tracks (it refuses `-c statement_timeout=…` unless `ignore_startup_parameters` lists it).
+  The engine adds `-c TimeZone=UTC` itself.
 * `db.lock(..., session=True)` and a no-transaction migration need a session lock, so both fail with an error before any SQL.
   Transaction locks, `set_config(..., true)` and `SET LOCAL` still work.
 * A raw `SET` in your own SQL is not detected, and it is not safe behind a pooler.
@@ -1622,9 +1633,11 @@ async with db.lock("shop:7:sync", session=True, timeout=5):  # no transaction ne
   (HTTP) without an open transaction. The lock has a connection of its own, opened from the
   same URL with the pool's TLS and connect settings and closed on release. It is not
   taken from the pool, so a lock that waits never holds a pool slot. Each lock costs one
-  connect (estimated 1–5 ms) and counts against the server's `max_connections`. Behind
-  a transaction pooler, a session lock is unsafe: with the statement cache on (PgBouncer 1.24 or later, no flag) it can hang
-  later migrators, and with `pgbouncer=true` in the URL it raises an error before any SQL. It waits at most `timeout` seconds (forever when `None` or `inf`, not at all with
+  connect (estimated 1–5 ms) and counts against the server's `max_connections`.
+  Behind a transaction pooler, a session lock is unsafe.
+  With the statement cache on (PgBouncer 1.24 or later, no flag) it can hang later migrators.
+  With `pgbouncer=true` in the URL it raises an error before any SQL.
+  It waits at most `timeout` seconds (forever when `None` or `inf`, not at all with
   `nowait=True`; at most 2147483.647, the Postgres limit) and raises
   `monorm.LockNotAvailable` when another session still holds the lock. `timeout` without
   `session=True` raises `TypeError`. The lock is released when the block ends, also on
