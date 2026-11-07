@@ -190,8 +190,50 @@ jobs:
       - uses: actions/checkout@v4
       - run: python3 scripts/check-test-twins.py
 
+  pgbouncer:
+    needs: affected
+    if: contains(fromJSON(needs.affected.outputs.groups), 'pgbouncer')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: orm_test
+        ports: ['5432:5432']
+        options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      ORM_RUST_TEST_POSTGRES_URL: postgres://postgres:postgres@localhost/orm_test_rs
+      MONORM_PGBOUNCER_URL: postgres://postgres@127.0.0.1:6432/orm_test_rs
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker exec ${{ job.services.postgres.id }} createdb -U postgres orm_test_rs
+      # PgBouncer 1.26.1 in transaction mode (scripts/ci/pgbouncer/pgbouncer.ini) in front of the service.
+      - name: Start PgBouncer
+        run: |
+          docker run -d --name pgbouncer --network host \
+            -v "$PWD/scripts/ci/pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro" \
+            -v "$PWD/scripts/ci/pgbouncer/userlist.txt:/etc/pgbouncer/userlist.txt:ro" \
+            --entrypoint /usr/bin/pgbouncer edoburu/pgbouncer:v1.26.1-p0 /etc/pgbouncer/pgbouncer.ini
+          for _ in $(seq 20); do
+            pg_isready -h 127.0.0.1 -p 6432 && exit 0
+            sleep 1
+          done
+          docker logs pgbouncer
+          exit 1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # The tests behind_pooler_* skip without MONORM_PGBOUNCER_URL.
+      - run: cargo test -q -p monorm-engine --lib behind_pooler -- --test-threads=1
+      - name: The two pooler tests exist
+        run: |
+          test "$(cargo test -q -p monorm-engine --lib behind_pooler -- --list | grep -c ': test')" = 2
+
   checks-ok:
-    needs: [affected, rust, python, node, release-scripts, docs, test-twins]
+    needs: [affected, rust, python, node, release-scripts, docs, test-twins, pgbouncer]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5

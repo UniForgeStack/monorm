@@ -32,6 +32,7 @@ BASE_GROUPS = {
     "names",
     "docs",
     "test-twins",
+    "pgbouncer",
 }
 
 EVERY = set(BASE_GROUPS)  # a rule that selects every group

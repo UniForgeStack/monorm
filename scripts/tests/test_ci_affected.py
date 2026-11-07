@@ -110,6 +110,12 @@ class PlanTest(unittest.TestCase):
         for path in ["crates/engine/src/a.rs", "crates/contracts/src/a.rs", "Cargo.lock", "Cargo.toml", "pyproject.toml"]:
             self.assertGreaterEqual(plan(path), affected.BASE_GROUPS, path)
 
+    def test_pgbouncer_job_runs_for_the_engine_and_its_config_only(self) -> None:
+        for path in ["crates/engine/src/db/postgres.rs", "crates/core/src/schema.rs", "scripts/ci/pgbouncer/pgbouncer.ini"]:
+            self.assertIn("pgbouncer", plan(path), path)
+        for path in ["README.md", "languages/python/monorm/client.py", "languages/js/src/client.ts", "crates/cli/src/main.rs"]:
+            self.assertNotIn("pgbouncer", plan(path), path)
+
     def test_unknown_path_selects_every_group(self) -> None:
         groups, reason = affected.plan(["mystery/file.txt", "README.md"])
         self.assertGreaterEqual(groups, affected.BASE_GROUPS)

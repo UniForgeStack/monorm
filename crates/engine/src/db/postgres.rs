@@ -730,11 +730,11 @@ async fn warm_up(client: &tokio_postgres::Client, types: &[String]) -> Result<()
         client.batch_execute("DEALLOCATE ALL").await
     }
     .await;
-    // On the error path the same server still gets `DEALLOCATE ALL` and the `ROLLBACK`.
+    // One message, so the pooler keeps one server: the aborted transaction ends first, then `DEALLOCATE ALL` can run.
     match result {
         Ok(()) => client.batch_execute("COMMIT").await,
         Err(e) => {
-            let _ = client.batch_execute("DEALLOCATE ALL; ROLLBACK").await;
+            let _ = client.batch_execute("ROLLBACK; DEALLOCATE ALL").await;
             Err(e)
         }
     }
@@ -798,7 +798,7 @@ impl PgDriver {
             if zone != "UTC" {
                 return Err(DbError::other(format!(
                     "the connection through the pooler has TimeZone {zone:?}, not \"UTC\": the pooler dropped the startup parameter; \
-                     add `options` to ignore_startup_parameters in its configuration (PgBouncer 1.20 or later) or set the server time zone to UTC"
+                     remove `options` from ignore_startup_parameters in its configuration (PgBouncer 1.20 or later) or set the server time zone to UTC"
                 )));
             }
         }
@@ -1528,6 +1528,83 @@ mod failure_tests {
         });
     }
 
+    /// The URL of a PgBouncer in transaction mode (CI sets it); the tests below skip without it.
+    fn pooler_url() -> Option<String> {
+        std::env::var("MONORM_PGBOUNCER_URL").ok()
+    }
+
+    /// Statements that differ in text, so the client keeps preparing new ones.
+    fn workload(i: i64) -> (String, Vec<Value>) {
+        (format!("SELECT $1::int8 + {i} AS n"), vec![bigint(i)])
+    }
+
+    #[test]
+    fn behind_pooler_the_flag_survives_server_switches() {
+        let Some(url) = pooler_url() else { return };
+        runtime().block_on(async {
+            let direct = driver().await;
+            direct
+                .batch(
+                    "DROP TABLE IF EXISTS monorm_pool_t; DROP TYPE IF EXISTS monorm_pool_role; \
+                     CREATE TYPE monorm_pool_role AS ENUM ('a', 'b'); \
+                     CREATE TABLE monorm_pool_t (id int8 PRIMARY KEY, role monorm_pool_role NOT NULL)"
+                        .into(),
+                )
+                .await
+                .unwrap();
+            // Two clients at the same time: the only way to see a name that another client holds (`42P05`).
+            let work = |client: i64| {
+                let url = flagged(&url);
+                async move {
+                    let db = PgDriver::connect_with_types(&url, 2, vec!["\"monorm_pool_role\"".into()]).await.unwrap();
+                    let zone = db.query_text("SHOW TimeZone".into()).await.unwrap();
+                    assert_eq!(zone[0][0].as_deref(), Some("UTC"));
+                    for i in 0..100 {
+                        let id = client * 1000 + i;
+                        let (sql, args) = workload(i);
+                        assert_eq!(db.query(sql, args).await.unwrap().len(), 1);
+                        let insert = "INSERT INTO monorm_pool_t (id, role) VALUES ($1, CAST($2 AS monorm_pool_role))";
+                        assert_eq!(db.execute(insert.into(), vec![bigint(id), "a".into()]).await.unwrap(), 1);
+                        let copied = db.copy_in("monorm_pool_t".into(), vec!["id".into(), "role".into()], vec![vec![bigint(id + 500), "b".into()]]).await;
+                        assert_eq!(copied.unwrap(), 1);
+                        let tx = db.begin().await.unwrap();
+                        tx.query("SELECT role FROM monorm_pool_t WHERE id = $1".into(), vec![bigint(id)]).await.unwrap();
+                        tx.commit().await.unwrap();
+                    }
+                    let e = db.session_lock(1, true, false, None).await.err().expect("refused");
+                    assert!(e.message.contains("pgbouncer=true"), "{}", e.message);
+                    db.close().await;
+                }
+            };
+            tokio::join!(work(1), work(2));
+            let count = direct.query_text("SELECT count(*) FROM monorm_pool_t".into()).await.unwrap();
+            assert_eq!(count[0][0].as_deref(), Some("400"));
+            direct.batch("DROP TABLE monorm_pool_t; DROP TYPE monorm_pool_role".into()).await.unwrap();
+        });
+    }
+
+    #[test]
+    fn behind_pooler_without_the_flag_a_statement_name_is_lost() {
+        let Some(url) = pooler_url() else { return };
+        runtime().block_on(async {
+            let db = PgDriver::connect(&url, 4).await.unwrap();
+            let mut lost = None;
+            for round in 0..20 {
+                for i in 0..20 {
+                    let (sql, args) = workload(i);
+                    if let Err(e) = db.query(sql, args).await {
+                        lost = Some((round, e));
+                    }
+                }
+                if lost.is_some() {
+                    break;
+                }
+            }
+            let (_, e) = lost.expect("the cache must lose a statement name when the pooler switches servers");
+            assert!(matches!(e.sqlstate.as_deref(), Some("26000" | "42P05")), "{e:?}");
+        });
+    }
+
     #[test]
     fn a_lost_statement_name_becomes_a_clear_error_and_retires_the_connection() {
         runtime().block_on(async {
@@ -1573,6 +1650,12 @@ mod failure_tests {
             let n = |sql: &str, args: Vec<Value>| db.query(sql.to_owned(), args);
 
             n("SELECT $1::int8 AS n", vec![bigint(1)]).await.unwrap();
+            none().await;
+            // The same text again and again is what `.prepare()` does in a binding.
+            for i in 0..3 {
+                n("SELECT $1::int8 AS n", vec![bigint(i)]).await.unwrap();
+                db.execute("UPDATE monorm_pgb SET name = $1 WHERE id = $2".into(), vec!["q".into(), bigint(i)]).await.unwrap();
+            }
             none().await;
             let insert = "INSERT INTO monorm_pgb (id, role, name) VALUES ($1, CAST($2 AS monorm_pgb_role), $3)";
             assert_eq!(db.execute(insert.into(), vec![bigint(1), "a".into(), "x".into()]).await.unwrap(), 1);
