@@ -204,20 +204,7 @@ pub fn lower_specs(ir: &mut SchemaIr, specs: &[ProxyModel]) -> Result<(), String
         if let Some(p) = &partition {
             if p.values.len() == 1 { omitted.remove(&p.field); }
         }
-        for f in source.fields.iter().filter(|f| omitted.contains(&f.name)) {
-            if f.primary_key { return Err(format!("{}.{}: the primary key cannot be omitted", spec.model, f.name)); }
-            if stored(f).is_some_and(|p| !p.nullable && p.default.is_none() && !p.default_now && p.default_sql.is_none() && !p.auto_increment) {
-                return Err(format!("{}.{}: a NOT NULL field without a database default cannot be omitted, because an insert through the proxy would fail", spec.model, f.name));
-            }
-        }
-        if let Some((r, key)) = source.relations.iter().filter(|r| !omitted.contains(&r.name)).find_map(|r| r.from.iter().find(|f| omitted.contains(*f)).map(|f| (r, f))) {
-            return Err(format!("{}.{key}: relation {} uses it as its key; omit the relation too", spec.model, r.name));
-        }
-        for other in &ir.models {
-            if let Some((r, key)) = other.relations.iter().filter(|r| r.target == spec.model).find_map(|r| r.to.iter().find(|f| omitted.contains(*f)).map(|f| (r, f))) {
-                return Err(format!("{}.{key}: relation {}.{} references it", spec.model, other.name, r.name));
-            }
-        }
+        monorm::hide::check(&ir.models, &spec.model, source, physical, &omitted, monorm::hide::Hide::Omitted)?;
         model.fields.retain(|f| !omitted.contains(&f.name));
         model.relations.retain(|r| !omitted.contains(&r.name));
         let mut prepared = ProxyModel { model: spec.model.clone(), parent: spec.parent.clone(), storage_owner,
