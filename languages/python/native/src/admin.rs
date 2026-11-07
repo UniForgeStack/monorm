@@ -118,6 +118,18 @@ pub struct AdminSite {
 
 #[pymethods]
 impl AdminSite {
+    /// The permission names of the chosen strategy: the gate first.
+    #[getter]
+    fn permissions(&self) -> Vec<String> {
+        self.site.permission_names()
+    }
+
+    /// The labels that the permission names use: the site label and the label of each resource.
+    #[getter]
+    fn labels(&self) -> Vec<String> {
+        self.site.labels()
+    }
+
     /// The `(status, body)` of one in-memory request. `user_json` is the JSON of the user, or None.
     #[pyo3(signature = (engine, method, path, user_json = None, trace = None))]
     fn request<'py>(

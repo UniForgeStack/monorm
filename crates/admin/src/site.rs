@@ -8,6 +8,8 @@ use monorm_core::ir::{ColType, RelKind, ValueType};
 use monorm_core::schema::Schema;
 use serde::Deserialize;
 
+use crate::permissions::{Op, Strategy};
+
 pub const DEFAULT_PREFIX: &str = "/admin/api";
 pub const DEFAULT_PAGE_SIZE: usize = 25;
 pub const MAX_PAGE_SIZE: usize = 100;
@@ -33,6 +35,10 @@ fn err<T>(message: String) -> Result<T, ConfigError> {
 struct Config {
     /// The path prefix of every route.
     prefix: Option<String>,
+    /// `page` (default), `model` or `access`.
+    permissions: Option<String>,
+    /// The label of the permission names, `admin` by default.
+    label: Option<String>,
     /// The registered resources. None: every concrete model is a read-only resource.
     #[serde(default)]
     resources: Vec<ResourceConfig>,
@@ -44,6 +50,18 @@ struct ResourceConfig {
     model: String,
     #[serde(default)]
     list: ListConfig,
+    /// The operations that the resource offers, for every user: `read`, `create`, `update`, `delete`.
+    allow: Option<Vec<String>>,
+    /// Page levels: `read`, `manage` and, to split delete from manage, `delete`.
+    perms: Option<Vec<String>>,
+    /// Overrides the site label in the names of this resource.
+    label: Option<String>,
+    /// Names of field permissions (`see_cost`): `<label>.<name>`.
+    #[serde(default)]
+    field_permissions: Vec<String>,
+    /// Names of actions: `<label>.<action>_<resource>`.
+    #[serde(default)]
+    actions: Vec<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -83,11 +101,20 @@ pub struct Resource {
     pub page_size: usize,
     /// Positions of the order columns in `columns`: the cursor of a page reads them back.
     pub order_positions: Vec<usize>,
+    /// The lowercase model name in the permission names.
+    pub key: String,
+    pub label: String,
+    pub allow: Vec<Op>,
+    /// `delete` is its own page level, and `manage` does not include it.
+    pub split_delete: bool,
+    pub field_permissions: Vec<String>,
+    pub actions: Vec<String>,
 }
 
 pub struct Site {
     pub schema: Arc<Schema>,
     pub prefix: String,
+    pub strategy: Strategy,
     pub resources: Vec<Resource>,
 }
 
@@ -99,11 +126,17 @@ impl Site {
             serde_json::from_str(config_json).map_err(|e| ConfigError(format!("invalid admin config: {e}")))?
         };
         let prefix = normalize_prefix(config.prefix.as_deref().unwrap_or(DEFAULT_PREFIX))?;
+        let strategy = match config.permissions.as_deref() {
+            None => Strategy::Page,
+            Some(text) => Strategy::parse(text).ok_or_else(|| ConfigError(format!("permissions {text:?} is not \"page\", \"model\" or \"access\"")))?,
+        };
+        let label = config.label.as_deref().unwrap_or("admin");
+        check_name("label", label)?;
         let mut resources = Vec::new();
         if config.resources.is_empty() {
             for (idx, m) in schema.models.iter().enumerate() {
                 if concrete(m) {
-                    resources.push(resource(&schema, idx, &ListConfig::default())?);
+                    resources.push(resource(&schema, idx, &ResourceConfig::of(&schema.model(idx).ir.name), strategy, label)?);
                 }
             }
         } else {
@@ -116,10 +149,10 @@ impl Site {
                 if !seen.insert(idx) {
                     return err(format!("{}: registered twice", r.model));
                 }
-                resources.push(resource(&schema, idx, &r.list)?);
+                resources.push(resource(&schema, idx, r, strategy, label)?);
             }
         }
-        Ok(Site { schema, prefix, resources })
+        Ok(Site { schema, prefix, strategy, resources })
     }
 
     pub fn resource(&self, name: &str) -> Option<&Resource> {
@@ -140,9 +173,71 @@ fn concrete(m: &monorm_core::schema::Model) -> bool {
     !m.ir.table.is_empty() && m.view.is_none()
 }
 
-fn resource(schema: &Schema, idx: usize, list: &ListConfig) -> Result<Resource, ConfigError> {
+impl ResourceConfig {
+    fn of(model: &str) -> ResourceConfig {
+        ResourceConfig { model: model.to_owned(), list: ListConfig::default(), allow: None, perms: None, label: None, field_permissions: Vec::new(), actions: Vec::new() }
+    }
+}
+
+/// A part of a permission name: lowercase letters, digits and `_`, so `.` stays the label separator.
+fn check_name(what: &str, text: &str) -> Result<(), ConfigError> {
+    let ok = !text.is_empty() && text.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+    if ok { Ok(()) } else { err(format!("{what} {text:?} must be lowercase letters, digits and _")) }
+}
+
+/// The permission settings of one resource, checked.
+struct PermissionOptions {
+    label: String,
+    allow: Vec<Op>,
+    split_delete: bool,
+}
+
+fn permission_options(name: &str, config: &ResourceConfig, strategy: Strategy, site_label: &str) -> Result<PermissionOptions, ConfigError> {
+    let label = config.label.clone().unwrap_or_else(|| site_label.to_owned());
+    check_name("label", &label)?;
+    let mut allow = Vec::new();
+    for text in config.allow.clone().unwrap_or_else(|| Op::ALL.iter().map(|o| o.name().to_owned()).collect()) {
+        let Some(op) = Op::parse(&text) else {
+            return err(format!("{name}: allow has {text:?}, not one of read, create, update, delete"));
+        };
+        if !allow.contains(&op) {
+            allow.push(op);
+        }
+    }
+    let mut split_delete = false;
+    if let Some(levels) = &config.perms {
+        if strategy != Strategy::Page {
+            return err(format!("{name}: perms applies to the page strategy only"));
+        }
+        for level in levels {
+            match level.as_str() {
+                "read" | "manage" => {}
+                "delete" => split_delete = true,
+                other => return err(format!("{name}: perms has {other:?}, not one of read, manage, delete")),
+            }
+        }
+        if !levels.iter().any(|l| l == "read") || !levels.iter().any(|l| l == "manage") {
+            return err(format!("{name}: perms must name read and manage"));
+        }
+    }
+    if strategy == Strategy::Access && (!config.field_permissions.is_empty() || !config.actions.is_empty()) {
+        return err(format!("{name}: field and action names need the page or model strategy"));
+    }
+    let mut seen = BTreeSet::new();
+    for n in config.field_permissions.iter().chain(&config.actions) {
+        check_name(&format!("{name}: permission name"), n)?;
+        if !seen.insert(n) {
+            return err(format!("{name}: permission name {n:?} is declared twice"));
+        }
+    }
+    Ok(PermissionOptions { label, allow, split_delete })
+}
+
+fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Strategy, site_label: &str) -> Result<Resource, ConfigError> {
+    let list = &config.list;
     let model = schema.model(idx);
     let name = model.ir.name.clone();
+    let PermissionOptions { label, allow, split_delete } = permission_options(&name, config, strategy, site_label)?;
     let mut columns = match &list.columns {
         Some(names) if names.is_empty() => return err(format!("{name}: list.columns is empty")),
         Some(names) => names.iter().map(|n| column(schema, idx, n)).collect::<Result<Vec<_>, _>>()?,
@@ -182,7 +277,21 @@ fn resource(schema: &Schema, idx: usize, list: &ListConfig) -> Result<Resource, 
     if page_size == 0 || page_size > MAX_PAGE_SIZE {
         return err(format!("{name}: list.page_size is {page_size}, between 1 and {MAX_PAGE_SIZE}"));
     }
-    Ok(Resource { model: idx, name, columns, order, page_size, order_positions })
+    let key = name.to_lowercase();
+    Ok(Resource {
+        model: idx,
+        name,
+        columns,
+        order,
+        page_size,
+        order_positions,
+        key,
+        label,
+        allow,
+        split_delete,
+        field_permissions: config.field_permissions.clone(),
+        actions: config.actions.clone(),
+    })
 }
 
 fn listable(f: &monorm_core::ir::FieldIr) -> bool {

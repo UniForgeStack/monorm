@@ -10,8 +10,8 @@
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { AdminSettingsError, type Admin } from "./admin.js";
-import { connect, getDatabase } from "./db.js";
+import { AdminConfigError, AdminSettingsError, type Admin } from "./admin.js";
+import { connect, getDatabase, type Database } from "./db.js";
 import { NotConnected } from "./errors.js";
 import { native } from "./native.js";
 
@@ -34,7 +34,7 @@ async function load(spec: string, what: string): Promise<unknown> {
   }
 }
 
-async function serve(settingsJson: string, settings: Settings): Promise<number> {
+async function open(settings: Settings): Promise<{ admin: Admin; database: Database }> {
   const admin = (await load(settings.app, "admin.app")) as Admin;
   if (typeof admin?.serve !== "function") throw new Error(`admin.app \`${settings.app}\` is not a monorm/admin Admin`);
   if (settings.setup !== null) await (await load(settings.setup, "admin.setup") as () => unknown)();
@@ -47,6 +47,31 @@ async function serve(settingsJson: string, settings: Settings): Promise<number> 
     if (!url) throw new Error("no database: the setup hook did not connect, and MONORM_DATABASE_URL is not set");
     database = await connect(url);
   }
+  return { admin, database };
+}
+
+async function sync(settings: Settings): Promise<number> {
+  const { admin, database } = await open(settings);
+  try {
+    let synced, seeded;
+    try {
+      synced = await admin.syncPermissions(database);
+      seeded = await admin.seedRoles(database);
+    } catch (e) {
+      if (e instanceof AdminConfigError) throw new AdminSettingsError(e.message);
+      throw e;
+    }
+    process.stdout.write(`permissions: ${synced.created} created, ${synced.stale.length} stale\n`);
+    for (const name of synced.stale) process.stdout.write(`stale: ${name}\n`);
+    process.stdout.write(`roles: ${seeded.rolesCreated.length} created, ${seeded.grants} grants added\n`);
+  } finally {
+    await database.close();
+  }
+  return 0;
+}
+
+async function serve(settingsJson: string, settings: Settings): Promise<number> {
+  const { admin, database } = await open(settings);
   try {
     const server = await admin.serve(database, settingsJson, process.env.MONORM_ADMIN_SECRET ?? null);
     const stop = () => void server.stop().catch(() => undefined);
@@ -59,8 +84,8 @@ async function serve(settingsJson: string, settings: Settings): Promise<number> 
   return 0;
 }
 
-/** Gives the exit code: 0 after a clean stop, 2 for wrong settings, 1 for any other failure. */
-export async function run(): Promise<number> {
+/** Gives the exit code: 0 after a clean stop, 2 for wrong settings, 1 for any other failure. `command` is `serve` or `sync-permissions`. */
+export async function run(command: "serve" | "sync-permissions" = "serve"): Promise<number> {
   let settingsJson: string;
   try {
     settingsJson = native().adminSettings(process.cwd());
@@ -69,7 +94,8 @@ export async function run(): Promise<number> {
     return 2;
   }
   try {
-    return await serve(settingsJson, JSON.parse(settingsJson) as Settings);
+    const settings = JSON.parse(settingsJson) as Settings;
+    return command === "sync-permissions" ? await sync(settings) : await serve(settingsJson, settings);
   } catch (e) {
     process.stderr.write(`error: ${e instanceof Error ? e.message : String(e)}\n`);
     return e instanceof AdminSettingsError ? 2 : 1;

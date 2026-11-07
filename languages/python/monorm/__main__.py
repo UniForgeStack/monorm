@@ -41,10 +41,10 @@ def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else list(argv)
     if args[:1] == ["init"]:  # no schema, apps or extensions exist before init
         return _native.cli(args)
-    if args == ["admin"]:  # the server runs here, because the admin module and the setup hook are Python
+    if args in (["admin"], ["admin", "sync-permissions"]):  # the admin module and the setup hook are Python
         from ._admin_cli import run
 
-        return run()
+        return run(args[1] if len(args) > 1 else "serve")
     try:
         apps = resolve_apps(_native.cli_schema(args))
         extensions = resolve_extensions()

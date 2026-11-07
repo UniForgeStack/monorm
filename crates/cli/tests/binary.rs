@@ -677,6 +677,14 @@ fn bare_admin_in_the_binary_says_to_use_python_or_node() {
 }
 
 #[test]
+fn admin_sync_permissions_in_the_binary_says_to_use_python_or_node() {
+    let dir = project("admin-sync", &[("schema.prisma", SCHEMA)]);
+    let out = monorm(&dir, &["admin", "sync-permissions"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(text(&out.stderr).contains("python -m monorm admin"), "{}", text(&out.stderr));
+}
+
+#[test]
 fn admin_init_writes_settings_a_module_and_the_import_for_every_model() {
     let dir = project("admin-init-py", &[("schema.prisma", SCHEMA)]);
     assert_eq!(monorm(&dir, &["admin", "init"]).status.code(), Some(2), "the binary needs --lang");

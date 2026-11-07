@@ -70,6 +70,18 @@ pub struct AdminResponse {
 
 #[napi]
 impl AdminSite {
+    /// The permission names of the chosen strategy: the gate first.
+    #[napi(getter)]
+    pub fn permissions(&self) -> Vec<String> {
+        self.site.permission_names()
+    }
+
+    /// The labels that the permission names use: the site label and the label of each resource.
+    #[napi(getter)]
+    pub fn labels(&self) -> Vec<String> {
+        self.site.labels()
+    }
+
     /// One in-memory request. `user_json` is the JSON of the user, or null.
     #[napi]
     pub fn request<'env>(

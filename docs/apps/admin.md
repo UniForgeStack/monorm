@@ -194,13 +194,85 @@ await db.bindRequest(tx, { scope: { user: 1 }, tenant: "acme" }, async () => { /
 
 When a request times out, Python cancels the host task, and Node cannot cancel a Promise: its work runs on and the service discards the result.
 
+## Permissions
+
+A staff user sees and does only what the grants of the user allow.
+Deny is the default.
+An active superuser has every permission, and an inactive user has none.
+The grants come from the auth tables (`Permission`, `Role`, and the join models of `User`).
+The service loads them once per request, in one statement, and none for a superuser.
+A grant change shows at the next request.
+A deactivated user or a removed superuser flag shows at the next session renewal: see [Renewal](#renewal-when-a-change-takes-effect).
+
+`Admin(permissions=...)` (Python) and `new Admin(registry, { permissions })` (TypeScript) choose a strategy.
+Every strategy needs `admin.access` first: it opens the site.
+
+| Strategy | Names per resource |
+|---|---|
+| `"page"` (default) | `<label>.read_<resource>` and `<label>.manage_<resource>`. Manage includes read and delete. |
+| `"model"` | `add_`, `change_`, `delete_` and `view_` with the resource name. Read needs view or change. |
+| `"access"` | None. `admin.access` is the only name. |
+
+The label is `admin` by default, for every resource. `label=` on the site or on one resource changes it.
+A pattern such as `orders.*` selects a name only when the label of that resource is `orders`.
+The resource name is the lowercase model name.
+With `perms=["read", "manage", "delete"]` on a resource, `page` adds `<label>.delete_<resource>`, and delete needs it.
+A resource can also list `field_permissions` and `actions`. These add names such as `admin.see_name` and `admin.export_role` in `page` and `model`.
+
+```python
+site = Admin(permissions="model", label="staff")
+site.register(Order, {"allow": ["read", "update"], "actions": ["refund"]})
+```
+
+`allow=` limits a resource for every user, superusers too.
+It takes `read`, `create`, `update` and `delete`.
+
+A request without a grant gets `403` and one audit row (action `permission_denied`).
+The resources and actions that the user cannot use are absent from `GET {prefix}/resources`.
+The columns of a resource that the user can read are all listed: only the names in `field_permissions` follow the grants.
+The audit row says why in `changes`: `{"needs": [...]}` (one of these names is enough) or `{"reason": "allow"}` (`allow=` excludes read).
+
+### `admin.permissions` and `sync-permissions`
+
+`admin.permissions` lists the names of the chosen strategy.
+`monorm admin sync-permissions` (and `npx monorm admin sync-permissions`) passes them to the auth `sync_permissions`, then seeds the roles.
+It prints how many names it created and which names are stale.
+A stale name is in the tables but not in the strategy. The command never deletes it.
+Run it at deploy, after `migrate`.
+The binary `monorm` cannot run it: it needs your admin module.
+
+```text
+permissions: 5 created, 1 stale
+stale: admin.read_old
+roles: 2 created, 4 grants added
+```
+
+### Pattern grants
+
+`roles` maps a role name to patterns over `<label>.<codename>`.
+`*` matches any text, `?` matches one character, and a leading `-` removes the names that it matches.
+`[` and `]` are an error in both languages.
+The command creates a missing role and adds the missing grants.
+A second run changes nothing, and it removes no role and no grant.
+
+```python
+site = Admin(roles={"support": ["admin.*", "-admin.manage_*"], "reader": ["admin.read_role"]})
+```
+
+```ts
+const site = new Admin(registry, { roles: { support: ["admin.*", "-admin.manage_*"], reader: ["admin.read_role"] } });
+```
+
+A pattern that matches no name is an error, and so is a run before the first sync.
+A role that matches `admin.access` through its patterns can open the site; add `admin.access` when it is not in a pattern.
+
 ## Routes and answers
 
 The path prefix is a config value, and the default is `/admin/api`.
 
 | Route | Answer |
 |---|---|
-| `GET {prefix}/resources` | The resources with their columns, order, page size and permissions (`["read"]`). |
+| `GET {prefix}/resources` | The resources that the user may read, with their columns, order and page size, and the permission names that the user holds. |
 | `GET {prefix}/resources/{name}?cursor=&limit=` | One page: `columns`, `rows` and `next`. |
 
 A row is an array that follows `columns`.
@@ -211,7 +283,7 @@ A date and a time are ISO 8601 with an offset.
 | Status | When |
 |---|---|
 | 401 | The request has no user. |
-| 403 | The user is not a superuser (`is_superuser` is not `true`). |
+| 403 | The user lacks a permission (see [Permissions](#permissions)). The request writes an audit row. |
 | 404 | The resource or the path is unknown. |
 | 400 | The cursor or the limit is not valid. |
 

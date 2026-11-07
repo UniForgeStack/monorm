@@ -123,3 +123,48 @@ def test_two_processes_run_side_by_side_on_one_database(tmp_path, monkeypatch):
         first.send_signal(signal.SIGTERM)
         second.send_signal(signal.SIGTERM)
     assert run_to_end(first)[0] == 0 and run_to_end(second)[0] == 0
+
+
+AUTH_SCHEMA = 'datasource db {\n  provider = "sqlite"\n}\nimport "app:monorm-auth" (prefix: "auth_")\nimport "app:monorm-admin" (prefix: "admin_")\n'
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+
+def sync_permissions(tmp_path, url):
+    environ = {**os.environ, "MONORM_DATABASE_URL": url, "PYTHONPATH": ROOT}
+    proc = subprocess.run([sys.executable, "-m", "monorm", "admin", "sync-permissions"], cwd=tmp_path, env=environ, capture_output=True, text=True, timeout=120)
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def test_monorm_admin_sync_permissions_creates_the_names_and_a_second_run_creates_none(tmp_path, monkeypatch):
+    (tmp_path / "schema.prisma").write_text(AUTH_SCHEMA)
+    monkeypatch.chdir(tmp_path)
+    for command in (["admin", "init"], ["generate"], ["makemigrations"]):
+        assert cli(command) == 0
+    url = f"sqlite://{tmp_path}/admin.db"
+    assert cli(["migrate", "--url", url]) == 0
+    code, out, err = sync_permissions(tmp_path, url)
+    assert code == 0, err
+    assert "permissions: 19 created, 0 stale" in out
+    code, out, err = sync_permissions(tmp_path, url)
+    assert code == 0 and "permissions: 0 created, 0 stale" in out, err
+
+
+def test_monorm_admin_sync_permissions_names_a_schema_without_auth_models(tmp_path, monkeypatch):
+    url = project(tmp_path, monkeypatch)
+    code, out, err = sync_permissions(tmp_path, url)
+    assert code == 2 and "no auth model Permission" in err, err
+
+
+def test_monorm_admin_sync_permissions_seeds_the_roles_of_the_admin_and_a_second_run_adds_none(tmp_path, monkeypatch):
+    (tmp_path / "schema.prisma").write_text(AUTH_SCHEMA)
+    monkeypatch.chdir(tmp_path)
+    for command in (["admin", "init"], ["generate"], ["makemigrations"]):
+        assert cli(command) == 0
+    url = f"sqlite://{tmp_path}/admin.db"
+    assert cli(["migrate", "--url", url]) == 0
+    module = (tmp_path / "admin.py").read_text()
+    (tmp_path / "admin.py").write_text(module.replace("admin = Admin()", 'admin = Admin(roles={"reader": ["admin.access", "admin.read_*"]})'))
+    code, out, err = sync_permissions(tmp_path, url)
+    assert code == 0 and "roles: 1 created, 10 grants added" in out, (out, err)
+    code, out, err = sync_permissions(tmp_path, url)
+    assert code == 0 and "roles: 0 created, 0 grants added" in out, (out, err)

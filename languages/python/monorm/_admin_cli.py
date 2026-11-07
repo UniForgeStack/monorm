@@ -35,8 +35,8 @@ class _SettingsError(Exception):
     """A wrong setting or a missing secret: exit code 2."""
 
 
-async def _serve(config: dict[str, Any]) -> int:
-    from ._admin_host import HOST
+async def _open(config: dict[str, Any]) -> tuple[Any, Any]:
+    """Imports the admin, runs the setup hook and gives the admin with its connected database."""
     from .admin import Admin
     from .db import connect, get_database
     from .errors import NotConnected
@@ -57,6 +57,32 @@ async def _serve(config: dict[str, Any]) -> int:
                 "no database: the setup hook did not connect, and MONORM_DATABASE_URL is not set"
             ) from None
         db = await connect(url)
+    return admin, db
+
+
+async def _sync(config: dict[str, Any]) -> int:
+    from .admin import AdminConfigError
+
+    admin, db = await _open(config)
+    try:
+        try:
+            synced = await admin.sync_permissions(db)
+            seeded = await admin.seed_roles(db)
+        except AdminConfigError as e:
+            raise _SettingsError(str(e)) from None
+    finally:
+        await db.close()
+    print(f"permissions: {synced.created} created, {len(synced.stale)} stale")
+    for name in synced.stale:
+        print(f"stale: {name}")
+    print(f"roles: {len(seeded.roles_created)} created, {seeded.grants} grants added")
+    return 0
+
+
+async def _serve(config: dict[str, Any]) -> int:
+    from ._admin_host import HOST
+
+    admin, db = await _open(config)
     try:
         site = admin._site(db._registry)
         try:
@@ -77,8 +103,11 @@ async def _serve(config: dict[str, Any]) -> int:
     return 0
 
 
-def run() -> int:
-    """Gives the exit code: 0 after a clean stop, 2 for wrong settings, 1 for any other failure."""
+def run(command: str = "serve") -> int:
+    """Gives the exit code: 0 after a clean stop, 2 for wrong settings, 1 for any other failure.
+
+    ``command`` is ``serve`` (bare ``monorm admin``) or ``sync-permissions``.
+    """
     try:
         config = json.loads(_native.admin_settings(os.getcwd()))
     except ValueError as e:
@@ -87,7 +116,7 @@ def run() -> int:
     if os.getcwd() not in sys.path:
         sys.path.insert(0, os.getcwd())
     try:
-        return asyncio.run(_serve(config))
+        return asyncio.run(_sync(config) if command == "sync-permissions" else _serve(config))
     except _SettingsError as e:
         print(f"error: {e}", file=sys.stderr)
         return 2

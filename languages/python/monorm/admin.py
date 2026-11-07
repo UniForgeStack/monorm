@@ -21,7 +21,9 @@ from json import dumps as _dumps
 from typing import TYPE_CHECKING, Any, Literal, Mapping, Sequence, TypedDict
 
 from . import _native
+from . import _admin_permissions
 from ._admin_host import HOST as _HOST
+from ._admin_permissions import RoleSeedReport, SyncReport
 from .expr import ColumnRef, Ordering
 from .model import Model, registry as default_registry
 
@@ -29,7 +31,7 @@ if TYPE_CHECKING:
     from .db import Database
     from .model import Registry
 
-__all__ = ["Admin", "AdminConfigError", "AdminResponse", "AdminTestClient", "ListConfig", "ResourceConfig", "check", "register", "test_client"]
+__all__ = ["Admin", "AdminConfigError", "AdminResponse", "AdminTestClient", "ListConfig", "ResourceConfig", "RoleSeedReport", "SyncReport", "check", "register", "test_client"]
 
 DEFAULT_PREFIX = "/admin/api"
 
@@ -46,9 +48,21 @@ class ListConfig(TypedDict, total=False):
 
 class ResourceConfig(TypedDict, total=False):
     list: ListConfig
+    allow: Sequence[Literal["read", "create", "update", "delete"]]
+    """The operations that the resource allows for every user, superusers too."""
+    perms: Sequence[Literal["read", "manage", "delete"]]
+    """The ``page`` strategy only: add ``"delete"`` to split the delete permission from ``manage``."""
+    label: str
+    """The label of the permission names of this resource, instead of the site label."""
+    field_permissions: Sequence[str]
+    """Names such as ``"see_credential"`` that become ``<label>.<name>``."""
+    actions: Sequence[str]
+    """Names such as ``"refund"`` that become ``<label>.<action>_<resource>``."""
 
 
 _LIST_KEYS = {"columns", "order", "page_size"}
+_RESOURCE_KEYS = {"list", "allow", "perms", "label", "field_permissions", "actions"}
+Strategy = Literal["page", "model", "access"]
 
 
 def _label(model: type[Model], ref: ColumnRef[Any]) -> str:
@@ -106,7 +120,8 @@ class AdminTestClient:
     Two modes:
 
     - ``user=`` is a plain value that the client trusts, with no login. Its shape is a JSON object:
-      ``{"is_superuser": True}`` reads every resource, no user is a 401 and any other user is a 403.
+      ``{"is_superuser": True}`` reads every resource (``allow=`` still limits it), no user is a 401, and any other user
+      gets what its grants allow: a user with no grant is a 403, and a ``{"key": ...}`` user has its grants loaded.
     - ``secret=`` runs the served router with login: the guard, the signed cookie, CSRF, the Origin check,
       the rate limit and the security headers. The client keeps a cookie jar. ``login`` signs in; a write
       sends the CSRF token of the jar and the Origin of ``http://localhost`` unless ``csrf=`` or ``origin=``
@@ -198,11 +213,31 @@ class AdminTestClient:
 
 
 class Admin:
-    """The resources of one registry."""
+    """The resources of one registry.
 
-    def __init__(self, registry: Registry = default_registry, prefix: str = DEFAULT_PREFIX) -> None:
+    ``permissions`` is the strategy: ``"page"`` (``<label>.read_<resource>`` and ``<label>.manage_<resource>``, the default),
+    ``"model"`` (``add_``, ``change_``, ``delete_`` and ``view_``) or ``"access"`` (only ``admin.access``).
+    ``label`` is the label of the names (``admin`` by default). ``roles`` maps a role name to pattern grants
+    (``{"support": ["orders.*", "-shops.see_credential"]}``) that ``seed_roles`` writes to the auth tables.
+    """
+
+    def __init__(
+        self,
+        registry: Registry = default_registry,
+        prefix: str = DEFAULT_PREFIX,
+        *,
+        permissions: Strategy = "page",
+        label: str = "admin",
+        roles: Mapping[str, Sequence[str]] | None = None,
+    ) -> None:
         self._registry = registry
         self.prefix = prefix
+        self._strategy = permissions
+        self._label = label
+        self._roles = {name: list(patterns) for name, patterns in (roles or {}).items()}
+        for name, patterns in self._roles.items():
+            if isinstance(patterns, str) or not all(isinstance(p, str) for p in patterns):
+                raise AdminConfigError(f"roles[{name!r}] must be a list of patterns")
         self._resources: dict[str, tuple[type[Model], ResourceConfig]] = {}
 
     def register(self, model: type[Model], config: ResourceConfig | None = None) -> None:
@@ -210,7 +245,7 @@ class Admin:
         if model.__name__ in self._resources:
             raise AdminConfigError(f"{model.__name__} is already registered")
         config = config or {}
-        if unknown := sorted(set(config) - {"list"}):
+        if unknown := sorted(set(config) - _RESOURCE_KEYS):
             raise AdminConfigError(f"{model.__name__}: unknown option {unknown[0]!r}")
         self._resources[model.__name__] = (model, config)
 
@@ -220,8 +255,13 @@ class Admin:
             resource: dict[str, Any] = {"model": name}
             if "list" in config:
                 resource["list"] = _list(model, config["list"])
+            raw: dict[str, Any] = dict(config)
+            for key in ("allow", "perms", "label", "field_permissions", "actions"):
+                if key in raw:
+                    value = raw[key]
+                    resource[key] = value if isinstance(value, str) else list(value)
             resources.append(resource)
-        return json.dumps({"prefix": self.prefix, "resources": resources})
+        return json.dumps({"prefix": self.prefix, "permissions": self._strategy, "label": self._label, "resources": resources})
 
     def _site(self, registry: Registry) -> _native.AdminSite:
         schema = registry._native if registry._native is not None else registry.prepare()
@@ -233,6 +273,36 @@ class Admin:
     def check(self) -> None:
         """Raises :class:`AdminConfigError` when the config does not fit the schema. Needs no database."""
         self._site(self._registry)
+
+    @property
+    def permissions(self) -> list[str]:
+        """The permission names of the chosen strategy, ``admin.access`` first. They need a prepared registry, not a database."""
+        return list(self._site(self._registry).permissions)
+
+    async def sync_permissions(self, database: Database | None = None) -> SyncReport:
+        """Creates the names of :attr:`permissions` that the auth tables lack and reports the stale ones. It deletes nothing."""
+        from .db import resolve
+
+        db = resolve(database)
+        site = self._site(db._registry)
+        try:
+            return await _admin_permissions.sync(site.permissions, site.labels, db)
+        except ValueError as e:
+            raise AdminConfigError(str(e)) from None
+
+    async def seed_roles(self, database: Database | None = None) -> RoleSeedReport:
+        """Writes the pattern grants of ``roles`` to the auth tables. A second run changes nothing; no role or grant is removed.
+
+        Run :meth:`sync_permissions` first: a pattern grants only names that exist in the tables.
+        """
+        from .db import resolve
+
+        db = resolve(database)
+        site = self._site(db._registry)
+        try:
+            return await _admin_permissions.seed(self._roles, site.permissions, db)
+        except ValueError as e:
+            raise AdminConfigError(str(e)) from None
 
     def test_client(
         self,

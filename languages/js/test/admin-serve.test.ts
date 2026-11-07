@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -19,9 +19,11 @@ function cli(args: string[], cwd: string, url = ""): { code: number; out: string
   return { code: r.status ?? -1, out: r.stdout, err: r.stderr };
 }
 
-function project(migrate = true): { dir: string; url: string } {
+const AUTH_SCHEMA = 'datasource db {\n  provider = "sqlite"\n}\nimport "app:auth" (prefix: "auth_")\nimport "app:admin" (prefix: "admin_")\n';
+
+function project(migrate = true, schema = SCHEMA): { dir: string; url: string } {
   const dir = mkdtempSync(join(tmpdir(), "monorm-admin-serve-"));
-  writeFileSync(join(dir, "schema.prisma"), SCHEMA);
+  writeFileSync(join(dir, "schema.prisma"), schema);
   writeFileSync(join(dir, "package.json"), '{"type":"module"}');
   mkdirSync(join(dir, "node_modules"));
   symlinkSync(PACKAGE, join(dir, "node_modules/monorm"));
@@ -130,4 +132,33 @@ test("two processes run side by side on one database", async () => {
   second.child.kill("SIGTERM");
   assert.equal(await first.ended, 0);
   assert.equal(await second.ended, 0);
+});
+
+test("monorm admin sync permissions creates the names and a second run creates none", () => {
+  const { dir, url } = project(true, AUTH_SCHEMA);
+  const first = cli(["admin", "sync-permissions"], dir, url);
+  assert.equal(first.code, 0, first.err);
+  assert.match(first.out, /permissions: 19 created, 0 stale/);
+  const second = cli(["admin", "sync-permissions"], dir, url);
+  assert.equal(second.code, 0, second.err);
+  assert.match(second.out, /permissions: 0 created, 0 stale/);
+});
+
+test("monorm admin sync permissions names a schema without auth models", () => {
+  const { dir, url } = project();
+  const r = cli(["admin", "sync-permissions"], dir, url);
+  assert.equal(r.code, 2, r.err);
+  assert.match(r.err, /no auth model Permission/);
+});
+
+test("monorm admin sync permissions seeds the roles of the admin and a second run adds none", () => {
+  const { dir, url } = project(true, AUTH_SCHEMA);
+  const file = join(dir, "admin.ts");
+  writeFileSync(file, readFileSync(file, "utf8").replace("new Admin()", 'new Admin(undefined, { roles: { reader: ["admin.access", "admin.read_*"] } })'));
+  const first = cli(["admin", "sync-permissions"], dir, url);
+  assert.equal(first.code, 0, first.err);
+  assert.match(first.out, /roles: 1 created, 10 grants added/);
+  const second = cli(["admin", "sync-permissions"], dir, url);
+  assert.equal(second.code, 0, second.err);
+  assert.match(second.out, /roles: 0 created, 0 grants added/);
 });

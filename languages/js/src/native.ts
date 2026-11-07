@@ -158,6 +158,10 @@ export interface NativeQueryEvent {
 
 /** The resources of one schema and one admin config; it holds no connection. */
 export interface NativeAdminSite {
+  /** The permission names of the strategy, `admin.access` first. */
+  readonly permissions: string[];
+  /** The labels of those names, the gate label first. */
+  readonly labels: string[];
   /** One in-memory request; `userJson` is the JSON of the user, or null. */
   request(engine: NativeEngine, method: string, path: string, userJson: string | null, trace: NativeTrace | null): Promise<{ status: number; body: string }>;
   /**

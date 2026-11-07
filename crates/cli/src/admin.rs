@@ -60,8 +60,10 @@ impl Lang {
 pub fn other(sub: Option<&str>, host: Host) -> Failure {
     match sub {
         None if host == Host::Binary => Failure::Setup(STANDALONE.into()),
-        // The host starts the server before the CLI sees this command.
+        // The host runs these before the CLI sees the command.
         None => Failure::Setup("monorm admin must start from the host entry point".into()),
+        Some("sync-permissions") if host == Host::Binary => Failure::Setup(STANDALONE.into()),
+        Some("sync-permissions") => Failure::Setup("monorm admin sync-permissions must start from the host entry point".into()),
         Some(other) => Failure::Usage(format!("unknown admin command {other}")),
     }
 }

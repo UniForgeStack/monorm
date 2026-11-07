@@ -120,6 +120,10 @@ class Trace:
 
 @final
 class AdminSite:
+    @property
+    def permissions(self) -> list[str]: ...
+    @property
+    def labels(self) -> list[str]: ...
     def request(
         self, engine: Engine, method: str, path: str, user_json: str | None = None, trace: Trace | None = None
     ) -> Awaitable[tuple[int, str]]: ...

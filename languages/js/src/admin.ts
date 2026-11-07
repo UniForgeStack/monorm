@@ -15,6 +15,8 @@
  * With no `register` call every concrete model is a read-only resource.
  */
 import { hostDispatch } from "./admin-host.js";
+import * as grants from "./admin-permissions.js";
+import type { RoleSeedReport, SyncReport } from "./admin-permissions.js";
 import type { Database } from "./db.js";
 import { ORMError } from "./errors.js";
 import { Column, Ordering } from "./expr.js";
@@ -45,7 +47,30 @@ export interface ListConfig {
 
 export interface ResourceConfig {
   readonly list?: ListConfig;
+  /** The operations that the resource allows for every user, superusers too. */
+  readonly allow?: readonly ("read" | "create" | "update" | "delete")[];
+  /** The `page` strategy only: add `"delete"` to split the delete permission from `manage`. */
+  readonly perms?: readonly ("read" | "manage" | "delete")[];
+  /** The label of the permission names of this resource, instead of the site label. */
+  readonly label?: string;
+  /** Names such as `"see_credential"` that become `<label>.<name>`. */
+  readonly fieldPermissions?: readonly string[];
+  /** Names such as `"refund"` that become `<label>.<action>_<resource>`. */
+  readonly actions?: readonly string[];
 }
+
+/** `page`: `<label>.read_<resource>` and `<label>.manage_<resource>` (the default); `model`: `add_`, `change_`, `delete_`, `view_`; `access`: only `admin.access`. */
+export type PermissionStrategy = "page" | "model" | "access";
+
+export interface AdminOptions {
+  readonly permissions?: PermissionStrategy;
+  /** The label of the permission names (`admin` by default). */
+  readonly label?: string;
+  /** Role name to pattern grants (`{ support: ["orders.*", "-shops.see_credential"] }`) that `seedRoles` writes to the auth tables. */
+  readonly roles?: Readonly<Record<string, readonly string[]>>;
+}
+
+export type { RoleSeedReport, SyncReport };
 
 export interface AdminUser {
   readonly is_superuser?: boolean;
@@ -53,6 +78,7 @@ export interface AdminUser {
 }
 
 const LIST_KEYS = new Set(["columns", "order", "pageSize"]);
+const RESOURCE_KEYS = new Set(["list", "allow", "perms", "label", "fieldPermissions", "actions"]);
 
 function label(model: AnyModel, ref: AnyColumn): string {
   if (ref.root.name !== model._meta.name) {
@@ -136,7 +162,8 @@ export interface LoginOptions {
  * Two modes:
  *
  * - `user` is a plain value that the client trusts, with no login. Its shape is a JSON object:
- *   `{ is_superuser: true }` reads every resource, no user is a 401 and any other user is a 403.
+ *   `{ is_superuser: true }` reads every resource (`allow` still limits it), no user is a 401, and any other user
+ *   gets what its grants allow: a user with no grant is a 403, and a `{ key }` user has its grants loaded.
  * - `secret` runs the served router with login: the guard, the signed cookie, CSRF, the Origin check, the rate
  *   limit and the security headers. The client keeps a cookie jar. `login` signs in; a write sends the CSRF token
  *   of the jar and the Origin `http://localhost` unless `csrf` or `origin` says otherwise (`null` leaves the
@@ -222,15 +249,31 @@ export class AdminTestClient {
 export class Admin {
   prefix: string = DEFAULT_PREFIX;
   readonly #resources = new Map<string, { model: AnyModel; config: ResourceConfig }>();
+  readonly #strategy: PermissionStrategy;
+  readonly #label: string;
+  readonly #roles: Record<string, string[]>;
 
-  constructor(private readonly registry: Registry = defaultRegistry) {}
+  constructor(
+    private readonly registry: Registry = defaultRegistry,
+    options: AdminOptions = {},
+  ) {
+    this.#strategy = options.permissions ?? "page";
+    this.#label = options.label ?? "admin";
+    this.#roles = {};
+    for (const [name, patterns] of Object.entries(options.roles ?? {})) {
+      if (typeof patterns === "string" || !Array.isArray(patterns) || !patterns.every((p) => typeof p === "string")) {
+        throw new AdminConfigError(`roles[${JSON.stringify(name)}] must be a list of patterns`);
+      }
+      this.#roles[name] = [...patterns];
+    }
+  }
 
   /** Makes `model` a resource. Once any model is registered, only registered models are resources. */
   register(model: AnyModel, config: ResourceConfig = {}): void {
     const name = model._meta.name;
     if (this.#resources.has(name)) throw new AdminConfigError(`${name} is already registered`);
     for (const key of Object.keys(config)) {
-      if (key !== "list") throw new AdminConfigError(`${name}: unknown option '${key}'`);
+      if (!RESOURCE_KEYS.has(key)) throw new AdminConfigError(`${name}: unknown option '${key}'`);
     }
     this.#resources.set(name, { model, config });
   }
@@ -239,8 +282,13 @@ export class Admin {
     const resources = [...this.#resources].map(([model, { model: cls, config }]) => ({
       model,
       ...(config.list === undefined ? {} : { list: listJson(cls, config.list) }),
+      ...(config.allow === undefined ? {} : { allow: [...config.allow] }),
+      ...(config.perms === undefined ? {} : { perms: [...config.perms] }),
+      ...(config.label === undefined ? {} : { label: config.label }),
+      ...(config.fieldPermissions === undefined ? {} : { field_permissions: [...config.fieldPermissions] }),
+      ...(config.actions === undefined ? {} : { actions: [...config.actions] }),
     }));
-    return JSON.stringify({ prefix: this.prefix, resources });
+    return JSON.stringify({ prefix: this.prefix, permissions: this.#strategy, label: this.#label, resources });
   }
 
   #site(registry: Registry): NativeAdminSite {
@@ -256,6 +304,31 @@ export class Admin {
   /** Throws `AdminConfigError` when the config does not fit the schema. Needs no database. */
   check(): void {
     this.#site(this.registry);
+  }
+
+  /** The permission names of the chosen strategy, `admin.access` first. They need a prepared registry, not a database. */
+  get permissions(): string[] {
+    return [...this.#site(this.registry).permissions];
+  }
+
+  /** Creates the names of `permissions` that the auth tables lack and reports the stale ones. It deletes nothing. */
+  async syncPermissions(database: Database): Promise<SyncReport> {
+    const site = this.#site(database.registry);
+    try {
+      return await grants.sync(site.permissions, site.labels, database, database.registry);
+    } catch (e) {
+      throw new AdminConfigError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  /** Writes the pattern grants of `roles` to the auth tables. A second run changes nothing; no role or grant is removed. Run `syncPermissions` first. */
+  async seedRoles(database: Database): Promise<RoleSeedReport> {
+    const site = this.#site(database.registry);
+    try {
+      return await grants.seed(this.#roles, site.permissions, database, database.registry);
+    } catch (e) {
+      throw new AdminConfigError(e instanceof Error ? e.message : String(e));
+    }
   }
 
   /** `{ user }` is the in-memory path with no login; `{ secret }` runs the served router with login (see `AdminTestClient`). */

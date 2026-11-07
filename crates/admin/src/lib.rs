@@ -13,6 +13,7 @@ pub mod guard;
 pub mod inproc;
 pub mod json;
 pub mod list;
+pub mod permissions;
 pub mod revoke;
 pub mod scope;
 pub mod security;

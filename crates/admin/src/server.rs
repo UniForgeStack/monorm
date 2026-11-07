@@ -14,21 +14,17 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
+use crate::audit::{self, Entry};
 use crate::auth::{self, AuthConfig};
 use crate::list::{self, ListError};
+use crate::permissions::{self, Grants, Op};
 use crate::scope::Scoped;
 use crate::service::ErrorNote;
 use crate::site::{Resource, Site};
 
-/// The user of a request: a JSON object. Only `is_superuser: true` gets in for now.
+/// The user of a request: a JSON object with `key`, `is_superuser` and, when it is false, `is_active`.
 #[derive(Clone, Debug)]
 pub struct User(pub Value);
-
-impl User {
-    fn is_superuser(&self) -> bool {
-        self.0.get("is_superuser").and_then(Value::as_bool) == Some(true)
-    }
-}
 
 struct State_ {
     site: Arc<Site>,
@@ -92,19 +88,37 @@ pub(crate) fn reject(status: StatusCode, kind: &str, message: &str) -> Response 
     (status, Json(json!({"ok": false, "error": {"kind": kind, "message": message}}))).into_response()
 }
 
-/// 401 for no user, 403 for a user who is not a superuser: before any lookup, so a path leaks nothing.
-fn check_user(user: Option<&Extension<User>>) -> Option<Response> {
-    match user {
-        None => Some(reject(StatusCode::UNAUTHORIZED, "Unauthorized", "sign in")),
-        Some(u) if !u.0.is_superuser() => Some(reject(StatusCode::FORBIDDEN, "Forbidden", "superusers only")),
-        Some(_) => None,
-    }
+/// 401 for no user: before any lookup, so a path leaks nothing.
+fn require_user(user: Option<Extension<User>>) -> Result<User, Box<Response>> {
+    user.map(|Extension(u)| u).ok_or_else(|| Box::new(reject(StatusCode::UNAUTHORIZED, "Unauthorized", "sign in")))
 }
 
-fn describe(site: &Site, r: &Resource) -> Value {
+/// 403, and one audit row that commits with the request. `changes` says why: `needs` (the names of
+/// which one is enough) or `reason`. A failed audit write does not change the answer.
+async fn deny(site: &Site, scope: Scoped, user: &User, resource: &str, changes: Value) -> Response {
+    let key = match &user.0["key"] {
+        Value::String(s) => s.clone(),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    };
+    let entry = Entry { user_key: &key, action: "permission_denied", resource, record_key: "", record_label: "", changes: Some(changes) };
+    match audit::record(site, scope.executor(), entry).await {
+        Ok(()) => {
+            let _ = scope.commit().await;
+        }
+        Err(_) => scope.rollback().await,
+    }
+    reject(StatusCode::FORBIDDEN, "Forbidden", "you do not have the permission for this")
+}
+
+fn columns(r: &Resource) -> Vec<Value> {
+    r.columns.iter().map(|c| json!({"label": c.label, "type": c.ty.ty, "nullable": c.nullable, "array": c.ty.array})).collect()
+}
+
+pub(crate) fn describe(site: &Site, r: &Resource) -> Value {
     json!({
         "name": r.name,
-        "columns": r.columns.iter().map(|c| json!({"label": c.label, "type": c.ty.ty, "nullable": c.nullable, "array": c.ty.array})).collect::<Vec<_>>(),
+        "columns": columns(r),
         "order": r.order.iter().map(|o| json!({"column": o.column.label, "desc": o.desc})).collect::<Vec<_>>(),
         "page_size": r.page_size,
         "permissions": ["read"],
@@ -112,12 +126,33 @@ fn describe(site: &Site, r: &Resource) -> Value {
     })
 }
 
-async fn resources(State(s): Shared, user: Option<Extension<User>>) -> Response {
-    if let Some(r) = check_user(user.as_ref()) {
-        return r;
+/// The preamble of every route: the user (401), a scope, the grants of the user, and the site gate (403).
+async fn authorize(s: &State_, user: Option<Extension<User>>) -> Result<(User, Scoped, Grants), Box<Response>> {
+    let user = require_user(user)?;
+    let scope = Scoped::begin(s.conn.as_ref()).await.map_err(|e| Box::new(database_error(&e.message)))?;
+    let grants = match permissions::load(&s.site, scope.executor(), &user.0).await {
+        Ok(g) => g,
+        Err(m) => {
+            scope.rollback().await;
+            return Err(Box::new(database_error(&m)));
+        }
+    };
+    if !s.site.gate(&grants) {
+        return Err(Box::new(deny(&s.site, scope, &user, "", json!({"needs": [permissions::GATE]})).await));
     }
-    let all: Vec<Value> = s.site.resources.iter().map(|r| describe(&s.site, r)).collect();
-    Json(json!({"ok": true, "resources": all})).into_response()
+    Ok((user, scope, grants))
+}
+
+async fn resources(State(s): Shared, user: Option<Extension<User>>) -> Response {
+    let (_, scope, grants) = match authorize(&s, user).await {
+        Ok(t) => t,
+        Err(r) => return *r,
+    };
+    if let Err(e) = scope.commit().await {
+        return database_error(&e.message);
+    }
+    let meta = s.site.metadata(&grants);
+    Json(json!({"ok": true, "resources": meta["resources"], "permissions": meta["permissions"]})).into_response()
 }
 
 #[derive(Deserialize)]
@@ -127,24 +162,27 @@ struct ListQuery {
 }
 
 async fn rows(State(s): Shared, user: Option<Extension<User>>, Path(name): Path<String>, Query(q): Query<ListQuery>) -> Response {
-    if let Some(r) = check_user(user.as_ref()) {
-        return r;
-    }
+    let (user, scope, grants) = match authorize(&s, user).await {
+        Ok(t) => t,
+        Err(r) => return *r,
+    };
     let Some(resource) = s.site.resource(&name) else {
+        scope.rollback().await;
         return reject(StatusCode::NOT_FOUND, "NotFound", &format!("no resource {name:?}"));
     };
-    let scope = match Scoped::begin(s.conn.as_ref()).await {
-        Ok(scope) => scope,
-        Err(e) => return database_error(&e.message),
-    };
+    if !resource.allow.contains(&Op::Read) {
+        return deny(&s.site, scope, &user, &resource.name, json!({"reason": "allow"})).await;
+    }
+    if !s.site.allows(&grants, resource, Op::Read) {
+        return deny(&s.site, scope, &user, &resource.name, json!({"needs": s.site.requires(resource, Op::Read)})).await;
+    }
     let out = list::list(&s.site, resource, scope.executor(), s.target, q.cursor.as_deref(), q.limit).await;
     match out {
         Ok(page) => {
             if let Err(e) = scope.commit().await {
                 return database_error(&e.message);
             }
-            let meta = describe(&s.site, resource);
-            Json(json!({"ok": true, "resource": meta["name"], "columns": meta["columns"], "rows": page.rows, "next": page.next})).into_response()
+            Json(json!({"ok": true, "resource": resource.name, "columns": columns(resource), "rows": page.rows, "next": page.next})).into_response()
         }
         Err(ListError::Bad(m)) => {
             scope.rollback().await;

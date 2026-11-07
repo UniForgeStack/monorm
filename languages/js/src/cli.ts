@@ -23,7 +23,9 @@ export async function main(rawArgv: readonly string[]): Promise<number> {
   if (typeof addon.cli !== "function") throw new Error("CLI unavailable; the native library does not include the command line (rebuild it with the tooling feature)");
   const argv = [...rawArgv];
   if (argv[0] === "init") return addon.cli(argv); // no schema, apps or extensions exist before init
-  if (argv.length === 1 && argv[0] === "admin") return (await import("./admin-cli.js")).run(); // the admin module and the setup hook are TypeScript
+  if (argv[0] === "admin" && (argv.length === 1 || (argv.length === 2 && argv[1] === "sync-permissions"))) {
+    return (await import("./admin-cli.js")).run(argv[1] === "sync-permissions" ? "sync-permissions" : "serve"); // the admin module and the setup hook are TypeScript
+  }
   try {
     const schema = addon.cliSchema(argv);
     for (const [name, file] of Object.entries(resolveApps(schema))) argv.push("--app", `${name}=${file}`);
