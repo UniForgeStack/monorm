@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use monorm_admin::Site;
+use monorm_admin::{Config, Logger, Server, Site};
 use monorm_engine::db::Executor;
 use napi::bindgen_prelude::PromiseRaw;
 use napi::Env;
@@ -45,6 +45,52 @@ impl AdminSite {
             Ok(AdminResponse { status: u32::from(status), body })
         })
     }
+
+    /// Binds the socket and serves this site: `settings_json` is the text that `adminSettings` gave.
+    /// Rejects when an admin table is absent or the socket cannot bind.
+    #[napi]
+    pub fn serve<'env>(&self, env: &'env Env, engine: &Engine, settings_json: String) -> napi::Result<PromiseRaw<'env, AdminServer>> {
+        let config: Config = serde_json::from_str(&settings_json).map_err(|e| napi::Error::from_reason(format!("settings are not JSON: {e}")))?;
+        let driver = engine.driver.clone();
+        let site = self.site.clone();
+        env.spawn_future(async move {
+            let server = monorm_admin::serve(site, driver, config.serve_config(), Logger::stderr()).await.map_err(napi::Error::from_reason)?;
+            Ok(AdminServer { server: Arc::new(server) })
+        })
+    }
+}
+
+/// A running server. `stop` drains it: readiness answers 503, new connections stop, open requests finish.
+#[napi]
+pub struct AdminServer {
+    server: Arc<Server>,
+}
+
+#[napi]
+impl AdminServer {
+    #[napi(getter)]
+    pub fn address(&self) -> String {
+        self.server.addr().to_string()
+    }
+
+    #[napi]
+    pub fn stop<'env>(&self, env: &'env Env) -> napi::Result<PromiseRaw<'env, ()>> {
+        let server = self.server.clone();
+        env.spawn_future(async move { server.stop().await.map_err(napi::Error::from_reason) })
+    }
+
+    #[napi]
+    pub fn wait<'env>(&self, env: &'env Env) -> napi::Result<PromiseRaw<'env, ()>> {
+        let server = self.server.clone();
+        env.spawn_future(async move { server.wait().await.map_err(napi::Error::from_reason) })
+    }
+}
+
+/// The `[admin]` settings of the project in `dir`, as JSON. Throws the text of a wrong setting.
+#[napi]
+pub fn admin_settings(dir: String) -> napi::Result<String> {
+    let config = Config::load(std::path::Path::new(&dir), |name| std::env::var(name).ok()).map_err(napi::Error::from_reason)?;
+    serde_json::to_string(&config).map_err(|e| napi::Error::from_reason(e.to_string()))
 }
 
 /// Plans the resources: throws the precise text of a wrong config.

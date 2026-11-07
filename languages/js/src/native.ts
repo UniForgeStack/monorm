@@ -160,6 +160,15 @@ export interface NativeQueryEvent {
 export interface NativeAdminSite {
   /** One in-memory request; `userJson` is the JSON of the user, or null. */
   request(engine: NativeEngine, method: string, path: string, userJson: string | null, trace: NativeTrace | null): Promise<{ status: number; body: string }>;
+  /** Binds the socket and serves; `settingsJson` is what `adminSettings` gave. Rejects when an admin table is absent or the socket cannot bind. */
+  serve(engine: NativeEngine, settingsJson: string): Promise<NativeAdminServer>;
+}
+
+/** A running admin server. `stop` drains it: readiness answers 503, new connections stop, open requests finish. */
+export interface NativeAdminServer {
+  readonly address: string;
+  stop(): Promise<void>;
+  wait(): Promise<void>;
 }
 
 export interface NativeTrace {
@@ -240,6 +249,8 @@ interface Addon {
   Trace: new () => NativeTrace;
   /** The admin service (feature `admin`): throws the precise text of a wrong config. */
   adminSite(schema: NativeSchema, configJson: string): NativeAdminSite;
+  /** The `[admin]` settings of the project in `dir` as JSON; throws the text of a wrong setting. */
+  adminSettings(dir: string): string;
   connect(url: string, schema: NativeSchema, maxConnections: number, disable: string[]): Promise<NativeEngine>;
   prepareSchema(schemaJson: string, contextJson?: string): string;
   nativeArtifact(): string;

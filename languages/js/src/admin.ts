@@ -19,7 +19,7 @@ import { ORMError } from "./errors.js";
 import { Column, Ordering } from "./expr.js";
 import type { ModelSpec } from "./meta.js";
 import { registry as defaultRegistry, type ModelClass, type Registry } from "./model.js";
-import { call, native, wait, type NativeAdminSite } from "./native.js";
+import { call, native, wait, type NativeAdminServer, type NativeAdminSite } from "./native.js";
 
 export const DEFAULT_PREFIX = "/admin/api";
 
@@ -161,6 +161,11 @@ export class Admin {
 
   testClient(database: Database, options: { readonly user?: AdminUser | null } = {}): AdminTestClient {
     return new AdminTestClient(this.#site(database.registry), database, options.user ?? null);
+  }
+
+  /** @internal What `monorm admin` runs: serves this admin on the socket of `settingsJson`. */
+  serve(database: Database, settingsJson: string): Promise<NativeAdminServer> {
+    return wait(() => this.#site(database.registry).serve(database.engine, settingsJson));
   }
 }
 

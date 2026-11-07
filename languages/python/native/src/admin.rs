@@ -3,9 +3,9 @@
 
 use std::sync::Arc;
 
-use monorm_admin::Site;
+use monorm_admin::{Config, Logger, Server, Site};
 use monorm_engine::db::Executor;
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 
 use crate::{Engine, PySchema, Trace};
@@ -35,6 +35,49 @@ impl AdminSite {
         let site = self.site.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move { Ok(monorm_admin::call(site, conn, &method, &path, user).await) })
     }
+
+    /// Binds the socket and serves this site: `settings_json` is the text that `admin_settings` gave.
+    /// Raises `RuntimeError` when an admin table is absent or the socket cannot bind.
+    fn serve<'py>(&self, py: Python<'py>, engine: &Bound<'py, Engine>, settings_json: String) -> PyResult<Bound<'py, PyAny>> {
+        let config: Config = serde_json::from_str(&settings_json).map_err(|e| PyValueError::new_err(format!("settings are not JSON: {e}")))?;
+        let driver = engine.get().driver.clone();
+        let site = self.site.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let server = monorm_admin::serve(site, driver, config.serve_config(), Logger::stderr()).await.map_err(PyRuntimeError::new_err)?;
+            Ok(AdminServer { server: Arc::new(server) })
+        })
+    }
+}
+
+/// A running server. `stop` drains it: readiness answers 503, new connections stop, open requests finish.
+#[pyclass(frozen, module = "monorm._native")]
+pub struct AdminServer {
+    server: Arc<Server>,
+}
+
+#[pymethods]
+impl AdminServer {
+    #[getter]
+    fn address(&self) -> String {
+        self.server.addr().to_string()
+    }
+
+    fn stop<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let server = self.server.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move { server.stop().await.map_err(PyRuntimeError::new_err) })
+    }
+
+    fn wait<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let server = self.server.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move { server.wait().await.map_err(PyRuntimeError::new_err) })
+    }
+}
+
+/// The `[admin]` settings of the project in `dir`, as JSON. Raises `ValueError` with the text of a wrong setting.
+#[pyfunction]
+fn admin_settings(dir: &str) -> PyResult<String> {
+    let config = Config::load(std::path::Path::new(dir), |name| std::env::var(name).ok()).map_err(PyValueError::new_err)?;
+    serde_json::to_string(&config).map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
 /// Plans the resources: raises `ValueError` with the precise text of a wrong config.
@@ -46,6 +89,8 @@ fn admin_site(schema: &Bound<'_, PySchema>, config_json: &str) -> PyResult<Admin
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(admin_site, m)?)?;
+    m.add_function(wrap_pyfunction!(admin_settings, m)?)?;
     m.add_class::<AdminSite>()?;
+    m.add_class::<AdminServer>()?;
     Ok(())
 }
