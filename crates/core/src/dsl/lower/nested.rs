@@ -185,8 +185,9 @@ pub(super) fn expand(m: &ModelDecl, member: &Member, items: &[Item], ctx: &Ctx<'
             };
             continue;
         }
+        if a.name == "deprecated" { continue; } // checked by `model_fields`
         if a.name != "storage" {
-            return err(a.pos, format!("{what}: a field of a nested type takes @storage(columns | json) and @renamed_from, not @{}", a.name));
+            return err(a.pos, format!("{what}: a field of a nested type takes @storage(columns | json), @renamed_from and @deprecated, not @{}", a.name));
         }
         let mut n = Named::new(format!("{what}: @storage"), &a.args);
         storage = match a.args.positional.as_slice() {

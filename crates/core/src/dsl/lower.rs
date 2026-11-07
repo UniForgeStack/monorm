@@ -1,7 +1,7 @@
 //! Syntax tree -> schema IR.
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use super::expr::{Context, Diagnostic, Span};
 use super::syntax::{err, Args, Attr, EnumDecl, Item, Member, ModelDecl, Path, Pos, Props, Result, TypeRef, Value};
@@ -328,7 +328,7 @@ fn expression(pending: Option<&Pendings>, model: &str, context: Context, what: &
     }
 }
 
-const FIELD_ATTRS: &str = "@id, @unique, @default, @client_default, @map, @db.*, @check, @generated, @comment, @renamed_from";
+const FIELD_ATTRS: &str = "@id, @unique, @default, @client_default, @map, @db.*, @check, @generated, @comment, @renamed_from, @deprecated";
 
 pub struct Lowering<'l> {
     /// Reads an imported file (path as written in the schema).
@@ -417,8 +417,10 @@ impl Lowering<'_> {
         // fields first (relations need every model's primary key)
         let mut lowered: Vec<ModelIr> = vec![];
         let mut all_paths: Vec<Paths> = vec![];
+        let mut all_hidden: Vec<(String, Deprecated)> = vec![];
         for m in &models {
-            let (ir, paths) = model_fields(m, &model_names, &ctx, &items)?;
+            let (ir, paths, hidden) = model_fields(m, &model_names, &ctx, &items)?;
+            if !hidden.fields.is_empty() { all_hidden.push((m.name.clone(), hidden)); }
             lowered.push(ir);
             all_paths.push(paths);
         }
@@ -445,8 +447,64 @@ impl Lowering<'_> {
         ir.models = lowered;
         lower_partitions(&items, &mut ir)?;
         let warnings = resolve_pending(&mut ir, &ctx.pending)?;
+        hide_deprecated(&mut ir, &all_hidden)?;
         Ok((ir, warnings))
     }
+}
+
+/// Takes the `@deprecated` fields out of the logical models. The physical copy keeps them, so the
+/// table, the snapshot and the migrations stay as they are. The copy comes first because the
+/// extension passes capture storage only once, and they must see the fields as they are stored.
+fn hide_deprecated(ir: &mut SchemaIr, hidden: &[(String, Deprecated)]) -> Result<()> {
+    if hidden.is_empty() { return Ok(()); }
+    crate::behavior::capture_storage(ir).map_err(|msg| super::syntax::Error { pos: hidden[0].1.pos, msg })?;
+    // The artifact check reads this number from any schema that carries storage.
+    if ir.behavior.schema_contract == 0 { ir.behavior.schema_contract = crate::behavior::SCHEMA_CONTRACT; }
+    let storage = ir.behavior.storage.take().expect("captured storage");
+    let mut result = Ok(());
+    for (name, Deprecated { fields, pos }) in hidden {
+        let (Some(source), Some(physical)) = (ir.models.iter().find(|m| &m.name == name), storage.models.iter().find(|m| &m.name == name)) else { continue };
+        let checked = monorm::hide::check(&ir.models, name, source, physical, fields, monorm::hide::Hide::Deprecated)
+            .and_then(|()| match &source.partition {
+                Some(key) if key.keys.iter().filter_map(|k| k.field.as_ref()).any(|f| fields.contains(f)) => {
+                    Err(format!("{name}: a partition key field cannot be deprecated"))
+                }
+                _ => Ok(()),
+            });
+        if let Err(msg) = checked {
+            result = err(*pos, msg);
+            break;
+        }
+    }
+    ir.behavior.storage = Some(storage);
+    result?;
+    for (name, Deprecated { fields, .. }) in hidden {
+        let model = ir.models.iter_mut().find(|m| &m.name == name).expect("lowered model");
+        // The where clause is raw SQL: a word match on a field name or column is the only test that core can make.
+        let words: Vec<String> = model.fields.iter().filter(|f| fields.contains(&f.name)).flat_map(|f| [f.name.clone(), f.column.clone()]).collect();
+        let in_sql = |sql: &Option<String>| sql.as_deref().is_some_and(|sql| words.iter().any(|w| names_word(sql, w)));
+        model.fields.retain(|f| !fields.contains(&f.name));
+        // These objects stay on the table. The logical model has no field to point them at, and a
+        // unique over a hidden column is no conflict target for an upsert.
+        let uses = |c: &IndexColumnIr| c.field.as_ref().is_some_and(|f| fields.contains(f));
+        let refers = |names: &[String]| names.iter().any(|f| fields.contains(f));
+        model.indexes.retain(|i| !i.columns.iter().any(uses) && !refers(&i.include) && !in_sql(&i.where_));
+        model.constraints.retain(|c| match c {
+            ConstraintIr::Unique { fields: names, .. } => !refers(names),
+            ConstraintIr::Exclude { elements, where_, .. } => !elements.iter().any(|e| uses(&e.column)) && !in_sql(where_),
+            ConstraintIr::Check { .. } => true,
+        });
+        model.triggers.retain(|t| !refers(&t.update_of));
+    }
+    Ok(())
+}
+
+/// Whether `sql` holds `word` as a whole identifier, bare or quoted.
+fn names_word(sql: &str, word: &str) -> bool {
+    let is_id = |c: char| c.is_alphanumeric() || c == '_';
+    sql.match_indices(word).any(|(i, _)| {
+        !sql[..i].chars().next_back().is_some_and(is_id) && !sql[i + word.len()..].chars().next().is_some_and(is_id)
+    })
 }
 
 /// `enum Name { a b @map("B") ... @@map("db_name") @@storage(text) }`
@@ -593,7 +651,29 @@ fn function(pos: Pos, name: &str, props: &Props) -> Result<FunctionIr> {
     Ok(f)
 }
 
-fn model_fields(m: &ModelDecl, models: &HashMap<&str, &ModelDecl>, ctx: &Ctx<'_>, items: &[Item]) -> Result<(ModelIr, Paths)> {
+/// The fields of a model that `@deprecated` takes out of the logical model, with the position of the first.
+struct Deprecated {
+    fields: BTreeSet<String>,
+    pos: Pos,
+}
+
+/// `@deprecated`: no arguments, no `@client_default` or `@renamed_from` beside it, and a table model.
+fn deprecated(m: &ModelDecl, member: &Member) -> Result<bool> {
+    let Some(a) = member.attrs.iter().find(|a| a.name == "deprecated") else { return Ok(false) };
+    let what = format!("{}.{}", m.name, member.name);
+    if !a.args.positional.is_empty() || !a.args.named.is_empty() {
+        return err(a.pos, format!("{what}: @deprecated takes no arguments"));
+    }
+    if let Some(o) = member.attrs.iter().find(|o| o.name == "client_default" || o.name == "renamed_from") {
+        return err(o.pos, format!("{what}: @deprecated cannot go with @{}: a deprecated field is never written, and its column cannot be renamed", o.name));
+    }
+    if m.is_view {
+        return err(a.pos, format!("{what}: @deprecated goes on a field of a table model, not of a view"));
+    }
+    Ok(true)
+}
+
+fn model_fields(m: &ModelDecl, models: &HashMap<&str, &ModelDecl>, ctx: &Ctx<'_>, items: &[Item]) -> Result<(ModelIr, Paths, Deprecated)> {
     let mut ir = ModelIr {
         partition: None,
         name: m.name.clone(),
@@ -653,6 +733,7 @@ fn model_fields(m: &ModelDecl, models: &HashMap<&str, &ModelDecl>, ctx: &Ctx<'_>
     let mut seen = HashSet::new();
     let mut paths = Paths::new();
     let mut origins: Vec<&Member> = vec![];
+    let mut hidden = Deprecated { fields: BTreeSet::new(), pos: Pos::default() };
     for member in &m.members {
         if !seen.insert(member.name.as_str()) {
             return err(member.pos, format!("{}.{} is declared twice", m.name, member.name));
@@ -663,6 +744,10 @@ fn model_fields(m: &ModelDecl, models: &HashMap<&str, &ModelDecl>, ctx: &Ctx<'_>
         if nested::is_nested(ctx, member) {
             let expansion = nested::expand(m, member, items, ctx)?;
             origins.extend(expansion.fields.iter().map(|_| member));
+            if deprecated(m, member)? {
+                if hidden.fields.is_empty() { hidden.pos = member.pos; }
+                hidden.fields.extend(expansion.fields.iter().map(|f| f.name.clone()));
+            }
             ir.fields.extend(expansion.fields);
             ir.constraints.extend(expansion.checks);
             paths.extend(expansion.paths);
@@ -670,12 +755,16 @@ fn model_fields(m: &ModelDecl, models: &HashMap<&str, &ModelDecl>, ctx: &Ctx<'_>
         }
         ir.fields.push(field(m, member, ctx, Some(&ctx.pending))?);
         origins.push(member);
+        if deprecated(m, member)? {
+            if hidden.fields.is_empty() { hidden.pos = member.pos; }
+            hidden.fields.insert(member.name.clone());
+        }
     }
     check_collisions(&ir, &origins)?;
     for a in m.blocks.iter().filter(|a| a.name == "id") {
         composite_id(&mut ir, a)?;
     }
-    Ok((ir, paths))
+    Ok((ir, paths, hidden))
 }
 
 /// No two fields of a model share a name or a column. `origins` holds the member that made each field.
@@ -1046,6 +1135,7 @@ fn field(m: &ModelDecl, member: &Member, ctx: &Ctx<'_>, pending: Option<&Pending
                 });
             }
             "relation" => return err(a.pos, format!("{what}: @relation goes on a field whose type is a model")),
+            "deprecated" => {} // `model_fields` checks it and removes the field after lowering
             other => return err(a.pos, format!("{what}: unknown attribute @{other}; use {FIELD_ATTRS}")),
         }
     }
@@ -1105,6 +1195,9 @@ fn relation(
     let what = format!("relation {}.{}", m.name, member.name);
     let is_json = |model: &str, field: &str| field_types.get(&(model.to_string(), field.to_string())) == Some(&ColType::Json);
     let json_key_error = |model: &str, field: &str| format!("{what}: {model}.{field} is Json, and a Json field can't be a reference key");
+    if let Some(a) = member.attrs.iter().find(|a| a.name == "deprecated") {
+        return err(a.pos, format!("{what}: @deprecated goes on a scalar, enum or nested field, not on a relation"));
+    }
     if let Some(a) = member.attrs.iter().find(|a| a.name != "relation") {
         return err(a.pos, format!("{what}: relations take only @relation(...)"));
     }

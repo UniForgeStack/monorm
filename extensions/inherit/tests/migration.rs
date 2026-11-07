@@ -402,3 +402,108 @@ fn a_generated_join_model_unique_name_fits_the_identifier_limit() {
     let uniques = generated_join_uniques(&["OrganizationMembership"]);
     assert!(uniques.len() == 1 && uniques[0].len() <= 63 && uniques[0].starts_with("organizationmembership_permissions_"), "{uniques:?}");
 }
+
+/// A deprecated base field leaves the logical models and stays in the storage that core captured first.
+#[test]
+fn a_deprecated_base_field_keeps_the_physical_storage_and_leaves_the_child() {
+    let legacy = json!({"name": "legacy", "column": "legacy", "type": "string", "default": "x"});
+    let build = || -> SchemaIr {
+        let mut base = user(false);
+        base.push(legacy.clone());
+        serde_json::from_value(json!({"dialect": "postgres", "models": [
+            {"name": "User", "table": "user", "fields": base},
+            {"name": "MyUser", "table": "myuser", "fields": [{"name": OWN, "column": OWN, "type": "string", "nullable": true}]}],
+            "behavior": {"declarations": [{"attribute": "inherit.override", "model": "MyUser", "field": null, "arguments": {},
+                "positional": ["User"], "location": {"file": "schema.prisma", "line": 9, "column": 1}}]}})).unwrap()
+    };
+    let mut plain = build();
+    monorm_inherit::expand(&mut plain).unwrap();
+    let mut hidden = build();
+    capture_storage(&mut hidden).unwrap();
+    hidden.behavior.schema_contract = monorm::extension::SCHEMA_CONTRACT;
+    hidden.models[0].fields.retain(|f| f.name != "legacy");
+    monorm_inherit::expand(&mut hidden).unwrap();
+    let physical = |ir: &SchemaIr| monorm_core::schema::Schema::from_ir(serde_json::from_value(json!({"dialect": ir.dialect, "models": ir.behavior.storage.as_ref().unwrap().models})).unwrap()).unwrap();
+    let (plain, hidden_ir) = (physical(&plain), hidden);
+    let after = physical(&hidden_ir);
+    assert!(migrate::plan(&after, &migrate::snapshot(&plain).unwrap()).unwrap().up.is_empty());
+    assert!(migrate::plan(&plain, &migrate::snapshot(&after).unwrap()).unwrap().up.is_empty());
+    assert!(hidden_ir.models.iter().all(|m| m.fields.iter().all(|f| f.name != "legacy")));
+    assert!(after.models.iter().any(|m| m.fields().iter().any(|f| f.name == "legacy")));
+}
+
+/// A real compile: core hides the field (or not), then inherit builds the storage of the child that overrides `User`.
+/// `hide` adds `@deprecated`; the column sits between `id` and `name`, with objects over it.
+fn legacy_storage(dialect: &str, hide: bool, objects: bool) -> monorm_core::schema::Schema {
+    let postgres_only = if objects && dialect == "postgres" {
+        "  @@exclude([legacy(op: \"=\")], where: \"id > 0\")\n  @@trigger(touch, before: [update], update_of: [legacy], body: \"BEGIN RETURN NEW; END;\")\n"
+    } else { "" };
+    let indexes = if objects { "  @@index([legacy, name])\n  @@unique([legacy, name])\n" } else { "" };
+    let mark = if hide { " @deprecated" } else { "" };
+    let source = format!("datasource db {{\n  provider = \"{dialect}\"\n}}\n\
+        model User {{\n  id Int @id @default(autoincrement())\n  legacy String @default(\"x\"){mark}\n  name String\n{indexes}{postgres_only}}}\n\
+        model MyUser {{\n  id Int @id @default(autoincrement())\n  nick String?\n}}\n");
+    let mut ir = monorm_core::dsl::compile(&source, None).unwrap_or_else(|e| panic!("{e}\n{source}"));
+    // Core knows no extension, so the declaration that the artifact would carry goes in by hand.
+    ir.behavior.declarations.push(serde_json::from_value(json!({"attribute": "inherit.override", "model": "MyUser", "field": null, "arguments": {},
+        "positional": ["User"], "location": {"file": "schema.prisma", "line": 9, "column": 1}})).unwrap());
+    monorm_inherit::expand(&mut ir).unwrap();
+    let storage = json!({"dialect": ir.dialect, "models": ir.behavior.storage.as_ref().unwrap().models});
+    monorm_core::schema::Schema::from_ir(serde_json::from_value(storage).unwrap()).unwrap()
+}
+
+/// Adding or removing `@deprecated` on a field of an inherited model changes no physical object:
+/// not the column order, the indexes, the unique constraints, the exclusion nor the trigger.
+#[test]
+fn deprecated_in_an_inherited_model_changes_no_physical_object_and_makes_no_migration() {
+    for dialect in ["postgres", "sqlite"] {
+        let (plain, hidden) = (legacy_storage(dialect, false, true), legacy_storage(dialect, true, true));
+        let from_plain = migrate::snapshot(&plain).unwrap();
+        let from_hidden = migrate::snapshot(&hidden).unwrap();
+        assert_eq!(serde_json::to_value(&from_plain).unwrap(), serde_json::to_value(&from_hidden).unwrap(), "{dialect}: the snapshots differ");
+        let added = migrate::plan(&hidden, &from_plain).unwrap().up;
+        assert!(added.is_empty(), "{dialect}: attribute added: {:?}", sql(&added));
+        let removed = migrate::plan(&plain, &from_hidden).unwrap().up;
+        assert!(removed.is_empty(), "{dialect}: attribute removed: {:?}", sql(&removed));
+        let create = migrate::create_all(&hidden).unwrap().join("\n");
+        assert!(create.contains("legacy_name_idx") && create.contains("legacy_name_key"), "{dialect}: {create}");
+        assert!(dialect == "sqlite" || create.contains("EXCLUDE") && create.contains("touch"), "{create}");
+    }
+}
+
+/// The hidden column keeps its place in a fresh `CREATE TABLE` too.
+#[test]
+fn deprecated_in_an_inherited_model_keeps_the_column_position_on_sqlite() {
+    let created = |hide: bool| {
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        for sql in migrate::create_all(&legacy_storage("sqlite", hide, false)).unwrap() { db.execute_batch(&sql).unwrap(); }
+        columns(&db, "user")
+    };
+    let plain = created(false);
+    assert_ne!(plain.last().map(String::as_str), Some("legacy"), "the column must not be last: {plain:?}");
+    assert_eq!(created(true), plain);
+}
+
+/// The child declares `legacy` itself, and the base has a field with the same column and another type.
+fn clash(hide: bool) -> Result<monorm_core::schema::Schema, String> {
+    let mark = if hide { " @deprecated" } else { "" };
+    let source = format!("model Base {{\n  id Int @id @default(autoincrement())\n  legacy Int?\n}}\n\
+        model Child {{\n  id Int @id @default(autoincrement())\n  legacy String?{mark}\n}}\n");
+    let mut ir = monorm_core::dsl::compile(&source, None).unwrap_or_else(|e| panic!("{e}\n{source}"));
+    for (attribute, model, positional) in [("inherit.abstract", "Base", vec![]), ("inherit.extends", "Child", vec!["Base"])] {
+        ir.behavior.declarations.push(serde_json::from_value(json!({"attribute": attribute, "model": model, "field": null, "arguments": {},
+            "positional": positional, "location": {"file": "schema.prisma", "line": 9, "column": 1}})).unwrap());
+    }
+    monorm_inherit::expand(&mut ir)?;
+    let storage = json!({"dialect": ir.dialect, "models": ir.behavior.storage.as_ref().unwrap().models});
+    Ok(monorm_core::schema::Schema::from_ir(serde_json::from_value(storage).unwrap()).unwrap())
+}
+
+/// `@deprecated` adds no silent change: the child definition of the column wins, as it does without the attribute.
+#[test]
+fn a_deprecated_child_field_that_clashes_with_a_base_column_changes_nothing() {
+    let (plain, hidden) = (clash(false).unwrap(), clash(true).unwrap());
+    let (plain, hidden) = (migrate::create_all(&plain).unwrap().join("\n"), migrate::create_all(&hidden).unwrap().join("\n"));
+    assert!(plain.contains("\"legacy\" varchar"), "{plain}");
+    assert_eq!(plain, hidden);
+}

@@ -413,3 +413,17 @@ fn partition_values_validate_enum_members_and_sqlite() {
     lower_specs(&mut ir, &[partition_spec(json!(["POSITIVE"]))]).unwrap();
     assert_eq!(ir.partitions[0].bound, "FOR VALUES IN ('positive')");
 }
+
+#[test]
+fn a_deprecated_field_is_not_seen_by_the_proxy_and_stays_in_the_storage() {
+    let source = "model User {\n  id Int @id\n  name String?\n  legacy String @default(\"x\") @deprecated\n}\nmodel Active {\n  id Int @id\n}\n";
+    let compile = || monorm_core::dsl::compile(source, None).unwrap();
+    let mut ir = compile();
+    assert!(!has_field(&ir, "User", "legacy"));
+    lower_specs(&mut ir, &[spec("Active", "User")]).unwrap();
+    assert!(!has_field(&ir, "Active", "legacy") && has_field(&ir, "Active", "name"));
+    let storage = ir.behavior.storage.as_ref().unwrap();
+    assert!(storage.models.iter().find(|m| m.name == "User").unwrap().fields.iter().any(|f| f.name == "legacy"));
+    let error = lower_specs(&mut compile(), &[select("Active", "User", ProxySelection::Include(names(&["id", "legacy"])))]).unwrap_err();
+    assert!(error.contains("Active: @@proxy.fields names legacy, which is not a field or relation of User"), "{error}");
+}

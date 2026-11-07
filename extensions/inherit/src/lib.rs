@@ -452,19 +452,55 @@ fn step(
     resolve(ir, child, &waiting, d, generated, touched)
 }
 
+/// Core takes a `@deprecated` field out of the logical model and keeps it, with the objects over it, in the captured storage.
+fn hides_fields(ir: &SchemaIr) -> bool {
+    let Some(storage) = &ir.behavior.storage else { return false };
+    storage.models.iter().any(|s| ir.models.iter().find(|m| m.name == s.name).is_some_and(|m| s.fields.iter().any(|f| !m.fields.iter().any(|l| l.column == f.column))))
+}
+
 fn run(ir: &mut SchemaIr) -> Result<(), String> {
     let p = parse(ir)?;
     if p.abstracts.is_empty() && p.extends.is_empty() && p.overrides.is_empty() { return Ok(()); }
     validate(ir, &p)?;
     capture_storage(ir)?;
-    let sequence = order(&p).map_err(|cycle| {
+    // The storage of a child comes from the same expansion of the captured base storage, so a hidden field keeps its
+    // column position and its indexes, constraints and triggers, and the physical schema does not change.
+    let mut physical: Option<SchemaIr> = None;
+    if hides_fields(ir) {
+        let mut copied: SchemaIr = copy(&*ir)?;
+        copied.models = copy(&ir.behavior.storage.as_ref().expect("captured storage").models)?;
+        copied.behavior.storage = None;
+        capture_storage(&mut copied)?;
+        physical = Some(copied);
+    }
+    let touched = rewrite(ir, &p)?;
+    if let Some(copied) = &mut physical { rewrite(copied, &p)?; }
+    let removed: BTreeSet<String> = p.abstracts.keys().cloned().chain(p.overrides.values().map(|(_, b)| b.clone())).collect();
+    let source = physical.as_ref().unwrap_or(ir);
+    let stored: Vec<ModelIr> = touched.iter().filter(|n| !removed.contains(*n))
+        .map(|name| copy(source.models.iter().find(|m| &m.name == name).ok_or("lost a model")?)).collect::<Result<_, String>>()?;
+    let storage = ir.behavior.storage.as_mut().ok_or("inherit requires captured physical storage")?;
+    storage.models.retain(|m| !removed.contains(&m.name));
+    for model in stored {
+        match storage.models.iter_mut().find(|m| m.name == model.name) {
+            Some(slot) => *slot = model,
+            None => storage.models.push(model),
+        }
+    }
+    for d in ir.behavior.declarations.iter_mut().filter(|d| d.attribute.starts_with("inherit.")) { d.lowered = true; }
+    Ok(())
+}
+
+/// Expands the models of `ir`; returns the names of the models that it changed.
+fn rewrite(ir: &mut SchemaIr, p: &Parsed) -> Result<BTreeSet<String>, String> {
+    let sequence = order(p).map_err(|cycle| {
         let (d, _) = &p.extends[&cycle[0]];
         error(d, format!("extends cycle: {}", cycle.join(" -> ")))
     })?;
     let mut touched: BTreeSet<String> = BTreeSet::new();
     let mut generated = BTreeMap::new();
     let mut started = BTreeSet::new();
-    for child in &sequence { step(ir, &p, child, &mut started, &mut generated, &mut touched)?; }
+    for child in &sequence { step(ir, p, child, &mut started, &mut generated, &mut touched)?; }
     for (child, (d, base)) in &p.overrides {
         if !p.extends.contains_key(child) { merge(ir, child, std::slice::from_ref(base), Some(base.as_str()), d)?; }
         let (bi, ci) = (index(ir, base)?, index(ir, child)?);
@@ -514,17 +550,7 @@ fn run(ir: &mut SchemaIr) -> Result<(), String> {
     let removed: BTreeSet<String> = p.abstracts.keys().cloned().chain(p.overrides.values().map(|(_, b)| b.clone())).collect();
     ir.models.retain(|m| !removed.contains(&m.name));
     ir.behavior.declarations.retain(|d| !removed.contains(&d.model));
-    let storage = ir.behavior.storage.as_mut().ok_or("inherit requires captured physical storage")?;
-    storage.models.retain(|m| !removed.contains(&m.name));
-    for name in touched.iter().filter(|n| !removed.contains(*n)) {
-        let physical: ModelIr = copy(ir.models.iter().find(|m| &m.name == name).ok_or("lost a model")?)?;
-        match storage.models.iter_mut().find(|m| &m.name == name) {
-            Some(slot) => *slot = physical,
-            None => storage.models.push(physical),
-        }
-    }
-    for d in ir.behavior.declarations.iter_mut().filter(|d| d.attribute.starts_with("inherit.")) { d.lowered = true; }
-    Ok(())
+    Ok(touched)
 }
 
 // The package entry point; Rust callers keep the rlib API.

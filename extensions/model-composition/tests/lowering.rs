@@ -90,3 +90,24 @@ fn rejected_candidates_are_unchanged() {
         assert_eq!(serde_json::to_value(ir).unwrap(), before);
     }
 }
+
+/// A deprecated parent field leaves the logical models and stays in the storage that core captured first.
+#[test]
+fn a_deprecated_parent_field_keeps_the_physical_storage_and_leaves_the_children() {
+    let legacy = json!({"name":"legacy","column":"legacy","type":"string","default":"x"});
+    let with_legacy = || {
+        let mut value = definition();
+        value["models"][1]["fields"].as_array_mut().unwrap().push(legacy.clone());
+        serde_json::from_value::<SchemaIr>(value).unwrap()
+    };
+    let mut plain = with_legacy();
+    monorm_composition::lower(&mut plain).unwrap();
+    let mut hidden = with_legacy();
+    monorm::extension::capture_storage(&mut hidden).unwrap();
+    hidden.behavior.schema_contract = monorm::extension::SCHEMA_CONTRACT;
+    hidden.models[1].fields.retain(|f| f.name != "legacy");
+    monorm_composition::lower(&mut hidden).unwrap();
+    assert_eq!(serde_json::to_value(&plain.behavior.storage).unwrap(), serde_json::to_value(&hidden.behavior.storage).unwrap());
+    assert!(plain.models.iter().all(|m| m.name == "Person" || m.fields.iter().any(|f| f.name == "legacy")));
+    assert!(hidden.models.iter().all(|m| m.fields.iter().all(|f| f.name != "legacy")));
+}

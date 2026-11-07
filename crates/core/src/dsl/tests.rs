@@ -1375,3 +1375,124 @@ fn a_model_view_cannot_take_a_sql_view_as_its_root() {
     let error = crate::schema::validate_sql_views(&ir).unwrap_err();
     assert!(error.contains("cannot have the SQL view V as its source or root"), "{error}");
 }
+
+fn deprecated_source(legacy_line: &str, with_objects: bool) -> String {
+    let objects = if with_objects { "  @@index([legacy, title])\n  @@unique([legacy, title])\n" } else { "" };
+    format!("model Item {{\n  id BigInt @id @default(autoincrement())\n  title String\n{legacy_line}{objects}}}\n")
+}
+
+fn deprecated_plan(source: &str, previous: &crate::migrate::DbSchema) -> crate::migrate::MigrationPlan {
+    let (_, schema) = check(ok(source)).unwrap();
+    crate::migrate::plan(&schema, previous).unwrap()
+}
+
+#[test]
+fn deprecated_leaves_the_logical_model_and_stays_in_the_physical_schema() {
+    let source = deprecated_source("  legacy String @default(\"none\") @deprecated\n", true);
+    let (ir, schema) = check(ok(&source)).unwrap();
+    let names = |m: &crate::ir::ModelIr| m.fields.iter().map(|f| f.name.clone()).collect::<Vec<_>>();
+    assert_eq!(names(&ir.models[0]), ["id", "title"]);
+    assert_eq!(names(&schema.physical().models[0].ir), ["id", "title", "legacy"]);
+    assert!(ir.models[0].indexes.is_empty() && ir.models[0].constraints.is_empty(), "objects over the column are physical only");
+    let physical = &schema.physical().models[0].ir;
+    assert_eq!((physical.indexes.len(), physical.constraints.len()), (1, 1));
+    let create = crate::migrate::create_all(&schema).unwrap().join("\n");
+    assert!(create.contains("\"legacy\" varchar DEFAULT 'none' NOT NULL") && create.contains("item_legacy_title_idx"), "{create}");
+}
+
+#[test]
+fn deprecated_attribute_added_or_removed_makes_no_migration_and_the_line_deleted_drops_the_column() {
+    let plain = deprecated_source("  legacy String @default(\"none\")\n", true);
+    let hidden = deprecated_source("  legacy String @default(\"none\") @deprecated\n", true);
+    let gone = deprecated_source("", false);
+    let snapshot = deprecated_plan(&plain, &Default::default()).snapshot;
+    assert!(deprecated_plan(&hidden, &snapshot).up.is_empty(), "attribute added");
+    let hidden_snapshot = deprecated_plan(&hidden, &Default::default()).snapshot;
+    assert_eq!(serde_json::to_value(&hidden_snapshot).unwrap(), serde_json::to_value(&snapshot).unwrap());
+    assert!(deprecated_plan(&plain, &hidden_snapshot).up.is_empty(), "attribute removed");
+    let drop = deprecated_plan(&gone, &hidden_snapshot);
+    let columns: Vec<_> = drop.up.iter().filter(|s| s.sql.contains("DROP COLUMN \"legacy\"")).collect();
+    assert_eq!(columns.len(), 1, "{:?}", drop.up);
+    assert!(!columns[0].destructive.is_empty(), "the drop carries the destructive marker");
+}
+
+fn deprecated_sqlite(legacy_line: &str) -> String {
+    format!("datasource db {{\n  provider = \"sqlite\"\n}}\n{}", deprecated_source(legacy_line, true))
+}
+
+#[test]
+fn deprecated_attribute_makes_no_sqlite_migration() {
+    let plain = deprecated_sqlite("  legacy String @default(\"none\")\n");
+    let hidden = deprecated_sqlite("  legacy String @default(\"none\") @deprecated\n");
+    let snapshot = deprecated_plan(&plain, &Default::default()).snapshot;
+    assert!(deprecated_plan(&hidden, &snapshot).up.is_empty(), "attribute added");
+    let hidden_snapshot = deprecated_plan(&hidden, &Default::default()).snapshot;
+    assert_eq!(serde_json::to_value(&hidden_snapshot).unwrap(), serde_json::to_value(&snapshot).unwrap());
+    assert!(deprecated_plan(&plain, &hidden_snapshot).up.is_empty(), "attribute removed");
+}
+
+#[test]
+fn deprecated_takes_exclusions_triggers_and_partial_objects_with_it() {
+    let source = "model Item {
+  id BigInt @id @default(autoincrement())
+  title String
+  legacy String @default(\"x\") @deprecated
+  @@exclude([legacy(op: \"=\")], where: \"id > 0\")
+  @@trigger(touch, before: [update], update_of: [legacy], body: \"BEGIN RETURN NEW; END;\")
+  @@index([title], where: \"legacy <> 'x'\")
+  @@index([title], name: \"item_other_idx\", where: \"legacy_other IS NULL\")
+  @@index([title], name: \"item_partial_uq\", unique: true, where: \"\\\"legacy\\\" = 'y'\")
+}
+";
+    let (ir, schema) = check(ok(source)).unwrap();
+    let item = &ir.models[0];
+    let kept: Vec<_> = item.indexes.iter().filter_map(|i| i.name.clone()).collect();
+    assert_eq!(kept, ["item_other_idx"], "an index whose WHERE names the column leaves the model; a longer name stays");
+    assert!(item.constraints.is_empty() && item.triggers.is_empty(), "{:?}", item.constraints);
+    let physical = &schema.physical().models[0].ir;
+    assert_eq!((physical.indexes.len(), physical.constraints.len(), physical.triggers.len()), (3, 1, 1));
+}
+
+#[test]
+fn deprecated_nested_field_hides_all_its_columns_and_keeps_them_in_storage() {
+    let source = "type Geo {\n  lat Float\n  lng Float?\n}\n\nmodel Shop {\n  id Int @id\n  geo Geo? @deprecated\n  name String?\n}\n";
+    let (ir, schema) = check(ok(source)).unwrap();
+    let names = |m: &crate::ir::ModelIr| m.fields.iter().map(|f| f.name.clone()).collect::<Vec<_>>();
+    assert_eq!(names(&ir.models[0]), ["id", "name"]);
+    assert_eq!(names(&schema.physical().models[0].ir).len(), 4);
+    assert!(deprecated_plan(source, &crate::migrate::plan(&schema, &Default::default()).unwrap().snapshot).up.is_empty());
+}
+
+#[test]
+fn deprecated_generated_column_needs_no_default() {
+    let source = deprecated_source("  total Int @generated(\"id * 2\") @deprecated\n", false);
+    let (ir, schema) = check(ok(&source)).unwrap();
+    assert_eq!(ir.models[0].fields.len(), 2);
+    assert!(schema.physical().models[0].ir.fields.iter().any(|f| f.name == "total"));
+}
+
+#[test]
+fn deprecated_rejects_a_partition_key_and_a_view_field() {
+    let partitioned = "model Event {\n  id BigInt @id\n  kind String @default(\"a\") @deprecated\n  @@partition(list: [kind])\n}\n";
+    assert!(fails(partitioned).contains("Event: a partition key field cannot be deprecated"), "{}", fails(partitioned));
+    let view = views("view V {\n  id Int @id\n  legacy Int @deprecated\n}\n", &[("views/public/V.sql", "SELECT 1 AS id")]).unwrap_err();
+    assert!(view.contains("@deprecated goes on a field of a table model, not of a view"), "{view}");
+}
+
+#[test]
+fn deprecated_errors() {
+    let model = |field: &str| format!("model Item {{\n  id BigInt @id @default(autoincrement())\n  title String\n  {field}\n}}\n");
+    for (source, message) in [
+        (model("legacy String @default(\"x\") @deprecated(\"later\")"), "Item.legacy: @deprecated takes no arguments"),
+        (model("legacy String @default(\"x\") @deprecated @client_default(\"y\")"), "Item.legacy: @deprecated cannot go with @client_default"),
+        (model("legacy String @default(\"x\") @deprecated @renamed_from(\"old\")"), "Item.legacy: @deprecated cannot go with @renamed_from"),
+        (model("legacy String @deprecated"), "Item.legacy: a NOT NULL field without a database default cannot be deprecated, because an insert would fail"),
+        ("model Item {\n  id BigInt @id @deprecated\n}\n".into(), "Item.id: the primary key cannot be deprecated"),
+        ("model Item {\n  id BigInt\n  part Int @default(1) @deprecated\n  @@id([id, part])\n}\n".into(), "Item.part: the primary key cannot be deprecated"),
+        (format!("model Item {{\n  id BigInt @id\n  other_id BigInt? @deprecated\n  other Other? @relation(fields: [other_id], references: [id])\n}}\nmodel Other {{\n  id BigInt @id\n}}\n"), "Item.other_id: relation other uses it as its key"),
+        (format!("model Item {{\n  id BigInt @id @default(autoincrement())\n  code String @unique @default(\"c\") @deprecated\n}}\nmodel Other {{\n  id BigInt @id\n  item_code String\n  item Item @relation(fields: [item_code], references: [code])\n}}\n"), "Item.code: relation Other.item references it"),
+        (format!("model Item {{\n  id BigInt @id\n  other Other? @deprecated\n}}\nmodel Other {{\n  id BigInt @id\n  item_id BigInt? @unique\n  item Item? @relation(fields: [item_id], references: [id])\n}}\n"), "@deprecated goes on a scalar, enum or nested field, not on a relation"),
+    ] {
+        assert!(fails(&source).contains(message), "{message}: {}", fails(&source));
+    }
+}
