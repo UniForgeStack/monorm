@@ -3,7 +3,7 @@
 //! narrowing nor client defaults change physical storage or imply predicates.
 //! Explicit partition ownership projects local objects and a permanent storage bound.
 use std::collections::{BTreeMap, BTreeSet};
-use monorm::{extension::{capture_storage, ModelView, ResultCheck, RowFilter}, ir::{ClientDefaultIr, FieldIr, ModelIr, PartitionIr, SchemaIr}};
+use monorm::{extension::{capture_storage, ModelView, ResultCheck, RowFilter}, ir::{ClientDefaultIr, FieldIr, PartitionIr, SchemaIr}};
 use serde::{Deserialize, Serialize};
 
 /// The id under which the pass keeps its records in `extension_data`.
@@ -87,7 +87,7 @@ pub fn lower(ir: &mut SchemaIr) -> Result<(), String> {
         if specs.insert(d.model.clone(), spec).is_some() { return Err(format!("{}: duplicate proxy source", d.model)); }
     }
     for d in declarations.iter().filter(|d| d.attribute != "proxy.of") {
-        let error = |message: &str| format!("{}:{}:{}: @@{}: {message}", d.location.file, d.location.line, d.location.column, d.attribute);
+        let error = |message: &str| d.error_with("@@", message);
         let spec = specs.get_mut(&d.model).ok_or_else(|| error("requires @@proxy.of on the same model"))?;
         if d.attribute != "proxy.fields" { return Err(error("unknown proxy declaration")); }
         if spec.selection.is_some() { return Err(error("duplicate @@proxy.fields")); }
@@ -147,7 +147,7 @@ pub fn lower_specs(ir: &mut SchemaIr, specs: &[ProxyModel]) -> Result<(), String
     capture_storage(ir)?;
     for spec in order {
         let source = ir.models.iter().find(|m| m.name == spec.parent).expect("checked source");
-        let mut model: ModelIr = copy(source)?;
+        let mut model = source.clone();
         let placeholder = ir.models.iter().find(|m| m.name == spec.model).expect("checked model");
         if !placeholder.relations.is_empty() {
             return Err(format!("{}: proxy relation overrides are unsupported; inherited relations retain their logical targets", spec.model));
@@ -284,7 +284,7 @@ pub fn lower_specs(ir: &mut SchemaIr, specs: &[ProxyModel]) -> Result<(), String
             let p = partition.as_ref().expect("resolved owned partition");
             let mut fields = source.fields.clone();
             for f in &mut fields { f.primary_key = false; f.unique = false; f.index = false; f.check = None; }
-            let mut objects: ModelIr = copy(placeholder)?;
+            let mut objects = placeholder.clone();
             objects.name = p.table.clone();
             objects.fields = fields;
             objects.primary_key.clear();
@@ -339,31 +339,13 @@ pub fn lower_specs(ir: &mut SchemaIr, specs: &[ProxyModel]) -> Result<(), String
     Ok(())
 }
 
-fn copy<T: serde::Serialize + serde::de::DeserializeOwned>(value: &T) -> Result<T, String> {
-    serde_json::from_value(serde_json::to_value(value).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
-}
-
+/// Shape violations, including null for a non-null view, are warning-only.
+/// Validate encoding here; physical constraints remain database-enforced.
 fn validate_default(field: &FieldIr, value: &serde_json::Value) -> Result<(), String> {
-    use monorm::ir::ColType;
-    // Shape violations, including null for a non-null view, are warning-only.
-    // Validate encoding here; physical constraints remain database-enforced.
-    if value.is_null() { return Ok(()); }
-    if field.array {
-        let values = value.as_array().ok_or("array client default requires an array")?;
-        let scalar = FieldIr { array: false, ..field.clone() };
-        for v in values { validate_default(&scalar, v)?; }
-        return Ok(());
-    }
-    let valid = match field.ty {
-        ColType::Int => value.as_i64().is_some_and(|v| i32::try_from(v).is_ok()),
-        ColType::BigInt => value.is_i64(),
-        ColType::Float => value.is_number(),
-        ColType::Bool => value.is_boolean(),
-        ColType::Json => true,
-        ColType::Decimal => value.is_string() || value.is_number(),
-        ColType::String | ColType::Text | ColType::DateTime | ColType::Date | ColType::Uuid => value.is_string(),
-    };
-    if valid { Ok(()) } else { Err(format!("client default does not encode as {:?}", field.ty)) }
+    field.check_client_default(value).map_err(|reason| match reason {
+        monorm::ir::ClientDefaultError::NotAnArray => "array client default requires an array".to_owned(),
+        _ => format!("client default does not encode as {:?}", field.ty),
+    })
 }
 
 #[cfg(test)]

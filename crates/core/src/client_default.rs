@@ -20,20 +20,23 @@ pub enum Literal {
     Uuid(uuid::Uuid), Decimal(bigdecimal::BigDecimal), Json(Value), Array(ColType, Vec<Literal>),
 }
 
+/// `prepare` checks the JSON shape with `FieldIr::check_client_default` first, so this text is a guard only.
+const SHAPE: &str = "has the wrong shape";
+
 impl Literal {
     fn parse(value: &Value, ty: ValueType) -> Result<Self, String> {
         // On a Json field, null is the JSON value, like `@default("null")`.
         if ty.ty == ColType::Json && !ty.array { return Ok(Self::Json(value.clone())); }
         if value.is_null() { return Ok(Self::Null(ty)); }
         if ty.array {
-            return Ok(Self::Array(ty.ty, value.as_array().ok_or("requires an array")?.iter().map(|v| Self::parse(v, ty.element())).collect::<Result<_, _>>()?));
+            return Ok(Self::Array(ty.ty, value.as_array().ok_or(SHAPE)?.iter().map(|v| Self::parse(v, ty.element())).collect::<Result<_, _>>()?));
         }
-        let text = || value.as_str().ok_or("requires text");
+        let text = || value.as_str().ok_or(SHAPE);
         Ok(match ty.ty {
-            ColType::Int => Self::Int(value.as_i64().and_then(|v| i32::try_from(v).ok()).ok_or("requires int32")?),
-            ColType::BigInt => Self::BigInt(value.as_i64().ok_or("requires int64")?),
-            ColType::Float => Self::Float(value.as_f64().ok_or("requires a number")?),
-            ColType::Bool => Self::Bool(value.as_bool().ok_or("requires a bool")?),
+            ColType::Int => Self::Int(value.as_i64().and_then(|v| i32::try_from(v).ok()).ok_or(SHAPE)?),
+            ColType::BigInt => Self::BigInt(value.as_i64().ok_or(SHAPE)?),
+            ColType::Float => Self::Float(value.as_f64().ok_or(SHAPE)?),
+            ColType::Bool => Self::Bool(value.as_bool().ok_or(SHAPE)?),
             ColType::String | ColType::Text => Self::Text(text()?.into()),
             ColType::DateTime => Self::DateTime(chrono::DateTime::parse_from_rfc3339(text()?)
                 .map_err(|e| format!("requires an RFC 3339 timestamp with an offset, such as 2026-01-01T00:00:00Z: {e}"))?),
@@ -62,6 +65,7 @@ pub fn prepare(model: &str, fields: &[FieldIr], enums: &[EnumIr]) -> Result<Vec<
                         return Err(what(&format!("must be a value of enum {}", e.name)));
                     }
                 }
+                f.check_client_default(value).map_err(|e| what(&e.to_string()))?;
                 ClientDefault::Literal(Literal::parse(value, f.value_type()).map_err(|e| what(&e))?)
             }
             ClientDefaultIr::Call(call) => {

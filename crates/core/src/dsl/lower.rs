@@ -1131,7 +1131,11 @@ fn field(m: &ModelDecl, member: &Member, ctx: &Ctx<'_>, pending: Option<&Pending
                         }
                         ClientDefaultIr::Call(call)
                     }
-                    v => ClientDefaultIr::Value(literal(a.pos, v, &f, enum_ir, &what)?),
+                    v => {
+                        let value = literal(a.pos, v, &f, enum_ir, &what)?;
+                        f.check_client_default(&value).map_err(|reason| super::syntax::Error { pos: a.pos, msg: format!("{what}: @client_default {reason}") })?;
+                        ClientDefaultIr::Value(value)
+                    }
                 });
             }
             "relation" => return err(a.pos, format!("{what}: @relation goes on a field whose type is a model")),
