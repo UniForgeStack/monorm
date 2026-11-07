@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # `monorm init` end to end on SQLite with the local build: a Python project runs its script,
-# a TypeScript project runs on Node and on Bun, and `create-monorm` wraps the same command.
+# a TypeScript project runs on Node and on Bun, `create-monorm` wraps the same command,
+# and `monorm admin init` and a start of `monorm admin` work in both projects.
 # Needs `maturin develop` (the `monorm` package of $PYTHON), `npm run assemble` in languages/js, node, bun and npm.
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -69,6 +70,42 @@ node -e '
 grep -q "Alice" "$WORK/node-all-run.out"
 (cd "$WORK/ts-all" && rm -f dev.db && bun index.ts | tee "$WORK/bun-all-run.out")
 grep -q "Alice" "$WORK/bun-all-run.out"
+
+# `monorm admin init`, then a start of `monorm admin` on SQLite: health answers and SIGTERM stops it with exit 0.
+admin_probe() { # name, then the command that starts the server (the project is the current directory)
+  local name=$1 pid url
+  shift
+  MONORM_ADMIN_PORT=0 MONORM_DATABASE_URL="sqlite://$WORK/$name.db" "$@" 2> "$WORK/$name.err" &
+  pid=$!
+  for _ in $(seq 150); do
+    grep -q '"listening"' "$WORK/$name.err" && break
+    kill -0 "$pid" 2> /dev/null || break
+    sleep 0.2
+  done
+  url=$(sed -n 's/.*"url":"\([^"]*\)".*/\1/p' "$WORK/$name.err" | head -n 1)
+  if [ -z "$url" ]; then cat "$WORK/$name.err" >&2; kill "$pid" 2> /dev/null || true; return 1; fi
+  curl -fsS "$url/healthz" > /dev/null
+  curl -fsS "$url/readyz" > /dev/null
+  kill -TERM "$pid"
+  wait "$pid"
+}
+(
+  cd "$WORK/py-app"
+  "$PYTHON" -m monorm admin init --models db.models > "$WORK/py-admin-init.out"
+  grep -q "admin:admin" monorm.toml
+  "$PYTHON" -m monorm generate > /dev/null
+  "$PYTHON" -m monorm makemigrations > /dev/null
+  "$PYTHON" -m monorm migrate --url "sqlite://$WORK/py-admin.db" > /dev/null
+  admin_probe py-admin "$PYTHON" -m monorm admin
+)
+(
+  cd "$WORK/ts-app"
+  node "$JS/dist/src/cli.js" admin init > "$WORK/ts-admin-init.out"
+  grep -q "./admin.ts:admin" monorm.toml
+  node "$JS/dist/src/cli.js" makemigrations > /dev/null
+  node "$JS/dist/src/cli.js" migrate --url "sqlite://$WORK/ts-admin.db" > /dev/null
+  admin_probe ts-admin node "$JS/dist/src/cli.js" admin
+)
 
 # create-monorm: the thin wrapper writes the same TypeScript project, with the Bun commands under bun.
 mkdir -p "$WORK/wrapper/node_modules/@ufstack"
