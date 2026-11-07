@@ -66,7 +66,8 @@ fn prepared_write(schema: &Arc<schema::Schema>, target: Target, op_json: &str, n
     };
     let declared = declared.iter().map(|d| d.as_deref().map(declared_type).transpose()).collect::<PyResult<Vec<_>>>()?;
     let inner = monorm_engine::prepared_write::PreparedWrite::prepare(schema, target, &op, n, &declared).map_err(engine_err)?;
-    Ok(PreparedWrite { inner: Arc::new(inner), schema: schema.clone(), model, driver, classes })
+    let writable = protect::Writable::of(schema, &model).map_err(engine_err)?;
+    Ok(PreparedWrite { inner: Arc::new(inner), schema: schema.clone(), writable, driver, classes })
 }
 
 /// The held write of rows. `options` is the insert options JSON (`kind` "insert"), or
@@ -79,7 +80,8 @@ fn prepared_rows(schema: &Arc<schema::Schema>, target: Target, kind: &str, model
     let declared = declared.iter().map(|d| d.as_deref().map(declared_type).transpose()).collect::<PyResult<Vec<_>>>()?;
     let spec = RowsSpec::from_options(kind, model, fields, options, returning, batch_size, n, declared).map_err(engine_err)?;
     let inner = monorm_engine::prepared_write::PreparedRows::prepare(schema.clone(), target, spec).map_err(engine_err)?;
-    Ok(PreparedRows { inner: Arc::new(inner), schema: schema.clone(), model: model.to_string(), driver, classes })
+    let writable = protect::Writable::of(schema, model).map_err(engine_err)?;
+    Ok(PreparedRows { inner: Arc::new(inner), schema: schema.clone(), writable, driver, classes })
 }
 
 fn inspect_operation(schema: &schema::Schema, target: Target, op_json: &str, params: &[Bound<'_, PyAny>]) -> PyResult<String> {
@@ -536,7 +538,7 @@ impl PreparedRead {
 struct PreparedWrite {
     inner: Arc<monorm_engine::prepared_write::PreparedWrite>,
     schema: Arc<schema::Schema>,
-    model: String,
+    writable: protect::Writable,
     driver: Option<Arc<dyn Driver>>,
     classes: Arc<Classes>,
 }
@@ -557,7 +559,7 @@ impl PreparedWrite {
         allowed: Vec<String>,
         trace: Option<&Bound<'py, Trace>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        protect::ensure_writable(&self.schema, &self.model, &allowed).map_err(engine_err)?;
+        self.writable.check(&self.schema, &allowed).map_err(engine_err)?;
         let call = self.inner.call(&PyParams(&params)).map_err(engine_err)?;
         let inner = self.inner.clone();
         let conn: Arc<dyn Executor> = match (tx, &self.driver) {
@@ -592,7 +594,7 @@ impl PreparedWrite {
 struct PreparedRows {
     inner: Arc<monorm_engine::prepared_write::PreparedRows>,
     schema: Arc<schema::Schema>,
-    model: String,
+    writable: protect::Writable,
     driver: Option<Arc<dyn Driver>>,
     classes: Arc<Classes>,
 }
@@ -614,7 +616,7 @@ impl PreparedRows {
         allowed: Vec<String>,
         trace: Option<&Bound<'py, Trace>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        protect::ensure_writable(&self.schema, &self.model, &allowed).map_err(engine_err)?;
+        self.writable.check(&self.schema, &allowed).map_err(engine_err)?;
         let rows = convert_cells(self.inner.field_types(), rows, true)?;
         let conn: Arc<dyn Executor> = match (tx, &self.driver) {
             (Some(tx), _) => tx.get().inner.clone(),

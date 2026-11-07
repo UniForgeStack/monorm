@@ -776,7 +776,8 @@ fn prepared_write(schema: &Arc<schema::Schema>, target: Target, op_json: &str, n
         _ => return Err(query_err("prepare() takes an update or a delete")),
     };
     let inner = monorm_engine::prepared_write::PreparedWrite::prepare(schema, target, &op, n as usize, &declared_types(declared)?).map_err(engine_err)?;
-    Ok(PreparedWrite { inner: Arc::new(inner), driver, schema: schema.clone(), model })
+    let writable = protect::Writable::of(schema, &model).map_err(engine_err)?;
+    Ok(PreparedWrite { inner: Arc::new(inner), driver, schema: schema.clone(), writable })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -786,7 +787,8 @@ fn prepared_rows(schema: &Arc<schema::Schema>, target: Target, kind: &str, model
     let spec = RowsSpec::from_options(kind, model, fields, options, returning, batch_size.map(|b| b as usize), n as usize, declared_types(declared)?)
         .map_err(engine_err)?;
     let inner = monorm_engine::prepared_write::PreparedRows::prepare(schema.clone(), target, spec).map_err(engine_err)?;
-    Ok(PreparedRows { inner: Arc::new(inner), driver, schema: schema.clone(), model: model.to_string() })
+    let writable = protect::Writable::of(schema, model).map_err(engine_err)?;
+    Ok(PreparedRows { inner: Arc::new(inner), driver, schema: schema.clone(), writable })
 }
 
 // -- prepared reads ---------------------------------------------------------------------------
@@ -842,7 +844,7 @@ pub struct PreparedWrite {
     /// None on a schema without a connection: `sql()` and `inspect()` only.
     driver: Option<Arc<dyn Driver>>,
     schema: Arc<schema::Schema>,
-    model: String,
+    writable: protect::Writable,
 }
 
 #[napi]
@@ -851,7 +853,7 @@ impl PreparedWrite {
     #[napi(ts_return_type = "Promise<unknown>")]
     pub fn run<'env>(&self, env: &'env Env, params_: Unknown<'_>, tx: Option<&Transaction>, allowed: Option<Vec<String>>,
         trace: Option<&Trace>) -> napi::Result<PromiseRaw<'env, Raw>> {
-        protect::ensure_writable(&self.schema, &self.model, allowed.as_deref().unwrap_or_default()).map_err(engine_err)?;
+        self.writable.check(&self.schema, allowed.as_deref().unwrap_or_default()).map_err(engine_err)?;
         let call = self.inner.call(&params(env, params_)?).map_err(engine_err)?;
         let conn: Arc<dyn Executor> = match (tx, &self.driver) {
             (Some(tx), _) => tx.inner.clone(),
@@ -887,7 +889,7 @@ pub struct PreparedRows {
     inner: Arc<monorm_engine::prepared_write::PreparedRows>,
     driver: Option<Arc<dyn Driver>>,
     schema: Arc<schema::Schema>,
-    model: String,
+    writable: protect::Writable,
 }
 
 #[napi]
@@ -897,7 +899,7 @@ impl PreparedRows {
     #[napi(ts_return_type = "Promise<unknown>")]
     pub fn run<'env>(&self, env: &'env Env, rows: Unknown<'_>, params_: Unknown<'_>, tx: Option<&Transaction>,
         allowed: Option<Vec<String>>, trace: Option<&Trace>) -> napi::Result<PromiseRaw<'env, Raw>> {
-        protect::ensure_writable(&self.schema, &self.model, allowed.as_deref().unwrap_or_default()).map_err(engine_err)?;
+        self.writable.check(&self.schema, allowed.as_deref().unwrap_or_default()).map_err(engine_err)?;
         let rows = convert_cells(env, self.inner.field_types(), rows, true)?;
         let conn: Arc<dyn Executor> = match (tx, &self.driver) {
             (Some(tx), _) => tx.inner.clone(),
