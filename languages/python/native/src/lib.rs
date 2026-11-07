@@ -4,6 +4,8 @@
 //! operation. Every operation is one FFI crossing returning an awaitable; results come
 //! back as a list of tuples built in one pass, in schema field order.
 
+#[cfg(feature = "admin")]
+mod admin;
 mod build;
 mod convert;
 mod errors;
@@ -1473,6 +1475,8 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(list_migrations, m)?)?;
     m.add_function(wrap_pyfunction!(squash_migration, m)?)?;
     m.add_function(wrap_pyfunction!(find_migration, m)?)?;
+    #[cfg(feature = "admin")]
+    admin::register(m)?;
     m.add_class::<PySchema>()?;
     m.add_class::<Engine>()?;
     m.add_class::<PreparedRead>()?;

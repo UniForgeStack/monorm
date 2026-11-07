@@ -119,6 +119,14 @@ class Trace:
     def take(self) -> list[tuple[str, float, float, int, str | None]]: ...
 
 @final
+class AdminSite:
+    def request(
+        self, engine: Engine, method: str, path: str, user_json: str | None = None, trace: Trace | None = None
+    ) -> Awaitable[tuple[int, str]]: ...
+
+def admin_site(schema: Schema, config_json: str) -> AdminSite: ...
+
+@final
 class SessionLock:
     def release(self, trace: Trace | None = None) -> Awaitable[None]: ...
 

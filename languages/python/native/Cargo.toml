@@ -11,6 +11,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 monorm-core = { path = "../../../crates/core", default-features = false }
 monorm-engine = { path = "../../../crates/engine", default-features = false }
+monorm-admin = { path = "../../../crates/admin", optional = true, default-features = false }
 monorm-cli = { path = "../../../crates/cli", optional = true, default-features = false }
 pyo3 = { version = "0.29", features = ["chrono", "uuid"] }
 pyo3-async-runtimes = { version = "0.29", features = ["tokio-runtime"] }
@@ -21,10 +22,11 @@ uuid = "1"
 bigdecimal = "0.4"
 
 [features]
-default = ["postgres", "sqlite", "cli", "generate-python", "generate-typescript", "reference-loading"]
+default = ["postgres", "sqlite", "admin", "cli", "generate-python", "generate-typescript", "reference-loading"]
 postgres = ["monorm-engine/postgres", "sea-query/backend-postgres", "monorm-cli?/postgres"]
 sqlite = ["monorm-engine/sqlite", "sea-query/backend-sqlite", "monorm-cli?/sqlite"]
 cli = ["dep:monorm-cli"]
+admin = ["dep:monorm-admin"]
 generate-python = ["monorm-core/generate-python", "monorm-cli?/generate-python"]
 generate-typescript = ["monorm-core/generate-typescript", "monorm-cli?/generate-typescript"]
 reference-loading = ["monorm-core/reference-loading", "monorm-cli?/reference-loading"]
@@ -33,4 +35,4 @@ reference-loading = ["monorm-core/reference-loading", "monorm-cli?/reference-loa
 profile-postgres = ["postgres"]
 profile-sqlite = ["sqlite"]
 profile-combined = ["postgres", "sqlite"]
-profile-tooling = ["postgres", "sqlite", "cli", "generate-python", "generate-typescript", "reference-loading"]
+profile-tooling = ["postgres", "sqlite", "admin", "cli", "generate-python", "generate-typescript", "reference-loading"]
