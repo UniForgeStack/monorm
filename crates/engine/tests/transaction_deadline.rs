@@ -220,4 +220,27 @@ mod postgres {
             holder.commit().await.unwrap();
         });
     }
+
+    #[test]
+    fn a_deadline_that_ends_the_start_frees_the_only_connection_slot() {
+        let Some(url) = url() else { return };
+        runtime().block_on(async {
+            for round in 0..200 {
+                // A fresh pool, so the start creates the connection that the deadline may cut off; on odd
+                // rounds the pool holds a connection, so BEGIN runs when the deadline passes.
+                let db = db::connect(&url, 1).await.unwrap();
+                if round % 2 == 1 { db.batch("SELECT 1".into()).await.unwrap(); }
+                let options = TransactionOptions { isolation: Some(Isolation::Serializable), timeout: Some(Duration::from_nanos(1)) };
+                // The deadline ends the start, or the begin wins and a statement meets the expiry.
+                let error = match begin_root(&*db, options).await {
+                    Err(error) => error,
+                    Ok(tx) => tx.batch("SELECT 1".into()).await.expect_err("the deadline has passed"),
+                };
+                assert_timeout(&error, TimeoutOutcome::RolledBack);
+                let next = tokio::time::timeout(Duration::from_secs(10), begin_root(&*db, TransactionOptions::default()))
+                    .await.unwrap_or_else(|_| panic!("round {round}: the next start waits for a slot that nobody frees"));
+                next.unwrap().commit().await.unwrap();
+            }
+        });
+    }
 }
