@@ -19,7 +19,7 @@ import * as grants from "./admin-permissions.js";
 import type { RoleSeedReport, SyncReport } from "./admin-permissions.js";
 import type { Database } from "./db.js";
 import { ORMError } from "./errors.js";
-import { Column, Ordering } from "./expr.js";
+import { asCondition, Column, Condition, Expression, IRContext, Ordering, PATH, RelationPath, resolveNullRule } from "./expr.js";
 import type { ModelSpec } from "./meta.js";
 import { registry as defaultRegistry, type ModelClass, type Registry } from "./model.js";
 import { Prepared } from "./query.js";
@@ -40,8 +40,67 @@ export class AdminSettingsError extends ORMError {
 type AnyColumn = Column<any, any, any, any>;
 type AnyModel = ModelClass<ModelSpec>;
 
+type AnyRelation = RelationPath<any, any, any>;
+
+export interface NamedChoice {
+  readonly name: string;
+  readonly label?: string;
+  /** A condition such as `Note.rank.gt(1)`. It has no `param()`: the choice is a fixed condition. */
+  readonly condition: unknown;
+}
+
+export interface NamedFilter {
+  /** The name in the URL (`n.<name>=<choice>`). The choice `all` is reserved: it applies no condition. */
+  readonly name: string;
+  readonly label?: string;
+  readonly choices: readonly NamedChoice[];
+  /** The choice that applies when the URL names none. Without it: all rows. */
+  readonly default?: string;
+}
+
+export interface ComputedColumn {
+  /** The column name: list it in `columns` as a string. */
+  readonly name: string;
+  readonly label?: string;
+  /** `int`, `bigint`, `float`, `bool`, `string`, `text`, `datetime`, `date`, `uuid`, `json` or `decimal`. */
+  readonly type: string;
+  readonly nullable?: boolean;
+  /** An expression that the list statement computes, such as `func.lower(Note.title)`. It has no `param()`. */
+  readonly expr?: unknown;
+  /** Instead of `expr`: `async (keys) => values` gets the keys of one page (one call per page), one value per key. */
+  readonly function?: BatchFunction;
+  /** A sort header. It needs `expr` and `nullable: false`. */
+  readonly sortable?: boolean;
+}
+
+export type BatchFunction = (keys: readonly any[]) => Promise<readonly unknown[]>;
+
+export interface AggregateColumn {
+  readonly name: string;
+  readonly label?: string;
+  /** A to-many relation of the model, such as `Author.comments`. */
+  readonly relation: AnyRelation;
+  readonly fn: "count" | "sum" | "min" | "max" | "avg";
+  /** A field of the related model, such as `Author.comments.rank`: every function but `count` needs it. */
+  readonly field?: AnyColumn;
+}
+
 export interface ListConfig {
-  readonly columns?: readonly AnyColumn[];
+  /** Fields of the model; a string names a computed or aggregate column. */
+  readonly columns?: readonly (AnyColumn | string)[];
+  /** The filter bar: a field, a field of a to-one relation, or a to-one relation (its key is the value). */
+  readonly filters?: readonly (AnyColumn | AnyRelation)[];
+  readonly namedFilters?: readonly NamedFilter[];
+  readonly computed?: readonly ComputedColumn[];
+  readonly aggregates?: readonly AggregateColumn[];
+  /** The title of a column, by field or by name. */
+  readonly labels?: Readonly<Record<string, string>>;
+  /** What an empty value shows in the list. */
+  readonly empty?: string;
+  /** What an empty value shows in one column, by path (`"author.name"`) or name. */
+  readonly emptyFields?: Readonly<Record<string, string>>;
+  /** The to-many relations that the detail page shows as tabs. Without it: every one that leads to a resource. */
+  readonly tabs?: readonly AnyRelation[];
   readonly order?: readonly (AnyColumn | Ordering<any, any>)[];
   /** Rows per page, 1 to 200 (25 by default). */
   readonly pageSize?: number;
@@ -119,7 +178,7 @@ export interface AdminUser {
   readonly [key: string]: unknown;
 }
 
-const LIST_KEYS = new Set(["columns", "order", "pageSize", "sortable", "search", "searchWith"]);
+const LIST_KEYS = new Set(["columns", "order", "pageSize", "sortable", "search", "searchWith", "filters", "namedFilters", "computed", "aggregates", "labels", "empty", "emptyFields", "tabs"]);
 const BRAND_KEYS = new Set(["name", "logo", "colors", "links", "environment"]);
 const RESOURCE_KEYS = new Set(["list", "title", "group", "allow", "perms", "label", "fieldPermissions", "actions"]);
 
@@ -130,13 +189,110 @@ function label(model: AnyModel, ref: AnyColumn): string {
   return [...ref.path, ref.field.ir].join(".");
 }
 
+/** A column name: a string (a computed or aggregate column), a column or a relation of `model`. */
+function refName(model: AnyModel, ref: AnyColumn | AnyRelation | string): string {
+  if (typeof ref === "string") return ref;
+  if (ref instanceof Column) return label(model, ref);
+  const state = (ref as AnyRelation)[PATH];
+  if (state === undefined) throw new AdminConfigError(`${model._meta.name}: ${String(ref)} is not a column or a relation`);
+  if (state.root.name !== model._meta.name) throw new AdminConfigError(`${String(ref)} belongs to ${state.root.name}, not to ${model._meta.name}`);
+  return state.path.join(".");
+}
+
+/** The engine IR of an expression or a condition. The admin keeps no parameters: a literal goes into the IR itself. */
+function irOf(model: AnyModel, node: unknown, what: string): unknown {
+  const where = `${model._meta.name}: ${what}`;
+  const params: unknown[] = [];
+  let ir: unknown;
+  try {
+    const value = node instanceof Condition ? resolveNullRule(node) : node instanceof Expression ? node : asCondition(node);
+    ir = (value as Expression<unknown>).ir(new IRContext(model._meta as never, params));
+  } catch (e) {
+    throw new AdminConfigError(`${where}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  return inline(ir, params, where);
+}
+
+function inline(ir: unknown, params: readonly unknown[], where: string): unknown {
+  if (Array.isArray(ir)) return ir.map((item) => inline(item, params, where));
+  if (ir === null || typeof ir !== "object") return ir;
+  const node = ir as Record<string, unknown>;
+  if (node["t"] === "param") {
+    const value = params[node["i"] as number];
+    if (value === null) return { t: "null" };
+    if (typeof value === "boolean") return { t: "const", value };
+    if (typeof value === "string") return { t: "text", value };
+    if ((typeof value === "number" && Number.isSafeInteger(value)) || typeof value === "bigint") return { t: "int", value: Number(value) };
+    throw new AdminConfigError(`${where}: a value of this type is not a literal of the admin; use an integer, a string or a boolean`);
+  }
+  return Object.fromEntries(Object.entries(node).map(([k, v]) => [k, inline(v, params, where)]));
+}
+
+function batchName(model: AnyModel, column: string): string {
+  return `column.${model._meta.name}.${column}`;
+}
+
+function computedJson(model: AnyModel, items: readonly ComputedColumn[]): unknown[] {
+  return items.map((item) => {
+    if ((item.expr === undefined) === (item.function === undefined)) {
+      throw new AdminConfigError(`${model._meta.name}: computed '${item.name}' sets expr or function, one of them`);
+    }
+    const { expr, function: fn, ...rest } = item;
+    return {
+      ...rest,
+      ...(expr !== undefined ? { expr: irOf(model, expr, `computed '${item.name}'`) } : {}),
+      ...(fn !== undefined ? { function: batchName(model, item.name) } : {}),
+    };
+  });
+}
+
+function aggregatesJson(model: AnyModel, items: readonly AggregateColumn[]): unknown[] {
+  return items.map((item) => {
+    const where = `${model._meta.name}: aggregate '${item.name}'`;
+    const relation = item.relation as AnyRelation | undefined;
+    if (relation?.[PATH] === undefined) throw new AdminConfigError(`${where}: relation takes a relation such as ${model._meta.name}.<relation>`);
+    const name = refName(model, relation);
+    const out: Record<string, unknown> = { name: item.name, relation: name, fn: item.fn };
+    if (item.label !== undefined) out["label"] = item.label;
+    if (item.field !== undefined) {
+      const field = item.field;
+      if (!(field instanceof Column) || field.root.name !== model._meta.name || field.path.join(".") !== name) {
+        throw new AdminConfigError(`${where}: field takes a field of the relation '${name}'`);
+      }
+      out["field"] = field.field.ir;
+    }
+    return out;
+  });
+}
+
+function namedJson(model: AnyModel, items: readonly NamedFilter[]): unknown[] {
+  return items.map((item) => ({
+    name: item.name,
+    ...(item.label !== undefined ? { label: item.label } : {}),
+    ...(item.default !== undefined ? { default: item.default } : {}),
+    choices: item.choices.map((c) => ({
+      name: c.name,
+      ...(c.label !== undefined ? { label: c.label } : {}),
+      expr: irOf(model, c.condition, `named filter '${item.name}'`),
+    })),
+  }));
+}
+
 function listJson(model: AnyModel, config: ListConfig): Record<string, unknown> {
   const name = model._meta.name;
   for (const key of Object.keys(config)) {
     if (!LIST_KEYS.has(key)) throw new AdminConfigError(`${name}: unknown list option '${key}'`);
   }
   const out: Record<string, unknown> = {};
-  if (config.columns !== undefined) out["columns"] = config.columns.map((c) => label(model, c));
+  if (config.columns !== undefined) out["columns"] = config.columns.map((c) => refName(model, c));
+  if (config.filters !== undefined) out["filters"] = config.filters.map((c) => refName(model, c));
+  if (config.tabs !== undefined) out["tabs"] = config.tabs.map((c) => refName(model, c));
+  if (config.namedFilters !== undefined) out["named_filters"] = namedJson(model, config.namedFilters);
+  if (config.computed !== undefined) out["computed"] = computedJson(model, config.computed);
+  if (config.aggregates !== undefined) out["aggregates"] = aggregatesJson(model, config.aggregates);
+  if (config.labels !== undefined) out["labels"] = { ...config.labels };
+  if (config.empty !== undefined) out["empty"] = config.empty;
+  if (config.emptyFields !== undefined) out["empty_fields"] = { ...config.emptyFields };
   if (config.order !== undefined) {
     out["order"] = config.order.map((item) => {
       if (item instanceof Ordering) {
@@ -152,6 +308,25 @@ function listJson(model: AnyModel, config: ListConfig): Record<string, unknown> 
   if (config.search !== undefined) out["search"] = config.search.map((c) => label(model, c));
   if (config.searchWith !== undefined) out["search_with"] = searchName(model);
   return out;
+}
+
+/** The host function of a computed column: one call with the keys of the page, one value per key. */
+function batchHost(model: AnyModel, fn: BatchFunction): HostFunction {
+  const single = model._meta.key.length === 1;
+  return async (_database, args) => {
+    const keys = (args.keys as unknown[][]).map((cells) => (single ? cells[0] : cells));
+    return (await fn(keys)).map(cellJson);
+  };
+}
+
+function cellJson(value: unknown): unknown {
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "bigint") return value.toString();
+  if (Array.isArray(value)) return value.map(cellJson);
+  if (value !== null && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, cellJson(v)]));
+  }
+  return value;
 }
 
 function searchName(model: AnyModel): string {
@@ -392,12 +567,15 @@ export class Admin {
     });
   }
 
-  /** The host functions: login and the `searchWith` function of each resource. */
+  /** The host functions: login, the `searchWith` function of each resource and the function of each computed column. */
   #host(): Record<string, HostFunction> {
     const host: Record<string, HostFunction> = { ...HOST };
     for (const [, { model, config }] of this.#resources) {
       const search = config.list?.searchWith;
       if (search !== undefined) host[searchName(model)] = searchHost(model, search);
+      for (const column of config.list?.computed ?? []) {
+        if (column.function !== undefined) host[batchName(model, column.name)] = batchHost(model, column.function);
+      }
     }
     return host;
   }

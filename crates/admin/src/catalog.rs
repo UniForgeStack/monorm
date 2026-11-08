@@ -34,7 +34,7 @@ pub async fn prefix_warnings(site: &Site, conn: &dyn Executor) -> Result<Vec<Str
     let sql = format!(
         "SELECT c.relname, a.attname, \
          CASE WHEN a.attcollation = 0 THEN 'C' \
-              WHEN a.attcollation = 100 THEN (SELECT CASE WHEN coalesce(to_jsonb(d) ->> 'datlocprovider', 'c') = 'c' THEN d.datcollate ELSE to_jsonb(d) ->> 'datlocale' END FROM pg_database d WHERE d.datname = current_database()) \
+              WHEN a.attcollation = 100 THEN (SELECT CASE WHEN coalesce(to_jsonb(d) ->> 'datlocprovider', 'c') = 'c' THEN d.datcollate ELSE coalesce(to_jsonb(d) ->> 'datlocale', to_jsonb(d) ->> 'daticulocale') END FROM pg_database d WHERE d.datname = current_database()) \
               ELSE (SELECT collname FROM pg_collation WHERE oid = a.attcollation) END, \
          EXISTS (SELECT 1 FROM pg_index i JOIN pg_opclass o ON o.oid = i.indclass[0] \
                  WHERE i.indrelid = c.oid AND i.indkey[0] = a.attnum AND i.indpred IS NULL AND o.opcname LIKE '%\\_pattern\\_ops') \

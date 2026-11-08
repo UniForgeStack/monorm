@@ -27,14 +27,15 @@ from . import _native
 from . import _admin_permissions
 from ._admin_host import HOST as _HOST
 from ._admin_permissions import RoleSeedReport, SyncReport
-from .expr import ColumnRef, Ordering
+from .errors import QueryError
+from .expr import ColumnRef, Condition, Expression, IRContext, Ordering, RelationPath, as_condition, resolve_null_rule
 from .model import Model, registry as default_registry
 
 if TYPE_CHECKING:
     from .db import Database
     from .model import Registry
 
-__all__ = ["Admin", "AdminConfigError", "AdminResponse", "AdminTestClient", "BrandConfig", "BrandLink", "ListConfig", "ResourceConfig", "RoleSeedReport", "SyncReport", "check", "register", "test_client", "url"]
+__all__ = ["Admin", "AdminConfigError", "AdminResponse", "AdminTestClient", "AggregateColumn", "BrandConfig", "BrandLink", "ComputedColumn", "ListConfig", "NamedChoice", "NamedFilter", "ResourceConfig", "RoleSeedReport", "SyncReport", "check", "register", "test_client", "url"]
 
 DEFAULT_PREFIX = "/admin/api"
 
@@ -43,8 +44,63 @@ class AdminConfigError(ValueError):
     """The admin config names an unknown field, a list column through a to-many relation, or a bad value."""
 
 
+class NamedChoice(TypedDict, total=False):
+    name: str
+    label: str
+    condition: Any
+    """A condition such as ``Note.rank > 1``. It has no ``monorm.param``: the choice is a fixed condition."""
+
+
+class NamedFilter(TypedDict, total=False):
+    name: str
+    """The name in the URL (``n.<name>=<choice>``). The choice ``all`` is reserved: it applies no condition."""
+    label: str
+    choices: Sequence[NamedChoice]
+    default: str
+    """The choice that applies when the URL names none. Without it: all rows."""
+
+
+class ComputedColumn(TypedDict, total=False):
+    name: str
+    """The column name: list it in ``columns`` as a string."""
+    label: str
+    type: str
+    """``int``, ``bigint``, ``float``, ``bool``, ``string``, ``text``, ``datetime``, ``date``, ``uuid``, ``json`` or ``decimal``."""
+    nullable: bool
+    expr: Any
+    """An expression that the list statement computes, such as ``monorm.func.lower(Note.title)``. It has no ``monorm.param``."""
+    function: Callable[[list[Any]], Awaitable[Sequence[Any]]]
+    """Instead of ``expr``: ``async def f(keys)`` gets the keys of one page (one call per page) and returns one value per key."""
+    sortable: bool
+    """A sort header. It needs ``expr`` and ``nullable=False``."""
+
+
+class AggregateColumn(TypedDict, total=False):
+    name: str
+    label: str
+    relation: Any
+    """A to-many relation of the model, such as ``Author.comments``."""
+    fn: Literal["count", "sum", "min", "max", "avg"]
+    field: Any
+    """A field of the related model, such as ``Author.comments.rank``: every function but ``count`` needs it."""
+
+
 class ListConfig(TypedDict, total=False):
-    columns: Sequence[ColumnRef[Any]]
+    columns: Sequence[ColumnRef[Any] | str]
+    """Fields of the model; a string names a computed or aggregate column."""
+    filters: Sequence[ColumnRef[Any] | RelationPath[Any]]
+    """The filter bar: a field, a field of a to-one relation, or a to-one relation (its key is the value)."""
+    named_filters: Sequence[NamedFilter]
+    computed: Sequence[ComputedColumn]
+    aggregates: Sequence[AggregateColumn]
+    labels: Mapping[ColumnRef[Any] | str, str]
+    """The title of a column."""
+    empty: str
+    """What an empty value shows in the list."""
+    empty_fields: Mapping[ColumnRef[Any] | str, str]
+    """What an empty value shows in one column."""
+    tabs: Sequence[RelationPath[Any]]
+    """The to-many relations that the detail page shows as tabs. Without it: every one that leads to a resource."""
     order: Sequence[ColumnRef[Any] | Ordering]
     page_size: int
     """Rows per page, 1 to 200 (25 by default)."""
@@ -93,7 +149,7 @@ class ResourceConfig(TypedDict, total=False):
     """Names such as ``"refund"`` that become ``<label>.<action>_<resource>``."""
 
 
-_LIST_KEYS = {"columns", "order", "page_size", "sortable", "search", "search_with"}
+_LIST_KEYS = {"columns", "order", "page_size", "sortable", "search", "search_with", "filters", "named_filters", "computed", "aggregates", "labels", "empty", "empty_fields", "tabs"}
 _RESOURCE_KEYS = {"list", "title", "group", "allow", "perms", "label", "field_permissions", "actions"}
 _BRAND_KEYS = {"name", "logo", "colors", "links", "environment"}
 Strategy = Literal["page", "model", "access"]
@@ -105,12 +161,118 @@ def _label(model: type[Model], ref: ColumnRef[Any]) -> str:
     return ".".join((*ref._path, ref._field.name))
 
 
+def _name(model: type[Model], ref: Any) -> str:
+    """A column name: a string (a computed or aggregate column), a column or a relation of ``model``."""
+    if isinstance(ref, str):
+        return ref
+    if isinstance(ref, RelationPath):
+        if ref._root is not model:
+            raise AdminConfigError(f"{ref!r} belongs to {ref._root.__name__}, not to {model.__name__}")
+        return ".".join(ref._path)
+    return _label(model, ref)
+
+
+def _ir(model: type[Model], node: Any, what: str) -> Any:
+    """The engine IR of an expression or condition. The admin keeps no parameters: a literal goes into the IR itself."""
+    params: list[Any] = []
+    if isinstance(node, Condition):
+        node = resolve_null_rule(node)
+    elif not isinstance(node, Expression):
+        node = as_condition(node)
+    try:
+        ir = node._ir(IRContext(model, params))
+    except QueryError as e:
+        raise AdminConfigError(f"{model.__name__}: {what}: {e}") from None
+    return _inline(ir, params, f"{model.__name__}: {what}")
+
+
+def _inline(ir: Any, params: list[Any], what: str) -> Any:
+    if isinstance(ir, list):
+        return [_inline(item, params, what) for item in ir]
+    if not isinstance(ir, dict):
+        return ir
+    if ir.get("t") == "param":
+        value = params[ir["i"]]
+        if value is None:
+            return {"t": "null"}
+        if isinstance(value, bool):
+            return {"t": "const", "value": value}
+        if isinstance(value, int):
+            return {"t": "int", "value": value}
+        if isinstance(value, str):
+            return {"t": "text", "value": value}
+        raise AdminConfigError(f"{what}: a value of type {type(value).__name__} is not a literal of the admin; use an integer, a string or a boolean")
+    return {k: _inline(v, params, what) for k, v in ir.items()}
+
+
+def _batch_name(model: type[Model], column: str) -> str:
+    return f"column.{model.__name__}.{column}"
+
+
+def _computed(model: type[Model], items: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    out = []
+    for item in items:
+        entry = {k: v for k, v in item.items() if k not in ("expr", "function")}
+        if (item.get("expr") is None) == (item.get("function") is None):
+            raise AdminConfigError(f"{model.__name__}: computed {item.get('name')!r} sets expr or function, one of them")
+        if item.get("expr") is not None:
+            entry["expr"] = _ir(model, item["expr"], f"computed {item.get('name')!r}")
+        else:
+            entry["function"] = _batch_name(model, str(item["name"]))
+        out.append(entry)
+    return out
+
+
+def _aggregates(model: type[Model], items: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    out = []
+    for item in items:
+        entry: dict[str, Any] = {k: v for k, v in item.items() if k not in ("relation", "fn", "field")}
+        relation = item["relation"]
+        if not isinstance(relation, RelationPath):
+            raise AdminConfigError(f"{model.__name__}: aggregate {item.get('name')!r}: relation takes a relation such as {model.__name__}.<relation>")
+        entry["relation"] = _name(model, relation)
+        entry["fn"] = item["fn"]
+        if item.get("field") is not None:
+            field = item["field"]
+            if not isinstance(field, ColumnRef) or field._root is not model or field._path[: len(relation._path)] != relation._path:
+                raise AdminConfigError(f"{model.__name__}: aggregate {item.get('name')!r}: field takes a field of the relation {entry['relation']!r}")
+            entry["field"] = field._field.name
+        out.append(entry)
+    return out
+
+
+def _named(model: type[Model], items: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    out = []
+    for item in items:
+        entry = {k: v for k, v in item.items() if k != "choices"}
+        entry["choices"] = [
+            {**{k: v for k, v in c.items() if k != "condition"}, "expr": _ir(model, c["condition"], f"named filter {item.get('name')!r}")}
+            for c in item["choices"]
+        ]
+        out.append(entry)
+    return out
+
+
 def _list(model: type[Model], config: Mapping[str, Any]) -> dict[str, Any]:
     if unknown := sorted(set(config) - _LIST_KEYS):
         raise AdminConfigError(f"{model.__name__}: unknown list option {unknown[0]!r}")
     out: dict[str, Any] = {}
     if "columns" in config:
-        out["columns"] = [_label(model, c) for c in config["columns"]]
+        out["columns"] = [_name(model, c) for c in config["columns"]]
+    for key in ("filters", "tabs"):
+        if key in config:
+            out[key] = [_name(model, c) for c in config[key]]
+    if "named_filters" in config:
+        out["named_filters"] = _named(model, config["named_filters"])
+    if "computed" in config:
+        out["computed"] = _computed(model, config["computed"])
+    if "aggregates" in config:
+        out["aggregates"] = _aggregates(model, config["aggregates"])
+    for key in ("labels", "empty_fields"):
+        if key in config:
+            out[key] = {_name(model, k): v for k, v in config[key].items()}
+    if "empty" in config:
+        out["empty"] = config["empty"]
     if "order" in config:
         order = []
         for item in config["order"]:
@@ -154,6 +316,27 @@ def _search_host(model: type[Model], search: Any) -> Callable[[Any, dict[str, An
         return [_key_json(k) for k in found][:limit]
 
     return run
+
+
+def _batch_host(model: type[Model], function: Callable[[list[Any]], Awaitable[Sequence[Any]]]) -> Callable[[Any, dict[str, Any]], Awaitable[Any]]:
+    """The host function of a computed column: one call with the keys of the page, one value per key."""
+    single = len(model._meta.key_names) == 1
+
+    async def run(database: Any, args: dict[str, Any]) -> Any:
+        keys = [cells[0] if single else cells for cells in args["keys"]]
+        return [_cell_json(v) for v in await function(keys)]
+
+    return run
+
+
+def _cell_json(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_cell_json(v) for v in value]
+    if isinstance(value, Mapping):
+        return {str(k): _cell_json(v) for k, v in value.items()}
+    return value.isoformat() if isinstance(value, (datetime.date, datetime.time)) else str(value)
 
 
 def _key_value(value: Any) -> Any:
@@ -368,12 +551,17 @@ class Admin:
         return json.dumps(out)
 
     def _host(self) -> dict[str, Any]:
-        """The host functions: login and the ``search_with`` function of each resource."""
+        """The host functions: login, the ``search_with`` function of each resource and the function of each computed column."""
         host: dict[str, Any] = dict(_HOST)
         for model, config in self._resources.values():
-            search = config.get("list", {}).get("search_with")
+            listing = config.get("list", {})
+            search = listing.get("search_with")
             if search is not None:
                 host[_search_name(model)] = _search_host(model, search)
+            for column in listing.get("computed", ()):
+                function = column.get("function")
+                if function is not None:
+                    host[_batch_name(model, column.get("name", ""))] = _batch_host(model, function)
         return host
 
     def _site(self, registry: Registry) -> _native.AdminSite:
