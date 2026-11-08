@@ -132,6 +132,8 @@ test("sign in, open a list and a detail page", async () => {
   await page.getByText("First").first().waitFor();
   await page.getByRole("link", { name: "Author 1" }).click();
   await page.waitForURL(`${base}/admin/Author/1`);
+  // A reload aborts a request still in flight, which the failed-request check would report.
+  await page.getByRole("heading", { name: /Author/ }).waitFor();
 
   await page.reload();
   await page.getByRole("heading", { name: /Author/ }).waitFor();
