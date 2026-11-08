@@ -74,10 +74,10 @@ before(async () => {
   writeFileSync(join(dir, "schema.prisma"), SCHEMA);
   writeFileSync(join(dir, "seed.py"), SEED);
   run(["-m", "monorm", "admin", "init", "--models", "models"], env);
-  // A search box on Book: the title is a plain column, so the search is "contains".
+  // A search box on Book: the title is a plain column, so the search is "contains". A filter on its author.
   const module = readFileSync(join(dir, "admin.py"), "utf8");
   assert.ok(module.includes("admin.register(Book)"), "the generated admin.py registers Book");
-  writeFileSync(join(dir, "admin.py"), module.replace("admin.register(Book)", 'admin.register(Book, {"list": {"search": [Book.title]}})'));
+  writeFileSync(join(dir, "admin.py"), module.replace("admin.register(Book)", 'admin.register(Book, {"list": {"search": [Book.title], "filters": [Book.author]}})'));
   run(["-m", "monorm", "generate"], env);
   run(["-m", "monorm", "makemigrations"], env);
   run(["-m", "monorm", "migrate", "--url", env.MONORM_DATABASE_URL], env);
@@ -187,6 +187,73 @@ test("sort a column and search a list", async () => {
   await page.getByText("1 record", { exact: true }).waitFor();
   // The count has arrived, so closing the context aborts no request that is still in flight.
   await page.getByRole("heading", { name: /Book/ }).waitFor();
+  assert.deepEqual(problems, []);
+  await context.close();
+});
+
+test("filter a list, keep the view in the URL, and open a tab", async () => {
+  const context = await browser.newContext({ timezoneId: ZONE, locale: "en-US" });
+  const page = await context.newPage();
+  const problems = [];
+  page.on("console", (m) => m.type() === "error" && !m.text().includes("status of 401") && problems.push(`console: ${m.text()}`));
+  page.on("pageerror", (e) => problems.push(`page error: ${e.message}`));
+  page.on("requestfailed", (r) => problems.push(`request failed: ${r.url()} ${r.failure()?.errorText}`));
+  page.on("response", (r) => r.status() >= 400 && r.status() !== 401 && problems.push(`HTTP ${r.status()}: ${r.url()}`));
+
+  await page.goto(`${base}/admin/-/login`);
+  await page.getByLabel("Username").fill("ann");
+  await page.getByLabel("Password").fill("pw-of-ann");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await page.getByRole("navigation", { name: "Resources" }).getByRole("link", { name: "Book", exact: true }).click();
+  await page.waitForURL(`${base}/admin/Book`);
+  const titles = async () => (await page.locator("tbody tr td:nth-child(2)").allTextContents()).map((t) => t.trim());
+  const rowsAre = async (expected) => {
+    for (let i = 0; i < 100; i++) {
+      if (JSON.stringify(await titles()) === JSON.stringify(expected)) return;
+      await page.waitForTimeout(100);
+    }
+    assert.deepEqual(await titles(), expected);
+  };
+  await page.getByText("2 records").waitFor();
+  await rowsAre(["First", "Second"]);
+
+  // A relation filter: pick the author from the list of options, and the chip carries the author's name.
+  await page.getByText("Pick a Author").click();
+  await page.getByRole("button", { name: "Ada" }).click();
+  await page.waitForURL(`${base}/admin/Book?f.author=1`);
+  await rowsAre(["First"]);
+  await page.getByRole("button", { name: "Remove Ada" }).click();
+  await page.waitForURL(`${base}/admin/Book`);
+  await rowsAre(["First", "Second"]);
+
+  // One filter: the books with no author. The view is in the URL, and it comes back after a reload.
+  await page.getByLabel("Author: empty").selectOption("empty");
+  await page.waitForURL(`${base}/admin/Book?f.author%3Aempty=1`);
+  await rowsAre(["Second"]);
+  await page.getByText("1 record", { exact: true }).waitFor();
+  await page.reload();
+  await rowsAre(["Second"]);
+  await page.getByText("1 record", { exact: true }).waitFor();
+  assert.equal(await page.getByLabel("Author: empty").inputValue(), "empty");
+
+  // The detail page links back to the list as the user left it, and the back button does too.
+  await page.getByRole("link", { name: "2", exact: true }).click();
+  await page.waitForURL(`${base}/admin/Book/2`);
+  await page.getByRole("heading", { name: /Book/ }).waitFor();
+  await page.getByText("Second").first().waitFor();
+  await page.getByRole("link", { name: /← Book/ }).click();
+  await page.waitForURL(`${base}/admin/Book?f.author%3Aempty=1`);
+  await rowsAre(["Second"]);
+  await page.getByText("1 record", { exact: true }).waitFor();
+
+  // One tab: the books of the author. A full load aborts a request still in flight, so the list settles first.
+  await page.waitForLoadState("networkidle");
+  await page.goto(`${base}/admin/Author/1`);
+  await page.getByRole("heading", { name: /Author/ }).waitFor();
+  await page.getByRole("tab", { name: "Books" }).click();
+  await page.waitForURL(`${base}/admin/Author/1?tab=books`);
+  await rowsAre(["First"]);
+  await page.getByText("1 record", { exact: true }).waitFor();
   assert.deepEqual(problems, []);
   await context.close();
 });

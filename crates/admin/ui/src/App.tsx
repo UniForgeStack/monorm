@@ -1,10 +1,11 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Menu from "@radix-ui/react-dropdown-menu";
+import { DetailPage } from "./Detail";
 import { ListPage } from "./List";
 import * as api from "./api";
-import { cell, getZone, setZone, type Zone } from "./format";
-import { BASE, LOGIN_URL, Link, PASSWORD_URL, detailUrl, listUrl, navigate, parse, usePath } from "./router";
+import { getZone, setZone, type Zone } from "./format";
+import { BASE, LOGIN_URL, Link, PASSWORD_URL, listUrl, navigate, parse, usePath } from "./router";
 import { Alert, Button, Card, Field, message } from "./ui";
 
 export function App() {
@@ -166,33 +167,5 @@ function Password() {
         <Button type="submit">Change password</Button>
       </form>
     </Card>
-  );
-}
-
-function DetailPage({ resource, id, zone, site }: { resource: string; id: string; zone: Zone; site: api.Site | undefined }) {
-  const q = useQuery({ queryKey: ["detail", resource, id], queryFn: () => api.detail(resource, id), retry: false });
-  const meta = site?.resources.find((r) => r.name === resource);
-  if (q.isError) return <Alert>{message(q.error)}</Alert>;
-  if (!q.data) return <p className="muted">Loading…</p>;
-  const d = q.data;
-  return (
-    <section>
-      <p><Link href={listUrl(resource)}>← {meta?.title ?? resource}</Link></p>
-      <h1>{meta?.title ?? resource} <span className="muted">{decodeURIComponent(d.key)}</span></h1>
-      <dl className="fields">
-        {d.fields.map((f, i) => (
-          <div key={f.label}>
-            <dt>{f.title}</dt>
-            <dd>{cell(d.values[i], f, zone) || <span className="muted">—</span>}</dd>
-          </div>
-        ))}
-        {d.links.map((l) => (
-          <div key={l.name}>
-            <dt>{l.title}</dt>
-            <dd><Link href={detailUrl(l.resource, l.key)}>{l.resource} {decodeURIComponent(l.key)}</Link></dd>
-          </div>
-        ))}
-      </dl>
-    </section>
   );
 }

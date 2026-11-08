@@ -18,8 +18,9 @@ export function Table({ resource, columns, rows, keys, zone, sortable = [], unin
         header: c.title,
         cell: ({ row }) => {
           const text = cell(row.original.cells[i], c, zone);
-          if (i === 0) return <Link href={detailUrl(resource, row.original.key)}>{text || "—"}</Link>;
-          return text || <span className="muted">—</span>;
+          const none = c.empty ?? "—";
+          if (i === 0) return <Link href={detailUrl(resource, row.original.key)}>{text || none}</Link>;
+          return text || <span className="muted">{none}</span>;
         },
       })),
     [columns, resource, zone],

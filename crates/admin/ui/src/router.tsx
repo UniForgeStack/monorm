@@ -17,6 +17,11 @@ export function usePath(): string {
   return useSyncExternalStore(subscribe, () => window.location.pathname);
 }
 
+/** The query string of the page, as the browser holds it: the state of a list lives here. */
+export function useSearch(): string {
+  return useSyncExternalStore(subscribe, () => window.location.search);
+}
+
 export function navigate(to: string, replace = false) {
   if (replace) window.history.replaceState(null, "", to);
   else window.history.pushState(null, "", to);
@@ -56,4 +61,18 @@ export function Link({ href, onClick, ...rest }: AnchorHTMLAttributes<HTMLAnchor
     navigate(href);
   };
   return <a href={href} onClick={go} {...rest} />;
+}
+
+const LAST = "monorm-admin-list:";
+
+/** The view of a list (its query string) lives for the tab: the detail page links back to it. */
+export function rememberList(resource: string, search: string) {
+  if (search) sessionStorage.setItem(LAST + resource, search);
+  else sessionStorage.removeItem(LAST + resource);
+}
+
+/** The URL of a list as the user left it. */
+export function listBack(resource: string): string {
+  const search = sessionStorage.getItem(LAST + resource);
+  return search ? `${listUrl(resource)}?${search}` : listUrl(resource);
 }

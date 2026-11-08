@@ -111,6 +111,77 @@ admin.register(Note, {"list": {"search_with": by_body}})
 admin.register(Note, { list: { searchWith: async (q, limit) => (await findIds(q, limit)) } });
 ```
 
+### Filters
+
+`filters` lists the fields of the filter bar.
+An entry is a field, a field of a to-one relation (`Comment.author.name`), or a to-one relation (`Comment.author`).
+A name that matches nothing is an error in `check()` and in `Site::build`.
+
+| Query | Meaning |
+|---|---|
+| `?f.level=high` | The field equals the value. |
+| `?f.level=high&f.level=low` | Several values for one filter mean "or". Different filters mean "and". |
+| `?f.rank:gte=2`, `:gt`, `:lt`, `:lte` | A range, on numbers, dates and times. |
+| `?f.nick:empty`, `?f.nick:notempty` | "Is empty" and "is not empty". A text field counts `NULL` and `""` as empty. |
+| `?f.author=<key>` | A relation filter. The value is the encoded key of the target, as in the `keys` of a list. |
+| `?f.author.name=Bo` | A field of a related model. It adds a join, not a second statement. |
+
+A value of the wrong type for the field answers `422`.
+A date and time value is ISO 8601 with an offset, and a date-only value means midnight UTC.
+The metadata of a resource has `filters` with the `kind` (`enum`, `bool`, `number`, `datetime`, `date`, `uuid`, `text` or `relation`) and the `operators` that the filter takes.
+`?q=` and the filters work together, and so does the count (`GET {prefix}/counts/{name}?q=&f.level=high`).
+
+`named_filters` (Python) and `namedFilters` (TypeScript) are filters that you write as conditions, for the choices of a person who does not know the data:
+
+```python
+admin.register(Ticket, {"list": {"named_filters": [{
+    "name": "age", "label": "Age", "default": "recent",
+    "choices": [
+        {"name": "recent", "label": "Last year", "condition": Ticket.created_at > datetime(2026, 1, 1)},
+        {"name": "old", "label": "Older", "condition": Ticket.created_at <= datetime(2026, 1, 1)},
+    ],
+}]}})
+```
+
+`?n.age=old` picks a choice.
+Without it the `default` applies, and `?n.age=all` (the reserved choice `all`) turns the filter off.
+A condition is a fixed expression: it takes int, string, bool and null literals and no `monorm.param`.
+An unknown choice answers `422`.
+
+### Computed and aggregate columns
+
+A column that is not a field is declared once and listed in `columns` by name.
+`computed` has two forms:
+- `expr` is an expression that the list statement computes, such as `monorm.func.length(Note.body)`. It sorts when the config says `sortable: True` and the column is not nullable.
+- `function` is `async def f(keys)`. It gets the keys of the page in one call and returns one value per key, in the same order. The declared `type` is checked, and a wrong value is a `500`.
+
+`aggregates` shows the `count`, `sum`, `min`, `max` or `avg` of a to-many relation, as a column.
+It is one statement for the page, with no N+1.
+
+```python
+admin.register(Author, {"list": {
+    "columns": [Author.name, "comments", "top_rank"],
+    "aggregates": [
+        {"name": "comments", "label": "Comments", "relation": Author.comments, "fn": "count"},
+        {"name": "top_rank", "label": "Top rank", "relation": Author.comments, "fn": "max", "field": Author.comments.rank},
+    ],
+}})
+```
+
+`labels` (a title for each field) and `empty` (the text for an empty value) change what a column shows.
+`empty_fields` sets the text for one field, and it wins over `empty`.
+A column name that clashes with a field, or a label or empty text for an unknown field, is a build error.
+In TypeScript the keys are `namedFilters`, `emptyFields`, and `computed` and `aggregates` with the same entries (`func.length(Note.body)`, `Author.comments`); `function` is `async (keys) => values`.
+
+### To-many tabs
+
+The detail page shows each to-many relation as a tab, and the tab is the list of the child resource, with its search, filters and sort.
+`tabs` picks the relations, and without it every to-many relation that leads to a resource is a tab.
+The routes are `GET {prefix}/resources/{name}/{key}/{relation}` and `GET {prefix}/counts/{name}/{key}/{relation}`.
+They take the same query as a list.
+An unknown record or relation answers `404`.
+The permission of the child resource applies, so the UI shows no tab for a resource that the user may not read.
+
 ### Statement timeout
 
 On PostgreSQL every request runs `SET LOCAL statement_timeout` first, and the default is 15 seconds.
@@ -353,8 +424,9 @@ The path prefix is a config value, and the default is `/admin/api`.
 | Route | Answer |
 |---|---|
 | `GET {prefix}/resources` | The `brand`, the navigation groups (`nav`), and the resources that the user may read. Each resource has a `title`, its `fields`, its `key` fields, its columns (with `title`, `widget` and `choices`), order, page size, sort columns and search fields. It also lists the permission names that the user holds. |
-| `GET {prefix}/resources/{name}?cursor=&before=&last=&page=&limit=&sort=&q=` | One page: `columns`, `rows`, `keys`, `next` and `prev`. See [Lists](#lists). |
-| `GET {prefix}/counts/{name}?q=&exact=` | `{"count", "capped"}`. See [Count](#count). |
+| `GET {prefix}/resources/{name}?cursor=&before=&last=&page=&limit=&sort=&q=&f.*=&n.*=` | One page: `columns`, `rows`, `keys`, `next` and `prev`. See [Lists](#lists). |
+| `GET {prefix}/counts/{name}?q=&f.*=&n.*=&exact=` | `{"count", "capped"}`. See [Count](#count). |
+| `GET {prefix}/resources/{name}/{key}/{relation}`, `GET {prefix}/counts/{name}/{key}/{relation}` | The list and the count of a to-many tab. See [To-many tabs](#to-many-tabs). |
 | `GET {prefix}/resources/{name}/{key}` | One record: `fields`, `values` and `links` to the to-one targets that the user may read. A key is encoded as in [The UI](#the-ui). |
 
 A row is an array that follows `columns`.
@@ -367,7 +439,8 @@ A date and a time are ISO 8601 with an offset.
 | 401 | The request has no user. |
 | 403 | The user lacks a permission (see [Permissions](#permissions)). The request writes an audit row. |
 | 404 | The resource, the path or the record is unknown. |
-| 400 | The cursor, the limit, the sort, the search term or the key is not valid. |
+| 400 | The cursor, the limit, the sort, the search term, the filter name or the key is not valid. |
+| 422 | A filter value has the wrong type, or a named filter has no such choice. |
 | 504 | The statement timeout cancelled a statement. |
 
 An error body is `{"ok": false, "error": {"kind": "...", "message": "..."}}`.
@@ -385,8 +458,8 @@ The UI path `/admin` is a constant; only the API `prefix` is configurable, and `
 | Path | Page |
 |---|---|
 | `/admin/-/login`, `/admin/-/password` | Sign in, and change the password. Logout is in the header menu. |
-| `/admin/{resource}` | The list. The first column links to the record. |
-| `/admin/{resource}/{key}` | The record: its fields and a link for each to-one relation. |
+| `/admin/{resource}` | The list. The first column links to the record. Search, filters, sort, page and page size are in the query string, so a reload, a link and the back button return to the same view. |
+| `/admin/{resource}/{key}` | The record: its fields, a link for each to-one relation, and a tab for each to-many relation (`?tab={relation}`). |
 
 A key is stable and easy to bookmark.
 Each key field is percent-encoded (only `A-Z a-z 0-9 - . _ ~` stay as they are), and a composite key joins the fields with `,` in key order.
