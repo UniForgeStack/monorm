@@ -23,10 +23,10 @@ const LONG: Record<Kind, string> = {
   postgres: 'SELECT pg_sleep(30)',
   sqlite: 'WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 2000000000) SELECT count(*) FROM c',
 };
-// A statement of about a tenth of a second.
+// A statement far below the deadline of the cumulative test, also on a loaded machine with the debug addon.
 const SHORT: Record<Kind, string> = {
   postgres: 'SELECT pg_sleep(0.1)',
-  sqlite: 'WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 200000) SELECT count(*) FROM c',
+  sqlite: 'WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 20000) SELECT count(*) FROM c',
 };
 
 class Backend {
@@ -310,7 +310,8 @@ test('timeout is cumulative', async () => {
     let done = 0;
     const start = Date.now();
     await assert.rejects(db.transaction(async () => {
-      for (let i = 0; i < 200; i++) {
+      // Bound by time, not by count: the deadline ends the loop on a fast build too.
+      while (Date.now() - start < 3000) {
         await db.execute(SHORT[b.kind]);
         done += 1;
       }

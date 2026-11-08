@@ -23,10 +23,10 @@ LONG = {
     "postgres": "SELECT pg_sleep(30)",
     "sqlite": "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 2000000000) SELECT count(*) FROM c",
 }
-# A statement of a few milliseconds.
+# A statement far below the deadline of the cumulative test, also on a loaded machine with the debug build.
 SHORT = {
     "postgres": "SELECT pg_sleep(0.1)",
-    "sqlite": "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 200000) SELECT count(*) FROM c",
+    "sqlite": "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 20000) SELECT count(*) FROM c",
 }
 
 
@@ -328,7 +328,8 @@ async def test_timeout_is_cumulative(backend):
     start = time.monotonic()
     with pytest.raises(monorm.TransactionTimeoutError):
         async with db.transaction(timeout=0.6):
-            for _ in range(200):
+            # Bound by time, not by count: the deadline ends the loop on a fast build too.
+            while time.monotonic() - start < 3:
                 await db.execute(SHORT[backend.kind])
                 done += 1
     assert time.monotonic() - start < 5
