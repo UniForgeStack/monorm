@@ -3,7 +3,7 @@
 // Needs: the `monorm` wheel in the active Python (`maturin develop`), `npm install` and `npm run install-browser` here.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { after, before, test } from "node:test";
@@ -74,6 +74,10 @@ before(async () => {
   writeFileSync(join(dir, "schema.prisma"), SCHEMA);
   writeFileSync(join(dir, "seed.py"), SEED);
   run(["-m", "monorm", "admin", "init", "--models", "models"], env);
+  // A search box on Book: the title is a plain column, so the search is "contains".
+  const module = readFileSync(join(dir, "admin.py"), "utf8");
+  assert.ok(module.includes("admin.register(Book)"), "the generated admin.py registers Book");
+  writeFileSync(join(dir, "admin.py"), module.replace("admin.register(Book)", 'admin.register(Book, {"list": {"search": [Book.title]}})'));
   run(["-m", "monorm", "generate"], env);
   run(["-m", "monorm", "makemigrations"], env);
   run(["-m", "monorm", "migrate", "--url", env.MONORM_DATABASE_URL], env);
@@ -137,6 +141,52 @@ test("sign in, open a list and a detail page", async () => {
 
   await page.reload();
   await page.getByRole("heading", { name: /Author/ }).waitFor();
+  assert.deepEqual(problems, []);
+  await context.close();
+});
+
+test("sort a column and search a list", async () => {
+  const context = await browser.newContext({ timezoneId: ZONE, locale: "en-US" });
+  const page = await context.newPage();
+  const problems = [];
+  page.on("console", (m) => m.type() === "error" && !m.text().includes("status of 401") && problems.push(`console: ${m.text()}`));
+  page.on("pageerror", (e) => problems.push(`page error: ${e.message}`));
+  page.on("requestfailed", (r) => problems.push(`request failed: ${r.url()} ${r.failure()?.errorText}`));
+  page.on("response", (r) => r.status() >= 400 && r.status() !== 401 && problems.push(`HTTP ${r.status()}: ${r.url()}`));
+
+  await page.goto(`${base}/admin/-/login`);
+  await page.getByLabel("Username").fill("ann");
+  await page.getByLabel("Password").fill("pw-of-ann");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await page.getByRole("navigation", { name: "Resources" }).getByRole("link", { name: "Book", exact: true }).click();
+  await page.waitForURL(`${base}/admin/Book`);
+  const titles = async () => (await page.locator("tbody tr td:nth-child(2)").allTextContents()).map((t) => t.trim());
+  await page.getByText("2 records").waitFor();
+  // The old rows stay on screen until the new ones arrive, so each step polls for its rows.
+  const rowsAre = async (expected) => {
+    for (let i = 0; i < 100; i++) {
+      if (JSON.stringify(await titles()) === JSON.stringify(expected)) return;
+      await page.waitForTimeout(100);
+    }
+    assert.deepEqual(await titles(), expected);
+  };
+  await rowsAre(["First", "Second"]);
+
+  // A first click sorts ascending, a second one descending.
+  const header = page.getByRole("columnheader", { name: /Title/ });
+  await header.getByRole("button").click();
+  await page.locator('th[aria-sort="ascending"]').waitFor();
+  await rowsAre(["First", "Second"]);
+  await header.getByRole("button").click();
+  await page.locator('th[aria-sort="descending"]').waitFor();
+  await rowsAre(["Second", "First"]);
+
+  await page.getByRole("searchbox", { name: "Search" }).fill("sec");
+  await page.getByRole("button", { name: "Search", exact: true }).click();
+  await rowsAre(["Second"]);
+  await page.getByText("1 record", { exact: true }).waitFor();
+  // The next click ends the last request first: a reload would abort one still in flight.
+  await page.getByRole("heading", { name: /Book/ }).waitFor();
   assert.deepEqual(problems, []);
   await context.close();
 });

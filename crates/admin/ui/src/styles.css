@@ -54,3 +54,12 @@ h2 { font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; color:
 .menu-item[data-highlighted] { background: var(--bg); }
 .menu-label { padding: .3rem .6rem; font-size: .75rem; color: var(--muted); }
 .menu-sep { height: 1px; background: var(--line); margin: .25rem 0; }
+.toolbar { display: flex; gap: 1rem; align-items: center; justify-content: space-between; margin-bottom: 1rem; flex-wrap: wrap; }
+.search { display: flex; gap: .5rem; }
+.search input, .jump input, .size select { padding: .4rem .5rem; border: 1px solid var(--line); border-radius: 4px; font: inherit; }
+.size { display: flex; gap: .5rem; align-items: center; color: var(--muted); font-size: .9rem; }
+.pager { align-items: center; flex-wrap: wrap; }
+.jump { display: flex; gap: .25rem; }
+.jump input { width: 5.5rem; }
+.count { margin-left: auto; color: var(--muted); display: flex; gap: .5rem; align-items: center; }
+.sort { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }

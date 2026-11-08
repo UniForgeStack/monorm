@@ -32,3 +32,5 @@ export function Card({ title, children }: { title: string; children: ReactNode }
     </section>
   );
 }
+
+export const message = (e: unknown) => (e instanceof Error ? e.message : String(e));

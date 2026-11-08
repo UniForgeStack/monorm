@@ -10,7 +10,7 @@ interface Row {
 }
 
 /** One column per meta column. The first one links to the detail of its row. */
-export function Table({ resource, columns, rows, keys, zone }: { resource: string; columns: Column[]; rows: unknown[][]; keys: string[]; zone: Zone }) {
+export function Table({ resource, columns, rows, keys, zone, sortable = [], sort = "", onSort }: { resource: string; columns: Column[]; rows: unknown[][]; keys: string[]; zone: Zone; sortable?: string[]; sort?: string; onSort?: (label: string) => void }) {
   const defs = useMemo<ColumnDef<Row>[]>(
     () =>
       columns.map((c, i) => ({
@@ -33,7 +33,16 @@ export function Table({ resource, columns, rows, keys, zone }: { resource: strin
           {table.getHeaderGroups().map((g) => (
             <tr key={g.id}>
               {g.headers.map((h) => (
-                <th key={h.id} scope="col">{flexRender(h.column.columnDef.header, h.getContext())}</th>
+                <th key={h.id} scope="col" aria-sort={ariaSort(sort, h.column.id)}>
+                  {onSort && sortable.includes(h.column.id) ? (
+                    <button type="button" className="sort" onClick={() => onSort(h.column.id)}>
+                      {flexRender(h.column.columnDef.header, h.getContext())}
+                      <span aria-hidden="true">{ariaSort(sort, h.column.id) === "ascending" ? " ▲" : ariaSort(sort, h.column.id) === "descending" ? " ▼" : ""}</span>
+                    </button>
+                  ) : (
+                    flexRender(h.column.columnDef.header, h.getContext())
+                  )}
+                </th>
               ))}
             </tr>
           ))}
@@ -50,4 +59,12 @@ export function Table({ resource, columns, rows, keys, zone }: { resource: strin
       </table>
     </div>
   );
+}
+
+/** The sort is `-label` for descending and `label` for ascending, on its first column. */
+function ariaSort(sort: string, label: string): "ascending" | "descending" | undefined {
+  const first = sort.split(",")[0] ?? "";
+  if (first === label) return "ascending";
+  if (first === `-${label}`) return "descending";
+  return undefined;
 }

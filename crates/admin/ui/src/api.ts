@@ -19,6 +19,9 @@ export interface Resource {
   key: string[];
   links: { name: string; title: string; target: string }[];
   page_size: number;
+  max_page_size: number;
+  sortable: { column: string; indexed: boolean }[];
+  search: { fields: string[]; custom: boolean };
 }
 
 export interface Brand {
@@ -46,6 +49,23 @@ export interface Page {
   rows: unknown[][];
   keys: string[];
   next: string | null;
+  prev: string | null;
+}
+
+/** Where a list is: a keyset position or a page number, with the sort, the search and the page size. */
+export interface ListParams {
+  cursor?: string;
+  before?: string;
+  last?: boolean;
+  page?: number;
+  sort?: string;
+  q?: string;
+  limit?: number;
+}
+
+export interface Count {
+  count: number;
+  capped: boolean;
 }
 
 export interface Detail {
@@ -117,10 +137,18 @@ export const logout = () => call<object>("POST", "/logout", {});
 export const changePassword = (old_password: string, new_password: string) => call<object>("POST", "/password", { old_password, new_password });
 export const site = () => call<Site>("GET", "/resources");
 
-export function page(resource: string, cursor: string | null): Promise<Page> {
-  const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
-  return call<Page>("GET", `/resources/${encodeURIComponent(resource)}${query}`);
+function query(params: Record<string, string | number | boolean | undefined>): string {
+  const parts = Object.entries(params)
+    .filter(([, v]) => v !== undefined && v !== "" && v !== false)
+    .map(([k, v]) => `${k}=${encodeURIComponent(v === true ? "1" : String(v))}`);
+  return parts.length ? `?${parts.join("&")}` : "";
 }
+
+export const page = (resource: string, params: ListParams) => call<Page>("GET", `/resources/${encodeURIComponent(resource)}${query({ ...params })}`);
+
+/** The count is its own request, after the rows: capped at 10,000, or exact on request. */
+export const count = (resource: string, q: string, exact: boolean) =>
+  call<Count>("GET", `/counts/${encodeURIComponent(resource)}${query({ q, exact })}`);
 
 /** `key` is the encoded path segment as the list gave it: it goes into the URL as it is. */
 export const detail = (resource: string, key: string) => call<Detail>("GET", `/resources/${encodeURIComponent(resource)}/${key}`);

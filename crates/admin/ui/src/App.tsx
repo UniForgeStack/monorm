@@ -1,13 +1,11 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Menu from "@radix-ui/react-dropdown-menu";
-import { Table } from "./Table";
+import { ListPage } from "./List";
 import * as api from "./api";
 import { cell, getZone, setZone, type Zone } from "./format";
 import { BASE, LOGIN_URL, Link, PASSWORD_URL, detailUrl, listUrl, navigate, parse, usePath } from "./router";
-import { Alert, Button, Card, Field } from "./ui";
-
-const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+import { Alert, Button, Card, Field, message } from "./ui";
 
 export function App() {
   const path = usePath();
@@ -168,28 +166,6 @@ function Password() {
         <Button type="submit">Change password</Button>
       </form>
     </Card>
-  );
-}
-
-function ListPage({ resource, zone, site }: { resource: string; zone: Zone; site: api.Site | undefined }) {
-  const [cursors, setCursors] = useState<(string | null)[]>([null]);
-  useEffect(() => setCursors([null]), [resource]);
-  const cursor = cursors[cursors.length - 1] ?? null;
-  const q = useQuery({ queryKey: ["list", resource, cursor], queryFn: () => api.page(resource, cursor), placeholderData: (prev) => prev });
-  const meta = site?.resources.find((r) => r.name === resource);
-  if (q.isError) return <Alert>{message(q.error)}</Alert>;
-  if (!q.data) return <p className="muted">Loading…</p>;
-  const page = q.data;
-  return (
-    <section>
-      <h1>{meta?.title ?? resource}</h1>
-      <Table resource={resource} columns={page.columns} rows={page.rows} keys={page.keys} zone={zone} />
-      {page.rows.length === 0 && <p className="muted">No records.</p>}
-      <div className="pager">
-        <Button variant="plain" disabled={cursors.length < 2} onClick={() => setCursors((c) => c.slice(0, -1))}>Previous</Button>
-        <Button variant="plain" disabled={!page.next} onClick={() => page.next && setCursors((c) => [...c, page.next])}>Next</Button>
-      </div>
-    </section>
   );
 }
 
