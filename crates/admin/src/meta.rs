@@ -9,7 +9,8 @@ use monorm_core::schema::Schema;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::site::{err, Column, ConfigError, Resource};
+use crate::list::{is_text, ranged};
+use crate::site::{err, Column, ConfigError, Filter, FilterKind, Resource, Source};
 
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
@@ -131,6 +132,58 @@ pub fn column(schema: &Schema, c: &Column) -> Value {
     out
 }
 
+/// A column of a list: the title and the empty text that the config gives, and whether the value is computed.
+fn list_column(schema: &Schema, r: &Resource, c: &Column) -> Value {
+    let mut out = column(schema, c);
+    if let Some(title) = r.labels.get(&c.label) {
+        out["title"] = json!(title);
+    }
+    if let Some(text) = r.empty_fields.get(&c.label).or(r.empty.as_ref()) {
+        out["empty"] = json!(text);
+    }
+    if !matches!(c.source, Source::Field) {
+        out["computed"] = json!(true);
+    }
+    out
+}
+
+/// One filter of the filter bar: the name in the URL, the kind of value, and the operators that it takes.
+fn filter(schema: &Schema, r: &Resource, f: &Filter) -> Value {
+    let title = r.labels.get(&f.name).cloned().unwrap_or_else(|| humanize(&f.name));
+    match &f.kind {
+        FilterKind::Field(c) => {
+            let kind = if c.ty.enum_idx.is_some() {
+                "enum"
+            } else {
+                match c.ty.ty {
+                    ColType::Bool => "bool",
+                    ColType::Int | ColType::BigInt | ColType::Float => "number",
+                    ColType::DateTime => "datetime",
+                    ColType::Date => "date",
+                    ColType::Uuid => "uuid",
+                    _ => "text",
+                }
+            };
+            let mut operators = vec!["eq"];
+            if ranged(c.ty) {
+                operators.extend(["gt", "gte", "lt", "lte"]);
+            }
+            if c.nullable || is_text(c.ty) {
+                operators.extend(["empty", "notempty"]);
+            }
+            let mut out = json!({"name": f.name, "title": title, "kind": kind, "type": c.ty.ty, "nullable": c.nullable, "operators": operators});
+            if let Some(e) = c.ty.enum_idx.and_then(|i| schema.enums.get(i as usize)) {
+                out["choices"] = json!(e.values.iter().map(|v| v.name.clone()).collect::<Vec<_>>());
+            }
+            out
+        }
+        FilterKind::Relation { target, from, .. } => {
+            let nullable = from.iter().all(|c| c.nullable);
+            json!({"name": f.name, "title": title, "kind": "relation", "target": target, "nullable": nullable, "operators": if nullable { json!(["eq", "empty", "notempty"]) } else { json!(["eq"]) }})
+        }
+    }
+}
+
 /// The metadata of one resource that does not depend on the user.
 pub fn resource(schema: &Schema, r: &Resource, builds: &AtomicUsize) -> Value {
     builds.fetch_add(1, Ordering::SeqCst);
@@ -138,7 +191,7 @@ pub fn resource(schema: &Schema, r: &Resource, builds: &AtomicUsize) -> Value {
         "name": r.name,
         "title": r.title,
         "group": r.group,
-        "columns": r.columns.iter().map(|c| column(schema, c)).collect::<Vec<_>>(),
+        "columns": r.columns.iter().map(|c| list_column(schema, r, c)).collect::<Vec<_>>(),
         "order": r.order.iter().map(|o| json!({"column": o.column.label, "desc": o.desc})).collect::<Vec<_>>(),
         "page_size": r.page_size,
         "max_page_size": crate::site::MAX_PAGE_SIZE,
@@ -148,7 +201,11 @@ pub fn resource(schema: &Schema, r: &Resource, builds: &AtomicUsize) -> Value {
         "permissions": ["read"],
         "table": schema.model(r.model).table(),
         "key": r.key_columns.iter().map(|c| c.label.clone()).collect::<Vec<_>>(),
-        "fields": r.detail.iter().map(|c| column(schema, c)).collect::<Vec<_>>(),
+        "fields": r.detail.iter().map(|c| list_column(schema, r, c)).collect::<Vec<_>>(),
         "links": r.links.iter().map(|l| json!({"name": l.name, "title": humanize(&l.name), "target": l.target})).collect::<Vec<_>>(),
+        "filters": r.filters.iter().map(|f| filter(schema, r, f)).collect::<Vec<_>>(),
+        "named_filters": r.named_filters.iter().map(|n| json!({"name": n.name, "title": n.label, "default": n.default, "choices": n.choices.iter().map(|c| json!({"name": c.name, "title": c.label})).collect::<Vec<_>>()})).collect::<Vec<_>>(),
+        "tabs": r.tabs.iter().map(|t| json!({"name": t.name, "title": r.labels.get(&t.name).cloned().unwrap_or_else(|| humanize(&t.name)), "target": t.target})).collect::<Vec<_>>(),
+        "empty": r.empty,
     })
 }

@@ -19,11 +19,11 @@ use crate::audit::{self, Entry};
 use crate::auth::{self, AuthConfig};
 use crate::bridge::{CallContext, HostBridge};
 use crate::key;
-use crate::list::{self, ListError, ListRequest, Position};
+use crate::list::{self, FilterClause, FilterOp, ListError, ListRequest, Page, Position};
 use crate::permissions::{self, Grants, Op};
 use crate::scope::Scoped;
 use crate::service::ErrorNote;
-use crate::site::{Resource, Site};
+use crate::site::{Related, Resource, Site, Source};
 
 /// The user of a request: a JSON object with `key`, `is_superuser` and, when it is false, `is_active`.
 #[derive(Clone, Debug)]
@@ -47,7 +47,7 @@ pub fn api(site: Arc<Site>, conn: Arc<dyn Executor>) -> Router {
 pub fn api_with(site: Arc<Site>, conn: Arc<dyn Executor>, auth: Option<AuthConfig>) -> Router {
     let target = Target::new(conn.dialect());
     let prefix = site.prefix.clone();
-    let routes = Router::new().route("/resources", get(resources)).route("/resources/{name}", get(rows)).route("/resources/{name}/{key}", get(detail)).route("/counts/{name}", get(counts));
+    let routes = Router::new().route("/resources", get(resources)).route("/resources/{name}", get(rows)).route("/resources/{name}/{key}", get(detail)).route("/resources/{name}/{key}/{rel}", get(tab_rows)).route("/counts/{name}", get(counts)).route("/counts/{name}/{key}/{rel}", get(tab_counts));
     let bridge = auth.clone().map(|a| (a.bridge.clone(), a));
     let extra = auth.map(|auth| auth::routes(auth, site.clone(), conn.clone()));
     let state = Arc::new(State_ { site, conn, target, bridge });
@@ -225,18 +225,19 @@ async fn finish<T>(scope: Scoped, out: Result<T, ListError>, ok: impl FnOnce(T) 
             }
             ok(value)
         }
-        Err(ListError::Bad(m)) => {
+        Err(e) => {
             scope.rollback().await;
-            reject(StatusCode::BAD_REQUEST, "BadRequest", &m)
+            error_response(e)
         }
-        Err(ListError::Engine(m)) => {
-            scope.rollback().await;
-            database_error(&m)
-        }
-        Err(ListError::Timeout(m)) => {
-            scope.rollback().await;
-            timeout_error(m)
-        }
+    }
+}
+
+fn error_response(e: ListError) -> Response {
+    match e {
+        ListError::Bad(m) => reject(StatusCode::BAD_REQUEST, "BadRequest", &m),
+        ListError::Invalid(m) => reject(StatusCode::UNPROCESSABLE_ENTITY, "Invalid", &m),
+        ListError::Engine(m) => database_error(&m),
+        ListError::Timeout(m) => timeout_error(m),
     }
 }
 
@@ -257,34 +258,113 @@ async fn query(scope: Scoped, q: Result<Query<ListQuery>, QueryRejection>) -> Re
     }
 }
 
-async fn rows(State(s): Shared, user: Option<Extension<User>>, Path(name): Path<String>, q: Result<Query<ListQuery>, QueryRejection>) -> Response {
-    let (scope, resource) = match open_resource(&s, user, &name).await {
-        Ok(t) => t,
-        Err(r) => return *r,
+/// The filter bar of a request: `f.<name>=v` (repeated for several values), `f.<name>:gte=v` and `n.<name>=<choice>`.
+/// The filter clauses and the named-filter choices of a query string.
+type Filters = (Vec<FilterClause>, Vec<(String, String)>);
+
+fn filters_of(uri: &Uri) -> Result<Filters, ListError> {
+    let mut clauses: Vec<FilterClause> = Vec::new();
+    let mut named: Vec<(String, String)> = Vec::new();
+    for (key, value) in form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes()) {
+        if let Some(rest) = key.strip_prefix("f.") {
+            let (name, op) = match rest.rsplit_once(':') {
+                Some((name, op)) => (name, FilterOp::parse(op).ok_or_else(|| ListError::Bad(format!("filter: {op:?} is not an operator (gt, gte, lt, lte, empty, notempty)")))?),
+                None => (rest, FilterOp::Eq),
+            };
+            let value = matches!(op, FilterOp::Eq | FilterOp::Gt | FilterOp::Gte | FilterOp::Lt | FilterOp::Lte).then(|| value.into_owned());
+            match clauses.iter_mut().find(|c| c.name == name && c.op == op) {
+                Some(c) => c.values.extend(value),
+                None => clauses.push(FilterClause { name: name.to_owned(), op, values: value.into_iter().collect() }),
+            }
+        } else if let Some(name) = key.strip_prefix("n.") {
+            if named.iter().any(|(n, _)| n == name) {
+                return Err(ListError::Bad(format!("filter: {name:?} has two choices")));
+            }
+            named.push((name.to_owned(), value.into_owned()));
+        }
+    }
+    Ok((clauses, named))
+}
+
+fn position_of(q: &ListQuery) -> Option<Position> {
+    match (&q.cursor, &q.before, flag(&q.last), q.page) {
+        (None, None, false, None) => Some(Position::First),
+        (Some(c), None, false, None) => Some(Position::After(c.clone())),
+        (None, Some(c), false, None) => Some(Position::Before(c.clone())),
+        (None, None, true, None) => Some(Position::Last),
+        (None, None, false, Some(n)) => Some(Position::Page(n)),
+        _ => None,
+    }
+}
+
+/// A value that a host function returned for a computed column, in the protocol encoding of its type.
+fn batch_value(c: &crate::site::Column, v: Value) -> Result<Value, ListError> {
+    let bad = |m: String| ListError::Engine(format!("the function of column {:?} returned a value that does not fit: {m}", c.label));
+    if v.is_null() {
+        return if c.nullable { Ok(v) } else { Err(bad("null in a column that is not nullable".into())) };
+    }
+    match c.ty.ty {
+        monorm_core::ir::ColType::Json => Ok(v),
+        monorm_core::ir::ColType::Decimal => match &v {
+            Value::String(_) => Ok(v),
+            Value::Number(n) => Ok(Value::String(n.to_string())),
+            _ => Err(bad(format!("{v} is not a decimal"))),
+        },
+        monorm_core::ir::ColType::BigInt => match crate::json::bind(c.ty.ty, &v).map_err(bad)? {
+            sea_query::Value::BigInt(Some(n)) => Ok(Value::String(n.to_string())),
+            _ => Err(bad(format!("{v} is not an integer"))),
+        },
+        ty => crate::json::bind(ty, &v).map(|_| v).map_err(bad),
+    }
+}
+
+/// One call to each host function of a computed column for the whole page: never one call per row.
+async fn fill_batch(s: &State_, resource: &Resource, scope: &Scoped, page: &mut Page) -> Result<(), ListError> {
+    if page.batch.is_empty() || page.rows.is_empty() {
+        return Ok(());
+    }
+    let Some((bridge, auth)) = &s.bridge else { return Err(ListError::Engine("a computed column with a function needs the host bridge".into())) };
+    let keys: Vec<Value> = page.rows.iter().map(|r| Value::Array(resource.key_positions.iter().map(|&p| r[p].clone()).collect())).collect();
+    for &i in &page.batch {
+        let c = &resource.columns[i];
+        let Source::Batch(name) = &c.source else { continue };
+        let ctx = CallContext { request_id: auth.security.call_id(), tenant: None, scope: json!({}), tx: Some(scope.transaction()) };
+        let answer = bridge.call(name, json!({"keys": keys, "column": c.label}), ctx).await.map_err(|e| ListError::Engine(format!("{}: {}", e.kind(), e.message())))?;
+        let Value::Array(values) = answer else { return Err(ListError::Engine(format!("the function of column {:?} returns a list with one value for each key", c.label))) };
+        if values.len() != page.rows.len() {
+            return Err(ListError::Engine(format!("the function of column {:?} returned {} values for {} keys", c.label, values.len(), page.rows.len())));
+        }
+        for (row, v) in page.rows.iter_mut().zip(values) {
+            row[i] = batch_value(c, v)?;
+        }
+    }
+    Ok(())
+}
+
+async fn run_rows(s: &State_, resource: &Resource, scope: Scoped, q: ListQuery, uri: &Uri, pins: Vec<(crate::site::Column, Value)>) -> Response {
+    let Some(position) = position_of(&q) else {
+        scope.rollback().await;
+        return reject(StatusCode::BAD_REQUEST, "BadRequest", "use one of cursor, before, last and page");
     };
-    let (scope, q) = match query(scope, q).await {
-        Ok(t) => t,
-        Err(r) => return r,
-    };
-    let position = match (&q.cursor, &q.before, flag(&q.last), q.page) {
-        (None, None, false, None) => Position::First,
-        (Some(c), None, false, None) => Position::After(c.clone()),
-        (None, Some(c), false, None) => Position::Before(c.clone()),
-        (None, None, true, None) => Position::Last,
-        (None, None, false, Some(n)) => Position::Page(n),
-        _ => {
+    let (filters, named) = match filters_of(uri) {
+        Ok(f) => f,
+        Err(e) => {
             scope.rollback().await;
-            return reject(StatusCode::BAD_REQUEST, "BadRequest", "use one of cursor, before, last and page");
+            return error_response(e);
         }
     };
-    let mut request = ListRequest { position, limit: q.limit, sort: q.sort, q: q.q, found: None };
+    let mut request = ListRequest { limit: q.limit, sort: q.sort, q: q.q, filters, named, pins, ..ListRequest::new(position) };
     let out = async {
-        list::check_request(resource, &request)?;
-        request.found = found_keys(&s, resource, &scope, request.q.as_deref()).await?;
-        let page = list::list(&s.site, resource, scope.executor(), s.target, &request).await?;
+        list::check_request(&s.site, resource, &request)?;
+        request.found = found_keys(s, resource, &scope, request.q.as_deref()).await?;
+        let mut page = list::list(&s.site, resource, scope.executor(), s.target, &request).await?;
+        fill_batch(s, resource, &scope, &mut page).await?;
         // The function ran once: its keys give the count too, so the count request need not call it again.
         let total = match &request.found {
-            Some(found) => Some(list::count(&s.site, resource, scope.executor(), s.target, None, Some(found), true).await?),
+            Some(found) => {
+                let counted = ListRequest { q: None, found: Some(found.clone()), ..request.clone() };
+                Some(list::count(&s.site, resource, scope.executor(), s.target, &counted, true).await?)
+            }
             None => None,
         };
         Ok::<_, ListError>((page, total))
@@ -301,8 +381,25 @@ async fn rows(State(s): Shared, user: Option<Extension<User>>, Path(name): Path<
     .await
 }
 
-/// The count of a list, a separate request after the rows: capped at 10,000, or exact when `exact=1`.
-async fn counts(State(s): Shared, user: Option<Extension<User>>, Path(name): Path<String>, q: Result<Query<ListQuery>, QueryRejection>) -> Response {
+async fn run_counts(s: &State_, resource: &Resource, scope: Scoped, q: ListQuery, uri: &Uri, pins: Vec<(crate::site::Column, Value)>) -> Response {
+    let (filters, named) = match filters_of(uri) {
+        Ok(f) => f,
+        Err(e) => {
+            scope.rollback().await;
+            return error_response(e);
+        }
+    };
+    let mut request = ListRequest { sort: None, q: q.q, filters, named, pins, ..ListRequest::new(Position::First) };
+    let out = async {
+        list::check_request(&s.site, resource, &request)?;
+        request.found = found_keys(s, resource, &scope, request.q.as_deref()).await?;
+        list::count(&s.site, resource, scope.executor(), s.target, &request, flag(&q.exact)).await
+    }
+    .await;
+    finish(scope, out, |total| Json(json!({"ok": true, "resource": resource.name, "count": total.count, "capped": total.capped})).into_response()).await
+}
+
+async fn rows(State(s): Shared, user: Option<Extension<User>>, Path(name): Path<String>, uri: Uri, q: Result<Query<ListQuery>, QueryRejection>) -> Response {
     let (scope, resource) = match open_resource(&s, user, &name).await {
         Ok(t) => t,
         Err(r) => return *r,
@@ -311,12 +408,95 @@ async fn counts(State(s): Shared, user: Option<Extension<User>>, Path(name): Pat
         Ok(t) => t,
         Err(r) => return r,
     };
-    let found = match found_keys(&s, resource, &scope, q.q.as_deref()).await {
-        Ok(f) => f,
-        Err(e) => return finish(scope, Err::<(), _>(e), |_| unreachable!()).await,
+    run_rows(&s, resource, scope, q, &uri, Vec::new()).await
+}
+
+/// The count of a list, a separate request after the rows: capped at 10,000, or exact when `exact=1`.
+async fn counts(State(s): Shared, user: Option<Extension<User>>, Path(name): Path<String>, uri: Uri, q: Result<Query<ListQuery>, QueryRejection>) -> Response {
+    let (scope, resource) = match open_resource(&s, user, &name).await {
+        Ok(t) => t,
+        Err(r) => return *r,
     };
-    let out = list::count(&s.site, resource, scope.executor(), s.target, q.q.as_deref(), found.as_deref(), flag(&q.exact)).await;
-    finish(scope, out, |total| Json(json!({"ok": true, "resource": resource.name, "count": total.count, "capped": total.capped})).into_response()).await
+    let (scope, q) = match query(scope, q).await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    run_counts(&s, resource, scope, q, &uri, Vec::new()).await
+}
+
+/// The preamble of a tab route: the parent (read permission), the tab (404), the child (read permission),
+/// and the pins that fix the child rows to the parent record.
+async fn open_tab<'a>(s: &'a State_, user: Option<Extension<User>>, name: &str, raw: &str, rel: &str) -> Result<(Scoped, Related<'a>, Vec<(crate::site::Column, Value)>), Box<Response>> {
+    let (user, scope, grants) = authorize(s, user).await?;
+    let Some(parent) = s.site.resource(name) else {
+        scope.rollback().await;
+        return Err(Box::new(reject(StatusCode::NOT_FOUND, "NotFound", &format!("no resource {name:?}"))));
+    };
+    for r in [Some(parent), s.site.plan_related(parent, rel).map(|r| r.child)].into_iter().flatten() {
+        if !r.allow.contains(&Op::Read) {
+            return Err(Box::new(deny(&s.site, scope, &user, &r.name, json!({"reason": "allow"})).await));
+        }
+        if !s.site.allows(&grants, r, Op::Read) {
+            return Err(Box::new(deny(&s.site, scope, &user, &r.name, json!({"needs": s.site.requires(r, Op::Read)})).await));
+        }
+    }
+    let Some(related) = s.site.plan_related(parent, rel) else {
+        scope.rollback().await;
+        return Err(Box::new(reject(StatusCode::NOT_FOUND, "NotFound", &format!("{name:?} has no tab {rel:?}"))));
+    };
+    let types: Vec<_> = parent.key_columns.iter().map(|c| c.ty.ty).collect();
+    let key = match key::decode(&types, raw) {
+        Ok(k) => k,
+        Err(m) => {
+            scope.rollback().await;
+            return Err(Box::new(reject(StatusCode::BAD_REQUEST, "BadRequest", &m)));
+        }
+    };
+    match list::parent_values(&s.site, parent, &related, scope.executor(), s.target, &key).await {
+        Ok(Some(values)) => {
+            let pins = related.child_to.iter().cloned().zip(values).collect();
+            Ok((scope, related, pins))
+        }
+        Ok(None) => {
+            scope.rollback().await;
+            Err(Box::new(reject(StatusCode::NOT_FOUND, "NotFound", "no such record")))
+        }
+        Err(e) => {
+            scope.rollback().await;
+            Err(Box::new(error_response(e)))
+        }
+    }
+}
+
+async fn tab_rows(State(s): Shared, user: Option<Extension<User>>, Path((name, _, rel)): Path<(String, String, String)>, uri: Uri, q: Result<Query<ListQuery>, QueryRejection>) -> Response {
+    let raw = tab_key(&uri);
+    let (scope, related, pins) = match open_tab(&s, user, &name, &raw, &rel).await {
+        Ok(t) => t,
+        Err(r) => return *r,
+    };
+    let (scope, q) = match query(scope, q).await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    run_rows(&s, related.child, scope, q, &uri, pins).await
+}
+
+async fn tab_counts(State(s): Shared, user: Option<Extension<User>>, Path((name, _, rel)): Path<(String, String, String)>, uri: Uri, q: Result<Query<ListQuery>, QueryRejection>) -> Response {
+    let raw = tab_key(&uri);
+    let (scope, related, pins) = match open_tab(&s, user, &name, &raw, &rel).await {
+        Ok(t) => t,
+        Err(r) => return *r,
+    };
+    let (scope, q) = match query(scope, q).await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    run_counts(&s, related.child, scope, q, &uri, pins).await
+}
+
+/// The raw key segment of `/resources/<name>/<key>/<rel>`: `Path` decodes it, and then a `,` in a value cannot be told from the separator.
+fn tab_key(uri: &Uri) -> String {
+    uri.path().rsplit('/').nth(1).unwrap_or_default().to_owned()
 }
 
 /// One record: its fields, and a link to each to-one target that the user may read.
@@ -372,17 +552,9 @@ async fn detail(State(s): Shared, user: Option<Extension<User>>, Path((name, _))
             scope.rollback().await;
             reject(StatusCode::NOT_FOUND, "NotFound", "no such record")
         }
-        Err(ListError::Bad(m)) => {
+        Err(e) => {
             scope.rollback().await;
-            reject(StatusCode::BAD_REQUEST, "BadRequest", &m)
-        }
-        Err(ListError::Engine(m)) => {
-            scope.rollback().await;
-            database_error(&m)
-        }
-        Err(ListError::Timeout(m)) => {
-            scope.rollback().await;
-            timeout_error(m)
+            error_response(e)
         }
     }
 }

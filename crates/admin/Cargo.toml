@@ -12,6 +12,7 @@ name = "monorm_admin"
 [dependencies]
 monorm-core = { path = "../core", default-features = false }
 monorm-engine = { path = "../engine", default-features = false }
+form_urlencoded = "1"
 axum = { version = "0.8", default-features = false, features = ["json", "query", "matched-path", "tokio", "http1"] }
 tower = { version = "0.5", default-features = false, features = ["util"] }
 http-body-util = "0.1"

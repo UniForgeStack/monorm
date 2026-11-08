@@ -5,7 +5,8 @@
 //! a cursor names exactly one position.
 
 use monorm_core::dialect::{Dialect, Target};
-use monorm_core::ir::{ColType, Operation, ValueType};
+use monorm_core::ir::{ColType, EnumStorage, Operation, ValueType};
+use monorm_core::schema::Schema;
 use monorm_engine::db::Executor;
 use monorm_engine::exec::{self, Outcome};
 use monorm_engine::plan::{Plan, Planner};
@@ -15,12 +16,14 @@ use serde_json::{json, Value};
 
 use crate::json;
 use crate::key;
-use crate::site::{Column, Mode, OrderColumn, Resource, Site, COUNT_CAP, LARGE_TABLE_ROWS, MAX_PAGE_SIZE};
+use crate::site::{Column, Filter, FilterKind, Mode, OrderColumn, Related, Resource, Site, Source, COUNT_CAP, LARGE_TABLE_ROWS, MAX_PAGE_SIZE};
 
-/// Why a list failed: the request is wrong, the engine failed, or a statement ran past its time limit.
+/// Why a list failed: the request is wrong (`Bad`) or a value in it does not fit (`Invalid`),
+/// the engine failed, or a statement ran past its time limit.
 #[derive(Debug)]
 pub enum ListError {
     Bad(String),
+    Invalid(String),
     Engine(String),
     Timeout(String),
 }
@@ -33,6 +36,8 @@ pub struct Page {
     pub next: Option<String>,
     /// The cursor of the page before this one (`before=`), or none on the first page.
     pub prev: Option<String>,
+    /// The columns whose values a host function gives: the row has a null there until the caller fills it.
+    pub batch: Vec<usize>,
 }
 
 /// Which page of the keyset order a request asks for.
@@ -56,6 +61,52 @@ pub struct ListRequest {
     pub q: Option<String>,
     /// The keys that a `search_with` function found, in place of the search fields.
     pub found: Option<Vec<Vec<Value>>>,
+    /// The filters of the filter bar: all of them hold.
+    pub filters: Vec<FilterClause>,
+    /// `(filter, choice)` of the named filters. A named filter not in the list takes its default.
+    pub named: Vec<(String, String)>,
+    /// Fixed equalities, as the JSON of a row cell: the rows of one record's tab.
+    pub pins: Vec<(Column, Value)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterOp {
+    Eq,
+    Gt,
+    Gte,
+    Lt,
+    Lte,
+    Empty,
+    NotEmpty,
+}
+
+impl FilterOp {
+    pub fn parse(text: &str) -> Option<FilterOp> {
+        Some(match text {
+            "eq" => FilterOp::Eq,
+            "gt" => FilterOp::Gt,
+            "gte" => FilterOp::Gte,
+            "lt" => FilterOp::Lt,
+            "lte" => FilterOp::Lte,
+            "empty" => FilterOp::Empty,
+            "notempty" => FilterOp::NotEmpty,
+            _ => return None,
+        })
+    }
+}
+
+/// One condition of the filter bar: `f.status=a&f.status=b` is one clause with two values.
+#[derive(Debug, Clone)]
+pub struct FilterClause {
+    pub name: String,
+    pub op: FilterOp,
+    pub values: Vec<String>,
+}
+
+impl ListRequest {
+    pub fn new(position: Position) -> ListRequest {
+        ListRequest { position, limit: None, sort: None, q: None, found: None, filters: Vec::new(), named: Vec::new(), pins: Vec::new() }
+    }
 }
 
 pub struct Total {
@@ -92,8 +143,12 @@ impl Params for Binds {
     }
 }
 
+/// A column as an expression: a field, or the expression of a computed column.
 fn col(c: &Column) -> Value {
-    json!({"t": "col", "path": c.path, "name": c.field})
+    match &c.source {
+        Source::Expr(e) => e.clone(),
+        _ => json!({"t": "col", "path": c.path, "name": c.field}),
+    }
 }
 
 fn engine(e: Error) -> ListError {
@@ -292,6 +347,204 @@ fn search_filters(site: &Site, resource: &Resource, q: Option<&str>, found: Opti
     }
 }
 
+fn invalid(m: String) -> ListError {
+    ListError::Invalid(m)
+}
+
+fn parse_error(text: &str, what: &str) -> String {
+    format!("{text:?} is not {what}")
+}
+
+/// The text of a filter value as a bind value of the column type.
+fn filter_bind(schema: &Schema, ty: ValueType, text: &str) -> Result<Bind, String> {
+    if let Some(e) = ty.enum_idx.and_then(|i| schema.enums.get(i as usize)) {
+        let Some(v) = e.values.iter().find(|v| v.name == text) else { return Err(format!("{text:?} is not a value of {}", e.name)) };
+        return match e.storage {
+            EnumStorage::Int => v.value.as_i64().and_then(|n| i32::try_from(n).ok()).map(|n| Bind::Int(Some(n))).ok_or_else(|| parse_error(text, "an integer enum value")),
+            _ => Ok(Bind::String(Some(v.value.as_str().unwrap_or(&v.name).to_owned()))),
+        };
+    }
+    let t = text.trim();
+    Ok(match ty.ty {
+        ColType::Int => Bind::Int(Some(t.parse().map_err(|_| parse_error(text, "an integer"))?)),
+        ColType::BigInt => Bind::BigInt(Some(t.parse().map_err(|_| parse_error(text, "an integer"))?)),
+        ColType::Float => Bind::Double(Some(t.parse().map_err(|_| parse_error(text, "a number"))?)),
+        ColType::Bool => Bind::Bool(Some(match t {
+            "true" | "1" => true,
+            "false" | "0" => false,
+            _ => return Err(parse_error(text, "true or false")),
+        })),
+        ColType::String | ColType::Text => Bind::String(Some(text.to_owned())),
+        ColType::DateTime => {
+            let at = chrono::DateTime::parse_from_rfc3339(t).ok().or_else(|| {
+                let day = chrono::NaiveDate::parse_from_str(t, "%Y-%m-%d").ok()?;
+                Some(day.and_hms_opt(0, 0, 0)?.and_utc().fixed_offset())
+            });
+            Bind::ChronoDateTimeWithTimeZone(Some(at.ok_or_else(|| parse_error(text, "a date and time (2026-01-31T10:00:00Z) or a date (2026-01-31)"))?))
+        }
+        ColType::Date => Bind::ChronoDate(Some(chrono::NaiveDate::parse_from_str(t, "%Y-%m-%d").map_err(|_| parse_error(text, "a date (2026-01-31)"))?)),
+        ColType::Uuid => Bind::Uuid(Some(t.parse().map_err(|_| parse_error(text, "a UUID"))?)),
+        ColType::Json | ColType::Decimal => return Err(format!("a filter does not take a {:?} field", ty.ty)),
+    })
+}
+
+pub fn ranged(ty: ValueType) -> bool {
+    !ty.array && ty.enum_idx.is_none() && matches!(ty.ty, ColType::Int | ColType::BigInt | ColType::Float | ColType::DateTime | ColType::Date)
+}
+
+pub fn is_text(ty: ValueType) -> bool {
+    ty.enum_idx.is_none() && matches!(ty.ty, ColType::String | ColType::Text)
+}
+
+fn null_of(item: Value, neg: bool) -> Value {
+    json!({"t": "is_null", "item": item, "neg": neg})
+}
+
+fn not(item: Value) -> Value {
+    json!({"t": "not", "item": item})
+}
+
+/// The condition of one clause on a column.
+fn field_expr(site: &Site, f: &Filter, c: &Column, clause: &FilterClause, binds: &mut Binds) -> Result<Value, ListError> {
+    let item = col(c);
+    let one = || match clause.values.as_slice() {
+        [v] => Ok(v.as_str()),
+        _ => Err(invalid(format!("filter {:?}: {} takes one value", f.name, clause_op(clause.op)))),
+    };
+    let bind = |binds: &mut Binds, text: &str| filter_bind(&site.schema, c.ty, text).map(|b| binds.push(b)).map_err(|m| invalid(format!("filter {:?}: {m}", f.name)));
+    Ok(match clause.op {
+        FilterOp::Eq => {
+            if clause.values.is_empty() {
+                return Err(invalid(format!("filter {:?} has no value", f.name)));
+            }
+            let mut params = Vec::new();
+            for v in &clause.values {
+                params.push(bind(binds, v)?);
+            }
+            if params.len() == 1 {
+                json!({"t": "cmp", "op": "eq", "l": item, "r": params[0]})
+            } else {
+                json!({"t": "in", "item": item, "values": params})
+            }
+        }
+        FilterOp::Gt | FilterOp::Gte | FilterOp::Lt | FilterOp::Lte => {
+            if !ranged(c.ty) {
+                return Err(invalid(format!("filter {:?}: {} is for numbers and dates", f.name, clause_op(clause.op))));
+            }
+            let op = match clause.op {
+                FilterOp::Gt => "gt",
+                FilterOp::Gte => "ge",
+                FilterOp::Lt => "lt",
+                _ => "le",
+            };
+            json!({"t": "cmp", "op": op, "l": item, "r": bind(binds, one()?)?})
+        }
+        FilterOp::Empty | FilterOp::NotEmpty => {
+            if !clause.values.is_empty() {
+                return Err(invalid(format!("filter {:?}: {} takes no value", f.name, clause_op(clause.op))));
+            }
+            if !c.nullable && !is_text(c.ty) {
+                return Err(invalid(format!("filter {:?}: the field is never empty", f.name)));
+            }
+            let empty = if is_text(c.ty) {
+                json!({"t": "or", "items": [null_of(item.clone(), false), {"t": "cmp", "op": "eq", "l": item, "r": binds.push(Bind::String(Some(String::new())))}]})
+            } else {
+                null_of(item, false)
+            };
+            if clause.op == FilterOp::Empty { empty } else { not(empty) }
+        }
+    })
+}
+
+fn clause_op(op: FilterOp) -> &'static str {
+    match op {
+        FilterOp::Eq => "eq",
+        FilterOp::Gt => "gt",
+        FilterOp::Gte => "gte",
+        FilterOp::Lt => "lt",
+        FilterOp::Lte => "lte",
+        FilterOp::Empty => "empty",
+        FilterOp::NotEmpty => "notempty",
+    }
+}
+
+/// The condition of one clause on a to-one relation: the value is an encoded key of the target.
+fn relation_expr(f: &Filter, from: &[Column], key: &[Column], clause: &FilterClause, binds: &mut Binds) -> Result<Value, ListError> {
+    let empty = || json!({"t": "and", "items": from.iter().map(|c| null_of(col(c), false)).collect::<Vec<_>>()});
+    match clause.op {
+        FilterOp::Eq => {
+            if clause.values.is_empty() {
+                return Err(invalid(format!("filter {:?} has no value", f.name)));
+            }
+            let types: Vec<ColType> = key.iter().map(|c| c.ty.ty).collect();
+            let mut alternatives = Vec::new();
+            for raw in &clause.values {
+                let parts = key::decode(&types, raw).map_err(|m| invalid(format!("filter {:?}: {m}", f.name)))?;
+                let mut items = Vec::new();
+                for ((c, k), v) in from.iter().zip(key).zip(&parts) {
+                    let b = json::bind(k.ty.ty, v).map_err(|m| invalid(format!("filter {:?}: {m}", f.name)))?;
+                    items.push(json!({"t": "cmp", "op": "eq", "l": col(c), "r": binds.push(b)}));
+                }
+                alternatives.push(json!({"t": "and", "items": items}));
+            }
+            Ok(json!({"t": "or", "items": alternatives}))
+        }
+        FilterOp::Empty | FilterOp::NotEmpty if clause.values.is_empty() => Ok(if clause.op == FilterOp::Empty { empty() } else { not(empty()) }),
+        _ => Err(invalid(format!("filter {:?}: a relation filter takes values, or empty or notempty", f.name))),
+    }
+}
+
+/// The conditions of the filter bar, the named filters (with their defaults) and the pins of a request.
+/// No database: a wrong filter fails the request before it runs.
+fn filter_exprs(site: &Site, resource: &Resource, request: &ListRequest, binds: &mut Binds) -> Result<Vec<Value>, ListError> {
+    let mut out = Vec::new();
+    for clause in &request.filters {
+        let Some(f) = resource.filters.iter().find(|f| f.name == clause.name) else {
+            return Err(ListError::Bad(format!("filter: {:?} is not a filter of this list", clause.name)));
+        };
+        out.push(match &f.kind {
+            FilterKind::Field(c) => field_expr(site, f, c, clause, binds)?,
+            FilterKind::Relation { from, key, .. } => relation_expr(f, from, key, clause, binds)?,
+        });
+    }
+    for (name, _) in &request.named {
+        if !resource.named_filters.iter().any(|n| n.name == *name) {
+            return Err(ListError::Bad(format!("filter: {name:?} is not a named filter of this list")));
+        }
+    }
+    for nf in &resource.named_filters {
+        let choice = match request.named.iter().find(|(n, _)| *n == nf.name) {
+            Some((_, c)) if c == "all" => continue,
+            Some((_, c)) => c.as_str(),
+            None => match &nf.default {
+                Some(d) => d.as_str(),
+                None => continue,
+            },
+        };
+        let Some(c) = nf.choices.iter().find(|c| c.name == choice) else {
+            return Err(invalid(format!("filter {:?}: {choice:?} is not a choice", nf.name)));
+        };
+        out.push(c.expr.clone());
+    }
+    for (c, v) in &request.pins {
+        if v.is_null() {
+            // A parent without a value for the key joins no child row.
+            out.push(json!({"t": "and", "items": [null_of(col(c), false), null_of(col(c), true)]}));
+            continue;
+        }
+        let b = json::bind(c.ty.ty, v).map_err(ListError::Engine)?;
+        out.push(json!({"t": "cmp", "op": "eq", "l": col(c), "r": binds.push(b)}));
+    }
+    Ok(out)
+}
+
+/// Every condition of a request: the search, then the filters. `None`: no row matches.
+fn where_filters(site: &Site, resource: &Resource, request: &ListRequest, binds: &mut Binds) -> Result<Option<Vec<Value>>, ListError> {
+    let Some(mut filters) = search_filters(site, resource, request.q.as_deref(), request.found.as_deref(), binds)? else { return Ok(None) };
+    filters.extend(filter_exprs(site, resource, request, binds)?);
+    Ok(Some(filters))
+}
+
 async fn run_select(site: &Site, conn: &dyn Executor, target: Target, op: Value, binds: Binds) -> Result<Box<exec::Selected>, ListError> {
     let op: Operation = serde_json::from_value(op).map_err(|e| ListError::Engine(e.to_string()))?;
     let plan = Planner::plan(&site.schema, target, &op, &binds).map_err(engine)?;
@@ -311,10 +564,10 @@ async fn run_count(site: &Site, conn: &dyn Executor, target: Target, op: Value, 
     }
 }
 
-/// The count of the rows that match the search, capped at `COUNT_CAP`, or exact.
-pub async fn count(site: &Site, resource: &Resource, conn: &dyn Executor, target: Target, q: Option<&str>, found: Option<&[Vec<Value>]>, exact: bool) -> Result<Total, ListError> {
+/// The count of the rows that match the search and the filters of the request, capped at `COUNT_CAP`, or exact.
+pub async fn count(site: &Site, resource: &Resource, conn: &dyn Executor, target: Target, request: &ListRequest, exact: bool) -> Result<Total, ListError> {
     let mut binds = Binds::default();
-    let Some(filters) = search_filters(site, resource, q, found, &mut binds)? else { return Ok(Total { count: 0, capped: false }) };
+    let Some(filters) = where_filters(site, resource, request, &mut binds)? else { return Ok(Total { count: 0, capped: false }) };
     let model = &site.schema.model(resource.model).ir.name;
     let mut op = json!({"op": "count", "model": model, "filters": filters});
     if !exact {
@@ -336,13 +589,14 @@ async fn is_large(site: &Site, resource: &Resource, conn: &dyn Executor, target:
 }
 
 /// The checks of a request that need no database, so that a bad request never reaches the bridge.
-pub fn check_request(resource: &Resource, request: &ListRequest) -> Result<(), ListError> {
+pub fn check_request(site: &Site, resource: &Resource, request: &ListRequest) -> Result<(), ListError> {
     page_limit(resource, request)?;
     effective_order(resource, request.sort.as_deref())?;
     if request.q.as_deref().is_some_and(|q| q.trim().chars().count() > crate::site::MAX_SEARCH_LEN) {
         return Err(ListError::Bad(format!("the search text has at most {} characters", crate::site::MAX_SEARCH_LEN)));
     }
-    Ok(())
+    // The values bind to a throwaway list: the check needs the errors only.
+    filter_exprs(site, resource, request, &mut Binds::default()).map(|_| ())
 }
 
 fn page_limit(resource: &Resource, request: &ListRequest) -> Result<usize, ListError> {
@@ -359,7 +613,7 @@ pub async fn list(site: &Site, resource: &Resource, conn: &dyn Executor, target:
     if !sort_text.is_empty() && !resource.sortable_explicit {
         let indexed = |o: &OrderColumn| resource.sortable.iter().any(|s| s.column.label == o.column.label && s.indexed);
         let first = order.iter().find(|o| !resource.key_columns.iter().any(|k| k.label == o.column.label) && !indexed(o));
-        if let Some(o) = first {
+        if let Some(o) = first.filter(|o| o.column.source == Source::Field) {
             if is_large(site, resource, conn, target).await? {
                 return Err(ListError::Bad(format!("sort: {:?} has no index, and the table has more than {LARGE_TABLE_ROWS} rows", o.column.label)));
             }
@@ -387,21 +641,23 @@ pub async fn list(site: &Site, resource: &Resource, conn: &dyn Executor, target:
         }
         offset = (n - 1).checked_mul(limit).filter(|o| i64::try_from(*o).is_ok()).ok_or_else(|| ListError::Bad("page is too large".into()))?;
         if offset > 0 {
-            let total = count(site, resource, conn, target, request.q.as_deref(), request.found.as_deref(), false).await?;
+            let total = count(site, resource, conn, target, request, false).await?;
             if total.capped {
                 return Err(ListError::Bad(format!("page needs an exact count: more than {COUNT_CAP} rows match")));
             }
         }
     }
-    let Some(search) = search_filters(site, resource, request.q.as_deref(), request.found.as_deref(), &mut binds)? else {
-        return Ok(Page { rows: vec![], keys: vec![], next: None, prev: None });
+    let batch: Vec<usize> = resource.columns.iter().enumerate().filter(|(_, c)| matches!(c.source, Source::Batch(_))).map(|(i, _)| i).collect();
+    let Some(search) = where_filters(site, resource, request, &mut binds)? else {
+        return Ok(Page { rows: vec![], keys: vec![], next: None, prev: None, batch });
     };
     filters.extend(search);
     let model = &site.schema.model(resource.model).ir.name;
+    let selected: Vec<usize> = (0..resource.columns.len()).filter(|i| !batch.contains(i)).collect();
     let mut op = json!({
         "op": "select",
         "model": model,
-        "columns": resource.columns.iter().map(|c| json!({"t": "expr", "expr": col(c)})).collect::<Vec<_>>(),
+        "columns": selected.iter().map(|&i| json!({"t": "expr", "expr": col(&resource.columns[i])})).collect::<Vec<_>>(),
         "order": used.iter().map(|o| json!({"expr": col(&o.column), "desc": o.desc})).collect::<Vec<_>>(),
         "filters": filters,
         "limit": limit + 1,
@@ -409,16 +665,16 @@ pub async fn list(site: &Site, resource: &Resource, conn: &dyn Executor, target:
     if offset > 0 {
         op["offset"] = json!(offset);
     }
-    let selected = run_select(site, conn, target, op, binds).await?;
-    let types = &selected.plan.types;
-    let total = selected.rows.len();
+    let fetched = run_select(site, conn, target, op, binds).await?;
+    let types = &fetched.plan.types;
+    let total = fetched.rows.len();
     let more = total > limit;
     let mut rows = Vec::with_capacity(total.min(limit));
     for r in 0..total.min(limit) {
-        let mut row = Vec::with_capacity(types.len());
+        let mut row = vec![Value::Null; resource.columns.len()];
         for (c, ty) in types.iter().enumerate() {
-            let cell = selected.rows.cell(r, c, *ty).map_err(|e| ListError::Engine(e.to_string()))?;
-            row.push(json::cell(&site.schema, *ty, cell));
+            let cell = fetched.rows.cell(r, c, *ty).map_err(|e| ListError::Engine(e.to_string()))?;
+            row[selected[c]] = json::cell(&site.schema, *ty, cell);
         }
         rows.push(Value::Array(row));
     }
@@ -440,7 +696,37 @@ pub async fn list(site: &Site, resource: &Resource, conn: &dyn Executor, target:
         Position::Last => (None, more.then_some(first_cursor).flatten()),
     };
     let keys = rows.iter().map(|r| key::encode(&resource.key_positions.iter().map(|&p| r[p].clone()).collect::<Vec<_>>())).collect();
-    Ok(Page { rows, keys, next, prev })
+    Ok(Page { rows, keys, next, prev, batch })
+}
+
+/// The values of the columns that a to-many relation joins on, in the record with this key, or none when no row has the key.
+pub async fn parent_values(site: &Site, parent: &Resource, related: &Related<'_>, conn: &dyn Executor, target: Target, key: &[Value]) -> Result<Option<Vec<Value>>, ListError> {
+    if key.len() != parent.key_columns.len() {
+        return Err(ListError::Bad("the key does not fit this resource".into()));
+    }
+    let mut binds = Vec::new();
+    for (c, v) in parent.key_columns.iter().zip(key) {
+        binds.push(json::bind(c.ty.ty, v).map_err(ListError::Bad)?);
+    }
+    let items: Vec<Value> = parent.key_columns.iter().enumerate().map(|(i, c)| json!({"t": "cmp", "op": "eq", "l": col(c), "r": {"t": "param", "i": i}})).collect();
+    let model = &site.schema.model(parent.model).ir.name;
+    let op = json!({
+        "op": "select",
+        "model": model,
+        "columns": related.parent_from.iter().map(|c| json!({"t": "expr", "expr": col(c)})).collect::<Vec<_>>(),
+        "filters": [{"t": "and", "items": items}],
+        "limit": 1,
+    });
+    let selected = run_select(site, conn, target, op, Binds(binds)).await?;
+    if selected.rows.is_empty() {
+        return Ok(None);
+    }
+    let mut row = Vec::new();
+    for (c, ty) in selected.plan.types.iter().enumerate() {
+        let cell = selected.rows.cell(0, c, *ty).map_err(|e| ListError::Engine(e.to_string()))?;
+        row.push(json::cell(&site.schema, *ty, cell));
+    }
+    Ok(Some(row))
 }
 
 /// The detail columns of the record with this key, as JSON cells, or none when no row has the key.

@@ -8,6 +8,7 @@
 pub mod audit;
 pub mod auth;
 pub mod bridge;
+pub mod catalog;
 pub mod config;
 pub mod guard;
 pub mod inproc;

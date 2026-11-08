@@ -83,6 +83,7 @@ pub fn with_settings(driver: Arc<dyn Driver>, settings: &[(String, String)], log
 /// Checks the admin tables, wraps the driver for `db_settings`, binds the socket and serves.
 pub async fn serve(site: Arc<Site>, driver: Arc<dyn Driver>, config: ServeConfig, log: Logger) -> Result<Server, String> {
     tables::check(&site.schema, driver.as_ref()).await?;
+    let warnings = crate::catalog::prefix_warnings(&site, driver.as_ref()).await.unwrap_or_else(|e| vec![e]);
     let conn = with_settings(driver, &config.db_settings, &log);
     let listener = tokio::net::TcpListener::bind((config.host.as_str(), config.port))
         .await
@@ -92,7 +93,7 @@ pub async fn serve(site: Arc<Site>, driver: Arc<dyn Driver>, config: ServeConfig
     options.log = log.clone();
     options.auth = config.auth.clone();
     let stopping = options.draining.clone();
-    for warning in &site.warnings {
+    for warning in site.warnings.iter().chain(&warnings) {
         log.line("warn", warning, json!({}));
     }
     let app = service::service(site, conn, options);

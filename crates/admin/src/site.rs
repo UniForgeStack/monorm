@@ -1,14 +1,16 @@
 //! `Site::build`: the resources of an admin, checked against the prepared schema.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use monorm_core::dialect::Dialect;
-use monorm_core::ir::{ColType, ConstraintIr, FieldIr, ModelIr, RelKind, ValueType};
+use monorm_core::dialect::{Dialect, Target};
+use monorm_core::ir::{ColType, ConstraintIr, FieldIr, ModelIr, Operation, RelKind, ValueType};
 use monorm_core::schema::Schema;
+use monorm_engine::plan::{Plan, Planner};
+use monorm_engine::NoParams;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -95,7 +97,7 @@ struct ResourceConfig {
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct ListConfig {
-    /// Field names; `author.name` reaches a field through to-one relations.
+    /// Field names; `author.name` reaches a field through to-one relations. A computed or aggregate column is named here too.
     columns: Option<Vec<String>>,
     /// Field names of the model, `-created_at` for descending.
     order: Option<Vec<String>>,
@@ -106,6 +108,90 @@ struct ListConfig {
     search_with: Option<String>,
     /// Field names that the sort headers may use. Default: the list columns that can sort.
     sortable: Option<Vec<String>>,
+    /// The title of a column, by column name.
+    #[serde(default)]
+    labels: BTreeMap<String, String>,
+    /// What an empty value shows in every column of the list.
+    empty: Option<String>,
+    /// What an empty value shows in one column, by column name.
+    #[serde(default)]
+    empty_fields: BTreeMap<String, String>,
+    /// Fields that the filter bar offers: a field, `author.name` (a field of a to-one relation) or a to-one relation.
+    #[serde(default)]
+    filters: Vec<String>,
+    /// Filters made of prepared expressions: one choice at a time.
+    #[serde(default)]
+    named_filters: Vec<NamedFilterConfig>,
+    /// Columns that a SQL expression or a host function computes.
+    #[serde(default)]
+    computed: Vec<ComputedConfig>,
+    /// Columns that count or sum the rows of a to-many relation.
+    #[serde(default)]
+    aggregates: Vec<AggregateConfig>,
+    /// The to-many relations that the detail page shows as tabs. Default: every one that leads to a resource.
+    tabs: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NamedFilterConfig {
+    name: String,
+    label: Option<String>,
+    choices: Vec<NamedChoiceConfig>,
+    /// The choice that applies when the URL names none. None: all rows.
+    default: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NamedChoiceConfig {
+    name: String,
+    label: Option<String>,
+    /// The condition, as an expression of the engine IR.
+    expr: Value,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ComputedConfig {
+    name: String,
+    label: Option<String>,
+    /// The declared type: `int`, `bigint`, `float`, `bool`, `string`, `text`, `datetime`, `date`, `uuid`, `json` or `decimal`.
+    #[serde(rename = "type")]
+    ty: String,
+    /// Whether the value may be null. Default: true.
+    nullable: Option<bool>,
+    /// A SQL expression, as an expression of the engine IR.
+    expr: Option<Value>,
+    /// The name of a host function: it takes `{"keys": [...]}` for one page and returns one value per key.
+    function: Option<String>,
+    /// Whether the column has a sort header. It needs `expr` and `nullable: false`.
+    sortable: Option<bool>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AggregateConfig {
+    name: String,
+    label: Option<String>,
+    /// A to-many relation of the model.
+    relation: String,
+    /// `count`, `sum`, `min`, `max` or `avg`.
+    #[serde(rename = "fn")]
+    function: String,
+    /// A field of the related model: every function but `count` needs one.
+    field: Option<String>,
+}
+
+/// Where the value of a column comes from.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Source {
+    /// A field of the model or of a model reached through to-one relations.
+    Field,
+    /// An expression of the engine IR, part of the list statement.
+    Expr(Value),
+    /// A host function: one call for each page.
+    Batch(String),
 }
 
 /// One column of a list: a field of the model or of a model reached through to-one relations.
@@ -117,6 +203,7 @@ pub struct Column {
     pub field: String,
     pub ty: ValueType,
     pub nullable: bool,
+    pub source: Source,
 }
 
 #[derive(Debug, Clone)]
@@ -194,8 +281,66 @@ pub struct Resource {
     pub sortable: Vec<Sortable>,
     /// The config names the sort columns: no table size rule.
     pub sortable_explicit: bool,
+    /// The titles of columns that the config names.
+    pub labels: BTreeMap<String, String>,
+    /// What an empty value shows in the list.
+    pub empty: Option<String>,
+    pub empty_fields: BTreeMap<String, String>,
+    /// The filters of the filter bar.
+    pub filters: Vec<Filter>,
+    pub named_filters: Vec<NamedFilter>,
+    /// To-many relations that the detail page shows as tabs.
+    pub tabs: Vec<Tab>,
+    tabs_config: Option<Vec<String>>,
     /// Whether the table is large, and when it was read.
     large: Mutex<Option<(Instant, bool)>>,
+}
+
+/// What a filter reads.
+#[derive(Debug, Clone)]
+pub enum FilterKind {
+    Field(Column),
+    /// A to-one relation: the foreign key fields on this model, in the key order of the target, and the target key.
+    Relation { target: String, from: Vec<Column>, key: Vec<Column> },
+}
+
+#[derive(Debug, Clone)]
+pub struct Filter {
+    /// `status`, `author.name` or `author`: the name in the URL (`f.<name>`).
+    pub name: String,
+    pub kind: FilterKind,
+}
+
+#[derive(Debug, Clone)]
+pub struct NamedChoice {
+    pub name: String,
+    pub label: String,
+    pub expr: Value,
+}
+
+/// A filter with a few prepared conditions, one chosen at a time.
+#[derive(Debug, Clone)]
+pub struct NamedFilter {
+    pub name: String,
+    pub label: String,
+    pub choices: Vec<NamedChoice>,
+    pub default: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Tab {
+    /// The to-many relation.
+    pub name: String,
+    /// The name of the child resource.
+    pub target: String,
+}
+
+/// The rows of a to-many relation of one record: the child rows whose `child_to` equals the `parent_from` of the record.
+#[derive(Debug)]
+pub struct Related<'a> {
+    pub child: &'a Resource,
+    pub parent_from: Vec<Column>,
+    pub child_to: Vec<Column>,
 }
 
 impl Resource {
@@ -300,6 +445,19 @@ impl Site {
         for (r, l) in resources.iter_mut().zip(links) {
             r.links = l;
         }
+        let tabs: Vec<Vec<Tab>> = (0..resources.len()).map(|i| tabs_of(&schema, &resources, i)).collect::<Result<_, _>>()?;
+        for (r, t) in resources.iter_mut().zip(tabs) {
+            r.tabs = t;
+        }
+        for r in &resources {
+            for f in &r.filters {
+                if let FilterKind::Relation { target, .. } = &f.kind {
+                    if !resources.iter().any(|o| &o.name == target) {
+                        return err(format!("{}: filter {:?} leads to {target}, which is not a resource", r.name, f.name));
+                    }
+                }
+            }
+        }
         let meta_builds = AtomicUsize::new(0);
         for r in &mut resources {
             r.meta = meta::resource(&schema, r, &meta_builds);
@@ -346,6 +504,63 @@ impl Site {
     pub fn resource(&self, name: &str) -> Option<&Resource> {
         self.resources.iter().find(|r| r.name == name)
     }
+
+    /// The rows of the to-many relation `rel` of a record of `parent`: none when `rel` is not a tab of the resource.
+    pub fn plan_related<'a>(&'a self, parent: &Resource, rel: &str) -> Option<Related<'a>> {
+        let tab = parent.tabs.iter().find(|t| t.name == rel)?;
+        let child = self.resource(&tab.target)?;
+        let parent_model = self.schema.model(parent.model);
+        let relation = parent_model.ir.relations.iter().find(|r| r.name == rel)?;
+        let (parent_from, child_to) = (field_columns(&self.schema, parent.model, &relation.from)?, field_columns(&self.schema, child.model, &relation.to)?);
+        Some(Related { child, parent_from, child_to })
+    }
+}
+
+/// The columns of the fields that `names` (field or column names) point to.
+fn field_columns(schema: &Schema, model: usize, names: &[String]) -> Option<Vec<Column>> {
+    names
+        .iter()
+        .map(|n| {
+            let f = schema.model(model).ir.fields.iter().find(|f| f.name == *n || f.column == *n)?;
+            column(schema, model, &f.name).ok()
+        })
+        .collect()
+}
+
+/// The tabs of resource `i`: the to-many relations that lead to a resource, and are not a many-to-many.
+fn tabs_of(schema: &Schema, resources: &[Resource], i: usize) -> Result<Vec<Tab>, ConfigError> {
+    let r = &resources[i];
+    let model = schema.model(r.model);
+    let usable = |rel: &monorm_core::ir::RelationIr| -> Option<String> {
+        let (_, target) = model.relation(&rel.name).ok()?;
+        let child = resources.iter().find(|o| o.model == target)?;
+        (rel.kind == RelKind::Many && rel.through.is_none() && field_columns(schema, r.model, &rel.from).is_some() && field_columns(schema, child.model, &rel.to).is_some()).then(|| child.name.clone())
+    };
+    let mut out = Vec::new();
+    match &r.tabs_config {
+        None => {
+            for rel in &model.ir.relations {
+                if let Some(target) = usable(rel) {
+                    out.push(Tab { name: rel.name.clone(), target });
+                }
+            }
+        }
+        Some(names) => {
+            for n in names {
+                let Some(rel) = model.ir.relations.iter().find(|rel| rel.name == *n) else {
+                    return err(format!("{}: tabs has {n:?}, which is not a relation", r.name));
+                };
+                let Some(target) = usable(rel) else {
+                    return err(format!("{}: tab {n:?} needs a to-many relation (not a many-to-many) to a resource", r.name));
+                };
+                if out.iter().any(|t: &Tab| t.name == *n) {
+                    return err(format!("{}: tab {n:?} is listed twice", r.name));
+                }
+                out.push(Tab { name: rel.name.clone(), target });
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn normalize_prefix(prefix: &str) -> Result<String, ConfigError> {
@@ -426,11 +641,18 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
     let model = schema.model(idx);
     let name = model.ir.name.clone();
     let PermissionOptions { label, allow, split_delete } = permission_options(&name, config, strategy, site_label)?;
+    let extras = extra_columns(schema, idx, &name, list)?;
+    let extra = |n: &str| extras.columns.iter().find(|e| e.label == n).cloned();
     let mut columns = match &list.columns {
         Some(names) if names.is_empty() => return err(format!("{name}: list.columns is empty")),
-        Some(names) => names.iter().map(|n| column(schema, idx, n)).collect::<Result<Vec<_>, _>>()?,
+        Some(names) => names.iter().map(|n| extra(n).map_or_else(|| column(schema, idx, n), Ok)).collect::<Result<Vec<_>, _>>()?,
         None => model.ir.fields.iter().filter(|f| listable(f)).map(|f| column(schema, idx, &f.name)).collect::<Result<Vec<_>, _>>()?,
     };
+    for e in &extras.columns {
+        if !columns.iter().any(|c| c.label == e.label) {
+            columns.push(e.clone());
+        }
+    }
     let mut seen = BTreeSet::new();
     for c in &columns {
         if !seen.insert(c.label.clone()) {
@@ -483,7 +705,22 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
         return err(format!("{name}: group is empty"));
     }
     let search = search_fields(schema, idx, &name, list, warnings)?;
-    let sortable = sortable_columns(schema, idx, &name, list, &columns)?;
+    let mut sortable = sortable_columns(schema, idx, &name, list, &columns)?;
+    for c in columns.iter().filter(|c| extras.sortable.contains(&c.label)) {
+        sortable.push(Sortable { column: c.clone(), indexed: false });
+    }
+    for key in list.labels.keys().chain(list.empty_fields.keys()) {
+        if !columns.iter().any(|c| c.label == *key) && !detail.iter().any(|c| c.label == *key) {
+            return err(format!("{name}: labels and empty_fields name {key:?}, which is not a column"));
+        }
+    }
+    for text in list.labels.values().chain(list.empty_fields.values()).chain(&list.empty) {
+        if text.chars().count() > 80 {
+            return err(format!("{name}: a label or an empty text has at most 80 characters"));
+        }
+    }
+    let filters = filter_specs(schema, idx, &name, list)?;
+    let named_filters = named_filters(schema, idx, &name, list)?;
     Ok(Resource {
         model: idx,
         name,
@@ -508,6 +745,13 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
         search_with: list.search_with.clone(),
         sortable,
         sortable_explicit: list.sortable.is_some(),
+        labels: list.computed.iter().map(|c| (&c.name, &c.label)).chain(list.aggregates.iter().map(|a| (&a.name, &a.label))).filter_map(|(n, l)| Some((n.clone(), l.clone()?))).chain(list.labels.clone()).collect(),
+        empty: list.empty.clone(),
+        empty_fields: list.empty_fields.clone(),
+        filters,
+        named_filters,
+        tabs: Vec::new(),
+        tabs_config: list.tabs.clone(),
         large: Mutex::new(None),
     })
 }
@@ -549,7 +793,7 @@ fn listable(f: &monorm_core::ir::FieldIr) -> bool {
 }
 
 /// A column from `author.name`: each name before the last is a to-one relation.
-fn column(schema: &Schema, root: usize, spec: &str) -> Result<Column, ConfigError> {
+pub(crate) fn column(schema: &Schema, root: usize, spec: &str) -> Result<Column, ConfigError> {
     let model_name = &schema.model(root).ir.name;
     let mut parts: Vec<&str> = spec.split('.').collect();
     let field_name = parts.pop().unwrap_or_default();
@@ -574,7 +818,7 @@ fn column(schema: &Schema, root: usize, spec: &str) -> Result<Column, ConfigErro
     let mut ty = ValueType::scalar(field.ty);
     ty.array = field.array;
     ty.enum_idx = field.enum_idx;
-    Ok(Column { label: spec.to_owned(), path, field: field.name.clone(), ty, nullable: field.nullable })
+    Ok(Column { label: spec.to_owned(), path, field: field.name.clone(), ty, nullable: field.nullable, source: Source::Field })
 }
 
 fn order_column(schema: &Schema, root: usize, field: &str, desc: bool, name: &str) -> Result<OrderColumn, ConfigError> {
@@ -597,7 +841,7 @@ fn sortable_columns(schema: &Schema, idx: usize, name: &str, list: &ListConfig, 
     let model = schema.model(idx);
     let named: Vec<String> = match &list.sortable {
         Some(names) => names.clone(),
-        None => columns.iter().filter(|c| c.path.is_empty()).map(|c| c.field.clone()).collect(),
+        None => columns.iter().filter(|c| c.path.is_empty() && c.source == Source::Field).map(|c| c.field.clone()).collect(),
     };
     let mut out = Vec::new();
     for field in named {
@@ -635,7 +879,7 @@ fn leads_btree(m: &ModelIr, f: &FieldIr) -> bool {
         || m.indexes.iter().any(|i| {
             let btree = i.method.as_deref().is_none_or(|m| m.eq_ignore_ascii_case("btree"));
             let first = i.columns.first();
-            btree && i.where_.is_none() && first.is_some_and(|c| c.field.as_deref().is_some_and(|k| names(f, k)) && c.expr.is_none() && c.opclass.is_none())
+            btree && i.where_.is_none() && first.is_some_and(|c| c.field.as_deref().is_some_and(|k| names(f, k)) && c.expr.is_none() && c.opclass.as_deref().is_none_or(|o| o.ends_with("_pattern_ops")))
         })
 }
 
@@ -727,4 +971,233 @@ fn type_name(c: &Column) -> String {
     } else {
         format!("{:?}", c.ty.ty).to_lowercase()
     }
+}
+
+/// Computed and aggregate columns of a resource, and which of them have a sort header.
+struct Extras {
+    columns: Vec<Column>,
+    sortable: Vec<String>,
+}
+
+fn ident_ok(text: &str) -> bool {
+    !text.is_empty() && text.chars().count() <= 40 && text.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+fn parse_type(text: &str) -> Option<ColType> {
+    Some(match text.to_ascii_lowercase().replace('_', "").as_str() {
+        "int" | "integer" => ColType::Int,
+        "bigint" => ColType::BigInt,
+        "float" => ColType::Float,
+        "bool" | "boolean" => ColType::Bool,
+        "string" => ColType::String,
+        "text" => ColType::Text,
+        "datetime" => ColType::DateTime,
+        "date" => ColType::Date,
+        "uuid" => ColType::Uuid,
+        "json" => ColType::Json,
+        "decimal" => ColType::Decimal,
+        _ => return None,
+    })
+}
+
+/// A prepared expression is constant: a parameter or a scope value would have no value at the request.
+fn has_binding(expr: &Value) -> bool {
+    match expr {
+        Value::Object(map) => matches!(map.get("t").and_then(Value::as_str), Some("param" | "in_param" | "scope")) || map.values().any(has_binding),
+        Value::Array(items) => items.iter().any(has_binding),
+        _ => false,
+    }
+}
+
+/// The type of an expression, as the planner reads it. The planner runs with no connection and no data.
+fn probe_type(schema: &Schema, model: &str, expr: &Value) -> Result<ValueType, String> {
+    let plan = probe(schema, json_select(model, Some(expr), None))?;
+    plan.types.first().copied().ok_or_else(|| "the expression has no type".to_owned())
+}
+
+fn json_select(model: &str, column: Option<&Value>, filter: Option<&Value>) -> Value {
+    let mut op = serde_json::json!({"op": "select", "model": model, "limit": 1});
+    op["columns"] = match column {
+        Some(e) => serde_json::json!([{"t": "expr", "expr": e}]),
+        None => serde_json::json!([{"t": "model"}]),
+    };
+    if let Some(f) = filter {
+        op["filters"] = serde_json::json!([f]);
+    }
+    op
+}
+
+fn probe(schema: &Schema, op: Value) -> Result<monorm_engine::plan::SelectPlan, String> {
+    let op: Operation = serde_json::from_value(op).map_err(|e| e.to_string())?;
+    match Planner::plan(schema, Target::new(schema.dialect), &op, &NoParams).map_err(|e| e.to_string())? {
+        Plan::Select(p) => Ok(p),
+        _ => Err("the expression is not a select".to_owned()),
+    }
+}
+
+fn same_type(declared: ColType, found: ColType) -> bool {
+    declared == found || matches!((declared, found), (ColType::String, ColType::Text) | (ColType::Text, ColType::String))
+}
+
+fn extra_columns(schema: &Schema, idx: usize, name: &str, list: &ListConfig) -> Result<Extras, ConfigError> {
+    let model = schema.model(idx);
+    let mut columns: Vec<Column> = Vec::new();
+    let mut sortable = Vec::new();
+    let taken = |columns: &[Column], n: &str| -> Result<(), ConfigError> {
+        if !ident_ok(n) {
+            return err(format!("{name}: column name {n:?} has 1 to 40 letters, digits and _"));
+        }
+        if model.ir.fields.iter().any(|f| f.name == n) || model.ir.relations.iter().any(|r| r.name == n) || columns.iter().any(|c| c.label == n) {
+            return err(format!("{name}: computed column {n:?} has the name of a field, a relation or another computed column"));
+        }
+        Ok(())
+    };
+    for c in &list.computed {
+        taken(&columns, &c.name)?;
+        let Some(declared) = parse_type(&c.ty) else {
+            return err(format!("{name}: computed {:?}: type {:?} is not int, bigint, float, bool, string, text, datetime, date, uuid, json or decimal", c.name, c.ty));
+        };
+        let nullable = c.nullable.unwrap_or(true);
+        let source = match (&c.expr, &c.function) {
+            (Some(expr), None) => {
+                if has_binding(expr) {
+                    return err(format!("{name}: computed {:?}: an expression has no parameters or scope values", c.name));
+                }
+                let found = probe_type(schema, &model.ir.name, expr).map_err(|e| ConfigError(format!("{name}: computed {:?}: {e}", c.name)))?;
+                if found.array || found.enum_idx.is_some() || !same_type(declared, found.ty) {
+                    return err(format!("{name}: computed {:?}: declared {declared:?}, but the expression is {:?}{}", c.name, found.ty, if found.array { " array" } else { "" }));
+                }
+                Source::Expr(expr.clone())
+            }
+            (None, Some(f)) if !f.trim().is_empty() => Source::Batch(f.clone()),
+            _ => return err(format!("{name}: computed {:?} sets expr or function, one of them", c.name)),
+        };
+        if c.sortable == Some(true) {
+            if matches!(source, Source::Batch(_)) {
+                return err(format!("{name}: computed {:?}: a column of a host function cannot sort; the database does not know its values", c.name));
+            }
+            if nullable || matches!(declared, ColType::Json | ColType::Decimal) {
+                return err(format!("{name}: computed {:?}: a sort column is not null (set nullable to false) and not json or decimal", c.name));
+            }
+            sortable.push(c.name.clone());
+        }
+        columns.push(Column { label: c.name.clone(), path: Vec::new(), field: c.name.clone(), ty: ValueType::scalar(declared), nullable, source });
+    }
+    for a in &list.aggregates {
+        taken(&columns, &a.name)?;
+        let Ok((rel, target)) = model.relation(&a.relation) else {
+            return err(format!("{name}: aggregate {:?}: {} has no relation {:?}", a.name, model.ir.name, a.relation));
+        };
+        if rel.kind != RelKind::Many {
+            return err(format!("{name}: aggregate {:?}: {:?} is a to-one relation; an aggregate reads a to-many relation", a.name, a.relation));
+        }
+        let expr = match (a.function.as_str(), &a.field) {
+            ("count", None) => serde_json::json!({"t": "func", "name": "count", "rel": [a.relation]}),
+            ("count", Some(_)) => return err(format!("{name}: aggregate {:?}: count takes no field", a.name)),
+            ("sum" | "min" | "max" | "avg", Some(field)) => {
+                if schema.model(target).field(field).is_err() {
+                    return err(format!("{name}: aggregate {:?}: {} has no field {field:?}", a.name, schema.model(target).ir.name));
+                }
+                serde_json::json!({"t": "func", "name": a.function, "args": [{"t": "col", "path": [a.relation], "name": field}]})
+            }
+            ("sum" | "min" | "max" | "avg", None) => return err(format!("{name}: aggregate {:?}: {} needs a field", a.name, a.function)),
+            (other, _) => return err(format!("{name}: aggregate {:?}: function {other:?} is not count, sum, min, max or avg", a.name)),
+        };
+        let found = probe_type(schema, &model.ir.name, &expr).map_err(|e| ConfigError(format!("{name}: aggregate {:?}: {e}", a.name)))?;
+        columns.push(Column { label: a.name.clone(), path: Vec::new(), field: a.name.clone(), ty: found, nullable: a.function != "count", source: Source::Expr(expr) });
+    }
+    for (c, label) in list.computed.iter().map(|c| (&c.name, &c.label)).chain(list.aggregates.iter().map(|a| (&a.name, &a.label))) {
+        if label.as_ref().is_some_and(|l| l.trim().is_empty() || l.chars().count() > 80) {
+            return err(format!("{name}: the label of {c:?} has 1 to 80 characters"));
+        }
+    }
+    Ok(Extras { columns, sortable })
+}
+
+/// A field that a filter can compare: not an array, a JSON value or a decimal.
+fn filterable(c: &Column) -> bool {
+    !c.ty.array && !matches!(c.ty.ty, ColType::Json | ColType::Decimal)
+}
+
+fn filter_specs(schema: &Schema, idx: usize, name: &str, list: &ListConfig) -> Result<Vec<Filter>, ConfigError> {
+    let model = schema.model(idx);
+    let mut out: Vec<Filter> = Vec::new();
+    for spec in &list.filters {
+        if out.iter().any(|f| f.name == *spec) {
+            return err(format!("{name}: filter {spec:?} is listed twice"));
+        }
+        if !spec.contains('.') && model.relation(spec).is_ok() {
+            out.push(Filter { name: spec.clone(), kind: relation_filter(schema, idx, name, spec)? });
+            continue;
+        }
+        let c = column(schema, idx, spec).map_err(|e| ConfigError(e.0.replace("list column", "filter")))?;
+        if !filterable(&c) {
+            return err(format!("{name}: filter {spec:?}: a filter does not take an array, json or decimal field"));
+        }
+        out.push(Filter { name: spec.clone(), kind: FilterKind::Field(c) });
+    }
+    for n in list.named_filters.iter().map(|f| &f.name) {
+        if out.iter().any(|f| f.name == *n) {
+            return err(format!("{name}: named filter {n:?} has the name of a filter"));
+        }
+    }
+    Ok(out)
+}
+
+/// A to-one relation as a filter: the foreign key fields on the model compare with a key of the target.
+fn relation_filter(schema: &Schema, idx: usize, name: &str, spec: &str) -> Result<FilterKind, ConfigError> {
+    let model = schema.model(idx);
+    let (rel, target_idx) = model.relation(spec).map_err(|e| ConfigError(e.to_string()))?;
+    if rel.kind != RelKind::One {
+        return err(format!("{name}: filter {spec:?}: a filter takes a to-one relation, and {spec:?} is to-many"));
+    }
+    let target = schema.model(target_idx);
+    let keys = target.key_fields();
+    if rel.to.len() != keys.len() {
+        return err(format!("{name}: filter {spec:?}: the relation does not lead to the key of {}", target.ir.name));
+    }
+    let (mut from, mut key) = (Vec::new(), Vec::new());
+    for k in &keys {
+        let Some(n) = rel.to.iter().position(|t| *t == k.column || *t == k.name) else {
+            return err(format!("{name}: filter {spec:?}: the relation does not lead to the key of {}", target.ir.name));
+        };
+        let Some(f) = model.ir.fields.iter().find(|f| f.column == rel.from[n] || f.name == rel.from[n]) else {
+            return err(format!("{name}: filter {spec:?}: the foreign key field {:?} is not a field", rel.from[n]));
+        };
+        from.push(column(schema, idx, &f.name)?);
+        key.push(column(schema, target_idx, &k.name)?);
+    }
+    Ok(FilterKind::Relation { target: target.ir.name.clone(), from, key })
+}
+
+fn named_filters(schema: &Schema, idx: usize, name: &str, list: &ListConfig) -> Result<Vec<NamedFilter>, ConfigError> {
+    let model = schema.model(idx);
+    let mut out: Vec<NamedFilter> = Vec::new();
+    for f in &list.named_filters {
+        if !ident_ok(&f.name) || out.iter().any(|o| o.name == f.name) {
+            return err(format!("{name}: named filter {:?} has 1 to 40 letters, digits and _, and a name of its own", f.name));
+        }
+        if f.choices.is_empty() {
+            return err(format!("{name}: named filter {:?} has no choices", f.name));
+        }
+        let mut choices: Vec<NamedChoice> = Vec::new();
+        for c in &f.choices {
+            if !ident_ok(&c.name) || c.name == "all" || choices.iter().any(|o| o.name == c.name) {
+                return err(format!("{name}: named filter {:?}: choice {:?} has 1 to 40 letters, digits and _, is not \"all\" (that is every row) and has a name of its own", f.name, c.name));
+            }
+            if has_binding(&c.expr) {
+                return err(format!("{name}: named filter {:?}: choice {:?}: an expression has no parameters or scope values", f.name, c.name));
+            }
+            let key = model.key_fields().first().map(|k| serde_json::json!({"t": "col", "path": [], "name": k.name}));
+            probe(schema, json_select(&model.ir.name, key.as_ref(), Some(&c.expr))).map_err(|e| ConfigError(format!("{name}: named filter {:?}: choice {:?}: {e}", f.name, c.name)))?;
+            choices.push(NamedChoice { name: c.name.clone(), label: c.label.clone().unwrap_or_else(|| meta::humanize(&c.name)), expr: c.expr.clone() });
+        }
+        if let Some(d) = &f.default {
+            if !choices.iter().any(|c| c.name == *d) {
+                return err(format!("{name}: named filter {:?}: default {d:?} is not a choice", f.name));
+            }
+        }
+        out.push(NamedFilter { name: f.name.clone(), label: f.label.clone().unwrap_or_else(|| meta::humanize(&f.name)), choices, default: f.default.clone() });
+    }
+    Ok(out)
 }
