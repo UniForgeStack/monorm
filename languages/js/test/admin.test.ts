@@ -68,9 +68,11 @@ async function world(provider: (typeof PROVIDERS)[number], run: (w: { site: Admi
 for (const provider of PROVIDERS) {
   test(`a to-one column is one statement and keeps the row without an author (${provider})`, () => world(provider, async ({ site, db, Post }) => {
     site.register(Post, { list: { columns: [Post.title, Post.author.name], order: [Post.title] } });
-    const page = await site.testClient(db, { user: SU }).get("/admin/api/resources/AdmPost");
+    const client = site.testClient(db, { user: SU });
+    const preamble = (await client.get("/admin/api/resources")).queries; // the statement timeout on PostgreSQL, nothing on SQLite
+    const page = await client.get("/admin/api/resources/AdmPost");
     assert.equal(page.status, 200);
-    assert.equal(page.queries, 1);
+    assert.equal(page.queries, preamble + 1);
     const body = page.json();
     assert.deepEqual(body.columns.map((c: { label: string }) => c.label).slice(0, 2), ["title", "author.name"]);
     assert.deepEqual(body.rows.map((r: unknown[]) => r.slice(0, 2)), [["one", "Ada"], ["three", "Bo"], ["two", null]]);

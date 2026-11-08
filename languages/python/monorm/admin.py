@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import datetime
 import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from json import dumps as _dumps
 from typing import TYPE_CHECKING, Any, Literal, Mapping, Sequence, TypedDict
@@ -45,6 +46,14 @@ class ListConfig(TypedDict, total=False):
     columns: Sequence[ColumnRef[Any]]
     order: Sequence[ColumnRef[Any] | Ordering]
     page_size: int
+    """Rows per page, 1 to 200 (50 by default)."""
+    sortable: Sequence[ColumnRef[Any]]
+    """The list columns that a sort header may use. Without it every list column that can sort."""
+    search: Sequence[ColumnRef[Any]]
+    """Fields of the model that the search box matches. The strategy comes from the indexes of each field."""
+    search_with: Any
+    """Replaces ``search``. A prepared query set with ``monorm.param("q")`` (its rows are the matches), or
+    ``async def f(q: str, limit: int) -> Sequence[key]``. One host call per request."""
 
 
 class BrandLink(TypedDict):
@@ -83,7 +92,7 @@ class ResourceConfig(TypedDict, total=False):
     """Names such as ``"refund"`` that become ``<label>.<action>_<resource>``."""
 
 
-_LIST_KEYS = {"columns", "order", "page_size"}
+_LIST_KEYS = {"columns", "order", "page_size", "sortable", "search", "search_with"}
 _RESOURCE_KEYS = {"list", "title", "group", "allow", "perms", "label", "field_permissions", "actions"}
 _BRAND_KEYS = {"name", "logo", "colors", "links", "environment"}
 Strategy = Literal["page", "model", "access"]
@@ -115,7 +124,35 @@ def _list(model: type[Model], config: Mapping[str, Any]) -> dict[str, Any]:
         out["order"] = order
     if "page_size" in config:
         out["page_size"] = config["page_size"]
+    for key in ("sortable", "search"):
+        if key in config:
+            out[key] = [_label(model, c) for c in config[key]]
+    if "search_with" in config:
+        out["search_with"] = _search_name(model)
     return out
+
+
+def _search_name(model: type[Model]) -> str:
+    return f"search.{model.__name__}"
+
+
+def _key_cells(model: type[Model], row: Any) -> list[Any]:
+    return [_key_value(getattr(row, name)) for name in model._meta.key_names]
+
+
+def _search_host(model: type[Model], search: Any) -> Callable[[Any, dict[str, Any]], Awaitable[Any]]:
+    """The host function of a ``search_with``: the keys of the matches, at most ``limit``."""
+    from .query import Prepared
+
+    async def run(database: Any, args: dict[str, Any]) -> Any:
+        limit = int(args["limit"])
+        if isinstance(search, Prepared):
+            rows = await search(q=args["q"])
+            return [_key_cells(model, row) for row in rows[:limit]]
+        found = await search(args["q"], limit)
+        return [_key_json(k) for k in found][:limit]
+
+    return run
 
 
 def _key_value(value: Any) -> Any:
@@ -143,6 +180,8 @@ class AdminResponse:
     """Statements the engine ran for this request (counted on the in-memory ``user=`` path only)."""
     headers: tuple[tuple[str, str], ...] = ()
     """The response headers, every ``set-cookie`` kept (login mode only)."""
+    sql: tuple[str, ...] = ()
+    """The SQL of those statements, with placeholders (the ``user=`` path only)."""
 
     def json(self) -> Any:
         return json.loads(self.text)
@@ -177,12 +216,14 @@ class AdminTestClient:
         settings: Mapping[str, Any] | None = None,
         prefix: str = DEFAULT_PREFIX,
         ip: str = "127.0.0.1",
+        host: Mapping[str, Any] | None = None,
     ) -> None:
         if secret is not None and user is not None:
             raise ValueError("test_client takes `user` (no login) or `secret` (login), not both")
         if secret is None and settings is not None:
             raise ValueError("test_client takes `settings` only with `secret`")
         self._site = site
+        self._host = dict(host) if host is not None else dict(_HOST)
         self._database = database
         self._user = None if user is None else json.dumps(user)
         self._secret = secret
@@ -207,11 +248,12 @@ class AdminTestClient:
             if json is not None or headers or csrf is not _AUTO or origin is not _AUTO:
                 raise TypeError("the `user=` client takes only a method and a path")
             trace = _native.Trace()
-            status, body = await self._site.request(self._database._engine, method, path, self._user, trace)
-            return AdminResponse(status, body, len(trace.take()))
+            status, body = await self._site.request(self._database._engine, method, path, self._user, trace, self._database, self._host)
+            events = trace.take()
+            return AdminResponse(status, body, len(events), sql=tuple(e[0] for e in events))
         router = self._router
         if router is None:
-            router = self._router = self._site.client(self._database._engine, self._database, _HOST, self._secret, self._options)
+            router = self._router = self._site.client(self._database._engine, self._database, self._host, self._secret, self._options)
         sent: dict[str, str] = {"host": "localhost", **{k.lower(): v for k, v in (headers or {}).items()}}
         if self.cookies:
             sent["cookie"] = "; ".join(f"{k}={v}" for k, v in self.cookies.items())
@@ -260,6 +302,7 @@ class Admin:
     (``{"support": ["orders.*", "-shops.see_credential"]}``) that ``seed_roles`` writes to the auth tables.
     ``brand`` sets the name, logo, colors, header links and environment label of the UI. ``groups`` is the order of the
     navigation groups; a resource names one of them with ``group``.
+    ``statement_timeout`` is the time limit in seconds of each request's database statements (15 by default, 0 for none).
     """
 
     def __init__(
@@ -272,7 +315,11 @@ class Admin:
         roles: Mapping[str, Sequence[str]] | None = None,
         brand: BrandConfig | None = None,
         groups: Sequence[str] = (),
+        statement_timeout: float = 15.0,
     ) -> None:
+        if statement_timeout < 0:
+            raise AdminConfigError("statement_timeout is a number of seconds, 0 or more (0 sets no limit)")
+        self._statement_timeout = statement_timeout
         self._registry = registry
         self.prefix = prefix
         if unknown := sorted(set(brand or {}) - _BRAND_KEYS):
@@ -315,7 +362,18 @@ class Admin:
             out["brand"] = self._brand
         if self._groups:
             out["groups"] = self._groups
+        if self._statement_timeout != 15.0:
+            out["statement_timeout_ms"] = round(self._statement_timeout * 1000)
         return json.dumps(out)
+
+    def _host(self) -> dict[str, Any]:
+        """The host functions: login and the ``search_with`` function of each resource."""
+        host: dict[str, Any] = dict(_HOST)
+        for model, config in self._resources.values():
+            search = config.get("list", {}).get("search_with")
+            if search is not None:
+                host[_search_name(model)] = _search_host(model, search)
+        return host
 
     def _site(self, registry: Registry) -> _native.AdminSite:
         schema = registry._native if registry._native is not None else registry.prepare()
@@ -324,9 +382,11 @@ class Admin:
         except ValueError as e:
             raise AdminConfigError(str(e)) from None
 
-    def check(self) -> None:
-        """Raises :class:`AdminConfigError` when the config does not fit the schema. Needs no database."""
-        self._site(self._registry)
+    def check(self) -> list[str]:
+        """Raises :class:`AdminConfigError` when the config does not fit the schema. Needs no database.
+
+        Returns the warnings: for example a search field that no index serves. ``monorm admin`` logs the same warnings at start."""
+        return list(self._site(self._registry).warnings)
 
     def url(self, model: type[Model], key: Any) -> str:
         """The path of the page of one record: ``/admin/<Model>/<key>``.
@@ -389,7 +449,7 @@ class Admin:
         from .db import resolve
 
         db = resolve(database)
-        return AdminTestClient(self._site(db._registry), db, user, secret=secret, settings=settings, prefix=self.prefix, ip=ip)
+        return AdminTestClient(self._site(db._registry), db, user, secret=secret, settings=settings, prefix=self.prefix, ip=ip, host=self._host())
 
 
 _default = Admin()
@@ -399,8 +459,8 @@ def register(model: type[Model], config: ResourceConfig | None = None) -> None:
     _default.register(model, config)
 
 
-def check() -> None:
-    _default.check()
+def check() -> list[str]:
+    return _default.check()
 
 
 def url(model: type[Model], key: Any) -> str:

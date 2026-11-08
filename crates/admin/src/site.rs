@@ -3,9 +3,11 @@
 use std::collections::BTreeSet;
 use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
-use monorm_core::ir::{ColType, RelKind, ValueType};
+use monorm_core::dialect::Dialect;
+use monorm_core::ir::{ColType, ConstraintIr, FieldIr, ModelIr, RelKind, ValueType};
 use monorm_core::schema::Schema;
 use serde::Deserialize;
 use serde_json::Value;
@@ -16,7 +18,16 @@ use crate::permissions::{Op, Strategy};
 
 pub const DEFAULT_PREFIX: &str = "/admin/api";
 pub const DEFAULT_PAGE_SIZE: usize = 25;
-pub const MAX_PAGE_SIZE: usize = 100;
+pub const MAX_PAGE_SIZE: usize = 200;
+/// A count stops here: the list shows `10,000+`.
+pub const COUNT_CAP: usize = 10_000;
+/// A table with more rows allows only the sort columns that lead an index, unless the config names the columns.
+pub const LARGE_TABLE_ROWS: usize = 50_000;
+pub const DEFAULT_STATEMENT_TIMEOUT_MS: u64 = 15_000;
+/// How long a table size stays known.
+const LARGE_TTL: Duration = Duration::from_secs(300);
+/// The longest search text.
+pub const MAX_SEARCH_LEN: usize = 200;
 
 /// A wrong config: the text names the model and the field.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +62,8 @@ struct Config {
     /// The registered resources. None: every concrete model is a read-only resource.
     #[serde(default)]
     resources: Vec<ResourceConfig>,
+    /// The time limit of each statement of a request, in ms (PostgreSQL). 0: none. Default 15000.
+    statement_timeout_ms: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -85,6 +98,12 @@ struct ListConfig {
     /// Field names of the model, `-created_at` for descending.
     order: Option<Vec<String>>,
     page_size: Option<usize>,
+    /// Field names of the model that the search box reads.
+    search: Option<Vec<String>>,
+    /// The name of a host function that replaces the search: it takes the text and returns keys.
+    search_with: Option<String>,
+    /// Field names that the sort headers may use. Default: the list columns that can sort.
+    sortable: Option<Vec<String>>,
 }
 
 /// One column of a list: a field of the model or of a model reached through to-one relations.
@@ -102,6 +121,40 @@ pub struct Column {
 pub struct OrderColumn {
     pub column: Column,
     pub desc: bool,
+}
+
+/// How a search field matches the text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// `=text`
+    Exact,
+    /// `^text`
+    Prefix,
+    /// The text alone, on a field that a trigram index serves or that has no better index.
+    Contains,
+    /// `@text`
+    Fulltext,
+}
+
+#[derive(Debug, Clone)]
+pub struct SearchField {
+    pub column: Column,
+    /// The mode of a text with no prefix character.
+    pub default: Mode,
+    /// A text field takes every mode but `Fulltext`; the others take `Exact` only.
+    pub text: bool,
+    /// The text search configuration of a full-text index on the field. None: no such index.
+    pub fulltext: Option<String>,
+    /// An index serves the default mode.
+    pub indexed: bool,
+}
+
+/// A column that a sort header may use.
+#[derive(Debug, Clone)]
+pub struct Sortable {
+    pub column: Column,
+    /// The column leads an index.
+    pub indexed: bool,
 }
 
 #[derive(Debug)]
@@ -134,6 +187,31 @@ pub struct Resource {
     pub links: Vec<Link>,
     /// The metadata that does not depend on the user, built once by `Site::build`.
     pub meta: serde_json::Value,
+    pub search: Vec<SearchField>,
+    pub search_with: Option<String>,
+    pub sortable: Vec<Sortable>,
+    /// The config names the sort columns: no table size rule.
+    pub sortable_explicit: bool,
+    /// Whether the table is large, and when it was read.
+    large: Mutex<Option<(Instant, bool)>>,
+}
+
+impl Resource {
+    /// Whether the table has more than `LARGE_TABLE_ROWS` rows. `measure` runs when the answer is older than five minutes.
+    pub async fn large<F, Fut>(&self, measure: F) -> Result<bool, String>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Result<bool, String>>,
+    {
+        if let Some((at, large)) = *self.large.lock().unwrap_or_else(|e| e.into_inner()) {
+            if at.elapsed() < LARGE_TTL {
+                return Ok(large);
+            }
+        }
+        let large = measure().await?;
+        *self.large.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), large));
+        Ok(large)
+    }
 }
 
 /// A to-one relation that the detail page shows as a link to the page of the target.
@@ -155,6 +233,10 @@ pub struct Site {
     pub brand: serde_json::Value,
     /// The navigation groups in order.
     pub groups: Vec<String>,
+    /// The time limit of each statement of a request. None: no limit.
+    pub statement_timeout: Option<Duration>,
+    /// What an operator should fix, found when the site was built: a search field with no index.
+    pub warnings: Vec<String>,
     meta_builds: AtomicUsize,
 }
 
@@ -173,10 +255,11 @@ impl Site {
         let label = config.label.as_deref().unwrap_or("admin");
         check_name("label", label)?;
         let mut resources = Vec::new();
+        let mut warnings = Vec::new();
         if config.resources.is_empty() {
             for (idx, m) in schema.models.iter().enumerate() {
                 if concrete(m) {
-                    resources.push(resource(&schema, idx, &ResourceConfig::of(&schema.model(idx).ir.name), strategy, label)?);
+                    resources.push(resource(&schema, idx, &ResourceConfig::of(&schema.model(idx).ir.name), strategy, label, &mut warnings)?);
                 }
             }
         } else {
@@ -189,7 +272,7 @@ impl Site {
                 if !seen.insert(idx) {
                     return err(format!("{}: registered twice", r.model));
                 }
-                resources.push(resource(&schema, idx, r, strategy, label)?);
+                resources.push(resource(&schema, idx, r, strategy, label, &mut warnings)?);
             }
         }
         if prefix == key::UI_BASE && !crate::ui::FILES.is_empty() {
@@ -220,7 +303,11 @@ impl Site {
             r.meta = meta::resource(&schema, r, &meta_builds);
         }
         let brand = meta::brand(config.brand.as_ref())?;
-        Ok(Site { schema, prefix, strategy, resources, brand, groups, meta_builds })
+        let statement_timeout = match config.statement_timeout_ms.unwrap_or(DEFAULT_STATEMENT_TIMEOUT_MS) {
+            0 => None,
+            ms => Some(Duration::from_millis(ms)),
+        };
+        Ok(Site { schema, prefix, strategy, resources, brand, groups, statement_timeout, warnings, meta_builds })
     }
 
     /// How many times `build` made the metadata of a resource: one per resource, and no request adds to it.
@@ -331,7 +418,7 @@ fn permission_options(name: &str, config: &ResourceConfig, strategy: Strategy, s
     Ok(PermissionOptions { label, allow, split_delete })
 }
 
-fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Strategy, site_label: &str) -> Result<Resource, ConfigError> {
+fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Strategy, site_label: &str, warnings: &mut Vec<String>) -> Result<Resource, ConfigError> {
     let list = &config.list;
     let model = schema.model(idx);
     let name = model.ir.name.clone();
@@ -392,6 +479,8 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
     if config.group.as_ref().is_some_and(|g| g.trim().is_empty()) {
         return err(format!("{name}: group is empty"));
     }
+    let search = search_fields(schema, idx, &name, list, warnings)?;
+    let sortable = sortable_columns(schema, idx, &name, list, &columns)?;
     Ok(Resource {
         model: idx,
         name,
@@ -412,6 +501,11 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
         detail,
         links: Vec::new(),
         meta: serde_json::Value::Null,
+        search,
+        search_with: list.search_with.clone(),
+        sortable,
+        sortable_explicit: list.sortable.is_some(),
+        large: Mutex::new(None),
     })
 }
 
@@ -493,4 +587,141 @@ fn order_column(schema: &Schema, root: usize, field: &str, desc: bool, name: &st
         return err(format!("{name}: order {field:?}: a field of this type cannot order a list"));
     }
     Ok(OrderColumn { column, desc })
+}
+
+/// The columns that a sort header may use: own fields in the list that a keyset page can compare.
+fn sortable_columns(schema: &Schema, idx: usize, name: &str, list: &ListConfig, columns: &[Column]) -> Result<Vec<Sortable>, ConfigError> {
+    let model = schema.model(idx);
+    let named: Vec<String> = match &list.sortable {
+        Some(names) => names.clone(),
+        None => columns.iter().filter(|c| c.path.is_empty()).map(|c| c.field.clone()).collect(),
+    };
+    let mut out = Vec::new();
+    for field in named {
+        let explicit = list.sortable.is_some();
+        let ok = order_column(schema, idx, &field, false, name);
+        match ok {
+            Ok(o) => {
+                if !columns.iter().any(|c| c.label == o.column.label) {
+                    return err(format!("{name}: sortable {field:?} is not a list column"));
+                }
+                if out.iter().any(|s: &Sortable| s.column.label == o.column.label) {
+                    return err(format!("{name}: sortable {field:?} is listed twice"));
+                }
+                let f = model.field(&field).map_err(|e| ConfigError(e.to_string()))?;
+                out.push(Sortable { column: o.column, indexed: leads_btree(&model.ir, f) });
+            }
+            Err(e) if explicit => return Err(e),
+            Err(_) => {}
+        }
+    }
+    Ok(out)
+}
+
+fn names(f: &FieldIr, text: &str) -> bool {
+    f.name == text || f.column == text
+}
+
+/// The field is the first key of a primary key, a unique constraint or a plain btree index.
+fn leads_btree(m: &ModelIr, f: &FieldIr) -> bool {
+    if f.primary_key || f.unique || f.index || m.primary_key.first().is_some_and(|k| names(f, k)) {
+        return true;
+    }
+    let unique = m.constraints.iter().any(|c| matches!(c, ConstraintIr::Unique { fields, .. } if fields.first().is_some_and(|k| names(f, k))));
+    unique
+        || m.indexes.iter().any(|i| {
+            let btree = i.method.as_deref().is_none_or(|m| m.eq_ignore_ascii_case("btree"));
+            let first = i.columns.first();
+            btree && i.where_.is_none() && first.is_some_and(|c| c.field.as_deref().is_some_and(|k| names(f, k)) && c.expr.is_none() && c.opclass.is_none())
+        })
+}
+
+/// A trigram index (gin or gist, `gin_trgm_ops`) on the field.
+fn has_trigram(m: &ModelIr, f: &FieldIr) -> bool {
+    m.indexes.iter().any(|i| {
+        let method = i.method.as_deref().unwrap_or("btree").to_ascii_lowercase();
+        (method == "gin" || method == "gist") && i.where_.is_none() && i.columns.iter().any(|c| c.field.as_deref().is_some_and(|k| names(f, k)) && c.opclass.as_deref().is_some_and(|o| o.contains("trgm")))
+    })
+}
+
+/// The text search configuration of a gin or gist index on `to_tsvector('cfg', field)`; `""` when the index names none.
+fn fulltext_config(m: &ModelIr, f: &FieldIr) -> Option<String> {
+    for i in &m.indexes {
+        let method = i.method.as_deref().unwrap_or("btree").to_ascii_lowercase();
+        if (method != "gin" && method != "gist") || i.where_.is_some() {
+            continue;
+        }
+        let Some(expr) = i.columns.first().and_then(|c| c.expr.as_deref()) else { continue };
+        let lower = expr.to_ascii_lowercase();
+        let Some(at) = lower.find("to_tsvector(") else { continue };
+        if !lower.contains(&f.column.to_ascii_lowercase()) && !lower.contains(&f.name.to_ascii_lowercase()) {
+            continue;
+        }
+        let rest = expr[at + "to_tsvector(".len()..].trim_start();
+        let config = rest.strip_prefix('\'').and_then(|r| r.split('\'').next()).filter(|c| !c.is_empty() && c.chars().all(|ch| ch.is_alphanumeric() || ch == '_' || ch == '.')).unwrap_or("");
+        if config.is_empty() {
+            return None;
+        }
+        return Some(config.to_owned());
+    }
+    None
+}
+
+/// The search fields of a resource, each with the mode that its indexes serve. A field that no index serves is a warning;
+/// a field of a type that no mode fits is an error.
+fn search_fields(schema: &Schema, idx: usize, name: &str, list: &ListConfig, warnings: &mut Vec<String>) -> Result<Vec<SearchField>, ConfigError> {
+    let model = schema.model(idx);
+    let mut out: Vec<SearchField> = Vec::new();
+    for field in list.search.clone().unwrap_or_default() {
+        if field.contains('.') {
+            return err(format!("{name}: search {field:?}: search takes a field of {name}, not of a related model"));
+        }
+        if out.iter().any(|s| s.column.field == field) {
+            return err(format!("{name}: search {field:?} is listed twice"));
+        }
+        let column = column(schema, idx, &field)?;
+        let f = model.field(&field).map_err(|e| ConfigError(e.to_string()))?;
+        let ty = column.ty;
+        let text = matches!(ty.ty, ColType::String | ColType::Text) && !ty.array && ty.enum_idx.is_none();
+        let exact = matches!(ty.ty, ColType::Int | ColType::BigInt | ColType::Uuid) && !ty.array && ty.enum_idx.is_none();
+        if f.write_sql.is_some() && !text || !(text || exact) {
+            return err(format!("{name}: search {field:?}: no search strategy fits a {} field; search takes text, integer and uuid fields", type_name(&column)));
+        }
+        let postgres = schema.dialect == Dialect::Postgres;
+        let btree = leads_btree(&model.ir, f);
+        let trigram = postgres && text && has_trigram(&model.ir, f);
+        let fulltext = if postgres && text { fulltext_config(&model.ir, f) } else { None };
+        let (default, indexed) = if !text {
+            (Mode::Exact, btree)
+        } else if trigram {
+            (Mode::Contains, true)
+        } else if btree {
+            (Mode::Prefix, true)
+        } else if fulltext.is_some() {
+            (Mode::Fulltext, true)
+        } else {
+            (Mode::Contains, false)
+        };
+        if !indexed {
+            warnings.push(format!("{name}: search field {field:?} has no index that serves a search; add an index on it (a btree for exact and prefix, a trigram index for contains, a full-text index for @)"));
+        }
+        out.push(SearchField { column, default, text, fulltext, indexed });
+    }
+    if list.search_with.is_some() && !out.is_empty() {
+        return err(format!("{name}: search and search_with are two ways to search; set one"));
+    }
+    if list.search_with.as_ref().is_some_and(|n| n.trim().is_empty()) {
+        return err(format!("{name}: search_with is empty"));
+    }
+    Ok(out)
+}
+
+fn type_name(c: &Column) -> String {
+    if c.ty.array {
+        "array".into()
+    } else if c.ty.enum_idx.is_some() {
+        "enum".into()
+    } else {
+        format!("{:?}", c.ty.ty).to_lowercase()
+    }
 }

@@ -92,6 +92,9 @@ pub async fn serve(site: Arc<Site>, driver: Arc<dyn Driver>, config: ServeConfig
     options.log = log.clone();
     options.auth = config.auth.clone();
     let stopping = options.draining.clone();
+    for warning in &site.warnings {
+        log.line("warn", warning, json!({}));
+    }
     let app = service::service(site, conn, options);
     let server = Server::start(listener, app, stopping);
     log.line("info", "listening", json!({"addr": addr.to_string(), "url": format!("http://{addr}"), "timeout_ms": config.timeout.as_millis() as u64}));

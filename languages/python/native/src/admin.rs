@@ -124,6 +124,12 @@ impl AdminSite {
         self.site.permission_names()
     }
 
+    /// The warnings of the config, for example a search field that no index serves.
+    #[getter]
+    fn warnings(&self) -> Vec<String> {
+        self.site.warnings.clone()
+    }
+
     /// The labels that the permission names use: the site label and the label of each resource.
     #[getter]
     fn labels(&self) -> Vec<String> {
@@ -138,7 +144,9 @@ impl AdminSite {
     }
 
     /// The `(status, body)` of one in-memory request. `user_json` is the JSON of the user, or None.
-    #[pyo3(signature = (engine, method, path, user_json = None, trace = None))]
+    /// `database` and `host` give the host bridge that a `search_with` function runs through.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (engine, method, path, user_json = None, trace = None, database = None, host = None))]
     fn request<'py>(
         &self,
         py: Python<'py>,
@@ -147,12 +155,22 @@ impl AdminSite {
         path: String,
         user_json: Option<String>,
         trace: Option<&Bound<'py, Trace>>,
+        database: Option<Bound<'py, PyAny>>,
+        host: Option<Bound<'py, PyDict>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let user = user_json.map(|j| serde_json::from_str(&j).map_err(|e| PyValueError::new_err(format!("user is not JSON: {e}")))).transpose()?;
         let driver: Arc<dyn Executor> = engine.get().driver.clone();
         let conn = monorm_engine::trace::wrap(driver, trace.map(|t| &t.get().0));
         let site = self.site.clone();
-        pyo3_async_runtimes::tokio::future_into_py(py, async move { Ok(monorm_admin::call(site, conn, &method, &path, user).await) })
+        let auth = match (database, host) {
+            (Some(database), Some(host)) => {
+                // The secret only numbers the host calls: no login runs on this path.
+                let security = monorm_admin::security_with(Some("in-memory client: no login runs on this path"), Default::default());
+                Some(auth_config(py, database, host, security)?)
+            }
+            _ => None,
+        };
+        pyo3_async_runtimes::tokio::future_into_py(py, async move { Ok(monorm_admin::call_with(site, conn, &method, &path, user, auth).await) })
     }
 
     /// The router that `serve` runs, called in memory, with login. `options_json` is `{"idle_timeout", "session_timeout", "origins"}`.

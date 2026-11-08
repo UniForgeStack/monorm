@@ -80,13 +80,11 @@ async def _sync(config: dict[str, Any]) -> int:
 
 
 async def _serve(config: dict[str, Any]) -> int:
-    from ._admin_host import HOST
-
     admin, db = await _open(config)
     try:
         site = admin._site(db._registry)
         try:
-            server = await site.serve(db._engine, json.dumps(config), db, HOST, os.environ.get("MONORM_ADMIN_SECRET"))
+            server = await site.serve(db._engine, json.dumps(config), db, admin._host(), os.environ.get("MONORM_ADMIN_SECRET"))
         except ValueError as e:
             raise _SettingsError(str(e)) from None
         loop = asyncio.get_running_loop()

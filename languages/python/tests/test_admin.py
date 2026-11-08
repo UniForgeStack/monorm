@@ -73,9 +73,11 @@ async def world(request):
 async def test_a_to_one_column_is_one_statement_and_keeps_the_row_without_an_author(world):
     site, db, Author, Post = world
     site.register(Post, {"list": {"columns": [Post.title, Post.author.name], "order": [Post.title]}})
-    page = await site.test_client(db, user=SU).get("/admin/api/resources/AdmPost")
+    client = site.test_client(db, user=SU)
+    preamble = (await client.get("/admin/api/resources")).queries  # the statement timeout on PostgreSQL, nothing on SQLite
+    page = await client.get("/admin/api/resources/AdmPost")
     assert page.status == 200
-    assert page.queries == 1
+    assert page.queries == preamble + 1
     body = page.json()
     assert [c["label"] for c in body["columns"]][:2] == ["title", "author.name"]
     assert [row[:2] for row in body["rows"]] == [["one", "Ada"], ["three", "Bo"], ["two", None]]

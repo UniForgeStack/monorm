@@ -76,6 +76,12 @@ impl AdminSite {
         self.site.permission_names()
     }
 
+    /// The warnings of the config, for example a search field that no index serves.
+    #[napi(getter)]
+    pub fn warnings(&self) -> Vec<String> {
+        self.site.warnings.clone()
+    }
+
     /// The labels that the permission names use: the site label and the label of each resource.
     #[napi(getter)]
     pub fn labels(&self) -> Vec<String> {
@@ -91,7 +97,9 @@ impl AdminSite {
     }
 
     /// One in-memory request. `user_json` is the JSON of the user, or null.
+    /// `dispatch` runs the host calls of a `search_with` function.
     #[napi]
+    #[allow(clippy::too_many_arguments)]
     pub fn request<'env>(
         &self,
         env: &'env Env,
@@ -100,13 +108,16 @@ impl AdminSite {
         path: String,
         user_json: Option<String>,
         trace: Option<&Trace>,
+        dispatch: Option<Function<'env, Args, Promise<String>>>,
     ) -> napi::Result<PromiseRaw<'env, AdminResponse>> {
         let user = user_json.map(|j| serde_json::from_str(&j).map_err(|e| napi::Error::from_reason(format!("user is not JSON: {e}")))).transpose()?;
         let driver: Arc<dyn Executor> = engine.driver.clone();
         let conn = monorm_engine::trace::wrap(driver, trace.map(|t| &t.0));
         let site = self.site.clone();
+        // The secret only numbers the host calls: no login runs on this path.
+        let auth = dispatch.map(|d| auth_config(d, monorm_admin::security_with(Some("in-memory client: no login runs on this path"), Default::default()))).transpose()?;
         env.spawn_future(async move {
-            let (status, body) = monorm_admin::call(site, conn, &method, &path, user).await;
+            let (status, body) = monorm_admin::call_with(site, conn, &method, &path, user, auth).await;
             Ok(AdminResponse { status: u32::from(status), body })
         })
     }

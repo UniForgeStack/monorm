@@ -124,9 +124,18 @@ class AdminSite:
     def permissions(self) -> list[str]: ...
     @property
     def labels(self) -> list[str]: ...
+    @property
+    def warnings(self) -> list[str]: ...
     def url(self, resource: str, key_json: str) -> str: ...
     def request(
-        self, engine: Engine, method: str, path: str, user_json: str | None = None, trace: Trace | None = None
+        self,
+        engine: Engine,
+        method: str,
+        path: str,
+        user_json: str | None = None,
+        trace: Trace | None = None,
+        database: Any = None,
+        host: dict[str, Any] | None = None,
     ) -> Awaitable[tuple[int, str]]: ...
     def client(
         self,

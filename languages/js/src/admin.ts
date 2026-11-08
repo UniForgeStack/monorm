@@ -14,7 +14,7 @@
  *
  * With no `register` call every concrete model is a read-only resource.
  */
-import { hostDispatch } from "./admin-host.js";
+import { HOST, hostDispatch, type HostFunction } from "./admin-host.js";
 import * as grants from "./admin-permissions.js";
 import type { RoleSeedReport, SyncReport } from "./admin-permissions.js";
 import type { Database } from "./db.js";
@@ -22,6 +22,7 @@ import { ORMError } from "./errors.js";
 import { Column, Ordering } from "./expr.js";
 import type { ModelSpec } from "./meta.js";
 import { registry as defaultRegistry, type ModelClass, type Registry } from "./model.js";
+import { Prepared } from "./query.js";
 import { call, native, wait, type NativeAdminRouter, type NativeAdminServer, type NativeAdminSite } from "./native.js";
 
 export const DEFAULT_PREFIX = "/admin/api";
@@ -42,8 +43,22 @@ type AnyModel = ModelClass<ModelSpec>;
 export interface ListConfig {
   readonly columns?: readonly AnyColumn[];
   readonly order?: readonly (AnyColumn | Ordering<any, any>)[];
+  /** Rows per page, 1 to 200 (50 by default). */
   readonly pageSize?: number;
+  /** The list columns that a sort header may use. Without it every list column that can sort. */
+  readonly sortable?: readonly AnyColumn[];
+  /** Fields of the model that the search box matches. The strategy comes from the indexes of each field. */
+  readonly search?: readonly AnyColumn[];
+  /**
+   * Replaces `search`. A prepared query set with `param("q")` (its rows are the matches), or
+   * `async (q, limit) => keys`. One host call per request.
+   */
+  readonly searchWith?: SearchWith;
 }
+
+/** The keys of the matches: a key value, the key values in key order, or an object of key fields. */
+export type SearchFunction = (q: string, limit: number) => Promise<readonly RecordKey[]>;
+export type SearchWith = SearchFunction | Prepared<any, any, any>;
 
 export interface BrandConfig {
   /** The name in the header and the page title (`Admin` by default). */
@@ -89,6 +104,8 @@ export interface AdminOptions {
   readonly brand?: BrandConfig;
   /** The order of the navigation groups; a resource names one of them with `group`. */
   readonly groups?: readonly string[];
+  /** The time limit in seconds of each request's database statements (15 by default, 0 for none). */
+  readonly statementTimeout?: number;
 }
 
 /** One key field, the key values in key order, or an object of key fields. */
@@ -102,7 +119,7 @@ export interface AdminUser {
   readonly [key: string]: unknown;
 }
 
-const LIST_KEYS = new Set(["columns", "order", "pageSize"]);
+const LIST_KEYS = new Set(["columns", "order", "pageSize", "sortable", "search", "searchWith"]);
 const BRAND_KEYS = new Set(["name", "logo", "colors", "links", "environment"]);
 const RESOURCE_KEYS = new Set(["list", "title", "group", "allow", "perms", "label", "fieldPermissions", "actions"]);
 
@@ -131,7 +148,27 @@ function listJson(model: AnyModel, config: ListConfig): Record<string, unknown> 
     });
   }
   if (config.pageSize !== undefined) out["page_size"] = config.pageSize;
+  if (config.sortable !== undefined) out["sortable"] = config.sortable.map((c) => label(model, c));
+  if (config.search !== undefined) out["search"] = config.search.map((c) => label(model, c));
+  if (config.searchWith !== undefined) out["search_with"] = searchName(model);
   return out;
+}
+
+function searchName(model: AnyModel): string {
+  return `search.${model._meta.name}`;
+}
+
+/** The host function of a `searchWith`: the keys of the matches, at most `limit`. */
+function searchHost(model: AnyModel, search: SearchWith): HostFunction {
+  return async (_database, args) => {
+    const limit = Number(args.limit);
+    if (search instanceof Prepared) {
+      const rows = (await (search as Prepared<any, any, any>).all({ q: args.q })) as Record<string, KeyPart>[];
+      return rows.slice(0, limit).map((row) => model._meta.key.map((f) => keyValue(row[f.name]!)));
+    }
+    const found = await search(args.q, limit);
+    return found.slice(0, limit).map(keyJson);
+  };
 }
 
 /** The answer to one in-memory request. */
@@ -143,6 +180,8 @@ export class AdminResponse {
     readonly queries: number,
     /** `[name, value]` pairs of the response headers, with every `set-cookie` (login mode only). */
     readonly headers: readonly (readonly [string, string])[] = [],
+    /** The SQL of those statements, with placeholders (the `user` path only). */
+    readonly sql: readonly string[] = [],
   ) {}
 
   /** The first header with this name (any case), or `null`. */
@@ -211,6 +250,7 @@ export class AdminTestClient {
     user: AdminUser | null,
     login: LoginOptions | null = null,
     private readonly prefix: string = DEFAULT_PREFIX,
+    private readonly host: Readonly<Record<string, HostFunction>> = HOST,
   ) {
     if (login !== null && user !== null) throw new TypeError("testClient takes `user` (no login) or `secret` (login), not both");
     this.#user = user === null ? null : JSON.stringify(user);
@@ -223,11 +263,12 @@ export class AdminTestClient {
     if (login === null) {
       if (Object.keys(options).length > 0) throw new TypeError("the `user` client takes only a method and a path");
       const trace = new (native().Trace)();
-      const { status, body } = await wait(() => this.site.request(this.database.engine, method, path, this.#user, trace));
-      return new AdminResponse(status, body, trace.take().length);
+      const { status, body } = await wait(() => this.site.request(this.database.engine, method, path, this.#user, trace, hostDispatch(this.database, this.host)));
+      const events = trace.take();
+      return new AdminResponse(status, body, events.length, [], events.map((e) => e.sql));
     }
     this.#router ??= call(() =>
-      this.site.client(this.database.engine, hostDispatch(this.database), login.secret, JSON.stringify(login.settings ?? {}), null),
+      this.site.client(this.database.engine, hostDispatch(this.database, this.host), login.secret, JSON.stringify(login.settings ?? {}), null),
     );
     const sent = new Map<string, string>([["host", "localhost"]]);
     for (const [k, v] of Object.entries(options.headers ?? {})) sent.set(k.toLowerCase(), v);
@@ -291,6 +332,7 @@ export class Admin {
   readonly #roles: Record<string, string[]>;
   readonly #brand: BrandConfig | undefined;
   readonly #groups: string[];
+  readonly #statementTimeout: number;
   #planned: { schema: unknown; site: NativeAdminSite } | null = null;
 
   constructor(
@@ -304,6 +346,9 @@ export class Admin {
     }
     this.#brand = options.brand;
     this.#groups = [...(options.groups ?? [])];
+    const timeout = options.statementTimeout ?? 15;
+    if (!(timeout >= 0) || !Number.isFinite(timeout)) throw new AdminConfigError("statementTimeout is a number of seconds, 0 or more (0 sets no limit)");
+    this.#statementTimeout = timeout;
     this.#roles = {};
     for (const [name, patterns] of Object.entries(options.roles ?? {})) {
       if (typeof patterns === "string" || !Array.isArray(patterns) || !patterns.every((p) => typeof p === "string")) {
@@ -343,7 +388,18 @@ export class Admin {
       resources,
       ...(this.#brand === undefined ? {} : { brand: this.#brand }),
       ...(this.#groups.length === 0 ? {} : { groups: this.#groups }),
+      ...(this.#statementTimeout === 15 ? {} : { statement_timeout_ms: Math.round(this.#statementTimeout * 1000) }),
     });
+  }
+
+  /** The host functions: login and the `searchWith` function of each resource. */
+  #host(): Record<string, HostFunction> {
+    const host: Record<string, HostFunction> = { ...HOST };
+    for (const [, { model, config }] of this.#resources) {
+      const search = config.list?.searchWith;
+      if (search !== undefined) host[searchName(model)] = searchHost(model, search);
+    }
+    return host;
   }
 
   #site(registry: Registry): NativeAdminSite {
@@ -356,9 +412,12 @@ export class Admin {
     }
   }
 
-  /** Throws `AdminConfigError` when the config does not fit the schema. Needs no database. */
-  check(): void {
-    this.#site(this.registry);
+  /**
+   * Throws `AdminConfigError` when the config does not fit the schema. Needs no database.
+   * Returns the warnings, for example a search field that no index serves. `monorm admin` logs the same warnings at start.
+   */
+  check(): string[] {
+    return [...this.#site(this.registry).warnings];
   }
 
   /**
@@ -406,7 +465,7 @@ export class Admin {
     const { secret, settings, ip } = options;
     if (secret === undefined && (settings !== undefined || ip !== undefined)) throw new TypeError("testClient takes `settings` and `ip` only with `secret`");
     const login = secret === undefined ? null : { secret, ...(settings === undefined ? {} : { settings }), ...(ip === undefined ? {} : { ip }) };
-    return new AdminTestClient(this.#site(database.registry), database, options.user ?? null, login, this.prefix);
+    return new AdminTestClient(this.#site(database.registry), database, options.user ?? null, login, this.prefix, this.#host());
   }
 
   /** @internal What `monorm admin` runs: serves this admin on the socket of `settingsJson`; `secret` is `MONORM_ADMIN_SECRET`. */
@@ -414,7 +473,7 @@ export class Admin {
     const site = this.#site(database.registry);
     let started: Promise<NativeAdminServer>;
     try {
-      started = site.serve(database.engine, settingsJson, hostDispatch(database), secret);
+      started = site.serve(database.engine, settingsJson, hostDispatch(database, this.#host()), secret);
     } catch (e) {
       throw new AdminSettingsError(e instanceof Error ? e.message : String(e));
     }
@@ -426,7 +485,7 @@ const defaultAdmin = new Admin();
 
 export const admin = {
   register: (model: AnyModel, config?: ResourceConfig): void => defaultAdmin.register(model, config),
-  check: (): void => defaultAdmin.check(),
+  check: (): string[] => defaultAdmin.check(),
   url: (model: AnyModel, key: RecordKey): string => defaultAdmin.url(model, key),
   testClient: (database: Database, options?: Parameters<Admin["testClient"]>[1]): AdminTestClient => defaultAdmin.testClient(database, options),
 };

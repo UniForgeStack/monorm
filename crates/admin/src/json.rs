@@ -40,7 +40,11 @@ fn enum_label(schema: &Schema, ty: ValueType, n: i64) -> Option<String> {
 pub fn bind(ty: ColType, v: &Value) -> Result<Bind, String> {
     let bad = || format!("a cursor value {v} is not a {ty:?}");
     Ok(match ty {
-        ColType::BigInt => Bind::BigInt(Some(v.as_str().ok_or_else(bad)?.parse().map_err(|_| bad())?)),
+        // A bridge function returns plain integers for a BigInt key; a row cell shows the string form.
+        ColType::BigInt => Bind::BigInt(Some(match v.as_i64() {
+            Some(n) => n,
+            None => v.as_str().ok_or_else(bad)?.parse().map_err(|_| bad())?,
+        })),
         ColType::Int => Bind::Int(Some(i32::try_from(v.as_i64().ok_or_else(bad)?).map_err(|_| bad())?)),
         ColType::Float => Bind::Double(Some(v.as_f64().ok_or_else(bad)?)),
         ColType::Bool => Bind::Bool(Some(v.as_bool().ok_or_else(bad)?)),
