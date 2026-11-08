@@ -2,7 +2,7 @@
 
 The admin is in progress.
 It reads model lists for a superuser, and `monorm admin` serves them over HTTP.
-It has a password login. It has no write, search, filter or count yet.
+It has a password login. It has no write or filter yet.
 A served API request without a session answers 401.
 
 The admin is one Rust crate (`monorm-admin`) with a thin module for each language.
@@ -30,7 +30,7 @@ admin.check(); // throws AdminConfigError; needs no database
 ```
 
 `check()` rejects an unknown field and a list column through a to-many relation.
-The page size is 1 to 100, and the default is 25.
+The page size is 1 to 200, and the default is 25.
 An order column must be a plain column: not nullable, not an array, and not Json, Decimal or an enum.
 The primary key is always the last order column, so a keyset page has a stable order.
 
@@ -39,6 +39,76 @@ The primary key is always the last order column, so a keyset page has a stable o
 With no `register` call, every concrete model is a read-only resource.
 After the first `register` call, only the registered models are resources.
 A resource is named after its model.
+
+## Lists
+
+A list page is a keyset page: the cursor holds the order values of the last row, and the next page is one statement with no `OFFSET`.
+A page has `next` and `prev` cursors (`null` at an end).
+`?cursor=` goes forward, and `?before=` goes back with a `prev` cursor.
+`?last=1` gives the last page, and the first page needs no parameter.
+A cursor belongs to its sort: with another `sort`, the answer is `400`.
+`?page=N` jumps to a page with `OFFSET`.
+It works only when the exact count is below the threshold (50,000 rows).
+
+### Count
+
+The rows come first, and the count is a separate request: `GET {prefix}/counts/{name}?q=`.
+The answer is `{"count", "capped"}`.
+The count stops at 10,000, and then `capped` is `true` and the UI shows "10,000+".
+`?exact=1` counts all rows, under the statement timeout.
+An exact count on a large table can time out (`504`).
+
+### Sort
+
+`sortable` lists the sort columns of a resource, and `?sort=title` or `?sort=-title` picks one.
+A column that is not in the list answers `400`.
+Without `sortable`, every list column can sort, except on a large table: with more than 50,000 rows, a sort on a column that leads no index answers `400`.
+The size is a capped count that the service keeps for five minutes.
+A `sortable` list is used as given, and no size check applies.
+The primary key is always the last order column.
+
+### Search
+
+`search` lists the fields that `?q=` looks in.
+A term starts with a prefix that picks the mode:
+
+| Start | Mode |
+|---|---|
+| `=` | Exact match. |
+| `^` | Starts with. |
+| `@` | Full text. PostgreSQL only: SQLite answers `400`. |
+| none | The default for the field. |
+
+The default comes from the schema indexes of the field:
+- a trigram index gives contains;
+- a btree index gives starts with;
+- a full-text index gives full text;
+- no index gives contains, and `check()` and the server start warn about it.
+
+A field that has no strategy at all (for example a `DateTime`) is an error in `check()` and in `Site::build`.
+`%` and `_` in a term are text, not wildcards.
+A term that is a whole number also tries the primary key.
+A term is at most 200 characters.
+
+`search_with` (Python) and `searchWith` (TypeScript) replace the fields with your own search.
+It is a function `(q, limit)` that returns primary keys, or a prepared query set with a `q` parameter.
+The service calls it once for a request, with a limit of 1,000, and it lists the rows with those keys.
+
+```python
+by_body = Note.objects.filter(Note.body.contains(monorm.param("q"))).prepare()
+admin.register(Note, {"list": {"search_with": by_body}})
+```
+
+```ts
+admin.register(Note, { list: { searchWith: async (q, limit) => (await findIds(q, limit)) } });
+```
+
+### Statement timeout
+
+On PostgreSQL every request runs `SET LOCAL statement_timeout` first, and the default is 15 seconds.
+`Admin(statement_timeout=...)` (Python, seconds) and `new Admin(registry, { statementTimeout })` (TypeScript, seconds) change it, and `0` turns it off.
+A cancelled statement answers `504`.
+SQLite has no statement timeout.
 
 ## Test client
 
@@ -273,8 +343,9 @@ The path prefix is a config value, and the default is `/admin/api`.
 
 | Route | Answer |
 |---|---|
-| `GET {prefix}/resources` | The `brand`, the navigation groups (`nav`), and the resources that the user may read. Each resource has a `title`, its `fields`, its `key` fields, its columns (with `title`, `widget` and `choices`), order and page size. It also lists the permission names that the user holds. |
-| `GET {prefix}/resources/{name}?cursor=&limit=` | One page: `columns`, `rows`, `keys` and `next`. |
+| `GET {prefix}/resources` | The `brand`, the navigation groups (`nav`), and the resources that the user may read. Each resource has a `title`, its `fields`, its `key` fields, its columns (with `title`, `widget` and `choices`), order, page size, sort columns and search fields. It also lists the permission names that the user holds. |
+| `GET {prefix}/resources/{name}?cursor=&before=&last=&page=&limit=&sort=&q=` | One page: `columns`, `rows`, `keys`, `next` and `prev`. See [Lists](#lists). |
+| `GET {prefix}/counts/{name}?q=&exact=` | `{"count", "capped"}`. See [Count](#count). |
 | `GET {prefix}/resources/{name}/{key}` | One record: `fields`, `values` and `links` to the to-one targets that the user may read. A key is encoded as in [The UI](#the-ui). |
 
 A row is an array that follows `columns`.
@@ -287,7 +358,8 @@ A date and a time are ISO 8601 with an offset.
 | 401 | The request has no user. |
 | 403 | The user lacks a permission (see [Permissions](#permissions)). The request writes an audit row. |
 | 404 | The resource, the path or the record is unknown. |
-| 400 | The cursor, the limit or the key is not valid. |
+| 400 | The cursor, the limit, the sort, the search term or the key is not valid. |
+| 504 | The statement timeout cancelled a statement. |
 
 An error body is `{"ok": false, "error": {"kind": "...", "message": "..."}}`.
 
@@ -367,7 +439,7 @@ Both languages also export `url` at module level for the default admin.
 ### Browser smoke test
 
 `crates/admin/ui/e2e` holds the first browser suite of the repository.
-It starts a real `python -m monorm admin` process on SQLite (it makes a temporary project, migrates, and seeds a user and two rows), signs in, opens a list and a record, and fails on any console error, CSP violation or failed request.
+It starts a real `python -m monorm admin` process on SQLite (it makes a temporary project, migrates, and seeds a user and two rows), signs in, sorts a list, searches it, opens a record, and fails on any console error, CSP violation or failed request.
 The driver is Playwright (`playwright` 1.65.0, pinned) with `node:test`.
 Playwright downloads a browser, so the install is not part of the default `npm install` of any package.
 Run it from a checkout, with the `monorm` wheel installed in the active Python (`maturin develop`):

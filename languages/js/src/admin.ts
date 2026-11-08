@@ -43,7 +43,7 @@ type AnyModel = ModelClass<ModelSpec>;
 export interface ListConfig {
   readonly columns?: readonly AnyColumn[];
   readonly order?: readonly (AnyColumn | Ordering<any, any>)[];
-  /** Rows per page, 1 to 200 (50 by default). */
+  /** Rows per page, 1 to 200 (25 by default). */
   readonly pageSize?: number;
   /** The list columns that a sort header may use. Without it every list column that can sort. */
   readonly sortable?: readonly AnyColumn[];
