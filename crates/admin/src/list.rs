@@ -58,12 +58,6 @@ pub struct ListRequest {
     pub found: Option<Vec<Vec<Value>>>,
 }
 
-impl ListRequest {
-    pub fn first() -> Self {
-        ListRequest { position: Position::First, limit: None, sort: None, q: None, found: None }
-    }
-}
-
 pub struct Total {
     pub count: usize,
     /// The count stopped at the cap: the real count is higher.
@@ -271,11 +265,11 @@ fn found_filter(resource: &Resource, found: &[Vec<Value>], binds: &mut Binds) ->
     let mut alternatives = Vec::new();
     for key in found {
         if key.len() != resource.key_columns.len() {
-            return Err(ListError::Bad("a key from the search function does not fit this resource".into()));
+            return Err(ListError::Engine("a key from the search function does not fit this resource".into()));
         }
         let mut items = Vec::new();
         for (c, v) in resource.key_columns.iter().zip(key) {
-            let b = json::bind(c.ty.ty, v).map_err(ListError::Bad)?;
+            let b = json::bind(c.ty.ty, v).map_err(ListError::Engine)?;
             items.push(json!({"t": "cmp", "op": "eq", "l": col(c), "r": binds.push(b)}));
         }
         alternatives.push(json!({"t": "and", "items": items}));
@@ -327,27 +321,40 @@ pub async fn count(site: &Site, resource: &Resource, conn: &dyn Executor, target
         op["limit"] = json!(COUNT_CAP + 1);
     }
     let n = run_count(site, conn, target, op, binds).await? as usize;
-    Ok(if n > COUNT_CAP { Total { count: COUNT_CAP, capped: true } } else { Total { count: n, capped: false } })
+    Ok(if !exact && n > COUNT_CAP { Total { count: COUNT_CAP, capped: true } } else { Total { count: n, capped: false } })
 }
 
-/// Whether the table has more than `LARGE_TABLE_ROWS` rows (a cached answer, at most five minutes old).
+/// Whether the table has more than `LARGE_TABLE_ROWS` rows (a cached answer).
 async fn is_large(site: &Site, resource: &Resource, conn: &dyn Executor, target: Target) -> Result<bool, ListError> {
     let model = &site.schema.model(resource.model).ir.name;
     let measure = || async {
         let op = json!({"op": "count", "model": model, "limit": LARGE_TABLE_ROWS + 1});
-        let n = run_count(site, conn, target, op, Binds::default()).await.map_err(|e| match e {
-            ListError::Bad(m) | ListError::Engine(m) | ListError::Timeout(m) => m,
-        })?;
+        let n = run_count(site, conn, target, op, Binds::default()).await?;
         Ok(n as usize > LARGE_TABLE_ROWS)
     };
-    resource.large(measure).await.map_err(ListError::Engine)
+    resource.large(measure).await
 }
 
-pub async fn list(site: &Site, resource: &Resource, conn: &dyn Executor, target: Target, request: &ListRequest) -> Result<Page, ListError> {
+/// The checks of a request that need no database, so that a bad request never reaches the bridge.
+pub fn check_request(resource: &Resource, request: &ListRequest) -> Result<(), ListError> {
+    page_limit(resource, request)?;
+    effective_order(resource, request.sort.as_deref())?;
+    if request.q.as_deref().is_some_and(|q| q.trim().chars().count() > crate::site::MAX_SEARCH_LEN) {
+        return Err(ListError::Bad(format!("the search text has at most {} characters", crate::site::MAX_SEARCH_LEN)));
+    }
+    Ok(())
+}
+
+fn page_limit(resource: &Resource, request: &ListRequest) -> Result<usize, ListError> {
     let limit = request.limit.unwrap_or(resource.page_size);
     if limit == 0 || limit > MAX_PAGE_SIZE {
         return Err(ListError::Bad(format!("limit is between 1 and {MAX_PAGE_SIZE}")));
     }
+    Ok(limit)
+}
+
+pub async fn list(site: &Site, resource: &Resource, conn: &dyn Executor, target: Target, request: &ListRequest) -> Result<Page, ListError> {
+    let limit = page_limit(resource, request)?;
     let (order, sort_text) = effective_order(resource, request.sort.as_deref())?;
     if !sort_text.is_empty() && !resource.sortable_explicit {
         let indexed = |o: &OrderColumn| resource.sortable.iter().any(|s| s.column.label == o.column.label && s.indexed);
@@ -378,7 +385,7 @@ pub async fn list(site: &Site, resource: &Resource, conn: &dyn Executor, target:
         if n == 0 {
             return Err(ListError::Bad("page starts at 1".into()));
         }
-        offset = (n - 1) * limit;
+        offset = (n - 1).checked_mul(limit).filter(|o| i64::try_from(*o).is_ok()).ok_or_else(|| ListError::Bad("page is too large".into()))?;
         if offset > 0 {
             let total = count(site, resource, conn, target, request.q.as_deref(), request.found.as_deref(), false).await?;
             if total.capped {
@@ -424,11 +431,12 @@ pub async fn list(site: &Site, resource: &Resource, conn: &dyn Executor, target:
         Some(encode(&sort_text, &values))
     };
     let (first_cursor, last_cursor) = (cursor_of(rows.first()), cursor_of(rows.last()));
+    // A cursor page with no rows (the rows after it were deleted) keeps the way back: the cursor itself.
     let (next, prev) = match &request.position {
         Position::First => (more.then_some(last_cursor).flatten(), None),
-        Position::After(_) => (more.then_some(last_cursor).flatten(), first_cursor),
+        Position::After(c) => (more.then_some(last_cursor).flatten(), first_cursor.or_else(|| Some(c.clone()))),
         Position::Page(n) => (more.then_some(last_cursor).flatten(), if *n > 1 { first_cursor } else { None }),
-        Position::Before(_) => (last_cursor, more.then_some(first_cursor).flatten()),
+        Position::Before(c) => (last_cursor.or_else(|| Some(c.clone())), more.then_some(first_cursor).flatten()),
         Position::Last => (None, more.then_some(first_cursor).flatten()),
     };
     let keys = rows.iter().map(|r| key::encode(&resource.key_positions.iter().map(|&p| r[p].clone()).collect::<Vec<_>>())).collect();
@@ -454,7 +462,6 @@ pub async fn detail(site: &Site, resource: &Resource, conn: &dyn Executor, targe
         "limit": 1,
     });
     let op: Operation = serde_json::from_value(op).map_err(|e| ListError::Engine(e.to_string()))?;
-    let engine = |e: Error| ListError::Engine(e.to_string());
     let plan = Planner::plan(&site.schema, target, &op, &Binds(binds)).map_err(engine)?;
     let Plan::Select(_) = &plan else { return Err(ListError::Engine("a detail plans a select".into())) };
     let Outcome::Select(selected) = exec::run(conn, target, plan).await.map_err(engine)? else {

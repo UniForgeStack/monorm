@@ -50,6 +50,9 @@ export interface Page {
   keys: string[];
   next: string | null;
   prev: string | null;
+  /** Present when a custom search ran: the count of that one call, always exact. */
+  count?: number;
+  capped?: boolean;
 }
 
 /** Where a list is: a keyset position or a page number, with the sort, the search and the page size. */

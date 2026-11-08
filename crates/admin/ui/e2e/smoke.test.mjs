@@ -185,7 +185,7 @@ test("sort a column and search a list", async () => {
   await page.getByRole("button", { name: "Search", exact: true }).click();
   await rowsAre(["Second"]);
   await page.getByText("1 record", { exact: true }).waitFor();
-  // The next click ends the last request first: a reload would abort one still in flight.
+  // The count has arrived, so closing the context aborts no request that is still in flight.
   await page.getByRole("heading", { name: /Book/ }).waitFor();
   assert.deepEqual(problems, []);
   await context.close();

@@ -30,6 +30,7 @@ admin.check(); // throws AdminConfigError; needs no database
 ```
 
 `check()` rejects an unknown field and a list column through a to-many relation.
+It returns the warnings as a list of strings (for example a search field that has no index).
 The page size is 1 to 200, and the default is 25.
 An order column must be a plain column: not nullable, not an array, and not Json, Decimal or an enum.
 The primary key is always the last order column, so a keyset page has a stable order.
@@ -42,28 +43,33 @@ A resource is named after its model.
 
 ## Lists
 
-A list page is a keyset page: the cursor holds the order values of the last row, and the next page is one statement with no `OFFSET`.
+A list page is a keyset page.
+The cursor holds the order values of the last row.
+The next page is one statement with no `OFFSET`.
 A page has `next` and `prev` cursors (`null` at an end).
 `?cursor=` goes forward, and `?before=` goes back with a `prev` cursor.
 `?last=1` gives the last page, and the first page needs no parameter.
 A cursor belongs to its sort: with another `sort`, the answer is `400`.
 `?page=N` jumps to a page with `OFFSET`.
-It works only when the exact count is below the threshold (50,000 rows).
+It works only when the count is exact: if more than 10,000 rows match, the answer is `400`.
+A `page` that is too large for the offset also answers `400`.
+A cursor page whose rows are gone is empty, and it keeps the cursor back (`prev` after `?cursor=`, `next` after `?before=`).
 
 ### Count
 
 The rows come first, and the count is a separate request: `GET {prefix}/counts/{name}?q=`.
 The answer is `{"count", "capped"}`.
 The count stops at 10,000, and then `capped` is `true` and the UI shows "10,000+".
-`?exact=1` counts all rows, under the statement timeout.
+`?exact=1` counts all rows, under the statement timeout, and `capped` is then `false`.
 An exact count on a large table can time out (`504`).
 
 ### Sort
 
 `sortable` lists the sort columns of a resource, and `?sort=title` or `?sort=-title` picks one.
 A column that is not in the list answers `400`.
-Without `sortable`, every list column can sort, except on a large table: with more than 50,000 rows, a sort on a column that leads no index answers `400`.
-The size is a capped count that the service keeps for five minutes.
+Without `sortable`, every list column can sort.
+The exception is a large table: with more than 50,000 rows, a sort on a column that leads no index answers `400`.
+The service keeps the size, a capped count, for a short time.
 A `sortable` list is used as given, and no size check applies.
 The primary key is always the last order column.
 
@@ -93,6 +99,8 @@ A term is at most 200 characters.
 `search_with` (Python) and `searchWith` (TypeScript) replace the fields with your own search.
 It is a function `(q, limit)` that returns primary keys, or a prepared query set with a `q` parameter.
 The service calls it once for a request, with a limit of 1,000, and it lists the rows with those keys.
+The `rows` answer then has `count` and `capped` too, so the UI makes no second call.
+A key of the wrong type is a fault of the function, and the answer is `500`.
 
 ```python
 by_body = Note.objects.filter(Note.body.contains(monorm.param("q"))).prepare()
@@ -107,7 +115,8 @@ admin.register(Note, { list: { searchWith: async (q, limit) => (await findIds(q,
 
 On PostgreSQL every request runs `SET LOCAL statement_timeout` first, and the default is 15 seconds.
 `Admin(statement_timeout=...)` (Python, seconds) and `new Admin(registry, { statementTimeout })` (TypeScript, seconds) change it, and `0` turns it off.
-A cancelled statement answers `504`.
+A cancelled statement answers `504`, on a list, a count, the size check of a sort and a detail page.
+The largest value is 2,147,483 seconds (the limit of PostgreSQL); a larger value is an error in `check()`.
 SQLite has no statement timeout.
 
 ## Test client
@@ -125,7 +134,7 @@ const client = admin.testClient(db, { user: { is_superuser: true } });
 const page = (await client.get("/admin/api/resources/Post")).json();
 ```
 
-The response has `status`, `text`, `queries` (the statements that the request ran) and `json()`.
+The response has `status`, `text`, `queries` (the statements that the request ran), `sql` (their text, with placeholders) and `json()`.
 
 ## Login and sessions
 

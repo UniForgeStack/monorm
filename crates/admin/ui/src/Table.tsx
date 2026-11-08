@@ -10,7 +10,7 @@ interface Row {
 }
 
 /** One column per meta column. The first one links to the detail of its row. */
-export function Table({ resource, columns, rows, keys, zone, sortable = [], sort = "", onSort }: { resource: string; columns: Column[]; rows: unknown[][]; keys: string[]; zone: Zone; sortable?: string[]; sort?: string; onSort?: (label: string) => void }) {
+export function Table({ resource, columns, rows, keys, zone, sortable = [], unindexed = [], sort = "", onSort }: { resource: string; columns: Column[]; rows: unknown[][]; keys: string[]; zone: Zone; sortable?: string[]; unindexed?: string[]; sort?: string; onSort?: (label: string) => void }) {
   const defs = useMemo<ColumnDef<Row>[]>(
     () =>
       columns.map((c, i) => ({
@@ -35,7 +35,7 @@ export function Table({ resource, columns, rows, keys, zone, sortable = [], sort
               {g.headers.map((h) => (
                 <th key={h.id} scope="col" aria-sort={ariaSort(sort, h.column.id)}>
                   {onSort && sortable.includes(h.column.id) ? (
-                    <button type="button" className="sort" onClick={() => onSort(h.column.id)}>
+                    <button type="button" className="sort" title={unindexed.includes(h.column.id) ? "No index: a large table can refuse this sort" : undefined} onClick={() => onSort(h.column.id)}>
                       {flexRender(h.column.columnDef.header, h.getContext())}
                       <span aria-hidden="true">{ariaSort(sort, h.column.id) === "ascending" ? " ▲" : ariaSort(sort, h.column.id) === "descending" ? " ▼" : ""}</span>
                     </button>

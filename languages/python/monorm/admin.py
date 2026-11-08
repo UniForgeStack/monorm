@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from json import dumps as _dumps
@@ -317,7 +318,7 @@ class Admin:
         groups: Sequence[str] = (),
         statement_timeout: float = 15.0,
     ) -> None:
-        if statement_timeout < 0:
+        if not math.isfinite(statement_timeout) or statement_timeout < 0:
             raise AdminConfigError("statement_timeout is a number of seconds, 0 or more (0 sets no limit)")
         self._statement_timeout = statement_timeout
         self._registry = registry

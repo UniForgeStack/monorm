@@ -21,13 +21,17 @@ export function ListPage({ resource, zone, site }: { resource: string; zone: Zon
   const q = params.q ?? "";
   const rows = useQuery({ queryKey: ["list", resource, params], queryFn: () => api.page(resource, params), placeholderData: (prev) => prev });
   // The count waits for the rows: it is a second request, and it never delays them.
-  const total = useQuery({
+  // A custom search counts in the rows request (one call of the function), so the second request is skipped.
+  const inline = rows.data?.count;
+  const counted = useQuery({
     queryKey: ["count", resource, q, exact],
     queryFn: () => api.count(resource, q, exact),
-    enabled: rows.isSuccess,
+    enabled: rows.isSuccess && inline === undefined,
     placeholderData: (prev) => prev,
     retry: false,
   });
+  const total: { data?: api.Count; isError: boolean; error: unknown } =
+    inline !== undefined ? { data: { count: inline, capped: rows.data?.capped ?? false }, isError: false, error: null } : counted;
   const restart = (change: api.ListParams) => setParams((p) => ({ sort: p.sort, q: p.q, limit: p.limit, ...change }));
   const search = (e: FormEvent) => {
     e.preventDefault();
@@ -39,12 +43,12 @@ export function ListPage({ resource, zone, site }: { resource: string; zone: Zon
     const next = first === label ? `-${label}` : first === `-${label}` ? undefined : label;
     setParams((p) => ({ q: p.q, limit: p.limit, sort: next }));
   };
-  if (rows.isError) return <Alert>{message(rows.error)}</Alert>;
-  if (!rows.data) return <p className="muted">Loading…</p>;
+  if (!rows.data && !rows.isError) return <p className="muted">Loading…</p>;
   const page = rows.data;
   const searchable = !!meta && (meta.search.fields.length > 0 || meta.search.custom);
-  const limit = params.limit ?? meta?.page_size ?? 50;
-  const sizes = [...new Set([...SIZES, meta?.page_size ?? 50])].filter((n) => n <= (meta?.max_page_size ?? 200)).sort((a, b) => a - b);
+  const pageSize = meta?.page_size ?? 25;
+  const limit = params.limit ?? pageSize;
+  const sizes = [...new Set([...SIZES, pageSize])].filter((n) => n <= (meta?.max_page_size ?? 200)).sort((a, b) => a - b);
   const pages = total.data && !total.data.capped ? Math.max(1, Math.ceil(total.data.count / limit)) : null;
   const jump = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -70,6 +74,14 @@ export function ListPage({ resource, zone, site }: { resource: string; zone: Zon
           </select>
         </label>
       </div>
+      {!page ? (
+        // The toolbar stays: a refused sort or search is undone from it.
+        <>
+          <Alert>{message(rows.error)}</Alert>
+          {params.sort && <Button variant="plain" onClick={() => setParams((p) => ({ q: p.q, limit: p.limit }))}>Clear the sort</Button>}
+        </>
+      ) : (
+        <>
       <Table
         resource={resource}
         columns={page.columns}
@@ -77,6 +89,7 @@ export function ListPage({ resource, zone, site }: { resource: string; zone: Zon
         keys={page.keys}
         zone={zone}
         sortable={meta?.sortable.map((s) => s.column) ?? []}
+        unindexed={meta?.sortable.filter((s) => !s.indexed).map((s) => s.column) ?? []}
         sort={params.sort ?? ""}
         onSort={sortBy}
       />
@@ -99,6 +112,8 @@ export function ListPage({ resource, zone, site }: { resource: string; zone: Zon
           )}
         </span>
       </div>
+        </>
+      )}
     </section>
   );
 }

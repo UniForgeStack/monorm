@@ -24,6 +24,8 @@ pub const COUNT_CAP: usize = 10_000;
 /// A table with more rows allows only the sort columns that lead an index, unless the config names the columns.
 pub const LARGE_TABLE_ROWS: usize = 50_000;
 pub const DEFAULT_STATEMENT_TIMEOUT_MS: u64 = 15_000;
+/// PostgreSQL stores `statement_timeout` in an `int4` of milliseconds and rejects more.
+pub const MAX_STATEMENT_TIMEOUT_MS: u64 = i32::MAX as u64;
 /// How long a table size stays known.
 const LARGE_TTL: Duration = Duration::from_secs(300);
 /// The longest search text.
@@ -197,11 +199,11 @@ pub struct Resource {
 }
 
 impl Resource {
-    /// Whether the table has more than `LARGE_TABLE_ROWS` rows. `measure` runs when the answer is older than five minutes.
-    pub async fn large<F, Fut>(&self, measure: F) -> Result<bool, String>
+    /// Whether the table has more than `LARGE_TABLE_ROWS` rows. `measure` runs when the answer is older than `LARGE_TTL`.
+    pub async fn large<F, Fut, E>(&self, measure: F) -> Result<bool, E>
     where
         F: FnOnce() -> Fut,
-        Fut: std::future::Future<Output = Result<bool, String>>,
+        Fut: std::future::Future<Output = Result<bool, E>>,
     {
         if let Some((at, large)) = *self.large.lock().unwrap_or_else(|e| e.into_inner()) {
             if at.elapsed() < LARGE_TTL {
@@ -304,6 +306,7 @@ impl Site {
         }
         let brand = meta::brand(config.brand.as_ref())?;
         let statement_timeout = match config.statement_timeout_ms.unwrap_or(DEFAULT_STATEMENT_TIMEOUT_MS) {
+            ms if ms > MAX_STATEMENT_TIMEOUT_MS => return err(format!("statement_timeout_ms is {ms}, at most {MAX_STATEMENT_TIMEOUT_MS}")),
             0 => None,
             ms => Some(Duration::from_millis(ms)),
         };
@@ -644,7 +647,7 @@ fn has_trigram(m: &ModelIr, f: &FieldIr) -> bool {
     })
 }
 
-/// The text search configuration of a gin or gist index on `to_tsvector('cfg', field)`; `""` when the index names none.
+/// The text search configuration of a gin or gist index on `to_tsvector('cfg', field)`; none when the index names none.
 fn fulltext_config(m: &ModelIr, f: &FieldIr) -> Option<String> {
     for i in &m.indexes {
         let method = i.method.as_deref().unwrap_or("btree").to_ascii_lowercase();

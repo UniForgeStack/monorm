@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use axum::extract::rejection::QueryRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::{Request, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
@@ -234,17 +235,36 @@ async fn finish<T>(scope: Scoped, out: Result<T, ListError>, ok: impl FnOnce(T) 
         }
         Err(ListError::Timeout(m)) => {
             scope.rollback().await;
-            let mut response = reject(StatusCode::GATEWAY_TIMEOUT, "Timeout", "the query took too long: narrow the search or the sort");
-            response.extensions_mut().insert(ErrorNote(m));
-            response
+            timeout_error(m)
         }
     }
 }
 
-async fn rows(State(s): Shared, user: Option<Extension<User>>, Path(name): Path<String>, Query(q): Query<ListQuery>) -> Response {
+fn timeout_error(note: String) -> Response {
+    let mut response = reject(StatusCode::GATEWAY_TIMEOUT, "Timeout", "the query took too long: narrow the search or the sort");
+    response.extensions_mut().insert(ErrorNote(note));
+    response
+}
+
+/// The query of a list route, once the user may read the resource: a malformed value is 400 in the usual envelope, after the 401, 404 and 403.
+async fn query(scope: Scoped, q: Result<Query<ListQuery>, QueryRejection>) -> Result<(Scoped, ListQuery), Response> {
+    match q {
+        Ok(Query(q)) => Ok((scope, q)),
+        Err(e) => {
+            scope.rollback().await;
+            Err(reject(StatusCode::BAD_REQUEST, "BadRequest", &e.body_text()))
+        }
+    }
+}
+
+async fn rows(State(s): Shared, user: Option<Extension<User>>, Path(name): Path<String>, q: Result<Query<ListQuery>, QueryRejection>) -> Response {
     let (scope, resource) = match open_resource(&s, user, &name).await {
         Ok(t) => t,
         Err(r) => return *r,
+    };
+    let (scope, q) = match query(scope, q).await {
+        Ok(t) => t,
+        Err(r) => return r,
     };
     let position = match (&q.cursor, &q.before, flag(&q.last), q.page) {
         (None, None, false, None) => Position::First,
@@ -257,23 +277,39 @@ async fn rows(State(s): Shared, user: Option<Extension<User>>, Path(name): Path<
             return reject(StatusCode::BAD_REQUEST, "BadRequest", "use one of cursor, before, last and page");
         }
     };
-    let found = match found_keys(&s, resource, &scope, q.q.as_deref()).await {
-        Ok(f) => f,
-        Err(e) => return finish(scope, Err::<(), _>(e), |_| unreachable!()).await,
-    };
-    let request = ListRequest { position, limit: q.limit, sort: q.sort, q: q.q, found };
-    let out = list::list(&s.site, resource, scope.executor(), s.target, &request).await;
-    finish(scope, out, |page| {
-        Json(json!({"ok": true, "resource": resource.name, "columns": resource.meta["columns"], "rows": page.rows, "keys": page.keys, "next": page.next, "prev": page.prev})).into_response()
+    let mut request = ListRequest { position, limit: q.limit, sort: q.sort, q: q.q, found: None };
+    let out = async {
+        list::check_request(resource, &request)?;
+        request.found = found_keys(&s, resource, &scope, request.q.as_deref()).await?;
+        let page = list::list(&s.site, resource, scope.executor(), s.target, &request).await?;
+        // The function ran once: its keys give the count too, so the count request need not call it again.
+        let total = match &request.found {
+            Some(found) => Some(list::count(&s.site, resource, scope.executor(), s.target, None, Some(found), true).await?),
+            None => None,
+        };
+        Ok::<_, ListError>((page, total))
+    }
+    .await;
+    finish(scope, out, |(page, total)| {
+        let mut body = json!({"ok": true, "resource": resource.name, "columns": resource.meta["columns"], "rows": page.rows, "keys": page.keys, "next": page.next, "prev": page.prev});
+        if let Some(total) = total {
+            body["count"] = json!(total.count);
+            body["capped"] = json!(total.capped);
+        }
+        Json(body).into_response()
     })
     .await
 }
 
 /// The count of a list, a separate request after the rows: capped at 10,000, or exact when `exact=1`.
-async fn counts(State(s): Shared, user: Option<Extension<User>>, Path(name): Path<String>, Query(q): Query<ListQuery>) -> Response {
+async fn counts(State(s): Shared, user: Option<Extension<User>>, Path(name): Path<String>, q: Result<Query<ListQuery>, QueryRejection>) -> Response {
     let (scope, resource) = match open_resource(&s, user, &name).await {
         Ok(t) => t,
         Err(r) => return *r,
+    };
+    let (scope, q) = match query(scope, q).await {
+        Ok(t) => t,
+        Err(r) => return r,
     };
     let found = match found_keys(&s, resource, &scope, q.q.as_deref()).await {
         Ok(f) => f,
@@ -340,9 +376,13 @@ async fn detail(State(s): Shared, user: Option<Extension<User>>, Path((name, _))
             scope.rollback().await;
             reject(StatusCode::BAD_REQUEST, "BadRequest", &m)
         }
-        Err(ListError::Engine(m) | ListError::Timeout(m)) => {
+        Err(ListError::Engine(m)) => {
             scope.rollback().await;
             database_error(&m)
+        }
+        Err(ListError::Timeout(m)) => {
+            scope.rollback().await;
+            timeout_error(m)
         }
     }
 }

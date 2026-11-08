@@ -148,6 +148,71 @@ async fn a_request_needs_a_superuser() {
     assert_eq!(call(Some(json!({"is_superuser": true})), "/admin/api/resources/Author?limit=0").await.0, 400);
 }
 
+#[tokio::test]
+async fn a_malformed_query_is_401_without_a_session_and_a_json_400_with_one() {
+    let conn = database().await;
+    let site = Arc::new(Site::build(schema(), "").unwrap());
+    let call = |user: Option<Value>, uri: &'static str| monorm_admin::call(site.clone(), conn.clone(), "GET", uri, user);
+    let su = || Some(json!({"is_superuser": true}));
+    for uri in ["/admin/api/resources/Author?limit=abc", "/admin/api/resources/Author?page=-1", "/admin/api/counts/Author?exact=%ff&limit=x"] {
+        assert_eq!(call(None, uri).await.0, 401, "{uri}");
+        let (status, body) = call(su(), uri).await;
+        let body: Value = serde_json::from_str(&body).unwrap_or_else(|_| panic!("{uri}: not JSON: {body}"));
+        assert_eq!((status, body["ok"].as_bool()), (400, Some(false)), "{uri}");
+    }
+    assert_eq!(call(su(), "/admin/api/resources/Nope?limit=abc").await.0, 404);
+}
+
+#[tokio::test]
+async fn a_page_number_that_overflows_the_offset_is_a_400() {
+    let conn = database().await;
+    let site = comments(json!({}));
+    // The first two overflow usize; 2^57 * 100 fits usize but not the i64 of an SQL offset.
+    for page in ["18446744073709551615", "1152921504606846976", "144115188075855872"] {
+        let (status, body, _) = get_sql(&site, conn.clone(), &format!("{COMMENTS}?limit=100&page={page}")).await;
+        assert_eq!(status, 400, "{page}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn a_cursor_page_whose_rows_are_gone_keeps_the_way_back() {
+    let conn = database().await;
+    let site = comments(json!({}));
+    let (_, first, _) = get_sql(&site, conn.clone(), COMMENTS).await;
+    let next = first["next"].as_str().unwrap().to_owned();
+    conn.batch("DELETE FROM comments WHERE id > 2".into()).await.unwrap();
+    let (status, after, _) = get_sql(&site, conn.clone(), &format!("{COMMENTS}?cursor={next}")).await;
+    assert_eq!((status, after["rows"].as_array().unwrap().len(), after["next"].is_null()), (200, 0, true), "{after}");
+    let (_, back, _) = get_sql(&site, conn.clone(), &format!("{COMMENTS}?before={}", after["prev"].as_str().unwrap())).await;
+    assert_eq!(bodies(&back), ["one"], "{back}");
+    let (_, before, _) = get_sql(&site, conn, &format!("{COMMENTS}?before={}", first["prev"].as_str().unwrap_or("x"))).await;
+    assert!(before.get("rows").is_none() || before["rows"].as_array().is_some(), "{before}");
+}
+
+#[tokio::test]
+async fn above_50000_rows_a_sort_needs_an_index_unless_the_config_names_the_columns() {
+    let conn = database().await;
+    conn.batch(
+        "INSERT INTO comments (id, body, big, level, rank, at)
+         WITH RECURSIVE n(i) AS (SELECT 10 UNION ALL SELECT i + 1 FROM n WHERE i < 50020)
+         SELECT i, 'row' || i, 1, 1, 1, '2026-01-02T03:04:05Z' FROM n;"
+            .into(),
+    )
+    .await
+    .unwrap();
+    let site = comments(json!({"columns": ["body", "rank"]}));
+    let (status, body, sql) = get_sql(&site, conn.clone(), &format!("{COMMENTS}?sort=rank")).await;
+    assert_eq!(status, 400, "{body}");
+    assert!(body["error"]["message"].as_str().unwrap_or_default().contains("no index"), "{body}");
+    assert!(sql.iter().any(|s| s.to_lowercase().contains("count")), "the first request measures the table: {sql:?}");
+    let (status, _, sql) = get_sql(&site, conn.clone(), &format!("{COMMENTS}?sort=rank")).await;
+    assert_eq!(status, 400);
+    assert!(!sql.iter().any(|s| s.to_lowercase().contains("count")), "the answer is cached: {sql:?}");
+    assert_eq!(get_sql(&site, conn.clone(), &format!("{COMMENTS}?sort=-id")).await.0, 200, "the key leads an index");
+    let explicit = comments(json!({"columns": ["body", "rank"], "sortable": ["rank"]}));
+    assert_eq!(get_sql(&explicit, conn, &format!("{COMMENTS}?sort=rank")).await.0, 200, "an explicit sortable skips the rule");
+}
+
 #[test]
 fn a_wrong_config_is_one_precise_error() {
     let build = |config: Value| Site::build(schema(), &config.to_string()).err().unwrap().to_string();
@@ -160,6 +225,8 @@ fn a_wrong_config_is_one_precise_error() {
     assert!(build(json!({"resources": [{"model": "Comment", "list": {"order": ["level"]}}]})).contains("cannot order"));
     assert!(build(json!({"resources": [{"model": "Author", "list": {"page_size": 0}}]})).contains("page_size"));
     assert!(build(json!({"resources": [{"model": "Author", "list": {"colums": []}}]})).contains("colums"));
+    assert!(build(json!({"statement_timeout_ms": 2_147_483_648u64})).contains("statement_timeout_ms"));
+    assert!(Site::build(schema(), &json!({"statement_timeout_ms": 2_147_483_647u64}).to_string()).is_ok());
 }
 
 async fn get_sql(site: &Arc<Site>, conn: Arc<dyn Executor>, uri: &str) -> (u16, Value, Vec<String>) {
@@ -237,7 +304,7 @@ async fn the_count_is_its_own_request_and_a_capped_count_has_a_limit() {
     assert_eq!(sql.len(), 1);
     assert!(sql[0].contains("LIMIT ?"), "{}", sql[0]);
     let (_, exact, sql) = get_sql(&site, conn, "/admin/api/counts/Comment?exact=1").await;
-    assert_eq!(exact["count"], 3);
+    assert_eq!((exact["count"].as_i64(), exact["capped"].as_bool()), (Some(3), Some(false)));
     assert!(!sql[0].contains("LIMIT"), "{}", sql[0]);
 }
 
@@ -255,6 +322,8 @@ async fn above_the_cap_the_count_says_so_and_a_page_jump_is_refused() {
     let site = comments(json!({}));
     let (_, body, _) = get(&site, conn.clone(), "/admin/api/counts/Comment").await;
     assert_eq!((body["count"].as_i64(), body["capped"].as_bool()), (Some(10_000), Some(true)));
+    let (_, exact, _) = get(&site, conn.clone(), "/admin/api/counts/Comment?exact=1").await;
+    assert_eq!((exact["count"].as_i64(), exact["capped"].as_bool()), (Some(10_014), Some(false)), "exact on request goes past the cap");
     assert_eq!(get(&site, conn.clone(), &format!("{COMMENTS}?page=3")).await.0, 400);
     let small = comments(json!({"search": ["body"]}));
     let (status, body, _) = get(&small, conn, &format!("{COMMENTS}?q=%3Dtwo&page=1")).await;

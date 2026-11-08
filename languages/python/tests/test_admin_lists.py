@@ -1,6 +1,7 @@
 """Admin lists: keyset paging, the capped count, sort, search, and the statement timeout, on PostgreSQL and SQLite."""
 
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -55,9 +56,21 @@ async def world(request):
         [{"title": t, "body": b, "rank": r, "at": at} for t, b, r in zip(TITLES, bodies, ranks)]
     )
 
-    yield SimpleNamespace(provider=request.param, db=db, Note=Note, make=lambda **options: admin.Admin(registry, **options))
+    yield SimpleNamespace(provider=request.param, registry=registry, db=db, Note=Note, make=lambda **options: admin.Admin(registry, **options))
     await db.drop_tables()
     await db.close()
+
+
+@asynccontextmanager
+async def locked(w):
+    """Another connection holds an exclusive table lock, so a statement of the admin waits until its timeout."""
+    other = await monorm.connect(PG_URL, registry=w.registry, default=False)
+    try:
+        async with other.transaction():
+            await other.execute("LOCK TABLE adm_notes IN ACCESS EXCLUSIVE MODE")
+            yield
+    finally:
+        await other.close()
 
 
 def register(w, list_config=None, **options):
@@ -160,6 +173,14 @@ async def test_search_with_a_function_makes_one_bridge_call_and_a_prepared_query
     page = await client.get(f"{NOTES}?q=plum")
     assert titles(page) == ["gamma", "delta"]
     assert len(calls) == 1 and calls[0][0] == "plum"
+    assert (page.json()["count"], page.json()["capped"]) == (2, False)
+    counted = await client.get(f"{NOTES}?q=plum&limit=1")
+    assert (len(calls), counted.json()["count"]) == (2, 2)
+
+    async def wrong(q, limit):
+        return ["not a key"]
+
+    assert (await register(world, {"search_with": wrong})[1].get(f"{NOTES}?q=x")).status == 500
     prepared = world.Note.objects.using(world.db).filter(world.Note.title == monorm.param("q")).prepare()
     site, client = register(world, {"search_with": prepared})
     assert titles(await client.get(f"{NOTES}?q=beta")) == ["beta"]
@@ -173,11 +194,23 @@ async def test_each_request_runs_in_a_statement_timeout_on_postgres(world):
     if world.provider != "postgres":
         return
 
-    async def slow(q, limit):
-        await world.db.fetch("SELECT pg_sleep(5)::text")
-        return []
+    for bad in (-1, float("nan"), float("inf")):
+        with pytest.raises(admin.AdminConfigError):
+            world.make(statement_timeout=bad)
+    slowed, slow_client = register(world, statement_timeout=0.2)
+    async with locked(world):
+        page = await slow_client.get(NOTES)
+    assert page.status == 504
+    assert page.sql[0] == "SET LOCAL statement_timeout = 200"
 
-    slowed, slow_client = register(world, {"search_with": slow}, statement_timeout=0.2)
-    page = await slow_client.get(f"{NOTES}?q=x")
-    assert page.status in (500, 504)
-    assert "SET LOCAL statement_timeout = 200" == page.sql[0]
+
+async def test_a_timeout_is_a_504_on_a_list_a_count_a_sort_probe_and_a_detail_page(world):
+    if world.provider != "postgres":
+        pytest.skip("the statement timeout is PostgreSQL only")
+    site, client = register(world, statement_timeout=0.2)
+    async with locked(world):
+        assert (await client.get(NOTES)).status == 504
+        assert (await client.get("/admin/api/counts/AdmNote")).status == 504
+        assert (await client.get(f"{NOTES}?sort=rank")).status == 504
+        assert (await client.get(f"{NOTES}/1")).status == 504
+    assert (await client.get(f"{NOTES}/1")).status == 200

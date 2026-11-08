@@ -34,6 +34,7 @@ const PROVIDERS = ["sqlite", "postgres"] as const;
 type Loose = any;
 type Database = Awaited<ReturnType<typeof connect>>;
 interface World {
+  registry: Registry;
   provider: (typeof PROVIDERS)[number];
   db: Database;
   Note: Loose;
@@ -49,10 +50,23 @@ async function world(provider: (typeof PROVIDERS)[number], run: (w: World) => Pr
     await db.createTables();
     const at = new Date("2026-01-02T03:04:05Z");
     await Note.objects.using(db).insertMany(TITLES.map((title, i) => ({ title, body: BODIES[i], rank: RANKS[i], at })));
-    await run({ provider, db, Note, make: (options) => new Admin(registry, options) });
+    await run({ provider, registry, db, Note, make: (options) => new Admin(registry, options) });
   } finally {
     await db.dropTables();
     await db.close();
+  }
+}
+
+// Another connection holds an exclusive table lock, so a statement of the admin waits until its timeout.
+async function locked(w: World, run: () => Promise<void>): Promise<void> {
+  const other = await connect(PG_URL, { registry: w.registry, default: false });
+  try {
+    await other.transaction(async () => {
+      await other.execute("LOCK TABLE adm_notes IN ACCESS EXCLUSIVE MODE");
+      await run();
+    });
+  } finally {
+    await other.close();
   }
 }
 
@@ -158,6 +172,12 @@ for (const provider of PROVIDERS) {
     assert.deepEqual(titles(await client.get(`${NOTES}?q=plum`)), ["gamma", "delta"]);
     assert.equal(calls.length, 1);
     assert.equal(calls[0]![0], "plum");
+    const counted = await client.get(`${NOTES}?q=plum`);
+    assert.deepEqual([counted.json().count, counted.json().capped], [2, false]);
+    const limited = await client.get(`${NOTES}?q=plum&limit=1`);
+    assert.deepEqual([calls.length, limited.json().count], [3, 2]);
+    const wrong = register(w, { searchWith: async () => ["not a key"] });
+    assert.equal((await wrong.client.get(`${NOTES}?q=x`)).status, 500);
     const prepared = w.Note.objects.using(w.db).filter(w.Note.title.eq(param("q"))).prepare();
     ({ client } = register(w, { searchWith: prepared }));
     assert.deepEqual(titles(await client.get(`${NOTES}?q=beta`)), ["beta"]);
@@ -169,13 +189,26 @@ for (const provider of PROVIDERS) {
     const first = (await client.get(NOTES)).sql[0]!;
     assert.equal(w.provider === "postgres", first.startsWith("SET LOCAL statement_timeout = 15000"));
     if (w.provider !== "postgres") return;
-    const slow = async () => {
-      await w.db.fetchText("SELECT pg_sleep(5)::text");
-      return [];
-    };
-    const { client: slowClient } = register(w, { searchWith: slow }, { statementTimeout: 0.2 });
-    const page = await slowClient.get(`${NOTES}?q=x`);
-    assert.ok([500, 504].includes(page.status));
-    assert.equal(page.sql[0], "SET LOCAL statement_timeout = 200");
+    for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      assert.throws(() => w.make({ statementTimeout: bad }), AdminConfigError);
+    }
+    const { client: slowClient } = register(w, {}, { statementTimeout: 0.2 });
+    await locked(w, async () => {
+      const page = await slowClient.get(NOTES);
+      assert.equal(page.status, 504);
+      assert.equal(page.sql[0], "SET LOCAL statement_timeout = 200");
+    });
+  }));
+
+  test(`a timeout is a 504 on a list a count a sort probe and a detail page (${provider})`, () => world(provider, async (w) => {
+    if (w.provider !== "postgres") return;
+    const { client } = register(w, {}, { statementTimeout: 0.2 });
+    await locked(w, async () => {
+      assert.equal((await client.get(NOTES)).status, 504);
+      assert.equal((await client.get("/admin/api/counts/AdmNote")).status, 504);
+      assert.equal((await client.get(`${NOTES}?sort=rank`)).status, 504);
+      assert.equal((await client.get(`${NOTES}/1`)).status, 504);
+    });
+    assert.equal((await client.get(`${NOTES}/1`)).status, 200);
   }));
 }
