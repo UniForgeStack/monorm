@@ -166,10 +166,10 @@ pub struct Total {
 }
 
 #[derive(Default)]
-pub(crate) struct Binds(Vec<Bind>);
+pub(crate) struct Binds(pub(crate) Vec<Bind>);
 
 impl Binds {
-    fn push(&mut self, v: Bind) -> Value {
+    pub(crate) fn push(&mut self, v: Bind) -> Value {
         self.0.push(v);
         json!({"t": "param", "i": self.0.len() - 1})
     }
@@ -202,14 +202,14 @@ impl Params for Binds {
 }
 
 /// A column as an expression: a field, or the expression of a computed column.
-fn col(c: &Column) -> Value {
+pub(crate) fn col(c: &Column) -> Value {
     match &c.source {
         Source::Expr(e) => e.clone(),
         _ => json!({"t": "col", "path": c.path, "name": c.field}),
     }
 }
 
-fn engine(e: Error) -> ListError {
+pub(crate) fn engine(e: Error) -> ListError {
     let message = e.to_string();
     let lower = message.to_lowercase();
     if lower.contains("statement timeout") || lower.contains("canceling statement") || lower.contains("57014") || lower.contains("timed out") || lower.contains("deadline") {
@@ -604,7 +604,7 @@ fn where_filters(site: &Site, resource: &Resource, request: &ListRequest, binds:
     Ok(Some(filters))
 }
 
-async fn run_select(site: &Site, conn: &dyn Executor, target: Target, op: Value, binds: Binds) -> Result<Box<exec::Selected>, ListError> {
+pub(crate) async fn run_select(site: &Site, conn: &dyn Executor, target: Target, op: Value, binds: Binds) -> Result<Box<exec::Selected>, ListError> {
     let op: Operation = serde_json::from_value(op).map_err(|e| ListError::Engine(e.to_string()))?;
     let plan = Planner::plan(&site.schema, target, &op, &binds).map_err(engine)?;
     let Plan::Select(_) = &plan else { return Err(ListError::Engine("a list plans a select".into())) };
@@ -816,17 +816,28 @@ pub async fn parent_values(site: &Site, parent: &Resource, related: &Related<'_>
     Ok(Some(row))
 }
 
+/// The filter that picks the record with this key; its values go to `binds`.
+pub(crate) fn key_filter(resource: &Resource, key: &[Value], binds: &mut Binds) -> Result<Value, ListError> {
+    let mut items = Vec::new();
+    for (c, v) in resource.key_columns.iter().zip(key) {
+        let param = binds.push(json::bind(c.ty.ty, v).map_err(ListError::Bad)?);
+        items.push(json!({"t": "cmp", "op": "eq", "l": col(c), "r": param}));
+    }
+    Ok(json!({"t": "and", "items": items}))
+}
+
 /// The detail columns of the record with this key, as JSON cells, or none when no row has the key.
 pub async fn detail(site: &Site, resource: &Resource, conn: &dyn Executor, target: Target, key: &[Value], scope: &RowScope) -> Result<Option<Record>, ListError> {
+    read_record(site, resource, conn, target, key, scope, false).await
+}
+
+/// `detail`; with `lock` the select takes the row lock of a write (`FOR UPDATE`, PostgreSQL only: SQLite has no row locks).
+pub(crate) async fn read_record(site: &Site, resource: &Resource, conn: &dyn Executor, target: Target, key: &[Value], scope: &RowScope, lock: bool) -> Result<Option<Record>, ListError> {
     if key.len() != resource.key_columns.len() {
         return Err(ListError::Bad("the key does not fit this resource".into()));
     }
     let mut binds = Binds::default();
-    for (c, v) in resource.key_columns.iter().zip(key) {
-        binds.0.push(json::bind(c.ty.ty, v).map_err(ListError::Bad)?);
-    }
-    let items: Vec<Value> = resource.key_columns.iter().enumerate().map(|(i, c)| json!({"t": "cmp", "op": "eq", "l": col(c), "r": {"t": "param", "i": i}})).collect();
-    let mut filters = vec![json!({"t": "and", "items": items})];
+    let mut filters = vec![key_filter(resource, key, &mut binds)?];
     filters.extend(scope.push(&mut binds));
     let model = &site.schema.model(resource.model).ir.name;
     let mut columns: Vec<Value> = resource.detail.iter().map(|c| json!({"t": "expr", "expr": col(c)})).collect();
@@ -838,6 +849,9 @@ pub async fn detail(site: &Site, resource: &Resource, conn: &dyn Executor, targe
         "filters": filters,
         "limit": 1,
     });
+    if lock && target.dialect == monorm_core::dialect::Dialect::Postgres {
+        op["lock"] = json!({"exclusive": true});
+    }
     scope.apply(&mut op);
     let selected = run_select(site, conn, target, op, binds).await?;
     if selected.rows.is_empty() {

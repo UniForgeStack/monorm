@@ -27,6 +27,7 @@ pub mod site;
 pub mod sql;
 pub mod tables;
 pub mod ui;
+pub mod write;
 
 pub use auth::AuthConfig;
 pub use bridge::{BoxFuture, BridgeError, CallContext, HostBridge};
@@ -35,6 +36,6 @@ pub use inproc::{Reply, Routed};
 pub use scope::Scoped;
 pub use security::{Security, SecurityOptions};
 pub use serve::{serve, ServeConfig, Server};
-pub use server::{call, call_with, router, User};
+pub use server::{call, call_body, call_with, router, User};
 pub use service::{service, Logger, Options};
 pub use site::{ConfigError, Site};

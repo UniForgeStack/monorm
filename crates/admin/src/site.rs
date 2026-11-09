@@ -111,6 +111,9 @@ struct ResourceConfig {
     /// Per-row rules, `change` and `delete`: prepared expressions that the list and the detail select as flags.
     #[serde(default)]
     can: BTreeMap<String, Value>,
+    /// The text of a form message for a named `@@check`: the name of the constraint, then the text.
+    #[serde(default)]
+    check_messages: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -314,6 +317,8 @@ pub struct Resource {
     pub queryset: Option<Queryset>,
     /// The per-row rules (`change`, `delete`): each one is a flag in the list and the detail.
     pub can: Vec<(String, Value)>,
+    /// The text that a failed named `@@check` shows in the form.
+    pub check_messages: BTreeMap<String, String>,
     /// The names of the named read defaults that read no scope value: each one has a bypass permission.
     pub bypass: Vec<String>,
     /// The names of the read defaults that read a `scope.<name>` value: the admin sets no scope value, so every admin read turns them off.
@@ -623,7 +628,7 @@ fn concrete(m: &monorm_core::schema::Model) -> bool {
 
 impl ResourceConfig {
     fn of(model: &str) -> ResourceConfig {
-        ResourceConfig { model: model.to_owned(), list: ListConfig::default(), allow: None, perms: None, label: None, title: None, group: None, field_permissions: Vec::new(), actions: Vec::new(), queryset: None, can: BTreeMap::new() }
+        ResourceConfig { model: model.to_owned(), list: ListConfig::default(), allow: None, perms: None, label: None, title: None, group: None, field_permissions: Vec::new(), actions: Vec::new(), queryset: None, can: BTreeMap::new(), check_messages: BTreeMap::new() }
     }
 }
 
@@ -768,6 +773,9 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
     let named_filters = named_filters(schema, idx, &name, list)?;
     let queryset = queryset_of(schema, idx, &name, config.queryset.as_ref())?;
     let can = can_rules(schema, &name, &config.can)?;
+    if let Some(k) = config.check_messages.keys().find(|k| !model.ir.constraints.iter().any(|c| matches!(c, ConstraintIr::Check { name: Some(n), .. } if n == *k))) {
+        return err(format!("{name}: check_messages names {k:?}, which is not a named @@check of the model"));
+    }
     let scope_defaults = scope_default_names(model);
     Ok(Resource {
         model: idx,
@@ -801,6 +809,7 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
         tabs: Vec::new(),
         queryset,
         can,
+        check_messages: config.check_messages.clone(),
         bypass: model.read_defaults.names().into_iter().filter(|n| !scope_defaults.iter().any(|d| d == n)).map(str::to_owned).collect(),
         scope_defaults,
         tabs_config: list.tabs.clone(),

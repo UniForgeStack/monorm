@@ -7,6 +7,7 @@ use monorm_core::{behavior::SCHEMA_CONTRACT, dsl, migrate, schema::Schema};
 use monorm_engine::db::{self, Executor};
 use serde_json::{json, Value};
 
+const ADMIN: &str = include_str!("../../../apps/admin/schema.prisma");
 const SOURCE: &str = r#"
 datasource db {
   provider = "sqlite"
@@ -33,7 +34,7 @@ model Item {
 /// The schema with two named read defaults on `Item`: `visible` hides the hidden rows, and `tenant` keeps the rows of `scope.tenant`.
 /// The extensions that normally add them are not needed.
 fn schema() -> Arc<Schema> {
-    let mut ir = serde_json::to_value(dsl::compile(SOURCE, None).unwrap()).unwrap();
+    let mut ir = serde_json::to_value(dsl::compile(&format!("{SOURCE}\n{ADMIN}"), None).unwrap()).unwrap();
     ir["behavior"]["schema_contract"] = json!(SCHEMA_CONTRACT);
     ir["behavior"]["read_defaults"] = json!([
         {
@@ -50,8 +51,8 @@ fn schema() -> Arc<Schema> {
 
 async fn database() -> Arc<dyn Executor> {
     let conn = db::connect("sqlite://:memory:", 1).await.unwrap();
-    for sql in migrate::create_statements(&migrate::snapshot(&schema()).unwrap()) {
-        conn.batch(sql).await.unwrap();
+    for step in migrate::plan(&schema(), &Default::default()).unwrap().up {
+        conn.batch(step.sql).await.unwrap();
     }
     conn.batch(
         "INSERT INTO owners (id, name) VALUES (1, 'Ada'), (2, 'Bo');
@@ -183,6 +184,31 @@ async fn can_rules_are_flags_of_every_row_in_the_list_and_the_detail() {
     let item = meta["resources"].as_array().unwrap().iter().find(|r| r["name"] == "Item").unwrap();
     assert_eq!(item["can"], json!(["change", "delete"]));
     // The flags are selected in the one statement of the list: no host call and no extra query.
+}
+
+async fn send(site: &Arc<Site>, conn: &Arc<dyn Executor>, method: &str, uri: &str, body: Value) -> (u16, Value) {
+    let user = Some(json!({"key": 1, "is_superuser": true}));
+    let (status, out) = monorm_admin::call_body(site.clone(), conn.clone(), method, uri, user, None, Some(&body.to_string())).await;
+    (status, serde_json::from_str(&out).unwrap_or(Value::Null))
+}
+
+#[tokio::test]
+async fn a_write_stays_inside_the_queryset_the_can_rule_and_the_default_and_sets_no_tenant_value() {
+    let conn = database().await;
+    let rank_over = |n: i64| json!({"t": "cmp", "op": "gt", "l": {"t": "col", "path": [], "name": "rank"}, "r": {"t": "int", "value": n}});
+    let site = items(json!({"queryset": mine(), "can": {"change": rank_over(1), "delete": rank_over(3)}}));
+    let edit = |title: &str, was: &str| json!({"set": {"title": title}, "loaded": {"title": was}});
+    // The `tenant` default reads `scope.tenant`, which the admin never sets: the lock read must not fail on it.
+    let (status, out) = send(&site, &conn, "PATCH", &format!("{ITEMS}/4"), edit("FOUR", "four")).await;
+    assert_eq!(status, 200, "{out}");
+    assert_eq!(send(&site, &conn, "PATCH", &format!("{ITEMS}/3"), edit("x", "three")).await.0, 404, "outside the queryset");
+    assert_eq!(send(&site, &conn, "PATCH", &format!("{ITEMS}/2"), edit("x", "two")).await.0, 404, "the `visible` default hides the row");
+    assert_eq!(send(&site, &conn, "PATCH", &format!("{ITEMS}/1"), edit("x", "one")).await.0, 403, "the can rule");
+    assert_eq!(send(&site, &conn, "DELETE", &format!("{ITEMS}/4"), json!({})).await.0, 200, "rank 4 passes the delete rule");
+    let (_, rows) = get(&site, &conn, ITEMS).await;
+    assert_eq!(titles(&rows), ["one"]);
+    let created = send(&site, &conn, "POST", ITEMS, json!({"set": {"id": 9, "owner_id": 1, "title": "new", "rank": 9, "hidden": false}})).await;
+    assert_eq!(created.0, 201, "{}", created.1);
 }
 
 #[tokio::test]

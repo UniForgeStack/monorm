@@ -74,7 +74,7 @@ pub(crate) fn with_cookies(mut response: Response, cookies: &[String]) -> Respon
 /// The client of a request for the login limits: the socket peer, or, when the peer is a trusted proxy,
 /// the first address of `X-Forwarded-For` (read from the right) that is not a trusted proxy itself.
 /// A header from any other peer, and an entry that is not an address, is not believed.
-fn client_ip(req: &Request, trusted: &[IpAddr]) -> String {
+pub(crate) fn client_ip(req: &Request, trusted: &[IpAddr]) -> String {
     let Some(peer) = req.extensions().get::<ConnectInfo<SocketAddr>>().map(|c| c.0.ip()) else {
         return "unknown".into();
     };

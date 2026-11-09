@@ -1,9 +1,11 @@
-//! Cells as JSON, and cursor values back as bind values.
+//! Cells as JSON, bind values as the JSON of a cell, and cursor values back as bind values.
 //!
 //! Big integers and decimals are JSON strings, so a browser keeps every digit. Dates and
 //! times are ISO 8601; a time carries its offset.
 
-use chrono::{DateTime, SecondsFormat};
+use bigdecimal::BigDecimal;
+use chrono::{DateTime, SecondsFormat, Utc};
+use std::str::FromStr;
 use monorm_core::ir::{ColType, EnumStorage, ValueType};
 use monorm_core::schema::Schema;
 use monorm_engine::db::Cell;
@@ -54,4 +56,37 @@ pub fn bind(ty: ColType, v: &Value) -> Result<Bind, String> {
         ColType::Uuid => Bind::Uuid(Some(v.as_str().ok_or_else(bad)?.parse().map_err(|_| bad())?)),
         ColType::Json | ColType::Decimal => return Err(bad()),
     })
+}
+
+/// A bind value as the JSON of a row cell of type `ty`: the form a stored value of that type has.
+pub fn bind_json(schema: &Schema, ty: ValueType, b: &Bind) -> Value {
+    cell(schema, ty, bind_cell(b))
+}
+
+fn bind_cell(b: &Bind) -> Cell<'_> {
+    match b {
+        Bind::Bool(Some(x)) => Cell::Bool(*x),
+        Bind::Int(Some(x)) => Cell::Int(*x),
+        Bind::BigInt(Some(x)) => Cell::BigInt(*x),
+        Bind::Double(Some(x)) => Cell::Float(*x),
+        Bind::String(Some(x)) => Cell::Text(x),
+        Bind::ChronoDateTimeWithTimeZone(Some(x)) => Cell::DateTime(x.with_timezone(&Utc)),
+        Bind::ChronoDate(Some(x)) => Cell::Date(*x),
+        Bind::Uuid(Some(x)) => Cell::Uuid(*x),
+        Bind::Json(Some(x)) => Cell::Json((**x).clone()),
+        Bind::BigDecimal(Some(x)) => Cell::Decimal(x.to_string()),
+        Bind::Array(_, Some(items)) => Cell::Array(items.iter().map(bind_cell).collect()),
+        _ => Cell::Null,
+    }
+}
+
+/// Two JSON cells of one column type hold the same value. A decimal compares by number, so `5` and `"5.00"` match.
+pub fn same(ty: ColType, a: &Value, b: &Value) -> bool {
+    if a == b {
+        return true;
+    }
+    match (ty, a, b) {
+        (ColType::Decimal, Value::String(x), Value::String(y)) => matches!((BigDecimal::from_str(x), BigDecimal::from_str(y)), (Ok(x), Ok(y)) if x == y),
+        _ => false,
+    }
 }

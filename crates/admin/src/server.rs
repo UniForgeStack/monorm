@@ -29,14 +29,14 @@ use crate::site::{Related, Resource, Site, Slot, Source};
 #[derive(Clone, Debug)]
 pub struct User(pub Value);
 
-struct State_ {
-    site: Arc<Site>,
-    conn: Arc<dyn Executor>,
-    target: Target,
-    bridge: Option<(Arc<dyn HostBridge>, AuthConfig)>,
+pub(crate) struct State_ {
+    pub(crate) site: Arc<Site>,
+    pub(crate) conn: Arc<dyn Executor>,
+    pub(crate) target: Target,
+    pub(crate) bridge: Option<(Arc<dyn HostBridge>, AuthConfig)>,
 }
 
-type Shared = State<Arc<State_>>;
+pub(crate) type Shared = State<Arc<State_>>;
 
 /// The admin routes without a fallback, so a caller can merge other routes first.
 pub fn api(site: Arc<Site>, conn: Arc<dyn Executor>) -> Router {
@@ -47,7 +47,7 @@ pub fn api(site: Arc<Site>, conn: Arc<dyn Executor>) -> Router {
 pub fn api_with(site: Arc<Site>, conn: Arc<dyn Executor>, auth: Option<AuthConfig>) -> Router {
     let target = Target::new(conn.dialect());
     let prefix = site.prefix.clone();
-    let routes = Router::new().route("/resources", get(resources)).route("/resources/{name}", get(rows)).route("/resources/{name}/{key}", get(detail)).route("/resources/{name}/{key}/{rel}", get(tab_rows)).route("/counts/{name}", get(counts)).route("/counts/{name}/{key}/{rel}", get(tab_counts));
+    let routes = Router::new().route("/resources", get(resources)).route("/resources/{name}", get(rows).post(crate::write::create)).route("/resources/{name}/{key}", get(detail).patch(crate::write::update).delete(crate::write::destroy)).route("/resources/{name}/{key}/{rel}", get(tab_rows)).route("/counts/{name}", get(counts)).route("/counts/{name}/{key}/{rel}", get(tab_counts));
     let bridge = auth.clone().map(|a| (a.bridge.clone(), a));
     let extra = auth.map(|auth| auth::routes(auth, site.clone(), conn.clone()));
     let state = Arc::new(State_ { site, conn, target, bridge });
@@ -73,7 +73,16 @@ pub async fn call(site: Arc<Site>, conn: Arc<dyn Executor>, method: &str, uri: &
 
 /// `call` with the host bridge of `auth`, so a `search_with` function runs. No login runs: `user` is the user.
 pub async fn call_with(site: Arc<Site>, conn: Arc<dyn Executor>, method: &str, uri: &str, user: Option<Value>, auth: Option<AuthConfig>) -> (u16, String) {
-    let built = Request::builder().method(method).uri(uri).body(axum::body::Body::empty());
+    call_body(site, conn, method, uri, user, auth, None).await
+}
+
+/// `call_with` with a JSON body.
+pub async fn call_body(site: Arc<Site>, conn: Arc<dyn Executor>, method: &str, uri: &str, user: Option<Value>, auth: Option<AuthConfig>, body: Option<&str>) -> (u16, String) {
+    let mut built = Request::builder().method(method).uri(uri);
+    if body.is_some() {
+        built = built.header("content-type", "application/json");
+    }
+    let built = built.body(axum::body::Body::from(body.unwrap_or_default().to_owned()));
     let mut request = match built {
         Ok(r) => r,
         Err(e) => return (400, failure("BadRequest", &e.to_string())),
@@ -99,13 +108,13 @@ pub(crate) fn reject(status: StatusCode, kind: &str, message: &str) -> Response 
 }
 
 /// 401 for no user: before any lookup, so a path leaks nothing.
-fn require_user(user: Option<Extension<User>>) -> Result<User, Box<Response>> {
+pub(crate) fn require_user(user: Option<Extension<User>>) -> Result<User, Box<Response>> {
     user.map(|Extension(u)| u).ok_or_else(|| Box::new(reject(StatusCode::UNAUTHORIZED, "Unauthorized", "sign in")))
 }
 
 /// 403, and one audit row that commits with the request. `changes` says why: `needs` (the names of
 /// which one is enough) or `reason`. A failed audit write does not change the answer.
-async fn deny(site: &Site, scope: Scoped, user: &User, resource: &str, changes: Value) -> Response {
+pub(crate) async fn deny(site: &Site, scope: Scoped, user: &User, resource: &str, changes: Value) -> Response {
     let key = match &user.0["key"] {
         Value::String(s) => s.clone(),
         Value::Null => String::new(),
@@ -122,7 +131,7 @@ async fn deny(site: &Site, scope: Scoped, user: &User, resource: &str, changes: 
 }
 
 /// The preamble of every route: the user (401), a scope, the grants of the user and the site gate (403).
-async fn authorize(s: &State_, user: Option<Extension<User>>) -> Result<(User, Scoped, Grants), Box<Response>> {
+pub(crate) async fn authorize(s: &State_, user: Option<Extension<User>>) -> Result<(User, Scoped, Grants), Box<Response>> {
     let user = require_user(user)?;
     let scope = Scoped::begin(s.conn.as_ref()).await.map_err(|e| Box::new(database_error(&e.message)))?;
     // SQLite has no statement timeout: the request timeout of the service covers it.
@@ -146,13 +155,13 @@ async fn authorize(s: &State_, user: Option<Extension<User>>) -> Result<(User, S
 }
 
 /// The user key as the host functions and the `user` slots see it.
-fn user_key(user: &User) -> Value {
+pub(crate) fn user_key(user: &User) -> Value {
     user.0["key"].clone()
 }
 
 /// What one request reads: the row scope of the resource.
-struct Reach {
-    rows: RowScope,
+pub(crate) struct Reach {
+    pub(crate) rows: RowScope,
 }
 
 /// A JSON value from a slot as a bound value.
@@ -169,7 +178,7 @@ fn slot_bind(v: &Value) -> Result<sea_query::Value, ListError> {
 }
 
 /// The names in `without=` (comma-separated, repeatable).
-fn without_of(uri: &Uri) -> Vec<String> {
+pub(crate) fn without_of(uri: &Uri) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for (k, v) in form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes()) {
         if k == "without" {
@@ -185,7 +194,7 @@ fn without_of(uri: &Uri) -> Vec<String> {
 
 /// The row scope of one request on `resource`: the `queryset` filter (never bypassed), the read defaults that read a scope value
 /// (always off: the admin sets no scope value) and the read defaults that the user may switch off (`names`).
-async fn reach(s: &State_, resource: &Resource, user: &User, grants: &Grants, names: Vec<String>, scope: Scoped) -> Result<(Scoped, Reach), Box<Response>> {
+pub(crate) async fn reach(s: &State_, resource: &Resource, user: &User, grants: &Grants, names: Vec<String>, scope: Scoped) -> Result<(Scoped, Reach), Box<Response>> {
     for n in &names {
         if !resource.bypass.contains(n) {
             scope.rollback().await;
@@ -324,7 +333,7 @@ async fn finish<T>(scope: Scoped, out: Result<T, ListError>, ok: impl FnOnce(T) 
     }
 }
 
-fn error_response(e: ListError) -> Response {
+pub(crate) fn error_response(e: ListError) -> Response {
     match e {
         ListError::Bad(m) => reject(StatusCode::BAD_REQUEST, "BadRequest", &m),
         ListError::Invalid(m) => reject(StatusCode::UNPROCESSABLE_ENTITY, "Invalid", &m),
@@ -661,7 +670,7 @@ async fn detail(State(s): Shared, user: Option<Extension<User>>, Path((name, _))
     }
 }
 
-fn database_error(message: &str) -> Response {
+pub(crate) fn database_error(message: &str) -> Response {
     let mut response = reject(StatusCode::INTERNAL_SERVER_ERROR, "DatabaseError", message);
     response.extensions_mut().insert(ErrorNote(message.to_string()));
     response

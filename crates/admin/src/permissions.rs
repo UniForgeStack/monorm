@@ -189,6 +189,7 @@ impl Site {
             .map(|r| {
                 let mut meta = r.meta.clone();
                 meta["actions"] = json!(r.actions.iter().filter(|a| self.allowed_extra(grants, r, &format!("{}.{a}_{}", r.label, r.key))).collect::<Vec<_>>());
+                meta["ops"] = json!([Op::Create, Op::Update, Op::Delete].iter().filter(|o| r.allow.contains(o) && self.allows(grants, r, **o)).map(|o| o.name()).collect::<Vec<_>>());
                 meta["bypass"] = json!(self.bypassable(grants, r));
                 meta["field_permissions"] = json!(r.field_permissions.iter().filter(|f| self.allowed_extra(grants, r, &format!("{}.{f}", r.label))).collect::<Vec<_>>());
                 meta

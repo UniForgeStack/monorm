@@ -187,7 +187,7 @@ fn filter(schema: &Schema, r: &Resource, f: &Filter) -> Value {
 /// The metadata of one resource that does not depend on the user.
 pub fn resource(schema: &Schema, r: &Resource, builds: &AtomicUsize) -> Value {
     builds.fetch_add(1, Ordering::SeqCst);
-    json!({
+    let mut meta = json!({
         "name": r.name,
         "title": r.title,
         "group": r.group,
@@ -208,5 +208,9 @@ pub fn resource(schema: &Schema, r: &Resource, builds: &AtomicUsize) -> Value {
         "tabs": r.tabs.iter().map(|t| json!({"name": t.name, "title": r.labels.get(&t.name).cloned().unwrap_or_else(|| humanize(&t.name)), "target": t.target})).collect::<Vec<_>>(),
         "empty": r.empty,
         "can": r.can.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
-    })
+    });
+    if let (Some(m), Value::Object(form)) = (meta.as_object_mut(), crate::write::form_meta(schema, r)) {
+        m.extend(form);
+    }
+    meta
 }
