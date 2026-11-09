@@ -18,6 +18,7 @@ from __future__ import annotations
 import datetime
 import json
 import math
+import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from json import dumps as _dumps
@@ -131,6 +132,13 @@ class BrandConfig(TypedDict, total=False):
     """A short label such as ``staging``, shown in the header."""
 
 
+class SectionConfig(TypedDict, total=False):
+    title: str
+    fields: Sequence[str]
+    collapsed: bool
+    """A collapsed section starts closed. It needs a ``title``."""
+
+
 class ResourceConfig(TypedDict, total=False):
     list: ListConfig
     title: str
@@ -155,10 +163,52 @@ class ResourceConfig(TypedDict, total=False):
     """Conditions that a row must meet for the user to change or delete it. The list and the detail select them as flags."""
     check_messages: Mapping[str, str]
     """The form message of each named ``@@check``, by the name of the check. A failed check without an entry shows a generic message."""
+    form: Sequence[SectionConfig] | Mapping[Literal["create", "edit"], Sequence[SectionConfig]]
+    """The sections of the form: one list for both forms, or ``{"create": [...], "edit": [...]}``. A field that no section names
+    trails in an untitled section. A name that is not a field of the form is an error at the start of the site."""
+    readonly: Sequence[str]
+    """Fields that the form shows but never writes, in the create and the edit form. A write to one of them is a 422."""
+    widgets: Mapping[str, str]
+    """The widget of a field (``"blurb": "textarea"``), of a nested path (``"Geo.lat"``) or of a type (``"Text"``, an enum name).
+    A field beats a path, a path beats a type; the site ``widgets`` come last."""
+    form_component: str | os.PathLike[str]
+    """The path of a JavaScript module that replaces the whole form: ``export default (React) => function Form(props) {...}``.
+    The admin reads the file when the site starts and serves it to signed-in staff."""
+
+
+def _widgets(name: str | None, value: Any) -> dict[str, str]:
+    who = f"{name}: widgets" if name else "widgets"
+    if not isinstance(value, Mapping) or not all(isinstance(k, str) and isinstance(v, str) for k, v in value.items()):
+        raise AdminConfigError(f"{who} maps a field, a path or a type to a widget name")
+    return dict(value)
+
+
+def _section(name: str, s: Any) -> dict[str, Any]:
+    if not isinstance(s, Mapping) or not isinstance(s.get("fields"), (list, tuple)) or not all(isinstance(f, str) for f in s["fields"]):
+        raise AdminConfigError(f"{name}: a form section is {{'title': ..., 'fields': [...]}}")
+    if unknown := sorted(set(s) - {"title", "fields", "collapsed"}):
+        raise AdminConfigError(f"{name}: unknown section option {unknown[0]!r}")
+    out: dict[str, Any] = {"fields": list(s["fields"])}
+    if "title" in s:
+        out["title"] = s["title"]
+    if "collapsed" in s:
+        out["collapsed"] = bool(s["collapsed"])
+    return out
+
+
+def _form(name: str, form: Any) -> Any:
+    if isinstance(form, Mapping):
+        for which, sections in form.items():
+            if not isinstance(sections, (list, tuple)):
+                raise AdminConfigError(f"{name}: form {which} is a list of sections")
+        return {which: [_section(name, s) for s in sections] for which, sections in form.items()}
+    if isinstance(form, (list, tuple)):
+        return [_section(name, s) for s in form]
+    raise AdminConfigError(f"{name}: form is a list of sections, or a mapping with create and edit")
 
 
 _LIST_KEYS = {"columns", "order", "page_size", "sortable", "search", "search_with", "filters", "named_filters", "computed", "aggregates", "labels", "empty", "empty_fields", "tabs"}
-_RESOURCE_KEYS = {"list", "title", "group", "allow", "perms", "label", "field_permissions", "actions", "queryset", "can", "check_messages"}
+_RESOURCE_KEYS = {"list", "title", "group", "allow", "perms", "label", "field_permissions", "actions", "queryset", "can", "check_messages", "form", "readonly", "widgets", "form_component"}
 _BRAND_KEYS = {"name", "logo", "colors", "links", "environment"}
 Strategy = Literal["page", "model", "access"]
 
@@ -588,7 +638,8 @@ class Admin:
     ``label`` is the label of the names (``admin`` by default). ``roles`` maps a role name to pattern grants
     (``{"support": ["orders.*", "-shops.see_credential"]}``) that ``seed_roles`` writes to the auth tables.
     ``brand`` sets the name, logo, colors, header links and environment label of the UI. ``groups`` is the order of the
-    navigation groups; a resource names one of them with ``group``.
+    navigation groups; a resource names one of them with ``group``. ``widgets`` maps a field (``"Book.title"``), a nested subfield (``"Geo.lat"``)
+    or a type name (``"Text"``, ``"Status"``, a nested type) to a widget for every resource; a resource ``widgets`` entry wins at one level.
     ``statement_timeout`` is the time limit in seconds of each request's database statements (15 by default, 0 for none).
     The admin ignores tenancy: a read default that reads a ``scope`` value is off in every admin read, so staff see the rows of all tenants.
     """
@@ -602,6 +653,7 @@ class Admin:
         label: str = "admin",
         roles: Mapping[str, Sequence[str]] | None = None,
         brand: BrandConfig | None = None,
+        widgets: Mapping[str, str] | None = None,
         groups: Sequence[str] = (),
         statement_timeout: float = 15.0,
     ) -> None:
@@ -613,6 +665,7 @@ class Admin:
         if unknown := sorted(set(brand or {}) - _BRAND_KEYS):
             raise AdminConfigError(f"unknown brand option {unknown[0]!r}")
         self._brand = dict(brand) if brand else None
+        self._widgets = _widgets(None, widgets) if widgets else None
         self._groups = list(groups)
         self._planned: tuple[object, _native.AdminSite] | None = None
         self._strategy = permissions
@@ -653,6 +706,20 @@ class Admin:
                 if not isinstance(messages, Mapping) or not all(isinstance(k, str) and isinstance(v, str) for k, v in messages.items()):
                     raise AdminConfigError(f"{name}: check_messages maps a check name to a message")
                 resource["check_messages"] = dict(messages)
+            if "form" in config:
+                resource["form"] = _form(name, config["form"])
+            if "readonly" in config:
+                names = config["readonly"]
+                if isinstance(names, str) or not all(isinstance(n, str) for n in names):
+                    raise AdminConfigError(f"{name}: readonly is a list of field names")
+                resource["readonly"] = list(names)
+            if "widgets" in config:
+                resource["widgets"] = _widgets(name, config["widgets"])
+            if "form_component" in config:
+                path = config["form_component"]
+                if not isinstance(path, (str, os.PathLike)):
+                    raise AdminConfigError(f"{name}: form_component is the path of a JavaScript file")
+                resource["form_component"] = os.fspath(path)
             raw: dict[str, Any] = dict(config)
             for key in ("title", "group", "allow", "perms", "label", "field_permissions", "actions"):
                 if key in raw:
@@ -662,6 +729,8 @@ class Admin:
         out: dict[str, Any] = {"prefix": self.prefix, "permissions": self._strategy, "label": self._label, "resources": resources}
         if self._brand is not None:
             out["brand"] = self._brand
+        if self._widgets:
+            out["widgets"] = self._widgets
         if self._groups:
             out["groups"] = self._groups
         if self._statement_timeout != 15.0:

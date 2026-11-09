@@ -153,6 +153,23 @@ export interface ResourceConfig {
   readonly can?: CanRules;
   /** The form message of each named `@@check`, by the name of the check. A failed check without an entry shows a generic message. */
   readonly checkMessages?: Readonly<Record<string, string>>;
+  /**
+   * The sections of the form: one list for both forms, or `{ create, edit }`. A field that no section names trails in an
+   * untitled section. A name that is not a field of the form is an error at the start of the site.
+   */
+  readonly form?: readonly FormSection[] | { readonly create?: readonly FormSection[]; readonly edit?: readonly FormSection[] };
+  /** Fields that the form shows but never writes, in the create and the edit form. A write to one of them is a 422. */
+  readonly readonly?: readonly string[];
+  /**
+   * The widget of a field (`blurb: "textarea"`), of a nested path (`"Geo.lat"`) or of a type (`Text`, an enum name).
+   * A field beats a path, a path beats a type; the site `widgets` come last.
+   */
+  readonly widgets?: Readonly<Record<string, string>>;
+  /**
+   * The path of a JavaScript module that replaces the whole form: `export default (React) => function Form(props) {...}`.
+   * The admin reads the file when the site starts and serves it to signed-in staff.
+   */
+  readonly formComponent?: string;
   readonly list?: ListConfig;
   /** The name in the navigation and the page heading (the model name, spaced, by default). */
   readonly title?: string;
@@ -173,6 +190,13 @@ export interface ResourceConfig {
 /** `page`: `<label>.read_<resource>` and `<label>.manage_<resource>` (the default); `model`: `add_`, `change_`, `delete_`, `view_`; `access`: only `admin.access`. */
 export type PermissionStrategy = "page" | "model" | "access";
 
+export interface FormSection {
+  readonly title?: string;
+  readonly fields: readonly string[];
+  /** A collapsed section starts closed. It needs a `title`. */
+  readonly collapsed?: boolean;
+}
+
 export interface AdminOptions {
   readonly permissions?: PermissionStrategy;
   /** The label of the permission names (`admin` by default). */
@@ -181,6 +205,8 @@ export interface AdminOptions {
   readonly roles?: Readonly<Record<string, readonly string[]>>;
   /** The name, logo, colors, header links and environment label of the UI. */
   readonly brand?: BrandConfig;
+  /** A field (`Book.title`), a nested subfield (`Geo.lat`) or a type name (`Text`, an enum, a nested type) to a widget for every resource; a resource `widgets` entry wins at one level. */
+  readonly widgets?: Readonly<Record<string, string>>;
   /** The order of the navigation groups; a resource names one of them with `group`. */
   readonly groups?: readonly string[];
   /** The time limit in seconds of each request's database statements (15 by default, 0 for none). */
@@ -200,7 +226,46 @@ export interface AdminUser {
 
 const LIST_KEYS = new Set(["columns", "order", "pageSize", "sortable", "search", "searchWith", "filters", "namedFilters", "computed", "aggregates", "labels", "empty", "emptyFields", "tabs"]);
 const BRAND_KEYS = new Set(["name", "logo", "colors", "links", "environment"]);
-const RESOURCE_KEYS = new Set(["queryset", "can", "list", "title", "group", "allow", "perms", "label", "fieldPermissions", "actions", "checkMessages"]);
+const RESOURCE_KEYS = new Set(["queryset", "can", "list", "title", "group", "allow", "perms", "label", "fieldPermissions", "actions", "checkMessages", "form", "readonly", "widgets", "formComponent"]);
+
+function widgetsJson(who: string, value: unknown): Record<string, string> {
+  if (typeof value !== "object" || value === null || Array.isArray(value) || !Object.values(value).every((v) => typeof v === "string")) {
+    throw new AdminConfigError(`${who} maps a field, a path or a type to a widget name`);
+  }
+  return { ...(value as Record<string, string>) };
+}
+
+function sectionJson(name: string, s: unknown): Record<string, unknown> {
+  const section = s as Record<string, unknown> | null;
+  if (typeof section !== "object" || section === null || !Array.isArray(section.fields) || !section.fields.every((f) => typeof f === "string")) {
+    throw new AdminConfigError(`${name}: a form section is { title, fields }`);
+  }
+  for (const key of Object.keys(section)) {
+    if (key !== "title" && key !== "fields" && key !== "collapsed") throw new AdminConfigError(`${name}: unknown section option '${key}'`);
+  }
+  return { fields: [...section.fields], ...(section.title === undefined ? {} : { title: section.title }), ...(section.collapsed === undefined ? {} : { collapsed: Boolean(section.collapsed) }) };
+}
+
+function readonlyJson(name: string, names: unknown): string[] {
+  if (!Array.isArray(names) || !names.every((n) => typeof n === "string")) throw new AdminConfigError(`${name}: readonly is a list of field names`);
+  return [...names];
+}
+
+function formComponentJson(name: string, path: unknown): string {
+  if (typeof path !== "string") throw new AdminConfigError(`${name}: formComponent is the path of a JavaScript file`);
+  return path;
+}
+
+function formJson(name: string, form: unknown): unknown {
+  if (Array.isArray(form)) return form.map((s) => sectionJson(name, s));
+  if (typeof form === "object" && form !== null) {
+    return Object.fromEntries(Object.entries(form).map(([which, sections]) => {
+      if (!Array.isArray(sections)) throw new AdminConfigError(`${name}: form ${which} is a list of sections`);
+      return [which, sections.map((s) => sectionJson(name, s))];
+    }));
+  }
+  throw new AdminConfigError(`${name}: form is a list of sections, or an object with create and edit`);
+}
 
 function label(model: AnyModel, ref: AnyColumn): string {
   if (ref.root.name !== model._meta.name) {
@@ -614,6 +679,7 @@ export class Admin {
   readonly #label: string;
   readonly #roles: Record<string, string[]>;
   readonly #brand: BrandConfig | undefined;
+  readonly #widgets: Record<string, string> | undefined;
   readonly #groups: string[];
   readonly #statementTimeout: number;
   #planned: { schema: unknown; site: NativeAdminSite } | null = null;
@@ -628,6 +694,7 @@ export class Admin {
       if (!BRAND_KEYS.has(key)) throw new AdminConfigError(`unknown brand option '${key}'`);
     }
     this.#brand = options.brand;
+    this.#widgets = options.widgets === undefined ? undefined : widgetsJson("widgets", options.widgets);
     this.#groups = [...(options.groups ?? [])];
     const timeout = options.statementTimeout ?? 15;
     if (!(timeout >= 0) || !Number.isFinite(timeout)) throw new AdminConfigError("statementTimeout is a number of seconds, 0 or more (0 sets no limit)");
@@ -664,6 +731,10 @@ export class Admin {
         ...(queryset === undefined ? {} : { queryset: queryset.json }),
         ...(config.can === undefined ? {} : { can: canJson(cls, config.can) }),
         ...(config.checkMessages === undefined ? {} : { check_messages: { ...config.checkMessages } }),
+        ...(config.form === undefined ? {} : { form: formJson(model, config.form) }),
+        ...(config.readonly === undefined ? {} : { readonly: readonlyJson(model, config.readonly) }),
+        ...(config.widgets === undefined ? {} : { widgets: widgetsJson(`${model}: widgets`, config.widgets) }),
+        ...(config.formComponent === undefined ? {} : { form_component: formComponentJson(model, config.formComponent) }),
         ...(list === undefined ? {} : { list }),
         ...(config.title === undefined ? {} : { title: config.title }),
         ...(config.group === undefined ? {} : { group: config.group }),
@@ -680,6 +751,7 @@ export class Admin {
       label: this.#label,
       resources,
       ...(this.#brand === undefined ? {} : { brand: this.#brand }),
+      ...(this.#widgets === undefined || Object.keys(this.#widgets).length === 0 ? {} : { widgets: this.#widgets }),
       ...(this.#groups.length === 0 ? {} : { groups: this.#groups }),
       ...(this.#statementTimeout === 15 ? {} : { statement_timeout_ms: Math.round(this.#statementTimeout * 1000) }),
     });
