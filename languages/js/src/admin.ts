@@ -151,6 +151,8 @@ export interface ResourceConfig {
   readonly queryset?: Prepared<any, any, any> | QuerysetFunction;
   /** `{ change, delete }`: a condition each. The list and the detail carry the result for every row; the UI disables the button that a row does not allow. */
   readonly can?: CanRules;
+  /** The form message of each named `@@check`, by the name of the check. A failed check without an entry shows a generic message. */
+  readonly checkMessages?: Readonly<Record<string, string>>;
   readonly list?: ListConfig;
   /** The name in the navigation and the page heading (the model name, spaced, by default). */
   readonly title?: string;
@@ -198,7 +200,7 @@ export interface AdminUser {
 
 const LIST_KEYS = new Set(["columns", "order", "pageSize", "sortable", "search", "searchWith", "filters", "namedFilters", "computed", "aggregates", "labels", "empty", "emptyFields", "tabs"]);
 const BRAND_KEYS = new Set(["name", "logo", "colors", "links", "environment"]);
-const RESOURCE_KEYS = new Set(["queryset", "can", "list", "title", "group", "allow", "perms", "label", "fieldPermissions", "actions"]);
+const RESOURCE_KEYS = new Set(["queryset", "can", "list", "title", "group", "allow", "perms", "label", "fieldPermissions", "actions", "checkMessages"]);
 
 function label(model: AnyModel, ref: AnyColumn): string {
   if (ref.root.name !== model._meta.name) {
@@ -533,9 +535,10 @@ export class AdminTestClient {
   async request(method: string, path: string, options: RequestOptions = {}): Promise<AdminResponse> {
     const login = this.#login;
     if (login === null) {
-      if (Object.keys(options).length > 0) throw new TypeError("the `user` client takes only a method and a path");
+      if (Object.keys(options).some((k) => k !== "json")) throw new TypeError("the `user` client takes only a method, a path and `json`");
       const trace = new (native().Trace)();
-      const { status, body } = await wait(() => this.site.request(this.database.engine, method, path, this.#user, trace, hostDispatch(this.database, this.host)));
+      const sentJson = options.json === undefined ? null : JSON.stringify(options.json);
+      const { status, body } = await wait(() => this.site.request(this.database.engine, method, path, this.#user, trace, hostDispatch(this.database, this.host), sentJson));
       const events = trace.take();
       return new AdminResponse(status, body, events.length, [], events.map((e) => e.sql));
     }
@@ -571,6 +574,14 @@ export class AdminTestClient {
 
   post(path: string, options?: RequestOptions): Promise<AdminResponse> {
     return this.request("POST", path, options);
+  }
+
+  patch(path: string, options?: RequestOptions): Promise<AdminResponse> {
+    return this.request("PATCH", path, options);
+  }
+
+  delete(path: string, options?: RequestOptions): Promise<AdminResponse> {
+    return this.request("DELETE", path, options);
   }
 
   /** Signs in: reads the CSRF token, then posts the credentials. The jar keeps the session cookie. */
@@ -652,6 +663,7 @@ export class Admin {
         model,
         ...(queryset === undefined ? {} : { queryset: queryset.json }),
         ...(config.can === undefined ? {} : { can: canJson(cls, config.can) }),
+        ...(config.checkMessages === undefined ? {} : { check_messages: { ...config.checkMessages } }),
         ...(list === undefined ? {} : { list }),
         ...(config.title === undefined ? {} : { title: config.title }),
         ...(config.group === undefined ? {} : { group: config.group }),

@@ -167,7 +167,7 @@ export interface NativeAdminSite {
   /** The startup warnings, for example a search field that no index serves. */
   readonly warnings: string[];
   /** One in-memory request; `userJson` is the JSON of the user, or null. `dispatch` runs the host calls of a `searchWith` function. */
-  request(engine: NativeEngine, method: string, path: string, userJson: string | null, trace: NativeTrace | null, dispatch: NativeHostDispatch | null): Promise<{ status: number; body: string }>;
+  request(engine: NativeEngine, method: string, path: string, userJson: string | null, trace: NativeTrace | null, dispatch: NativeHostDispatch | null, body: string | null): Promise<{ status: number; body: string }>;
   /**
    * The served router with login, called in memory. `optionsJson` is `{"idle_timeout", "session_timeout", "origins"}`.
    * Throws when an option is wrong or the secret is missing or short. `dispatch` runs one host call.

@@ -153,10 +153,12 @@ class ResourceConfig(TypedDict, total=False):
     for each request). Its filter limits the list, count, search, detail and tabs; its ``order`` is the list order when the list sets none."""
     can: Mapping[Literal["change", "delete"], Any]
     """Conditions that a row must meet for the user to change or delete it. The list and the detail select them as flags."""
+    check_messages: Mapping[str, str]
+    """The form message of each named ``@@check``, by the name of the check. A failed check without an entry shows a generic message."""
 
 
 _LIST_KEYS = {"columns", "order", "page_size", "sortable", "search", "search_with", "filters", "named_filters", "computed", "aggregates", "labels", "empty", "empty_fields", "tabs"}
-_RESOURCE_KEYS = {"list", "title", "group", "allow", "perms", "label", "field_permissions", "actions", "queryset", "can"}
+_RESOURCE_KEYS = {"list", "title", "group", "allow", "perms", "label", "field_permissions", "actions", "queryset", "can", "check_messages"}
 _BRAND_KEYS = {"name", "logo", "colors", "links", "environment"}
 Strategy = Literal["page", "model", "access"]
 
@@ -523,10 +525,11 @@ class AdminTestClient:
         origin: str | None = _AUTO,
     ) -> AdminResponse:
         if self._secret is None:
-            if json is not None or headers or csrf is not _AUTO or origin is not _AUTO:
-                raise TypeError("the `user=` client takes only a method and a path")
+            if headers or csrf is not _AUTO or origin is not _AUTO:
+                raise TypeError("the `user=` client takes only a method, a path and `json`")
             trace = _native.Trace()
-            status, body = await self._site.request(self._database._engine, method, path, self._user, trace, self._database, self._host)
+            sent_json = None if json is None else _dumps(json)
+            status, body = await self._site.request(self._database._engine, method, path, self._user, trace, self._database, self._host, sent_json)
             events = trace.take()
             return AdminResponse(status, body, len(events), sql=tuple(e[0] for e in events))
         router = self._router
@@ -561,6 +564,12 @@ class AdminTestClient:
 
     async def post(self, path: str, **kwargs: Any) -> AdminResponse:
         return await self.request("POST", path, **kwargs)
+
+    async def patch(self, path: str, **kwargs: Any) -> AdminResponse:
+        return await self.request("PATCH", path, **kwargs)
+
+    async def delete(self, path: str, **kwargs: Any) -> AdminResponse:
+        return await self.request("DELETE", path, **kwargs)
 
     async def login(self, username: str, password: str) -> AdminResponse:
         """Signs in: reads the CSRF token, then posts the credentials. The jar keeps the session cookie."""
@@ -639,6 +648,11 @@ class Admin:
                     listing["order"] = order
             if "can" in config:
                 resource["can"] = _can(model, config["can"])
+            if "check_messages" in config:
+                messages = config["check_messages"]
+                if not isinstance(messages, Mapping) or not all(isinstance(k, str) and isinstance(v, str) for k, v in messages.items()):
+                    raise AdminConfigError(f"{name}: check_messages maps a check name to a message")
+                resource["check_messages"] = dict(messages)
             raw: dict[str, Any] = dict(config)
             for key in ("title", "group", "allow", "perms", "label", "field_permissions", "actions"):
                 if key in raw:

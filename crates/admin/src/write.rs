@@ -271,7 +271,7 @@ fn constraint_problems(schema: &Schema, r: &Resource, written: &[String], deleti
                 p.field(&f, "A record with this value already exists.");
             }
         }
-        Some("23503") => {
+        Some("23503" | "23001") => {
             if deleting {
                 p.form.push("Other records still refer to this record, so it cannot be deleted.".into());
             } else {

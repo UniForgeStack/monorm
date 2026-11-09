@@ -145,8 +145,9 @@ impl AdminSite {
 
     /// The `(status, body)` of one in-memory request. `user_json` is the JSON of the user, or None.
     /// `database` and `host` give the host bridge that a `search_with` function runs through.
+    /// `body` is the JSON text of a write.
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (engine, method, path, user_json = None, trace = None, database = None, host = None))]
+    #[pyo3(signature = (engine, method, path, user_json = None, trace = None, database = None, host = None, body = None))]
     fn request<'py>(
         &self,
         py: Python<'py>,
@@ -157,6 +158,7 @@ impl AdminSite {
         trace: Option<&Bound<'py, Trace>>,
         database: Option<Bound<'py, PyAny>>,
         host: Option<Bound<'py, PyDict>>,
+        body: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let user = user_json.map(|j| serde_json::from_str(&j).map_err(|e| PyValueError::new_err(format!("user is not JSON: {e}")))).transpose()?;
         let driver: Arc<dyn Executor> = engine.get().driver.clone();
@@ -170,7 +172,7 @@ impl AdminSite {
             }
             _ => None,
         };
-        pyo3_async_runtimes::tokio::future_into_py(py, async move { Ok(monorm_admin::call_with(site, conn, &method, &path, user, auth).await) })
+        pyo3_async_runtimes::tokio::future_into_py(py, async move { Ok(monorm_admin::call_body(site, conn, &method, &path, user, auth, body.as_deref()).await) })
     }
 
     /// The router that `serve` runs, called in memory, with login. `options_json` is `{"idle_timeout", "session_timeout", "origins"}`.

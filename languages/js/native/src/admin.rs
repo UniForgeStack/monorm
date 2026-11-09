@@ -97,7 +97,7 @@ impl AdminSite {
     }
 
     /// One in-memory request. `user_json` is the JSON of the user, or null.
-    /// `dispatch` runs the host calls of a `search_with` function.
+    /// `dispatch` runs the host calls of a `search_with` function. `body` is the JSON text of a write.
     #[napi]
     #[allow(clippy::too_many_arguments)]
     pub fn request<'env>(
@@ -109,6 +109,7 @@ impl AdminSite {
         user_json: Option<String>,
         trace: Option<&Trace>,
         dispatch: Option<Function<'env, Args, Promise<String>>>,
+        body: Option<String>,
     ) -> napi::Result<PromiseRaw<'env, AdminResponse>> {
         let user = user_json.map(|j| serde_json::from_str(&j).map_err(|e| napi::Error::from_reason(format!("user is not JSON: {e}")))).transpose()?;
         let driver: Arc<dyn Executor> = engine.driver.clone();
@@ -117,8 +118,8 @@ impl AdminSite {
         // The secret only numbers the host calls: no login runs on this path.
         let auth = dispatch.map(|d| auth_config(d, monorm_admin::security_with(Some("in-memory client: no login runs on this path"), Default::default()))).transpose()?;
         env.spawn_future(async move {
-            let (status, body) = monorm_admin::call_with(site, conn, &method, &path, user, auth).await;
-            Ok(AdminResponse { status: u32::from(status), body })
+            let (status, text) = monorm_admin::call_body(site, conn, &method, &path, user, auth, body.as_deref()).await;
+            Ok(AdminResponse { status: u32::from(status), body: text })
         })
     }
 

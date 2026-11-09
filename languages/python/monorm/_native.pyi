@@ -136,6 +136,7 @@ class AdminSite:
         trace: Trace | None = None,
         database: Any = None,
         host: dict[str, Any] | None = None,
+        body: str | None = None,
     ) -> Awaitable[tuple[int, str]]: ...
     def client(
         self,
