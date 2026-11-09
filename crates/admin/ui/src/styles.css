@@ -99,3 +99,23 @@ details.section[open] summary { margin-bottom: .75rem; }
 .cancel { margin-left: auto; }
 .confirm { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: .75rem 1rem; margin-bottom: 1rem; }
 .btn-off { opacity: .5; }
+
+/* Relation fields: the picker, the chips, the create modal and the file field. */
+.combo { position: relative; }
+.combo input { width: 100%; box-sizing: border-box; }
+.combo-pop { position: absolute; z-index: 5; left: 0; right: 0; top: 100%; margin-top: 2px; background: #fff; border: 1px solid var(--line); border-radius: 4px; box-shadow: 0 4px 12px rgb(0 0 0 / 12%); max-height: 18rem; overflow-y: auto; }
+.combo-list { list-style: none; margin: 0; padding: 0; }
+.combo-opt { padding: .4rem .6rem; cursor: pointer; }
+.combo-on, .combo-opt:hover { background: var(--bg); }
+.combo-note { margin: 0; padding: .4rem .6rem; }
+.combo-foot { display: flex; gap: 1rem; padding: .4rem .6rem; border-top: 1px solid var(--line); }
+.combo-foot:empty { display: none; }
+.picker { display: flex; align-items: center; gap: .75rem; }
+.picker .combo { flex: 1; }
+.chips { list-style: none; margin: 0 0 .5rem; padding: 0; display: flex; flex-wrap: wrap; gap: .4rem; }
+.chip { display: inline-flex; align-items: center; gap: .35rem; padding: .15rem .25rem .15rem .6rem; border: 1px solid var(--line); border-radius: 999px; background: #fff; }
+.chip button { border: 0; background: none; cursor: pointer; font: inherit; line-height: 1; padding: .1rem .35rem; color: var(--muted); }
+.dialog { width: min(36rem, 92vw); border: 1px solid var(--line); border-radius: 6px; padding: 1rem 1.25rem; }
+.dialog::backdrop { background: rgb(0 0 0 / 40%); }
+.dialog .form { padding-bottom: 0; }
+.file-now { margin: 0 0 .5rem; }

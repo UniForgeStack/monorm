@@ -1,10 +1,12 @@
 import * as React from "react";
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { createPortal } from "react-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Label from "@radix-ui/react-label";
 import * as api from "./api";
 import { cell, type Zone } from "./format";
 import { Link, detailUrl, editUrl, listBack, navigate, newUrl, useSearch } from "./router";
+import { Chips, FileField, Picker } from "./relations";
 import { Alert, Button, message } from "./ui";
 
 type Input = string | boolean;
@@ -74,7 +76,7 @@ export function FormPage({ resource, id, zone, site }: { resource: string; id?: 
   return (
     <section>
       {head}
-      <FormBody key={`${q.dataUpdatedAt}:${search}`} meta={meta} columns={columns} cells={cells} id={id} zone={zone} reload={() => q.refetch()} />
+      <FormBody key={`${q.dataUpdatedAt}:${search}`} meta={meta} columns={columns} cells={cells} id={id} zone={zone} site={site} reload={() => q.refetch()} />
     </section>
   );
 }
@@ -132,14 +134,62 @@ function Block({ section, fields, children }: { section: api.Section; fields: st
   );
 }
 
-function FormBody({ meta, columns, cells, id, zone, reload }: { meta: api.Resource; columns: api.Column[]; cells: Record<string, unknown>; id?: string; zone: Zone; reload: () => void }) {
+/** The picker row for a record that the modal just created: its key as the server types it, and the text that names it. */
+async function named(target: api.Resource, relation: api.RelationInfo, key: string): Promise<api.Option> {
+  const fallback = decodeURIComponent(key);
+  try {
+    const d = await api.detail(target.name, key);
+    const at = (name: string | undefined) => d.fields.findIndex((c) => c.label === name);
+    const value = d.values[at(target.key[0])] ?? fallback;
+    return { value, label: String(d.values[at(relation.label)] ?? value) };
+  } catch {
+    return { value: fallback, label: fallback };
+  }
+}
+
+/** The create form of a target record, in a modal over the open form. The open form keeps its values: nothing here touches them. */
+function CreateDialog({ target, relation, zone, site, done }: { target: api.Resource; relation: api.RelationInfo; zone: Zone; site: api.Site | undefined; done: (o: api.Option | null) => void }) {
+  const ref = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    ref.current?.showModal();
+  }, []);
+  return createPortal(
+    <dialog
+      ref={ref}
+      className="dialog"
+      aria-labelledby="dialog-title"
+      onCancel={(e) => {
+        e.preventDefault();
+        done(null);
+      }}
+    >
+      <h2 id="dialog-title">New {target.title}</h2>
+      <FormBody
+        meta={target}
+        columns={target.fields}
+        cells={{}}
+        zone={zone}
+        site={site}
+        reload={() => {}}
+        modal={{ done: (key) => void named(target, relation, key).then(done), cancel: () => done(null) }}
+      />
+    </dialog>,
+    document.body,
+  );
+}
+
+type Modal = { done: (key: string) => void; cancel: () => void };
+
+function FormBody({ meta, columns, cells, id, zone, site, reload, modal }: { meta: api.Resource; columns: api.Column[]; cells: Record<string, unknown>; id?: string; zone: Zone; site: api.Site | undefined; reload: () => void; modal?: Modal }) {
   const client = useQueryClient();
   const creating = id === undefined;
   const fields = (meta.form ?? []).flatMap((f) => {
     const column = columns.find((c) => c.label === f.name);
     return column ? [{ f, column, w: f.widget ?? column.widget }] : [];
   });
-  const params = new URLSearchParams(useSearch());
+  const search = useSearch();
+  // The modal is a create form that no URL fills.
+  const params = new URLSearchParams(modal ? "" : search);
   const blank = (c: api.Column, w: string): Input => toInput(creating ? null : cells[c.label], w, zone);
   const start = () =>
     Object.fromEntries(fields.map(({ column: c, w }) => [c.label, creating && params.has(c.label) ? (w === "checkbox" ? params.get(c.label) === "true" : (params.get(c.label) as string)) : blank(c, w)]));
@@ -148,24 +198,75 @@ function FormBody({ meta, columns, cells, id, zone, reload }: { meta: api.Resour
   const [conflicts, setConflicts] = useState<NonNullable<api.ErrorBody["conflicts"]>>({});
   const [busy, setBusy] = useState(false);
   const custom = useCustom(meta);
+  // Many-to-many chips: the saved links and the links on the form. The save sends the difference.
+  const chipRelations = modal ? [] : (meta.chips ?? []);
+  const empty = () => Object.fromEntries(chipRelations.map((r) => [r.name, [] as api.Option[]]));
+  const [saved, setSaved] = useState<Record<string, api.Option[]>>(() => (creating ? empty() : {}));
+  const [chips, setChips] = useState<Record<string, api.Option[]>>(() => (creating ? empty() : {}));
+  const [capped, setCapped] = useState<string[]>([]);
+  // The value that a file field holds after an upload: a later save compares against it, not against the loaded value.
+  const [uploaded, setUploaded] = useState<Record<string, unknown>>({});
+  const [creator, setCreator] = useState<{ relation: api.RelationInfo; done: (o: api.Option | null) => void } | null>(null);
+  useEffect(() => {
+    if (creating) return;
+    let live = true;
+    for (const r of chipRelations) {
+      api.links(meta.name, id, r.name).then(
+        (got) => {
+          if (!live) return;
+          setSaved((s) => ({ ...s, [r.name]: got.items }));
+          setChips((s) => ({ ...s, [r.name]: got.items }));
+          if (got.truncated) setCapped((c) => [...c, r.name]);
+        },
+        (e) => live && setProblems({ fields: {}, form: [message(e)] }),
+      );
+    }
+    return () => {
+      live = false;
+    };
+    // The saved links load once for a record: a reload remounts the form.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const openCreate = (relation: api.RelationInfo) => () => new Promise<api.Option | null>((resolve) => setCreator({ relation, done: (o) => (setCreator(null), resolve(o)) }));
+  const mayCreate = (r: api.RelationInfo) => (!modal && r.create && api.may(site?.resources.find((x) => x.name === r.target), "create") ? openCreate(r) : undefined);
+  const links = (): api.Links | undefined => {
+    const out: api.Links = {};
+    for (const r of chipRelations) {
+      const now = chips[r.name];
+      const was = saved[r.name];
+      // A relation that has not loaded has no difference to send.
+      if (!now || !was) continue;
+      const has = (list: api.Option[], o: api.Option) => list.some((x) => JSON.stringify(x.value) === JSON.stringify(o.value));
+      const add = now.filter((o) => !has(was, o)).map((o) => o.value);
+      const remove = was.filter((o) => !has(now, o)).map((o) => o.value);
+      if (add.length > 0 || remove.length > 0) out[r.name] = { add, remove };
+    }
+    return Object.keys(out).length > 0 ? out : undefined;
+  };
   const dirty = (c: api.Column, w: string) => vals[c.label] !== blank(c, w);
 
   /** The one write of both paths. The guard values go along even for a field that the form cannot change. */
-  const send = async (set: api.Values, action: Action): Promise<boolean> => {
+  const send = async (set: api.Values, action: Action, changes?: api.Links): Promise<boolean> => {
     const loaded: api.Values = {};
-    if (!creating) for (const { column: c } of fields) loaded[c.label] = cells[c.label];
+    if (!creating) for (const { column: c } of fields) loaded[c.label] = c.label in uploaded ? uploaded[c.label] : cells[c.label];
     setConflicts({});
     setProblems({ fields: {}, form: [] });
     setBusy(true);
     try {
-      const done = creating ? await api.create(meta.name, set) : await api.update(meta.name, id, set, loaded);
+      const done = creating ? await api.create(meta.name, set, changes) : await api.update(meta.name, id, set, loaded, changes);
       await client.invalidateQueries({ queryKey: ["list"] });
       await client.invalidateQueries({ queryKey: ["count"] });
       await client.invalidateQueries({ queryKey: ["detail"] });
-      if (action === "add") {
+      await client.invalidateQueries({ queryKey: ["autocomplete"] });
+      if (modal) {
+        modal.done(done.key);
+      } else if (action === "add") {
         // Another record of the same kind: the form is empty again, and the prefill of the URL stays.
-        if (creating) setVals(start());
-        else navigate(newUrl(meta.name));
+        if (creating) {
+          setVals(start());
+          setSaved(empty());
+          setChips(empty());
+        } else navigate(newUrl(meta.name));
       } else if (action === "continue") {
         if (creating) navigate(editUrl(meta.name, done.key));
         else reload();
@@ -198,10 +299,12 @@ function FormBody({ meta, columns, cells, id, zone, reload }: { meta: api.Resour
     }
     setConflicts({});
     if (Object.keys(local).length > 0) return setProblems({ fields: local, form: [] });
-    await send(set, action);
+    await send(set, action, links());
   };
   const on = (action: Action) => (e: FormEvent) => {
     e.preventDefault();
+    // The modal sits in the React tree of the open form: its submit must not reach that form.
+    e.stopPropagation();
     void submit(action);
   };
   const set = (name: string, v: Input) => setVals((s) => ({ ...s, [name]: v }));
@@ -234,7 +337,7 @@ function FormBody({ meta, columns, cells, id, zone, reload }: { meta: api.Resour
     const locked = f.readonly || (!creating && f.readonly_on_update);
     const errors = problems.fields[name] ?? [];
     const conflict = conflicts[name];
-    const id_ = `f-${name}`;
+    const id_ = `f-${modal ? "m-" : ""}${name}`;
     const common = { id: id_, name, disabled: locked, "aria-invalid": errors.length > 0 || undefined, "aria-describedby": `${id_}-msg` };
     const value = vals[name];
     return (
@@ -245,7 +348,35 @@ function FormBody({ meta, columns, cells, id, zone, reload }: { meta: api.Resour
           {f.default && creating && <span className="muted"> (default)</span>}
           {f.readonly && <span className="muted"> (read-only)</span>}
         </Label.Root>
-        {w === "checkbox" ? (
+        {f.relation ? (
+          <Picker
+            id={id_}
+            resource={meta.name}
+            relation={f.relation}
+            target={site?.resources.find((r) => r.name === f.relation?.target)}
+            value={String(value)}
+            nullable={c.nullable}
+            disabled={locked}
+            invalid={errors.length > 0}
+            described={`${id_}-msg`}
+            onChange={(v) => set(name, v)}
+            onCreate={mayCreate(f.relation)}
+          />
+        ) : f.file ? (
+          <FileField
+            id={id_}
+            resource={meta.name}
+            recordKey={id}
+            field={name}
+            reference={name in uploaded ? uploaded[name] : cells[name]}
+            disabled={locked}
+            described={`${id_}-msg`}
+            onUploaded={(ref) => {
+              setUploaded((u) => ({ ...u, [name]: ref }));
+              void client.invalidateQueries({ queryKey: ["detail"] });
+            }}
+          />
+        ) : w === "checkbox" ? (
           <input {...common} type="checkbox" checked={value === true} onChange={(e) => set(name, e.target.checked)} />
         ) : w === "radio" ? (
           <div role="radiogroup" aria-labelledby={`${id_}-label`} aria-invalid={common["aria-invalid"]} aria-describedby={common["aria-describedby"]} className="radios">
@@ -293,12 +424,36 @@ function FormBody({ meta, columns, cells, id, zone, reload }: { meta: api.Resour
         const bad = inside.map(({ column }) => column.label).filter((n) => (problems.fields[n]?.length ?? 0) > 0 || conflicts[n]);
         return <Block key={`${section.title ?? ""}:${i}`} section={section} fields={bad}>{inside.map(input)}</Block>;
       })}
+      {chipRelations.map((r) => (
+        <div key={r.name} className="field">
+          <Label.Root htmlFor={`f-chips-${r.name}`}>{r.name}</Label.Root>
+          <Chips
+            id={`f-chips-${r.name}`}
+            resource={meta.name}
+            relation={r}
+            items={chips[r.name]}
+            onChange={(items) => setChips((s) => ({ ...s, [r.name]: items }))}
+            onCreate={mayCreate(r)}
+          />
+          {capped.includes(r.name) && <p className="muted">Only the first 200 links show. The others stay as they are.</p>}
+        </div>
+      ))}
       <div className="savebar">
         <Button type="submit" disabled={busy}>Save</Button>
-        <Button type="button" variant="plain" disabled={busy} onClick={on("continue")}>Save and continue</Button>
-        <Button type="button" variant="plain" disabled={busy} onClick={on("add")}>Save and add another</Button>
-        <Link href={creating ? listBack(meta.name) : detailUrl(meta.name, id)} className="cancel">Cancel</Link>
+        {modal ? (
+          <Button type="button" variant="plain" disabled={busy} onClick={modal.cancel}>Cancel</Button>
+        ) : (
+          <>
+            <Button type="button" variant="plain" disabled={busy} onClick={on("continue")}>Save and continue</Button>
+            <Button type="button" variant="plain" disabled={busy} onClick={on("add")}>Save and add another</Button>
+            <Link href={creating ? listBack(meta.name) : detailUrl(meta.name, id)} className="cancel">Cancel</Link>
+          </>
+        )}
       </div>
+      {creator && (() => {
+        const target = site?.resources.find((r) => r.name === creator.relation.target);
+        return target ? <CreateDialog target={target} relation={creator.relation} zone={zone} site={site} done={creator.done} /> : null;
+      })()}
     </form>
   );
 }

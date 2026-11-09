@@ -43,6 +43,22 @@ model Note {
   title String
   @@map("notes")
 }
+
+model Reviewer {
+  id     BigInt  @id @default(autoincrement())
+  name   String
+  papers Paper[]
+  @@map("reviewers")
+}
+
+model Paper {
+  id        BigInt  @id @default(autoincrement())
+  title     String
+  reviewer_id BigInt?
+  cover     Json?
+  reviewer    Reviewer? @relation(fields: [reviewer_id], references: [id])
+  @@map("papers")
+}
 `;
 
 // A custom form: the module default-exports a function from React to a component.
@@ -72,6 +88,7 @@ async def main():
         {"title": "First", "created_at": at, "author_id": ada.id},
         {"title": "Second", "created_at": at, "author_id": None},
     ])
+    await models.Reviewer.objects.insert_many([{"name": f"Rev {n:02d}"} for n in range(1, 26)])
     await db.close()
 
 asyncio.run(main())
@@ -99,7 +116,14 @@ before(async () => {
   // Book: a section layout with a collapsed section. Note: a custom form from a module file.
   const book = 'admin.register(Book, {"list": {"search": [Book.title], "filters": [Book.author]}, "form": [{"title": "Basics", "fields": ["title", "created_at"]}, {"title": "More", "fields": ["author_id"], "collapsed": True}]})';
   writeFileSync(join(dir, "note-form.js"), NOTE_FORM);
-  writeFileSync(join(dir, "admin.py"), module.replace("admin.register(Book)", book).replace("admin.register(Note)", 'admin.register(Note, {"form_component": "note-form.js"})'));
+  // Paper: a picker over Reviewer (with a create modal) and a file field in a memory store.
+  assert.ok(module.includes("admin.register(Reviewer)") && module.includes("admin.register(Paper)"), "the generated admin.py registers Reviewer and Paper");
+  const withStorage = module
+    .replace("from monorm.admin import Admin\n", "from monorm.admin import Admin\nfrom monorm_file_storage import Registry\nfrom opendal import AsyncOperator\n")
+    .replace("admin = Admin()", 'admin = Admin(storage=Registry({"media": AsyncOperator("memory")}))')
+    .replace("admin.register(Reviewer)", 'admin.register(Reviewer, {"list": {"search": [Reviewer.name]}})')
+    .replace("admin.register(Paper)", 'admin.register(Paper, {"relations": {"reviewer": {"create": True}}, "files": {"cover": "media"}})');
+  writeFileSync(join(dir, "admin.py"), withStorage.replace("admin.register(Book)", book).replace("admin.register(Note)", 'admin.register(Note, {"form_component": "note-form.js"})'));
   run(["-m", "monorm", "generate"], env);
   run(["-m", "monorm", "makemigrations"], env);
   run(["-m", "monorm", "migrate", "--url", env.MONORM_DATABASE_URL], env);
@@ -374,5 +398,59 @@ test("a section layout with a collapsed section, and a custom form", async () =>
   await page.getByText("Hello").first().waitFor();
   await page.waitForLoadState("networkidle");
   assert.deepEqual(problems, [`HTTP 422: ${base}/admin/api/resources/Note`, "console: Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)"]);
+  await context.close();
+});
+
+test("pick a record with the autocomplete, create one in a modal, and upload a file", async () => {
+  const { context, page, problems } = await signedIn();
+  await page.goto(`${base}/admin/Paper/-/new`);
+  await page.getByRole("heading", { name: "Add Paper" }).waitFor();
+  await page.getByLabel("Title").fill("Pick");
+  const reviewer = page.getByRole("combobox", { name: "Reviewer id" });
+  await reviewer.click();
+  const options = page.getByRole("listbox").getByRole("option");
+  await options.nth(19).waitFor();
+  assert.equal(await options.count(), 20, "the first page holds 20 rows");
+  await page.getByRole("button", { name: "Show more" }).click();
+  await options.nth(24).waitFor();
+  assert.equal(await options.count(), 25, "the next page follows by keyset");
+  // A search narrows the list on the server. Each step waits for its rows.
+  await reviewer.fill("Rev 23");
+  await page.getByRole("option", { name: "Rev 23" }).waitFor();
+  await options.nth(1).waitFor({ state: "detached" });
+  await page.getByRole("option", { name: "Rev 23" }).click();
+  assert.equal(await reviewer.inputValue(), "Rev 23");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.waitForURL(`${base}/admin/Paper/1`);
+  await page.getByText("23").first().waitFor();
+
+  // The modal creates a Reviewer, fills the field and leaves the other fields of the form as they were.
+  await page.goto(`${base}/admin/Paper/-/new`);
+  await page.getByLabel("Title").fill("Modal");
+  await page.getByRole("combobox", { name: "Reviewer id" }).click();
+  await page.getByRole("button", { name: /^New Reviewer/ }).click();
+  const dialog = page.getByRole("dialog", { name: "New Reviewer" });
+  await dialog.getByLabel("Name").fill("Rev New");
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await dialog.waitFor({ state: "detached" });
+  assert.equal(await page.getByRole("combobox", { name: "Reviewer id" }).inputValue(), "Rev New");
+  assert.equal(await page.getByLabel("Title").inputValue(), "Modal", "the form keeps its values");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.waitForURL(`${base}/admin/Paper/2`);
+  await page.getByText("26").first().waitFor();
+
+  // One upload through the multipart route, then the download as an attachment.
+  await page.goto(`${base}/admin/Paper/2/edit`);
+  await page.getByRole("heading", { name: "Change Paper" }).waitFor();
+  await page.getByLabel("Cover").setInputFiles({ name: "cover.txt", mimeType: "text/plain", buffer: Buffer.from("cover bytes") });
+  const link = page.getByRole("link", { name: "cover.txt" });
+  await link.waitFor();
+  const got = await context.request.get(new URL(await link.getAttribute("href"), base).href);
+  assert.equal(got.status(), 200);
+  assert.match(got.headers()["content-disposition"], /^attachment/);
+  assert.equal(got.headers()["content-type"], "text/plain");
+  assert.equal(await got.text(), "cover bytes");
+  await page.waitForLoadState("networkidle");
+  assert.deepEqual(problems, []);
   await context.close();
 });

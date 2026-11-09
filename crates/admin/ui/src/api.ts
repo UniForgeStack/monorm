@@ -40,9 +40,25 @@ export interface Tab {
   prefill?: { parent: string; child: string }[];
 }
 
+/** A relation field of a form: a picker (one record) or chips (many records) over the resource `target`. */
+export interface RelationInfo {
+  name: string;
+  target: string;
+  /** The column of the target that names a row. */
+  label: string;
+  /** The user may create a target record from the form (a modal). */
+  create: boolean;
+  /** The config limits the choices. */
+  choices: boolean;
+}
+
 /** What a form needs to know of one writable field. */
 export interface FormField {
   name: string;
+  /** Set when a picker fills the field. */
+  relation?: RelationInfo | null;
+  /** The field holds a file reference: the form uploads and downloads it. */
+  file?: boolean;
   required: boolean;
   default: boolean;
   readonly_on_update: boolean;
@@ -84,6 +100,8 @@ export interface Resource {
   writable?: boolean;
   read_only_reason?: string | null;
   form?: FormField[];
+  /** The many-to-many relations that the form edits as chips. */
+  chips?: RelationInfo[];
   /** The layout of the create form and of the edit form. */
   sections?: { create: Section[]; edit: Section[] };
   /** A module of the resource replaces the whole form: see `formModuleUrl`. */
@@ -180,13 +198,15 @@ let csrf = "";
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = {};
-  if (body !== undefined) headers["content-type"] = "application/json";
+  // A `FormData` body is the upload: the browser sets the multipart content type with its boundary.
+  const upload = body instanceof FormData;
+  if (body !== undefined && !upload) headers["content-type"] = "application/json";
   if (method !== "GET") headers["x-csrf-token"] = csrf;
   const response = await fetch(`${base}${path}`, {
     method,
     headers,
     credentials: "same-origin",
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: body === undefined ? undefined : upload ? body : JSON.stringify(body),
   });
   const text = await response.text();
   let data: { ok?: boolean; error?: { kind: string; message: string }; csrf?: string } & ErrorBody = {};
@@ -246,11 +266,43 @@ const recordPath = (resource: string, key: string) => `/resources/${encodeURICom
 
 export type Values = Record<string, unknown>;
 
-/** Create a record from the fields that the user filled in. The answer has the encoded key of the new record. */
-export const create = (resource: string, set: Values) => call<{ key: string }>("POST", `/resources/${encodeURIComponent(resource)}`, { set });
+/** The records that a many-to-many save adds and removes, for each relation. A value is the key of the target record. */
+export type Links = Record<string, { add: unknown[]; remove: unknown[] }>;
+
+/** One row of a picker: the key of the target record and the text that names it. */
+export interface Option {
+  value: unknown;
+  label: string;
+}
+
+/** Create a record from the fields that the user filled in, and the links of its chips. The answer has the encoded key of the new record. */
+export const create = (resource: string, set: Values, links?: Links) =>
+  call<{ key: string }>("POST", `/resources/${encodeURIComponent(resource)}`, links ? { set, links } : { set });
 
 /** Change a record: `set` holds only the changed fields, `loaded` the values that the form was loaded with. */
-export const update = (resource: string, key: string, set: Values, loaded: Values) =>
-  call<{ key: string; changed: string[] }>("PATCH", recordPath(resource, key), { set, loaded });
+export const update = (resource: string, key: string, set: Values, loaded: Values, links?: Links) =>
+  call<{ key: string; changed: string[] }>("PATCH", recordPath(resource, key), links ? { set, loaded, links } : { set, loaded });
 
 export const destroy = (resource: string, key: string, loaded: Values) => call<{ key: string }>("DELETE", recordPath(resource, key), { loaded });
+
+/** One page of the picker of a relation field, by keyset: `next` is the cursor of the following page. */
+export function autocomplete(resource: string, rel: string, q: string, cursor?: string) {
+  const p = new URLSearchParams({ limit: "20" });
+  if (q !== "") p.set("q", q);
+  if (cursor) p.set("cursor", cursor);
+  return call<{ items: Option[]; next: string | null }>("GET", `/autocomplete/${encodeURIComponent(resource)}/${encodeURIComponent(rel)}?${p}`);
+}
+
+/** The records that the record `key` links to through a many-to-many relation (at most 200). */
+export const links = (resource: string, key: string, rel: string) =>
+  call<{ items: Option[]; truncated: boolean }>("GET", `/links/${encodeURIComponent(resource)}/${key}/${encodeURIComponent(rel)}`);
+
+/** Where the download of a file field comes from. The server reads the file from its storage and sends it as an attachment. */
+export const fileUrl = (resource: string, key: string, field: string) => `${base}/files/${encodeURIComponent(resource)}/${key}/${encodeURIComponent(field)}`;
+
+/** Store a file in a file field of a saved record. The upload writes the field of the record: `value` is the new reference. */
+export function upload(resource: string, key: string, field: string, file: File) {
+  const form = new FormData();
+  form.append("file", file);
+  return call<{ key: string; value: unknown }>("POST", `/files/${encodeURIComponent(resource)}/${key}/${encodeURIComponent(field)}`, form);
+}
