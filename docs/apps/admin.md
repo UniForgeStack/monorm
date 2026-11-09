@@ -492,7 +492,7 @@ The server checks them again on each request.
 | `DELETE {prefix}/resources/{name}/{key}` | `{"loaded": {...}}` (optional) | `200` with `{"ok", "key"}`. |
 
 The body is at most 1 MB.
-Each resource in `GET {prefix}/resources` has `writable`, `read_only_reason` and `form`: for each writable field its `name`, `required`, `default`, `readonly_on_update` (the key fields) and `max_length`.
+Each resource in `GET {prefix}/resources` has `writable`, `read_only_reason`, `sections` (the `create` and `edit` layouts), `form_component` (whether a module replaces the form) and `form`: for each writable field its `name`, `required`, `default`, `readonly_on_update` (the key fields), `readonly` (the config), `widget` and `max_length`.
 
 ### The plain path
 
@@ -551,12 +551,85 @@ The test client has no service layer, so its `request_id` is `unknown`.
 | `/admin/{resource}/-/new` | The create form. A URL parameter named like a field fills it, for example `?author_id=1`. |
 | `/admin/{resource}/{key}/edit` | The change form with the stored values. |
 
-A widget follows the type: a checkbox for a Boolean, a select for an enum, a text area for long text, JSON and lists, a date or time input, and a text input for the rest.
+A widget follows the type unless the config sets one (see [Layout, read-only fields and widgets](#layout-read-only-fields-and-widgets)): a checkbox for a Boolean, a select for an enum, a text area for long text, JSON and lists, a date or time input, and a text input for the rest.
 A key field is read-only on the change form.
 The save bar stays at the bottom and has "Save" (back to the record), "Save and continue" (stay in the form, on the new record for a create) and "Save and add another" (an empty create form).
-The form sends only the fields that changed.
+The form sends only the fields that changed, and never a read-only field.
 "Add" on a to-many tab opens the create form of the child, with the field that points at the parent filled in.
 Delete asks first, in a dialog on the record page.
+
+### Layout, read-only fields and widgets
+
+Four resource settings shape the form.
+`Site::build` checks every name in them, so an unknown field, section or widget stops the start with an error that names the setting.
+
+```python
+admin.register(Book, {
+    "form": {
+        "create": [{"title": "Basics", "fields": ["title", "author_id"]}],
+        "edit": [
+            {"title": "Basics", "fields": ["title", "author_id"]},
+            {"title": "Internal", "fields": ["version", "notes"], "collapsed": True},
+        ],
+    },
+    "readonly": ["version"],
+    "widgets": {"notes": "textarea", "Status": "radio"},
+    "form_component": "forms/book.js",
+})
+```
+
+TypeScript uses the same keys, with `formComponent` for the last one.
+
+- `form` is a list of sections for both forms, or `{"create": [...], "edit": [...]}`. A section has `fields`, an optional `title` and `collapsed`. A collapsed section needs a title and starts closed; a field error inside it opens it. A field of the form that no section names goes in a last section without a title. A field may appear once in a layout, and a layout may name only fields of that form.
+- `readonly` lists fields that the admin shows but never writes, on both forms. The form disables them and does not send them. A request that sets one gets `422` with `This field is read-only.`. A read-only guard field (a version counter) still goes in `loaded` and the server still compares it. A required field with no default cannot be read-only, because a create would never fill it: that is a build error.
+- `widgets` maps a key to a widget. The widgets are `text`, `textarea`, `number`, `date`, `datetime`, `checkbox`, `select`, `radio`, `json`, `list`, `email` and `url`. A widget has to fit the type of its field: `checkbox` for a Boolean, `select` and `radio` for an enum, `number` for a number, and so on. A wrong fit is a build error.
+- The `Admin` setting `widgets` (Python `widgets=`, TypeScript `widgets:`) has the same keys and applies to every resource.
+
+A key is one of these, from the most specific to the least:
+
+| Key | Names |
+|---|---|
+| `title` or `Book.title` | One field. |
+| `Geo.lat` | A subfield of a nested type with `columns` storage. It applies wherever the type is used, at any depth. `Address.geo.lat` names the same subfield from the outer type `Address`, and the outer type wins. |
+| `Status` | An enum: every field of it. |
+| `Address` | A nested type stored as JSON: the field of it. Only `json` fits, and it is the default already. |
+| `String`, `Text`, `Int`, `DateTime` ... | A scalar type: every field of it. |
+
+The field wins over the path, the path over the type, and the type over the default of the column.
+A `Model.field` key on a resource names only a field of that resource form: another model, or a field that the form does not hold, is a build error.
+At one level the resource setting wins over the site-wide one.
+
+### Custom form component
+
+`form_component` names a JavaScript file that replaces the whole form of one resource.
+The server reads the file when it builds the site, at most 512 KB, and a missing or too large file is a build error.
+A relative path is relative to the working directory of the process, so give an absolute path, for example `Path(__file__).parent / "book.js"`.
+Staff get the module from `GET {prefix}/forms/{name}` (`401` without a session, `403` without read permission on the resource, `404` when the resource has no module), and the UI loads it with a dynamic `import()` from the same origin, so the content security policy stays `script-src 'self'`.
+The module is code that every staff user of the admin runs: only put files there that you wrote or reviewed.
+
+The module default-exports a function from React to a component:
+
+```js
+export default (React) => function BookForm({ creating, values, errors, saving, save }) {
+  const [title, setTitle] = React.useState(values.title ?? "");
+  return React.createElement("form", { onSubmit: (e) => { e.preventDefault(); save({ title }); } },
+    React.createElement("input", { value: title, onChange: (e) => setTitle(e.target.value) }),
+    (errors.fields.title ?? []).map((m) => React.createElement("p", { key: m }, m)),
+    React.createElement("button", { disabled: saving }, "Save"));
+};
+```
+
+| Prop | Value |
+|---|---|
+| `resource`, `creating` | The resource name, and whether the form creates a record. |
+| `values` | The value of each form field as the server sent it (`null` for a new record, or the URL prefill). |
+| `errors` | `{fields: {name: [messages]}, form: [messages]}` of the last save. |
+| `conflicts` | The current value of each field that changed since the form loaded (`409`). |
+| `saving` | True while a save runs. |
+| `save(set)` | Sends the fields in `set`. On success the UI goes to the record. It resolves to `false` when the server refuses the values, and `errors` has the reason. |
+| `reload()` | Loads the record again. |
+
+On an edit, the UI sends `loaded` for every form field, so the conflict check and the guard fields work as with the built-in form.
 
 ## Routes and answers
 
@@ -570,6 +643,7 @@ The path prefix is a config value, and the default is `/admin/api`.
 | `GET {prefix}/resources/{name}/{key}/{relation}`, `GET {prefix}/counts/{name}/{key}/{relation}` | The list and the count of a to-many tab. See [To-many tabs](#to-many-tabs). |
 | `GET {prefix}/resources/{name}/{key}` | One record: `fields`, `values` and `links` to the to-one targets that the user may read. A key is encoded as in [The UI](#the-ui). |
 | `POST`, `PATCH`, `DELETE` on `{prefix}/resources/{name}[/{key}]` | Create, change and delete one record. See [Writes and forms](#writes-and-forms). |
+| `GET {prefix}/forms/{name}` | The module of a custom form, as `text/javascript` with `cache-control: no-store`; `401`, `403` and `404` as above. See [Custom form component](#custom-form-component). |
 
 A row is an array that follows `columns`.
 `next` is a cursor for the next page, or `null` on the last page.
@@ -665,7 +739,7 @@ Both languages also export `url` at module level for the default admin.
 ### Browser smoke test
 
 `crates/admin/ui/e2e` holds the first browser suite of the repository.
-It starts a real `python -m monorm admin` process on SQLite (it makes a temporary project, migrates, and seeds a user and two rows), signs in, sorts a list, searches it, opens a record, adds, changes and deletes a record through the forms, and fails on any console error, CSP violation or failed request.
+It starts a real `python -m monorm admin` process on SQLite (it makes a temporary project, migrates, and seeds a user and two rows), signs in, sorts a list, searches it, opens a record, adds, changes and deletes a record through the forms, opens a section layout and a custom form, and fails on any console error, CSP violation or failed request.
 The driver is Playwright (`playwright` 1.65.0, pinned) with `node:test`.
 Playwright downloads a browser, so the install is not part of the default `npm install` of any package.
 Run it from a checkout, with the `monorm` wheel installed in the active Python (`maturin develop`):
