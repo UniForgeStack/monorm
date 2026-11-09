@@ -19,7 +19,7 @@ import * as grants from "./admin-permissions.js";
 import type { RoleSeedReport, SyncReport } from "./admin-permissions.js";
 import type { Database } from "./db.js";
 import { ORMError } from "./errors.js";
-import { asCondition, Column, Condition, Expression, IRContext, Ordering, PATH, RelationPath, resolveNullRule } from "./expr.js";
+import { asCondition, Column, Condition, Expression, IRContext, Ordering, PATH, RelationPath, resolveNullRule, Slot, SlotParams } from "./expr.js";
 import type { ModelSpec } from "./meta.js";
 import { registry as defaultRegistry, type ModelClass, type Registry } from "./model.js";
 import { Prepared } from "./query.js";
@@ -132,7 +132,25 @@ export interface BrandConfig {
   readonly environment?: string;
 }
 
+/** The two `can` rules: a condition of the row, selected as a flag of every row in the list and the detail. */
+export interface CanRules {
+  readonly change?: unknown;
+  readonly delete?: unknown;
+}
+
+/** `async (user) => condition`: the rows that this user sees, one call per request. A list of conditions means AND. */
+export type QuerysetFunction = (user: any) => Promise<unknown>;
+
 export interface ResourceConfig {
+  /**
+   * The rows that staff see: a prepared query set with a `param("user")` slot
+   * (`Order.objects.filter(Order.ownerId.eq(param("user"))).prepare()`), or an async function `(user) => condition`
+   * (one host call per request). Its filter applies to the list, the detail, the count, the search and the tabs;
+   * its order sets the order of the list. A row outside the filter is a 404 on the detail. The bypass permission never lifts it.
+   */
+  readonly queryset?: Prepared<any, any, any> | QuerysetFunction;
+  /** `{ change, delete }`: a condition each. The list and the detail carry the result for every row; the UI disables the button that a row does not allow. */
+  readonly can?: CanRules;
   readonly list?: ListConfig;
   /** The name in the navigation and the page heading (the model name, spaced, by default). */
   readonly title?: string;
@@ -180,7 +198,7 @@ export interface AdminUser {
 
 const LIST_KEYS = new Set(["columns", "order", "pageSize", "sortable", "search", "searchWith", "filters", "namedFilters", "computed", "aggregates", "labels", "empty", "emptyFields", "tabs"]);
 const BRAND_KEYS = new Set(["name", "logo", "colors", "links", "environment"]);
-const RESOURCE_KEYS = new Set(["list", "title", "group", "allow", "perms", "label", "fieldPermissions", "actions"]);
+const RESOURCE_KEYS = new Set(["queryset", "can", "list", "title", "group", "allow", "perms", "label", "fieldPermissions", "actions"]);
 
 function label(model: AnyModel, ref: AnyColumn): string {
   if (ref.root.name !== model._meta.name) {
@@ -280,6 +298,92 @@ function namedJson(model: AnyModel, items: readonly NamedFilter[]): unknown[] {
   }));
 }
 
+function orderName(model: AnyModel, item: AnyColumn | Ordering<any, any>): string {
+  if (item instanceof Ordering) {
+    if (!(item.expr instanceof Column)) throw new AdminConfigError(`${model._meta.name}: order takes columns`);
+    if (item.nulls !== undefined) throw new AdminConfigError(`${model._meta.name}: order does not take a NULLs placement`);
+    return (item.descending ? "-" : "") + label(model, item.expr);
+  }
+  return label(model, item);
+}
+
+const SLOTS = ["user"];
+
+/** The IR of a queryset filter: a `param("user")` becomes slot `i`, a literal goes inline. */
+function slotIr(ir: unknown, params: readonly unknown[], slots: string[], where: string): unknown {
+  if (Array.isArray(ir)) return ir.map((item) => slotIr(item, params, slots, where));
+  if (ir === null || typeof ir !== "object") return ir;
+  const node = ir as Record<string, unknown>;
+  if (node["t"] === "param") {
+    const value = params[node["i"] as number];
+    if (!(value instanceof Slot)) return inline(node, params, where);
+    if (!SLOTS.includes(value.name)) throw new AdminConfigError(`${where}: takes the param 'user', not '${value.name}'`);
+    if (!slots.includes(value.name)) slots.push(value.name);
+    return { t: "param", i: slots.indexOf(value.name) };
+  }
+  return Object.fromEntries(Object.entries(node).map(([k, v]) => [k, slotIr(v, params, slots, where)]));
+}
+
+function querysetName(model: AnyModel): string {
+  return `queryset.${model._meta.name}`;
+}
+
+/** The queryset as config JSON, and the order it sets (column names) or `undefined`. */
+function querysetJson(model: AnyModel, queryset: NonNullable<ResourceConfig["queryset"]>): { json: unknown; order: string[] | undefined } {
+  const name = model._meta.name;
+  if (typeof queryset === "function") return { json: { function: querysetName(model) }, order: undefined };
+  if (!(queryset instanceof Prepared)) {
+    throw new AdminConfigError(`${name}: queryset takes a prepared query set (${name}.objects.filter(...).prepare()) or an async function`);
+  }
+  const qs = (queryset as any)["qs"];
+  const state = qs.state;
+  if (qs.meta.name !== name) throw new AdminConfigError(`${name}: queryset is a query set of ${qs.meta.name}`);
+  const unused: [string, boolean][] = [
+    ["load()", Boolean(state.loads?.length) || state.modelFields !== undefined || state.related.length > 0 || state.prefetch.length > 0],
+    ["a slice", state.limit !== undefined || state.offset !== undefined],
+    ["from() or join()", state.from !== undefined || state.joins.length > 0],
+    ["lock()", state.lock !== undefined],
+    ["withoutDefaults()", state.withoutDefaults !== false],
+  ];
+  for (const [what, used] of unused) {
+    if (used) throw new AdminConfigError(`${name}: queryset takes a filter and an order; it does not take ${what}`);
+  }
+  if (state.filters.length === 0) throw new AdminConfigError(`${name}: queryset needs a filter`);
+  const where = `${name}: queryset`;
+  const params = new SlotParams();
+  const slots: string[] = [];
+  let irs: unknown[];
+  try {
+    const ctx = new IRContext(model._meta as never, params);
+    irs = state.filters.map((f: Condition) => slotIr((resolveNullRule(f) as Expression<unknown>).ir(ctx), params, slots, where));
+  } catch (e) {
+    if (e instanceof AdminConfigError) throw e;
+    throw new AdminConfigError(`${where}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  const order = (state.order as Ordering<any, any>[]).map((o) => orderName(model, o));
+  return { json: { filter: irs.length === 1 ? irs[0] : { t: "and", items: irs }, slots }, order: order.length > 0 ? order : undefined };
+}
+
+/** The host function of a callable queryset: the filter for this user, with its values inline. */
+function querysetHost(model: AnyModel, fn: QuerysetFunction): HostFunction {
+  return async (_database, args) => {
+    const found = await fn(args.user);
+    const conditions = (Array.isArray(found) ? found : [found]).filter((c) => c !== undefined && c !== null);
+    if (conditions.length === 0) throw new AdminConfigError(`${model._meta.name}: the queryset function returns a condition`);
+    const irs = conditions.map((c) => irOf(model, c, "queryset"));
+    return { filter: irs.length === 1 ? irs[0] : { t: "and", items: irs } };
+  };
+}
+
+function canJson(model: AnyModel, rules: CanRules): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [rule, condition] of Object.entries(rules)) {
+    if (rule !== "change" && rule !== "delete") throw new AdminConfigError(`${model._meta.name}: can takes 'change' and 'delete', not '${rule}'`);
+    if (condition !== undefined) out[rule] = irOf(model, condition, `can '${rule}'`);
+  }
+  return out;
+}
+
 function listJson(model: AnyModel, config: ListConfig): Record<string, unknown> {
   const name = model._meta.name;
   for (const key of Object.keys(config)) {
@@ -295,16 +399,7 @@ function listJson(model: AnyModel, config: ListConfig): Record<string, unknown> 
   if (config.labels !== undefined) out["labels"] = { ...config.labels };
   if (config.empty !== undefined) out["empty"] = config.empty;
   if (config.emptyFields !== undefined) out["empty_fields"] = { ...config.emptyFields };
-  if (config.order !== undefined) {
-    out["order"] = config.order.map((item) => {
-      if (item instanceof Ordering) {
-        if (!(item.expr instanceof Column)) throw new AdminConfigError(`${name}: order takes columns`);
-        if (item.nulls !== undefined) throw new AdminConfigError(`${name}: order does not take a NULLs placement`);
-        return (item.descending ? "-" : "") + label(model, item.expr);
-      }
-      return label(model, item);
-    });
-  }
+  if (config.order !== undefined) out["order"] = config.order.map((item) => orderName(model, item));
   if (config.pageSize !== undefined) out["page_size"] = config.pageSize;
   if (config.sortable !== undefined) out["sortable"] = config.sortable.map((c) => label(model, c));
   if (config.search !== undefined) out["search"] = config.search.map((c) => label(model, c));
@@ -547,17 +642,26 @@ export class Admin {
   }
 
   #configJson(): string {
-    const resources = [...this.#resources].map(([model, { model: cls, config }]) => ({
-      model,
-      ...(config.list === undefined ? {} : { list: listJson(cls, config.list) }),
-      ...(config.title === undefined ? {} : { title: config.title }),
-      ...(config.group === undefined ? {} : { group: config.group }),
-      ...(config.allow === undefined ? {} : { allow: [...config.allow] }),
-      ...(config.perms === undefined ? {} : { perms: [...config.perms] }),
-      ...(config.label === undefined ? {} : { label: config.label }),
-      ...(config.fieldPermissions === undefined ? {} : { field_permissions: [...config.fieldPermissions] }),
-      ...(config.actions === undefined ? {} : { actions: [...config.actions] }),
-    }));
+    const resources = [...this.#resources].map(([model, { model: cls, config }]) => {
+      const queryset = config.queryset === undefined ? undefined : querysetJson(cls, config.queryset);
+      if (queryset?.order !== undefined && config.list?.order !== undefined) {
+        throw new AdminConfigError(`${model}: the order is set twice: by the queryset and by list.order`);
+      }
+      const list = config.list === undefined && queryset?.order === undefined ? undefined : { ...(config.list === undefined ? {} : listJson(cls, config.list)), ...(queryset?.order === undefined ? {} : { order: queryset.order }) };
+      return {
+        model,
+        ...(queryset === undefined ? {} : { queryset: queryset.json }),
+        ...(config.can === undefined ? {} : { can: canJson(cls, config.can) }),
+        ...(list === undefined ? {} : { list }),
+        ...(config.title === undefined ? {} : { title: config.title }),
+        ...(config.group === undefined ? {} : { group: config.group }),
+        ...(config.allow === undefined ? {} : { allow: [...config.allow] }),
+        ...(config.perms === undefined ? {} : { perms: [...config.perms] }),
+        ...(config.label === undefined ? {} : { label: config.label }),
+        ...(config.fieldPermissions === undefined ? {} : { field_permissions: [...config.fieldPermissions] }),
+        ...(config.actions === undefined ? {} : { actions: [...config.actions] }),
+      };
+    });
     return JSON.stringify({
       prefix: this.prefix,
       permissions: this.#strategy,
@@ -573,6 +677,7 @@ export class Admin {
   #host(): Record<string, HostFunction> {
     const host: Record<string, HostFunction> = { ...HOST };
     for (const [, { model, config }] of this.#resources) {
+      if (typeof config.queryset === "function") host[querysetName(model)] = querysetHost(model, config.queryset);
       const search = config.list?.searchWith;
       if (search !== undefined) host[searchName(model)] = searchHost(model, search);
       for (const column of config.list?.computed ?? []) {

@@ -21,14 +21,14 @@ import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from json import dumps as _dumps
-from typing import TYPE_CHECKING, Any, Literal, Mapping, Sequence, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, Mapping, Sequence, TypedDict, cast
 
 from . import _native
 from . import _admin_permissions
 from ._admin_host import HOST as _HOST
 from ._admin_permissions import RoleSeedReport, SyncReport
 from .errors import QueryError
-from .expr import ColumnRef, Condition, Expression, IRContext, Ordering, RelationPath, as_condition, resolve_null_rule
+from .expr import ColumnRef, Condition, Expression, IRContext, Ordering, RelationPath, SlotParams, _Slot, as_condition, resolve_null_rule
 from .model import Model, registry as default_registry
 
 if TYPE_CHECKING:
@@ -147,10 +147,16 @@ class ResourceConfig(TypedDict, total=False):
     """Names such as ``"see_credential"`` that become ``<label>.<name>``."""
     actions: Sequence[str]
     """Names such as ``"refund"`` that become ``<label>.<action>_<resource>``."""
+    queryset: Any
+    """The rows that staff see: a prepared query set (``Model.objects.filter(Model.owner == param("user")).prepare()``) whose
+    ``user`` param the admin fills, or an async function ``(user)`` that returns a condition (one host call
+    for each request). Its filter limits the list, count, search, detail and tabs; its ``order`` is the list order when the list sets none."""
+    can: Mapping[Literal["change", "delete"], Any]
+    """Conditions that a row must meet for the user to change or delete it. The list and the detail select them as flags."""
 
 
 _LIST_KEYS = {"columns", "order", "page_size", "sortable", "search", "search_with", "filters", "named_filters", "computed", "aggregates", "labels", "empty", "empty_fields", "tabs"}
-_RESOURCE_KEYS = {"list", "title", "group", "allow", "perms", "label", "field_permissions", "actions"}
+_RESOURCE_KEYS = {"list", "title", "group", "allow", "perms", "label", "field_permissions", "actions", "queryset", "can"}
 _BRAND_KEYS = {"name", "logo", "colors", "links", "environment"}
 Strategy = Literal["page", "model", "access"]
 
@@ -299,6 +305,92 @@ def _list(model: type[Model], config: Mapping[str, Any]) -> dict[str, Any]:
 
 def _search_name(model: type[Model]) -> str:
     return f"search.{model.__name__}"
+
+
+def _queryset_name(model: type[Model]) -> str:
+    return f"queryset.{model.__name__}"
+
+
+_SLOTS = ("user",)
+
+
+def _slot_ir(model: type[Model], ir: Any, params: list[Any], slots: list[str]) -> Any:
+    """The IR of a queryset filter: a ``param("user")`` becomes slot ``i`` and a literal goes inline."""
+    if isinstance(ir, list):
+        return [_slot_ir(model, item, params, slots) for item in ir]
+    if not isinstance(ir, dict):
+        return ir
+    if ir.get("t") == "param":
+        value = params[ir["i"]]
+        if not isinstance(value, _Slot):
+            return _inline(ir, params, f"{model.__name__}: queryset")
+        if value.name not in _SLOTS or value.transform is not None:
+            raise AdminConfigError(f"{model.__name__}: queryset takes the params {', '.join(repr(n) for n in _SLOTS)}, not {value!r}")
+        if value.name not in slots:
+            slots.append(value.name)
+        return {"t": "param", "i": slots.index(value.name)}
+    return {k: _slot_ir(model, v, params, slots) for k, v in ir.items()}
+
+
+def _queryset(model: type[Model], config: Any) -> tuple[dict[str, Any], list[str] | None]:
+    """The queryset of a resource as config JSON, and the order it sets (column names) or None."""
+    from .query import Prepared
+
+    if callable(config) and not isinstance(config, Prepared):
+        return {"function": _queryset_name(model)}, None
+    if not isinstance(config, Prepared):
+        raise AdminConfigError(f"{model.__name__}: queryset takes a prepared query set (Model.objects.filter(...).prepare()) or an async function")
+    qs = config._qs
+    if qs.model is not model:
+        raise AdminConfigError(f"{model.__name__}: queryset is a query set of {qs.model.__name__}")
+    for what, used in (
+        ("load()", qs._loads or qs._model_fields is not None or qs._related or qs._prefetch),
+        ("a slice", qs._limit is not None or qs._offset is not None),
+        ("from_() or join()", qs._from is not None or qs._joins),
+        ("lock()", qs._lock is not None),
+        ("without_defaults()", qs._without_defaults),
+    ):
+        if used:
+            raise AdminConfigError(f"{model.__name__}: queryset takes a filter and an order; it does not take {what}")
+    if not qs._filters:
+        raise AdminConfigError(f"{model.__name__}: queryset needs a filter")
+    params = SlotParams()
+    ctx = IRContext(model, params)
+    try:
+        filters = [resolve_null_rule(f)._ir(ctx) for f in qs._filters]
+    except QueryError as e:
+        raise AdminConfigError(f"{model.__name__}: queryset: {e}") from None
+    slots: list[str] = []
+    irs = [_slot_ir(model, f, params, slots) for f in filters]
+    filter_ir = irs[0] if len(irs) == 1 else {"t": "and", "items": irs}
+    order = [("-" if o.desc else "") + _label(model, o.expr) for o in qs._order if isinstance(o.expr, ColumnRef)]
+    if len(order) != len(qs._order):
+        raise AdminConfigError(f"{model.__name__}: queryset order takes columns")
+    return {"filter": filter_ir, "slots": slots}, order or None
+
+
+def _queryset_host(model: type[Model], function: Callable[..., Awaitable[Any]]) -> Callable[[Any, dict[str, Any]], Awaitable[Any]]:
+    """The host function of a callable queryset: the filter for this user, with its values inline."""
+
+    async def run(database: Any, args: dict[str, Any]) -> Any:
+        found = await function(args["user"])
+        conditions = [found] if isinstance(found, (Condition, Expression)) else list(found or ())
+        if not conditions:
+            raise AdminConfigError(f"{model.__name__}: the queryset function returns a condition")
+        irs = [_ir(model, c, "queryset") for c in conditions]
+        return {"filter": irs[0] if len(irs) == 1 else {"t": "and", "items": irs}}
+
+    return run
+
+
+def _is_prepared(value: Any) -> bool:
+    from .query import Prepared
+
+    return isinstance(value, Prepared)
+
+
+def _can(model: type[Model], rules: Mapping[Any, Any]) -> dict[str, Any]:
+    return {name: _ir(model, rule, f"can {name!r}") for name, rule in rules.items()}
 
 
 def _key_cells(model: type[Model], row: Any) -> list[Any]:
@@ -489,6 +581,7 @@ class Admin:
     ``brand`` sets the name, logo, colors, header links and environment label of the UI. ``groups`` is the order of the
     navigation groups; a resource names one of them with ``group``.
     ``statement_timeout`` is the time limit in seconds of each request's database statements (15 by default, 0 for none).
+    The admin ignores tenancy: a read default that reads a ``scope`` value is off in every admin read, so staff see the rows of all tenants.
     """
 
     def __init__(
@@ -537,6 +630,15 @@ class Admin:
             resource: dict[str, Any] = {"model": name}
             if "list" in config:
                 resource["list"] = _list(model, config["list"])
+            if "queryset" in config:
+                resource["queryset"], order = _queryset(model, config["queryset"])
+                if order is not None:
+                    listing = resource.setdefault("list", {})
+                    if "order" in listing:
+                        raise AdminConfigError(f"{name}: the order is in the queryset or in the list, not in both")
+                    listing["order"] = order
+            if "can" in config:
+                resource["can"] = _can(model, config["can"])
             raw: dict[str, Any] = dict(config)
             for key in ("title", "group", "allow", "perms", "label", "field_permissions", "actions"):
                 if key in raw:
@@ -557,6 +659,9 @@ class Admin:
         host: dict[str, Any] = dict(_HOST)
         for model, config in self._resources.values():
             listing = config.get("list", {})
+            scope = config.get("queryset")
+            if scope is not None and callable(scope) and not _is_prepared(scope):
+                host[_queryset_name(model)] = _queryset_host(model, cast(Callable[..., Awaitable[Any]], scope))
             search = listing.get("search_with")
             if search is not None:
                 host[_search_name(model)] = _search_host(model, search)
