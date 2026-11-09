@@ -5,7 +5,7 @@ import { FilterBar, POSITION } from "./filters";
 import { type Zone } from "./format";
 import { navigate, rememberList, useSearch } from "./router";
 import { Table } from "./Table";
-import { Alert, Button, message } from "./ui";
+import { Alert, Bypass, Button, message } from "./ui";
 
 const SIZES = [10, 25, 50, 100, 200];
 
@@ -43,7 +43,7 @@ export function ListView({ resource, zone, meta, params, change, scope }: { reso
   const [draft, setDraft] = useState(q);
   const [exact, setExact] = useState(false);
   // A new search or filter has a new count: it is capped again until the user asks.
-  const view = [...params].filter(([k]) => k === "q" || k.startsWith("f.") || k.startsWith("n.")).join("&");
+  const view = [...params].filter(([k]) => k === "q" || k === "without" || k.startsWith("f.") || k.startsWith("n.")).join("&");
   const [seen, setSeen] = useState(view);
   if (view !== seen) {
     setSeen(view);
@@ -100,6 +100,7 @@ export function ListView({ resource, zone, meta, params, change, scope }: { reso
             <Button type="submit" variant="plain">Search</Button>
           </form>
         )}
+        {meta?.bypass && meta.bypass.length > 0 && <Bypass names={meta.bypass} params={params} change={change} />}
         <label className="size">
           Rows per page
           <select value={limit} onChange={(e) => set("limit", e.target.value)}>

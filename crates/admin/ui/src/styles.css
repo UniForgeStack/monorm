@@ -78,3 +78,5 @@ h2 { font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; color:
 .tabs { display: flex; gap: .25rem; border-bottom: 1px solid var(--line); margin-bottom: 1rem; }
 .tab { border: 0; border-bottom: 2px solid transparent; background: none; padding: .4rem .75rem; font: inherit; cursor: pointer; color: var(--muted); }
 .tab-on { border-bottom-color: var(--primary); color: inherit; }
+.actions { display: flex; gap: .5rem; margin-bottom: 1rem; }
+.bypass { display: flex; gap: .4rem; align-items: center; color: var(--muted); font-size: .9rem; }

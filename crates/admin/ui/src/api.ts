@@ -54,6 +54,10 @@ export interface Resource {
   named_filters: NamedFilter[];
   tabs: Tab[];
   empty: string | null;
+  /** The rules that a row can allow: `change`, `delete`. Each row and detail carries one flag for each. */
+  can?: string[];
+  /** The read defaults that this user may switch off, with `?without=<name>`. */
+  bypass?: string[];
 }
 
 export interface Brand {
@@ -75,6 +79,9 @@ export interface Site {
   resources: Resource[];
 }
 
+/** One flag for each `can` rule of the resource: whether the rule holds for the row. */
+export type Flags = Record<string, boolean>;
+
 export interface Page {
   resource: string;
   columns: Column[];
@@ -82,6 +89,7 @@ export interface Page {
   keys: string[];
   next: string | null;
   prev: string | null;
+  flags?: Flags[];
   /** Present when a custom search ran: the count of that one call, always exact. */
   count?: number;
   capped?: boolean;
@@ -104,6 +112,7 @@ export interface Detail {
   key: string;
   fields: Column[];
   values: unknown[];
+  flags?: Flags;
   links: { name: string; title: string; resource: string; key: string }[];
 }
 
@@ -178,10 +187,12 @@ export const page = (resource: string, search: string, scope?: Scope) => call<Pa
 export function count(resource: string, search: string, exact: boolean, scope?: Scope) {
   const from = new URLSearchParams(search);
   const to = new URLSearchParams();
-  for (const [k, v] of from) if (k === "q" || k.startsWith("f.") || k.startsWith("n.")) to.append(k, v);
+  for (const [k, v] of from) if (k === "q" || k === "without" || k.startsWith("f.") || k.startsWith("n.")) to.append(k, v);
   if (exact) to.set("exact", "1");
   const text = to.toString();
   return call<Count>("GET", `/counts/${listPath(resource, scope)}${text ? `?${text}` : ""}`);
 }
 
-export const detail = (resource: string, key: string) => call<Detail>("GET", `/resources/${encodeURIComponent(resource)}/${key}`);
+/** `without` is the read defaults to switch off, as the URL holds them (`a,b`). */
+export const detail = (resource: string, key: string, without = "") =>
+  call<Detail>("GET", `/resources/${encodeURIComponent(resource)}/${key}${without ? `?without=${encodeURIComponent(without)}` : ""}`);
