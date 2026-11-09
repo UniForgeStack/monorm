@@ -491,8 +491,8 @@ The server checks them again on each request.
 | `PATCH {prefix}/resources/{name}/{key}` | `{"set": {...}, "loaded": {...}}` | `200` with `{"ok", "key", "changed": [names]}`. |
 | `DELETE {prefix}/resources/{name}/{key}` | `{"loaded": {...}}` (optional) | `200` with `{"ok", "key"}`. |
 
-The body is at most 1 MB.
-Each resource in `GET {prefix}/resources` has `writable`, `read_only_reason`, `sections` (the `create` and `edit` layouts), `form_component` (whether a module replaces the form) and `form`: for each writable field its `name`, `required`, `default`, `readonly_on_update` (the key fields), `readonly` (the config), `widget` and `max_length`.
+The body is at most 1 MB (the upload route takes 25 MiB).
+Each resource in `GET {prefix}/resources` has `writable`, `read_only_reason`, `sections` (the `create` and `edit` layouts), `form_component` (whether a module replaces the form) and `form`: for each writable field its `name`, `required`, `default`, `readonly_on_update` (the key fields), `readonly` (the config), `widget`, `max_length`, `relation` (the picker of a relation field, or `null`) and `file` (whether the field holds a file). The resource has `chips`, the many-to-many relations that the form edits.
 
 ### The plain path
 
@@ -631,6 +631,64 @@ export default (React) => function BookForm({ creating, values, errors, saving, 
 
 On an edit, the UI sends `loaded` for every form field, so the conflict check and the guard fields work as with the built-in form.
 
+### Relation fields and files
+
+A to-one field that holds a foreign key shows a search box, and a many-to-many relation shows chips.
+A relation is opt-in: name it in `relations` of the resource config.
+It needs `resources` to be set, and the target must be a resource too.
+
+```python
+admin.register(Book, {"relations": {"author": {"create": True}, "tags": {}}, "files": {"cover": "media"}})
+```
+
+Each entry of `relations` takes `label`, `choices` and `create`.
+The key of the entry is the name of the relation (`author`, not `author_id`).
+
+**Autocomplete.**
+`GET {prefix}/autocomplete/{name}/{relation}?q=&cursor=&limit=` answers `{"items": [{"value", "label"}], "next"}`.
+It pages by keyset on the key of the target, so it stays fast on millions of rows.
+`q` searches the `search` fields of the target.
+The target must have a label (`label`, or its first plain text column) and a `search`, and the label must be a column of its list.
+Without them `Site::build` fails.
+The picker applies the `queryset` filter of the target.
+It ignores tenancy and the `can` rules: `can` is a flag of one row, not a filter of a read.
+
+**`choices=`.**
+`choices` takes a prepared query set of the target.
+It limits the picker, and the server checks it again on a write: a value outside it is a `422` for the field.
+An update checks only the values that changed.
+`choices` combines with the `queryset` of the target.
+
+**Create modal.**
+`create: True` adds "New <target>…" to the picker.
+It opens a dialog with the create form of the target and fills the field with the new record.
+The form keeps the values that the user typed.
+The dialog has no inlines and no chips.
+The button shows only for a user who may create a target record. `Site::build` fails when the target does not allow create or is read-only.
+
+**Many-to-many chips.**
+A relation through a join model shows chips on the form.
+`GET {prefix}/links/{name}/{key}/{relation}` answers `{"items", "truncated"}` for the saved links: the target `queryset` applies, and the list stops at 200.
+A write takes `"links": {relation: {"add": [keys], "remove": [keys]}}` next to `set`.
+The links and the fields commit in the one write transaction, with one audit row (`links.<relation>` in `diff`).
+A save that fails leaves the links as they were.
+A write has at most 500 keys on each side.
+The join model must be writable and must have no other required field.
+
+**Upload and download.**
+`files` maps a field to a storage of the [file storage](../extensions/file-storage.md) registry.
+Pass the registry as `Admin(storage=registry)`.
+`POST {prefix}/files/{name}/{key}/{field}` takes a `multipart/form-data` body with one `file` part and answers `{"ok", "key", "changed", "value"}`.
+It is the only multipart route.
+The CSRF token, the `Origin` check and the permission to change the record apply, and the body is at most 25 MiB.
+A field in `readonly` takes no upload: the answer is a 422.
+An upload checks the permission and the record first, then stores the file with no transaction open, then writes the reference and the audit row in a new transaction that checks again.
+A failure after the storage call leaves the stored file unused.
+`GET {prefix}/files/{name}/{key}/{field}` reads the file from the storage and streams it with `Content-Disposition: attachment` and the stored content type.
+The browser never sees a storage URL.
+A new record has no key yet: the form says to save first, then upload.
+A replaced file stays in the storage.
+
 ## Routes and answers
 
 The path prefix is a config value, and the default is `/admin/api`.
@@ -643,6 +701,9 @@ The path prefix is a config value, and the default is `/admin/api`.
 | `GET {prefix}/resources/{name}/{key}/{relation}`, `GET {prefix}/counts/{name}/{key}/{relation}` | The list and the count of a to-many tab. See [To-many tabs](#to-many-tabs). |
 | `GET {prefix}/resources/{name}/{key}` | One record: `fields`, `values` and `links` to the to-one targets that the user may read. A key is encoded as in [The UI](#the-ui). |
 | `POST`, `PATCH`, `DELETE` on `{prefix}/resources/{name}[/{key}]` | Create, change and delete one record. See [Writes and forms](#writes-and-forms). |
+| `GET {prefix}/autocomplete/{name}/{relation}?q=&cursor=&limit=` | One page of the picker: `items` and `next`. See [Relation fields and files](#relation-fields-and-files). |
+| `GET {prefix}/links/{name}/{key}/{relation}` | The records that a many-to-many relation links: `items` and `truncated`. |
+| `POST`, `GET {prefix}/files/{name}/{key}/{field}` | Upload a file (multipart) and download it (attachment). |
 | `GET {prefix}/forms/{name}` | The module of a custom form, as `text/javascript` with `cache-control: no-store`; `401`, `403` and `404` as above. See [Custom form component](#custom-form-component). |
 
 A row is an array that follows `columns`.
@@ -658,6 +719,7 @@ A date and a time are ISO 8601 with an offset.
 | 400 | The cursor, the limit, the sort, the search term, the filter name or the key is not valid. |
 | 409 | A write found a stored value that is not the loaded value. |
 | 422 | A filter value has the wrong type, or a named filter has no such choice. A write has a field error or a message of the form. |
+| 413 | An upload is larger than 25 MiB. |
 | 504 | The statement timeout cancelled a statement. |
 
 An error body is `{"ok": false, "error": {"kind": "...", "message": "..."}}`.
