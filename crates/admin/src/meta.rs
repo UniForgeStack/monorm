@@ -207,5 +207,6 @@ pub fn resource(schema: &Schema, r: &Resource, builds: &AtomicUsize) -> Value {
         "named_filters": r.named_filters.iter().map(|n| json!({"name": n.name, "title": n.label, "default": n.default, "choices": n.choices.iter().map(|c| json!({"name": c.name, "title": c.label})).collect::<Vec<_>>()})).collect::<Vec<_>>(),
         "tabs": r.tabs.iter().map(|t| json!({"name": t.name, "title": r.labels.get(&t.name).cloned().unwrap_or_else(|| humanize(&t.name)), "target": t.target})).collect::<Vec<_>>(),
         "empty": r.empty,
+        "can": r.can.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
     })
 }

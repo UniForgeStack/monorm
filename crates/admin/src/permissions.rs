@@ -93,6 +93,11 @@ impl Grants {
     }
 }
 
+/// The permission that switches the named read default `default` off: `<label>.bypass_<default>_<key>`.
+pub fn bypass_name(r: &Resource, default: &str) -> String {
+    format!("{}.bypass_{default}_{}", r.label, r.key)
+}
+
 impl Site {
     /// The names of the chosen strategy: the gate first, then the names of each resource.
     pub fn permission_names(&self) -> Vec<String> {
@@ -126,6 +131,9 @@ impl Site {
             }
             for a in &r.actions {
                 push(format!("{l}.{a}_{k}"));
+            }
+            for d in &r.bypass {
+                push(bypass_name(r, d));
             }
         }
         out
@@ -181,12 +189,18 @@ impl Site {
             .map(|r| {
                 let mut meta = r.meta.clone();
                 meta["actions"] = json!(r.actions.iter().filter(|a| self.allowed_extra(grants, r, &format!("{}.{a}_{}", r.label, r.key))).collect::<Vec<_>>());
+                meta["bypass"] = json!(self.bypassable(grants, r));
                 meta["field_permissions"] = json!(r.field_permissions.iter().filter(|f| self.allowed_extra(grants, r, &format!("{}.{f}", r.label))).collect::<Vec<_>>());
                 meta
             })
             .collect();
         let permissions: Vec<String> = if self.gate(grants) { self.permission_names().into_iter().filter(|n| grants.has(n)).collect() } else { Vec::new() };
         json!({"resources": resources, "permissions": permissions})
+    }
+
+    /// The read defaults of `r` that the user may switch off for a request.
+    pub fn bypassable(&self, grants: &Grants, r: &Resource) -> Vec<String> {
+        r.bypass.iter().filter(|d| self.allowed_extra(grants, r, &bypass_name(r, d))).cloned().collect()
     }
 
     /// A field or action name: the user holds it, and has read access to the resource.

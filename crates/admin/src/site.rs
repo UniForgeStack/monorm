@@ -10,7 +10,8 @@ use monorm_core::dialect::{Dialect, Target};
 use monorm_core::ir::{ColType, ConstraintIr, FieldIr, ModelIr, Operation, RelKind, ValueType};
 use monorm_core::schema::Schema;
 use monorm_engine::plan::{Plan, Planner};
-use monorm_engine::NoParams;
+use monorm_engine::params::null_of;
+use monorm_engine::{Params, Result as EngineResult};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -70,6 +71,19 @@ struct Config {
     statement_timeout_ms: Option<u64>,
 }
 
+/// The rows a resource shows to staff.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct QuerysetConfig {
+    /// A prepared filter. A `param` with index `i` reads `slots[i]`.
+    filter: Option<Value>,
+    /// What each parameter holds at a request: `user` (the key of the staff user).
+    #[serde(default)]
+    slots: Vec<String>,
+    /// A host function that returns `{"filter": expr}` at each request, instead of `filter`.
+    function: Option<String>,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ResourceConfig {
@@ -92,6 +106,11 @@ struct ResourceConfig {
     /// Names of actions: `<label>.<action>_<resource>`.
     #[serde(default)]
     actions: Vec<String>,
+    /// The rows that staff see and touch.
+    queryset: Option<QuerysetConfig>,
+    /// Per-row rules, `change` and `delete`: prepared expressions that the list and the detail select as flags.
+    #[serde(default)]
+    can: BTreeMap<String, Value>,
 }
 
 #[derive(Deserialize, Default)]
@@ -291,10 +310,36 @@ pub struct Resource {
     pub named_filters: Vec<NamedFilter>,
     /// To-many relations that the detail page shows as tabs.
     pub tabs: Vec<Tab>,
+    /// The rows that staff see and touch: its filter joins every read of the resource.
+    pub queryset: Option<Queryset>,
+    /// The per-row rules (`change`, `delete`): each one is a flag in the list and the detail.
+    pub can: Vec<(String, Value)>,
+    /// The names of the named read defaults that read no scope value: each one has a bypass permission.
+    pub bypass: Vec<String>,
+    /// The names of the read defaults that read a `scope.<name>` value: the admin sets no scope value, so every admin read turns them off.
+    pub scope_defaults: Vec<String>,
     tabs_config: Option<Vec<String>>,
     /// Whether the table is large, and when it was read.
     large: Mutex<Option<(Instant, bool)>>,
 }
+
+/// What a parameter of a `queryset` holds at a request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Slot {
+    User,
+}
+
+#[derive(Debug, Clone)]
+pub struct Queryset {
+    /// A prepared filter. A `param` with index `i` reads `slots[i]`.
+    pub filter: Option<Value>,
+    pub slots: Vec<Slot>,
+    /// A host function that returns the filter at each request.
+    pub function: Option<String>,
+}
+
+/// The per-row rules. Each one is a flag of a row.
+pub const CAN_NAMES: [&str; 2] = ["change", "delete"];
 
 /// What a filter reads.
 #[derive(Debug, Clone)]
@@ -578,7 +623,7 @@ fn concrete(m: &monorm_core::schema::Model) -> bool {
 
 impl ResourceConfig {
     fn of(model: &str) -> ResourceConfig {
-        ResourceConfig { model: model.to_owned(), list: ListConfig::default(), allow: None, perms: None, label: None, title: None, group: None, field_permissions: Vec::new(), actions: Vec::new() }
+        ResourceConfig { model: model.to_owned(), list: ListConfig::default(), allow: None, perms: None, label: None, title: None, group: None, field_permissions: Vec::new(), actions: Vec::new(), queryset: None, can: BTreeMap::new() }
     }
 }
 
@@ -721,6 +766,9 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
     }
     let filters = filter_specs(schema, idx, &name, list)?;
     let named_filters = named_filters(schema, idx, &name, list)?;
+    let queryset = queryset_of(schema, idx, &name, config.queryset.as_ref())?;
+    let can = can_rules(schema, &name, &config.can)?;
+    let scope_defaults = scope_default_names(model);
     Ok(Resource {
         model: idx,
         name,
@@ -751,6 +799,10 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
         filters,
         named_filters,
         tabs: Vec::new(),
+        queryset,
+        can,
+        bypass: model.read_defaults.names().into_iter().filter(|n| !scope_defaults.iter().any(|d| d == n)).map(str::to_owned).collect(),
+        scope_defaults,
         tabs_config: list.tabs.clone(),
         large: Mutex::new(None),
     })
@@ -1029,8 +1081,37 @@ fn json_select(model: &str, column: Option<&Value>, filter: Option<&Value>) -> V
 }
 
 fn probe(schema: &Schema, op: Value) -> Result<monorm_engine::plan::SelectPlan, String> {
+    probe_with(schema, op, &ProbeParams(0))
+}
+
+/// Parameters that are null: the planner checks an expression with no request.
+struct ProbeParams(usize);
+
+impl Params for ProbeParams {
+    fn len(&self) -> usize {
+        self.0
+    }
+    fn value(&self, _: usize, ty: Option<ValueType>) -> EngineResult<sea_query::Value> {
+        Ok(null_of(ty))
+    }
+    fn text(&self, _: usize) -> EngineResult<String> {
+        Ok(String::new())
+    }
+    fn count(&self, _: usize) -> EngineResult<u64> {
+        Ok(0)
+    }
+}
+
+fn probe_with(schema: &Schema, mut op: Value, params: &ProbeParams) -> Result<monorm_engine::plan::SelectPlan, String> {
+    // A request turns these defaults off too: a probe has no scope value either.
+    if let Some(model) = op["model"].as_str().and_then(|m| schema.model_idx(m).ok()) {
+        let names = scope_default_names(schema.model(model));
+        if !names.is_empty() {
+            op["without_defaults"] = serde_json::json!(names);
+        }
+    }
     let op: Operation = serde_json::from_value(op).map_err(|e| e.to_string())?;
-    match Planner::plan(schema, Target::new(schema.dialect), &op, &NoParams).map_err(|e| e.to_string())? {
+    match Planner::plan(schema, Target::new(schema.dialect), &op, params).map_err(|e| e.to_string())? {
         Plan::Select(p) => Ok(p),
         _ => Err("the expression is not a select".to_owned()),
     }
@@ -1199,6 +1280,89 @@ fn named_filters(schema: &Schema, idx: usize, name: &str, list: &ListConfig) -> 
             }
         }
         out.push(NamedFilter { name: f.name.clone(), label: f.label.clone().unwrap_or_else(|| meta::humanize(&f.name)), choices, default: f.default.clone() });
+    }
+    Ok(out)
+}
+
+/// The names of the read defaults of the model that read a `scope.<name>` value.
+fn scope_default_names(model: &monorm_core::schema::Model) -> Vec<String> {
+    model.read_defaults.parts.iter().filter(|p| !p.scopes.is_empty()).map(|p| p.identity.name.clone()).collect()
+}
+
+/// The name of a host function: letters, digits, `_`, `.`, `:` and `-`, at most 80 characters.
+fn check_function(what: &str, name: &str) -> Result<(), ConfigError> {
+    let ok = !name.is_empty() && name.chars().count() <= 80 && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ':' | '-'));
+    if ok { Ok(()) } else { err(format!("{what} {name:?} is not a function name")) }
+}
+
+fn queryset_of(schema: &Schema, idx: usize, name: &str, config: Option<&QuerysetConfig>) -> Result<Option<Queryset>, ConfigError> {
+    let Some(q) = config else { return Ok(None) };
+    let mut slots = Vec::new();
+    for s in &q.slots {
+        slots.push(match s.as_str() {
+            "user" => Slot::User,
+            other => return err(format!("{name}: queryset slot {other:?} is not \"user\"")),
+        });
+    }
+    match (&q.filter, &q.function) {
+        (Some(_), Some(_)) => return err(format!("{name}: queryset has a filter or a function, not both")),
+        (None, Some(f)) => {
+            check_function(&format!("{name}: queryset.function"), f)?;
+            if !slots.is_empty() {
+                return err(format!("{name}: a queryset function takes no slots: it gets the user"));
+            }
+        }
+        (Some(f), None) => {
+            let model = &schema.model(idx).ir.name;
+            let key = schema.model(idx).key_fields().first().map(|k| serde_json::json!({"t": "col", "path": [], "name": k.name}));
+            probe_with(schema, json_select(model, key.as_ref(), Some(f)), &ProbeParams(slots.len())).map_err(|e| ConfigError(format!("{name}: queryset filter: {e}")))?;
+            if has_scope(f) {
+                return err(format!("{name}: queryset filter: a scope value has no value in the admin"));
+            }
+            if let Some(i) = max_param(f).filter(|&i| i >= slots.len()) {
+                return err(format!("{name}: queryset filter: parameter {i} has no slot"));
+            }
+        }
+        (None, None) => return err(format!("{name}: queryset has a filter or a function")),
+    }
+    Ok(Some(Queryset { filter: q.filter.clone(), slots, function: q.function.clone() }))
+}
+
+pub(crate) fn has_scope(expr: &Value) -> bool {
+    match expr {
+        Value::Object(map) => map.get("t").and_then(Value::as_str) == Some("scope") || map.values().any(has_scope),
+        Value::Array(items) => items.iter().any(has_scope),
+        _ => false,
+    }
+}
+
+/// The highest parameter index of an expression.
+pub(crate) fn max_param(expr: &Value) -> Option<usize> {
+    match expr {
+        Value::Object(map) => {
+            let here = matches!(map.get("t").and_then(Value::as_str), Some("param" | "in_param")).then(|| map.get("i").and_then(Value::as_u64).map(|i| i as usize)).flatten();
+            map.values().filter_map(max_param).chain(here).max()
+        }
+        Value::Array(items) => items.iter().filter_map(max_param).max(),
+        _ => None,
+    }
+}
+
+fn can_rules(schema: &Schema, name: &str, config: &BTreeMap<String, Value>) -> Result<Vec<(String, Value)>, ConfigError> {
+    let mut out = Vec::new();
+    for rule in CAN_NAMES {
+        let Some(expr) = config.get(rule) else { continue };
+        if has_binding(expr) {
+            return err(format!("{name}: can {rule:?}: an expression has no parameters or scope values"));
+        }
+        let ty = probe_type(schema, name, expr).map_err(|e| ConfigError(format!("{name}: can {rule:?}: {e}")))?;
+        if ty.ty != ColType::Bool || ty.array {
+            return err(format!("{name}: can {rule:?}: the expression is not a boolean"));
+        }
+        out.push((rule.to_owned(), expr.clone()));
+    }
+    if let Some(other) = config.keys().find(|k| !CAN_NAMES.contains(&k.as_str())) {
+        return err(format!("{name}: can has {other:?}, not one of {}", CAN_NAMES.join(", ")));
     }
     Ok(out)
 }

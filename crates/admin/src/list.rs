@@ -38,6 +38,54 @@ pub struct Page {
     pub prev: Option<String>,
     /// The columns whose values a host function gives: the row has a null there until the caller fills it.
     pub batch: Vec<usize>,
+    /// The `can` rules of each row, as an object: `{"change": true, "delete": false}`.
+    pub flags: Vec<Value>,
+}
+
+/// What limits the rows of one request beyond the list itself: the `queryset` filter, bound to the
+/// values of this request, and the named read defaults that a staff user switches off.
+/// Every route that reads rows takes its row limits from this one type.
+#[derive(Debug, Clone, Default)]
+pub struct RowScope {
+    /// Filter expressions: a `param` with index `i` reads `values[i]`.
+    pub filters: Vec<Value>,
+    pub values: Vec<Bind>,
+    /// The named read defaults that the request turns off.
+    pub without: Vec<String>,
+}
+
+impl RowScope {
+    /// The filters, with their parameters moved to the end of `binds`.
+    pub(crate) fn push(&self, binds: &mut Binds) -> Vec<Value> {
+        let base = binds.0.len();
+        binds.0.extend(self.values.iter().cloned());
+        self.filters.iter().map(|f| shift(f, base)).collect()
+    }
+
+    /// Turns the read defaults of the request off in a select or a count.
+    pub(crate) fn apply(&self, op: &mut Value) {
+        if !self.without.is_empty() {
+            op["without_defaults"] = json!(self.without);
+        }
+    }
+}
+
+/// The expression with the index of every parameter moved up by `base`.
+fn shift(expr: &Value, base: usize) -> Value {
+    match expr {
+        Value::Object(map) => {
+            let moved = matches!(map.get("t").and_then(Value::as_str), Some("param" | "in_param"));
+            Value::Object(map.iter().map(|(k, v)| (k.clone(), if moved && k == "i" { json!(v.as_u64().map_or(0, |i| i as usize + base)) } else { shift(v, base) })).collect())
+        }
+        Value::Array(items) => Value::Array(items.iter().map(|v| shift(v, base)).collect()),
+        other => other.clone(),
+    }
+}
+
+/// One record: the cells of the detail fields, and its `can` rules.
+pub struct Record {
+    pub cells: Vec<Value>,
+    pub flags: Value,
 }
 
 /// Which page of the keyset order a request asks for.
@@ -67,6 +115,8 @@ pub struct ListRequest {
     pub named: Vec<(String, String)>,
     /// Fixed equalities, as the JSON of a row cell: the rows of one record's tab.
     pub pins: Vec<(Column, Value)>,
+    /// The `queryset` filter and the read defaults that the user switched off.
+    pub scope: RowScope,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,7 +155,7 @@ pub struct FilterClause {
 
 impl ListRequest {
     pub fn new(position: Position) -> ListRequest {
-        ListRequest { position, limit: None, sort: None, q: None, found: None, filters: Vec::new(), named: Vec::new(), pins: Vec::new() }
+        ListRequest { position, limit: None, sort: None, q: None, found: None, filters: Vec::new(), named: Vec::new(), pins: Vec::new(), scope: RowScope::default() }
     }
 }
 
@@ -116,7 +166,7 @@ pub struct Total {
 }
 
 #[derive(Default)]
-struct Binds(Vec<Bind>);
+pub(crate) struct Binds(Vec<Bind>);
 
 impl Binds {
     fn push(&mut self, v: Bind) -> Value {
@@ -129,8 +179,16 @@ impl Params for Binds {
     fn len(&self) -> usize {
         self.0.len()
     }
-    fn value(&self, i: usize, _: Option<ValueType>) -> EngineResult<Bind> {
-        self.0.get(i).cloned().ok_or_else(|| Error::query(format!("parameter {i} out of range")))
+    fn value(&self, i: usize, ty: Option<ValueType>) -> EngineResult<Bind> {
+        let v = self.0.get(i).cloned().ok_or_else(|| Error::query(format!("parameter {i} out of range")))?;
+        Ok(match (ty, &v) {
+            // A slot value comes from JSON: it has the widest type, and the column decides the real one.
+            (Some(t), Bind::BigInt(Some(n))) if !t.array && t.ty == monorm_core::ir::ColType::Int => i32::try_from(*n).map(|n| Bind::Int(Some(n))).unwrap_or(v),
+            (Some(t), Bind::String(Some(s))) if !t.array && matches!(t.ty, monorm_core::ir::ColType::Uuid | monorm_core::ir::ColType::Date | monorm_core::ir::ColType::DateTime | monorm_core::ir::ColType::BigInt | monorm_core::ir::ColType::Int) => {
+                json::bind(t.ty, &Value::String(s.clone())).unwrap_or(v)
+            }
+            _ => v,
+        })
     }
     fn text(&self, i: usize) -> EngineResult<String> {
         match self.0.get(i) {
@@ -542,6 +600,7 @@ fn filter_exprs(site: &Site, resource: &Resource, request: &ListRequest, binds: 
 fn where_filters(site: &Site, resource: &Resource, request: &ListRequest, binds: &mut Binds) -> Result<Option<Vec<Value>>, ListError> {
     let Some(mut filters) = search_filters(site, resource, request.q.as_deref(), request.found.as_deref(), binds)? else { return Ok(None) };
     filters.extend(filter_exprs(site, resource, request, binds)?);
+    filters.extend(request.scope.push(binds));
     Ok(Some(filters))
 }
 
@@ -570,6 +629,7 @@ pub async fn count(site: &Site, resource: &Resource, conn: &dyn Executor, target
     let Some(filters) = where_filters(site, resource, request, &mut binds)? else { return Ok(Total { count: 0, capped: false }) };
     let model = &site.schema.model(resource.model).ir.name;
     let mut op = json!({"op": "count", "model": model, "filters": filters});
+    request.scope.apply(&mut op);
     if !exact {
         op["limit"] = json!(COUNT_CAP + 1);
     }
@@ -577,15 +637,26 @@ pub async fn count(site: &Site, resource: &Resource, conn: &dyn Executor, target
     Ok(if !exact && n > COUNT_CAP { Total { count: COUNT_CAP, capped: true } } else { Total { count: n, capped: false } })
 }
 
-/// Whether the table has more than `LARGE_TABLE_ROWS` rows (a cached answer).
-async fn is_large(site: &Site, resource: &Resource, conn: &dyn Executor, target: Target) -> Result<bool, ListError> {
+/// Whether the rows that this request may see are more than `LARGE_TABLE_ROWS`.
+/// Without a row scope the answer is the table size, and the resource caches it.
+/// A scope changes the rows, so a scoped answer is a capped count of those rows and no cache holds it.
+async fn is_large(site: &Site, resource: &Resource, conn: &dyn Executor, target: Target, scope: &RowScope) -> Result<bool, ListError> {
     let model = &site.schema.model(resource.model).ir.name;
     let measure = || async {
-        let op = json!({"op": "count", "model": model, "limit": LARGE_TABLE_ROWS + 1});
-        let n = run_count(site, conn, target, op, Binds::default()).await?;
+        let mut binds = Binds::default();
+        let mut op = json!({"op": "count", "model": model, "limit": LARGE_TABLE_ROWS + 1});
+        if !scope.filters.is_empty() {
+            op["filters"] = json!(scope.push(&mut binds));
+        }
+        scope.apply(&mut op);
+        let n = run_count(site, conn, target, op, binds).await?;
         Ok(n as usize > LARGE_TABLE_ROWS)
     };
-    resource.large(measure).await
+    if scope.filters.is_empty() && scope.without.is_empty() {
+        resource.large(measure).await
+    } else {
+        measure().await
+    }
 }
 
 /// The checks of a request that need no database, so that a bad request never reaches the bridge.
@@ -614,7 +685,7 @@ pub async fn list(site: &Site, resource: &Resource, conn: &dyn Executor, target:
         let indexed = |o: &OrderColumn| resource.sortable.iter().any(|s| s.column.label == o.column.label && s.indexed);
         let first = order.iter().find(|o| !resource.key_columns.iter().any(|k| k.label == o.column.label) && !indexed(o));
         if let Some(o) = first.filter(|o| o.column.source == Source::Field) {
-            if is_large(site, resource, conn, target).await? {
+            if is_large(site, resource, conn, target, &request.scope).await? {
                 return Err(ListError::Bad(format!("sort: {:?} has no index, and the table has more than {LARGE_TABLE_ROWS} rows", o.column.label)));
             }
         }
@@ -649,19 +720,22 @@ pub async fn list(site: &Site, resource: &Resource, conn: &dyn Executor, target:
     }
     let batch: Vec<usize> = resource.columns.iter().enumerate().filter(|(_, c)| matches!(c.source, Source::Batch(_))).map(|(i, _)| i).collect();
     let Some(search) = where_filters(site, resource, request, &mut binds)? else {
-        return Ok(Page { rows: vec![], keys: vec![], next: None, prev: None, batch });
+        return Ok(Page { rows: vec![], keys: vec![], next: None, prev: None, batch, flags: vec![] });
     };
     filters.extend(search);
     let model = &site.schema.model(resource.model).ir.name;
     let selected: Vec<usize> = (0..resource.columns.len()).filter(|i| !batch.contains(i)).collect();
+    let mut columns: Vec<Value> = selected.iter().map(|&i| json!({"t": "expr", "expr": col(&resource.columns[i])})).collect();
+    columns.extend(resource.can.iter().map(|(_, expr)| json!({"t": "expr", "expr": expr})));
     let mut op = json!({
         "op": "select",
         "model": model,
-        "columns": selected.iter().map(|&i| json!({"t": "expr", "expr": col(&resource.columns[i])})).collect::<Vec<_>>(),
+        "columns": columns,
         "order": used.iter().map(|o| json!({"expr": col(&o.column), "desc": o.desc})).collect::<Vec<_>>(),
         "filters": filters,
         "limit": limit + 1,
     });
+    request.scope.apply(&mut op);
     if offset > 0 {
         op["offset"] = json!(offset);
     }
@@ -670,16 +744,26 @@ pub async fn list(site: &Site, resource: &Resource, conn: &dyn Executor, target:
     let total = fetched.rows.len();
     let more = total > limit;
     let mut rows = Vec::with_capacity(total.min(limit));
+    let mut flags = Vec::with_capacity(total.min(limit));
     for r in 0..total.min(limit) {
         let mut row = vec![Value::Null; resource.columns.len()];
+        let mut rules = serde_json::Map::new();
         for (c, ty) in types.iter().enumerate() {
             let cell = fetched.rows.cell(r, c, *ty).map_err(|e| ListError::Engine(e.to_string()))?;
-            row[selected[c]] = json::cell(&site.schema, *ty, cell);
+            let value = json::cell(&site.schema, *ty, cell);
+            match selected.get(c) {
+                Some(&at) => row[at] = value,
+                None => {
+                    rules.insert(resource.can[c - selected.len()].0.clone(), json!(value.as_bool().unwrap_or(false)));
+                }
+            }
         }
         rows.push(Value::Array(row));
+        flags.push(Value::Object(rules));
     }
     if flip {
         rows.reverse();
+        flags.reverse();
     }
     let cursor_of = |row: Option<&Value>| {
         let row = row.and_then(Value::as_array)?;
@@ -696,28 +780,31 @@ pub async fn list(site: &Site, resource: &Resource, conn: &dyn Executor, target:
         Position::Last => (None, more.then_some(first_cursor).flatten()),
     };
     let keys = rows.iter().map(|r| key::encode(&resource.key_positions.iter().map(|&p| r[p].clone()).collect::<Vec<_>>())).collect();
-    Ok(Page { rows, keys, next, prev, batch })
+    Ok(Page { rows, keys, next, prev, batch, flags })
 }
 
 /// The values of the columns that a to-many relation joins on, in the record with this key, or none when no row has the key.
-pub async fn parent_values(site: &Site, parent: &Resource, related: &Related<'_>, conn: &dyn Executor, target: Target, key: &[Value]) -> Result<Option<Vec<Value>>, ListError> {
+pub async fn parent_values(site: &Site, parent: &Resource, related: &Related<'_>, conn: &dyn Executor, target: Target, key: &[Value], scope: &RowScope) -> Result<Option<Vec<Value>>, ListError> {
     if key.len() != parent.key_columns.len() {
         return Err(ListError::Bad("the key does not fit this resource".into()));
     }
-    let mut binds = Vec::new();
+    let mut binds = Binds::default();
     for (c, v) in parent.key_columns.iter().zip(key) {
-        binds.push(json::bind(c.ty.ty, v).map_err(ListError::Bad)?);
+        binds.0.push(json::bind(c.ty.ty, v).map_err(ListError::Bad)?);
     }
     let items: Vec<Value> = parent.key_columns.iter().enumerate().map(|(i, c)| json!({"t": "cmp", "op": "eq", "l": col(c), "r": {"t": "param", "i": i}})).collect();
+    let mut filters = vec![json!({"t": "and", "items": items})];
+    filters.extend(scope.push(&mut binds));
     let model = &site.schema.model(parent.model).ir.name;
-    let op = json!({
+    let mut op = json!({
         "op": "select",
         "model": model,
         "columns": related.parent_from.iter().map(|c| json!({"t": "expr", "expr": col(c)})).collect::<Vec<_>>(),
-        "filters": [{"t": "and", "items": items}],
+        "filters": filters,
         "limit": 1,
     });
-    let selected = run_select(site, conn, target, op, Binds(binds)).await?;
+    scope.apply(&mut op);
+    let selected = run_select(site, conn, target, op, binds).await?;
     if selected.rows.is_empty() {
         return Ok(None);
     }
@@ -730,36 +817,43 @@ pub async fn parent_values(site: &Site, parent: &Resource, related: &Related<'_>
 }
 
 /// The detail columns of the record with this key, as JSON cells, or none when no row has the key.
-pub async fn detail(site: &Site, resource: &Resource, conn: &dyn Executor, target: Target, key: &[Value]) -> Result<Option<Vec<Value>>, ListError> {
+pub async fn detail(site: &Site, resource: &Resource, conn: &dyn Executor, target: Target, key: &[Value], scope: &RowScope) -> Result<Option<Record>, ListError> {
     if key.len() != resource.key_columns.len() {
         return Err(ListError::Bad("the key does not fit this resource".into()));
     }
-    let mut binds = Vec::new();
+    let mut binds = Binds::default();
     for (c, v) in resource.key_columns.iter().zip(key) {
-        binds.push(json::bind(c.ty.ty, v).map_err(ListError::Bad)?);
+        binds.0.push(json::bind(c.ty.ty, v).map_err(ListError::Bad)?);
     }
     let items: Vec<Value> = resource.key_columns.iter().enumerate().map(|(i, c)| json!({"t": "cmp", "op": "eq", "l": col(c), "r": {"t": "param", "i": i}})).collect();
+    let mut filters = vec![json!({"t": "and", "items": items})];
+    filters.extend(scope.push(&mut binds));
     let model = &site.schema.model(resource.model).ir.name;
-    let op = json!({
+    let mut columns: Vec<Value> = resource.detail.iter().map(|c| json!({"t": "expr", "expr": col(c)})).collect();
+    columns.extend(resource.can.iter().map(|(_, expr)| json!({"t": "expr", "expr": expr})));
+    let mut op = json!({
         "op": "select",
         "model": model,
-        "columns": resource.detail.iter().map(|c| json!({"t": "expr", "expr": col(c)})).collect::<Vec<_>>(),
-        "filters": [{"t": "and", "items": items}],
+        "columns": columns,
+        "filters": filters,
         "limit": 1,
     });
-    let op: Operation = serde_json::from_value(op).map_err(|e| ListError::Engine(e.to_string()))?;
-    let plan = Planner::plan(&site.schema, target, &op, &Binds(binds)).map_err(engine)?;
-    let Plan::Select(_) = &plan else { return Err(ListError::Engine("a detail plans a select".into())) };
-    let Outcome::Select(selected) = exec::run(conn, target, plan).await.map_err(engine)? else {
-        return Err(ListError::Engine("a detail runs a select".into()));
-    };
+    scope.apply(&mut op);
+    let selected = run_select(site, conn, target, op, binds).await?;
     if selected.rows.is_empty() {
         return Ok(None);
     }
-    let mut row = Vec::new();
+    let mut cells = Vec::new();
+    let mut flags = serde_json::Map::new();
     for (c, ty) in selected.plan.types.iter().enumerate() {
         let cell = selected.rows.cell(0, c, *ty).map_err(|e| ListError::Engine(e.to_string()))?;
-        row.push(json::cell(&site.schema, *ty, cell));
+        let value = json::cell(&site.schema, *ty, cell);
+        match resource.detail.get(c) {
+            Some(_) => cells.push(value),
+            None => {
+                flags.insert(resource.can[c - resource.detail.len()].0.clone(), json!(value.as_bool().unwrap_or(false)));
+            }
+        }
     }
-    Ok(Some(row))
+    Ok(Some(Record { cells, flags: Value::Object(flags) }))
 }
