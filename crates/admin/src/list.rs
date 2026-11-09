@@ -71,7 +71,7 @@ impl RowScope {
 }
 
 /// The expression with the index of every parameter moved up by `base`.
-fn shift(expr: &Value, base: usize) -> Value {
+pub(crate) fn shift(expr: &Value, base: usize) -> Value {
     match expr {
         Value::Object(map) => {
             let moved = matches!(map.get("t").and_then(Value::as_str), Some("param" | "in_param"));

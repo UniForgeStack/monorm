@@ -78,7 +78,7 @@ struct Config {
 /// The rows a resource shows to staff.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct QuerysetConfig {
+pub(crate) struct QuerysetConfig {
     /// A prepared filter. A `param` with index `i` reads `slots[i]`.
     filter: Option<Value>,
     /// What each parameter holds at a request: `user` (the key of the staff user).
@@ -128,6 +128,12 @@ struct ResourceConfig {
     widgets: BTreeMap<String, String>,
     /// The path of a JavaScript module that replaces the form.
     form_component: Option<String>,
+    /// Relation fields with a picker (to-one) or chips (many-to-many), by relation name.
+    #[serde(default)]
+    relations: BTreeMap<String, crate::relations::RelationConfig>,
+    /// Json fields that hold an uploaded file: the form uploads and downloads them.
+    #[serde(default)]
+    files: Vec<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -339,6 +345,10 @@ pub struct Resource {
     pub bypass: Vec<String>,
     /// The names of the read defaults that read a `scope.<name>` value: the admin sets no scope value, so every admin read turns them off.
     pub scope_defaults: Vec<String>,
+    /// The relation fields with a picker or chips.
+    pub relations: Vec<crate::relations::Relation>,
+    /// The Json fields that hold an uploaded file.
+    pub files: Vec<String>,
     tabs_config: Option<Vec<String>>,
     /// Whether the table is large, and when it was read.
     large: Mutex<Option<(Instant, bool)>>,
@@ -516,6 +526,10 @@ impl Site {
         for (r, t) in resources.iter_mut().zip(tabs) {
             r.tabs = t;
         }
+        for (r, c) in config.resources.iter().enumerate() {
+            let built = crate::relations::build(&schema, &resources, r, &c.relations)?;
+            resources[r].relations = built;
+        }
         for r in &resources {
             for f in &r.filters {
                 if let FilterKind::Relation { target, .. } = &f.kind {
@@ -645,7 +659,7 @@ fn concrete(m: &monorm_core::schema::Model) -> bool {
 
 impl ResourceConfig {
     fn of(model: &str) -> ResourceConfig {
-        ResourceConfig { model: model.to_owned(), list: ListConfig::default(), allow: None, perms: None, label: None, title: None, group: None, field_permissions: Vec::new(), actions: Vec::new(), queryset: None, can: BTreeMap::new(), check_messages: BTreeMap::new(), form: None, readonly: Vec::new(), widgets: BTreeMap::new(), form_component: None }
+        ResourceConfig { model: model.to_owned(), list: ListConfig::default(), allow: None, perms: None, label: None, title: None, group: None, field_permissions: Vec::new(), actions: Vec::new(), queryset: None, can: BTreeMap::new(), check_messages: BTreeMap::new(), form: None, readonly: Vec::new(), widgets: BTreeMap::new(), form_component: None, relations: BTreeMap::new(), files: Vec::new() }
     }
 }
 
@@ -795,6 +809,7 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
     }
     let form = crate::form::build(schema, idx, &name, &detail, &allow, &FormConfig { form: config.form.clone(), readonly: config.readonly.clone(), widgets: config.widgets.clone(), component: config.form_component.clone() }, global)?;
     let scope_defaults = scope_default_names(model);
+    let files = files_of(schema, idx, &name, &config.files)?;
     Ok(Resource {
         model: idx,
         name,
@@ -831,9 +846,31 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
         check_messages: config.check_messages.clone(),
         bypass: model.read_defaults.names().into_iter().filter(|n| !scope_defaults.iter().any(|d| d == n)).map(str::to_owned).collect(),
         scope_defaults,
+        relations: Vec::new(),
+        files,
         tabs_config: list.tabs.clone(),
         large: Mutex::new(None),
     })
+}
+
+/// The Json fields of a resource that hold an uploaded file.
+fn files_of(schema: &Schema, idx: usize, name: &str, files: &[String]) -> Result<Vec<String>, ConfigError> {
+    let model = schema.model(idx);
+    let mut out: Vec<String> = Vec::new();
+    for f in files {
+        let Some(field) = model.ir.fields.iter().find(|x| x.name == *f) else { return err(format!("{name}: files has {f:?}, which is not a field")) };
+        if field.ty != ColType::Json || field.array || field.enum_idx.is_some() || !field.nullable || field.generated.is_some() {
+            return err(format!("{name}: files {f:?} must be a nullable Json field that the database does not generate"));
+        }
+        if out.contains(f) {
+            return err(format!("{name}: files lists {f:?} twice"));
+        }
+        out.push(f.clone());
+    }
+    if !out.is_empty() && model.key_fields().len() != 1 {
+        return err(format!("{name}: files needs a resource with a single-column key"));
+    }
+    Ok(out)
 }
 
 fn seen_group(resources: &[Resource], group: &str, until: &str) -> bool {
@@ -1313,7 +1350,7 @@ fn named_filters(schema: &Schema, idx: usize, name: &str, list: &ListConfig) -> 
 }
 
 /// The names of the read defaults of the model that read a `scope.<name>` value.
-fn scope_default_names(model: &monorm_core::schema::Model) -> Vec<String> {
+pub(crate) fn scope_default_names(model: &monorm_core::schema::Model) -> Vec<String> {
     model.read_defaults.parts.iter().filter(|p| !p.scopes.is_empty()).map(|p| p.identity.name.clone()).collect()
 }
 
@@ -1323,7 +1360,7 @@ fn check_function(what: &str, name: &str) -> Result<(), ConfigError> {
     if ok { Ok(()) } else { err(format!("{what} {name:?} is not a function name")) }
 }
 
-fn queryset_of(schema: &Schema, idx: usize, name: &str, config: Option<&QuerysetConfig>) -> Result<Option<Queryset>, ConfigError> {
+pub(crate) fn queryset_of(schema: &Schema, idx: usize, name: &str, config: Option<&QuerysetConfig>) -> Result<Option<Queryset>, ConfigError> {
     let Some(q) = config else { return Ok(None) };
     let mut slots = Vec::new();
     for s in &q.slots {

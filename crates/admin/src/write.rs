@@ -32,6 +32,7 @@ use crate::json;
 use crate::key;
 use crate::list::{self, Binds, ListError};
 use crate::permissions::{Grants, Op};
+use crate::relations::{self, Relation, LINKS_PER_WRITE};
 use crate::scope::Scoped;
 use crate::server::{authorize, deny, error_response, reach, reject, Shared, State_, User};
 use crate::service::{ErrorNote, RequestId};
@@ -44,7 +45,12 @@ const LABEL_WIDTH: usize = 200;
 
 /// Why the admin does not write to this model, or none when it does.
 pub fn read_only_reason(schema: &Schema, r: &Resource) -> Option<String> {
-    let m = schema.model(r.model);
+    model_read_only_reason(schema, r.model)
+}
+
+/// `read_only_reason` for a model that is not a resource, such as the join model of a many-to-many relation.
+pub(crate) fn model_read_only_reason(schema: &Schema, model: usize) -> Option<String> {
+    let m = schema.model(model);
     if m.ir.protected_write {
         return Some("this model is @@protected_write: its writes need host code, which the admin does not run yet".into());
     }
@@ -67,8 +73,11 @@ pub fn form_meta(schema: &Schema, r: &Resource) -> Value {
         .filter_map(|c| {
             let f = model.field(&c.field).ok()?;
             let key = model.ir.primary_key.contains(&f.name) || f.primary_key;
+            let relation = r.relations.iter().find(|x| !x.field.is_empty() && x.field == c.field).map(Relation::meta);
             Some(json!({
                 "name": c.label,
+                "relation": relation,
+                "file": r.files.contains(&c.field),
                 "required": !f.nullable && !has_default(f),
                 "default": has_default(f),
                 "readonly_on_update": key,
@@ -79,7 +88,8 @@ pub fn form_meta(schema: &Schema, r: &Resource) -> Value {
         })
         .collect();
     let sections = json!({"create": r.form.create.iter().map(Section::json).collect::<Vec<_>>(), "edit": r.form.edit.iter().map(Section::json).collect::<Vec<_>>()});
-    json!({"writable": reason.is_none(), "read_only_reason": reason, "form": fields, "sections": sections, "form_component": r.form.component.is_some()})
+    let chips: Vec<Value> = r.relations.iter().filter(|x| x.through.is_some()).map(Relation::meta).collect();
+    json!({"writable": reason.is_none(), "read_only_reason": reason, "form": fields, "chips": chips, "sections": sections, "form_component": r.form.component.is_some()})
 }
 
 pub(crate) fn has_default(f: &FieldIr) -> bool {
@@ -92,13 +102,13 @@ pub(crate) fn writable(c: &Column) -> bool {
 
 /// Messages for fields, and messages for the form.
 #[derive(Default)]
-struct Problems {
+pub(crate) struct Problems {
     fields: BTreeMap<String, Vec<String>>,
     form: Vec<String>,
 }
 
 impl Problems {
-    fn field(&mut self, name: &str, message: impl Into<String>) {
+    pub(crate) fn field(&mut self, name: &str, message: impl Into<String>) {
         self.fields.entry(name.to_owned()).or_default().push(message.into());
     }
 
@@ -106,32 +116,43 @@ impl Problems {
         self.fields.is_empty() && self.form.is_empty()
     }
 
-    fn response(self) -> Response {
+    pub(crate) fn response(self) -> Response {
         let message = "the values were not saved";
         (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"ok": false, "error": {"kind": "Invalid", "message": message}, "fields": self.fields, "form": self.form}))).into_response()
     }
 }
 
-struct Meta {
-    request_id: String,
-    ip: String,
-    agent: String,
+pub(crate) struct Meta {
+    pub(crate) request_id: String,
+    pub(crate) ip: String,
+    pub(crate) agent: String,
 }
 
 /// A checked request: the user, the transaction, the resource and the body.
-struct Call<'a> {
-    resource: &'a Resource,
-    user: User,
-    grants: Grants,
-    scope: Scoped,
-    meta: Meta,
-    uri: Uri,
-    body: Map<String, Value>,
+pub(crate) struct Call<'a> {
+    pub(crate) resource: &'a Resource,
+    pub(crate) user: User,
+    pub(crate) grants: Grants,
+    pub(crate) scope: Scoped,
+    pub(crate) meta: Meta,
+    pub(crate) uri: Uri,
+    pub(crate) body: Map<String, Value>,
+}
+
+/// The request id, the client and the user agent of a request, and its URI.
+pub(crate) fn meta_of(s: &State_, req: &Request) -> (Meta, Uri) {
+    let trusted: Vec<IpAddr> = s.bridge.as_ref().map(|(_, a)| a.security.options.trusted_proxies.clone()).unwrap_or_default();
+    let meta = Meta {
+        request_id: req.extensions().get::<RequestId>().map(|r| r.0.clone()).unwrap_or_default(),
+        ip: crate::auth::client_ip(req, &trusted),
+        agent: req.headers().get("user-agent").and_then(|v| v.to_str().ok()).unwrap_or_default().to_owned(),
+    };
+    (meta, req.uri().clone())
 }
 
 /// The steps that every write shares: the user (401), the resource (404), the permission (403),
-/// a model that is read-only here (403), then the body (400).
-async fn open<'a>(s: &'a State_, user: Option<Extension<User>>, name: &str, op: Op, req: Request) -> Result<Call<'a>, Box<Response>> {
+/// a model that is read-only here (403). The body stays unread: the caller reads it.
+pub(crate) async fn open_head<'a>(s: &'a State_, user: Option<Extension<User>>, name: &str, op: Op, (meta, uri): (Meta, Uri)) -> Result<Call<'a>, Box<Response>> {
     let (user, scope, grants) = authorize(s, user).await?;
     let Some(resource) = s.site.resource(name) else {
         scope.rollback().await;
@@ -147,17 +168,16 @@ async fn open<'a>(s: &'a State_, user: Option<Extension<User>>, name: &str, op: 
         scope.rollback().await;
         return Err(Box::new(reject(StatusCode::FORBIDDEN, "ReadOnly", &reason)));
     }
-    let trusted: Vec<IpAddr> = s.bridge.as_ref().map(|(_, a)| a.security.options.trusted_proxies.clone()).unwrap_or_default();
-    let meta = Meta {
-        request_id: req.extensions().get::<RequestId>().map(|r| r.0.clone()).unwrap_or_default(),
-        ip: crate::auth::client_ip(&req, &trusted),
-        agent: req.headers().get("user-agent").and_then(|v| v.to_str().ok()).unwrap_or_default().to_owned(),
-    };
-    let uri = req.uri().clone();
+    Ok(Call { resource, user, grants, scope, meta, uri, body: Map::new() })
+}
+
+/// `open_head`, then the JSON body (400, 413).
+async fn open<'a>(s: &'a State_, user: Option<Extension<User>>, name: &str, op: Op, req: Request) -> Result<Call<'a>, Box<Response>> {
+    let mut c = open_head(s, user, name, op, meta_of(s, &req)).await?;
     let bytes = match axum::body::to_bytes(req.into_body(), MAX_BODY).await {
         Ok(b) => b,
         Err(_) => {
-            scope.rollback().await;
+            c.scope.rollback().await;
             return Err(Box::new(reject(StatusCode::PAYLOAD_TOO_LARGE, "PayloadTooLarge", "the body is too large")));
         }
     };
@@ -167,12 +187,13 @@ async fn open<'a>(s: &'a State_, user: Option<Extension<User>>, name: &str, op: 
         match serde_json::from_slice::<Value>(&bytes) {
             Ok(Value::Object(m)) => m,
             _ => {
-                scope.rollback().await;
+                c.scope.rollback().await;
                 return Err(Box::new(reject(StatusCode::BAD_REQUEST, "BadRequest", "the body is a JSON object")));
             }
         }
     };
-    Ok(Call { resource, user, grants, scope, meta, uri, body })
+    c.body = body;
+    Ok(c)
 }
 
 impl Call<'_> {
@@ -185,6 +206,7 @@ impl Call<'_> {
     fn set(&self) -> Result<Map<String, Value>, String> {
         match self.body.get("set") {
             Some(Value::Object(m)) => Ok(m.clone()),
+            None if self.body.contains_key("links") => Ok(Map::new()),
             _ => Err("the body needs a \"set\" object".into()),
         }
     }
@@ -198,7 +220,7 @@ impl Call<'_> {
 }
 
 /// A server error as a form message with the request id. The cause goes to the log, not to the client.
-fn server_error(meta: &Meta, cause: &str) -> Response {
+pub(crate) fn server_error(meta: &Meta, cause: &str) -> Response {
     let id = if meta.request_id.is_empty() { "unknown" } else { meta.request_id.as_str() };
     let message = format!("The record was not saved: an error occurred. Request id: {id}");
     let mut response = (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"ok": false, "error": {"kind": "ServerError", "message": message}, "fields": {}, "form": [message]}))).into_response();
@@ -206,7 +228,7 @@ fn server_error(meta: &Meta, cause: &str) -> Response {
     response
 }
 
-fn list_failure(meta: &Meta, e: ListError) -> Response {
+pub(crate) fn list_failure(meta: &Meta, e: ListError) -> Response {
     match e {
         ListError::Engine(m) => server_error(meta, &m),
         other => error_response(other),
@@ -435,7 +457,7 @@ fn shape(schema: &Schema, type_name: &str, list: bool, v: &Value) -> Result<(), 
 }
 
 /// A JSON value as the bind value of `f`; null is the typed null of a nullable field.
-fn convert(schema: &Schema, f: &FieldIr, v: &Value) -> Result<Bind, String> {
+pub(crate) fn convert(schema: &Schema, f: &FieldIr, v: &Value) -> Result<Bind, String> {
     let ty = f.value_type();
     if v.is_null() {
         return if f.nullable { Ok(monorm_engine::params::null_of(Some(ty))) } else { Err("This field is required.".into()) };
@@ -501,17 +523,167 @@ fn record_label(r: &Resource, cells: &[Value], key_text: &str) -> String {
     label.unwrap_or(key_text).chars().take(LABEL_WIDTH).collect()
 }
 
-async fn write_audit(s: &State_, c: &Call<'_>, action: &str, key_text: &str, cells: &[Value], diff: Value) -> Result<(), String> {
+pub(crate) async fn write_audit(s: &State_, c: &Call<'_>, action: &str, key_text: &str, cells: &[Value], diff: Value) -> Result<(), String> {
     let changes = json!({"request_id": c.meta.request_id, "ip": c.meta.ip, "user_agent": c.meta.agent, "diff": diff});
     let entry = Entry { user_key: &user_key_text(&c.user), action, resource: &c.resource.name, record_key: key_text, record_label: &record_label(c.resource, cells, key_text), changes: Some(changes) };
     audit::record(&s.site, c.scope.executor(), entry).await
 }
 
-async fn finish(c: Call<'_>, response: Response) -> Response {
+pub(crate) async fn finish(c: Call<'_>, response: Response) -> Response {
     match c.scope.commit().await {
         Ok(()) => response,
         Err(e) => server_error(&c.meta, &e.message),
     }
+}
+
+
+// ---- relation fields ----
+
+/// The chips of one relation that a write changes: the keys to add and to remove, canonical and without repeats.
+struct Link<'a> {
+    relation: &'a Relation,
+    add: Vec<Value>,
+    remove: Vec<Value>,
+}
+
+/// The `links` of a body: `{<relation>: {"add": [keys], "remove": [keys]}}`. A wrong shape is a bad request, a wrong value a field problem.
+fn parse_links<'a>(s: &State_, resource: &'a Resource, body: &Map<String, Value>, problems: &mut Problems) -> Result<Vec<Link<'a>>, String> {
+    let Some(links) = body.get("links") else { return Ok(Vec::new()) };
+    let Value::Object(links) = links else { return Err("\"links\" is an object".into()) };
+    let mut out = Vec::new();
+    for (name, sides) in links {
+        let Some(relation) = resource.relations.iter().find(|r| &r.name == name && r.through.is_some()) else {
+            problems.field(name, "This field cannot be written.");
+            continue;
+        };
+        let Value::Object(sides) = sides else { return Err(format!("links.{name} is an object with \"add\" and \"remove\"")) };
+        if let Some(extra) = sides.keys().find(|k| *k != "add" && *k != "remove") {
+            return Err(format!("links.{name} has no {extra:?}"));
+        }
+        let mut side = |key: &str| -> Result<Vec<Value>, String> {
+            let keys = match sides.get(key) {
+                None => return Ok(Vec::new()),
+                Some(Value::Array(a)) => a,
+                Some(_) => return Err(format!("links.{name}.{key} is a list of keys")),
+            };
+            if keys.len() > LINKS_PER_WRITE {
+                problems.field(name, format!("Change at most {LINKS_PER_WRITE} links in one save."));
+                return Ok(Vec::new());
+            }
+            let mut out: Vec<Value> = Vec::new();
+            for k in keys {
+                match relations::canonical(s, relation, k) {
+                    Ok(c) if !out.contains(&c) => out.push(c),
+                    Ok(_) => {}
+                    Err(_) => problems.field(name, "A key is not valid."),
+                }
+            }
+            Ok(out)
+        };
+        let (add, remove) = (side("add")?, side("remove")?);
+        if add.iter().any(|k| remove.contains(k)) {
+            problems.field(name, "A record is in both lists.");
+        }
+        out.push(Link { relation, add, remove });
+    }
+    Ok(out)
+}
+
+/// The picker values of the body that must be rows the list offers: `only` limits them to the changed fields.
+async fn check_picks(s: &State_, c: &Call<'_>, set: &Map<String, Value>, only: Option<&[String]>, problems: &mut Problems) -> Result<(), Response> {
+    let resource = c.resource;
+    for relation in resource.relations.iter().filter(|r| !r.field.is_empty()) {
+        let Some(col) = resource.detail.iter().find(|d| d.field == relation.field) else { continue };
+        let Some(v) = set.get(&col.label).filter(|v| !v.is_null()) else { continue };
+        if only.is_some_and(|names| !names.contains(&col.label)) || problems.fields.contains_key(&col.label) {
+            continue;
+        }
+        let Ok(key) = relations::canonical(s, relation, v) else { continue };
+        let found = async {
+            let rows = relations::offer(s, relation, &c.user, &c.scope, true).await?;
+            relations::offered(s, c.scope.executor(), relation, &rows, std::slice::from_ref(&key)).await
+        }
+        .await
+        .map_err(|e| list_failure(&c.meta, e))?;
+        if found.is_empty() {
+            problems.field(&col.label, "Choose a record that the list offers.");
+        }
+    }
+    Ok(())
+}
+
+/// A plain `set` cannot write a file field: the upload route does.
+fn refuse_files(resource: &Resource, set: &Map<String, Value>, problems: &mut Problems) {
+    for col in resource.detail.iter().filter(|d| resource.files.contains(&d.field)) {
+        if set.contains_key(&col.label) {
+            problems.field(&col.label, "Use the upload to change a file.");
+        }
+    }
+}
+
+/// Adds and removes the links in the request transaction. The result is the audit diff of the links that changed.
+async fn apply_links(s: &State_, c: &Call<'_>, links: &[Link<'_>], source: &Value, problems: &mut Problems) -> Result<Map<String, Value>, Response> {
+    let (site, resource) = (&s.site, c.resource);
+    let mut diff = Map::new();
+    for link in links {
+        let (rel, through) = (link.relation, link.relation.through.as_ref().expect("chips have a join model"));
+        let target = site.resource(&rel.target).expect("`build` checked the target");
+        let (skey, tkey) = (&resource.key_columns[0], &target.key_columns[0]);
+        let failed = |e: ListError| list_failure(&c.meta, e);
+        if !link.add.is_empty() {
+            let rows = relations::offer(s, rel, &c.user, &c.scope, true).await.map_err(failed)?;
+            let found = relations::offered(s, c.scope.executor(), rel, &rows, &link.add).await.map_err(failed)?;
+            if link.add.iter().any(|k| !found.iter().any(|(f, _)| json::same(tkey.ty.ty, f, k))) {
+                problems.field(&rel.name, "Choose records that the list offers.");
+                continue;
+            }
+        }
+        let both: Vec<Value> = link.add.iter().chain(&link.remove).cloned().collect();
+        let have = relations::current(s, c.scope.executor(), rel, resource, source, Some(&both)).await.map_err(failed)?;
+        let has = |k: &Value| have.iter().any(|h| json::same(tkey.ty.ty, h, k));
+        let to_add: Vec<&Value> = link.add.iter().filter(|k| !has(k)).collect();
+        let to_remove: Vec<&Value> = link.remove.iter().filter(|k| has(k)).collect();
+        let bind = |ty: ColType, v: &Value| json::bind(ty, v);
+        let from = bind(skey.ty.ty, source).map_err(|m| server_error(&c.meta, &m))?;
+        if !to_add.is_empty() {
+            let mut rows = Vec::new();
+            for k in &to_add {
+                rows.push(vec![Some(from.clone()), Some(bind(tkey.ty.ty, k).map_err(|m| server_error(&c.meta, &m))?)]);
+            }
+            let bypass = if through.scope_defaults.is_empty() { ir::Bypass::default() } else { ir::Bypass::Names(through.scope_defaults.clone()) };
+            let fields = [through.source.clone(), through.target.clone()];
+            let planned = exec::plan_inserts(&site.schema, s.target, &through.model, &fields, rows, None, &NoParams, None, false, None, &bypass);
+            let ran = match planned {
+                Ok(plans) => exec::run_inserts(c.scope.executor(), s.target, plans, false, false).await,
+                Err(e) => Err(e),
+            };
+            if let Err(e) = ran {
+                return Err(server_error(&c.meta, &e.to_string()));
+            }
+        }
+        if !to_remove.is_empty() {
+            let mut binds = Binds::default();
+            let one = binds.push(from.clone());
+            let mut params = Vec::new();
+            for k in &to_remove {
+                params.push(binds.push(bind(tkey.ty.ty, k).map_err(|m| server_error(&c.meta, &m))?));
+            }
+            let mut op = json!({"op": "delete", "model": through.model, "filters": [
+                {"t": "cmp", "op": "eq", "l": {"t": "col", "path": [], "name": through.source}, "r": one},
+                {"t": "in", "item": {"t": "col", "path": [], "name": through.target}, "values": params},
+            ]});
+            if !through.scope_defaults.is_empty() {
+                op["without_defaults"] = json!(through.scope_defaults);
+            }
+            if let Err(e) = run_mutation(site, c, s.target, op, binds).await {
+                return Err(server_error(&c.meta, &e.to_string()));
+            }
+        }
+        if !to_add.is_empty() || !to_remove.is_empty() {
+            diff.insert(format!("links.{}", rel.name), json!({"added": to_add, "removed": to_remove}));
+        }
+    }
+    Ok(diff)
 }
 
 // ---- handlers ----
@@ -534,11 +706,22 @@ pub(crate) async fn create(State(s): Shared, user: Option<Extension<User>>, Path
     let model = site.schema.model(resource.model);
     let mut problems = Problems::default();
     let values = convert_set(site, resource, &set, false, &mut problems);
+    refuse_files(resource, &set, &mut problems);
+    let links = match parse_links(&s, resource, &c.body, &mut problems) {
+        Ok(l) => l,
+        Err(m) => return c.bad(&m).await,
+    };
     for col in resource.detail.iter().filter(|col| writable(col)) {
         if let Ok(f) = model.field(&col.field) {
             if !f.nullable && !has_default(f) && !set.contains_key(&col.label) {
                 problems.field(&col.label, "This field is required.");
             }
+        }
+    }
+    if problems.is_empty() {
+        if let Err(r) = check_picks(&s, &c, &set, None, &mut problems).await {
+            c.scope.rollback().await;
+            return r;
         }
     }
     if !problems.is_empty() {
@@ -581,8 +764,23 @@ pub(crate) async fn create(State(s): Shared, user: Option<Extension<User>>, Path
             return response;
         }
     };
-    let key_text = key::encode(&key_of(resource, &cells));
-    let diff: Map<String, Value> = resource.detail.iter().zip(&cells).filter(|(_, v)| !v.is_null()).map(|(d, v)| (d.label.clone(), json!({"from": null, "to": v}))).collect();
+    let new_key = key_of(resource, &cells);
+    let key_text = key::encode(&new_key);
+    let mut diff: Map<String, Value> = resource.detail.iter().zip(&cells).filter(|(_, v)| !v.is_null()).map(|(d, v)| (d.label.clone(), json!({"from": null, "to": v}))).collect();
+    if !links.is_empty() {
+        let source = new_key.first().cloned().unwrap_or(Value::Null);
+        match apply_links(&s, &c, &links, &source, &mut problems).await {
+            Ok(d) => diff.extend(d),
+            Err(r) => {
+                c.scope.rollback().await;
+                return r;
+            }
+        }
+        if !problems.is_empty() {
+            c.scope.rollback().await;
+            return problems.response();
+        }
+    }
     if let Err(m) = write_audit(&s, &c, "create", &key_text, &cells, Value::Object(diff)).await {
         let response = server_error(&c.meta, &m);
         c.scope.rollback().await;
@@ -595,13 +793,17 @@ pub(crate) async fn create(State(s): Shared, user: Option<Extension<User>>, Path
 
 /// The key segment of `/resources/<name>/<key>`, decoded to the values of the key columns.
 fn key_of_path(r: &Resource, uri: &Uri) -> Result<(String, Vec<Value>), String> {
-    let raw = uri.path().rsplit('/').next().unwrap_or_default();
+    decode_key(r, crate::server::segment(uri, 0))
+}
+
+/// The key values of a raw key segment, with the segment itself.
+pub(crate) fn decode_key(r: &Resource, raw: &str) -> Result<(String, Vec<Value>), String> {
     let types: Vec<_> = r.key_columns.iter().map(|c| c.ty.ty).collect();
     Ok((raw.to_owned(), key::decode(&types, raw)?))
 }
 
 /// A client value as the JSON of a stored cell of the column: `5` and `"5"` for an int both read `5`. A value that does not convert stays as sent.
-fn as_cell(site: &Site, r: &Resource, d: &Column, v: &Value) -> Value {
+pub(crate) fn as_cell(site: &Site, r: &Resource, d: &Column, v: &Value) -> Value {
     let Ok(f) = site.schema.model(r.model).field(&d.field) else { return v.clone() };
     convert(&site.schema, f, v).map_or_else(|_| v.clone(), |b| json::bind_json(&site.schema, f.value_type(), &b))
 }
@@ -662,6 +864,11 @@ pub(crate) async fn update(State(s): Shared, user: Option<Extension<User>>, Path
     }
     let mut problems = Problems::default();
     let values = convert_set(site, resource, &set, true, &mut problems);
+    refuse_files(resource, &set, &mut problems);
+    let links = match parse_links(&s, resource, &c.body, &mut problems) {
+        Ok(l) => l,
+        Err(m) => return c.bad(&m).await,
+    };
     if !problems.is_empty() {
         c.scope.rollback().await;
         return problems.response();
@@ -694,50 +901,49 @@ pub(crate) async fn update(State(s): Shared, user: Option<Extension<User>>, Path
         return conflict_response(found);
     }
     let changed = changed_values(site, resource, values, &record.cells);
-    if changed.is_empty() {
+    let changed_names: Vec<String> = changed.iter().map(|(n, _, _)| n.clone()).collect();
+    if let Err(r) = check_picks(&s, &c, &set, Some(&changed_names), &mut problems).await {
+        c.scope.rollback().await;
+        return r;
+    }
+    if !problems.is_empty() {
+        c.scope.rollback().await;
+        return problems.response();
+    }
+    if changed.is_empty() && links.is_empty() {
         let response = Json(json!({"ok": true, "key": raw, "changed": []})).into_response();
         return finish(c, response).await;
     }
-    let mut binds = Binds::default();
-    let filter = match list::key_filter(resource, &key, &mut binds) {
-        Ok(f) => f,
-        Err(e) => {
-            let response = list_failure(&c.meta, e);
+    if !changed.is_empty() {
+        if let Err(r) = run_update(&s, &c, &reach, &key, &changed).await {
             c.scope.rollback().await;
-            return response;
-        }
-    };
-    let mut filters = vec![filter];
-    let mut assignments = Vec::new();
-    let mut written = Vec::new();
-    for (n, b, _) in &changed {
-        let field = resource.detail.iter().find(|d| &d.label == n).map(|d| d.field.clone()).unwrap_or_default();
-        assignments.push(json!({"field": field, "value": binds.push(b.clone())}));
-        written.push(field);
-    }
-    filters.extend(reach.rows.push(&mut binds));
-    let mut op = json!({"op": "update", "model": model.ir.name, "filters": filters, "set": assignments});
-    reach.rows.apply(&mut op);
-    let ran = run_mutation(site, &c, s.target, op, binds).await;
-    match ran {
-        Ok(Outcome::Affected(1)) => {}
-        Ok(_) => {
-            c.scope.rollback().await;
-            return reject(StatusCode::NOT_FOUND, "NotFound", "no such record");
-        }
-        Err(e) => {
-            let response = statement_failure(site, resource, &c.meta, &written, false, e);
-            c.scope.rollback().await;
-            return response;
+            return r;
         }
     }
-    let diff: Map<String, Value> = changed.iter().filter_map(|(n, _, to)| resource.detail.iter().position(|d| &d.label == n).map(|at| (n.clone(), json!({"from": record.cells[at], "to": to})))).collect();
-    if let Err(m) = write_audit(&s, &c, "update", &raw, &record.cells, Value::Object(diff)).await {
+    let mut diff: Map<String, Value> = changed.iter().filter_map(|(n, _, to)| resource.detail.iter().position(|d| &d.label == n).map(|at| (n.clone(), json!({"from": record.cells[at], "to": to})))).collect();
+    if !links.is_empty() {
+        match apply_links(&s, &c, &links, &key[0], &mut problems).await {
+            Ok(d) => diff.extend(d),
+            Err(r) => {
+                c.scope.rollback().await;
+                return r;
+            }
+        }
+        if !problems.is_empty() {
+            c.scope.rollback().await;
+            return problems.response();
+        }
+    }
+    if diff.is_empty() {
+        let response = Json(json!({"ok": true, "key": raw, "changed": []})).into_response();
+        return finish(c, response).await;
+    }
+    if let Err(m) = write_audit(&s, &c, "update", &raw, &record.cells, Value::Object(diff.clone())).await {
         let response = server_error(&c.meta, &m);
         c.scope.rollback().await;
         return response;
     }
-    let names: Vec<&String> = changed.iter().map(|(n, _, _)| n).collect();
+    let names: Vec<&String> = diff.keys().collect();
     let response = Json(json!({"ok": true, "key": raw, "changed": names})).into_response();
     finish(c, response).await
 }
@@ -815,10 +1021,33 @@ pub(crate) async fn destroy(State(s): Shared, user: Option<Extension<User>>, Pat
     finish(c, response).await
 }
 
+/// The UPDATE of the changed fields of one record, with the `queryset` filter and the `can=` rule. The caller rolls back on an error.
+pub(crate) async fn run_update(s: &State_, c: &Call<'_>, reach: &crate::server::Reach, key: &[Value], changed: &[(String, Bind, Value)]) -> Result<(), Response> {
+    let (site, resource) = (&s.site, c.resource);
+    let model = site.schema.model(resource.model);
+    let mut binds = Binds::default();
+    let filter = list::key_filter(resource, key, &mut binds).map_err(|e| list_failure(&c.meta, e))?;
+    let mut filters = vec![filter];
+    let mut assignments = Vec::new();
+    let mut written = Vec::new();
+    for (n, b, _) in changed {
+        let field = resource.detail.iter().find(|d| &d.label == n).map(|d| d.field.clone()).unwrap_or_default();
+        assignments.push(json!({"field": field, "value": binds.push(b.clone())}));
+        written.push(field);
+    }
+    filters.extend(reach.rows.push(&mut binds));
+    let mut op = json!({"op": "update", "model": model.ir.name, "filters": filters, "set": assignments});
+    reach.rows.apply(&mut op);
+    match run_mutation(site, c, s.target, op, binds).await {
+        Ok(Outcome::Affected(1)) => Ok(()),
+        Ok(_) => Err(reject(StatusCode::NOT_FOUND, "NotFound", "no such record")),
+        Err(e) => Err(statement_failure(site, resource, &c.meta, &written, false, e)),
+    }
+}
+
 /// Plans and runs an update or a delete on the request transaction.
 async fn run_mutation(site: &Site, c: &Call<'_>, target: monorm_core::dialect::Target, op: Value, binds: Binds) -> Result<Outcome, Error> {
     let op: Operation = serde_json::from_value(op).map_err(|e| Error::query(e.to_string()))?;
     let plan = Planner::plan(&site.schema, target, &op, &binds)?;
     exec::run_in(c.scope.executor(), target, plan, false).await
 }
-

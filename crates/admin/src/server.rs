@@ -47,7 +47,7 @@ pub fn api(site: Arc<Site>, conn: Arc<dyn Executor>) -> Router {
 pub fn api_with(site: Arc<Site>, conn: Arc<dyn Executor>, auth: Option<AuthConfig>) -> Router {
     let target = Target::new(conn.dialect());
     let prefix = site.prefix.clone();
-    let routes = Router::new().route("/resources", get(resources)).route("/resources/{name}", get(rows).post(crate::write::create)).route("/resources/{name}/{key}", get(detail).patch(crate::write::update).delete(crate::write::destroy)).route("/resources/{name}/{key}/{rel}", get(tab_rows)).route("/forms/{name}", get(form_module)).route("/counts/{name}", get(counts)).route("/counts/{name}/{key}/{rel}", get(tab_counts));
+    let routes = Router::new().route("/resources", get(resources)).route("/resources/{name}", get(rows).post(crate::write::create)).route("/resources/{name}/{key}", get(detail).patch(crate::write::update).delete(crate::write::destroy)).route("/resources/{name}/{key}/{rel}", get(tab_rows)).route("/forms/{name}", get(form_module)).route("/counts/{name}", get(counts)).route("/counts/{name}/{key}/{rel}", get(tab_counts)).route("/autocomplete/{name}/{rel}", get(crate::relations::autocomplete)).route("/links/{name}/{key}/{rel}", get(crate::relations::links)).route("/files/{name}/{key}/{field}", get(crate::files::download).post(crate::files::upload));
     let bridge = auth.clone().map(|a| (a.bridge.clone(), a));
     let extra = auth.map(|auth| auth::routes(auth, site.clone(), conn.clone()));
     let state = Arc::new(State_ { site, conn, target, bridge });
@@ -78,14 +78,30 @@ pub async fn call_with(site: Arc<Site>, conn: Arc<dyn Executor>, method: &str, u
 
 /// `call_with` with a JSON body.
 pub async fn call_body(site: Arc<Site>, conn: Arc<dyn Executor>, method: &str, uri: &str, user: Option<Value>, auth: Option<AuthConfig>, body: Option<&str>) -> (u16, String) {
+    let json = body.map(|b| ("application/json", b.as_bytes().to_vec()));
+    let (status, bytes) = call_raw(site, conn, method, uri, user, auth, json.as_ref().map(|(t, b)| (*t, b.clone()))).await;
+    (status, String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// `call_with` with a body of any content type (an upload) and the bytes of the answer (a download). No guard runs.
+pub async fn call_raw(site: Arc<Site>, conn: Arc<dyn Executor>, method: &str, uri: &str, user: Option<Value>, auth: Option<AuthConfig>, body: Option<(&str, Vec<u8>)>) -> (u16, Vec<u8>) {
+    let (status, _, bytes) = call_full(site, conn, method, uri, user, auth, body).await;
+    (status, bytes)
+}
+
+/// `call_raw` with the headers of the answer.
+pub async fn call_full(site: Arc<Site>, conn: Arc<dyn Executor>, method: &str, uri: &str, user: Option<Value>, auth: Option<AuthConfig>, body: Option<(&str, Vec<u8>)>) -> (u16, Vec<(String, String)>, Vec<u8>) {
     let mut built = Request::builder().method(method).uri(uri);
-    if body.is_some() {
-        built = built.header("content-type", "application/json");
-    }
-    let built = built.body(axum::body::Body::from(body.unwrap_or_default().to_owned()));
-    let mut request = match built {
+    let bytes = match body {
+        Some((kind, bytes)) => {
+            built = built.header("content-type", kind);
+            bytes
+        }
+        None => Vec::new(),
+    };
+    let mut request = match built.body(axum::body::Body::from(bytes)) {
         Ok(r) => r,
-        Err(e) => return (400, failure("BadRequest", &e.to_string())),
+        Err(e) => return (400, Vec::new(), failure("BadRequest", &e.to_string()).into_bytes()),
     };
     if let Some(user) = user {
         request.extensions_mut().insert(User(user));
@@ -95,8 +111,9 @@ pub async fn call_body(site: Arc<Site>, conn: Arc<dyn Executor>, method: &str, u
         Err(never) => match never {},
     };
     let status = response.status().as_u16();
-    let bytes = http_body_util::BodyExt::collect(response.into_body()).await.map(|b| b.to_bytes()).unwrap_or_default();
-    (status, String::from_utf8_lossy(&bytes).into_owned())
+    let headers = response.headers().iter().map(|(k, v)| (k.as_str().to_owned(), String::from_utf8_lossy(v.as_bytes()).into_owned())).collect();
+    let bytes = http_body_util::BodyExt::collect(response.into_body()).await.map(|b| b.to_bytes().to_vec()).unwrap_or_default();
+    (status, headers, bytes)
 }
 
 fn failure(kind: &str, message: &str) -> String {
@@ -165,7 +182,7 @@ pub(crate) struct Reach {
 }
 
 /// A JSON value from a slot as a bound value.
-fn slot_bind(v: &Value) -> Result<sea_query::Value, ListError> {
+pub(crate) fn slot_bind(v: &Value) -> Result<sea_query::Value, ListError> {
     match v {
         Value::Bool(b) => Ok(sea_query::Value::Bool(Some(*b))),
         Value::Number(n) => match n.as_i64() {
@@ -222,14 +239,15 @@ pub(crate) async fn reach(s: &State_, resource: &Resource, user: &User, grants: 
     Ok((scope, Reach { rows }))
 }
 
-async fn queryset_rows(s: &State_, resource: &Resource, q: &crate::site::Queryset, user: &User, scope: &Scoped, rows: &mut RowScope) -> Result<(), ListError> {
+pub(crate) async fn queryset_rows(s: &State_, resource: &Resource, q: &crate::site::Queryset, user: &User, scope: &Scoped, rows: &mut RowScope) -> Result<(), ListError> {
     if let Some(filter) = &q.filter {
+        let base = rows.values.len();
         for slot in &q.slots {
             rows.values.push(match slot {
                 Slot::User => slot_bind(&user_key(user))?,
             });
         }
-        rows.filters.push(filter.clone());
+        rows.filters.push(list::shift(filter, base));
     }
     if let Some(function) = &q.function {
         let Some((bridge, auth)) = &s.bridge else { return Err(ListError::Engine("a queryset function needs the host bridge".into())) };
@@ -308,7 +326,7 @@ async fn form_module(State(s): Shared, user: Option<Extension<User>>, Path(name)
 const FOUND_KEYS: usize = 1000;
 
 /// The keys that the `search_with` function of the resource finds for the text, or none when the resource searches its own fields.
-async fn found_keys(s: &State_, resource: &Resource, scope: &Scoped, q: Option<&str>) -> Result<Option<Vec<Vec<Value>>>, ListError> {
+pub(crate) async fn found_keys(s: &State_, resource: &Resource, scope: &Scoped, q: Option<&str>) -> Result<Option<Vec<Vec<Value>>>, ListError> {
     let (Some(name), Some(text)) = (resource.search_with.as_deref(), q.map(str::trim).filter(|t| !t.is_empty())) else { return Ok(None) };
     let Some((bridge, auth)) = &s.bridge else { return Err(ListError::Engine("search_with needs the host bridge".into())) };
     let ctx = CallContext { request_id: auth.security.call_id(), tenant: None, scope: json!({}), tx: Some(scope.transaction()) };
@@ -331,7 +349,7 @@ async fn found_keys(s: &State_, resource: &Resource, scope: &Scoped, q: Option<&
     Ok(Some(keys))
 }
 
-async fn finish<T>(scope: Scoped, out: Result<T, ListError>, ok: impl FnOnce(T) -> Response) -> Response {
+pub(crate) async fn finish<T>(scope: Scoped, out: Result<T, ListError>, ok: impl FnOnce(T) -> Response) -> Response {
     match out {
         Ok(value) => {
             if let Err(e) = scope.commit().await {
@@ -588,7 +606,7 @@ async fn open_tab<'a>(s: &'a State_, user: Option<Extension<User>>, name: &str, 
 }
 
 async fn tab_rows(State(s): Shared, user: Option<Extension<User>>, Path((name, _, rel)): Path<(String, String, String)>, uri: Uri, q: Result<Query<ListQuery>, QueryRejection>) -> Response {
-    let raw = tab_key(&uri);
+    let raw = segment(&uri, 1).to_owned();
     let (scope, related, pins, reach) = match open_tab(&s, user, &name, &raw, &rel, &uri).await {
         Ok(t) => t,
         Err(r) => return *r,
@@ -601,7 +619,7 @@ async fn tab_rows(State(s): Shared, user: Option<Extension<User>>, Path((name, _
 }
 
 async fn tab_counts(State(s): Shared, user: Option<Extension<User>>, Path((name, _, rel)): Path<(String, String, String)>, uri: Uri, q: Result<Query<ListQuery>, QueryRejection>) -> Response {
-    let raw = tab_key(&uri);
+    let raw = segment(&uri, 1).to_owned();
     let (scope, related, pins, reach) = match open_tab(&s, user, &name, &raw, &rel, &uri).await {
         Ok(t) => t,
         Err(r) => return *r,
@@ -613,10 +631,11 @@ async fn tab_counts(State(s): Shared, user: Option<Extension<User>>, Path((name,
     run_counts(&s, related.child, scope, reach, q, &uri, pins).await
 }
 
-/// The raw key segment of `/resources/<name>/<key>/<rel>`: `Path` decodes it, and then a `,` in a value cannot be told from the separator.
-fn tab_key(uri: &Uri) -> String {
-    uri.path().rsplit('/').nth(1).unwrap_or_default().to_owned()
+/// The raw segment of the path, `back` segments from the end. `Path` decodes a segment, and then a `,` in a key value cannot be told from the separator.
+pub(crate) fn segment(uri: &Uri, back: usize) -> &str {
+    uri.path().rsplit('/').nth(back).unwrap_or_default()
 }
+
 
 /// One record: its fields, and a link to each to-one target that the user may read.
 async fn detail(State(s): Shared, user: Option<Extension<User>>, Path((name, _)): Path<(String, String)>, uri: Uri) -> Response {
@@ -634,8 +653,7 @@ async fn detail(State(s): Shared, user: Option<Extension<User>>, Path((name, _))
     if !s.site.allows(&grants, resource, Op::Read) {
         return deny(&s.site, scope, &user, &resource.name, json!({"needs": s.site.requires(resource, Op::Read)})).await;
     }
-    // The raw segment: `Path` decodes it, and then a `,` in a value cannot be told from the separator.
-    let raw = uri.path().rsplit('/').next().unwrap_or_default();
+    let raw = segment(&uri, 0);
     let types: Vec<_> = resource.key_columns.iter().map(|c| c.ty.ty).collect();
     let key = match key::decode(&types, raw) {
         Ok(k) => k,

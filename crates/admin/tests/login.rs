@@ -152,6 +152,10 @@ impl Client {
     }
 
     async fn raw(&mut self, method: &str, uri: &str, headers: &[(&str, &str)], body: Option<Value>) -> Reply {
+        self.bytes(method, uri, headers, body.map(|b| b.to_string().into_bytes())).await
+    }
+
+    async fn bytes(&mut self, method: &str, uri: &str, headers: &[(&str, &str)], body: Option<Vec<u8>>) -> Reply {
         let mut req = Request::builder().method(method).uri(uri).header("host", "localhost");
         let cookie = self.jar.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("; ");
         if !cookie.is_empty() {
@@ -161,7 +165,7 @@ impl Client {
             req = req.header(*k, *v);
         }
         let body = match body {
-            Some(b) => axum::body::Body::from(b.to_string()),
+            Some(b) => axum::body::Body::from(b),
             None => axum::body::Body::empty(),
         };
         let mut req = req.body(body).unwrap();
@@ -400,6 +404,32 @@ async fn a_write_needs_the_csrf_token_the_origin_and_json() {
     };
     let swapped = c.raw("POST", url, &[("x-csrf-token", &other_session), ok_origin, json_type], body()).await;
     assert_eq!(swapped.status, 403, "a token is bound to its session (the cookie differs from the header)");
+}
+
+#[tokio::test]
+async fn a_multipart_upload_needs_the_session_the_csrf_token_and_the_origin() {
+    let rig = rig().await;
+    let url = "/admin/api/files/Note/1/cover";
+    let kind = ("content-type", "multipart/form-data; boundary=xy");
+    let body = || Some(b"--xy\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\n\r\nhi\r\n--xy--\r\n".to_vec());
+    let mut c = Client::new(&rig.router, "10.0.0.1");
+    assert_eq!(c.bytes("POST", url, &[kind], body()).await.status, 401, "no session");
+    assert_eq!(c.login("ann", "pw").await.status, 200);
+    let token = c.jar["__Host-monorm-csrf"].clone();
+    let origin = ("origin", "http://localhost");
+    let no_token = c.bytes("POST", url, &[origin, kind], body()).await;
+    assert_eq!((no_token.status, no_token.body["error"]["kind"].as_str()), (403, Some("BadCsrfToken")));
+    let bad_token = c.bytes("POST", url, &[("x-csrf-token", "abc.def"), origin, kind], body()).await;
+    assert_eq!(bad_token.status, 403);
+    let no_origin = c.bytes("POST", url, &[("x-csrf-token", &token), kind], body()).await;
+    assert_eq!(no_origin.status, 403);
+    let foreign = c.bytes("POST", url, &[("x-csrf-token", &token), ("origin", "https://evil.example"), kind], body()).await;
+    assert_eq!(foreign.status, 403);
+    let other_route = c.bytes("POST", "/admin/api/resources/Note", &[("x-csrf-token", &token), origin, kind], body()).await;
+    assert_eq!(other_route.status, 415, "the multipart exception is for the upload route only");
+    // With all three the request passes the guard: `Note` has no file field, so the route answers 404.
+    let ok = c.bytes("POST", url, &[("x-csrf-token", &token), origin, kind], body()).await;
+    assert_eq!(ok.status, 404, "{:?}", ok.body);
 }
 
 #[tokio::test]

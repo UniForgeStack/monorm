@@ -76,6 +76,11 @@ fn is_safe(method: &Method) -> bool {
     matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS)
 }
 
+/// The one route that takes a multipart body: `POST <prefix>/files/<resource>/<key>/<field>`.
+fn is_upload(path: &str, prefix: &str) -> bool {
+    path.strip_prefix(prefix).and_then(|p| p.strip_prefix("/files/")).is_some_and(|rest| rest.split('/').count() == 3 && rest.split('/').all(|s| !s.is_empty()))
+}
+
 fn header_text(req: &Request, name: impl header::AsHeaderName) -> Option<&str> {
     req.headers().get(name).and_then(|v| v.to_str().ok())
 }
@@ -105,7 +110,8 @@ pub async fn guard(State(g): State<Arc<Guard>>, mut req: Request, next: Next) ->
             return reject(StatusCode::FORBIDDEN, "BadCsrfToken", "send the CSRF token of the csrf cookie in the x-csrf-token header");
         }
         let json = header_text(&req, header::CONTENT_TYPE).is_some_and(|t| t.split(';').next().is_some_and(|m| m.trim().eq_ignore_ascii_case("application/json")));
-        if matches!(*req.method(), Method::POST | Method::PUT | Method::PATCH) && !json {
+        let upload = *req.method() == Method::POST && is_upload(path, &g.site.prefix) && header_text(&req, header::CONTENT_TYPE).is_some_and(|t| t.split(';').next().is_some_and(|m| m.trim().eq_ignore_ascii_case("multipart/form-data")));
+        if matches!(*req.method(), Method::POST | Method::PUT | Method::PATCH) && !json && !upload {
             return reject(StatusCode::UNSUPPORTED_MEDIA_TYPE, "UnsupportedMediaType", "the body must be application/json");
         }
     }
