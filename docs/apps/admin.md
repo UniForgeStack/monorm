@@ -217,6 +217,7 @@ Each row of `GET {prefix}/resources/{name}` has an entry in `flags`, the detail 
 The UI disables the button of a rule that the record does not allow.
 Only `change` and `delete` are rule names.
 A `can` rule does not replace the permission: the user needs both.
+A write checks the rule on the locked row: see [Writes and forms](#writes-and-forms).
 
 ### Read defaults and the bypass permission
 
@@ -477,6 +478,86 @@ const site = new Admin(registry, { roles: { support: ["admin.*", "-admin.manage_
 A pattern that matches no name is an error, and so is a run before the first sync.
 A role that matches `admin.access` through its patterns can open the site; add `admin.access` when it is not in a pattern.
 
+## Writes and forms
+
+The admin creates, changes and deletes one record at a time.
+A write needs the permission of the operation (see [Permissions](#permissions): `manage_` or `add_`, `change_` and `delete_`, by strategy) and, when the resource sets `allow`, the operation in it.
+The UI shows Add, Edit and Delete only for the operations that the user holds (`ops` in `GET {prefix}/resources`).
+The server checks them again on each request.
+
+| Route | Body | Answer |
+|---|---|---|
+| `POST {prefix}/resources/{name}` | `{"set": {field: value}}` | `201` with `{"ok", "resource", "key", "values"}`. |
+| `PATCH {prefix}/resources/{name}/{key}` | `{"set": {...}, "loaded": {...}}` | `200` with `{"ok", "key", "changed": [names]}`. |
+| `DELETE {prefix}/resources/{name}/{key}` | `{"loaded": {...}}` (optional) | `200` with `{"ok", "key"}`. |
+
+The body is at most 1 MB.
+Each resource in `GET {prefix}/resources` has `writable`, `read_only_reason` and `form`: for each writable field its `name`, `required`, `default`, `readonly_on_update` (the key fields) and `max_length`.
+
+### The plain path
+
+All of it runs in Rust, in one transaction.
+The write selects the row with `SELECT ... FOR UPDATE`, with the `queryset` filter and the `can` rule.
+A row outside the `queryset` is a `404`, and a row that its `can` rule does not allow is a `403` with an audit row.
+It then compares the stored values with `loaded`, the values that the form showed.
+It writes only the fields in `set`, writes one audit row, and commits.
+A change that sets no new value writes nothing and no audit row, and answers `changed: []`.
+A write to a field of a key, or to a field that the form does not have, is a `422` for that field.
+`loaded` must hold every field in `set` and every guard field (a `400` when it does not), so the UI sends the loaded value of each field of the form.
+A value counts by what it stores: `"10"` for an integer field equals a stored `10`, and a decimal compares by number.
+SQLite has no row lock, so the write takes the whole-database write lock instead (`BEGIN IMMEDIATE`), and the compare and the write cannot interleave with another write.
+
+### Conflicts: `409`
+
+When a stored value is not the loaded value, nothing is written.
+The answer is `409` with `{"ok": false, "error": {"kind": "Conflict"}, "conflicts": {field: {"loaded", "current"}}}`.
+The form shows the current value under each field, and a "Reload the record" link replaces the form with the stored values.
+A delete compares every field in `loaded`.
+A model with a guard field (an extension that checks a version) gets the stricter check on that field too.
+
+### Field errors: `422`
+
+`{"ok": false, "error": {"kind": "Invalid"}, "fields": {field: [messages]}, "form": [messages]}`.
+The server checks, before it writes: the type, a required field, an enum value, `@db.VarChar` length, the shape of a nested type, JSON, and a field that the form does not have.
+The database then answers for the rest:
+
+- `@unique`: "A record with this value already exists." on the field.
+- A foreign key: "No such record." on the field. A delete of a row that others still refer to is a message of the form.
+- A one-column `@check`: "This value is not allowed." on the field.
+- A named `@@check`: a message of the form. Set the text with `check_messages` in the config of the resource (`{"check_messages": {"no_banned_title": "That title is not allowed."}}`). Without it the text is "The values break the rule <name>." A name that is not a named `@@check` of the model fails when the site builds.
+
+Any other failure is not a `500` page: it is a form message "The record was not saved: an error occurred. Request id: <id>" (`error.kind` is `ServerError`).
+The log holds the cause under the same request id.
+
+### Read-only models
+
+A model with host behavior (hooks, a hook assignment, or a hook default for a client value) or `@@protected_write` is read-only in the admin until the admin runs host code.
+A write answers `403` with `error.kind` `ReadOnly` and the reason, `writable` is `false`, and the UI shows the reason on the record and on the form.
+Guards and the other extension behavior that has no host code are not host behavior: those models stay writable.
+
+### The audit row
+
+Each write adds one `AdminLogEntry`: `action` (`create`, `update`, `delete`), `resource`, `record_key`, `record_label` (the first text value of the record, at most 200 characters), the actor, and the time.
+Its `changes` column holds `{"request_id", "ip", "user_agent", "diff": {field: {"from", "to"}}}`.
+A create has `from: null` for each field, and a delete has `to: null`.
+The row commits with the write, so a failed write leaves none.
+A refused write (`403`) writes a `permission_denied` row instead.
+The test client has no service layer, so its `request_id` is `unknown`.
+
+### Forms in the UI
+
+| Path | Page |
+|---|---|
+| `/admin/{resource}/-/new` | The create form. A URL parameter named like a field fills it, for example `?author_id=1`. |
+| `/admin/{resource}/{key}/edit` | The change form with the stored values. |
+
+A widget follows the type: a checkbox for a Boolean, a select for an enum, a text area for long text, JSON and lists, a date or time input, and a text input for the rest.
+A key field is read-only on the change form.
+The save bar stays at the bottom and has "Save" (back to the record), "Save and continue" (stay in the form, on the new record for a create) and "Save and add another" (an empty create form).
+The form sends only the fields that changed.
+"Add" on a to-many tab opens the create form of the child, with the field that points at the parent filled in.
+Delete asks first, in a dialog on the record page.
+
 ## Routes and answers
 
 The path prefix is a config value, and the default is `/admin/api`.
@@ -488,6 +569,7 @@ The path prefix is a config value, and the default is `/admin/api`.
 | `GET {prefix}/counts/{name}?q=&f.*=&n.*=&exact=` | `{"count", "capped"}`. See [Count](#count). |
 | `GET {prefix}/resources/{name}/{key}/{relation}`, `GET {prefix}/counts/{name}/{key}/{relation}` | The list and the count of a to-many tab. See [To-many tabs](#to-many-tabs). |
 | `GET {prefix}/resources/{name}/{key}` | One record: `fields`, `values` and `links` to the to-one targets that the user may read. A key is encoded as in [The UI](#the-ui). |
+| `POST`, `PATCH`, `DELETE` on `{prefix}/resources/{name}[/{key}]` | Create, change and delete one record. See [Writes and forms](#writes-and-forms). |
 
 A row is an array that follows `columns`.
 `next` is a cursor for the next page, or `null` on the last page.
@@ -500,7 +582,8 @@ A date and a time are ISO 8601 with an offset.
 | 403 | The user lacks a permission (see [Permissions](#permissions)). The request writes an audit row. |
 | 404 | The resource, the path or the record is unknown. |
 | 400 | The cursor, the limit, the sort, the search term, the filter name or the key is not valid. |
-| 422 | A filter value has the wrong type, or a named filter has no such choice. |
+| 409 | A write found a stored value that is not the loaded value. |
+| 422 | A filter value has the wrong type, or a named filter has no such choice. A write has a field error or a message of the form. |
 | 504 | The statement timeout cancelled a statement. |
 
 An error body is `{"ok": false, "error": {"kind": "...", "message": "..."}}`.
@@ -519,7 +602,8 @@ The UI path `/admin` is a constant; only the API `prefix` is configurable, and `
 |---|---|
 | `/admin/-/login`, `/admin/-/password` | Sign in, and change the password. Logout is in the header menu. |
 | `/admin/{resource}` | The list. The first column links to the record. Search, filters, sort, page and page size are in the query string, so a reload, a link and the back button return to the same view. |
-| `/admin/{resource}/{key}` | The record: its fields, a link for each to-one relation, and a tab for each to-many relation (`?tab={relation}`). |
+| `/admin/{resource}/{key}` | The record: its fields, a link for each to-one relation, and a tab for each to-many relation (`?tab={relation}`). It has Edit and Delete. |
+| `/admin/{resource}/-/new`, `/admin/{resource}/{key}/edit` | The forms: see [Forms in the UI](#forms-in-the-ui). |
 
 A key is stable and easy to bookmark.
 Each key field is percent-encoded (only `A-Z a-z 0-9 - . _ ~` stay as they are), and a composite key joins the fields with `,` in key order.
@@ -581,7 +665,7 @@ Both languages also export `url` at module level for the default admin.
 ### Browser smoke test
 
 `crates/admin/ui/e2e` holds the first browser suite of the repository.
-It starts a real `python -m monorm admin` process on SQLite (it makes a temporary project, migrates, and seeds a user and two rows), signs in, sorts a list, searches it, opens a record, and fails on any console error, CSP violation or failed request.
+It starts a real `python -m monorm admin` process on SQLite (it makes a temporary project, migrates, and seeds a user and two rows), signs in, sorts a list, searches it, opens a record, adds, changes and deletes a record through the forms, and fails on any console error, CSP violation or failed request.
 The driver is Playwright (`playwright` 1.65.0, pinned) with `node:test`.
 Playwright downloads a browser, so the install is not part of the default `npm install` of any package.
 Run it from a checkout, with the `monorm` wheel installed in the active Python (`maturin develop`):
