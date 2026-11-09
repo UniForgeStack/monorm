@@ -27,6 +27,7 @@ use sea_query::Value as Bind;
 use serde_json::{json, Map, Value};
 
 use crate::audit::{self, Entry};
+use crate::form::Section;
 use crate::json;
 use crate::key;
 use crate::list::{self, Binds, ListError};
@@ -71,18 +72,21 @@ pub fn form_meta(schema: &Schema, r: &Resource) -> Value {
                 "required": !f.nullable && !has_default(f),
                 "default": has_default(f),
                 "readonly_on_update": key,
+                "readonly": r.form.readonly.contains(&c.label),
+                "widget": r.form.widgets.get(&c.label).map_or_else(|| crate::meta::widget(c), String::as_str),
                 "max_length": f.max_length,
             }))
         })
         .collect();
-    json!({"writable": reason.is_none(), "read_only_reason": reason, "form": fields})
+    let sections = json!({"create": r.form.create.iter().map(Section::json).collect::<Vec<_>>(), "edit": r.form.edit.iter().map(Section::json).collect::<Vec<_>>()});
+    json!({"writable": reason.is_none(), "read_only_reason": reason, "form": fields, "sections": sections, "form_component": r.form.component.is_some()})
 }
 
-fn has_default(f: &FieldIr) -> bool {
+pub(crate) fn has_default(f: &FieldIr) -> bool {
     f.default.is_some() || f.default_now || f.default_sql.is_some() || f.client_default.is_some() || f.auto_increment
 }
 
-fn writable(c: &Column) -> bool {
+pub(crate) fn writable(c: &Column) -> bool {
     matches!(c.source, Source::Field) && c.path.is_empty()
 }
 
@@ -460,6 +464,10 @@ fn convert_set(site: &Site, r: &Resource, set: &Map<String, Value>, updating: bo
             problems.field(name, "This field cannot be written.");
             continue;
         };
+        if r.form.readonly.contains(name) {
+            problems.field(name, "This field is read-only.");
+            continue;
+        }
         if updating && (f.primary_key || model.ir.primary_key.contains(&f.name)) {
             problems.field(name, "The key of a record cannot change.");
             continue;

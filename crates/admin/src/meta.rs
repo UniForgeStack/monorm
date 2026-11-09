@@ -105,7 +105,7 @@ pub fn humanize(name: &str) -> String {
     chars.next().map(|f| f.to_uppercase().chain(chars).collect()).unwrap_or_default()
 }
 
-fn widget(c: &Column) -> &'static str {
+pub(crate) fn widget(c: &Column) -> &'static str {
     if c.ty.enum_idx.is_some() {
         return "select";
     }

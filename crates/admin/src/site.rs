@@ -15,6 +15,7 @@ use monorm_engine::{Params, Result as EngineResult};
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::form::FormConfig;
 use crate::key;
 use crate::meta::{self, BrandConfig};
 use crate::permissions::{Op, Strategy};
@@ -69,6 +70,9 @@ struct Config {
     resources: Vec<ResourceConfig>,
     /// The time limit of each statement of a request, in ms (PostgreSQL). 0: none. Default 15000.
     statement_timeout_ms: Option<u64>,
+    /// Widgets for every resource: `Model.field`, `Type.subfield`, or a type name, to a widget name.
+    #[serde(default)]
+    widgets: BTreeMap<String, String>,
 }
 
 /// The rows a resource shows to staff.
@@ -114,6 +118,16 @@ struct ResourceConfig {
     /// The text of a form message for a named `@@check`: the name of the constraint, then the text.
     #[serde(default)]
     check_messages: BTreeMap<String, String>,
+    /// Sections: a list, or `{create, edit}` with a list for each form. A field that no section names goes last.
+    form: Option<Value>,
+    /// Fields that the form shows and a request cannot write.
+    #[serde(default)]
+    readonly: Vec<String>,
+    /// Widgets of this resource: a field, `Type.subfield`, or a type name, to a widget name.
+    #[serde(default)]
+    widgets: BTreeMap<String, String>,
+    /// The path of a JavaScript module that replaces the form.
+    form_component: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -296,6 +310,8 @@ pub struct Resource {
     pub detail: Vec<Column>,
     /// To-one relations that lead to the key of another resource.
     pub links: Vec<Link>,
+    /// The sections, read-only fields, widgets and module of the forms.
+    pub form: crate::form::FormSpec,
     /// The metadata that does not depend on the user, built once by `Site::build`.
     pub meta: serde_json::Value,
     pub search: Vec<SearchField>,
@@ -451,12 +467,13 @@ impl Site {
         };
         let label = config.label.as_deref().unwrap_or("admin");
         check_name("label", label)?;
+        let global = crate::form::global(&schema, &config.widgets)?;
         let mut resources = Vec::new();
         let mut warnings = Vec::new();
         if config.resources.is_empty() {
             for (idx, m) in schema.models.iter().enumerate() {
                 if concrete(m) {
-                    resources.push(resource(&schema, idx, &ResourceConfig::of(&schema.model(idx).ir.name), strategy, label, &mut warnings)?);
+                    resources.push(resource(&schema, idx, &ResourceConfig::of(&schema.model(idx).ir.name), strategy, label, &global, &mut warnings)?);
                 }
             }
         } else {
@@ -469,7 +486,7 @@ impl Site {
                 if !seen.insert(idx) {
                     return err(format!("{}: registered twice", r.model));
                 }
-                resources.push(resource(&schema, idx, r, strategy, label, &mut warnings)?);
+                resources.push(resource(&schema, idx, r, strategy, label, &global, &mut warnings)?);
             }
         }
         if prefix == key::UI_BASE && !crate::ui::FILES.is_empty() {
@@ -628,7 +645,7 @@ fn concrete(m: &monorm_core::schema::Model) -> bool {
 
 impl ResourceConfig {
     fn of(model: &str) -> ResourceConfig {
-        ResourceConfig { model: model.to_owned(), list: ListConfig::default(), allow: None, perms: None, label: None, title: None, group: None, field_permissions: Vec::new(), actions: Vec::new(), queryset: None, can: BTreeMap::new(), check_messages: BTreeMap::new() }
+        ResourceConfig { model: model.to_owned(), list: ListConfig::default(), allow: None, perms: None, label: None, title: None, group: None, field_permissions: Vec::new(), actions: Vec::new(), queryset: None, can: BTreeMap::new(), check_messages: BTreeMap::new(), form: None, readonly: Vec::new(), widgets: BTreeMap::new(), form_component: None }
     }
 }
 
@@ -686,7 +703,7 @@ fn permission_options(name: &str, config: &ResourceConfig, strategy: Strategy, s
     Ok(PermissionOptions { label, allow, split_delete })
 }
 
-fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Strategy, site_label: &str, warnings: &mut Vec<String>) -> Result<Resource, ConfigError> {
+fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Strategy, site_label: &str, global: &[(crate::form::Key, String)], warnings: &mut Vec<String>) -> Result<Resource, ConfigError> {
     let list = &config.list;
     let model = schema.model(idx);
     let name = model.ir.name.clone();
@@ -776,6 +793,7 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
     if let Some(k) = config.check_messages.keys().find(|k| !model.ir.constraints.iter().any(|c| matches!(c, ConstraintIr::Check { name: Some(n), .. } if n == *k))) {
         return err(format!("{name}: check_messages names {k:?}, which is not a named @@check of the model"));
     }
+    let form = crate::form::build(schema, idx, &name, &detail, &allow, &FormConfig { form: config.form.clone(), readonly: config.readonly.clone(), widgets: config.widgets.clone(), component: config.form_component.clone() }, global)?;
     let scope_defaults = scope_default_names(model);
     Ok(Resource {
         model: idx,
@@ -796,6 +814,7 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
         key_positions,
         detail,
         links: Vec::new(),
+        form,
         meta: serde_json::Value::Null,
         search,
         search_with: list.search_with.clone(),

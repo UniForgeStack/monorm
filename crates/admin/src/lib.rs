@@ -10,6 +10,7 @@ pub mod auth;
 pub mod bridge;
 pub mod catalog;
 pub mod config;
+pub mod form;
 pub mod guard;
 pub mod inproc;
 pub mod json;

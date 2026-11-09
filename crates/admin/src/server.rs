@@ -47,7 +47,7 @@ pub fn api(site: Arc<Site>, conn: Arc<dyn Executor>) -> Router {
 pub fn api_with(site: Arc<Site>, conn: Arc<dyn Executor>, auth: Option<AuthConfig>) -> Router {
     let target = Target::new(conn.dialect());
     let prefix = site.prefix.clone();
-    let routes = Router::new().route("/resources", get(resources)).route("/resources/{name}", get(rows).post(crate::write::create)).route("/resources/{name}/{key}", get(detail).patch(crate::write::update).delete(crate::write::destroy)).route("/resources/{name}/{key}/{rel}", get(tab_rows)).route("/counts/{name}", get(counts)).route("/counts/{name}/{key}/{rel}", get(tab_counts));
+    let routes = Router::new().route("/resources", get(resources)).route("/resources/{name}", get(rows).post(crate::write::create)).route("/resources/{name}/{key}", get(detail).patch(crate::write::update).delete(crate::write::destroy)).route("/resources/{name}/{key}/{rel}", get(tab_rows)).route("/forms/{name}", get(form_module)).route("/counts/{name}", get(counts)).route("/counts/{name}/{key}/{rel}", get(tab_counts));
     let bridge = auth.clone().map(|a| (a.bridge.clone(), a));
     let extra = auth.map(|auth| auth::routes(auth, site.clone(), conn.clone()));
     let state = Arc::new(State_ { site, conn, target, bridge });
@@ -289,6 +289,19 @@ async fn open_resource<'a>(s: &'a State_, user: Option<Extension<User>>, name: &
     }
     let (scope, reach) = reach(s, resource, &user, &grants, without_of(uri), scope).await?;
     Ok((scope, resource, reach))
+}
+
+/// The module that replaces the form of a resource, for a user who may read the resource.
+async fn form_module(State(s): Shared, user: Option<Extension<User>>, Path(name): Path<String>, req: Request<axum::body::Body>) -> Response {
+    let (scope, resource, _) = match open_resource(&s, user, &name, req.uri()).await {
+        Ok(x) => x,
+        Err(r) => return *r,
+    };
+    scope.rollback().await;
+    match &resource.form.component {
+        Some(source) => (StatusCode::OK, [("content-type", "text/javascript; charset=utf-8"), ("cache-control", "no-store")], source.clone()).into_response(),
+        None => reject(StatusCode::NOT_FOUND, "NotFound", &format!("{name} has no form module")),
+    }
 }
 
 /// The most keys that a search function may return.
