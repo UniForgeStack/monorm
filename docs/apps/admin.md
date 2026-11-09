@@ -70,6 +70,7 @@ A column that is not in the list answers `400`.
 Without `sortable`, every list column can sort.
 The exception is a large table: with more than 50,000 rows, a sort on a column that leads no index answers `400`.
 The service keeps the size, a capped count, for a short time.
+A `queryset` or a bypass changes the rows of the request. Then the size is the capped count of the rows that the user can see, and the service does not keep it.
 A `sortable` list is used as given, and no size check applies.
 The primary key is always the last order column.
 
@@ -101,6 +102,8 @@ It is a function `(q, limit)` that returns primary keys, or a prepared query set
 The service calls it once for a request, with a limit of 1,000, and it lists the rows with those keys.
 The `rows` answer then has `count` and `capped` too, so the UI makes no second call.
 A key of the wrong type is a fault of the function, and the answer is `500`.
+The function gets no row scope. The service applies the `queryset` filter to the rows with the keys that it found.
+So when the function finds more than 1,000 matches, the list shows only the rows of the first 1,000 keys that the `queryset` lets through.
 
 ```python
 by_body = Note.objects.filter(Note.body.contains(monorm.param("q"))).prepare()
@@ -184,6 +187,60 @@ The routes are `GET {prefix}/resources/{name}/{key}/{relation}` and `GET {prefix
 They take the same query as a list.
 An unknown record or relation answers `404`.
 The permission of the child resource applies, so the UI shows no tab for a resource that the user may not read.
+
+### Row scope
+
+`queryset` limits the rows that staff see.
+It is a prepared query set with a `param("user")` slot: the admin fills it with the key of the staff user.
+
+```python
+mine = Order.objects.filter(Order.owner_id == param("user")).order_by(-Order.id).prepare()
+site.register(Order, {"queryset": mine, "list": {"columns": [Order.id, Order.total]}})
+```
+
+The filter applies to the list, the detail, the count, the search and the tabs.
+A row outside the filter answers `404` on the detail, and a parent outside it has no tabs.
+The order of the query set is the order of the list: the list sets none of its own then, or `check()` fails.
+The query set takes a filter and an order only; `load()`, a slice, `from()`, `join()`, `lock()` and `without_defaults()` are build errors, and so are a query set of another model, one without a filter, and a param other than `user`.
+In TypeScript the same key is `queryset`, with `param("user")`.
+
+A callable `queryset` says a rule that a query set cannot say.
+`async def scope(user)` (Python) and `async (user) => condition` (TypeScript) return a condition, or a list of conditions that mean AND.
+It runs once for each request, through the host bridge, and the values stay in the condition.
+Use a query set when you can: it costs no host call.
+
+### `can` rules
+
+`can={"change": expr, "delete": expr}` (`can: { change, delete }` in TypeScript) are conditions of the row.
+The list and detail queries select them as flags, with no host call.
+Each row of `GET {prefix}/resources/{name}` has an entry in `flags`, the detail has a `flags` object, and the resource metadata has `can`, the names of the rules.
+The UI disables the button of a rule that the record does not allow.
+Only `change` and `delete` are rule names.
+A `can` rule does not replace the permission: the user needs both.
+
+### Read defaults and the bypass permission
+
+A read default of a model, such as the `deleted` default of `@@soft_delete`, hides rows in the list and the detail.
+Each named default that reads no `scope` value has a bypass permission, `<label>.bypass_<default>_<resource>` (for example `admin.bypass_deleted_order`).
+A user with it, and with `admin.access` and the read grant of the resource, can add `?without=deleted` (several names are separated by commas) to the list, the count and the detail.
+A superuser has it.
+An unknown name answers `400`, and a name without the permission answers `403` with one audit row.
+`GET {prefix}/resources` lists in `bypass` the names that the user may use, and the UI shows a "Show deleted" checkbox for each.
+On a tab route `without` applies to the child only.
+The `queryset` filter is never lifted.
+The name is the name of the default, not of the model. A related model that the statement joins, and that has a default of the same name, shows its hidden rows too.
+A read default that reads a `scope` value, such as a tenant filter, has no bypass permission: see "Tenancy" below.
+
+### Tenancy
+
+The admin ignores tenancy: staff are not tenants, and the admin has no tenant picker.
+An admin read sets no `scope` value, and a read default that reads one (`@@query.filter("tenant", "shop_id == scope.shop")`) is off in every admin read.
+A model with a tenant read default shows the rows of all tenants, and never raises the missing-scope `QueryError`.
+`?without=<name>` of such a default answers `400`, because it is always off.
+Read defaults that read no `scope` value, such as soft delete, stay on, and their bypass permission works as above.
+PostgreSQL row-level security still applies to the database role of the admin connection.
+Give that role the rights it needs, for example `BYPASSRLS` or a policy that lets it read the rows of all tenants.
+Use `queryset` to limit the rows of staff when you need it.
 
 ### Statement timeout
 
