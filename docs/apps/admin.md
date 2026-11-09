@@ -124,7 +124,7 @@ A name that matches nothing is an error in `check()` and in `Site::build`.
 | `?f.rank:gte=2`, `:gt`, `:lt`, `:lte` | A range, on numbers, dates and times. |
 | `?f.nick:empty`, `?f.nick:notempty` | "Is empty" and "is not empty". A text field counts `NULL` and `""` as empty. |
 | `?f.author=<key>` | A relation filter. The value is the encoded key of the target, as in the `keys` of a list. |
-| `?f.author.name=Bo` | A field of a related model. It adds a join, not a second statement. |
+| `?f.author.name=Bo` | A field of a related model. It adds a subquery to the same statement, not a second statement. |
 
 A value of the wrong type for the field answers `422`.
 A date and time value is ISO 8601 with an offset, and a date-only value means midnight UTC.
@@ -135,17 +135,20 @@ The metadata of a resource has `filters` with the `kind` (`enum`, `bool`, `numbe
 
 ```python
 admin.register(Ticket, {"list": {"named_filters": [{
-    "name": "age", "label": "Age", "default": "recent",
+    "name": "urgency", "label": "Urgency", "default": "open",
     "choices": [
-        {"name": "recent", "label": "Last year", "condition": Ticket.created_at > datetime(2026, 1, 1)},
-        {"name": "old", "label": "Older", "condition": Ticket.created_at <= datetime(2026, 1, 1)},
+        {"name": "open", "label": "Open", "condition": Ticket.closed_at.is_null()},
+        {"name": "urgent", "label": "Urgent", "condition": Ticket.priority >= 3},
+        {"name": "overdue", "label": "Overdue", "condition": Ticket.due < monorm.func.now()},
     ],
 }]}})
 ```
 
-`?n.age=old` picks a choice.
-Without it the `default` applies, and `?n.age=all` (the reserved choice `all`) turns the filter off.
+`?n.urgency=urgent` picks a choice.
+Without it the `default` applies, and `?n.urgency=all` (the reserved choice `all`) turns the filter off.
 A condition is a fixed expression: it takes int, string, bool and null literals and no `monorm.param`.
+A date, decimal or float literal is a build error; compare to a column or to `func.now()` instead.
+In TypeScript an integer beyond 2^53 - 1 (a `bigint`) is also a build error.
 An unknown choice answers `422`.
 
 ### Computed and aggregate columns

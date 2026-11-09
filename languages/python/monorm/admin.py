@@ -169,6 +169,8 @@ def _name(model: type[Model], ref: Any) -> str:
         if ref._root is not model:
             raise AdminConfigError(f"{ref!r} belongs to {ref._root.__name__}, not to {model.__name__}")
         return ".".join(ref._path)
+    if not isinstance(ref, ColumnRef):
+        raise AdminConfigError(f"{model.__name__}: {ref!r} is not a column or a relation")
     return _label(model, ref)
 
 
@@ -234,7 +236,7 @@ def _aggregates(model: type[Model], items: Sequence[Mapping[str, Any]]) -> list[
         entry["fn"] = item["fn"]
         if item.get("field") is not None:
             field = item["field"]
-            if not isinstance(field, ColumnRef) or field._root is not model or field._path[: len(relation._path)] != relation._path:
+            if not isinstance(field, ColumnRef) or field._root is not model or field._path != relation._path:
                 raise AdminConfigError(f"{model.__name__}: aggregate {item.get('name')!r}: field takes a field of the relation {entry['relation']!r}")
             entry["field"] = field._field.name
         out.append(entry)

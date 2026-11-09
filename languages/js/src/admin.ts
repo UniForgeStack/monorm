@@ -93,7 +93,7 @@ export interface ListConfig {
   readonly namedFilters?: readonly NamedFilter[];
   readonly computed?: readonly ComputedColumn[];
   readonly aggregates?: readonly AggregateColumn[];
-  /** The title of a column, by field or by name. */
+  /** The title of a column, by path (`"author.name"`) or name. */
   readonly labels?: Readonly<Record<string, string>>;
   /** What an empty value shows in the list. */
   readonly empty?: string;
@@ -222,8 +222,10 @@ function inline(ir: unknown, params: readonly unknown[], where: string): unknown
     if (value === null) return { t: "null" };
     if (typeof value === "boolean") return { t: "const", value };
     if (typeof value === "string") return { t: "text", value };
-    if ((typeof value === "number" && Number.isSafeInteger(value)) || typeof value === "bigint") return { t: "int", value: Number(value) };
-    throw new AdminConfigError(`${where}: a value of this type is not a literal of the admin; use an integer, a string or a boolean`);
+    if (typeof value === "number" && Number.isSafeInteger(value)) return { t: "int", value };
+    // The IR goes as a JSON number, which keeps an integer exactly only up to 2^53 - 1.
+    if (typeof value === "bigint" && value >= BigInt(Number.MIN_SAFE_INTEGER) && value <= BigInt(Number.MAX_SAFE_INTEGER)) return { t: "int", value: Number(value) };
+    throw new AdminConfigError(`${where}: a value of this type is not a literal of the admin; use a safe integer, a string or a boolean`);
   }
   return Object.fromEntries(Object.entries(node).map(([k, v]) => [k, inline(v, params, where)]));
 }

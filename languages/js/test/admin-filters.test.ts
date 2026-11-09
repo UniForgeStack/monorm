@@ -195,6 +195,8 @@ for (const provider of PROVIDERS) {
     assert.deepEqual(rows.map((r: unknown[]) => Number(r[1])), [2, 1, 0]);
     assert.deepEqual(rows.map((r: unknown[]) => r[2]), [3, 2, null]);
     assert.equal(page.json().columns[1].title, "Comments");
+    const deeper = [{ name: "author_max", relation: A.comments, fn: "max" as const, field: A.comments.author.name }];
+    assert.throws(() => siteOf(w, {}, { columns: [A.name, "author_max"], aggregates: deeper }), (e) => e instanceof AdminConfigError && /field of the relation/.test(e.message));
   }));
 
   test(`a computed expression column is in the query and sorts when the config allows (${provider})`, () => world(provider, async (w) => {
@@ -269,5 +271,7 @@ for (const provider of PROVIDERS) {
     site.register(C, { list: { labels: { nope: "x" } } });
     site.register(w.Author);
     assert.throws(() => site.check(), (e) => e instanceof AdminConfigError && /nope/.test(e.message));
+    const big = [{ name: "big", type: "int", expr: func.coalesce(C.rank, 2n ** 60n as unknown as number) }];
+    assert.throws(() => siteOf(w, { columns: [C.body, "big"], computed: big }), (e) => e instanceof AdminConfigError && /safe integer/.test(e.message));
   }));
 }

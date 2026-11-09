@@ -258,10 +258,10 @@ async fn query(scope: Scoped, q: Result<Query<ListQuery>, QueryRejection>) -> Re
     }
 }
 
-/// The filter bar of a request: `f.<name>=v` (repeated for several values), `f.<name>:gte=v` and `n.<name>=<choice>`.
 /// The filter clauses and the named-filter choices of a query string.
 type Filters = (Vec<FilterClause>, Vec<(String, String)>);
 
+/// The filter bar of a request: `f.<name>=v` (repeated for several values), `f.<name>:gte=v` and `n.<name>=<choice>`.
 fn filters_of(uri: &Uri) -> Result<Filters, ListError> {
     let mut clauses: Vec<FilterClause> = Vec::new();
     let mut named: Vec<(String, String)> = Vec::new();

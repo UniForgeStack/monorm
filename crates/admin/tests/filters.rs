@@ -396,6 +396,73 @@ model FComment {
 }
 
 #[tokio::test]
+async fn every_way_of_paging_keeps_a_filter_and_a_computed_sort() {
+    let conn = database().await;
+    let computed = json!([{"name": "body_length", "type": "int", "nullable": false, "sortable": true, "expr": {"t": "func", "name": "length", "args": [{"t": "col", "path": [], "name": "body"}]}}]);
+    let site = comments(json!({"columns": ["body", "body_length"], "computed": computed, "page_size": 2}));
+    // Level high keeps one, three and four's neighbours: ids 1 and 3.
+    let query = format!("{COMMENTS}?sort=-body_length&f.level=high&limit=1");
+    let (status, first, _) = get(&site, &conn, &query).await;
+    assert_eq!(status, 200, "{first}");
+    assert_eq!(bodies(&first), ["three"]);
+    let next = first["next"].as_str().expect("a next cursor");
+    let (_, second, _) = get(&site, &conn, &format!("{query}&cursor={next}")).await;
+    assert_eq!(bodies(&second), ["one"]);
+    assert!(second["next"].is_null(), "{second}");
+    let (_, back, _) = get(&site, &conn, &format!("{query}&before={}", second["prev"].as_str().expect("a prev cursor"))).await;
+    assert_eq!(bodies(&back), ["three"]);
+    let (_, last, _) = get(&site, &conn, &format!("{query}&last=1")).await;
+    assert_eq!(bodies(&last), ["one"]);
+    let (_, page, _) = get(&site, &conn, &format!("{query}&page=2")).await;
+    assert_eq!(bodies(&page), ["one"]);
+}
+
+#[tokio::test]
+async fn the_sql_of_a_related_filter_and_an_aggregate_has_the_subquery_and_binds() {
+    let conn = database().await;
+    let site = comments(json!({}));
+    let (status, body, sql) = get(&site, &conn, &format!("{COMMENTS}?f.author.name=Ada")).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(bodies(&body), ["one", "four"]);
+    let page = sql.iter().find(|s| s.contains("FROM \"comments\"")).expect("the page statement");
+    assert!(page.contains("EXISTS(SELECT ? FROM \"authors\"") && page.contains("\"t1\".\"name\" = ?"), "{page}");
+    assert!(!page.contains("Ada"), "a filter value is a bind: {page}");
+    let list = json!({"columns": ["name", "comment_count"], "order": ["id"], "aggregates": [{"name": "comment_count", "label": "Comments", "relation": "comments", "fn": "count"}]});
+    let site = self::site(json!({"resources": [{"model": "Author", "list": list}, {"model": "Comment"}]}));
+    let (_, _, sql) = get(&site, &conn, AUTHORS).await;
+    assert!(sql[0].contains("(SELECT COUNT(*) FROM \"comments\" AS \"a1\" WHERE \"a1\".\"author_id\" = \"authors\".\"id\")"), "{}", sql[0]);
+}
+
+#[test]
+fn a_pattern_ops_index_serves_a_prefix_search_but_not_a_sort() {
+    let source = r#"
+datasource db {
+  provider = "postgresql"
+}
+
+model Pattern {
+  id   Int    @id
+  name String
+  @@index([name(ops: text_pattern_ops)])
+  @@map("patterns")
+}
+
+model Plain {
+  id   Int    @id
+  name String
+  @@index([name])
+  @@map("plains")
+}
+"#;
+    let schema = Arc::new(dsl::check(dsl::compile(source, None).unwrap()).unwrap().1);
+    let resources: Vec<Value> = ["Pattern", "Plain"].iter().map(|m| json!({"model": m, "list": {"columns": ["name"], "search": ["name"], "sortable": ["name"]}})).collect();
+    let config = json!({ "resources": resources });
+    let site = Site::build(schema, &config.to_string()).unwrap();
+    let flags: Vec<(bool, bool)> = site.resources.iter().map(|r| (r.sortable[0].indexed, r.search[0].indexed)).collect();
+    assert_eq!(flags, [(false, true), (true, true)], "pattern_ops: search yes, sort no; plain: both");
+}
+
+#[tokio::test]
 async fn a_prefix_search_on_a_plain_btree_warns_from_the_catalog() {
     let Ok(url) = std::env::var("ORM_RUST_TEST_POSTGRES_URL") else {
         eprintln!("skipped: ORM_RUST_TEST_POSTGRES_URL is not set");
@@ -445,4 +512,60 @@ model CCollated {
         assert!(warnings[0].starts_with("CPlain: search field \"name\""), "{warnings:?}");
     }
     conn.batch("DROP TABLE c_plain; DROP TABLE c_pattern; DROP TABLE c_collated".into()).await.unwrap();
+}
+
+#[tokio::test]
+async fn the_catalog_check_reads_the_collation_of_the_index() {
+    let Ok(url) = std::env::var("ORM_RUST_TEST_POSTGRES_URL") else {
+        eprintln!("skipped: ORM_RUST_TEST_POSTGRES_URL is not set");
+        return;
+    };
+    let source = r#"
+datasource db {
+  provider = "postgresql"
+}
+
+model CIndexC {
+  id   Int    @id
+  name String
+  @@index([name])
+  @@map("c_index_c")
+}
+
+model CIndexOther {
+  id   Int    @id
+  name String
+  @@index([name])
+  @@map("c_index_other")
+}
+"#;
+    let schema = Arc::new(dsl::check(dsl::compile(source, None).unwrap()).unwrap().1);
+    let conn = db::connect(&url, 2).await.unwrap();
+    conn.batch("DROP TABLE IF EXISTS c_index_c; DROP TABLE IF EXISTS c_index_other".into()).await.unwrap();
+    for step in migrate::plan(&schema, &Default::default()).unwrap().up {
+        conn.batch(step.sql).await.unwrap();
+    }
+    // Any collation that is not C: the test does not depend on the locale of the database.
+    let others = conn
+        .query_text("SELECT collname FROM pg_collation WHERE collname NOT IN ('C', 'POSIX', 'default', 'ucs_basic', 'pg_c_utf8') AND collencoding IN (-1, (SELECT encoding FROM pg_database WHERE datname = current_database())) ORDER BY collname LIMIT 1".into())
+        .await
+        .unwrap();
+    let Some(other) = others.first().and_then(|r| r[0].clone()) else {
+        conn.batch("DROP TABLE c_index_c; DROP TABLE c_index_other".into()).await.unwrap();
+        eprintln!("skipped: the server has only the C collations");
+        return;
+    };
+    // A C index on a column with another collation serves LIKE 'x%': no warning. The reverse cannot: one warning.
+    conn.batch(r#"ALTER TABLE c_index_c ALTER COLUMN name TYPE text COLLATE "pg_unicode_fast""#.into()).await.ok();
+    conn.batch(r#"ALTER TABLE c_index_other ALTER COLUMN name TYPE text COLLATE "C""#.into()).await.unwrap();
+    for (table, collation) in [("c_index_c", "C".to_owned()), ("c_index_other", other.clone())] {
+        let name = conn.query_text(format!("SELECT indexname FROM pg_indexes WHERE tablename = '{table}' AND indexname NOT LIKE '%pkey'")).await.unwrap()[0][0].clone().unwrap();
+        conn.batch(format!(r#"DROP INDEX "{name}"; CREATE INDEX "{name}" ON {table} (name COLLATE "{collation}")"#)).await.unwrap();
+    }
+    let resources: Vec<Value> = ["CIndexC", "CIndexOther"].iter().map(|m| json!({"model": m, "list": {"search": ["name"]}})).collect();
+    let site = Site::build(schema, &json!({ "resources": resources }).to_string()).unwrap();
+    let warnings = monorm_admin::catalog::prefix_warnings(&site, conn.as_ref()).await.unwrap();
+    conn.batch("DROP TABLE c_index_c; DROP TABLE c_index_other".into()).await.unwrap();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].starts_with("CIndexOther: search field \"name\""), "{warnings:?}");
 }

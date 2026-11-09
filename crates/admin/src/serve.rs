@@ -83,8 +83,9 @@ pub fn with_settings(driver: Arc<dyn Driver>, settings: &[(String, String)], log
 /// Checks the admin tables, wraps the driver for `db_settings`, binds the socket and serves.
 pub async fn serve(site: Arc<Site>, driver: Arc<dyn Driver>, config: ServeConfig, log: Logger) -> Result<Server, String> {
     tables::check(&site.schema, driver.as_ref()).await?;
-    let warnings = crate::catalog::prefix_warnings(&site, driver.as_ref()).await.unwrap_or_else(|e| vec![e]);
     let conn = with_settings(driver, &config.db_settings, &log);
+    // After `with_settings`, so that `current_schema()` is the one of the configured `search_path`.
+    let warnings = crate::catalog::prefix_warnings(&site, conn.as_ref()).await.unwrap_or_else(|e| vec![e]);
     let listener = tokio::net::TcpListener::bind((config.host.as_str(), config.port))
         .await
         .map_err(|e| format!("cannot listen on {}:{}: {e}", config.host, config.port))?;

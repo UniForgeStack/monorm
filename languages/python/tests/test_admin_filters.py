@@ -203,6 +203,9 @@ async def test_an_aggregate_over_a_relation_is_one_statement(world):
     assert [int(r[1]) for r in rows] == [2, 1, 0]
     assert [r[2] for r in rows] == [3, 2, None]
     assert page.json()["columns"][1]["title"] == "Comments"
+    deeper = [{"name": "author_max", "relation": A.comments, "fn": "max", "field": A.comments.author.name}]
+    with pytest.raises(admin.AdminConfigError, match="field of the relation"):
+        site_of(world, author={"columns": [A.name, "author_max"], "aggregates": deeper})
 
 
 async def test_a_computed_expression_column_is_in_the_query_and_sorts_when_the_config_allows(world):
@@ -289,4 +292,9 @@ async def test_labels_and_empty_texts_reach_the_metadata(world):
     site.register(C, {"list": {"labels": {"nope": "x"}}})
     site.register(world.Author)
     with pytest.raises(admin.AdminConfigError, match="nope"):
+        site.check()
+    site = admin.Admin(world.registry)
+    site.register(C, {"list": {"labels": {42: "x"}}})
+    site.register(world.Author)
+    with pytest.raises(admin.AdminConfigError, match="not a column or a relation"):
         site.check()

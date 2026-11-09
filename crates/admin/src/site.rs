@@ -856,7 +856,7 @@ fn sortable_columns(schema: &Schema, idx: usize, name: &str, list: &ListConfig, 
                     return err(format!("{name}: sortable {field:?} is listed twice"));
                 }
                 let f = model.field(&field).map_err(|e| ConfigError(e.to_string()))?;
-                out.push(Sortable { column: o.column, indexed: leads_btree(&model.ir, f) });
+                out.push(Sortable { column: o.column, indexed: leads_btree(&model.ir, f, false) });
             }
             Err(e) if explicit => return Err(e),
             Err(_) => {}
@@ -869,8 +869,9 @@ fn names(f: &FieldIr, text: &str) -> bool {
     f.name == text || f.column == text
 }
 
-/// The field is the first key of a primary key, a unique constraint or a plain btree index.
-fn leads_btree(m: &ModelIr, f: &FieldIr) -> bool {
+/// The field is the first key of a primary key, a unique constraint or a btree index.
+/// A `*_pattern_ops` index serves `LIKE 'x%'` but not `ORDER BY` under a non-C collation: `pattern_ops` counts only for a prefix search.
+fn leads_btree(m: &ModelIr, f: &FieldIr, pattern_ops: bool) -> bool {
     if f.primary_key || f.unique || f.index || m.primary_key.first().is_some_and(|k| names(f, k)) {
         return true;
     }
@@ -879,7 +880,7 @@ fn leads_btree(m: &ModelIr, f: &FieldIr) -> bool {
         || m.indexes.iter().any(|i| {
             let btree = i.method.as_deref().is_none_or(|m| m.eq_ignore_ascii_case("btree"));
             let first = i.columns.first();
-            btree && i.where_.is_none() && first.is_some_and(|c| c.field.as_deref().is_some_and(|k| names(f, k)) && c.expr.is_none() && c.opclass.as_deref().is_none_or(|o| o.ends_with("_pattern_ops")))
+            btree && i.where_.is_none() && first.is_some_and(|c| c.field.as_deref().is_some_and(|k| names(f, k)) && c.expr.is_none() && c.opclass.as_deref().is_none_or(|o| pattern_ops && o.ends_with("_pattern_ops")))
         })
 }
 
@@ -935,7 +936,7 @@ fn search_fields(schema: &Schema, idx: usize, name: &str, list: &ListConfig, war
             return err(format!("{name}: search {field:?}: no search strategy fits a {} field; search takes text, integer and uuid fields", type_name(&column)));
         }
         let postgres = schema.dialect == Dialect::Postgres;
-        let btree = leads_btree(&model.ir, f);
+        let btree = leads_btree(&model.ir, f, true);
         let trigram = postgres && text && has_trigram(&model.ir, f);
         let fulltext = if postgres && text { fulltext_config(&model.ir, f) } else { None };
         let (default, indexed) = if !text {
