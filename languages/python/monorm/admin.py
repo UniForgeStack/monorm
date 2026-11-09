@@ -19,6 +19,7 @@ import datetime
 import json
 import math
 import os
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from json import dumps as _dumps
@@ -174,6 +175,22 @@ class ResourceConfig(TypedDict, total=False):
     form_component: str | os.PathLike[str]
     """The path of a JavaScript module that replaces the whole form: ``export default (React) => function Form(props) {...}``.
     The admin reads the file when the site starts and serves it to signed-in staff."""
+    relations: Mapping[str, RelationConfig]
+    """The relation fields that the form edits, by relation name. A to-one relation becomes a picker with keyset autocomplete;
+    a many-to-many relation (through a join model) becomes chips. The target of each needs a text column that names a row."""
+    files: Mapping[str, str]
+    """File fields by field name, each with the name of its storage in the ``storage`` registry of the admin
+    (``{"cover": "media"}``). A file field is a nullable ``Json`` field that holds the reference of the file."""
+
+
+class RelationConfig(TypedDict, total=False):
+    label: str
+    """The text column of the target that names a row in the picker (the first text column by default)."""
+    create: bool
+    """Offer a modal in the form that creates a record of the target and fills the field."""
+    choices: Any
+    """A prepared query set of the target (``Author.objects.filter(Author.active == True).prepare()``) that limits the picker.
+    The server checks it again on write. It combines with the ``queryset`` of the target."""
 
 
 def _widgets(name: str | None, value: Any) -> dict[str, str]:
@@ -208,7 +225,7 @@ def _form(name: str, form: Any) -> Any:
 
 
 _LIST_KEYS = {"columns", "order", "page_size", "sortable", "search", "search_with", "filters", "named_filters", "computed", "aggregates", "labels", "empty", "empty_fields", "tabs"}
-_RESOURCE_KEYS = {"list", "title", "group", "allow", "perms", "label", "field_permissions", "actions", "queryset", "can", "check_messages", "form", "readonly", "widgets", "form_component"}
+_RESOURCE_KEYS = {"list", "title", "group", "allow", "perms", "label", "field_permissions", "actions", "queryset", "can", "check_messages", "form", "readonly", "widgets", "form_component", "relations", "files"}
 _BRAND_KEYS = {"name", "logo", "colors", "links", "environment"}
 Strategy = Literal["page", "model", "access"]
 
@@ -500,6 +517,77 @@ def _key_json(key: Any) -> Any:
     return _key_value(key)
 
 
+_RELATION_KEYS = {"label", "create", "choices"}
+
+
+def _relations(name: str, model: type[Model], value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise AdminConfigError(f"{name}: relations maps a relation name to its options")
+    out: dict[str, Any] = {}
+    for rel_name, options in value.items():
+        relation = model._meta.relations.get(rel_name) if isinstance(rel_name, str) else None
+        if relation is None:
+            raise AdminConfigError(f"{name}: relations has {rel_name!r}, which is not a relation of the model")
+        if not isinstance(options, Mapping):
+            raise AdminConfigError(f"{name}: relations[{rel_name!r}] is a mapping of options")
+        if unknown := sorted(set(options) - _RELATION_KEYS):
+            raise AdminConfigError(f"{name}: relations[{rel_name!r}] has an unknown option {unknown[0]!r}")
+        entry: dict[str, Any] = {}
+        if "label" in options:
+            if not isinstance(options["label"], str):
+                raise AdminConfigError(f"{name}: relations[{rel_name!r}].label is a column name")
+            entry["label"] = options["label"]
+        if "create" in options:
+            if not isinstance(options["create"], bool):
+                raise AdminConfigError(f"{name}: relations[{rel_name!r}].create is True or False")
+            entry["create"] = options["create"]
+        if "choices" in options:
+            from .query import Prepared
+
+            if not isinstance(options["choices"], Prepared):
+                raise AdminConfigError(f"{name}: relations[{rel_name!r}].choices takes a prepared query set of the target")
+            entry["choices"], _ = _queryset(relation.target, options["choices"])
+        out[rel_name] = entry
+    return out
+
+
+def _files(name: str, value: Any) -> dict[str, str]:
+    if not isinstance(value, Mapping) or not all(isinstance(k, str) and isinstance(v, str) and v for k, v in value.items()):
+        raise AdminConfigError(f"{name}: files maps a field name to a storage name")
+    return dict(value)
+
+
+def _file_host(storage: Any, files: Mapping[tuple[str, str], str]) -> dict[str, Callable[[Any, dict[str, Any]], Awaitable[Any]]]:
+    """The host functions ``file.store`` and ``file.fetch``: the core hands over a temporary file, the registry moves the bytes."""
+    from monorm_file_storage import Reference
+
+    async def store(database: Any, args: dict[str, Any]) -> Any:
+        name = files.get((args["model"], args["field"]))
+        if name is None:
+            raise AdminConfigError(f"{args['model']}.{args['field']} is not a file field")
+        with open(args["path"], "rb") as source:
+            reference = await storage.upload(name, source, filename=args["filename"], content_type=args["content_type"], max_size=args["max_size"])
+        return reference.to_dict()
+
+    async def fetch(database: Any, args: dict[str, Any]) -> Any:
+        reference = Reference.from_dict(args["reference"])
+        with open(args["path"], "wb") as out:
+            async for chunk in storage.open(reference):
+                out.write(chunk)
+        return None
+
+    return {"file.store": store, "file.fetch": fetch}
+
+
+def _multipart(file: tuple[str, bytes | str, str]) -> tuple[str, bytes]:
+    name, data, kind = file
+    boundary = f"----monorm{uuid.uuid4().hex}"
+    body = f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{name}"\r\nContent-Type: {kind}\r\n\r\n'.encode()
+    body += data.encode() if isinstance(data, str) else data
+    body += f"\r\n--{boundary}--\r\n".encode()
+    return f"multipart/form-data; boundary={boundary}", body
+
+
 @dataclass(frozen=True)
 class AdminResponse:
     """The answer to one in-memory request."""
@@ -512,6 +600,8 @@ class AdminResponse:
     """The response headers, every ``set-cookie`` kept (login mode only)."""
     sql: tuple[str, ...] = ()
     """The SQL of those statements, with placeholders (the ``user=`` path only)."""
+    content: bytes = b""
+    """The body as bytes: a file download is not text. Login mode keeps only the UTF-8 text."""
 
     def json(self) -> Any:
         return json.loads(self.text)
@@ -573,15 +663,24 @@ class AdminTestClient:
         headers: Mapping[str, str] | None = None,
         csrf: str | None = _AUTO,
         origin: str | None = _AUTO,
+        file: tuple[str, bytes | str, str] | None = None,
     ) -> AdminResponse:
+        """``file=(filename, data, content_type)`` sends a multipart upload. Login mode sends text files only (UTF-8)."""
+        if file is not None and json is not None:
+            raise TypeError("a request takes `json` or `file`, not both")
         if self._secret is None:
             if headers or csrf is not _AUTO or origin is not _AUTO:
-                raise TypeError("the `user=` client takes only a method, a path and `json`")
+                raise TypeError("the `user=` client takes only a method, a path, `json` and `file`")
             trace = _native.Trace()
+            if file is not None or "/files/" in path:
+                kind, data = _multipart(file) if file is not None else (None, None)
+                code, reply, raw = await self._site.request_raw(self._database._engine, method, path, self._user, trace, self._database, self._host, kind, data)
+                events = trace.take()
+                return AdminResponse(code, raw.decode("utf-8", "replace"), len(events), tuple(reply), tuple(e[0] for e in events), raw)
             sent_json = None if json is None else _dumps(json)
             status, body = await self._site.request(self._database._engine, method, path, self._user, trace, self._database, self._host, sent_json)
             events = trace.take()
-            return AdminResponse(status, body, len(events), sql=tuple(e[0] for e in events))
+            return AdminResponse(status, body, len(events), sql=tuple(e[0] for e in events), content=body.encode())
         router = self._router
         if router is None:
             router = self._router = self._site.client(self._database._engine, self._database, self._host, self._secret, self._options)
@@ -598,6 +697,13 @@ class AdminTestClient:
         body_text = None if json is None else _dumps(json)
         if body_text is not None:
             sent.setdefault("content-type", "application/json")
+        if file is not None:
+            kind, data = _multipart(file)
+            try:
+                body_text = data.decode("utf-8")
+            except UnicodeDecodeError:
+                raise ValueError("the login-mode client sends text files only (UTF-8); use `user=` for binary data") from None
+            sent.setdefault("content-type", kind)
         status, reply_headers, text = await router.request(method, path, list(sent.items()), body_text, self.ip)
         for name, value in reply_headers:
             if name.lower() == "set-cookie":
@@ -607,7 +713,7 @@ class AdminTestClient:
                     self.cookies.pop(key, None)
                 else:
                     self.cookies[key] = val
-        return AdminResponse(status, text, 0, tuple(reply_headers))
+        return AdminResponse(status, text, 0, tuple(reply_headers), content=text.encode())
 
     async def get(self, path: str, **kwargs: Any) -> AdminResponse:
         return await self.request("GET", path, **kwargs)
@@ -642,6 +748,7 @@ class Admin:
     or a type name (``"Text"``, ``"Status"``, a nested type) to a widget for every resource; a resource ``widgets`` entry wins at one level.
     ``statement_timeout`` is the time limit in seconds of each request's database statements (15 by default, 0 for none).
     The admin ignores tenancy: a read default that reads a ``scope`` value is off in every admin read, so staff see the rows of all tenants.
+    ``storage`` is the ``monorm_file_storage.Registry`` that holds the files of the ``files`` fields of the resources.
     """
 
     def __init__(
@@ -656,7 +763,9 @@ class Admin:
         widgets: Mapping[str, str] | None = None,
         groups: Sequence[str] = (),
         statement_timeout: float = 15.0,
+        storage: Any = None,
     ) -> None:
+        self._storage = storage
         if not math.isfinite(statement_timeout) or statement_timeout < 0:
             raise AdminConfigError("statement_timeout is a number of seconds, 0 or more (0 sets no limit)")
         self._statement_timeout = statement_timeout
@@ -720,6 +829,12 @@ class Admin:
                 if not isinstance(path, (str, os.PathLike)):
                     raise AdminConfigError(f"{name}: form_component is the path of a JavaScript file")
                 resource["form_component"] = os.fspath(path)
+            if "relations" in config:
+                resource["relations"] = _relations(name, model, config["relations"])
+            if "files" in config:
+                resource["files"] = list(_files(name, config["files"]))
+                if self._storage is None:
+                    raise AdminConfigError(f"{name}: files needs the storage option of Admin (a monorm_file_storage Registry)")
             raw: dict[str, Any] = dict(config)
             for key in ("title", "group", "allow", "perms", "label", "field_permissions", "actions"):
                 if key in raw:
@@ -752,6 +867,9 @@ class Admin:
                 function = column.get("function")
                 if function is not None:
                     host[_batch_name(model, column.get("name", ""))] = _batch_host(model, function)
+        files = {(model.__name__, field): storage for model, config in self._resources.values() for field, storage in _files(model.__name__, config.get("files", {})).items()}
+        if files:
+            host.update(_file_host(self._storage, files))
         return host
 
     def _site(self, registry: Registry) -> _native.AdminSite:

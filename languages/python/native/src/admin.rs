@@ -175,6 +175,45 @@ impl AdminSite {
         pyo3_async_runtimes::tokio::future_into_py(py, async move { Ok(monorm_admin::call_body(site, conn, &method, &path, user, auth, body.as_deref()).await) })
     }
 
+    /// `request` for a body and an answer of bytes: the `(status, headers, bytes)` of one in-memory request.
+    /// `content_type` and `data` are an upload (multipart) body; both or neither.
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    #[pyo3(signature = (engine, method, path, user_json = None, trace = None, database = None, host = None, content_type = None, data = None))]
+    fn request_raw<'py>(
+        &self,
+        py: Python<'py>,
+        engine: &Bound<'py, Engine>,
+        method: String,
+        path: String,
+        user_json: Option<String>,
+        trace: Option<&Bound<'py, Trace>>,
+        database: Option<Bound<'py, PyAny>>,
+        host: Option<Bound<'py, PyDict>>,
+        content_type: Option<String>,
+        data: Option<Vec<u8>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let user = user_json.map(|j| serde_json::from_str(&j).map_err(|e| PyValueError::new_err(format!("user is not JSON: {e}")))).transpose()?;
+        let driver: Arc<dyn Executor> = engine.get().driver.clone();
+        let conn = monorm_engine::trace::wrap(driver, trace.map(|t| &t.get().0));
+        let site = self.site.clone();
+        let auth = match (database, host) {
+            (Some(database), Some(host)) => {
+                let security = monorm_admin::security_with(Some("in-memory client: no login runs on this path"), Default::default());
+                Some(auth_config(py, database, host, security)?)
+            }
+            _ => None,
+        };
+        let body = match (content_type.as_deref(), data) {
+            (Some(kind), Some(bytes)) => Some((kind.to_owned(), bytes)),
+            (None, None) => None,
+            _ => return Err(PyValueError::new_err("content_type and data go together")),
+        };
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let body = body.as_ref().map(|(k, b)| (k.as_str(), b.clone()));
+            Ok(monorm_admin::call_full(site, conn, &method, &path, user, auth, body).await)
+        })
+    }
+
     /// The router that `serve` runs, called in memory, with login. `options_json` is `{"idle_timeout", "session_timeout", "origins"}`.
     /// Raises `ValueError` when an option is wrong or the secret is missing or short. Call it from a running event loop.
     #[allow(clippy::too_many_arguments)]

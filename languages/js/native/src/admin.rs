@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use monorm_admin::{AuthConfig, BoxFuture, BridgeError, CallContext, Config, HostBridge, Logger, Routed, Server, Site};
 use monorm_engine::db::Executor;
-use napi::bindgen_prelude::{FnArgs, Function, Promise, PromiseRaw};
+use napi::bindgen_prelude::{Buffer, FnArgs, Function, Promise, PromiseRaw};
 use napi::threadsafe_function::ThreadsafeFunction;
 use napi::{Env, Status};
 use napi_derive::napi;
@@ -68,6 +68,15 @@ pub struct AdminResponse {
     pub body: String,
 }
 
+/// The answer of `requestRaw`: the body is bytes, as a file download is not text.
+#[napi(object)]
+pub struct RawResponse {
+    pub status: u32,
+    /// `[name, value]` pairs.
+    pub headers: Vec<Vec<String>>,
+    pub body: Buffer,
+}
+
 #[napi]
 impl AdminSite {
     /// The permission names of the chosen strategy: the gate first.
@@ -120,6 +129,37 @@ impl AdminSite {
         env.spawn_future(async move {
             let (status, text) = monorm_admin::call_body(site, conn, &method, &path, user, auth, body.as_deref()).await;
             Ok(AdminResponse { status: u32::from(status), body: text })
+        })
+    }
+
+    /// Like `request`, with a byte body of a given content type (a multipart upload) and a byte answer (a file download).
+    #[napi]
+    #[allow(clippy::too_many_arguments)]
+    pub fn request_raw<'env>(
+        &self,
+        env: &'env Env,
+        engine: &Engine,
+        method: String,
+        path: String,
+        user_json: Option<String>,
+        trace: Option<&Trace>,
+        dispatch: Option<Function<'env, Args, Promise<String>>>,
+        content_type: Option<String>,
+        data: Option<Buffer>,
+    ) -> napi::Result<PromiseRaw<'env, RawResponse>> {
+        let user = user_json.map(|j| serde_json::from_str(&j).map_err(|e| napi::Error::from_reason(format!("user is not JSON: {e}")))).transpose()?;
+        let driver: Arc<dyn Executor> = engine.driver.clone();
+        let conn = monorm_engine::trace::wrap(driver, trace.map(|t| &t.0));
+        let site = self.site.clone();
+        let auth = dispatch.map(|d| auth_config(d, monorm_admin::security_with(Some("in-memory client: no login runs on this path"), Default::default()))).transpose()?;
+        let body = match (content_type, data) {
+            (Some(kind), Some(bytes)) => Some((kind, bytes.to_vec())),
+            (None, None) => None,
+            _ => return Err(napi::Error::from_reason("contentType and data go together")),
+        };
+        env.spawn_future(async move {
+            let (status, headers, bytes) = monorm_admin::call_full(site, conn, &method, &path, user, auth, body.as_ref().map(|(k, b)| (k.as_str(), b.clone()))).await;
+            Ok(RawResponse { status: u32::from(status), headers: headers.into_iter().map(|(k, v)| vec![k, v]).collect(), body: Buffer::from(bytes) })
         })
     }
 

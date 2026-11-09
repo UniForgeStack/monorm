@@ -168,6 +168,8 @@ export interface NativeAdminSite {
   readonly warnings: string[];
   /** One in-memory request; `userJson` is the JSON of the user, or null. `dispatch` runs the host calls of a `searchWith` function. */
   request(engine: NativeEngine, method: string, path: string, userJson: string | null, trace: NativeTrace | null, dispatch: NativeHostDispatch | null, body: string | null): Promise<{ status: number; body: string }>;
+  /** Like `request`, with a byte body of a content type (a multipart upload) and a byte answer (a file download). */
+  requestRaw(engine: NativeEngine, method: string, path: string, userJson: string | null, trace: NativeTrace | null, dispatch: NativeHostDispatch | null, contentType: string | null, data: Uint8Array | null): Promise<{ status: number; headers: string[][]; body: Uint8Array }>;
   /**
    * The served router with login, called in memory. `optionsJson` is `{"idle_timeout", "session_timeout", "origins"}`.
    * Throws when an option is wrong or the secret is missing or short. `dispatch` runs one host call.

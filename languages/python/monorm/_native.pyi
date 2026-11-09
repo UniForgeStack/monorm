@@ -138,6 +138,18 @@ class AdminSite:
         host: dict[str, Any] | None = None,
         body: str | None = None,
     ) -> Awaitable[tuple[int, str]]: ...
+    def request_raw(
+        self,
+        engine: Engine,
+        method: str,
+        path: str,
+        user_json: str | None = None,
+        trace: Trace | None = None,
+        database: Any = None,
+        host: dict[str, Any] | None = None,
+        content_type: str | None = None,
+        data: bytes | None = None,
+    ) -> Awaitable[tuple[int, list[tuple[str, str]], bytes]]: ...
     def client(
         self,
         engine: Engine,

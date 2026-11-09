@@ -14,6 +14,10 @@
  *
  * With no `register` call every concrete model is a read-only resource.
  */
+import { randomUUID } from "node:crypto";
+import { createReadStream, createWriteStream } from "node:fs";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { HOST, hostDispatch, type HostFunction } from "./admin-host.js";
 import * as grants from "./admin-permissions.js";
 import type { RoleSeedReport, SyncReport } from "./admin-permissions.js";
@@ -170,6 +174,13 @@ export interface ResourceConfig {
    * The admin reads the file when the site starts and serves it to signed-in staff.
    */
   readonly formComponent?: string;
+  /**
+   * The relation fields that the form edits, by relation name. A to-one relation becomes a picker with keyset autocomplete;
+   * a many-to-many relation (through a join model) becomes chips. The target of each needs a text column that names a row.
+   */
+  readonly relations?: Readonly<Record<string, RelationConfig>>;
+  /** File fields by field name, each with the name of its storage in the `storage` registry of the admin (`{ cover: "media" }`). A file field is a nullable `Json` field that holds the reference of the file. */
+  readonly files?: Readonly<Record<string, string>>;
   readonly list?: ListConfig;
   /** The name in the navigation and the page heading (the model name, spaced, by default). */
   readonly title?: string;
@@ -185,6 +196,21 @@ export interface ResourceConfig {
   readonly fieldPermissions?: readonly string[];
   /** Names such as `"refund"` that become `<label>.<action>_<resource>`. */
   readonly actions?: readonly string[];
+}
+
+export interface RelationConfig {
+  /** The text column of the target that names a row in the picker (the first text column by default). */
+  readonly label?: string;
+  /** Offer a modal in the form that creates a record of the target and fills the field. */
+  readonly create?: boolean;
+  /** A prepared query set of the target that limits the picker. The server checks it again on write. It combines with the `queryset` of the target. */
+  readonly choices?: Prepared<any, any, any>;
+}
+
+/** The file storage of the admin: a `Registry` of `@ufstack/monorm/extensions/file-storage`. */
+export interface FileStorage {
+  upload(storage: string, source: AsyncIterable<Uint8Array>, options: { filename?: string; contentType?: string; maxSize?: number }): Promise<{ toJSON(): unknown }>;
+  open(reference: any): AsyncIterable<Uint8Array>;
 }
 
 /** `page`: `<label>.read_<resource>` and `<label>.manage_<resource>` (the default); `model`: `add_`, `change_`, `delete_`, `view_`; `access`: only `admin.access`. */
@@ -211,6 +237,8 @@ export interface AdminOptions {
   readonly groups?: readonly string[];
   /** The time limit in seconds of each request's database statements (15 by default, 0 for none). */
   readonly statementTimeout?: number;
+  /** The `Registry` of the file storage (`extensions/file-storage`) that holds the files of the `files` fields. */
+  readonly storage?: FileStorage;
 }
 
 /** One key field, the key values in key order, or an object of key fields. */
@@ -226,7 +254,7 @@ export interface AdminUser {
 
 const LIST_KEYS = new Set(["columns", "order", "pageSize", "sortable", "search", "searchWith", "filters", "namedFilters", "computed", "aggregates", "labels", "empty", "emptyFields", "tabs"]);
 const BRAND_KEYS = new Set(["name", "logo", "colors", "links", "environment"]);
-const RESOURCE_KEYS = new Set(["queryset", "can", "list", "title", "group", "allow", "perms", "label", "fieldPermissions", "actions", "checkMessages", "form", "readonly", "widgets", "formComponent"]);
+const RESOURCE_KEYS = new Set(["queryset", "can", "list", "title", "group", "allow", "perms", "label", "fieldPermissions", "actions", "checkMessages", "form", "readonly", "widgets", "formComponent", "relations", "files"]);
 
 function widgetsJson(who: string, value: unknown): Record<string, string> {
   if (typeof value !== "object" || value === null || Array.isArray(value) || !Object.values(value).every((v) => typeof v === "string")) {
@@ -254,6 +282,63 @@ function readonlyJson(name: string, names: unknown): string[] {
 function formComponentJson(name: string, path: unknown): string {
   if (typeof path !== "string") throw new AdminConfigError(`${name}: formComponent is the path of a JavaScript file`);
   return path;
+}
+
+const RELATION_KEYS = new Set(["label", "create", "choices"]);
+
+function relationsJson(name: string, cls: AnyModel, registry: Registry, value: unknown): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new AdminConfigError(`${name}: relations maps a relation name to its options`);
+  const out: Record<string, unknown> = {};
+  for (const [relName, options] of Object.entries(value)) {
+    const found = cls._meta.relations.get(relName);
+    if (found === undefined) throw new AdminConfigError(`${name}: relations has '${relName}', which is not a relation of the model`);
+    if (typeof options !== "object" || options === null || Array.isArray(options)) throw new AdminConfigError(`${name}: relations['${relName}'] is an object of options`);
+    for (const key of Object.keys(options)) {
+      if (!RELATION_KEYS.has(key)) throw new AdminConfigError(`${name}: relations['${relName}'] has an unknown option '${key}'`);
+    }
+    const o = options as RelationConfig;
+    if (o.label !== undefined && typeof o.label !== "string") throw new AdminConfigError(`${name}: relations['${relName}'].label is a column name`);
+    if (o.create !== undefined && typeof o.create !== "boolean") throw new AdminConfigError(`${name}: relations['${relName}'].create is true or false`);
+    if (o.choices !== undefined && !(o.choices instanceof Prepared)) throw new AdminConfigError(`${name}: relations['${relName}'].choices takes a prepared query set of the target`);
+    out[relName] = {
+      ...(o.label === undefined ? {} : { label: o.label }),
+      ...(o.create === undefined ? {} : { create: o.create }),
+      ...(o.choices === undefined ? {} : { choices: querysetJson({ _meta: registry.get(found.target) } as unknown as AnyModel, o.choices).json }),
+    };
+  }
+  return out;
+}
+
+function filesJson(name: string, value: unknown): Record<string, string> {
+  if (typeof value !== "object" || value === null || Array.isArray(value) || !Object.values(value).every((v) => typeof v === "string" && v !== "")) {
+    throw new AdminConfigError(`${name}: files maps a field name to a storage name`);
+  }
+  return { ...(value as Record<string, string>) };
+}
+
+/** The host functions `file.store` and `file.fetch`: the core hands over a temporary file, the registry moves the bytes. */
+function fileHost(storage: FileStorage, files: ReadonlyMap<string, string>): Record<string, HostFunction> {
+  return {
+    async "file.store"(_database, args) {
+      const name = files.get(`${args.model}.${args.field}`);
+      if (name === undefined) throw new AdminConfigError(`${args.model}.${args.field} is not a file field`);
+      const reference = await storage.upload(name, createReadStream(args.path), { filename: args.filename, contentType: args.content_type, maxSize: args.max_size });
+      return reference.toJSON();
+    },
+    async "file.fetch"(_database, args) {
+      await pipeline(Readable.from(storage.open(args.reference)), createWriteStream(args.path));
+      return null;
+    },
+  };
+}
+
+/** A multipart body with one part named `file`. */
+function multipartBody(file: UploadFile): { type: string; data: Buffer } {
+  const [name, data, type] = file;
+  const boundary = `----monorm${randomUUID().replaceAll("-", "")}`;
+  const head = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${name}"\r\nContent-Type: ${type}\r\n\r\n`);
+  const tail = Buffer.from(`\r\n--${boundary}--\r\n`);
+  return { type: `multipart/form-data; boundary=${boundary}`, data: Buffer.concat([head, typeof data === "string" ? Buffer.from(data) : data, tail]) };
 }
 
 function formJson(name: string, form: unknown): unknown {
@@ -521,6 +606,8 @@ export class AdminResponse {
     readonly headers: readonly (readonly [string, string])[] = [],
     /** The SQL of those statements, with placeholders (the `user` path only). */
     readonly sql: readonly string[] = [],
+    /** The body as bytes: a file download is not text. Login mode keeps only the UTF-8 text. */
+    readonly content: Uint8Array = new TextEncoder().encode(text),
   ) {}
 
   /** The first header with this name (any case), or `null`. */
@@ -549,7 +636,11 @@ export interface RequestOptions {
   readonly csrf?: string | null;
   /** The `Origin` of a write: `http://localhost` unless given; `null` leaves the header out. */
   readonly origin?: string | null;
+  /** A multipart upload: `[filename, data, contentType]`. Login mode sends text files only (UTF-8). */
+  readonly file?: UploadFile;
 }
+
+export type UploadFile = readonly [filename: string, data: string | Uint8Array, contentType: string];
 
 export interface LoginOptions {
   /** The signing secret (`MONORM_ADMIN_SECRET`): at least 32 bytes. */
@@ -600,8 +691,16 @@ export class AdminTestClient {
   async request(method: string, path: string, options: RequestOptions = {}): Promise<AdminResponse> {
     const login = this.#login;
     if (login === null) {
-      if (Object.keys(options).some((k) => k !== "json")) throw new TypeError("the `user` client takes only a method, a path and `json`");
+      if (Object.keys(options).some((k) => k !== "json" && k !== "file")) throw new TypeError("the `user` client takes only a method, a path, `json` and `file`");
+      if (options.file !== undefined && options.json !== undefined) throw new TypeError("a request takes `json` or `file`, not both");
       const trace = new (native().Trace)();
+      if (options.file !== undefined || path.includes("/files/")) {
+        const part = options.file === undefined ? null : multipartBody(options.file);
+        const raw = await wait(() => this.site.requestRaw(this.database.engine, method, path, this.#user, trace, hostDispatch(this.database, this.host), part?.type ?? null, part?.data ?? null));
+        const events = trace.take();
+        const body = new Uint8Array(raw.body);
+        return new AdminResponse(raw.status, new TextDecoder().decode(body), events.length, raw.headers as [string, string][], events.map((e) => e.sql), body);
+      }
       const sentJson = options.json === undefined ? null : JSON.stringify(options.json);
       const { status, body } = await wait(() => this.site.request(this.database.engine, method, path, this.#user, trace, hostDispatch(this.database, this.host), sentJson));
       const events = trace.take();
@@ -619,8 +718,17 @@ export class AdminTestClient {
       const origin = options.origin === undefined ? "http://localhost" : options.origin;
       if (origin !== null) sent.set("origin", origin);
     }
-    const body = options.json === undefined ? null : JSON.stringify(options.json);
+    let body = options.json === undefined ? null : JSON.stringify(options.json);
     if (body !== null && !sent.has("content-type")) sent.set("content-type", "application/json");
+    if (options.file !== undefined) {
+      const part = multipartBody(options.file);
+      try {
+        body = new TextDecoder("utf-8", { fatal: true }).decode(part.data);
+      } catch {
+        throw new TypeError("the login-mode client sends text files only (UTF-8); use `user` for binary data");
+      }
+      if (!sent.has("content-type")) sent.set("content-type", part.type);
+    }
     const router = this.#router;
     const reply = await wait(() => router.request(method, path, [...sent], body, this.ip));
     for (const [name, value] of reply.headers as [string, string][]) {
@@ -682,12 +790,14 @@ export class Admin {
   readonly #widgets: Record<string, string> | undefined;
   readonly #groups: string[];
   readonly #statementTimeout: number;
+  readonly #storage: FileStorage | undefined;
   #planned: { schema: unknown; site: NativeAdminSite } | null = null;
 
   constructor(
     private readonly registry: Registry = defaultRegistry,
     options: AdminOptions = {},
   ) {
+    this.#storage = options.storage;
     this.#strategy = options.permissions ?? "page";
     this.#label = options.label ?? "admin";
     for (const key of Object.keys(options.brand ?? {})) {
@@ -719,7 +829,7 @@ export class Admin {
     this.#planned = null;
   }
 
-  #configJson(): string {
+  #configJson(registry: Registry): string {
     const resources = [...this.#resources].map(([model, { model: cls, config }]) => {
       const queryset = config.queryset === undefined ? undefined : querysetJson(cls, config.queryset);
       if (queryset?.order !== undefined && config.list?.order !== undefined) {
@@ -735,6 +845,8 @@ export class Admin {
         ...(config.readonly === undefined ? {} : { readonly: readonlyJson(model, config.readonly) }),
         ...(config.widgets === undefined ? {} : { widgets: widgetsJson(`${model}: widgets`, config.widgets) }),
         ...(config.formComponent === undefined ? {} : { form_component: formComponentJson(model, config.formComponent) }),
+        ...(config.relations === undefined ? {} : { relations: relationsJson(model, cls, registry, config.relations) }),
+        ...(config.files === undefined ? {} : { files: this.#filesOf(model, config.files) }),
         ...(list === undefined ? {} : { list }),
         ...(config.title === undefined ? {} : { title: config.title }),
         ...(config.group === undefined ? {} : { group: config.group }),
@@ -757,6 +869,12 @@ export class Admin {
     });
   }
 
+  #filesOf(model: string, files: unknown): string[] {
+    const names = Object.keys(filesJson(model, files));
+    if (this.#storage === undefined) throw new AdminConfigError(`${model}: files needs the storage option of Admin (a Registry of extensions/file-storage)`);
+    return names;
+  }
+
   /** The host functions: login, the `searchWith` function of each resource and the function of each computed column. */
   #host(): Record<string, HostFunction> {
     const host: Record<string, HostFunction> = { ...HOST };
@@ -768,13 +886,18 @@ export class Admin {
         if (column.function !== undefined) host[batchName(model, column.name)] = batchHost(model, column.function);
       }
     }
+    const files = new Map<string, string>();
+    for (const [name, { config }] of this.#resources) {
+      for (const [field, storage] of Object.entries(filesJson(name, config.files ?? {}))) files.set(`${name}.${field}`, storage);
+    }
+    if (files.size > 0 && this.#storage !== undefined) Object.assign(host, fileHost(this.#storage, files));
     return host;
   }
 
   #site(registry: Registry): NativeAdminSite {
     const schema = registry.native();
     try {
-      return call(() => native().adminSite(schema, this.#configJson()));
+      return call(() => native().adminSite(schema, this.#configJson(registry)));
     } catch (e) {
       if (e instanceof AdminConfigError) throw e;
       throw new AdminConfigError(e instanceof Error ? e.message : String(e));
