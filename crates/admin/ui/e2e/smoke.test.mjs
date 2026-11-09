@@ -37,6 +37,24 @@ model Book {
   author     Author?  @relation(fields: [author_id], references: [id])
   @@map("books")
 }
+
+model Note {
+  id    BigInt @id @default(autoincrement())
+  title String
+  @@map("notes")
+}
+`;
+
+// A custom form: the module default-exports a function from React to a component.
+const NOTE_FORM = `export default (React) => function NoteForm({ values, errors, saving, save }) {
+  const [title, setTitle] = React.useState(values.title ?? "");
+  const h = React.createElement;
+  return h("form", { className: "form", onSubmit: (e) => { e.preventDefault(); void save(title === "" ? {} : { title }); } },
+    h("label", { htmlFor: "note-title" }, "Note text"),
+    h("input", { id: "note-title", value: title, onChange: (e) => setTitle(e.target.value) }),
+    ...(errors.fields.title ?? []).map((m) => h("p", { key: m, role: "note" }, m)),
+    h("button", { type: "submit", disabled: saving }, "Save note"));
+};
 `;
 
 const SEED = `
@@ -77,7 +95,11 @@ before(async () => {
   // A search box on Book: the title is a plain column, so the search is "contains". A filter on its author.
   const module = readFileSync(join(dir, "admin.py"), "utf8");
   assert.ok(module.includes("admin.register(Book)"), "the generated admin.py registers Book");
-  writeFileSync(join(dir, "admin.py"), module.replace("admin.register(Book)", 'admin.register(Book, {"list": {"search": [Book.title], "filters": [Book.author]}})'));
+  assert.ok(module.includes("admin.register(Note)"), "the generated admin.py registers Note");
+  // Book: a section layout with a collapsed section. Note: a custom form from a module file.
+  const book = 'admin.register(Book, {"list": {"search": [Book.title], "filters": [Book.author]}, "form": [{"title": "Basics", "fields": ["title", "created_at"]}, {"title": "More", "fields": ["author_id"], "collapsed": True}]})';
+  writeFileSync(join(dir, "note-form.js"), NOTE_FORM);
+  writeFileSync(join(dir, "admin.py"), module.replace("admin.register(Book)", book).replace("admin.register(Note)", 'admin.register(Note, {"form_component": "note-form.js"})'));
   run(["-m", "monorm", "generate"], env);
   run(["-m", "monorm", "makemigrations"], env);
   run(["-m", "monorm", "migrate", "--url", env.MONORM_DATABASE_URL], env);
@@ -326,5 +348,31 @@ test("a form shows the field error of the server, and the edit of an author is s
   await page.waitForLoadState("networkidle");
   // The 422 of the first save is the one error that the test expects: the response and the console line of the browser.
   assert.deepEqual(problems, [`HTTP 422: ${base}/admin/api/resources/Author`, "console: Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)"]);
+  await context.close();
+});
+
+test("a section layout with a collapsed section, and a custom form", async () => {
+  const { context, page, problems } = await signedIn();
+  await page.goto(`${base}/admin/Book/-/new`);
+  await page.getByRole("heading", { name: "Add Book" }).waitFor();
+  await page.getByText("Basics", { exact: true }).waitFor();
+  const more = page.locator("details.section");
+  assert.equal(await more.getAttribute("open"), null, "the collapsed section starts closed");
+  assert.equal(await page.getByLabel("Author id").isVisible(), false);
+  await more.locator("summary").click();
+  await page.getByLabel("Author id").waitFor();
+  assert.equal(await page.locator("fieldset.section").count(), 1);
+
+  // The module of the resource replaces the form. The first save has no title, and the 422 comes back as `errors`.
+  await page.goto(`${base}/admin/Note/-/new`);
+  await page.getByLabel("Note text").waitFor();
+  await page.getByRole("button", { name: "Save note" }).click();
+  await page.getByRole("note").getByText("This field is required.").waitFor();
+  await page.getByLabel("Note text").fill("Hello");
+  await page.getByRole("button", { name: "Save note" }).click();
+  await page.waitForURL(`${base}/admin/Note/1`);
+  await page.getByText("Hello").first().waitFor();
+  await page.waitForLoadState("networkidle");
+  assert.deepEqual(problems, [`HTTP 422: ${base}/admin/api/resources/Note`, "console: Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)"]);
   await context.close();
 });

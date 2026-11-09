@@ -84,6 +84,12 @@ h2 { font-size: .75rem; text-transform: uppercase; letter-spacing: .05em; color:
 .form { max-width: 40rem; padding-bottom: 4.5rem; }
 .field textarea, .field select { padding: .5rem; border: 1px solid var(--line); border-radius: 4px; font: inherit; }
 .field input[type="checkbox"] { align-self: flex-start; padding: 0; }
+.field input[type="radio"] { padding: 0; }
+.radios { display: flex; flex-wrap: wrap; gap: .25rem 1rem; }
+.radio { display: inline-flex; gap: .35rem; align-items: center; }
+fieldset.section, details.section { border: 1px solid var(--line); border-radius: 4px; padding: .75rem 1rem 0; margin: 0 0 1rem; }
+.section legend, .section summary { font-weight: 600; padding: 0 .25rem; }
+details.section[open] summary { margin-bottom: .75rem; }
 .field-bad input, .field-bad textarea, .field-bad select { border-color: #8a1c13; }
 .msg { margin: 0; font-size: .9rem; }
 .msg-error { color: #8a1c13; }

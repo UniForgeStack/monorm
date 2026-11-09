@@ -46,7 +46,18 @@ export interface FormField {
   required: boolean;
   default: boolean;
   readonly_on_update: boolean;
+  /** The config makes the field read-only on both forms. */
+  readonly: boolean;
+  /** The widget after the config: the field, the nested path, the type, then the default of the column. */
+  widget: string;
   max_length: number | null;
+}
+
+/** A block of fields in a form. `title` is null for the block without a heading. */
+export interface Section {
+  title: string | null;
+  fields: string[];
+  collapsed: boolean;
 }
 
 export interface Resource {
@@ -73,6 +84,10 @@ export interface Resource {
   writable?: boolean;
   read_only_reason?: string | null;
   form?: FormField[];
+  /** The layout of the create form and of the edit form. */
+  sections?: { create: Section[]; edit: Section[] };
+  /** A module of the resource replaces the whole form: see `formModuleUrl`. */
+  form_component?: boolean;
   /** The writes that this user may do: `create`, `update`, `delete`. */
   ops?: string[];
 }
@@ -203,6 +218,8 @@ export async function session(): Promise<Session> {
 export const login = (username: string, password: string) => call<{ user: User }>("POST", "/login", { username, password });
 export const logout = () => call<object>("POST", "/logout", {});
 export const changePassword = (old_password: string, new_password: string) => call<object>("POST", "/password", { old_password, new_password });
+/** Where the module of a custom form comes from: the same origin, so the CSP allows it. */
+export const formModuleUrl = (resource: string) => `${base}/forms/${encodeURIComponent(resource)}`;
 export const site = () => call<Site>("GET", "/resources");
 
 const listPath = (resource: string, scope?: Scope) =>
