@@ -277,7 +277,7 @@ async def test_a_to_many_tab_lists_the_children_of_one_record_with_the_child_lis
     assert (await client.get("/admin/api/resources/FltAuthor/99/comments")).status == 404
     assert (await client.get("/admin/api/resources/FltAuthor/1/nothing")).status == 404
     author = next(r for r in (await client.get("/admin/api/resources")).json()["resources"] if r["name"] == "FltAuthor")
-    assert author["tabs"] == [{"name": "comments", "title": "Comments", "target": "FltComment"}]
+    assert author["tabs"] == [{"name": "comments", "title": "Comments", "target": "FltComment", "prefill": [{"parent": "id", "child": "author_id"}]}]
 
 
 async def test_labels_and_empty_texts_reach_the_metadata(world):

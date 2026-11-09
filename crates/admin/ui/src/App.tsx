@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Menu from "@radix-ui/react-dropdown-menu";
 import { DetailPage } from "./Detail";
+import { FormPage } from "./Form";
 import { ListPage } from "./List";
 import * as api from "./api";
 import { getZone, setZone, type Zone } from "./format";
@@ -132,6 +133,8 @@ function Shell({ user, route }: { user: api.User | null; route: ReturnType<typeo
           {route.page === "password" && <Password />}
           {route.page === "home" && <Card title={brand?.name ?? "Admin"}><p className="muted">Choose a resource.</p></Card>}
           {route.page === "list" && <ListPage resource={route.resource} zone={zone} site={site.data} />}
+          {route.page === "new" && <FormPage resource={route.resource} zone={zone} site={site.data} />}
+          {route.page === "edit" && <FormPage resource={route.resource} id={route.key} zone={zone} site={site.data} />}
           {route.page === "detail" && <DetailPage resource={route.resource} id={route.key} zone={zone} site={site.data} />}
         </main>
       </div>

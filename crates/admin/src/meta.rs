@@ -184,6 +184,16 @@ fn filter(schema: &Schema, r: &Resource, f: &Filter) -> Value {
     }
 }
 
+/// For "Add" on a to-many tab: the field of the new child record and the field of the open record that gives its value.
+fn prefill(schema: &Schema, parent: &Resource, tab: &crate::site::Tab) -> Value {
+    let model = schema.model(parent.model);
+    let Some(rel) = model.ir.relations.iter().find(|x| x.name == tab.name) else { return json!([]) };
+    let Some(child) = schema.models.iter().position(|m| m.ir.name == tab.target) else { return json!([]) };
+    let name_of = |m: usize, n: &String| schema.model(m).ir.fields.iter().find(|f| f.name == *n || f.column == *n).map(|f| f.name.clone());
+    let pairs = rel.from.iter().zip(&rel.to).filter_map(|(from, to)| Some(json!({"parent": name_of(parent.model, from)?, "child": name_of(child, to)?})));
+    Value::Array(pairs.collect())
+}
+
 /// The metadata of one resource that does not depend on the user.
 pub fn resource(schema: &Schema, r: &Resource, builds: &AtomicUsize) -> Value {
     builds.fetch_add(1, Ordering::SeqCst);
@@ -205,7 +215,7 @@ pub fn resource(schema: &Schema, r: &Resource, builds: &AtomicUsize) -> Value {
         "links": r.links.iter().map(|l| json!({"name": l.name, "title": humanize(&l.name), "target": l.target})).collect::<Vec<_>>(),
         "filters": r.filters.iter().map(|f| filter(schema, r, f)).collect::<Vec<_>>(),
         "named_filters": r.named_filters.iter().map(|n| json!({"name": n.name, "title": n.label, "default": n.default, "choices": n.choices.iter().map(|c| json!({"name": c.name, "title": c.label})).collect::<Vec<_>>()})).collect::<Vec<_>>(),
-        "tabs": r.tabs.iter().map(|t| json!({"name": t.name, "title": r.labels.get(&t.name).cloned().unwrap_or_else(|| humanize(&t.name)), "target": t.target})).collect::<Vec<_>>(),
+        "tabs": r.tabs.iter().map(|t| json!({"name": t.name, "title": r.labels.get(&t.name).cloned().unwrap_or_else(|| humanize(&t.name)), "target": t.target, "prefill": prefill(schema, r, t)})).collect::<Vec<_>>(),
         "empty": r.empty,
         "can": r.can.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
     });

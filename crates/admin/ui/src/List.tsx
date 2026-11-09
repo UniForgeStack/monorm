@@ -3,7 +3,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import * as api from "./api";
 import { FilterBar, POSITION } from "./filters";
 import { type Zone } from "./format";
-import { navigate, rememberList, useSearch } from "./router";
+import { Link, navigate, newUrl, rememberList, useSearch } from "./router";
 import { Table } from "./Table";
 import { Alert, Bypass, Button, message } from "./ui";
 
@@ -100,6 +100,7 @@ export function ListView({ resource, zone, meta, params, change, scope }: { reso
             <Button type="submit" variant="plain">Search</Button>
           </form>
         )}
+        {!scope && api.may(meta, "create") && <Link className="btn btn-primary" href={newUrl(resource)}>Add</Link>}
         {meta?.bypass && meta.bypass.length > 0 && <Bypass names={meta.bypass} params={params} change={change} />}
         <label className="size">
           Rows per page

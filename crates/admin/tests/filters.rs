@@ -303,7 +303,7 @@ async fn a_to_many_tab_lists_the_children_of_one_record_with_the_child_list_feat
     assert_eq!(get(&site, &conn, "/admin/api/resources/Author/1/nothing").await.0, 404, "no such tab");
     let (_, meta, _) = get(&site, &conn, "/admin/api/resources").await;
     let author = meta["resources"].as_array().unwrap().iter().find(|r| r["name"] == "Author").unwrap();
-    assert_eq!(author["tabs"], json!([{"name": "comments", "title": "Comments", "target": "Comment"}]));
+    assert_eq!(author["tabs"], json!([{"name": "comments", "title": "Comments", "target": "Comment", "prefill": [{"parent": "id", "child": "author_id"}]}]));
 }
 
 #[tokio::test]

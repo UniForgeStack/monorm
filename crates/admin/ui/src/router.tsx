@@ -33,22 +33,28 @@ export type Route =
   | { page: "password" }
   | { page: "home" }
   | { page: "list"; resource: string }
-  | { page: "detail"; resource: string; key: string };
+  | { page: "detail"; resource: string; key: string }
+  | { page: "new"; resource: string }
+  | { page: "edit"; resource: string; key: string };
 
-/** `/admin/-/login`, `/admin/-/password`, `/admin/<resource>` and `/admin/<resource>/<key>`: `-` is no resource name. */
+/** `/admin/-/login`, `/admin/-/password`, `/admin/<resource>`, `/admin/<resource>/<key>`, `/admin/<resource>/<key>/edit` and `/admin/<resource>/-/new`: `-` is no resource name and no key. */
 export function parse(pathname: string): Route {
   const rest = pathname.startsWith(BASE) ? pathname.slice(BASE.length) : pathname;
   const parts = rest.split("/").filter((p) => p !== "");
-  const [first, second] = parts;
+  const [first, second, third] = parts;
   if (first === undefined) return { page: "home" };
   if (first === "-") return second === "password" ? { page: "password" } : { page: "login" };
   const resource = decodeURIComponent(first);
   if (second === undefined) return { page: "list", resource };
+  if (second === "-" && third === "new") return { page: "new", resource };
+  if (third === "edit") return { page: "edit", resource, key: second };
   return { page: "detail", resource, key: second };
 }
 
 export const listUrl = (resource: string) => `${BASE}/${encodeURIComponent(resource)}`;
 export const detailUrl = (resource: string, key: string) => `${listUrl(resource)}/${key}`;
+export const newUrl = (resource: string, search = "") => `${listUrl(resource)}/-/new${search}`;
+export const editUrl = (resource: string, key: string) => `${detailUrl(resource, key)}/edit`;
 export const LOGIN_URL = `${BASE}/-/login`;
 export const PASSWORD_URL = `${BASE}/-/password`;
 

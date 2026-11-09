@@ -257,7 +257,7 @@ for (const provider of PROVIDERS) {
     assert.equal((await client.get("/admin/api/counts/FltAuthor/1/comments")).json().count, 2);
     assert.equal((await client.get("/admin/api/resources/FltAuthor/99/comments")).status, 404);
     assert.equal((await client.get("/admin/api/resources/FltAuthor/1/nothing")).status, 404);
-    assert.deepEqual((await resourceOf(client, "FltAuthor")).tabs, [{ name: "comments", title: "Comments", target: "FltComment" }]);
+    assert.deepEqual((await resourceOf(client, "FltAuthor")).tabs, [{ name: "comments", title: "Comments", target: "FltComment", prefill: [{ parent: "id", child: "author_id" }] }]);
   }));
 
   test(`labels and empty texts reach the metadata (${provider})`, () => world(provider, async (w) => {

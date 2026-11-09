@@ -257,3 +257,74 @@ test("filter a list, keep the view in the URL, and open a tab", async () => {
   assert.deepEqual(problems, []);
   await context.close();
 });
+
+async function signedIn() {
+  const context = await browser.newContext({ timezoneId: ZONE, locale: "en-US" });
+  const page = await context.newPage();
+  const problems = [];
+  page.on("console", (m) => m.type() === "error" && !m.text().includes("status of 401") && problems.push(`console: ${m.text()}`));
+  page.on("pageerror", (e) => problems.push(`page error: ${e.message}`));
+  page.on("requestfailed", (r) => problems.push(`request failed: ${r.url()} ${r.failure()?.errorText}`));
+  page.on("response", (r) => r.status() >= 400 && r.status() !== 401 && problems.push(`HTTP ${r.status()}: ${r.url()}`));
+  await page.goto(`${base}/admin/-/login`);
+  await page.getByLabel("Username").fill("ann");
+  await page.getByLabel("Password").fill("pw-of-ann");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await page.getByRole("navigation", { name: "Resources" }).waitFor();
+  return { context, page, problems };
+}
+
+test("add a book from the Books tab of an author, then change it, then delete it", async () => {
+  const { context, page, problems } = await signedIn();
+  await page.goto(`${base}/admin/Author/1?tab=books`);
+  await page.getByRole("link", { name: "Add", exact: true }).click();
+  // The author comes from the tab: the form opens with it filled in.
+  await page.waitForURL(`${base}/admin/Book/-/new?author_id=1`);
+  await page.getByRole("heading", { name: "Add Book" }).waitFor();
+  assert.equal(await page.getByLabel("Author id").inputValue(), "1");
+  await page.getByLabel("Title").fill("Third");
+  await page.getByLabel("Created at").fill("2026-02-03T10:00:00");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.waitForURL(`${base}/admin/Book/3`);
+  await page.getByText("Third").first().waitFor();
+
+  await page.getByRole("link", { name: "Edit" }).click();
+  await page.waitForURL(`${base}/admin/Book/3/edit`);
+  await page.getByRole("heading", { name: "Change Book" }).waitFor();
+  assert.equal(await page.getByLabel("Title").inputValue(), "Third");
+  await page.getByLabel("Title").fill("Third, revised");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.waitForURL(`${base}/admin/Book/3`);
+  await page.getByText("Third, revised").first().waitFor();
+
+  await page.getByRole("button", { name: "Delete" }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Delete it" }).click();
+  await page.waitForURL(`${base}/admin/Book`);
+  await page.getByText("2 records").waitFor();
+  await page.waitForLoadState("networkidle");
+  assert.deepEqual(problems, []);
+  await context.close();
+});
+
+test("a form shows the field error of the server, and the edit of an author is saved", async () => {
+  const { context, page, problems } = await signedIn();
+  await page.goto(`${base}/admin/Author/-/new`);
+  await page.getByRole("heading", { name: "Add Author" }).waitFor();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.getByText("This field is required.").waitFor();
+  await page.getByLabel("Name").fill("Zed");
+  await page.getByRole("button", { name: "Save and continue" }).click();
+  await page.waitForURL(`${base}/admin/Author/2/edit`);
+  await page.getByLabel("Name").fill("Zed Two");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.waitForURL(`${base}/admin/Author/2`);
+  await page.getByText("Zed Two").first().waitFor();
+  await page.getByRole("button", { name: "Delete" }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Delete it" }).click();
+  await page.waitForURL(`${base}/admin/Author`);
+  await page.getByText("1 record", { exact: true }).waitFor();
+  await page.waitForLoadState("networkidle");
+  // The 422 of the first save is the one error that the test expects: the response and the console line of the browser.
+  assert.deepEqual(problems, [`HTTP 422: ${base}/admin/api/resources/Author`, "console: Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)"]);
+  await context.close();
+});

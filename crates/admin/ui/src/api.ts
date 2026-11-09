@@ -36,6 +36,17 @@ export interface Tab {
   name: string;
   title: string;
   target: string;
+  /** "Add" on the tab: the field of the new record, and the field of the open record that gives its value. */
+  prefill?: { parent: string; child: string }[];
+}
+
+/** What a form needs to know of one writable field. */
+export interface FormField {
+  name: string;
+  required: boolean;
+  default: boolean;
+  readonly_on_update: boolean;
+  max_length: number | null;
 }
 
 export interface Resource {
@@ -58,7 +69,16 @@ export interface Resource {
   can?: string[];
   /** The read defaults that this user may switch off, with `?without=<name>`. */
   bypass?: string[];
+  /** False when the admin does not write to the model: `read_only_reason` says why. */
+  writable?: boolean;
+  read_only_reason?: string | null;
+  form?: FormField[];
+  /** The writes that this user may do: `create`, `update`, `delete`. */
+  ops?: string[];
 }
+
+/** Whether the user may do the write. The server checks it again. */
+export const may = (r: Resource | undefined, op: "create" | "update" | "delete") => !!r && r.writable !== false && !!r.form && (r.ops ?? [op]).includes(op);
 
 export interface Brand {
   name: string;
@@ -122,11 +142,19 @@ export interface User {
   display?: string;
 }
 
+/** The parts of an error answer that a form shows: a message for each field, messages for the form, and the 409 values. */
+export interface ErrorBody {
+  fields?: Record<string, string[]>;
+  form?: string[];
+  conflicts?: Record<string, { loaded: unknown; current: unknown }>;
+}
+
 export class ApiError extends Error {
   constructor(
     readonly status: number,
     readonly kind: string,
     message: string,
+    readonly body: ErrorBody = {},
   ) {
     super(message);
   }
@@ -146,14 +174,14 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await response.text();
-  let data: { ok?: boolean; error?: { kind: string; message: string }; csrf?: string } = {};
+  let data: { ok?: boolean; error?: { kind: string; message: string }; csrf?: string } & ErrorBody = {};
   try {
     data = text ? JSON.parse(text) : {};
   } catch {
     throw new ApiError(response.status, "BadResponse", `the server answered ${response.status} with no JSON`);
   }
   if (!response.ok || data.ok === false) {
-    throw new ApiError(response.status, data.error?.kind ?? "Error", data.error?.message ?? `the server answered ${response.status}`);
+    throw new ApiError(response.status, data.error?.kind ?? "Error", data.error?.message ?? `the server answered ${response.status}`, data);
   }
   if (data.csrf) csrf = data.csrf;
   return data as T;
@@ -196,3 +224,16 @@ export function count(resource: string, search: string, exact: boolean, scope?: 
 /** `without` is the read defaults to switch off, as the URL holds them (`a,b`). */
 export const detail = (resource: string, key: string, without = "") =>
   call<Detail>("GET", `/resources/${encodeURIComponent(resource)}/${key}${without ? `?without=${encodeURIComponent(without)}` : ""}`);
+
+const recordPath = (resource: string, key: string) => `/resources/${encodeURIComponent(resource)}/${key}`;
+
+export type Values = Record<string, unknown>;
+
+/** Create a record from the fields that the user filled in. The answer has the encoded key of the new record. */
+export const create = (resource: string, set: Values) => call<{ key: string }>("POST", `/resources/${encodeURIComponent(resource)}`, { set });
+
+/** Change a record: `set` holds only the changed fields, `loaded` the values that the form was loaded with. */
+export const update = (resource: string, key: string, set: Values, loaded: Values) =>
+  call<{ key: string; changed: string[] }>("PATCH", recordPath(resource, key), { set, loaded });
+
+export const destroy = (resource: string, key: string, loaded: Values) => call<{ key: string }>("DELETE", recordPath(resource, key), { loaded });
