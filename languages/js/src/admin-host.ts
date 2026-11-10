@@ -6,9 +6,24 @@
  * use the `database` it gets: a statement on another handle waits for a connection of its own.
  */
 import { authenticate } from "./auth/auth.js";
+import { loadRules, type PasswordRule, validatePassword } from "./auth/password.js";
 import { activeModel } from "./auth/permissions.js";
 import type { Database } from "./db.js";
 import type { NativeHostDispatch } from "./native.js";
+
+let loaded: { directory: string; rules: Promise<PasswordRule[]> } | undefined;
+
+/** Loads `[auth] password_rules` once per process, so a wrong setting fails at start and a custom rule keeps its state. */
+export function loadPasswordRules(): Promise<PasswordRule[]> {
+  const directory = process.cwd();
+  if (loaded?.directory === directory) return loaded.rules;
+  const rules = loadRules(directory);
+  loaded = { directory, rules };
+  rules.catch(() => {
+    if (loaded?.rules === rules) loaded = undefined; // a failed load is not kept
+  });
+  return rules;
+}
 
 export type HostFunction = (database: Database, args: any) => Promise<unknown>;
 
@@ -39,6 +54,11 @@ export const HOST: Readonly<Record<string, HostFunction>> = {
     const user = await User["objects"].using(database).filter(User["id"].eq(args.key)).first();
     if (user === null || user === undefined || !user.isActive) return { changed: false, reason: "the user cannot change the password" };
     if (!user.checkPassword(args.old_password)) return { changed: false, reason: "the old password is wrong" };
+    const errors = await validatePassword(args.new_password, user, { rules: await loadPasswordRules() });
+    // The codes and params reach the browser and the audit row, so a rule must keep the password out of them.
+    if (errors.length > 0) {
+      return { changed: false, reason: errors.map((e) => e.message).join(" "), errors };
+    }
     user.setPassword(args.new_password);
     await user.update({ password: user.password });
     return { changed: true, password_hash: user.password };

@@ -80,6 +80,12 @@ async def _sync(config: dict[str, Any]) -> int:
 
 
 async def _serve(config: dict[str, Any]) -> int:
+    from ._admin_host import load_password_rules
+
+    try:
+        load_password_rules()
+    except (RuntimeError, ValueError) as e:
+        raise _SettingsError(str(e)) from None
     admin, db = await _open(config)
     try:
         site = admin._site(db._registry)

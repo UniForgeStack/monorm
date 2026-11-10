@@ -69,7 +69,13 @@ impl HostBridge for Host {
             }
             "auth.change_password" => {
                 let mut current = self.password.lock().unwrap();
-                if payload["old_password"] == json!(current.clone()) {
+                if payload["old_password"] == json!(current.clone()) && payload["new_password"] == json!("odd") {
+                    let errors = json!([{"code": 42, "message": "A custom rule.", "params": {}}, {"code": "custom", "message": "A custom rule.", "params": {}}]);
+                    Ok(json!({"changed": false, "reason": "A custom rule.", "errors": errors}))
+                } else if payload["old_password"] == json!(current.clone()) && payload["new_password"] == json!("weak") {
+                    let errors = json!([{"code": "password_too_short", "message": "This password is too short.", "params": {"min": 8}}]);
+                    Ok(json!({"changed": false, "reason": "This password is too short.", "errors": errors}))
+                } else if payload["old_password"] == json!(current.clone()) {
                     *current = payload["new_password"].as_str().unwrap().to_string();
                     Ok(json!({"changed": true, "password_hash": format!("hash:{current}")}))
                 } else {
@@ -621,18 +627,62 @@ async fn a_password_change_needs_the_old_password_and_writes_an_audit_row() {
     let rig = rig().await;
     let mut c = Client::new(&rig.router, "10.0.0.1");
     c.login("ann", "pw").await;
-    let wrong = c.post("/admin/api/password", json!({"old_password": "x", "new_password": "new-pw"})).await;
+    let wrong = c.post("/admin/api/password", json!({"old_password": "x", "new_password": "new-password"})).await;
     assert_eq!((wrong.status, wrong.body["error"]["kind"].as_str()), (400, Some("InvalidPassword")));
     let missing = c.post("/admin/api/password", json!({"old_password": "pw"})).await;
     assert_eq!(missing.status, 400);
-    let done = c.post("/admin/api/password", json!({"old_password": "pw", "new_password": "new-pw"})).await;
+    let done = c.post("/admin/api/password", json!({"old_password": "pw", "new_password": "new-password"})).await;
     assert_eq!(done.status, 200);
-    assert_eq!(*rig.host.password.lock().unwrap(), "new-pw");
+    assert_eq!(*rig.host.password.lock().unwrap(), "new-password");
     let actions: Vec<String> = audit(&rig).await.into_iter().map(|r| r[1].clone()).collect();
     assert_eq!(actions, ["login", "password_change_failed", "password_change"]);
     let mut again = Client::new(&rig.router, "10.0.0.2");
     assert_eq!(again.login("ann", "pw").await.status, 401);
-    assert_eq!(again.login("ann", "new-pw").await.status, 200);
+    assert_eq!(again.login("ann", "new-password").await.status, 200);
+}
+
+#[tokio::test]
+async fn a_weak_new_password_is_refused_with_the_rule_codes_and_the_audit_row_has_no_password() {
+    let rig = rig().await;
+    let mut c = Client::new(&rig.router, "10.0.0.1");
+    c.login("ann", "pw").await;
+    let weak = c.post("/admin/api/password", json!({"old_password": "pw", "new_password": "weak"})).await;
+    assert_eq!((weak.status, weak.body["error"]["kind"].as_str()), (400, Some("WeakPassword")));
+    assert_eq!(weak.body["error"]["message"], "This password is too short.");
+    assert_eq!(weak.body["error"]["errors"][0]["code"], "password_too_short");
+    assert_eq!(*rig.host.password.lock().unwrap(), "pw", "the password stays");
+    let rows = rig.driver.query_text("SELECT action, changes FROM \"AdminLogEntry\" ORDER BY id DESC LIMIT 1".into()).await.unwrap();
+    let (action, changes) = (rows[0][0].clone().unwrap(), rows[0][1].clone().unwrap());
+    assert_eq!(action, "password_change_failed");
+    assert!(changes.contains("password_too_short") && !changes.contains("weak"), "{changes}");
+}
+
+#[tokio::test]
+async fn weak_new_passwords_do_not_use_up_the_password_limit_but_wrong_old_passwords_do() {
+    let rig = rig().await;
+    let mut c = Client::new(&rig.router, "10.0.0.1");
+    c.login("ann", "pw").await;
+    for _ in 0..7 {
+        let weak = c.post("/admin/api/password", json!({"old_password": "pw", "new_password": "weak"})).await;
+        assert_eq!(weak.status, 400, "a weak password is not a guess at the old password");
+    }
+    for _ in 0..5 {
+        let wrong = c.post("/admin/api/password", json!({"old_password": "no", "new_password": "new-password"})).await;
+        assert_eq!(wrong.body["error"]["kind"], "InvalidPassword");
+    }
+    let blocked = c.post("/admin/api/password", json!({"old_password": "pw", "new_password": "new-password"})).await;
+    assert_eq!(blocked.status, 429, "five wrong old passwords still block");
+}
+
+#[tokio::test]
+async fn the_audit_codes_keep_string_codes_only() {
+    let rig = rig().await;
+    let mut c = Client::new(&rig.router, "10.0.0.1");
+    c.login("ann", "pw").await;
+    c.post("/admin/api/password", json!({"old_password": "pw", "new_password": "odd"})).await;
+    let rows = rig.driver.query_text("SELECT changes FROM \"AdminLogEntry\" ORDER BY id DESC LIMIT 1".into()).await.unwrap();
+    let changes: Value = serde_json::from_str(&rows[0][0].clone().unwrap()).unwrap();
+    assert_eq!(changes["codes"], json!(["custom"]), "{changes}");
 }
 
 #[tokio::test]
@@ -643,7 +693,7 @@ async fn a_password_change_ends_the_old_cookie_and_keeps_the_changed_session() {
     let old = c.jar.clone();
     let mut elsewhere = Client::new(&rig.router, "10.0.0.2");
     elsewhere.login("ann", "pw").await;
-    let done = c.post("/admin/api/password", json!({"old_password": "pw", "new_password": "new-pw"})).await;
+    let done = c.post("/admin/api/password", json!({"old_password": "pw", "new_password": "new-password"})).await;
     assert_eq!(done.status, 200);
     assert!(done.cookie("__Host-monorm-session").is_some() && done.cookie("__Host-monorm-csrf").is_some(), "the session is issued again");
     assert!(done.body["csrf"].is_string());

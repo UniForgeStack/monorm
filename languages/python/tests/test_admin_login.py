@@ -179,7 +179,7 @@ async def test_a_write_needs_the_csrf_token_the_origin_and_json(world):
     site, db, _ = world
     client = site.test_client(db, secret=SECRET)
     await client.login("ann", "pw")
-    body = {"old_password": "pw", "new_password": "pw"}
+    body = {"old_password": "pw", "new_password": "new-password"}
     no_token = await client.post(PASSWORD_URL, json=body, csrf=None)
     assert (no_token.status, no_token.json()["error"]["kind"]) == (403, "BadCsrfToken")
     assert (await client.post(PASSWORD_URL, json=body, csrf="abc.def")).status == 403
@@ -323,13 +323,13 @@ async def test_a_password_change_ends_the_other_sessions_and_keeps_the_changed_o
     old = dict(client.cookies)
     elsewhere = site.test_client(db, secret=SECRET, ip="10.0.8.8", settings=RENEWS)
     await elsewhere.login("ann", "pw")
-    done = await client.post(PASSWORD_URL, json={"old_password": "pw", "new_password": "new-pw"})
+    done = await client.post(PASSWORD_URL, json={"old_password": "pw", "new_password": "new-password"})
     assert done.status == 200
     assert cookie(done, "__Host-monorm-session") and done.json()["csrf"]
     assert client.cookies["__Host-monorm-session"] != old["__Host-monorm-session"]
     client.cookies.update(old)
     assert (await client.get(ME)).status == 401, "the old cookie is dead at once"
-    await client.login("ann", "new-pw")
+    await client.login("ann", "new-password")
     await asyncio.sleep(1.1)
     assert (await client.get(ME)).status == 200, "the new session knows the new hash"
     assert (await elsewhere.get(ME)).status == 401
@@ -339,13 +339,42 @@ async def test_a_password_change_needs_the_old_password_and_writes_an_audit_row(
     site, db, models = world
     client = site.test_client(db, secret=SECRET)
     await client.login("ann", "pw")
-    wrong = await client.post(PASSWORD_URL, json={"old_password": "nope", "new_password": "new-pw"})
+    wrong = await client.post(PASSWORD_URL, json={"old_password": "nope", "new_password": "new-password"})
     assert (wrong.status, wrong.json()["error"]["kind"]) == (400, "InvalidPassword")
-    assert (await client.post(PASSWORD_URL, json={"new_password": "new-pw"})).status == 400
-    assert (await client.post(PASSWORD_URL, json={"old_password": "pw", "new_password": "new-pw"})).status == 200
+    assert (await client.post(PASSWORD_URL, json={"new_password": "new-password"})).status == 400
+    assert (await client.post(PASSWORD_URL, json={"old_password": "pw", "new_password": "new-password"})).status == 200
     assert [row[1] for row in await audit(db, models)] == ["login", "password_change_failed", "password_change"]
     assert (await site.test_client(db, secret=SECRET, ip="10.0.6.6").login("ann", "pw")).status == 401
-    assert (await site.test_client(db, secret=SECRET, ip="10.0.6.7").login("ann", "new-pw")).status == 200
+    assert (await site.test_client(db, secret=SECRET, ip="10.0.6.7").login("ann", "new-password")).status == 200
+
+
+async def test_a_weak_new_password_is_refused_with_the_rule_codes_and_the_audit_row_has_no_password(world):
+    site, db, models = world
+    client = site.test_client(db, secret=SECRET)
+    await client.login("ann", "pw")
+    weak = await client.post(PASSWORD_URL, json={"old_password": "pw", "new_password": "1234"})
+    error = weak.json()["error"]
+    assert (weak.status, error["kind"]) == (400, "WeakPassword")
+    assert [e["code"] for e in error["errors"]] == ["password_too_short", "password_too_common", "password_entirely_numeric"]
+    assert error["errors"][0]["params"] == {"min": 8}
+    assert error["message"].startswith("This password is too short.")
+    entry = models["AdminLogEntry"]
+    last = (await entry.objects.using(db).order_by(entry.id.desc()))[0]
+    assert last.action == "password_change_failed"
+    assert "password_too_short" in str(last.changes) and "1234" not in str(last.changes)
+    assert (await site.test_client(db, secret=SECRET, ip="10.0.6.8").login("ann", "pw")).status == 200
+
+
+async def test_weak_new_passwords_do_not_use_up_the_password_limit_but_wrong_old_passwords_do(world):
+    site, db, _ = world
+    client = site.test_client(db, secret=SECRET)
+    await client.login("ann", "pw")
+    for _ in range(7):
+        assert (await client.post(PASSWORD_URL, json={"old_password": "pw", "new_password": "1234"})).status == 400
+    for _ in range(5):
+        wrong = await client.post(PASSWORD_URL, json={"old_password": "no", "new_password": "a-long-new-password"})
+        assert wrong.json()["error"]["kind"] == "InvalidPassword"
+    assert (await client.post(PASSWORD_URL, json={"old_password": "pw", "new_password": "a-long-new-password"})).status == 429
 
 
 async def test_the_user_client_needs_no_login_and_does_not_mix_with_a_secret(world):

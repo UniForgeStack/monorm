@@ -66,7 +66,7 @@ async function audit(db: Database, models: Record<string, Loose>): Promise<[stri
   return rows.map((r: Loose) => [r.userKey, r.action, r.recordLabel]);
 }
 
-const body = { old_password: "pw", new_password: "pw" };
+const body = { old_password: "pw", new_password: "new-password" };
 
 function kind(reply: AdminResponse): string {
   return reply.json().error.kind;
@@ -303,13 +303,13 @@ for (const provider of PROVIDERS) {
     const old = new Map(client.cookies);
     const elsewhere = site.testClient(db, { secret: SECRET, ip: "10.0.8.8", settings: RENEWS });
     await elsewhere.login("ann", "pw");
-    const done = await client.post(PASSWORD_URL, { json: { old_password: "pw", new_password: "new-pw" } });
+    const done = await client.post(PASSWORD_URL, { json: { old_password: "pw", new_password: "new-password" } });
     assert.equal(done.status, 200);
     assert.ok(done.cookie("__Host-monorm-session") && done.json().csrf);
     assert.notEqual(client.cookies.get("__Host-monorm-session"), old.get("__Host-monorm-session"));
     for (const [k, v] of old) client.cookies.set(k, v);
     assert.equal((await client.get(ME)).status, 401, "the old cookie is dead at once");
-    await client.login("ann", "new-pw");
+    await client.login("ann", "new-password");
     await sleep(1100);
     assert.equal((await client.get(ME)).status, 200, "the new session knows the new hash");
     assert.equal((await elsewhere.get(ME)).status, 401);
@@ -318,13 +318,43 @@ for (const provider of PROVIDERS) {
   test(`a password change needs the old password and writes an audit row (${provider})`, () => world(provider, async ({ site, db, models }) => {
     const client = site.testClient(db, { secret: SECRET });
     await client.login("ann", "pw");
-    const wrong = await client.post(PASSWORD_URL, { json: { old_password: "nope", new_password: "new-pw" } });
+    const wrong = await client.post(PASSWORD_URL, { json: { old_password: "nope", new_password: "new-password" } });
     assert.deepEqual([wrong.status, kind(wrong)], [400, "InvalidPassword"]);
-    assert.equal((await client.post(PASSWORD_URL, { json: { new_password: "new-pw" } })).status, 400);
-    assert.equal((await client.post(PASSWORD_URL, { json: { old_password: "pw", new_password: "new-pw" } })).status, 200);
+    assert.equal((await client.post(PASSWORD_URL, { json: { new_password: "new-password" } })).status, 400);
+    assert.equal((await client.post(PASSWORD_URL, { json: { old_password: "pw", new_password: "new-password" } })).status, 200);
     assert.deepEqual((await audit(db, models)).map((row) => row[1]), ["login", "password_change_failed", "password_change"]);
     assert.equal((await site.testClient(db, { secret: SECRET, ip: "10.0.6.6" }).login("ann", "pw")).status, 401);
-    assert.equal((await site.testClient(db, { secret: SECRET, ip: "10.0.6.7" }).login("ann", "new-pw")).status, 200);
+    assert.equal((await site.testClient(db, { secret: SECRET, ip: "10.0.6.7" }).login("ann", "new-password")).status, 200);
+  }));
+
+  test(`a weak new password is refused with the rule codes and the audit row has no password (${provider})`, () => world(provider, async ({ site, db, models }) => {
+    const client = site.testClient(db, { secret: SECRET });
+    await client.login("ann", "pw");
+    const weak = await client.post(PASSWORD_URL, { json: { old_password: "pw", new_password: "1234" } });
+    const error = weak.json().error;
+    assert.deepEqual([weak.status, error.kind], [400, "WeakPassword"]);
+    assert.deepEqual(error.errors.map((e: Loose) => e.code), ["password_too_short", "password_too_common", "password_entirely_numeric"]);
+    assert.deepEqual(error.errors[0].params, { min: 8 });
+    assert.ok(error.message.startsWith("This password is too short."));
+    const entry = models["AdminLogEntry"];
+    const last = (await entry.objects.using(db).orderBy(entry.id.desc()))[0];
+    assert.equal(last.action, "password_change_failed");
+    const changes = JSON.stringify(last.changes);
+    assert.ok(changes.includes("password_too_short") && !changes.includes("1234"), changes);
+    assert.equal((await site.testClient(db, { secret: SECRET, ip: "10.0.6.8" }).login("ann", "pw")).status, 200);
+  }));
+
+  test(`weak new passwords do not use up the password limit but wrong old passwords do (${provider})`, () => world(provider, async ({ site, db }) => {
+    const client = site.testClient(db, { secret: SECRET });
+    await client.login("ann", "pw");
+    for (let i = 0; i < 7; i++) {
+      assert.equal((await client.post(PASSWORD_URL, { json: { old_password: "pw", new_password: "1234" } })).status, 400);
+    }
+    for (let i = 0; i < 5; i++) {
+      const wrong = await client.post(PASSWORD_URL, { json: { old_password: "no", new_password: "a-long-new-password" } });
+      assert.equal(wrong.json().error.kind, "InvalidPassword");
+    }
+    assert.equal((await client.post(PASSWORD_URL, { json: { old_password: "pw", new_password: "a-long-new-password" } })).status, 429);
   }));
 
   test(`the user client needs no login and does not mix with a secret (${provider})`, () => world(provider, async ({ site, db }) => {

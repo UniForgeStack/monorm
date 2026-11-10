@@ -390,7 +390,13 @@ async fn password(State(ctx): State<Arc<Ctx>>, Extension(session): Extension<Ses
     let label = session.0.user["username"].as_str().unwrap_or_default().to_string();
     let changed = out.get("changed").and_then(Value::as_bool) == Some(true);
     let action = if changed { "password_change" } else { "password_change_failed" };
-    let entry = Entry { user_key: &key, action, resource: "user", record_key: &key, record_label: &label, changes: Some(json!({"ip": ip, "request_id": request_id})) };
+    // A weak password adds the rule codes to the audit row, never the password. A custom rule may give any JSON, so keep strings only.
+    let errors = out.get("errors").and_then(Value::as_array).filter(|e| !e.is_empty());
+    let mut changes = json!({"ip": ip, "request_id": request_id});
+    if let Some(errors) = errors {
+        changes["codes"] = errors.iter().filter_map(|e| e.get("code").and_then(Value::as_str)).collect();
+    }
+    let entry = Entry { user_key: &key, action, resource: "user", record_key: &key, record_label: &label, changes: Some(changes) };
     if let Err(e) = ctx.audit(&scope, entry).await {
         scope.rollback().await;
         sec.user_limit().release(&limit);
@@ -416,5 +422,11 @@ async fn password(State(ctx): State<Arc<Ctx>>, Extension(session): Extension<Ses
         return session_response(&ctx, sec.rotate(&session.0, sec.pwd_tag(password_hash(&out))));
     }
     let reason = out.get("reason").and_then(Value::as_str).unwrap_or("the password was not changed");
+    if let Some(errors) = errors {
+        // The old password was right, so the attempt gives an attacker nothing to guess.
+        sec.user_limit().release(&limit);
+        let body = json!({"ok": false, "error": {"kind": "WeakPassword", "message": reason, "errors": errors}});
+        return (StatusCode::BAD_REQUEST, Json(body)).into_response();
+    }
     reject(StatusCode::BAD_REQUEST, "InvalidPassword", reason)
 }
