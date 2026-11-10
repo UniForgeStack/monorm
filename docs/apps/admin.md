@@ -281,8 +281,13 @@ Only a superuser reads resources: the resources are superuser-only for now.
 | `/login` | `GET` | Sets the CSRF cookie. Needs no session. |
 | `/login` | `POST` | `{"username", "password"}`. On success it sets the session cookie. |
 | `/me` | `GET` | The signed-in user. |
-| `/password` | `POST` | `{"old_password", "new_password"}`. The user changes their own password. |
+| `/password` | `POST` | `{"old_password", "new_password"}`. The user changes their own password. A weak new password gives `400` `WeakPassword`. |
 | `/logout` | `POST` | Ends the session. |
+
+The password change checks the new password with `validate_password` of `app:auth`, so the rules of `[auth] password_rules` apply (see [the auth app](auth.md#password-rules)).
+A weak password gives `400` with `{"ok": false, "error": {"kind": "WeakPassword", "message", "errors": [{"code", "message", "params"}]}}`.
+The `message` joins the English messages, and the page shows it.
+The password stays as it was, and the `password_change_failed` row of the audit holds the rule codes in `changes.codes`, never the password.
 
 A wrong password and an unknown user give the same `401` answer.
 The time of the two answers is equal because `authenticate` of `app:auth` hashes a dummy password for an unknown user.

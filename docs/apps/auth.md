@@ -2,7 +2,7 @@
 
 The auth app gives your project users, roles, permissions and passwords.
 It is one schema and one small module for each language.
-It has no native code.
+Only the password rules use native code: they call the Rust core of the `monorm` package.
 It comes with the `monorm` package of each registry: the Python module is `monorm_auth`, and the npm module is `monorm/auth`.
 
 The app needs the `monorm.inherit` extension, which is built into the same package.
@@ -110,6 +110,120 @@ It does not write the row.
 It writes the new hash when the old hash needs an update.
 For an unknown username it still computes one hash, so the time does not show whether the user exists.
 It does not change `last_login`.
+
+## Password rules
+
+`validate_password(password, user=None)` (TypeScript: `validatePassword(password, user)`) checks a new password against a list of rules.
+It returns a list of errors, and an empty list means the password is good.
+It does not raise for a weak password.
+`create_user` and `set_password` do not call it, because a script or an import may need a weak password.
+The admin password change calls it, and so should your own forms and commands.
+
+```python
+from monorm_auth import validate_password
+
+errors = await validate_password(new_password, user)
+if errors:
+    show([e.message for e in errors])
+```
+
+```ts
+import { validatePassword } from "monorm/auth";
+
+const errors = await validatePassword(newPassword, user);
+```
+
+An error has a `code`, an English `message` and `params`.
+The `code` is stable: translate the message in your project by `code` and `params`.
+`user` is a model, an object, a dict or `None`; it can be a user that has no row yet.
+`password_help_texts()` (TypeScript: `passwordHelpTexts()`) gives one help text for each rule, for a form.
+
+### The default rules
+
+| Rule | Option | Code and `params` |
+| --- | --- | --- |
+| `min_length` | `min`, default `8` | `password_too_short` `{min}` |
+| `common` | `path`, a file of one password for each line | `password_too_common` |
+| `numeric` | | `password_entirely_numeric` |
+| `user_similarity` | `attributes`, default `["username", "email"]`; `max_similarity`, default `0.7` | `password_too_similar` `{attribute}` |
+
+The built-in rules run in one Rust function, so Python and TypeScript give the same result.
+The length counts code points after Unicode NFC.
+`numeric` accepts decimal digits of any script, such as `٣`; it does not accept `½` or a CJK numeral.
+`common` and `user_similarity` compare the lower-case NFC text.
+`common` also trims the password, as Django does.
+`user_similarity` is the `quick_ratio` check of Django: a password is too close to an attribute when its character overlap with the whole value, or with one word of the value, is at least `max_similarity`.
+An attribute with no text value is skipped.
+
+The common-password list is `crates/core/data/common-passwords.txt`, inside the wheel and the npm package.
+It holds 10,001 entries (about 73 KB), made lower case and without duplicates.
+The source is [`Passwords/Common-Credentials/10k-most-common.txt`](https://github.com/danielmiessler/SecLists/blob/913b327317496d062bcc7cace524aaad8a693be2/Passwords/Common-Credentials/10k-most-common.txt) of SecLists, at commit `913b327317496d062bcc7cace524aaad8a693be2`.
+SecLists has the MIT license; the text is in `common-passwords.LICENSE` next to the list.
+Set `path` to use your own list.
+
+### Choose the rules
+
+Set `password_rules` in the `[auth]` table of the settings file (`passwordRules` in `package.json`, with `maxSimilarity`).
+No setting gives the four default rules.
+An empty list turns the rules off.
+The rules run in list order, and the errors come in that order.
+
+```toml
+[auth]
+password_rules = [
+  { rule = "min_length", min = 15 },
+  { rule = "common" },
+  { rule = "user_similarity", attributes = ["username", "email", "first_name"] },
+  { rule = "myproject.rules:NoCompanyName", word = "acme" },
+]
+```
+
+A name with no `:` is a built-in rule.
+An unknown rule, an unknown option or a bad value is a setting error.
+The message names the file and the key.
+You can also give a list in code: `validate_password(pw, user, rules=[rules.MinLength(min=12)])`.
+In TypeScript the built-in rules are `rules.minLength`, `rules.common`, `rules.numeric` and `rules.userSimilarity`.
+
+### Custom rules
+
+A custom rule is `module:attr` in the settings.
+The other keys of its entry go to it as options.
+A rule has two methods.
+`validate(password, user)` returns a list of `PasswordError`, and may be `async`.
+`help_text()` (TypeScript: `helpText()`) returns a string.
+
+```python
+from monorm_auth import PasswordError
+
+class NoCompanyName:
+    def __init__(self, word):
+        self.word = word
+
+    def validate(self, password, user=None):
+        if self.word in password.lower():
+            return [PasswordError("password_has_company", f"The password has {self.word}.", {"word": self.word})]
+        return []
+
+    def help_text(self):
+        return f"Your password can't have {self.word}."
+```
+
+A custom rule that cannot be imported is a setting error.
+A custom rule gets the password as typed. The built-in rules get the NFC form.
+A custom rule must not put the password in `params`: `params` reach the browser and the audit row.
+
+`validate_password` without `rules` reads the settings of the current directory at each call.
+For a form, call `load_rules()` (TypeScript: `loadRules()`) once at start and pass the list as `rules`.
+A custom rule then keeps its state.
+The admin does this: it loads the rules once, and a setting error stops it with exit code `2`.
+It reads `[auth]` from the current directory, so start it from the project directory.
+
+### Length and NIST
+
+NIST SP 800-63B asks for at least 15 characters when the password is the only factor.
+It asks for at least 8 when the password is one of several factors (MFA).
+The default is 8.
+If an account has no second factor, set `min_length` to `15`.
 
 ## Permissions
 
