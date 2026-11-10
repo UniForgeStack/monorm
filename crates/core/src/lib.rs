@@ -16,6 +16,7 @@ pub mod ext;
 pub mod ir;
 pub mod migrate;
 pub mod partition;
+pub mod password;
 pub mod schema;
 pub mod settings;
 

@@ -1498,6 +1498,9 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("SchemaError", py.get_type::<errors::SchemaError>())?;
     m.add("SchemaWarning", py.get_type::<errors::SchemaWarning>())?;
     m.add("MigrationError", py.get_type::<errors::MigrationError>())?;
+    m.add_function(wrap_pyfunction!(password_rules, m)?)?;
+    m.add_function(wrap_pyfunction!(password_check, m)?)?;
+    m.add_function(wrap_pyfunction!(password_help, m)?)?;
     m.add_function(wrap_pyfunction!(test_raise_validation_error, m)?)?;
     m.add_function(wrap_pyfunction!(test_validation_text, m)?)?;
     Ok(())
@@ -1513,6 +1516,26 @@ fn test_raise_validation_error(error: Bound<'_, PyAny>) -> PyResult<()> {
         Some(v) => engine_err(monorm_engine::Error::Validation(v)),
         None => error,
     })
+}
+
+/// The `[auth] password_rules` of the project in `dir` as a JSON list (the default list when it is not set).
+/// Raises `ValueError` with the text of a wrong setting.
+#[pyfunction]
+fn password_rules(dir: &str) -> PyResult<String> {
+    monorm_core::password::json::settings(std::path::Path::new(dir)).map_err(pyo3::exceptions::PyValueError::new_err)
+}
+
+/// Runs the built-in password rules (a JSON list of entries) on `password`; `attrs_json` maps a user attribute to its text.
+/// Gives the errors as a JSON list of `{code, message, params}`.
+#[pyfunction]
+fn password_check(rules_json: &str, password: &str, attrs_json: &str) -> PyResult<String> {
+    monorm_core::password::json::check(rules_json, password, attrs_json).map_err(pyo3::exceptions::PyValueError::new_err)
+}
+
+/// The help text of each built-in password rule entry, as a JSON list.
+#[pyfunction]
+fn password_help(rules_json: &str) -> PyResult<String> {
+    monorm_core::password::json::help(rules_json).map_err(pyo3::exceptions::PyValueError::new_err)
 }
 
 /// For tests only: the display text that Rust writes for a `ValidationError`.

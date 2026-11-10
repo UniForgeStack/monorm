@@ -18,6 +18,8 @@ sha2 = "0.10"
 chrono = "0.4"
 uuid = "1"
 bigdecimal = "0.4"
+unicode-normalization = "0.1"
+unicode-properties = { version = "0.1", default-features = false, features = ["general-category"] }
 
 [features]
 default = ["generate-python", "generate-typescript"]

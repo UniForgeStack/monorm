@@ -286,6 +286,12 @@ interface Addon {
   generateTypescript(path: string, runtime?: string | null, querySets?: Record<string, string> | null, modelMethods?: Record<string, string> | null, apps?: Record<string, string> | null, extensions?: Record<string, string> | null): string;
   setDecimalClass(ctor: unknown): void;
   setValidationClass(ctor: unknown): void;
+  /** The `[auth] password_rules` of the project in `dir`, as a JSON list; throws the text of a wrong setting. */
+  passwordRules(dir: string): string;
+  /** Runs the built-in rule entries (JSON) on a password; `attrsJson` maps a user attribute to its text. Gives the errors as JSON. */
+  passwordCheck(rulesJson: string, password: string, attrsJson: string): string;
+  /** The help text of each built-in rule entry, as JSON. */
+  passwordHelp(rulesJson: string): string;
   /** Test hook: reads a `ValidationError` into the engine's typed error and throws that error; any other value is thrown as it is. */
   _testRaiseValidationError(error: unknown): void;
   /** Test hook: the engine's text of a `ValidationError`. */

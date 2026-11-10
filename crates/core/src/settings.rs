@@ -136,7 +136,8 @@ impl Settings {
         }
     }
 
-    fn wrong(&self, key: &str, what: &str) -> String {
+    /// The error text for a wrong setting: the file, the key as the file spells it, and what is wrong.
+    pub fn wrong(&self, key: &str, what: &str) -> String {
         match &self.found {
             Some((source, _)) => format!("{}: `{}{key}` {what}", source.file(), source.prefix()),
             None => format!("`{key}` {what}"),

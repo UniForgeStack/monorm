@@ -132,6 +132,26 @@ fn validation_from_js(env: &Env, error: V) -> napi::Result<Option<ValidationErro
     Ok(Some(out))
 }
 
+/// The `[auth] password_rules` of the project in `dir` as a JSON list (the default list when it is not set).
+/// Throws the text of a wrong setting.
+#[napi(js_name = "passwordRules")]
+pub fn password_rules(dir: String) -> napi::Result<String> {
+    monorm_core::password::json::settings(Path::new(&dir)).map_err(napi::Error::from_reason)
+}
+
+/// Runs the built-in password rules (a JSON list of entries) on `password`; `attrs_json` maps a user attribute to its text.
+/// Gives the errors as a JSON list of `{code, message, params}`.
+#[napi(js_name = "passwordCheck")]
+pub fn password_check(rules_json: String, password: String, attrs_json: String) -> napi::Result<String> {
+    monorm_core::password::json::check(&rules_json, &password, &attrs_json).map_err(napi::Error::from_reason)
+}
+
+/// The help text of each built-in password rule entry, as a JSON list.
+#[napi(js_name = "passwordHelp")]
+pub fn password_help(rules_json: String) -> napi::Result<String> {
+    monorm_core::password::json::help(&rules_json).map_err(napi::Error::from_reason)
+}
+
 /// Test hook, the crossing of the binding: reads a JS `ValidationError` into the engine's typed error and
 /// throws that error back. Any other value is thrown as it is.
 #[napi(js_name = "_testRaiseValidationError")]
