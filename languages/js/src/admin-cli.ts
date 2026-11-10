@@ -7,31 +7,16 @@
  * the admin connects to `MONORM_DATABASE_URL` after it imports `app`.
  */
 
-import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
-
 import { AdminConfigError, AdminSettingsError, type Admin } from "./admin.js";
+import { loadPasswordRules } from "./admin-host.js";
 import { connect, getDatabase, type Database } from "./db.js";
 import { NotConnected } from "./errors.js";
+import { loadSpec as load } from "./load-spec.js";
 import { native } from "./native.js";
 
 interface Settings {
   readonly app: string;
   readonly setup: string | null;
-}
-
-async function load(spec: string, what: string): Promise<unknown> {
-  const at = spec.lastIndexOf(":");
-  const file = spec.slice(0, at);
-  const target = file.startsWith(".") || file.startsWith("/") ? pathToFileURL(resolve(file)).href : file;
-  try {
-    let value: unknown = await import(target);
-    for (const part of spec.slice(at + 1).split(".")) value = (value as Record<string, unknown> | undefined)?.[part];
-    if (value === undefined) throw new Error(`no ${spec.slice(at + 1)} in ${file}`);
-    return value;
-  } catch (e) {
-    throw new Error(`${what} \`${spec}\`: ${e instanceof Error ? e.message : String(e)}`);
-  }
 }
 
 async function open(settings: Settings): Promise<{ admin: Admin; database: Database }> {
@@ -71,6 +56,9 @@ async function sync(settings: Settings): Promise<number> {
 }
 
 async function serve(settingsJson: string, settings: Settings): Promise<number> {
+  await loadPasswordRules().catch((e) => {
+    throw new AdminSettingsError(e instanceof Error ? e.message : String(e));
+  });
   const { admin, database } = await open(settings);
   try {
     const server = await admin.serve(database, settingsJson, process.env.MONORM_ADMIN_SECRET ?? null);

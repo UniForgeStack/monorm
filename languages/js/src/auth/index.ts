@@ -3,3 +3,4 @@ export { checkPassword, makePassword, needsUpdate } from "./hashers.js";
 export { UserMethods } from "./methods.js";
 export { modelPermissionNames, syncPermissions } from "./permissions.js";
 export { UserQueries } from "./queries.js";
+export { loadRules, passwordHelpTexts, rules, validatePassword, type PasswordError, type PasswordRule } from "./password.js";
