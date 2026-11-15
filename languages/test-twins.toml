@@ -12,6 +12,11 @@
 "languages/python/tests/test_sql_view_typing.py" = "Python type test: mypy and pyright; the twin is the tsc test in sql-view-typing.test.ts"
 
 [python-only.ids]
+# languages/python/tests/test_admin_services.py
+"admin_services::a_threaded_sync_service_gets_plain_values_and_runs_database_calls_through_ctx_run" = "one-language: Python-only: a sync service runs in a thread; a TypeScript service is always async"
+"admin_services::a_threaded_service_that_returns_an_async_call_is_a_500_that_names_ctx_run" = "one-language: Python-only: the thread rule of sync services; a TypeScript service is always async"
+"admin_services::a_threaded_service_on_an_opted_in_protected_model_writes_like_an_async_one" = "one-language: Python-only: the thread rule of sync services; a TypeScript service is always async"
+"admin_services::a_service_object_with_an_async_call_is_not_sync_and_the_log_reads_one_key_rule_of_a_user" = "one-language: Python-only: the sync test of a service function; a TypeScript service is always async"
 # languages/python/tests/test_app_imports.py
 "app_imports::an_import_cycle_across_directories_is_scanned_once" = "add-ts: app_imports::an_import_cycle_across_directories_is_scanned_once"
 # languages/python/tests/test_bound_reads.py

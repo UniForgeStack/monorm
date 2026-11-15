@@ -28,7 +28,9 @@ from typing import TYPE_CHECKING, Any, Literal, Mapping, Sequence, TypedDict, ca
 from . import _native
 from . import _admin_permissions
 from ._admin_host import HOST as _HOST
+from ._admin_write import Context, InputDef, input, is_sync, is_threaded, log, service_function, threaded, writer_host
 from ._admin_permissions import RoleSeedReport, SyncReport
+from .adapters import _ADAPTERS as _adapters
 from .errors import QueryError
 from .expr import ColumnRef, Condition, Expression, IRContext, Ordering, RelationPath, SlotParams, _Slot, as_condition, resolve_null_rule
 from .model import Model, registry as default_registry
@@ -37,7 +39,7 @@ if TYPE_CHECKING:
     from .db import Database
     from .model import Registry
 
-__all__ = ["Admin", "AdminConfigError", "AdminResponse", "AdminTestClient", "AggregateColumn", "BrandConfig", "BrandLink", "ComputedColumn", "ListConfig", "NamedChoice", "NamedFilter", "ResourceConfig", "RoleSeedReport", "SyncReport", "check", "register", "test_client", "url"]
+__all__ = ["Admin", "AdminConfigError", "AdminResponse", "AdminTestClient", "AggregateColumn", "BrandConfig", "BrandLink", "ComputedColumn", "Context", "ListConfig", "NamedChoice", "NamedFilter", "ResourceConfig", "RoleSeedReport", "SyncReport", "check", "input", "log", "register", "test_client", "threaded", "url"]
 
 DEFAULT_PREFIX = "/admin/api"
 
@@ -181,6 +183,17 @@ class ResourceConfig(TypedDict, total=False):
     files: Mapping[str, str]
     """File fields by field name, each with the name of its storage in the ``storage`` registry of the admin
     (``{"cover": "media"}``). A file field is a nullable ``Json`` field that holds the reference of the file."""
+    create: Callable[..., Any]
+    """The service of a create: ``async def create(ctx, values)`` returns the new record. It owns its transactions."""
+    update: Callable[..., Any]
+    """The service of an update: ``async def update(ctx, qs, changes)``, where ``qs`` is the one-row query set of the record
+    (with the ``queryset`` filter and the ``can`` rule). Check ``ctx.loaded`` for a version conflict (``VersionConflict`` is a 409)."""
+    delete: Callable[..., Any]
+    """The service of a delete: ``async def delete(ctx, qs)``."""
+    inputs: Sequence[InputDef]
+    """Controls of the form that are no field (``admin.input("reason", type="textarea")``). Only a service reads them (``ctx.inputs``)."""
+    allow_protected_writes: bool
+    """A model with ``@@protected_write`` is closed to the admin. ``True`` opens it; the audit row records the opt-in."""
 
 
 class RelationConfig(TypedDict, total=False):
@@ -225,7 +238,7 @@ def _form(name: str, form: Any) -> Any:
 
 
 _LIST_KEYS = {"columns", "order", "page_size", "sortable", "search", "search_with", "filters", "named_filters", "computed", "aggregates", "labels", "empty", "empty_fields", "tabs"}
-_RESOURCE_KEYS = {"list", "title", "group", "allow", "perms", "label", "field_permissions", "actions", "queryset", "can", "check_messages", "form", "readonly", "widgets", "form_component", "relations", "files"}
+_RESOURCE_KEYS = {"list", "title", "group", "allow", "perms", "label", "field_permissions", "actions", "queryset", "can", "check_messages", "form", "readonly", "widgets", "form_component", "relations", "files", "create", "update", "delete", "inputs", "allow_protected_writes"}
 _BRAND_KEYS = {"name", "logo", "colors", "links", "environment"}
 Strategy = Literal["page", "model", "access"]
 
@@ -835,6 +848,21 @@ class Admin:
                 resource["files"] = list(_files(name, config["files"]))
                 if self._storage is None:
                     raise AdminConfigError(f"{name}: files needs the storage option of Admin (a monorm_file_storage Registry)")
+            services = {op: fn for op in ("create", "update", "delete") if (fn := cast("Mapping[str, Any]", config).get(op)) is not None}
+            if services:
+                for op, fn in services.items():
+                    if not callable(fn):
+                        raise AdminConfigError(f"{name}: {op} is a service function (ctx, ...)")
+                resource["service"] = {op: {"sync": is_sync(fn), "threaded": is_threaded(fn)} for op, fn in services.items()}
+            if "inputs" in config:
+                defs = config["inputs"]
+                if isinstance(defs, (str, InputDef)) or not all(isinstance(d, InputDef) for d in defs):
+                    raise AdminConfigError(f"{name}: inputs is a list of admin.input(...) controls")
+                resource["inputs"] = [d.json() for d in defs]
+            if config.get("allow_protected_writes"):
+                resource["allow_protected_writes"] = True
+            if _adapters.get(model):
+                resource["host_behavior"] = True
             raw: dict[str, Any] = dict(config)
             for key in ("title", "group", "allow", "perms", "label", "field_permissions", "actions"):
                 if key in raw:
@@ -867,6 +895,11 @@ class Admin:
                 function = column.get("function")
                 if function is not None:
                     host[_batch_name(model, column.get("name", ""))] = _batch_host(model, function)
+        host["admin.write"] = writer_host(self._resources)
+        for model, config in self._resources.values():
+            for op in ("create", "update", "delete"):
+                if (fn := cast("Mapping[str, Any]", config).get(op)) is not None:
+                    host[f"service.{model.__name__}.{op}"] = service_function(model, config, op, fn)
         files = {(model.__name__, field): storage for model, config in self._resources.values() for field, storage in _files(model.__name__, config.get("files", {})).items()}
         if files:
             host.update(_file_host(self._storage, files))

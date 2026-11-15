@@ -20,6 +20,8 @@ async def run(
 ) -> str:
     args = json.loads(payload)
     tenant_id = None if tenant is None else json.loads(tenant)
+    if tx is None:  # a write function owns its transactions
+        return json.dumps(await fn(database, args))
     with database.bind_request(tx, scope=json.loads(scope), tenant=tenant_id):
         return json.dumps(await fn(database, args))
 

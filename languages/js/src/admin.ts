@@ -20,6 +20,8 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { HOST, hostDispatch, type HostFunction } from "./admin-host.js";
 import * as grants from "./admin-permissions.js";
+import { Context, InputDef, input, log, serviceFunction, writerHost } from "./admin-write.js";
+import { hasFieldAdapters } from "./adapters.js";
 import type { RoleSeedReport, SyncReport } from "./admin-permissions.js";
 import type { Database } from "./db.js";
 import { ORMError } from "./errors.js";
@@ -181,6 +183,16 @@ export interface ResourceConfig {
   readonly relations?: Readonly<Record<string, RelationConfig>>;
   /** File fields by field name, each with the name of its storage in the `storage` registry of the admin (`{ cover: "media" }`). A file field is a nullable `Json` field that holds the reference of the file. */
   readonly files?: Readonly<Record<string, string>>;
+  /** The service of a create: `async (ctx, values) => record`. It owns its transactions and returns the new record. */
+  readonly create?: (ctx: Context, values: any) => Promise<unknown>;
+  /** The service of an update: `async (ctx, qs, changes)`. `qs` is the one-row query set (with the `queryset` filter and the `can` rule). A `VersionConflict` is a 409. */
+  readonly update?: (ctx: Context, qs: any, changes: any) => Promise<unknown>;
+  /** The service of a delete: `async (ctx, qs)`. */
+  readonly delete?: (ctx: Context, qs: any) => Promise<unknown>;
+  /** Controls of the form that are no field (`input("reason", { type: "textarea" })`). Only a service reads them (`ctx.inputs`). */
+  readonly inputs?: readonly InputDef[];
+  /** A model with `@@protected_write` is closed to the admin. `true` opens it; the audit row records the opt-in. */
+  readonly allowProtectedWrites?: boolean;
   readonly list?: ListConfig;
   /** The name in the navigation and the page heading (the model name, spaced, by default). */
   readonly title?: string;
@@ -254,7 +266,7 @@ export interface AdminUser {
 
 const LIST_KEYS = new Set(["columns", "order", "pageSize", "sortable", "search", "searchWith", "filters", "namedFilters", "computed", "aggregates", "labels", "empty", "emptyFields", "tabs"]);
 const BRAND_KEYS = new Set(["name", "logo", "colors", "links", "environment"]);
-const RESOURCE_KEYS = new Set(["queryset", "can", "list", "title", "group", "allow", "perms", "label", "fieldPermissions", "actions", "checkMessages", "form", "readonly", "widgets", "formComponent", "relations", "files"]);
+const RESOURCE_KEYS = new Set(["queryset", "can", "list", "title", "group", "allow", "perms", "label", "fieldPermissions", "actions", "checkMessages", "form", "readonly", "widgets", "formComponent", "relations", "files", "create", "update", "delete", "inputs", "allowProtectedWrites"]);
 
 function widgetsJson(who: string, value: unknown): Record<string, string> {
   if (typeof value !== "object" || value === null || Array.isArray(value) || !Object.values(value).every((v) => typeof v === "string")) {
@@ -848,6 +860,7 @@ export class Admin {
         ...(config.relations === undefined ? {} : { relations: relationsJson(model, cls, registry, config.relations) }),
         ...(config.files === undefined ? {} : { files: this.#filesOf(model, config.files) }),
         ...(list === undefined ? {} : { list }),
+        ...this.#writesJson(model, cls, config),
         ...(config.title === undefined ? {} : { title: config.title }),
         ...(config.group === undefined ? {} : { group: config.group }),
         ...(config.allow === undefined ? {} : { allow: [...config.allow] }),
@@ -869,6 +882,25 @@ export class Admin {
     });
   }
 
+  #writesJson(name: string, cls: AnyModel, config: ResourceConfig): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    const services: Record<string, unknown> = {};
+    for (const op of ["create", "update", "delete"] as const) {
+      const fn = config[op];
+      if (fn === undefined) continue;
+      if (typeof fn !== "function") throw new AdminConfigError(`${name}: ${op} is a service function (ctx, ...)`);
+      services[op] = { sync: false, threaded: false };
+    }
+    if (Object.keys(services).length > 0) out["service"] = services;
+    if (config.inputs !== undefined) {
+      if (!Array.isArray(config.inputs) || !config.inputs.every((d) => d instanceof InputDef)) throw new AdminConfigError(`${name}: inputs is a list of input(...) controls`);
+      out["inputs"] = config.inputs.map((d) => d.json());
+    }
+    if (config.allowProtectedWrites === true) out["allow_protected_writes"] = true;
+    if (hasFieldAdapters(cls._meta)) out["host_behavior"] = true;
+    return out;
+  }
+
   #filesOf(model: string, files: unknown): string[] {
     const names = Object.keys(filesJson(model, files));
     if (this.#storage === undefined) throw new AdminConfigError(`${model}: files needs the storage option of Admin (a Registry of extensions/file-storage)`);
@@ -884,6 +916,13 @@ export class Admin {
       if (search !== undefined) host[searchName(model)] = searchHost(model, search);
       for (const column of config.list?.computed ?? []) {
         if (column.function !== undefined) host[batchName(model, column.name)] = batchHost(model, column.function);
+      }
+    }
+    host["admin.write"] = writerHost(this.#resources);
+    for (const [name, { model, config }] of this.#resources) {
+      for (const op of ["create", "update", "delete"] as const) {
+        const fn = config[op];
+        if (fn !== undefined) host[`service.${name}.${op}`] = serviceFunction(model, config, op, fn);
       }
     }
     const files = new Map<string, string>();
@@ -980,4 +1019,8 @@ export const admin = {
   check: (): string[] => defaultAdmin.check(),
   url: (model: AnyModel, key: RecordKey): string => defaultAdmin.url(model, key),
   testClient: (database: Database, options?: Parameters<Admin["testClient"]>[1]): AdminTestClient => defaultAdmin.testClient(database, options),
+  input,
+  log,
 };
+
+export { Context, InputDef, input, log };

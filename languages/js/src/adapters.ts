@@ -69,6 +69,11 @@ type Statement<T> = (stored: Values) => Promise<T>;
 
 const ADAPTERS = new WeakMap<ModelMeta, Map<string, FieldAdapter>>();
 
+/** True when a field of `meta` has a field adapter: its writes need host behavior. */
+export function hasFieldAdapters(meta: ModelMeta): boolean {
+  return (ADAPTERS.get(meta)?.size ?? 0) > 0;
+}
+
 /** Adapt `meta.field`: its writes run the pipeline and its loaded value reads through `decode`.
  * `methods` become instance methods; a name that a model member already uses throws `FieldAdapterError`. */
 export function registerFieldAdapter(meta: ModelMeta, field: string, adapter: FieldAdapter, methods: Readonly<Record<string, (this: Row, ...args: never[]) => unknown>> = {}): void {

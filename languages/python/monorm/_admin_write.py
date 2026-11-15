@@ -1,0 +1,463 @@
+"""Host-side writes of the admin: the default writer, the service wrappers, ``Context`` and ``admin.log``.
+
+The Rust service calls these functions with no transaction. A function owns its transactions
+(``async with db.transaction()``) and answers with an envelope that the service maps to a status:
+``{"ok": True, "key": ..., "audited": bool}``, or ``{"ok": False, "kind": "not_found" | "conflict" | "invalid" | "sync_service"}``.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import contextvars
+import datetime
+import inspect
+from collections.abc import Awaitable, Callable, Mapping
+from typing import Any, TypeVar
+
+from .errors import DoesNotExist, ValidationError, VersionConflict
+from .expr import Condition, IRContext, SlotParams, _Slot, resolve_null_rule
+from .protection import allow_writes
+
+F = TypeVar("F", bound=Callable[..., Any])
+
+_THREADED = "_monorm_admin_threaded"
+
+
+def threaded(fn: F) -> F:
+    """Marks a plain (sync) service function. It runs in a worker thread, and its async database calls go through ``ctx.run(...)``.
+    A create gets ``(ctx, values)`` with plain values. An update gets ``(ctx, qs, values)`` and a delete ``(ctx, qs)``, where ``qs`` is a query set.
+    Use it as a decorator."""
+    setattr(fn, _THREADED, True)
+    return fn
+
+
+def is_threaded(fn: Any) -> bool:
+    return bool(getattr(fn, _THREADED, False))
+
+
+def is_sync(fn: Any) -> bool:
+    return not (inspect.iscoroutinefunction(fn) or inspect.iscoroutinefunction(getattr(fn, "__call__", None)))
+
+
+class InputDef:
+    """The definition of one input control; see :func:`input`."""
+
+    def __init__(self, name: str, type: str, label: str | None, required: bool, help: str | None, choices: list[str], secret: bool = False) -> None:
+        self.name = name
+        self.type = type
+        self.label = label
+        self.required = required
+        self.help = help
+        self.choices = choices
+        self.secret = secret
+
+    def json(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"name": self.name, "type": self.type, "required": self.required, "choices": self.choices}
+        if self.label is not None:
+            out["label"] = self.label
+        if self.help is not None:
+            out["help"] = self.help
+        if self.secret:
+            out["secret"] = True
+        return out
+
+
+def input(
+    name: str,
+    *,
+    type: str = "text",
+    label: str | None = None,
+    required: bool = False,
+    help: str | None = None,
+    choices: list[str] | tuple[str, ...] = (),
+    secret: bool = False,
+) -> InputDef:
+    """A control of the form that is no field: ``admin.input("reason", type="textarea", required=True)``.
+
+    ``type`` is ``text``, ``textarea``, ``number``, ``checkbox`` or ``select`` (``select`` needs ``choices``).
+    The value lives for one request and only the service reads it as ``ctx.inputs[name]``.
+    A resource with an input needs a service.
+    With ``secret=True`` the audit row stores a mask (``***``) in place of the value.
+    """
+    return InputDef(name, type, label, required, help, list(choices), secret)
+
+
+_PLAIN_USER_DROP = ("password_hash",)
+
+
+class Context:
+    """What a service function knows about the request.
+
+    ``user`` is the plain user of the admin, ``request_id`` the id of the request, ``loaded`` the values that the form showed
+    (by field name; empty on a create) and ``inputs`` the values of the ``admin.input`` controls. ``database`` is the database
+    of the request. A unit test builds a ``Context`` by hand and calls the service function: no admin is needed.
+    """
+
+    def __init__(
+        self,
+        *,
+        user: Mapping[str, Any] | None = None,
+        request_id: str = "",
+        loaded: Mapping[str, Any] | None = None,
+        inputs: Mapping[str, Any] | None = None,
+        audit_inputs: Mapping[str, Any] | None = None,
+        database: Any = None,
+        key: Mapping[str, Any] | None = None,
+        resource: str = "",
+        op: str = "",
+        ip: str | None = None,
+        user_agent: str | None = None,
+    ) -> None:
+        self.user: dict[str, Any] = {k: v for k, v in (user or {}).items() if k not in _PLAIN_USER_DROP}
+        self.request_id = request_id
+        self.loaded: dict[str, Any] = dict(loaded or {})
+        self.inputs: dict[str, Any] = dict(inputs or {})
+        self._audit_inputs: dict[str, Any] = dict(self.inputs if audit_inputs is None else audit_inputs)
+        self.database = database
+        self.key: dict[str, Any] | None = None if key is None else dict(key)
+        self.resource = resource
+        self.op = op
+        self.ip = ip
+        self.user_agent = user_agent
+        self.audits: list[dict[str, Any]] = []
+        self._audited = False
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._model: Any = None
+
+    def run(self, awaitable: Awaitable[Any]) -> Any:
+        """Runs an awaitable on the event loop and waits for the result. For a ``threaded`` sync service only:
+        its worker thread calls the async database API through here."""
+        if self._loop is None:
+            raise RuntimeError("ctx.run() works inside a threaded service that the admin runs")
+        return asyncio.run_coroutine_threadsafe(_as_coroutine(awaitable), self._loop).result()
+
+    async def audit(self, record: Any = None, *, action: str | None = None, changes: Mapping[str, Any] | None = None) -> None:
+        """Writes the audit row of this write on the database of the request (in the transaction that is open now).
+
+        The row holds the user, the action (the operation by default), the key of the record, the inputs (a secret input as a mask) and ``changes``.
+        A create passes the new record (an instance, a key value or a mapping of the key) so that the row names it.
+        With this call the admin writes no audit row of its own for the request.
+        """
+        key = self.key
+        model = self._model if self._model is not None else type(record) if hasattr(type(record), "_meta") else None
+        if record is not None and model is not None:
+            key = _key_of(model, record)
+        if key is None and self.op == "create":
+            raise ValueError("ctx.audit(record) on a create needs the new record: the row names it")
+        extra: dict[str, Any] = {"request_id": self.request_id, "inputs": dict(self._audit_inputs), "service": True}
+        if self.ip is not None:
+            extra["ip"] = self.ip
+        if self.user_agent is not None:
+            extra["user_agent"] = self.user_agent
+        if changes:
+            extra.update(changes)
+        act = action or self.op or "service"
+        resource = self.resource or (model.__name__ if model is not None else "")
+        record_key = _key_text(key)
+        entry: dict[str, Any] = {"action": act, "resource": resource, "record_key": record_key, "changes": extra}
+        self.audits.append(entry)
+        self._audited = True
+        if self.database is not None:
+            await _write_log(self.database, _user_key(self.user), act, resource, record_key, "", extra)
+
+
+async def _as_coroutine(awaitable: Awaitable[Any]) -> Any:
+    return await awaitable
+
+
+def _user_key(user: Mapping[str, Any]) -> str:
+    key = user.get("key")
+    return "" if key is None else str(key)
+
+
+def _escape(part: str) -> str:
+    return part.replace("\\", "\\\\").replace(",", "\\,")
+
+
+def _key_text(key: Mapping[str, Any] | None) -> str:
+    """The key text of the admin: the key values joined with ``,``, each escaped."""
+    if not key:
+        return ""
+    return ",".join(_escape(_key_scalar(v)) for v in key.values())
+
+
+def _key_scalar(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (datetime.date, datetime.time)):
+        return value.isoformat()
+    return str(value)
+
+
+def _key_of(model: Any, record: Any) -> dict[str, Any]:
+    names = model._meta.key_names
+    if isinstance(record, Mapping):
+        return {n: record[n] for n in names}
+    if isinstance(record, model):
+        return {n: getattr(record, n) for n in names}
+    if len(names) == 1:
+        return {names[0]: record}
+    if isinstance(record, (list, tuple)) and len(record) == len(names):
+        return dict(zip(names, record, strict=True))
+    raise TypeError(f"{model.__name__}: cannot read a key from {record!r}")
+
+
+def _actor_key(user: Any) -> Any:
+    """The key of a user: its ``key``, else its ``id`` (a mapping or an object); anything else is the key itself."""
+    if isinstance(user, Mapping):
+        return user.get("id") if user.get("key") is None else user["key"]
+    if user is None or isinstance(user, (str, int)):
+        return user
+    key = getattr(user, "key", None)
+    return getattr(user, "id", None) if key is None else key
+
+
+async def log(
+    action: str,
+    *,
+    user: Any = None,
+    resource: str = "",
+    record_key: Any = "",
+    label: str = "",
+    changes: Mapping[str, Any] | None = None,
+    using: Any = None,
+) -> None:
+    """Writes one row of the audit log from host code outside the admin: a job, a script, a webhook.
+
+    ``user`` is the user of the row (a user mapping or object: its ``key``, else its ``id``; a user key; or None), ``record_key`` the key of the record
+    (text, or a key value). The row goes through the database ``using`` (the default database) and joins the
+    transaction that is open. It needs the ``AdminLogEntry`` model of the admin app in the registry.
+    """
+    from .db import resolve
+
+    db = resolve(using)
+    key = _actor_key(user)
+    await _write_log(db, "" if key is None else str(key), action, resource, record_key if isinstance(record_key, str) else _key_scalar(record_key), label, dict(changes) if changes else None)
+
+
+async def _write_log(db: Any, user_key: str, action: str, resource: str, record_key: str, label: str, changes: Mapping[str, Any] | None) -> None:
+    registry = db._registry
+    try:
+        entry_model = registry.get("AdminLogEntry")
+    except Exception:
+        raise RuntimeError("the admin log needs the AdminLogEntry model: import the admin app schema") from None
+    await entry_model.objects.using(db).insert(
+        user_key=user_key, action=action, resource=resource, record_key=record_key, record_label=label, changes=None if changes is None else dict(changes)
+    )
+
+
+# -- values from the JSON of the request -----------------------------------------------------------------------------
+
+
+def _decode(type_name: str, value: Any) -> Any:
+    if value is None:
+        return None
+    if type_name == "date_time" and isinstance(value, str):
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=datetime.UTC)
+    if type_name == "date" and isinstance(value, str):
+        return datetime.date.fromisoformat(value)
+    if type_name == "time" and isinstance(value, str):
+        return datetime.time.fromisoformat(value)
+    return value
+
+
+def _field_type(field: Any) -> str:
+    return str(getattr(field, "of", None) or field.type_name)
+
+
+def decode_values(model: Any, values: Mapping[str, Any]) -> dict[str, Any]:
+    """The values of a request (JSON, by field name) as Python values of the fields."""
+    fields = model._meta.fields
+    out: dict[str, Any] = {}
+    for name, value in values.items():
+        field = fields.get(name)
+        if field is None:
+            out[name] = value
+        elif hasattr(field, "of") and isinstance(value, list):
+            out[name] = [_decode(_field_type(field), v) for v in value]
+        else:
+            out[name] = _decode(field.type_name, value)
+    return out
+
+
+# -- the filters of the resource -------------------------------------------------------------------------------------
+
+
+class _Bound(Condition):
+    """The filter of a prepared ``queryset``, with the user key put into its ``param("user")``."""
+
+    __slots__ = ("conditions", "user_key")
+
+    def __init__(self, conditions: list[Condition], user_key: Any) -> None:
+        self.conditions = conditions
+        self.user_key = user_key
+
+    def _ir(self, ctx: IRContext) -> Any:
+        inner = SlotParams()
+        irs = [resolve_null_rule(c)._ir(IRContext(ctx.root, inner)) for c in self.conditions]
+        ir = irs[0] if len(irs) == 1 else {"t": "and", "items": irs}
+        return self._remap(ir, inner, ctx.params)
+
+    def _remap(self, ir: Any, inner: list[Any], params: list[Any]) -> Any:
+        if isinstance(ir, list):
+            return [self._remap(i, inner, params) for i in ir]
+        if not isinstance(ir, dict):
+            return ir
+        if ir.get("t") == "param":
+            value = inner[ir["i"]]
+            if isinstance(value, _Slot):
+                if value.name != "user":
+                    raise ValueError(f"the queryset takes the param 'user', not {value.name!r}")
+                value = self.user_key
+            params.append(value)
+            return {**ir, "i": len(params) - 1}
+        return {k: self._remap(v, inner, params) for k, v in ir.items()}
+
+    def __repr__(self) -> str:
+        return f"queryset({self.conditions!r})"
+
+
+async def _resource_filters(config: Mapping[str, Any], user: Mapping[str, Any], op: str) -> list[Any]:
+    """The conditions the admin applies to one write: the ``queryset`` of the user and the ``can=`` rule of the operation."""
+    from .expr import Expression
+    from .query import Prepared
+
+    out: list[Any] = []
+    scope = config.get("queryset")
+    if isinstance(scope, Prepared):
+        out.append(_Bound(list(scope._qs._filters), user.get("key")))
+    elif scope is not None:
+        found = await scope(dict(user))
+        out.extend([found] if isinstance(found, (Condition, Expression)) else list(found or ()))
+    rule = config.get("can", {}).get({"update": "change", "delete": "delete"}.get(op, ""))
+    if rule is not None:
+        out.append(rule)
+    return out
+
+
+def _one_row(model: Any, db: Any, key: Mapping[str, Any], filters: list[Any]) -> Any:
+    fields = model._meta.fields
+    qs = model.objects.using(db).filter(*[getattr(model, name) == _decode(fields[name].type_name, value) for name, value in key.items()])
+    return qs.filter(*filters) if filters else qs
+
+
+# -- the envelope ----------------------------------------------------------------------------------------------------
+
+
+def _key_json(model: Any, record: Any) -> dict[str, Any]:
+    from .admin import _key_value
+
+    return {name: _key_value(value) for name, value in _key_of(model, record).items()}
+
+
+def _invalid(e: ValidationError) -> dict[str, Any]:
+    return {"ok": False, "kind": "invalid", "fields": e.fields, "form": e.non_field_messages}
+
+
+def _context(database: Any, args: Mapping[str, Any], model: Any) -> Context:
+    ctx = Context(
+        user=args.get("user"),
+        request_id=args.get("request_id") or "",
+        loaded=decode_values(model, args.get("loaded") or {}),
+        inputs=args.get("inputs") or {},
+        audit_inputs=args.get("audit_inputs"),
+        database=database,
+        key=args.get("key"),
+        resource=args.get("resource") or model.__name__,
+        op=args.get("op") or "",
+        ip=args.get("ip"),
+        user_agent=args.get("user_agent"),
+    )
+    ctx._model = model
+    return ctx
+
+
+def default_writer(model: Any, config: Mapping[str, Any]) -> Callable[[Any, dict[str, Any]], Awaitable[Any]]:
+    """The host function ``admin.write``'s share for one model: a query-set write with the filters of the resource."""
+
+    async def write(database: Any, args: dict[str, Any]) -> Any:
+        op = args["op"]
+        values = decode_values(model, args.get("values") or {})
+        user = args.get("user") or {}
+        protect = allow_writes(model) if args.get("allow_protected") else contextlib.nullcontext()
+        try:
+            with protect:
+                async with database.transaction():
+                    if op == "create":
+                        created = await model.objects.using(database).insert(**values)
+                        return {"ok": True, "key": _key_json(model, created), "audited": False}
+                    qs = _one_row(model, database, args["key"], await _resource_filters(config, user, op))
+                    if op == "update":
+                        done = await qs.update(**values) if values else await qs.exists()
+                    else:
+                        done = await qs.delete()
+                    if not done:
+                        return {"ok": False, "kind": "not_found"}
+                    return {"ok": True, "key": args["key"], "audited": False}
+        except ValidationError as e:
+            return _invalid(e)
+        except VersionConflict:
+            return {"ok": False, "kind": "conflict"}
+        except DoesNotExist:
+            return {"ok": False, "kind": "not_found"}
+
+    return write
+
+
+def service_function(model: Any, config: Mapping[str, Any], op: str, fn: Callable[..., Any]) -> Callable[[Any, dict[str, Any]], Awaitable[Any]]:
+    """The host function of one service function (``service.<Resource>.<op>``)."""
+    sync = is_sync(fn)
+
+    async def call(database: Any, args: dict[str, Any]) -> Any:
+        ctx = _context(database, args, model)
+        ctx._loop = asyncio.get_running_loop()
+        values = decode_values(model, args.get("values") or {})
+        user = args.get("user") or {}
+        protect = allow_writes(model) if args.get("allow_protected") else contextlib.nullcontext()
+        try:
+            with protect:
+                if op == "create":
+                    arguments: tuple[Any, ...] = (ctx, values)
+                else:
+                    qs = _one_row(model, database, args["key"], await _resource_filters(config, user, op))
+                    arguments = (ctx, qs, values) if op == "update" else (ctx, qs)
+                if sync:
+                    # The worker thread needs the context variables (the protected-write opt-in) of this task.
+                    scope = contextvars.copy_context()
+                    result = await asyncio.get_running_loop().run_in_executor(None, lambda: scope.run(fn, *arguments))
+                else:
+                    result = await fn(*arguments)
+        except ValidationError as e:
+            return _invalid(e)
+        except VersionConflict:
+            return {"ok": False, "kind": "conflict"}
+        except DoesNotExist:
+            return {"ok": False, "kind": "not_found"}
+        if inspect.isawaitable(result):
+            if inspect.iscoroutine(result):
+                result.close()
+            return {
+                "ok": False,
+                "kind": "sync_service",
+                "message": f"the {op} service of {model.__name__} is a threaded sync function that returned an awaitable: run the async database calls with ctx.run(...)",
+            }
+        out: dict[str, Any] = {"ok": True, "audited": ctx._audited}
+        if op == "create":
+            if result is None:
+                return {"ok": False, "kind": "error", "message": f"the create service of {model.__name__} returns the new record"}
+            out["key"] = _key_json(model, result)
+        return out
+
+    return call
+
+
+def writer_host(resources: Mapping[str, tuple[Any, Mapping[str, Any]]]) -> Callable[[Any, dict[str, Any]], Awaitable[Any]]:
+    """The host function ``admin.write``: one function for every resource, chosen by the model name of the call."""
+    writers = {name: default_writer(model, config) for name, (model, config) in resources.items()}
+
+    async def write(database: Any, args: dict[str, Any]) -> Any:
+        return await writers[args["model"]](database, args)
+
+    return write
