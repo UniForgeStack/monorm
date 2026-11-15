@@ -534,20 +534,130 @@ The database then answers for the rest:
 Any other failure is not a `500` page: it is a form message "The record was not saved: an error occurred. Request id: <id>" (`error.kind` is `ServerError`).
 The log holds the cause under the same request id.
 
-### Read-only models
+### Host behavior: the write goes through the bridge
 
-A model with host behavior (hooks, a hook assignment, or a hook default for a client value) or `@@protected_write` is read-only in the admin until the admin runs host code.
-A write answers `403` with `error.kind` `ReadOnly` and the reason, `writable` is `false`, and the UI shows the reason on the record and on the form.
-Guards and the other extension behavior that has no host code are not host behavior: those models stay writable.
+A model with host behavior (hooks, a hook assignment, or a hook default for a client value) writes through the host function `admin.write`.
+The write is a query-set write: the host selects the row with the `queryset` filter and the `can` rule, and the model code (hooks, field adapters) runs.
+Rust checks the record first (`404`, and `403` for a `can` rule), and the host answers with the key.
+A host route needs the [host binding](#host-functions-and-the-binding).
+Without it, a write answers `403` with `error.kind` `ReadOnly` and the reason "this write needs host code, and this admin has no host".
+Relation chips (`links`) do not go through host code: a host route refuses them.
+Guards and the other extension behavior that has no host code are not host behavior: those models stay writable on the plain path.
+
+`@@protected_write` is closed: `writable` is `false`, a write answers `403` with `error.kind` `ReadOnly` and the reason, and the UI shows the reason on the record and on the form.
+A resource opts in with `allow_protected_writes=True` (`allowProtectedWrites: true` in TypeScript).
+The audit row records the opt-in as `allow_protected_writes: true`.
+
+### Services
+
+A service owns the write of one operation.
+It is a plain function: a unit test calls it with a `Context` and no admin.
+
+```python
+from monorm import admin
+from monorm.errors import VersionConflict
+
+async def create(ctx, values):
+    async with ctx.database.transaction():
+        post = await Post.objects.using(ctx.database).insert(**values, author=ctx.user["key"])
+        await ctx.audit(post, changes={"reason": ctx.inputs["reason"]})
+    return post
+
+async def update(ctx, qs, changes):
+    async with ctx.database.transaction():
+        row = await qs.first()
+        if row.title != ctx.loaded["title"]:
+            raise VersionConflict("changed")
+        await qs.update(**changes)
+
+async def delete(ctx, qs):
+    await qs.delete()
+
+admin.register(Post, {"create": create, "update": update, "delete": delete, "inputs": [admin.input("reason", type="textarea", required=True)]})
+```
+
+```ts
+import { admin, type Context } from "monorm/admin";
+
+admin.register(Post, {
+  create: async (ctx: Context, values) => { /* ... */ },
+  update: async (ctx: Context, qs, changes) => { /* ... */ },
+  delete: async (ctx: Context, qs) => { /* ... */ },
+  inputs: [admin.input("reason", { type: "textarea", required: true })],
+});
+```
+
+- `create(ctx, values)`, `update(ctx, qs, changes)` and `delete(ctx, qs)`. For `update` and `delete`, `qs` is a one-row query set that holds the key, the `queryset` filter and the `can` rule. A row that the query set does not find is a `404`.
+- The service opens its own transaction and does its own version check against `ctx.loaded`. A service route skips the Rust `409` check.
+- `VersionConflict` gives `409` with `conflicts` and the current values.
+- The ORM `ValidationError` gives `422` with the field errors and the form messages. The form shows them as for a plain write.
+- Any other error gives `500` with the request id.
+- A resource with a service for only some operations uses the plain path (or `admin.write`) for the others.
+
+`ctx` holds:
+
+| Name | Value |
+|---|---|
+| `user` | The user of the admin as a plain mapping (no password hash). |
+| `request_id` | The id of the request. It is empty under the test client. |
+| `loaded` | The values that the form showed, by field name. Empty on a create. |
+| `inputs` | The values of the `admin.input` controls. |
+| `database` | The database of the request. |
+| `audit(record=None, *, action=None, changes=None)` | Writes the audit row inside the service transaction, with the inputs (a secret input as a mask). Rust fills the `record_label` after the service returns. |
+
+Without a `ctx.audit()` call, Rust writes the audit row after the service returns.
+With a call, the row commits with the service transaction and Rust adds none.
+
+The audit row of the default writer, and of a service that does not call `ctx.audit()`, is not atomic with the host write.
+Rust writes it after the host commit, in a new transaction.
+If that insert fails, the staff user reads "The record was not saved", although the record is saved, and a retry of a create can make a duplicate row.
+The window is open for the default writer in the same way: Rust compares the loaded values before the host call and holds no lock across it, so two staff users who save at the same time can overwrite each other with no `409`.
+A service owns its check and its transaction: use `ctx.audit()` and a version check in the service when this matters.
+
+### Inputs
+
+`admin.input(name, type=, label=, required=, help=, choices=, secret=)` adds a control to the form that is no field.
+The `type` is `text`, `textarea`, `number`, `checkbox` or `select` (`select` needs `choices`).
+The UI shows the controls on the create form, the edit form and the delete confirmation.
+The value lives for one request, and only the service reads it as `ctx.inputs[name]`.
+The audit row stores each input in `changes.inputs`. With `secret=True` it stores the mask `***` in place of the value, for the admin's own row and for the row of `ctx.audit()`. Without `secret=True` it stores the value as given, and staff with access to the audit log read it.
+A required input that is empty gives a `422` on the control.
+An input on a resource without a service is an `AdminConfigError` of `Site::build`, and `admin.check()` raises it without a database.
+In the API, `inputs` is an object in the body of the `POST`, `PATCH` and `DELETE` routes, and each resource lists its `inputs` in `GET {prefix}/resources`.
+
+### Sync services in Python
+
+A sync function runs in a thread, so it cannot use the async database API on the bound transaction.
+`Site::build` (and `admin.check()`) rejects a sync service unless it is marked `@admin.threaded`.
+A threaded service runs its async database calls through `ctx.run(awaitable)`.
+A create gets plain values. An update gets a query set and the values, and a delete gets a query set, so its async methods need `ctx.run` too:
+
+```python
+@admin.threaded
+def update(ctx, qs, changes):
+    row = ctx.run(qs.first())
+    ctx.run(qs.update(title=changes["title"]))
+```
+
+A threaded service that returns an awaitable instead of running it is a `500` that names `ctx.run`.
+TypeScript services are always async.
+
+### `admin.log`
+
+`admin.log(action, user=, resource=, record_key=, label=, changes=, using=)` lets host code outside the admin (a job, a script, a webhook) write an audit row.
+It joins the transaction that is open on the database.
+`user` is a user mapping or object (its `key`, else its `id`), a user key, or `None`.
+In TypeScript, `admin.log(action, { user, resource, recordKey, label, changes, using })`.
 
 ### The audit row
 
-Each write adds one `AdminLogEntry`: `action` (`create`, `update`, `delete`), `resource`, `record_key`, `record_label` (the first text value of the record, at most 200 characters), the actor, and the time.
+Each write adds one `AdminLogEntry`: `action` (`create`, `update`, `delete`), `resource`, `record_key`, `record_label` (the first text value of the record, at most 200 characters; Rust also sets it on the row of `ctx.audit()`), the actor, and the time.
 Its `changes` column holds `{"request_id", "ip", "user_agent", "diff": {field: {"from", "to"}}}`.
 A create has `from: null` for each field, and a delete has `to: null`.
 The row commits with the write, so a failed write leaves none.
 A refused write (`403`) writes a `permission_denied` row instead.
 The test client has no service layer, so its `request_id` is `unknown`.
+A host route adds `inputs`, `service` (whether a service wrote) and `allow_protected_writes` to `changes`.
 
 ### Forms in the UI
 
