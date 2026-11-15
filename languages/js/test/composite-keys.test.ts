@@ -38,7 +38,7 @@ test("describe lists single and composite keys", () => {
 });
 
 for (const provider of ["sqlite", "postgresql"]) {
-  const url = provider === "sqlite" ? "sqlite://:memory:" : process.env["ORM_TEST_DATABASE_URL"];
+  const url = provider === "sqlite" ? "sqlite://:memory:" : (process.env["ORM_TEST_DATABASE_URL"] ?? "postgres://postgres:postgres@localhost/orm_test");
 
   async function setup(): Promise<{ db: any; Item: any; Line: any }> {
     const registry = new Registry();

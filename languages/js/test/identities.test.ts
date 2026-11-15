@@ -14,7 +14,7 @@ const scratch = scratchDir("node-identities-");
 
 for (const [provider, url] of [
   ["sqlite", "sqlite://:memory:"],
-  ["postgresql", process.env["ORM_TEST_DATABASE_URL"] ?? ""],
+  ["postgresql", process.env["ORM_TEST_DATABASE_URL"] ?? "postgres://postgres:postgres@localhost/orm_test"],
 ] as const) {
   test(`ContentType identity roundtrip and frozen generation (${provider})`, { skip: provider === "postgresql" && !url }, async () => {
     const dir = mkdtempSync(join(scratch, "schema-"));

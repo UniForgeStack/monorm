@@ -29,7 +29,7 @@ model Solo {
 
 type Any = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
-const urls: Record<string, string | undefined> = { sqlite: "sqlite://:memory:", postgresql: process.env["ORM_TEST_DATABASE_URL"] };
+const urls: Record<string, string | undefined> = { sqlite: "sqlite://:memory:", postgresql: (process.env["ORM_TEST_DATABASE_URL"] ?? "postgres://postgres:postgres@localhost/orm_test") };
 
 async function setup(provider: string): Promise<{ db: Database; Note: Any; Solo: Any; events: QueryEvent[] }> {
   const registry = new Registry();

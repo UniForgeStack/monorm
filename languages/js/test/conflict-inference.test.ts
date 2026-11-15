@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { connect, loads, QueryError, Registry, type QueryEvent } from "../src/index.js";
 
-const urls: Record<string, string | undefined> = { sqlite: "sqlite://:memory:", postgresql: process.env["ORM_TEST_DATABASE_URL"] };
+const urls: Record<string, string | undefined> = { sqlite: "sqlite://:memory:", postgresql: (process.env["ORM_TEST_DATABASE_URL"] ?? "postgres://postgres:postgres@localhost/orm_test") };
 
 async function setup(provider: string) {
   const registry = new Registry();

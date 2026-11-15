@@ -63,7 +63,7 @@ const MISSING: Record<string, unknown> = {
   price: 99.5,
 };
 
-const urlOf = (provider: string) => (provider === "sqlite" ? "sqlite://:memory:" : process.env["ORM_TEST_DATABASE_URL"]);
+const urlOf = (provider: string) => (provider === "sqlite" ? "sqlite://:memory:" : (process.env["ORM_TEST_DATABASE_URL"] ?? "postgres://postgres:postgres@localhost/orm_test"));
 
 async function openDb(provider: string, source = KINDS): Promise<{ db: Database; models: Record<string, Any> }> {
   if (provider === "sqlite") source = source.replace("  price Decimal\n", "");

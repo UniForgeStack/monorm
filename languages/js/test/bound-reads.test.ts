@@ -34,7 +34,7 @@ model Part {
 type Any = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
 for (const provider of ["sqlite", "postgresql"]) {
-  const url = provider === "sqlite" ? "sqlite://:memory:" : process.env["ORM_TEST_DATABASE_URL"];
+  const url = provider === "sqlite" ? "sqlite://:memory:" : (process.env["ORM_TEST_DATABASE_URL"] ?? "postgres://postgres:postgres@localhost/orm_test");
 
   async function setup(): Promise<{ db: Database; Writer: Any; Entry: Any; Part: Any; count: () => number }> {
     const registry = new Registry();

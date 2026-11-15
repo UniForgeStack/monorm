@@ -33,7 +33,7 @@ test("partitions survive registry extension", () => {
   registry.prepare();
 });
 
-const url = process.env["ORM_TEST_DATABASE_URL"];
+const url = (process.env["ORM_TEST_DATABASE_URL"] ?? "postgres://postgres:postgres@localhost/orm_test");
 test("partition routes inserts and validates row moves", { skip: !url }, async () => {
   const registry = new Registry();
   const Row = loads(source, { registry })["PartitionRow"] as any;

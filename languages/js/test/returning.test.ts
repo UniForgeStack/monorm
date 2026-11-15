@@ -185,7 +185,7 @@ for (const dialect of ["sqlite", "postgres"] as const) {
   }));
 }
 
-test("a copy insert keeps the count and refuses returning", { skip: !process.env["ORM_TEST_DATABASE_URL"] }, async () => {
+test("a copy insert keeps the count and refuses returning", async () => {
   const { db, Author, a } = await open("postgres", true);
   try {
     assert.equal(await a.insertMany([{ name: "c", bio: "b" }], { copy: true }), 1);

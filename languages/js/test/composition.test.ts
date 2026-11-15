@@ -40,7 +40,7 @@ type Objects = {
 };
 
 for (const provider of ["sqlite", "postgresql"]) {
-  const url = provider === "sqlite" ? "sqlite://:memory:" : process.env["ORM_TEST_DATABASE_URL"];
+  const url = provider === "sqlite" ? "sqlite://:memory:" : (process.env["ORM_TEST_DATABASE_URL"] ?? "postgres://postgres:postgres@localhost/orm_test");
   test(`composed create, attach, update and delete (${provider})`, { skip: !enabled || !url }, async () => {
     const registry = new Registry();
     const models = loads(`datasource db {\n provider = "${provider}"\n}\n${source}`, { registry });
