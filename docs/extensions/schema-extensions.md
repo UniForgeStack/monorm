@@ -131,7 +131,7 @@ model Book {
   The soft-delete extension still requires a nullable `DateTime`; the host rule for a delete rewrite accepts any `DateTime`, so another extension can rewrite deletes on a required column.
 
 * Reads hide deleted rows.
-  Before, soft delete hid nothing, and a model needed `@@query.filter("deleted_at == null")`.
+  Before, soft delete hid nothing, and a model needed `@@query.filter("deleted", deleted_at == null)`.
   Remove that filter: while it stays, `all_with_deleted()`, `deleted_only()`, `undelete()` and `hard_delete()` cannot see deleted rows.
   `get()` returns `None` (`null`) for a deleted row; use `all_with_deleted()` to read it.
 * A to-one reference to a soft-delete model is nullable in the generated types: `Author | None` in Python, an `opt` hop in TypeScript paths.

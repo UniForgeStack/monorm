@@ -235,7 +235,7 @@ A read default that reads a `scope` value, such as a tenant filter, has no bypas
 ### Tenancy
 
 The admin ignores tenancy: staff are not tenants, and the admin has no tenant picker.
-An admin read sets no `scope` value, and a read default that reads one (`@@query.filter("tenant", "shop_id == scope.shop")`) is off in every admin read.
+An admin read sets no `scope` value, and a read default that reads one (`@@query.filter("tenant", shop_id == scope.shop)`) is off in every admin read.
 A model with a tenant read default shows the rows of all tenants, and never raises the missing-scope `QueryError`.
 `?without=<name>` of such a default answers `400`, because it is always off.
 Read defaults that read no `scope` value, such as soft delete, stay on, and their bypass permission works as above.

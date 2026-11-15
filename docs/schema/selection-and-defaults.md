@@ -39,18 +39,18 @@ model User {
   name String
   active Boolean @default(true)
   bio String @query.selectOut
-  @@query.defaults(filter: "active == true", fields: ["id", "name"], related: [])
+  @@query.defaults(filter: active == true, fields: ["id", "name"], related: [])
 }
 ```
 
 Each option also has its own attribute.
 One option comes from one place on a model.
-`@@query.filter("<name>", "<expr>")` adds a named filter; see "Named filters" below:
+`@@query.filter("<name>", <expr>)` adds a named filter; see "Named filters" below:
 
 ```prisma
 model Base {
   id Int @id @default(autoincrement())
-  @@query.filter("positive", "id > 0")
+  @@query.filter("positive", id > 0)
 }
 model Profile {
   id Int @id @default(autoincrement())
@@ -64,7 +64,7 @@ model User {
   bio String @query.selectOut
   profile_id Int @unique
   profile Profile @relation(fields: [profile_id], references: [id])
-  @@query.filter("active", "active == true")
+  @@query.filter("active", active == true)
   @@query.fields(["id", "name"])
   @@query.related(["profile"])
   @@query.order("-created_at", "id")
@@ -76,7 +76,7 @@ A second copy of `@@query.fields`, `@@query.related`, `@@query.order` or `@@quer
 
 ### Named filters
 
-`@@query.filter("<name>", "<expr>")` adds one filter with a name. A model can have several.
+`@@query.filter("<name>", <expr>)` adds one filter with a name. A model can have several.
 The filters of a model join with AND, and with the filters of other extensions.
 Each named filter is its own default, so `without_defaults("<name>")` drops that filter only.
 
@@ -85,8 +85,8 @@ model Post {
   id        Int     @id @default(autoincrement())
   shop_id   Int
   published Boolean
-  @@query.filter("tenant", "shop_id == scope.shop")
-  @@query.filter("published", "published == true")
+  @@query.filter("tenant", shop_id == scope.shop)
+  @@query.filter("published", published == true)
 }
 ```
 
@@ -100,11 +100,11 @@ A name is unique on a model across sources: the first entry keeps the name and a
 `"query"` is the query-defaults convention, not a core rule: that entry holds the order, the fields and the related paths,
 and also the filter of `@@query.defaults(filter: ...)`. `without_defaults("query")` drops those with that filter.
 The `query` entry exists on every model once any `@@query.*` is declared.
-A one-argument `@@query.filter("<expr>")` is a schema error that shows the two-argument form.
+A one-argument `@@query.filter(<expr>)` is a schema error that shows the two-argument form.
 
 A child (`@@query.parent`, a proxy or a composed model) inherits each name of its parent.
 A filter with the same name on the child replaces the inherited one; `parent.default_filter` in it means
-the parent's filter of that name. `@@query.filter("<name>", "none")` removes the inherited name.
+the parent's filter of that name. `@@query.filter("<name>", "none")` removes the inherited name (`"none"` stays a string).
 
 Without the package,
 `@@query.*` declarations fail at definition. The neutral `read_defaults` prepared
@@ -117,18 +117,22 @@ A prefetched `load()` read of a related model gets that model's default annotati
 Ordinary explicit partial selections remain available in baseline builds.
 
 Options omitted on a child inherit the nearest parent's policy. An explicit `filter:` option
-replaces the inherited filter (named filters inherit by name, above). `parent.default_filter and active == true` composes
+replaces the inherited filter (named filters inherit by name, above). `parent.default_filter & (active == true)` composes
 it deliberately. A standalone policy may specify `parent: "Base"`; proxy and
-composition declarations supply their parent. `filter: "none"` clears the filter,
+composition declarations supply their parent. `filter: "none"` clears the filter (`"none"` stays a string),
 `fields: ["*"]` resets to all fields, and `related: []` clears default loading.
 An explicit field list replaces the inherited list; local `@query.selectOut`
 removes that field from the default list. It retains the field in the model.
 An empty selected list exposes no scalar fields, while retaining identity helpers.
 
-Filter expressions support root fields, string/integer/boolean literals, `scope.<name>` values, NULL,
-`== != < <= > >=`, parentheses, `and`/`or` (or `&&`/`||`), and `not`/`!`.
-`not` binds looser than comparisons: `not a == 1` means `not (a == 1)`.
-Literal types are checked by the database when the query runs.
+A filter is a schema expression, not a string.
+It uses the same native syntax as other schema expressions, and the core checks it when the schema loads.
+It supports root fields, to-one paths, literals, `scope.<name>` values, `null`, `== != < <= > >=`, `&`, `|`, `~`, parentheses, and methods such as `.startswith()`, `.between()` and `.in_()`.
+A `scope.<name>` value takes the type of the field it is compared with.
+A type error is a schema error with the position in the schema file.
+The string form of a filter is deprecated.
+It still works, and it adds a warning with the expression to write instead.
+`monorm fmt --native` rewrites such strings to expressions.
 `parent.default_filter` requires an inherited filter. Unknown fields, inheritance
 cycles and recursive default loading reject during compilation/definition.
 Related paths use schema names separated by dots and must be to-one references.
@@ -160,7 +164,7 @@ A filter can read a value that the application sets for the current request or t
 model Order {
   id      Int @id @default(autoincrement())
   shop_id Int
-  @@query.filter("tenant", "shop_id == scope.shop")
+  @@query.filter("tenant", shop_id == scope.shop)
 }
 ```
 

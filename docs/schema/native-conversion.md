@@ -53,3 +53,12 @@ retain `sql(...)`. Introspected names stay explicit.
 Connected pull and drift materialize schemas through the existing shadow path.
 Their comparator also reconciles supported typed expressions to ignore redundant
 parentheses. Other properties and unsupported expressions retain strict comparison.
+
+A default filter that an extension takes as a string becomes an expression.
+Examples of the string form are `@@query.filter("tenant", "shop_id == scope.shop")` and `@@query.defaults(filter: "active == true")`.
+The same holds for a soft-delete or other extension option.
+The expression form is `@@query.filter("tenant", shop_id == scope.shop)`.
+The string form is deprecated.
+It still works, and each one adds a warning with the expression to write.
+The converter checks the string with the core, and keeps it as a string if the check fails.
+The value `"none"` stays a string.
