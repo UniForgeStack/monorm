@@ -180,7 +180,7 @@ model Doc {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`an instance hardDelete also drops the tenant filter (${dialect})`, { skip: !hasExtension("monorm.soft-delete") || !hasExtension("monorm.query-defaults") }, async () => {
+  test(`an instance hardDelete deletes its own row outside the scope (${dialect})`, { skip: !hasExtension("monorm.soft-delete") || !hasExtension("monorm.query-defaults") }, async () => {
     const [db, models] = await open(dialect, `
 model Doc {
   id      Int       @id
@@ -193,7 +193,7 @@ model Doc {
     try {
       await docs.insertMany([{ id: 1, shop: 1 }, { id: 2, shop: 2 }]);
       const doc = await scope({ shop: 2 }, async () => docs.get(Doc.id.eq(2)));
-      // The instance uses a bare bypass: no scope is set, and the shop 2 row is gone.
+      // A held instance names its own row: no scope is set, and the shop 2 row is gone.
       await (doc as SoftDeletable).hardDelete();
       const rows = await docs.withoutDefaults().all();
       assert.deepEqual(rows.map((d: { id: number }) => d.id), [1]);

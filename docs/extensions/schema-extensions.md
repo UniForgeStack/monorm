@@ -86,7 +86,7 @@ model Book {
 * `hard_delete()` (`hardDelete()`) sends `DELETE`.
   In database mode, the trigger soft-deletes a live row, so `hard_delete()` deletes only rows that are already soft-deleted.
   On a query set, it bypasses only the `"deleted"` default, so the other default filters (a tenant filter) still apply.
-  An instance `hard_delete()` uses a bare bypass, so it drops all defaults: a tenant filter and its scope check too. It deletes the row it holds.
+  An instance `hard_delete()` bypasses only `"deleted"` too. It deletes the row it holds, and no scope check applies to it.
   An instance `hard_delete()` does not check the version, also with `@@locking.version`.
 * `undelete()` on a query set clears the field of the matching soft-deleted rows; on an instance, it clears the field of its row.
   On a query set, it bypasses only the `"deleted"` default, like `all_with_deleted()`.

@@ -206,7 +206,7 @@ async def test_the_soft_delete_methods_bypass_only_the_deleted_default(dialect):
 @requires("monorm.soft-delete")
 @requires("monorm.query-defaults")
 @pytest.mark.parametrize("dialect", DATABASES)
-async def test_an_instance_hard_delete_also_drops_the_tenant_filter(dialect):
+async def test_an_instance_hard_delete_deletes_its_own_row_outside_the_scope(dialect):
     db, models = await connect(dialect, TENANT_SOFT_DELETE)
     Doc = models["Doc"]
     try:
@@ -214,7 +214,7 @@ async def test_an_instance_hard_delete_also_drops_the_tenant_filter(dialect):
         await docs.insert_many([{"id": 1, "shop": 1}, {"id": 2, "shop": 2}])
         with monorm.scope(shop=2):
             doc = await docs.get(Doc.id == 2)
-        # The instance uses a bare bypass: no scope is set, and the shop 2 row is gone.
+        # A held instance names its own row: no scope is set, and the shop 2 row is gone.
         await doc.hard_delete()
         with monorm.scope(shop=1):
             assert await docs.all_with_deleted().count() == 1

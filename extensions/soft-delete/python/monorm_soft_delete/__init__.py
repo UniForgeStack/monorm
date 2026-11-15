@@ -97,7 +97,7 @@ class SoftDeleteInstance:
     async def hard_delete(self: ModelLike) -> None:
         """``DELETE ... WHERE pk = ...`` also for a soft-delete model. In database mode,
         the trigger soft-deletes a live row; a soft-deleted row is deleted."""
-        bound: SoftDeleteBoundQuerySet[Any] = cast(Any, self.qs().without_defaults())
+        bound: SoftDeleteBoundQuerySet[Any] = cast(Any, self.qs().without_defaults(_DEFAULT))
         await bound.hard_delete()
 
     async def undelete(self: ModelLike) -> None:

@@ -87,13 +87,13 @@ export function softDeleteBoundQuerySet<B extends BoundQuerySetCtor>(Base: B) {
   };
 }
 
-type InstanceLike = { readonly pk: unknown; qs(): { withoutDefaults(): { hardDelete(): Promise<unknown> } } };
+type InstanceLike = { readonly pk: unknown; qs(): { withoutDefaults(name: never): { hardDelete(): Promise<unknown> } } };
 
 export class SoftDeleteInstance {
   /** `DELETE ... WHERE pk = ...` also for a soft-delete model; in database mode, the trigger soft-deletes a live row. */
   async hardDelete(this: InstanceLike): Promise<void> {
-    // Bare bypass on purpose: the instance already holds this row, so no default may hide it.
-    await this.qs().withoutDefaults().hardDelete();
+    // A held instance applies no scope filter: its primary key names the row.
+    await this.qs().withoutDefaults(DEFAULT).hardDelete();
   }
 
   /** Clear the soft-delete field of this row and fill it from the updated row. */
