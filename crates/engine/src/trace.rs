@@ -27,6 +27,8 @@ pub struct QueryEvent {
     pub rows: u64,
     /// The error message when the statement failed.
     pub error: Option<String>,
+    /// The settings in force for the statement (`scope.shop`, `monorm.bypass`), name and value.
+    pub settings: Vec<(String, String)>,
 }
 
 /// The events of the calls that share it.
@@ -47,11 +49,12 @@ struct Open {
     sql: String,
     start: SystemTime,
     clock: Instant,
+    settings: Vec<(String, String)>,
 }
 
 impl Open {
     fn end(self, rows: u64, error: Option<String>) -> QueryEvent {
-        QueryEvent { sql: self.sql, start: self.start, duration: self.clock.elapsed(), rows, error }
+        QueryEvent { sql: self.sql, start: self.start, duration: self.clock.elapsed(), rows, error, settings: self.settings }
     }
 }
 
@@ -76,11 +79,11 @@ impl Trace {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    fn start(&self, sql: String) -> u64 {
+    fn start(&self, sql: String, settings: Vec<(String, String)>) -> u64 {
         let mut inner = self.lock();
         let id = inner.next;
         inner.next += 1;
-        inner.open.push(Open { id, sql, start: SystemTime::now(), clock: Instant::now() });
+        inner.open.push(Open { id, sql, start: SystemTime::now(), clock: Instant::now(), settings });
         id
     }
 
@@ -105,8 +108,13 @@ pub fn wrap(conn: Arc<dyn Executor>, trace: Option<&Trace>) -> Arc<dyn Executor>
 /// Runs `run` and records it as statement `sql` into `trace`, when there is one: for
 /// work outside an executor, such as session advisory locks.
 pub async fn timed<T>(trace: Option<&Trace>, sql: String, run: impl Future<Output = DbResult<T>>, rows: impl Fn(&T) -> u64) -> DbResult<T> {
+    timed_with(trace, sql, Vec::new(), run, rows).await
+}
+
+/// `timed`, with the settings in force for the statement.
+pub async fn timed_with<T>(trace: Option<&Trace>, sql: String, settings: Vec<(String, String)>, run: impl Future<Output = DbResult<T>>, rows: impl Fn(&T) -> u64) -> DbResult<T> {
     let Some(trace) = trace else { return run.await };
-    let id = trace.start(sql);
+    let id = trace.start(sql, settings);
     let out = run.await;
     let (rows, error) = match &out {
         Ok(v) => (rows(v), None),
@@ -125,7 +133,7 @@ pub struct Traced {
 
 impl Traced {
     fn timed<'a, T: 'a>(&'a self, sql: String, run: impl Future<Output = DbResult<T>> + 'a, rows: impl Fn(&T) -> u64 + 'a) -> impl Future<Output = DbResult<T>> + 'a {
-        timed(Some(&self.trace), sql, run, rows)
+        timed_with(Some(&self.trace), sql, self.conn.settings(), run, rows)
     }
 
     fn traced_tx(&self, tx: Arc<dyn Transaction>) -> Arc<dyn Transaction> {
@@ -139,6 +147,9 @@ impl Executor for Traced {
     }
     fn pooler_transactions(&self) -> bool {
         self.conn.pooler_transactions()
+    }
+    fn settings(&self) -> Vec<(String, String)> {
+        self.conn.settings()
     }
     fn begin_migration(&self) -> BoxFuture<'_, DbResult<Arc<dyn Transaction>>> {
         Box::pin(async move { Ok(self.traced_tx(self.conn.begin_migration().await?)) })
@@ -202,7 +213,7 @@ mod tests {
     #[test]
     fn take_drains() {
         let t = Trace::new();
-        let id = t.start("SELECT 1".into());
+        let id = t.start("SELECT 1".into(), Vec::new());
         t.finish(id, 1, None);
         assert_eq!(t.take().len(), 1);
         assert!(t.take().is_empty());

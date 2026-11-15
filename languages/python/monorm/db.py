@@ -8,7 +8,7 @@ import math
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal, TypeVar, overload
 
 from . import _native, debug
@@ -101,6 +101,8 @@ class QueryEvent:
     #: True for SQL the caller wrote as a string with no parameters (:meth:`Database.execute`):
     #: it can hold literal values. ORM-built SQL and :meth:`Database.fetch` are False.
     raw: bool = False
+    #: The database settings in force for the statement, such as ``scope.shop``.
+    settings: Mapping[str, str] = field(default_factory=dict)
 
 
 class Database:
@@ -293,7 +295,7 @@ class Database:
     ) -> None:
         """Gives the events of a call to the N+1 finder and to every hook. ``failed`` is the
         error of the call: it stays, and the hook errors become notes on it."""
-        events = [QueryEvent(*e, raw) for e in trace.take()]
+        events = [QueryEvent(*e[:5], raw, dict(e[5])) for e in trace.take()]
         if origin is not None:
             # A write counts by its call, a read by its SQL shape; each key once per engine call.
             call_key = debug.write_key(key) if key is not None else None

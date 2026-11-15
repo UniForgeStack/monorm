@@ -451,16 +451,17 @@ impl Trace {
         Trace(monorm_engine::trace::Trace::new())
     }
 
-    /// `(sql, start, duration, rows, error)` per statement, oldest first: `start` in Unix
-    /// seconds, `duration` in seconds. The trace is empty afterwards.
+    /// `(sql, start, duration, rows, error, settings)` per statement, oldest first: `start` in
+    /// Unix seconds, `duration` in seconds, `settings` the `(name, value)` pairs in force.
+    /// The trace is empty afterwards.
     #[allow(clippy::type_complexity)]
-    fn take(&self) -> Vec<(String, f64, f64, u64, Option<String>)> {
+    fn take(&self) -> Vec<(String, f64, f64, u64, Option<String>, Vec<(String, String)>)> {
         self.0
             .take()
             .into_iter()
             .map(|e| {
                 let start = e.start.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64();
-                (e.sql, start, e.duration.as_secs_f64(), e.rows, e.error)
+                (e.sql, start, e.duration.as_secs_f64(), e.rows, e.error, e.settings)
             })
             .collect()
     }
@@ -644,13 +645,17 @@ struct Engine {
     target: Target,
     schema: Arc<schema::Schema>,
     classes: Arc<Classes>,
+    /// The settings of a `with_settings` engine: a statement in a transaction runs with them
+    /// in force, and a transaction that changed them puts the old ones back first.
+    settings: Option<Vec<(String, String)>>,
 }
 
 impl Engine {
     fn conn(&self, tx: Option<&Bound<'_, Transaction>>) -> Arc<dyn Executor> {
-        match tx {
-            Some(tx) => tx.get().inner.clone(),
-            None => self.driver.clone(),
+        match (tx, &self.settings) {
+            (Some(tx), Some(settings)) => db::SettingsTx::wrap(tx.get().inner.clone(), settings.clone()),
+            (Some(tx), None) => tx.get().inner.clone(),
+            (None, _) => self.driver.clone(),
         }
     }
 
@@ -965,11 +970,14 @@ impl Engine {
         })
     }
 
-    /// This engine on the same pool, with `set_config(name, value, true)` for each
-    /// setting at the start of every transaction (statements outside one get their own).
+    /// This engine on the same pool, with `set_config(name, value, true)` for each setting:
+    /// a transaction starts with them, a statement outside one gets a transaction of its own
+    /// in the same round trip, and a statement in a transaction that holds other values sets
+    /// the changed ones first. `names` is the full set: a name left out goes back to `''`.
     fn with_settings(&self, names: Vec<String>, values: Vec<String>) -> Engine {
-        let driver: Arc<dyn Driver> = Arc::new(db::WithSettings::new(self.driver.clone(), names.into_iter().zip(values).collect()));
-        Engine { driver, target: self.target, schema: self.schema.clone(), classes: self.classes.clone() }
+        let settings: Vec<(String, String)> = names.into_iter().zip(values).collect();
+        let driver: Arc<dyn Driver> = Arc::new(db::WithSettings::new(self.driver.clone(), settings.clone()));
+        Engine { driver, target: self.target, schema: self.schema.clone(), classes: self.classes.clone(), settings: Some(settings) }
     }
 
     /// Session advisory lock on a pinned connection; `None` when it is not taken.
@@ -1451,7 +1459,7 @@ fn connect<'py>(
             return Err(schema_err(format!("schema targets {}, connection uses {}", schema.dialect.name(), driver.dialect().name())));
         }
         let target = Target::new(driver.dialect()).without(&disable).map_err(query_err)?;
-        Ok(Engine { driver, target, schema, classes })
+        Ok(Engine { driver, target, schema, classes, settings: None })
     })
 }
 

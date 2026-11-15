@@ -240,8 +240,13 @@ async fn query(c: &PgConn, sql: &str, args: &[Value]) -> DbResult<Box<dyn RowSet
         return Ok(Box::new(PgRows(rows)));
     }
     let stmt = prepare(c, sql, args).await?;
+    query_prepared(c, &stmt, sql, args).await
+}
+
+async fn query_prepared(c: &PgConn, stmt: &Statement, sql: &str, args: &[Value]) -> DbResult<Box<dyn RowSet>> {
+    let params: Vec<Param<'_>> = args.iter().map(Param).collect();
     let refs: Vec<&(dyn ToSql + Sync)> = params.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
-    let rows = c.query(&stmt, &refs).await.map_err(|e| run_err(c, sql, args, e))?;
+    let rows = c.query(stmt, &refs).await.map_err(|e| run_err(c, sql, args, e))?;
     Ok(Box::new(PgRows(rows)))
 }
 
@@ -257,10 +262,15 @@ async fn fetch(c: &PgConn, sql: &str, args: &[Value]) -> DbResult<Box<dyn RawRow
         return Ok(Box::new(PgRawRows { columns, types, rows }));
     }
     let stmt = prepare(c, sql, args).await?;
+    fetch_prepared(c, &stmt, sql, args).await
+}
+
+async fn fetch_prepared(c: &PgConn, stmt: &Statement, sql: &str, args: &[Value]) -> DbResult<Box<dyn RawRows>> {
+    let params: Vec<Param<'_>> = args.iter().map(Param).collect();
     let refs: Vec<&(dyn ToSql + Sync)> = params.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
     let types = stmt.columns().iter().map(|c| raw_type(c.name(), c.type_())).collect::<DbResult<Vec<_>>>()?;
     let columns = stmt.columns().iter().map(|c| c.name().to_owned()).collect();
-    let rows = c.query(&stmt, &refs).await.map_err(|e| run_err(c, sql, args, e))?;
+    let rows = c.query(stmt, &refs).await.map_err(|e| run_err(c, sql, args, e))?;
     Ok(Box::new(PgRawRows { columns, types, rows }))
 }
 
@@ -339,8 +349,126 @@ async fn execute(c: &PgConn, sql: &str, args: &[Value]) -> DbResult<u64> {
         return c.execute_typed(sql, &typed(&params, args)?).await.map_err(|e| run_err(c, sql, args, e));
     }
     let stmt = prepare(c, sql, args).await?;
+    execute_prepared(c, &stmt, sql, args).await
+}
+
+async fn execute_prepared(c: &PgConn, stmt: &Statement, sql: &str, args: &[Value]) -> DbResult<u64> {
+    let params: Vec<Param<'_>> = args.iter().map(Param).collect();
     let refs: Vec<&(dyn ToSql + Sync)> = params.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
-    c.execute(&stmt, &refs).await.map_err(|e| run_err(c, sql, args, e))
+    c.execute(stmt, &refs).await.map_err(|e| run_err(c, sql, args, e))
+}
+
+// -- settings -------------------------------------------------------------------------------
+
+type Settings = Vec<(String, String)>;
+
+/// What to set so that `want` is in force after `applied`. A name that is no longer wanted goes
+/// back to the empty text (a custom setting cannot be unset in a transaction).
+fn settings_diff(applied: &[(String, String)], want: &[(String, String)]) -> Settings {
+    let mut out: Settings = want
+        .iter()
+        .filter(|(n, v)| applied.iter().find(|(a, _)| a == n).map(|(_, x)| x) != Some(v))
+        .cloned()
+        .collect();
+    out.extend(applied.iter().filter(|(n, v)| !v.is_empty() && !want.iter().any(|(w, _)| w == n)).map(|(n, _)| (n.clone(), String::new())));
+    out
+}
+
+fn settings_merge(applied: &mut Settings, change: &[(String, String)]) {
+    for (n, v) in change {
+        applied.retain(|(a, _)| a != n);
+        if !v.is_empty() { applied.push((n.clone(), v.clone())); }
+    }
+}
+
+/// One statement that sets every pair: `SELECT set_config($1, $2, true), set_config($3, $4, true)`.
+fn set_config_sql(change: &[(String, String)]) -> (String, Vec<Value>) {
+    let calls: Vec<String> = (0..change.len()).map(|i| format!("set_config(${}, ${}, true)", 2 * i + 1, 2 * i + 2)).collect();
+    let args = change.iter().flat_map(|(n, v)| [Value::from(n.clone()), Value::from(v.clone())]).collect();
+    (format!("SELECT {}", calls.join(", ")), args)
+}
+
+#[derive(Clone, Copy)]
+enum Shape {
+    Rows,
+    Raw,
+    Count,
+}
+
+enum Out {
+    Rows(Box<dyn RowSet>),
+    Raw(Box<dyn RawRows>),
+    Count(u64),
+}
+
+async fn run_kind(c: &PgConn, kind: Shape, sql: &str, args: &[Value]) -> DbResult<Out> {
+    Ok(match kind {
+        Shape::Rows => Out::Rows(query(c, sql, args).await?),
+        Shape::Raw => Out::Raw(fetch(c, sql, args).await?),
+        Shape::Count => Out::Count(execute(c, sql, args).await?),
+    })
+}
+
+async fn run_prepared(c: &PgConn, kind: Shape, stmt: &Statement, sql: &str, args: &[Value]) -> DbResult<Out> {
+    Ok(match kind {
+        Shape::Rows => Out::Rows(query_prepared(c, stmt, sql, args).await?),
+        Shape::Raw => Out::Raw(fetch_prepared(c, stmt, sql, args).await?),
+        Shape::Count => Out::Count(execute_prepared(c, stmt, sql, args).await?),
+    })
+}
+
+impl Out {
+    fn rows(self) -> Box<dyn RowSet> { match self { Out::Rows(r) => r, _ => unreachable!("the kind was Rows") } }
+    fn raw(self) -> Box<dyn RawRows> { match self { Out::Raw(r) => r, _ => unreachable!("the kind was Raw") } }
+    fn count(self) -> u64 { match self { Out::Count(n) => n, _ => unreachable!("the kind was Count") } }
+}
+
+/// A pooled connection in a transaction that this code opened and has not ended. Dropped before
+/// it is `clean`, the connection closes and the server rolls back, so the pool never holds it.
+struct Lone {
+    client: Option<Object>,
+    clean: bool,
+}
+
+impl Drop for Lone {
+    fn drop(&mut self) {
+        if !self.clean {
+            if let Some(obj) = self.client.take() {
+                drop(Object::take(obj));
+            }
+        }
+    }
+}
+
+/// An autocommit statement with settings: `BEGIN`, the settings, the statement and `COMMIT` go
+/// out together (tokio-postgres sends in call order), one round trip once both statements are
+/// prepared. The first error wins; a failed statement makes the `COMMIT` a rollback.
+async fn run_alone(pool: &Pool, want: Settings, kind: Shape, sql: &str, args: &[Value]) -> DbResult<Out> {
+    let mut lone = Lone { client: Some(get_client(pool).await?), clean: true };
+    let c = lone.client.as_ref().expect("the guard holds the client");
+    let (set_sql, set_args) = set_config_sql(&want);
+    // The prepare step is outside the transaction: a cold statement costs a round trip, as it does without settings.
+    let set_stmt = prepare(c, &set_sql, &set_args).await?;
+    let stmt = prepare(c, sql, args).await?;
+    lone.clean = false;
+    let c = lone.client.as_ref().expect("the guard holds the client");
+    let (begin, set, run, commit) = tokio::join!(
+        c.batch_execute("BEGIN"),
+        execute_prepared(c, &set_stmt, &set_sql, &set_args),
+        run_prepared(c, kind, &stmt, sql, args),
+        c.batch_execute("COMMIT"),
+    );
+    // A failed BEGIN leaves the state unknown: the connection closes (`clean` stays false).
+    begin.map_err(pg_err)?;
+    let committed = commit.map_err(pg_err);
+    if let Err(e) = &committed {
+        if c.batch_execute("ROLLBACK").await.is_err() { return Err(e.clone()); }
+    }
+    lone.clean = true;
+    set?;
+    let out = run?;
+    committed?;
+    Ok(out)
 }
 
 /// Simple-query protocol: several statements, no parameters, text results.
@@ -433,7 +561,7 @@ async fn copy_in_alone(c: Object, table: &str, columns: &[String], rows: &[Vec<V
         return copy_in(&c, table, columns, rows).await;
     }
     // Dropped mid-way, the session detaches the connection instead of pooling an open transaction.
-    let mut session = Session { client: Some(c), finished: false, next_savepoint: 0, savepoints: vec![] };
+    let mut session = Session { client: Some(c), finished: false, next_savepoint: 0, savepoints: vec![], applied: vec![], saved: vec![] };
     let client = || session.client.as_ref().expect("the session holds the client");
     client().batch_execute("BEGIN").await.map_err(pg_err)?;
     let result = match copy_in(client(), table, columns, rows).await {
@@ -846,7 +974,7 @@ impl PgDriver {
         let client = get_client(&self.pool).await?;
         if let Some(acquired) = acquired { acquired.store(true, Ordering::SeqCst); }
         let expiry = Arc::new(Expiry { fate: Fate::new(), cancel: client.cancel_token(), tls: self.tls.clone() });
-        let session = Session { client: Some(client), finished: false, next_savepoint: 0, savepoints: vec![] };
+        let session = Session { client: Some(client), finished: false, next_savepoint: 0, savepoints: vec![], applied: vec![], saved: vec![] };
         let sql = match isolation {
             Some(level) => format!("BEGIN ISOLATION LEVEL {}", level.sql()),
             None => "BEGIN".to_owned(),
@@ -860,6 +988,25 @@ impl PgDriver {
             expiry,
         });
         Ok(tx)
+    }
+
+    /// A statement in a transaction of its own with `want` in force. Behind a pooler the four
+    /// steps run one after the other: the unnamed statement has no prepare step to pipeline after.
+    async fn settled(&self, want: Settings, kind: Shape, sql: &str, args: &[Value]) -> DbResult<Out> {
+        if !self.pgbouncer {
+            return run_alone(&self.pool, want, kind, sql, args).await;
+        }
+        let tx = self.start_transaction(None, None).await?;
+        let out = async {
+            tx.settle(want).await?;
+            Ok(match kind {
+                Shape::Rows => Out::Rows(tx.query(sql.to_owned(), args.to_vec()).await?),
+                Shape::Raw => Out::Raw(tx.fetch(sql.to_owned(), args.to_vec()).await?),
+                Shape::Count => Out::Count(tx.execute(sql.to_owned(), args.to_vec()).await?),
+            })
+        }
+        .await;
+        super::finish(tx, out).await
     }
 
     /// A connection outside the pool, closed when dropped.
@@ -913,6 +1060,27 @@ impl Executor for PgDriver {
 
     fn copy_in(&self, table: String, columns: Vec<String>, rows: Vec<Vec<Value>>) -> BoxFuture<'_, DbResult<u64>> {
         Box::pin(async move { let c = get_client(&self.pool).await?; copy_in_alone(c, &table, &columns, &rows).await })
+    }
+
+    fn query_settled(&self, settings: Settings, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<Box<dyn RowSet>>> {
+        Box::pin(async move {
+            if settings.is_empty() { return self.query(sql, args).await; }
+            Ok(self.settled(settings, Shape::Rows, &sql, &args).await?.rows())
+        })
+    }
+
+    fn fetch_settled(&self, settings: Settings, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<Box<dyn RawRows>>> {
+        Box::pin(async move {
+            if settings.is_empty() { return self.fetch(sql, args).await; }
+            Ok(self.settled(settings, Shape::Raw, &sql, &args).await?.raw())
+        })
+    }
+
+    fn execute_settled(&self, settings: Settings, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<u64>> {
+        Box::pin(async move {
+            if settings.is_empty() { return self.execute(sql, args).await; }
+            Ok(self.settled(settings, Shape::Count, &sql, &args).await?.count())
+        })
     }
 
     fn begin(&self) -> BoxFuture<'_, DbResult<Arc<dyn Transaction>>> {
@@ -1011,6 +1179,10 @@ struct Session {
     finished: bool,
     next_savepoint: u64,
     savepoints: Vec<String>,
+    /// The settings in force in the transaction (`set_config(.., true)` calls that ran).
+    applied: Settings,
+    /// `applied` when each open savepoint began: a rolled-back savepoint takes its value back.
+    saved: Vec<Settings>,
 }
 
 impl Drop for Session {
@@ -1063,6 +1235,8 @@ impl PgTx {
         let client = session.client.as_ref().ok_or_else(closed)?;
         client.batch_execute(&format!("SAVEPOINT {name}")).await.map_err(pg_err)?;
         session.savepoints.push(name.clone());
+        let applied = session.applied.clone();
+        session.saved.push(applied);
         Ok(Self {
             session: self.session.clone(),
             savepoint: Some(name),
@@ -1086,6 +1260,44 @@ impl PgTx {
         f(client).await
     }
 
+    /// The statement with `want` in force. Only the settings that differ from the ones in force
+    /// go out, in the same flight as the statement. An empty `sql` only sets.
+    async fn settled(&self, want: Settings, kind: Shape, sql: &str, args: &[Value]) -> DbResult<Out> {
+        if self.done.load(Ordering::Acquire) {
+            return Err(closed());
+        }
+        let mut session = self.session.lock().await;
+        if self.done.load(Ordering::Acquire) || self.expiry.fate.is_expired() { return Err(closed()); }
+        super::check_savepoint(&session.savepoints, &self.savepoint)?;
+        let change = settings_diff(&session.applied, &want);
+        let c = session.client.as_ref().ok_or_else(closed)?;
+        if change.is_empty() {
+            if sql.is_empty() { return Ok(Out::Count(0)); }
+            return run_kind(c, kind, sql, args).await;
+        }
+        let (set_sql, set_args) = set_config_sql(&change);
+        if sql.is_empty() {
+            execute(c, &set_sql, &set_args).await?;
+            settings_merge(&mut session.applied, &change);
+            return Ok(Out::Count(0));
+        }
+        let (set, run) = if c.pgbouncer {
+            let set = execute(c, &set_sql, &set_args).await;
+            if set.is_err() { (set, None) } else { (set, Some(run_kind(c, kind, sql, args).await)) }
+        } else {
+            let set_stmt = prepare(c, &set_sql, &set_args).await?;
+            let stmt = prepare(c, sql, args).await?;
+            let (set, run) = tokio::join!(
+                execute_prepared(c, &set_stmt, &set_sql, &set_args),
+                run_prepared(c, kind, &stmt, sql, args),
+            );
+            (set, Some(run))
+        };
+        if set.is_ok() { settings_merge(&mut session.applied, &change); }
+        set?;
+        run.expect("the statement ran after its settings")
+    }
+
     async fn finish(&self, sql: String, commit: bool) -> DbResult<()> {
         let mut session = self.session.lock().await;
         if self.done.load(Ordering::Acquire) || self.expiry.fate.is_expired() { return Err(closed()); }
@@ -1107,6 +1319,9 @@ impl PgTx {
         }
         if self.savepoint.is_some() && result.is_ok() {
             session.savepoints.pop();
+            let before = session.saved.pop();
+            // PostgreSQL undoes the settings of a rolled-back savepoint, and keeps those of a released one.
+            if let (false, Some(before)) = (commit, before) { session.applied = before; }
         }
         if self.savepoint.is_none() {
             // Failed cleanup detached the connection above; otherwise the ended
@@ -1160,6 +1375,25 @@ impl Executor for PgTx {
             let tx: Arc<dyn Transaction> = Arc::new(self.begin_savepoint().await?);
             Ok(tx)
         })
+    }
+
+    fn settle(&self, want: Settings) -> BoxFuture<'_, DbResult<()>> {
+        Box::pin(async move {
+            self.settled(want, Shape::Count, "", &[]).await?;
+            Ok(())
+        })
+    }
+
+    fn query_settled(&self, want: Settings, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<Box<dyn RowSet>>> {
+        Box::pin(async move { Ok(self.settled(want, Shape::Rows, &sql, &args).await?.rows()) })
+    }
+
+    fn fetch_settled(&self, want: Settings, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<Box<dyn RawRows>>> {
+        Box::pin(async move { Ok(self.settled(want, Shape::Raw, &sql, &args).await?.raw()) })
+    }
+
+    fn execute_settled(&self, want: Settings, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<u64>> {
+        Box::pin(async move { Ok(self.settled(want, Shape::Count, &sql, &args).await?.count()) })
     }
 }
 
@@ -1375,7 +1609,7 @@ mod failure_tests {
             obj.batch_execute("BEGIN; CREATE TEMP TABLE sibling_savepoints (id INTEGER PRIMARY KEY) ON COMMIT PRESERVE ROWS").await.unwrap();
             let expiry = Arc::new(Expiry { fate: Fate::new(), cancel: obj.cancel_token(), tls: None });
             let outer = Arc::new(PgTx {
-                session: Arc::new(Mutex::new(Session { client: Some(obj), finished: false, next_savepoint: 0, savepoints: vec![] })),
+                session: Arc::new(Mutex::new(Session { client: Some(obj), finished: false, next_savepoint: 0, savepoints: vec![], applied: vec![], saved: vec![] })),
                 savepoint: None,
                 done: AtomicBool::new(false),
                 expiry,
@@ -1436,7 +1670,7 @@ mod failure_tests {
             let pid: i32 = obj.query_one("SELECT pg_backend_pid()", &[]).await.unwrap().get(0);
             let expiry = Arc::new(Expiry { fate: Fate::new(), cancel: obj.cancel_token(), tls: None });
             let tx = PgTx {
-                session: Arc::new(Mutex::new(Session { client: Some(obj), finished: false, next_savepoint: 0, savepoints: vec![] })),
+                session: Arc::new(Mutex::new(Session { client: Some(obj), finished: false, next_savepoint: 0, savepoints: vec![], applied: vec![], saved: vec![] })),
                 savepoint: None,
                 done: AtomicBool::new(false),
                 expiry,

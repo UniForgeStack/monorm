@@ -717,6 +717,8 @@ pub struct QueryEvent {
     pub duration: f64,
     pub rows: f64,
     pub error: Option<String>,
+    /// The settings in force for the statement: `{ name: value }`.
+    pub settings: std::collections::HashMap<String, String>,
 }
 
 /// The statements of the engine calls it is passed to, drained by `take()`.
@@ -743,6 +745,7 @@ impl Trace {
                 duration: e.duration.as_secs_f64() * 1000.0,
                 rows: e.rows as f64,
                 error: e.error,
+                settings: e.settings.into_iter().collect(),
             })
             .collect()
     }
@@ -947,13 +950,16 @@ pub struct Engine {
     driver: Arc<dyn Driver>,
     target: Target,
     schema: Arc<schema::Schema>,
+    /// The settings of a `with_settings` engine, in force for each statement in a transaction.
+    settings: Option<Vec<(String, String)>>,
 }
 
 impl Engine {
     fn conn(&self, tx: Option<&Transaction>) -> Arc<dyn Executor> {
-        match tx {
-            Some(tx) => tx.inner.clone(),
-            None => self.driver.clone(),
+        match (tx, &self.settings) {
+            (Some(tx), Some(settings)) => db::SettingsTx::wrap(tx.inner.clone(), settings.clone()),
+            (Some(tx), None) => tx.inner.clone(),
+            (None, _) => self.driver.clone(),
         }
     }
 
@@ -1245,12 +1251,15 @@ impl Engine {
         })
     }
 
-    /// This engine on the same pool, with `set_config(name, value, true)` for each
-    /// setting at the start of every transaction (statements outside one get their own).
+    /// This engine on the same pool, with `set_config(name, value, true)` for each setting:
+    /// a transaction starts with them, a statement outside one gets a transaction of its own
+    /// in the same round trip, and a statement in a transaction that holds other values sets
+    /// the changed ones first. `names` is the full set: a name left out goes back to `''`.
     #[napi]
     pub fn with_settings(&self, names: Vec<String>, values: Vec<String>) -> Engine {
-        let driver: Arc<dyn Driver> = Arc::new(db::WithSettings::new(self.driver.clone(), names.into_iter().zip(values).collect()));
-        Engine { driver, target: self.target, schema: self.schema.clone() }
+        let settings: Vec<(String, String)> = names.into_iter().zip(values).collect();
+        let driver: Arc<dyn Driver> = Arc::new(db::WithSettings::new(self.driver.clone(), settings.clone()));
+        Engine { driver, target: self.target, schema: self.schema.clone(), settings: Some(settings) }
     }
 
     /// Session advisory lock on a pinned connection; `null` when it is not taken.
@@ -1553,7 +1562,7 @@ pub fn connect<'env>(
             return Err(schema_err(format!("schema targets {}, connection uses {}", schema.dialect.name(), driver.dialect().name())));
         }
         let target = Target::new(driver.dialect()).without(&disable).map_err(query_err)?;
-        Ok(Engine { driver, target, schema })
+        Ok(Engine { driver, target, schema, settings: None })
     })
 }
 

@@ -154,6 +154,7 @@ export interface NativeQueryEvent {
   readonly duration: number;
   readonly rows: number;
   readonly error?: string | null;
+  readonly settings: Readonly<Record<string, string>>;
 }
 
 /** The resources of one schema and one admin config; it holds no connection. */

@@ -167,6 +167,28 @@ pub trait Executor: Send + Sync {
         }
         self.begin()
     }
+    /// The settings this executor puts in force for each statement (a trace shows them).
+    fn settings(&self) -> Vec<(String, String)> { Vec::new() }
+    /// Puts `settings` in force for the rest of the transaction (`set_config(name, value, true)`).
+    /// The full wanted set: a name set before and missing now goes back to the empty text.
+    /// A driver of a database without settings refuses a non-empty set.
+    fn settle(&self, settings: Vec<(String, String)>) -> BoxFuture<'_, DbResult<()>> {
+        Box::pin(async move {
+            if settings.is_empty() { return Ok(()); }
+            Err(DbError::new(ErrorKind::Query, format!("{} has no settings: this call needs PostgreSQL", self.dialect().name())))
+        })
+    }
+    /// `query` with `settings` in force. A transaction sets only the changed ones before the
+    /// statement; the pool runs a transaction of its own (`BEGIN`, settings, statement, `COMMIT`).
+    fn query_settled(&self, settings: Vec<(String, String)>, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<Box<dyn RowSet>>> {
+        Box::pin(async move { self.settle(settings).await?; self.query(sql, args).await })
+    }
+    fn fetch_settled(&self, settings: Vec<(String, String)>, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<Box<dyn RawRows>>> {
+        Box::pin(async move { self.settle(settings).await?; self.fetch(sql, args).await })
+    }
+    fn execute_settled(&self, settings: Vec<(String, String)>, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<u64>> {
+        Box::pin(async move { self.settle(settings).await?; self.execute(sql, args).await })
+    }
     /// Bulk load: `COPY table (columns) FROM STDIN`, one value per column in each row.
     /// Gives the number of rows written.
     fn copy_in(&self, table: String, columns: Vec<String>, rows: Vec<Vec<Value>>) -> BoxFuture<'_, DbResult<u64>> {
@@ -289,6 +311,19 @@ impl Executor for Guarded {
     fn copy_in(&self, table: String, columns: Vec<String>, rows: Vec<Vec<Value>>) -> BoxFuture<'_, DbResult<u64>> {
         Box::pin(self.guarded(self.inner.copy_in(table, columns, rows)))
     }
+    fn settings(&self) -> Vec<(String, String)> { self.inner.settings() }
+    fn settle(&self, settings: Vec<(String, String)>) -> BoxFuture<'_, DbResult<()>> {
+        Box::pin(self.guarded(self.inner.settle(settings)))
+    }
+    fn query_settled(&self, settings: Vec<(String, String)>, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<Box<dyn RowSet>>> {
+        Box::pin(self.guarded(self.inner.query_settled(settings, sql, args)))
+    }
+    fn fetch_settled(&self, settings: Vec<(String, String)>, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<Box<dyn RawRows>>> {
+        Box::pin(self.guarded(self.inner.fetch_settled(settings, sql, args)))
+    }
+    fn execute_settled(&self, settings: Vec<(String, String)>, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<u64>> {
+        Box::pin(self.guarded(self.inner.execute_settled(settings, sql, args)))
+    }
     fn begin(&self) -> BoxFuture<'_, DbResult<Arc<dyn Transaction>>> {
         Box::pin(async move {
             let tx = self.guarded(self.inner.begin()).await?;
@@ -363,10 +398,10 @@ pub trait SessionLock: Send + Sync {
     fn release(&self) -> BoxFuture<'_, DbResult<()>>;
 }
 
-/// A driver whose every transaction first runs `set_config(name, value, true)` (the
-/// same as `SET LOCAL`) for each setting, so row-level security policies see them. A
-/// statement outside a transaction runs in a transaction of its own. Savepoints inherit
-/// the settings of their transaction.
+/// A driver whose every statement runs with `settings` in force (`set_config(name, value,
+/// true)`, the same as `SET LOCAL`). A statement outside a transaction runs in a transaction
+/// of its own, in one round trip on PostgreSQL. A transaction starts with the settings, and
+/// its savepoints inherit them.
 pub struct WithSettings {
     inner: Arc<dyn Driver>,
     settings: Vec<(String, String)>,
@@ -378,55 +413,96 @@ impl WithSettings {
     }
 
     /// The settings go in after `BEGIN ISOLATION LEVEL ...`, so the level comes first.
-    async fn settle(&self, tx: Arc<dyn Transaction>) -> DbResult<Arc<dyn Transaction>> {
-        for (name, value) in &self.settings {
-            let args = vec![Value::from(name.clone()), Value::from(value.clone())];
-            if let Err(e) = tx.execute("SELECT set_config($1, $2, true)".into(), args).await {
-                let _ = tx.rollback().await;
-                return Err(e);
-            }
+    async fn settle_tx(&self, tx: Arc<dyn Transaction>) -> DbResult<Arc<dyn Transaction>> {
+        if self.settings.is_empty() { return Ok(tx); }
+        if let Err(e) = tx.settle(self.settings.clone()).await {
+            let _ = tx.rollback().await;
+            return Err(e);
         }
         Ok(tx)
     }
 }
 
-async fn finish<T>(tx: Arc<dyn Transaction>, out: DbResult<T>) -> DbResult<T> {
-    match out {
-        Ok(v) => tx.commit().await.map(|_| v),
-        Err(e) => {
-            let _ = tx.rollback().await;
-            Err(e)
-        }
+/// The statements of one block in a transaction: each runs with `settings` in force. The
+/// transaction itself remembers what it set, so a block that ends puts the old values back
+/// before the next statement, and a rolled-back savepoint forgets what it set.
+pub struct SettingsTx {
+    inner: Arc<dyn Transaction>,
+    settings: Vec<(String, String)>,
+}
+
+impl SettingsTx {
+    pub fn wrap(inner: Arc<dyn Transaction>, settings: Vec<(String, String)>) -> Arc<dyn Transaction> {
+        Arc::new(SettingsTx { inner, settings })
     }
+}
+
+impl Executor for SettingsTx {
+    fn dialect(&self) -> Dialect { self.inner.dialect() }
+    fn pooler_transactions(&self) -> bool { self.inner.pooler_transactions() }
+    fn settings(&self) -> Vec<(String, String)> { self.settings.clone() }
+    fn settle(&self, settings: Vec<(String, String)>) -> BoxFuture<'_, DbResult<()>> { self.inner.settle(settings) }
+    fn query(&self, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<Box<dyn RowSet>>> {
+        self.inner.query_settled(self.settings.clone(), sql, args)
+    }
+    fn fetch(&self, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<Box<dyn RawRows>>> {
+        self.inner.fetch_settled(self.settings.clone(), sql, args)
+    }
+    fn execute(&self, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<u64>> {
+        self.inner.execute_settled(self.settings.clone(), sql, args)
+    }
+    fn query_settled(&self, settings: Vec<(String, String)>, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<Box<dyn RowSet>>> {
+        self.inner.query_settled(settings, sql, args)
+    }
+    fn fetch_settled(&self, settings: Vec<(String, String)>, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<Box<dyn RawRows>>> {
+        self.inner.fetch_settled(settings, sql, args)
+    }
+    fn execute_settled(&self, settings: Vec<(String, String)>, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<u64>> {
+        self.inner.execute_settled(settings, sql, args)
+    }
+    fn batch(&self, sql: String) -> BoxFuture<'_, DbResult<u64>> {
+        Box::pin(async move { self.inner.settle(self.settings.clone()).await?; self.inner.batch(sql).await })
+    }
+    fn query_text(&self, sql: String) -> BoxFuture<'_, DbResult<Vec<Vec<Option<String>>>>> {
+        Box::pin(async move { self.inner.settle(self.settings.clone()).await?; self.inner.query_text(sql).await })
+    }
+    fn advisory_lock(&self, key: i64, exclusive: bool, nowait: bool) -> BoxFuture<'_, DbResult<bool>> {
+        Box::pin(async move { self.inner.settle(self.settings.clone()).await?; self.inner.advisory_lock(key, exclusive, nowait).await })
+    }
+    fn copy_in(&self, table: String, columns: Vec<String>, rows: Vec<Vec<Value>>) -> BoxFuture<'_, DbResult<u64>> {
+        Box::pin(async move { self.inner.settle(self.settings.clone()).await?; self.inner.copy_in(table, columns, rows).await })
+    }
+    fn begin(&self) -> BoxFuture<'_, DbResult<Arc<dyn Transaction>>> {
+        Box::pin(async move {
+            let tx = self.inner.begin().await?;
+            Ok(SettingsTx::wrap(tx, self.settings.clone()))
+        })
+    }
+}
+
+impl Transaction for SettingsTx {
+    fn commit(&self) -> BoxFuture<'_, DbResult<()>> { self.inner.commit() }
+    fn rollback(&self) -> BoxFuture<'_, DbResult<()>> { self.inner.rollback() }
+    fn mark_failed(&self, e: DbError) { self.inner.mark_failed(e) }
+    fn expire(&self, grace: std::time::Duration) -> BoxFuture<'_, TimeoutOutcome> { self.inner.expire(grace) }
 }
 
 impl Executor for WithSettings {
     fn dialect(&self) -> Dialect {
         self.inner.dialect()
     }
+    fn settings(&self) -> Vec<(String, String)> { self.settings.clone() }
     fn pooler_transactions(&self) -> bool {
         self.inner.pooler_transactions()
     }
     fn query(&self, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<Box<dyn RowSet>>> {
-        Box::pin(async move {
-            let tx = self.begin().await?;
-            let out = tx.query(sql, args).await;
-            finish(tx, out).await
-        })
+        self.inner.query_settled(self.settings.clone(), sql, args)
     }
     fn fetch(&self, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<Box<dyn RawRows>>> {
-        Box::pin(async move {
-            let tx = self.begin().await?;
-            let out = tx.fetch(sql, args).await;
-            finish(tx, out).await
-        })
+        self.inner.fetch_settled(self.settings.clone(), sql, args)
     }
     fn execute(&self, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<u64>> {
-        Box::pin(async move {
-            let tx = self.begin().await?;
-            let out = tx.execute(sql, args).await;
-            finish(tx, out).await
-        })
+        self.inner.execute_settled(self.settings.clone(), sql, args)
     }
     fn batch(&self, sql: String) -> BoxFuture<'_, DbResult<u64>> {
         Box::pin(async move {
@@ -450,10 +526,20 @@ impl Executor for WithSettings {
         })
     }
     fn begin(&self) -> BoxFuture<'_, DbResult<Arc<dyn Transaction>>> {
-        Box::pin(async move { self.settle(self.inner.begin().await?).await })
+        Box::pin(async move { self.settle_tx(self.inner.begin().await?).await })
     }
     fn begin_with(&self, start: TxStart) -> BoxFuture<'_, DbResult<Arc<dyn Transaction>>> {
-        Box::pin(async move { self.settle(self.inner.begin_with(start).await?).await })
+        Box::pin(async move { self.settle_tx(self.inner.begin_with(start).await?).await })
+    }
+}
+
+async fn finish<T>(tx: Arc<dyn Transaction>, out: DbResult<T>) -> DbResult<T> {
+    match out {
+        Ok(v) => tx.commit().await.map(|_| v),
+        Err(e) => {
+            let _ = tx.rollback().await;
+            Err(e)
+        }
     }
 }
 

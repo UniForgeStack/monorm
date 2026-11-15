@@ -94,6 +94,8 @@ export interface QueryEvent {
   /** True for SQL the caller wrote as a string with no parameters ({@link Database.execute}): it
    * can hold literal values. ORM-built SQL and {@link Database.fetch} are `false`. */
   readonly raw: boolean;
+  /** The settings in force for the statement, such as `scope.shop` and `monorm.bypass`. */
+  readonly settings: Readonly<Record<string, string>>;
 }
 
 /** @internal What an engine call tells the tracer: the parts of a write's N+1 key, and whether its SQL is raw. */
