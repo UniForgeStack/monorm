@@ -21,6 +21,12 @@ phase = "behavior"
 after = ["monorm.locking.prepare", "monorm.timestamps.prepare"]
 effects = ["behavior.read_defaults", "behavior.delete_rewrites", "storage.soft_delete_triggers"]
 
+# Runs after every behavior pass, so the read defaults of other extensions exist.
+[[passes]]
+id = "monorm.soft-delete.check"
+phase = "validation"
+after = ["monorm.soft-delete.prepare"]
+
 # `@@soft_delete.deleted_at("deleted_at", map: "_deleted_at", mode: "application")`: adds the field.
 [[attributes]]
 name = "soft_delete.deleted_at"

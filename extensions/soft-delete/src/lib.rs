@@ -2,7 +2,7 @@
 //! soft-deletes rows instead of deleting them.
 //! Database mode adds row triggers, so a raw `DELETE` soft-deletes too
 //! and the soft delete cascades to soft-delete children.
-use monorm::{dialect::Dialect, extension::{views_keeping, ReadDefault}, ir::{ColType, Expr, FieldIr, ModelIr, OnDelete, SchemaIr, TriggerEvent, TriggerIr, TriggerTiming}, sql::ident, tracking::{error, Mode, Tracked}, writes::{AssignValue, DeleteRewrite, WriteAssignment, WriteKind}};
+use monorm::{dialect::Dialect, extension::{views_keeping, Declaration, ReadDefault}, ir::{ColType, Expr, FieldIr, ModelIr, OnDelete, SchemaIr, TriggerEvent, TriggerIr, TriggerTiming}, sql::ident, tracking::{error, Mode, Tracked}, writes::{AssignValue, DeleteRewrite, WriteAssignment, WriteKind}};
 
 /// The read default that hides soft-deleted rows; `without_defaults("deleted")` bypasses it.
 const SOURCE: &str = "monorm.soft-delete";
@@ -38,22 +38,28 @@ fn repeats_default(filter: &serde_json::Value, field: &str) -> bool {
     *filter == serde_json::json!({"t": "is_null", "item": {"t": "col", "path": [], "name": field}, "neg": false})
 }
 
-fn reject_leftover_filters(ir: &SchemaIr, roles: &[SoftDelete]) -> Result<(), String> {
-    for s in roles {
-        for d in ir.behavior.declarations.iter().filter(|d| d.model == s.model && d.field.is_none()) {
-            let filter = match d.attribute.as_str() {
-                "query.filter" => d.positional.get(1),
-                "query.defaults" => d.arguments.get("filter"),
-                _ => None,
-            };
-            if filter.is_some_and(|f| repeats_default(f, &s.field)) {
-                return Err(error(d, format!("{} already hides soft-deleted rows by default; remove this filter, it would also hide them from all_with_deleted(), deleted_only(), undelete() and hard_delete()", s.model)));
-            }
+/// The declaration that wrote this filter, for the error position: any declaration whose argument is the filter, the model's own first.
+fn written_by<'a>(ir: &'a SchemaIr, model: &str, filter: &serde_json::Value) -> Option<&'a Declaration> {
+    let writes = |d: &&Declaration| d.positional.iter().chain(d.arguments.values()).any(|v| v == filter);
+    let own = ir.behavior.declarations.iter().filter(|d| d.model == model);
+    own.clone().find(writes).or_else(|| ir.behavior.declarations.iter().filter(|d| d.model != model).find(writes))
+}
+
+/// Runs after the behavior passes, so the read defaults of every other extension exist.
+pub fn check(ir: &mut SchemaIr) -> Result<(), String> {
+    for rewrite in ir.behavior.delete_rewrites.iter().filter(|d| d.source == SOURCE) {
+        for d in ir.behavior.read_defaults.iter().filter(|d| d.model == rewrite.model && d.source != SOURCE) {
+            let Some(filter) = d.filter.as_ref().filter(|f| repeats_default(f, &rewrite.field)) else { continue };
+            let message = format!("{} already hides soft-deleted rows by default; remove this filter, it would also hide them from all_with_deleted(), deleted_only(), undelete() and hard_delete()", rewrite.model);
+            return Err(match written_by(ir, &rewrite.model, filter) {
+                Some(declaration) if declaration.model != rewrite.model => error(declaration, format!("{message} (this declaration is on {}, which {} inherits)", declaration.model, rewrite.model)),
+                Some(declaration) => error(declaration, message),
+                None => message,
+            });
         }
     }
     Ok(())
 }
-
 
 fn column<'m>(model: &'m ModelIr, field: &str) -> Result<&'m str, String> {
     model.fields.iter().find(|f| f.name == field).map(|f| f.column.as_str()).ok_or_else(|| format!("{} has no field {field}", model.name))
@@ -132,7 +138,6 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
         ir.behavior.read_defaults.push(ReadDefault { source: SOURCE.into(), name: DEFAULT.into(), model: s.model.clone(),
             filter: Some(live(&s.field)), ..Default::default() });
     }
-    reject_leftover_filters(ir, &roles)?;
     ir.behavior.delete_rewrites.retain(|d| d.source != SOURCE);
     for s in &roles {
         ir.behavior.delete_rewrites.push(DeleteRewrite { source: SOURCE.into(), model: s.model.clone(), field: s.field.clone(), guard: live(&s.field) });
@@ -350,23 +355,42 @@ mod tests {
 
     #[test]
     fn a_leftover_filter_on_the_deleted_field_is_rejected() {
-        let declare = |attribute: &str, positional: serde_json::Value, arguments: serde_json::Value| serde_json::from_value::<monorm::extension::Declaration>(serde_json::json!({
-            "attribute": attribute, "model": "Author", "positional": positional, "arguments": arguments, "location": {"file": "schema.prisma", "line": 6, "column": 1}})).unwrap();
-        for filter in [serde_json::json!("deleted == null"), serde_json::json!("( deleted==null )"), serde_json::json!("deleted is null"), serde_json::json!({"t": "is_null", "item": {"t": "col", "path": [], "name": "deleted"}, "neg": false})] {
-            for d in [declare("query.filter", serde_json::json!(["live", filter]), serde_json::json!({})), declare("query.defaults", serde_json::json!([]), serde_json::json!({"filter": filter}))] {
-                let mut ir = schema("postgres", "application");
-                ir.behavior.declarations.push(d);
-                let err = prepared(&mut ir).unwrap_err();
-                assert!(err.starts_with("schema.prisma:6:1: @query.") && err.contains("Author already hides soft-deleted rows by default; remove this filter"), "{err}");
+        let tree = serde_json::json!({"t": "is_null", "item": {"t": "col", "path": [], "name": "deleted"}, "neg": false});
+        let message = "Author already hides soft-deleted rows by default; remove this filter, it would also hide them from all_with_deleted(), deleted_only(), undelete() and hard_delete()";
+        // Another extension's read default on the model, and the declaration that wrote it.
+        let given = |filter: serde_json::Value, declared: bool| {
+            let mut ir = schema("postgres", "application");
+            if declared {
+                ir.behavior.declarations.push(serde_json::from_value(serde_json::json!({"attribute": "other.filter", "model": "Author", "positional": ["live", filter], "arguments": {},
+                    "location": {"file": "schema.prisma", "line": 6, "column": 1}})).unwrap());
             }
+            prepared(&mut ir).unwrap();
+            ir.behavior.read_defaults.push(ReadDefault { source: "other.ext".into(), name: "live".into(), model: "Author".into(), filter: Some(filter), ..Default::default() });
+            ir
+        };
+        for filter in [serde_json::json!("deleted == null"), serde_json::json!("( deleted==null )"), serde_json::json!("deleted is null"), tree.clone()] {
+            let err = check(&mut given(filter.clone(), true)).unwrap_err();
+            assert_eq!(err, format!("schema.prisma:6:1: @other.filter: {message}"));
+            assert_eq!(check(&mut given(filter, false)).unwrap_err(), message, "no declaration, no position");
         }
+        let mut ir = given(serde_json::json!({"t": "and", "items": [tree, {"t": "cmp", "op": "gt", "l": {"t": "col", "path": [], "name": "id"}, "r": {"t": "int", "value": 0}}]}), true);
+        check(&mut ir).unwrap();
+        ir.behavior.read_defaults.last_mut().unwrap().model = "Note".into();
+        ir.behavior.read_defaults.last_mut().unwrap().filter = Some(serde_json::json!("deleted == null"));
+        check(&mut ir).unwrap();
+        // A filter that the model inherits: the declaration is on the parent, and the error says so.
+        let mut ir = given(tree.clone(), false);
+        ir.behavior.declarations.push(serde_json::from_value(serde_json::json!({"attribute": "other.filter", "model": "Note", "positional": ["live", tree], "arguments": {},
+            "location": {"file": "schema.prisma", "line": 2, "column": 1}})).unwrap());
+        assert_eq!(check(&mut ir).unwrap_err(), format!("schema.prisma:2:1: @other.filter: {message} (this declaration is on Note, which Author inherits)"));
+    }
+
+    #[test]
+    fn the_filter_of_a_model_without_soft_delete_and_the_own_read_default_pass() {
         let mut ir = schema("postgres", "application");
-        ir.behavior.declarations.push(declare("query.filter", serde_json::json!(["mine", "deleted == null and id > 0"]), serde_json::json!({})));
         prepared(&mut ir).unwrap();
-        let mut ir = schema("postgres", "application");
-        let tree = serde_json::json!({"t": "and", "items": [{"t": "is_null", "item": {"t": "col", "path": [], "name": "deleted"}, "neg": false}, {"t": "cmp", "op": "gt", "l": {"t": "col", "path": [], "name": "id"}, "r": {"t": "int", "value": 0}}]});
-        ir.behavior.declarations.push(declare("query.filter", serde_json::json!(["mine", tree]), serde_json::json!({})));
-        prepared(&mut ir).unwrap();
+        check(&mut ir).unwrap();
+        assert!(monorm::extension::pass_effects(&ir, check).unwrap().is_empty());
     }
 
     #[test]
@@ -473,4 +497,4 @@ mod tests {
 }
 
 // The package entry point; Rust callers keep the rlib API.
-monorm::extension!(("monorm.soft-delete.fields", add_fields), ("monorm.soft-delete.prepare", prepare));
+monorm::extension!(("monorm.soft-delete.fields", add_fields), ("monorm.soft-delete.prepare", prepare), ("monorm.soft-delete.check", check));
