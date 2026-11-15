@@ -4,6 +4,7 @@ import * as api from "./api";
 import { cell, type Zone } from "./format";
 import { ListView, useListState } from "./List";
 import { Link, detailUrl, editUrl, listBack, navigate, newUrl } from "./router";
+import { InputFields, inputBody, startInputs, type InputValues } from "./Inputs";
 import { Alert, Bypass, Button, message } from "./ui";
 
 /** A record: its fields and links, and one tab per to-many relation whose target the user can read. */
@@ -74,6 +75,8 @@ function RowActions({ meta, id, flags, detail }: { meta: api.Resource; id: strin
   const [asking, setAsking] = useState(false);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string[]>([]);
+  const [ins, setIns] = useState<InputValues>(() => startInputs(meta.inputs));
+  const [bad, setBad] = useState<Record<string, string[]>>({});
   if (meta.writable === false) return null;
   const allows = (rule: string) => !(meta.can ?? []).includes(rule) || flags[rule] === true;
   const remove = async () => {
@@ -84,8 +87,9 @@ function RowActions({ meta, id, flags, detail }: { meta: api.Resource; id: strin
     }
     setBusy(true);
     setProblem([]);
+    setBad({});
     try {
-      await api.destroy(meta.name, id, loaded);
+      await api.destroy(meta.name, id, loaded, inputBody(meta.inputs, ins));
       await client.invalidateQueries({ queryKey: ["list"] });
       await client.invalidateQueries({ queryKey: ["count"] });
       client.removeQueries({ queryKey: ["detail", meta.name, id] });
@@ -93,6 +97,7 @@ function RowActions({ meta, id, flags, detail }: { meta: api.Resource; id: strin
     } catch (e) {
       const body = e instanceof api.ApiError ? e.body : {};
       const stale = Object.keys(body.conflicts ?? {}).length > 0;
+      setBad(body.fields ?? {});
       setProblem(stale ? ["This record changed after you opened it. Reload the page and check it before you delete it."] : body.form?.length ? body.form : [message(e)]);
       setBusy(false);
     }
@@ -111,6 +116,7 @@ function RowActions({ meta, id, flags, detail }: { meta: api.Resource; id: strin
       {asking && (
         <div className="confirm" role="alertdialog" aria-label="Confirm delete">
           <p>Delete this {meta.title} for good? This cannot be undone.</p>
+          {(meta.inputs?.length ?? 0) > 0 && <InputFields defs={meta.inputs ?? []} vals={ins} errors={bad} onChange={(n, v) => setIns((s) => ({ ...s, [n]: v }))} scope="delete" />}
           {problem.map((m) => <Alert key={m}>{m}</Alert>)}
           <Button disabled={busy} onClick={remove}>Delete it</Button>{" "}
           <Button variant="plain" disabled={busy} onClick={() => { setAsking(false); setProblem([]); }}>Cancel</Button>

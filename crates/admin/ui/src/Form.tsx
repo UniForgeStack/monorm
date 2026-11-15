@@ -7,6 +7,7 @@ import * as api from "./api";
 import { cell, type Zone } from "./format";
 import { Link, detailUrl, editUrl, listBack, navigate, newUrl, useSearch } from "./router";
 import { Chips, FileField, Picker } from "./relations";
+import { InputFields, inputBody, startInputs, type InputValues } from "./Inputs";
 import { Alert, Button, message } from "./ui";
 
 type Input = string | boolean;
@@ -197,6 +198,7 @@ function FormBody({ meta, columns, cells, id, zone, site, reload, modal }: { met
   const [problems, setProblems] = useState<Problems>({ fields: {}, form: [] });
   const [conflicts, setConflicts] = useState<NonNullable<api.ErrorBody["conflicts"]>>({});
   const [busy, setBusy] = useState(false);
+  const [ins, setIns] = useState<InputValues>(() => startInputs(meta.inputs));
   const custom = useCustom(meta);
   // Many-to-many chips: the saved links and the links on the form. The save sends the difference.
   const chipRelations = modal ? [] : (meta.chips ?? []);
@@ -253,7 +255,7 @@ function FormBody({ meta, columns, cells, id, zone, site, reload, modal }: { met
     setProblems({ fields: {}, form: [] });
     setBusy(true);
     try {
-      const done = creating ? await api.create(meta.name, set, changes) : await api.update(meta.name, id, set, loaded, changes);
+      const done = creating ? await api.create(meta.name, set, changes, inputBody(meta.inputs, ins)) : await api.update(meta.name, id, set, loaded, changes, inputBody(meta.inputs, ins));
       await client.invalidateQueries({ queryKey: ["list"] });
       await client.invalidateQueries({ queryKey: ["count"] });
       await client.invalidateQueries({ queryKey: ["detail"] });
@@ -266,6 +268,7 @@ function FormBody({ meta, columns, cells, id, zone, site, reload, modal }: { met
           setVals(start());
           setSaved(empty());
           setChips(empty());
+          setIns(startInputs(meta.inputs));
         } else navigate(newUrl(meta.name));
       } else if (action === "continue") {
         if (creating) navigate(editUrl(meta.name, done.key));
@@ -329,7 +332,7 @@ function FormBody({ meta, columns, cells, id, zone, site, reload, modal }: { met
   }
 
   const stale = Object.keys(conflicts).length > 0;
-  const unplaced = Object.keys(problems.fields).filter((n) => !fields.some(({ column }) => column.label === n));
+  const unplaced = Object.keys(problems.fields).filter((n) => !fields.some(({ column }) => column.label === n) && !(meta.inputs ?? []).some((d) => d.name === n));
   const layout = (creating ? meta.sections?.create : meta.sections?.edit) ?? [{ title: null, fields: fields.map(({ column }) => column.label), collapsed: false }];
 
   const input = ({ f, column: c, w }: (typeof fields)[number]) => {
@@ -424,6 +427,7 @@ function FormBody({ meta, columns, cells, id, zone, site, reload, modal }: { met
         const bad = inside.map(({ column }) => column.label).filter((n) => (problems.fields[n]?.length ?? 0) > 0 || conflicts[n]);
         return <Block key={`${section.title ?? ""}:${i}`} section={section} fields={bad}>{inside.map(input)}</Block>;
       })}
+      {(meta.inputs?.length ?? 0) > 0 && <InputFields defs={meta.inputs ?? []} vals={ins} errors={problems.fields} onChange={(n, v) => setIns((s) => ({ ...s, [n]: v }))} scope={modal ? "m" : "f"} />}
       {chipRelations.map((r) => (
         <div key={r.name} className="field">
           <Label.Root htmlFor={`f-chips-${r.name}`}>{r.name}</Label.Root>

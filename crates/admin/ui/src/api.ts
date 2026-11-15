@@ -108,6 +108,19 @@ export interface Resource {
   form_component?: boolean;
   /** The writes that this user may do: `create`, `update`, `delete`. */
   ops?: string[];
+  /** The controls that only the service of the resource reads: they go along with a write as `inputs`. */
+  inputs?: InputInfo[];
+  /** True when host code does the writes of this resource. */
+  host_write?: boolean;
+}
+
+export interface InputInfo {
+  name: string;
+  type: "text" | "textarea" | "number" | "checkbox" | "select";
+  label: string;
+  required: boolean;
+  help: string | null;
+  choices: string[];
 }
 
 /** Whether the user may do the write. The server checks it again. */
@@ -276,14 +289,15 @@ export interface Option {
 }
 
 /** Create a record from the fields that the user filled in, and the links of its chips. The answer has the encoded key of the new record. */
-export const create = (resource: string, set: Values, links?: Links) =>
-  call<{ key: string }>("POST", `/resources/${encodeURIComponent(resource)}`, links ? { set, links } : { set });
+export const create = (resource: string, set: Values, links?: Links, inputs?: Values) =>
+  call<{ key: string }>("POST", `/resources/${encodeURIComponent(resource)}`, { set, ...(links ? { links } : {}), ...(inputs ? { inputs } : {}) });
 
 /** Change a record: `set` holds only the changed fields, `loaded` the values that the form was loaded with. */
-export const update = (resource: string, key: string, set: Values, loaded: Values, links?: Links) =>
-  call<{ key: string; changed: string[] }>("PATCH", recordPath(resource, key), links ? { set, loaded, links } : { set, loaded });
+export const update = (resource: string, key: string, set: Values, loaded: Values, links?: Links, inputs?: Values) =>
+  call<{ key: string; changed: string[] }>("PATCH", recordPath(resource, key), { set, loaded, ...(links ? { links } : {}), ...(inputs ? { inputs } : {}) });
 
-export const destroy = (resource: string, key: string, loaded: Values) => call<{ key: string }>("DELETE", recordPath(resource, key), { loaded });
+export const destroy = (resource: string, key: string, loaded: Values, inputs?: Values) =>
+  call<{ key: string }>("DELETE", recordPath(resource, key), inputs ? { loaded, inputs } : { loaded });
 
 /** One page of the picker of a relation field, by keyset: `next` is the cursor of the following page. */
 export function autocomplete(resource: string, rel: string, q: string, cursor?: string) {
