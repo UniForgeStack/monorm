@@ -98,7 +98,8 @@ model Book {
   `deleted_only()` (`deletedOnly()`) bypasses `"deleted"` and gives only the soft-deleted rows.
 * An instance method that needs its own row (`update()`, `load()`, `delete()`) finds the row even when a default hides it.
   `post.qs()` and `of(objs)` also apply no default to their own rows.
-* Database mode adds a `BEFORE DELETE ... FOR EACH ROW WHEN (OLD.deleted_at IS NULL)` trigger.
+* Database mode adds a `BEFORE DELETE ... FOR EACH ROW` trigger.
+  Its guard is `WHEN (OLD.deleted_at IS NULL)`; on Postgres the guard also has `AND pg_trigger_depth() = 0`.
   It sets the field and cancels the delete (Postgres `RETURN NULL`, SQLite `RAISE(IGNORE)`).
   A raw `DELETE` of a live row soft-deletes it.
   On Postgres, the statement reports 0 rows.
@@ -111,13 +112,16 @@ model Book {
   A child without soft delete keeps its rows.
   The Postgres delete trigger runs only at trigger depth 0 (`pg_trigger_depth() = 0`), so a hard delete of a soft-deleted parent leaves no orphan: the database cascade hard-deletes its children.
   The cost: a `DELETE` that runs inside another trigger is always a hard delete, and each row that the trigger tests calls `pg_trigger_depth()`.
-* SQLite: a hard delete of a soft-deleted parent whose child rows still exist fails with `FOREIGN KEY constraint failed`, and no row is deleted.
+* SQLite: a hard delete of a soft-deleted parent whose live child rows exist fails with `FOREIGN KEY constraint failed`, and no row is deleted.
   Delete or hard-delete the children first.
 * Migration: a changed trigger body (the depth guard, the version bump) shows in the next migration diff; apply that migration to an existing database.
 * Application mode has no cascade.
 * A composed model (`model-composition`) keeps its own hard delete plan and takes no role.
   Schema definition rejects `updated_at`, soft-delete and version fields anywhere in its ownership chain, including the composed model and every ancestor through the root.
   The error names the composed model, the owner, the field and the extension id that wrote the record (`monorm.timestamps`, `monorm.soft-delete` or `monorm.locking`), because composed writes cannot maintain those records.
+* A proxy model takes the roles of its root storage owner: the soft-delete, `updated_at` and version records.
+  The proxy must keep those fields.
+  In application mode, a proxy that excludes the `updated_at` field is rejected, and the error names the field.
 
 ### Behavior changes
 
@@ -136,6 +140,7 @@ model Book {
 * A many-to-many join model that has a default filter applies it to the link table.
   When the filter reads `scope.<name>` and the scope is not set, the query fails with an error that names the default.
   Set the scope with `scope()`, or bypass the default.
+  This is fail-closed by design: a query with no scope set does not read the link table without the filter.
 * Query-set `hard_delete()` and `undelete()` keep the other default filters.
   Before, they dropped all of them, including a tenant filter.
 * An upsert (`on_conflict(update=True)`) whose key a soft-deleted row holds changes nothing: the conflict blocks the insert, the `"deleted"` default blocks the update.
@@ -146,12 +151,11 @@ model Book {
   `filter()` still narrows, and a relation inside a bound `load()` keeps the default of its target model.
 * No changelog file exists, so this list is the record.
 
-## Behavior change: upsert
+## Upsert
 
-An upsert (`on_conflict(update=True)`) now sets `updated_at` and adds `version = version + 1` in its `DO UPDATE` clause, unless the call sets the field.
-Before, an upsert kept both values in application mode and in the SQLite `RETURNING` row.
-`update=True` without `update_fields` or `update_values` no longer overwrites the version field with the given value.
-No changelog file exists, so this note is the record.
+An upsert (`on_conflict(update=True)`) sets `updated_at` and adds `version = version + 1` in its `DO UPDATE` clause, unless the call sets the field.
+`update=True` without `update_fields` or `update_values` does not overwrite the version field with the given value.
+The version is a concurrency token, so it stays out of the update list; an explicit `updated_at` from the caller wins over the generated value.
 
 ## Optimistic locking
 

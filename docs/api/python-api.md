@@ -1383,7 +1383,10 @@ The column-role extensions change these writes (see `schema-extensions.md`).
 `@@timestamps.updated_at` and `@@locking.version` fields are set on each update.
 On a `@@soft_delete.deleted_at` model, `delete()` soft-deletes, and `hard_delete()`, `undelete()`, `all_with_deleted()` and `deleted_only()` exist (from the soft-delete extension's generated code).
 Plain reads hide deleted rows (the `"deleted"` default); `all_with_deleted()` and `deleted_only()` bypass only that default.
-On a query set, bypass only it with `without_defaults("deleted")`: a bare `without_defaults()` drops all defaults, a tenant filter too. An instance `hard_delete()` uses the bare bypass. A to-one reference to the model is `T | None`. See [Behavior changes](../extensions/schema-extensions.md#behavior-changes).
+On a query set, `without_defaults("deleted")` bypasses only it: a bare `without_defaults()` drops all defaults, a tenant filter too.
+An instance `hard_delete()` uses the bare bypass.
+A to-one reference to the model is `T | None`.
+See [Behavior changes](../extensions/schema-extensions.md#behavior-changes).
 A stale versioned instance write raises `monorm.VersionConflict`.
 
 ### Connections
