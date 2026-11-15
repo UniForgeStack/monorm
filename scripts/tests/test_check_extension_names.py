@@ -68,6 +68,41 @@ class CheckExtensionNamesTest(unittest.TestCase):
         root = self.tree({"crates/core/src/lib.rs": "// acme and x are words\n"})
         self.assertEqual(run(root).returncode, 0)
 
+    def test_extension_source_naming_another_extension_fails_with_file_and_line(self) -> None:
+        other = {"extensions/y/monorm-extension.toml": 'id = "acme.y"\nlibrary = "acme_y"\n[[attributes]]\nname = "y.tag"\n'}
+        for name in ("y.tag", "acme.y", "acme_y"):
+            root = self.tree({**other, "extensions/x/src/lib.rs": f'fn a() {{}}\nconst N: &str = "{name}";\n'})
+            result = run(root)
+            self.assertEqual(result.returncode, 1, name)
+            self.assertIn("extensions/x/src/lib.rs:2:", result.stdout)
+
+    def test_extension_source_may_name_itself_and_tests_may_name_another(self) -> None:
+        other = {"extensions/y/monorm-extension.toml": 'id = "acme.y"\n[[attributes]]\nname = "y.tag"\n'}
+        root = self.tree({
+            **other,
+            "extensions/x/src/lib.rs": 'const N: &str = "x.tag";\nconst M: &str = "acme.x";\n#[cfg(test)]\nmod t { const N: &str = "y.tag"; }\n',
+            "extensions/x/src/tests.rs": 'const N: &str = "y.tag";\n',
+            "extensions/x/tests/it.rs": 'const N: &str = "acme.y";\n',
+        })
+        self.assertEqual(run(root).returncode, 0, run(root).stdout)
+
+    def test_entry_macro_after_the_test_module_is_scanned(self) -> None:
+        other = {"extensions/y/monorm-extension.toml": 'id = "acme.y"\n[[attributes]]\nname = "y.tag"\n'}
+        source = 'fn a() {}\n#[cfg(test)]\nmod t { const N: &str = "acme.y"; }\nmonorm::extension!(("acme.y.prepare", a));\n'
+        result = run(self.tree({**other, "extensions/x/src/lib.rs": source}))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("extensions/x/src/lib.rs:4:", result.stdout)
+        self.assertNotIn("lib.rs:3:", result.stdout)
+
+    def test_python_and_typescript_packages_of_an_extension_are_scanned_but_not_their_tests(self) -> None:
+        other = {"extensions/y/monorm-extension.toml": 'id = "acme.y"\n[[attributes]]\nname = "y.tag"\n'}
+        for path in ("extensions/x/python/acme_x/__init__.py", "extensions/x/typescript/src/index.ts"):
+            result = run(self.tree({**other, path: 'N = "y.tag"\n'}))
+            self.assertEqual(result.returncode, 1, path)
+            self.assertIn(f"{path}:1:", result.stdout)
+        root = self.tree({**other, "extensions/x/typescript/test/a.test.ts": 'N = "y.tag"\n', "extensions/x/python/tests/test_a.py": 'N = "y.tag"\n'})
+        self.assertEqual(run(root).returncode, 0, run(root).stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
