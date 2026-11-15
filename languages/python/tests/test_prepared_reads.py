@@ -35,7 +35,7 @@ model Item {
  shop Int
  name String
  views Int @default(0)
- @@query.filter("tenant", "shop == scope.shop")
+ @@query.filter("tenant", shop == scope.shop)
  @@map("pr_item")
 }
 """

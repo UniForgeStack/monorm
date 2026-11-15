@@ -184,7 +184,7 @@ model Note {
  shop Int
  name String
  views Int @default(0)
- @@query.filter("tenant", "shop == scope.shop")
+ @@query.filter("tenant", shop == scope.shop)
  @@map("pw_note")
 }
 model Vault {

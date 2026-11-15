@@ -152,7 +152,7 @@ for (const provider of PROVIDERS) {
     const meta = (await every.get("/admin/api/resources")).json();
     assert.equal("tenants" in meta, false);
     assert.ok(!meta.resources.find((r: { name: string }) => r.name === "ScopeItem").bypass.includes("tenant"));
-  }, '@@query.filter("tenant", "owner_id == scope.tenant")'));
+  }, '@@query.filter("tenant", owner_id == scope.tenant)'));
 
   test(`a bypass permission switches a read default off (${provider})`, { skip: !hasExtension("monorm.soft-delete") }, () => world(provider, async (w) => {
     const client = siteOf(w).testClient(w.db, { user: SU1 });

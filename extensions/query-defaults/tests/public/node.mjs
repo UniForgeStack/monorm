@@ -71,9 +71,9 @@ async function run(provider, url) {
     assert.equal(await Archive.objects.using(db).count(), 2);
     assert.deepEqual(Archive.objects.currentFilter().filter((d) => d.name !== 'query').map((d) => d.name), ['mine']);
     for (const [source, text] of [
-      ['@@query.filter("owner == 1")', /takes a name and an expression: @@query\.filter\("<name>", "<expr>"\)/],
-      ['@@query.filter("query", "owner == 1")', /reserved/],
-      ['@@query.filter("a", "owner == 1")\n @@query.filter("a", "owner == 2")', /is given twice/],
+      ['@@query.filter("owner == 1")', /takes a name and an expression: @@query\.filter\("<name>", <expr>\)/],
+      ['@@query.filter("query", owner == 1)', /reserved/],
+      ['@@query.filter("a", owner == 1)\n @@query.filter("a", owner == 2)', /is given twice/],
     ]) assert.throws(() => loads(`model Bad {\n id Int @id\n owner Int\n ${source}\n}`, { registry: new Registry() }), text);
   } finally {
     await db.dropTables();

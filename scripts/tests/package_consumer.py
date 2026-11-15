@@ -42,7 +42,7 @@ async def run():
             raise AssertionError(f"expected an error with {parts}")
 
         with monorm.scope(shop=1, user="ann"):
-            # `@@query.filter("positive", "id > 0")` hides this row; the guard filter and the package filter both apply.
+            # `@@query.filter("positive", id > 0)` hides this row; the guard filter and the package filter both apply.
             await notes.insert(id=-1, text="hidden", start=1, end=2, shop_id=1, secret="")
             assert await notes.count() == 0
             assert await notes.without_defaults().count() == 1

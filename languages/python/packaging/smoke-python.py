@@ -40,7 +40,7 @@ model Base {
 model Note {
   text String
   @@inherit.extends(Base)
-  @@query.filter("positive", "id > 0")
+  @@query.filter("positive", id > 0)
 }
 enum Status {
   ACTIVE @map("active")

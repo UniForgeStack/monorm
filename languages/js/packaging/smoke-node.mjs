@@ -22,7 +22,7 @@ model Base {
 model Note {
   name String
   @@inherit.extends(Base)
-  @@query.filter("positive", "id > 0")
+  @@query.filter("positive", id > 0)
 }
 
 model Person {

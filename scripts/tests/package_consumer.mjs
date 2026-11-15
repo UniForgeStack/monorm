@@ -34,7 +34,7 @@ try {
   };
   let row;
   await scope({ shop: 1, user: 'ann' }, async () => {
-    // `@@query.filter("positive", "id > 0")` hides this row; the guard filter and the package filter both apply.
+    // `@@query.filter("positive", id > 0)` hides this row; the guard filter and the package filter both apply.
     await notes.insert({ id: -1, text: 'hidden', start: 1, end: 2, shopId: 1, secret: '' });
     assert.equal(await notes.count(), 0);
     assert.equal(await notes.withoutDefaults().count(), 1);

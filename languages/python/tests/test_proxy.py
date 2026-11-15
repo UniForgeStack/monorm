@@ -85,7 +85,7 @@ model Member {
 model ActiveMember {
   status String @client_default("active")
   @@proxy.of(Member)
-  @@query.defaults(filter: "status == \\"active\\"", fields: ["id", "name"])
+  @@query.defaults(filter: status == \"active\", fields: ["id", "name"])
 }
 """
 

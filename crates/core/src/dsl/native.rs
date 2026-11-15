@@ -1,7 +1,7 @@
 //! Source-span conversion; no database access, migration creation or historical edits.
 use std::{collections::BTreeMap, path::{Path, PathBuf}};
-use super::{expr::Context, sql_expr, syntax::{self, Attr, Pos, Value}, Installed};
-use crate::{ir::SchemaIr, migrate::{self, DbSchema}, schema::Schema};
+use super::{expr::Context, expr_arg, sql_expr, syntax::{self, Attr, Pos, Value}, Installed};
+use crate::{behavior::{ArgumentKind, Manifest}, ir::SchemaIr, migrate::{self, DbSchema}, schema::Schema};
 
 type Replacement = (usize, usize, String);
 
@@ -44,6 +44,19 @@ fn add(pos: Pos, value: &Value, context: Context, edits: &mut Vec<Edit>) {
     if let Some(sql) = sql { edits.push(Edit { pos, sql: sql.clone(), context }); }
 }
 
+/// The string arguments that the manifests declare as expressions, with their positions; `"none"` stays.
+fn expression_strings(attr: &Attr, field: bool, manifests: &[Manifest], out: &mut Vec<(Pos, String)>) {
+    let Some(declared) = super::lower::declared(manifests, &attr.name, field) else { return };
+    let is_expression = |kind: Option<ArgumentKind>| kind == Some(ArgumentKind::Expression);
+    let mut take = |pos: Pos, value: &Value| if let Value::Str(text) = value { if text != "none" { out.push((pos, text.clone())); } };
+    for (i, (name, _, value)) in attr.args.named.iter().enumerate() {
+        if is_expression(declared.arguments.get(name).map(|a| a.kind)) { take(attr.args.named_values[i], value); }
+    }
+    for (at, (pos, value)) in attr.args.positional.iter().enumerate() {
+        if is_expression(declared.positional_at(at).map(|a| a.kind)) { take(*pos, value); }
+    }
+}
+
 fn offsets(source: &str, pos: Pos) -> Option<(usize, usize)> {
     let mut lines = source.split_inclusive('\n');
     let start = lines.by_ref().take(pos.line.checked_sub(1)? as usize).map(str::len).sum::<usize>();
@@ -56,7 +69,7 @@ fn offsets(source: &str, pos: Pos) -> Option<(usize, usize)> {
 
 /// Converts representable source spans. Unsupported spans remain byte-for-byte
 /// intact and yield a diagnostic with their source location.
-fn replacements(source: &str, ir: &SchemaIr) -> Result<(Vec<Replacement>, Vec<String>), String> {
+fn replacements(source: &str, ir: &SchemaIr, manifests: &[Manifest]) -> Result<(Vec<Replacement>, Vec<String>), String> {
     let items = syntax::parse(source).map_err(|e| format!("{}: {}", e.pos, e.msg))?;
     let mut replacements = vec![];
     let mut reports = vec![];
@@ -64,6 +77,18 @@ fn replacements(source: &str, ir: &SchemaIr) -> Result<(Vec<Replacement>, Vec<St
         let syntax::Item::Model(model) = item else { continue; };
         let mut edits = vec![];
         for attr in model.members.iter().flat_map(|f| &f.attrs).chain(&model.blocks) { predicate(attr, &mut edits, &mut reports); }
+        let mut strings = vec![];
+        for member in &model.members { for attr in &member.attrs { expression_strings(attr, true, manifests, &mut strings); } }
+        for attr in &model.blocks { expression_strings(attr, false, manifests, &mut strings); }
+        for (pos, text) in strings {
+            match expr_arg::string_to_native(ir, &model.name, &text, pos) {
+                Ok(native) => match offsets(source, pos) {
+                    Some((a,b)) => replacements.push((a,b,native)),
+                    None => reports.push(format!("{pos}: cannot determine a safe source extent")),
+                },
+                Err(reason) => reports.push(reason),
+            }
+        }
         for edit in edits {
             match sql_expr::translate(ir, &model.name, edit.context, &edit.sql) {
                 Ok(native) => match offsets(source, edit.pos) {
@@ -79,7 +104,12 @@ fn replacements(source: &str, ir: &SchemaIr) -> Result<(Vec<Replacement>, Vec<St
 }
 
 pub fn convert_source(source: &str, ir: &SchemaIr) -> Result<(String, Vec<String>), String> {
-    let (replacements, reports) = replacements(source, ir)?;
+    convert_source_with(source, ir, &[])
+}
+
+/// `convert_source`, and the strings that the manifests declare as expressions.
+pub fn convert_source_with(source: &str, ir: &SchemaIr, manifests: &[Manifest]) -> Result<(String, Vec<String>), String> {
+    let (replacements, reports) = replacements(source, ir, manifests)?;
     let mut out = source.to_owned();
     for (a,b,native) in replacements.into_iter().rev() { out.replace_range(a..b, &native); }
     Ok((out, reports))
@@ -104,7 +134,7 @@ pub fn prepare(path: &Path, installed: &Installed, previous: &DbSchema) -> Resul
         // Installed app files belong to their package, not to this project.
         if unit.app.is_some() { continue; }
         let source = std::fs::read_to_string(&unit.path).map_err(|e| e.to_string())?;
-        let (edits, messages) = replacements(&source, &project.ir)?;
+        let (edits, messages) = replacements(&source, &project.ir, &project.manifests)?;
         reports.extend(messages.into_iter().map(|m| format!("{}:{m}", unit.path.display())));
         let canonical = unit.path.canonicalize().map_err(|e| e.to_string())?;
         let mut accepted = source.clone();

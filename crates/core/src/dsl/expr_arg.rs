@@ -3,7 +3,7 @@
 //! The parser keeps the syntax of such an argument as a marker (`marker`). `resolve` runs once
 //! the model shape is final: it checks every marker against its model in the default-filter
 //! context and writes the engine filter form (JSON) back, so an extension reads a checked tree.
-//! A string is the old filter language: it is read into the same tree, with a warning.
+//! A string is the string form of a filter: it is read into the same tree, with a warning.
 
 use serde_json::{json, Value as Json};
 
@@ -11,12 +11,9 @@ use super::expr::{self, Context, Diagnostic, Method, Node, NodeKind, Span, Warni
 use super::syntax::{BinOp, Path, Pos, Value};
 use crate::behavior::Manifest;
 use crate::ir::SchemaIr;
-use monorm::extension::{ArgumentKind, AttributeTarget, Declaration};
+use monorm::extension::{ArgumentKind, AttributeTarget, Declaration, PARENT_PLACEHOLDER};
 
 const KEY: &str = "$expression";
-
-/// The engine form of `parent.default_filter` until an extension puts the inherited filter in its place.
-pub const PARENT_PLACEHOLDER: &str = "parent_default_filter";
 
 /// The syntax of an expression argument, for `resolve`.
 pub fn marker(pos: Pos, value: &Value) -> Json {
@@ -52,12 +49,12 @@ pub fn resolve(ir: &mut SchemaIr, manifests: &[Manifest], warnings: &mut Vec<War
         let is_expression = |kind: Option<ArgumentKind>| kind == Some(ArgumentKind::Expression);
         for (name, value) in &d.arguments {
             if is_expression(attribute.arguments.get(name).map(|a| a.kind)) {
-                resolved.push((i, Slot::Named(name.clone()), one(ir, d, value, warnings)?));
+                resolved.push((i, Slot::Named(name.clone()), resolve_argument(ir, d, value, warnings)?));
             }
         }
         for (at, value) in d.positional.iter().enumerate() {
             if is_expression(attribute.positional_at(at).map(|a| a.kind)) {
-                resolved.push((i, Slot::Positional(at), one(ir, d, value, warnings)?));
+                resolved.push((i, Slot::Positional(at), resolve_argument(ir, d, value, warnings)?));
             }
         }
     }
@@ -69,6 +66,15 @@ pub fn resolve(ir: &mut SchemaIr, manifests: &[Manifest], warnings: &mut Vec<War
         }
     }
     Ok(())
+}
+
+/// The native form of a filter string, for `fmt --native`; the error names the position in the file.
+pub fn string_to_native(ir: &SchemaIr, model: &str, text: &str, at: Pos) -> Result<String, String> {
+    let at_error = |pos: Pos, message: &str| format!("{}:{}: {message}", pos.line, pos.col);
+    let (pos, syntax) = string_form(text, at).map_err(|(pos, message)| at_error(pos, &message))?;
+    let checked = expr::check(ir, model, Context::DefaultFilter, pos, &syntax)
+        .map_err(|e| format!("{}:{}: {}", e.span.line, e.span.column, e.message))?;
+    Ok(native(&checked.root))
 }
 
 /// A `parent.default_filter` that no extension has replaced is an error.
@@ -107,11 +113,11 @@ impl Origin {
     }
 }
 
-fn one(ir: &SchemaIr, d: &Declaration, value: &Json, warnings: &mut Vec<Warning>) -> Result<Json, String> {
+fn resolve_argument(ir: &SchemaIr, d: &Declaration, value: &Json, warnings: &mut Vec<Warning>) -> Result<Json, String> {
     let own = |pos: Pos| Origin { file: d.location.file.clone(), base: 1, pos };
     let (origin, text, syntax) = match value {
         Json::Null => return Ok(Json::Null),
-        // The tree of an earlier resolution, or IR that another tool wrote.
+        // A tree that is already resolved, or IR that another tool wrote.
         Json::Object(map) if !map.contains_key(KEY) => return Ok(value.clone()),
         Json::Object(map) => {
             let inner = map[KEY].as_object().ok_or_else(|| d.error_with("@", "an expression argument is malformed"))?;
@@ -131,10 +137,10 @@ fn one(ir: &SchemaIr, d: &Declaration, value: &Json, warnings: &mut Vec<Warning>
         _ => return Err(d.error_with("@", "expects an expression: write a condition, or \"none\" to clear it")),
     };
     let model = &d.model;
-    let (pos, syntax, old) = match (text, syntax) {
+    let (pos, syntax, from_string) = match (text, syntax) {
         (Some(text), _) => {
             if text == "none" { return Ok(Json::Null); }
-            match old_form(&text, origin.pos) {
+            match string_form(&text, origin.pos) {
                 Ok((pos, value)) => (pos, value, true),
                 Err((pos, message)) => return Err(origin.error(d, &Diagnostic { span: Span { line: pos.line, column: pos.col, len: pos.len }, message })),
             }
@@ -147,7 +153,7 @@ fn one(ir: &SchemaIr, d: &Declaration, value: &Json, warnings: &mut Vec<Warning>
     for w in checked.warnings {
         warnings.push(Warning { file: origin.file.clone(), span: origin.span(w.span), message: w.message });
     }
-    if old {
+    if from_string {
         let span = origin.span(Span { line: origin.pos.line, column: origin.pos.col, len: origin.pos.len });
         warnings.push(Warning {
             file: origin.file.clone(),
@@ -289,18 +295,18 @@ fn render(node: &Node) -> String {
     }
 }
 
-// ---- The old filter language ------------------------------------------------
+// ---- The string form ---------------------------------------------------------
 
 struct Token {
     text: String,
     pos: Pos,
 }
 
-type OldError = (Pos, String);
+type StringError = (Pos, String);
 
 /// `and`, `or`, `not`, `&&`, `||`, `!`, comparisons, names, integers, quoted strings,
 /// `scope.<name>`, `parent.default_filter`, `null`, `true` and `false`, read into the syntax of the native language.
-fn old_form(source: &str, at: Pos) -> Result<(Pos, Value), OldError> {
+fn string_form(source: &str, at: Pos) -> Result<(Pos, Value), StringError> {
     let chars: Vec<char> = source.chars().collect();
     let place = |from: usize, to: usize| Pos { line: at.line, col: at.col + 1 + from as u32, len: (to - from) as u32 };
     let mut tokens: Vec<Token> = vec![];
@@ -330,7 +336,7 @@ fn old_form(source: &str, at: Pos) -> Result<(Pos, Value), OldError> {
         let name = t.text.split('.').find(|s| matches!(*s, "or_null" | "and_not_null")).unwrap_or_default();
         return Err((t.pos, format!("{name}() is not available in a default filter; write the NULL test as a condition, for example `(x > 1 or x == null)`")));
     }
-    let mut parser = Old { tokens, at: 0, end: place(chars.len(), chars.len()) };
+    let mut parser = StringParser { tokens, at: 0, end: place(chars.len(), chars.len()) };
     let value = parser.boolean(0)?;
     if let Some(t) = parser.tokens.get(parser.at) {
         return Err((t.pos, format!("unexpected filter token {}", t.text)));
@@ -338,7 +344,7 @@ fn old_form(source: &str, at: Pos) -> Result<(Pos, Value), OldError> {
     Ok(value)
 }
 
-struct Old {
+struct StringParser {
     tokens: Vec<Token>,
     at: usize,
     end: Pos,
@@ -346,18 +352,18 @@ struct Old {
 
 type Operand = (Pos, Value);
 
-impl Old {
+impl StringParser {
     fn peek(&self) -> &str {
         self.tokens.get(self.at).map_or("", |t| t.text.as_str())
     }
 
-    fn take(&mut self) -> Result<(String, Pos), OldError> {
+    fn take(&mut self) -> Result<(String, Pos), StringError> {
         let token = self.tokens.get(self.at).ok_or((self.end, "incomplete default filter".to_owned()))?;
         self.at += 1;
         Ok((token.text.clone(), token.pos))
     }
 
-    fn boolean(&mut self, min: u8) -> Result<Operand, OldError> {
+    fn boolean(&mut self, min: u8) -> Result<Operand, StringError> {
         let mut left = self.unary()?;
         loop {
             let (precedence, op) = match self.peek() { "or" | "||" => (1, BinOp::Or), "and" | "&&" => (2, BinOp::And), _ => break };
@@ -370,7 +376,7 @@ impl Old {
     }
 
     /// `not` binds looser than comparisons, as in Python and TypeScript.
-    fn unary(&mut self) -> Result<Operand, OldError> {
+    fn unary(&mut self) -> Result<Operand, StringError> {
         if matches!(self.peek(), "!" | "not") {
             let (_, pos) = self.take()?;
             let operand = self.unary()?;
@@ -379,7 +385,7 @@ impl Old {
         self.comparison()
     }
 
-    fn comparison(&mut self) -> Result<Operand, OldError> {
+    fn comparison(&mut self) -> Result<Operand, StringError> {
         let left = self.atom()?;
         let op = match self.peek() {
             "==" => BinOp::Eq, "!=" => BinOp::Ne, "<" => BinOp::Lt, "<=" => BinOp::Le, ">" => BinOp::Gt, ">=" => BinOp::Ge,
@@ -390,7 +396,7 @@ impl Old {
         Ok((left.0, Value::Binary(op, op_pos, Box::new(left), Box::new(right))))
     }
 
-    fn atom(&mut self) -> Result<Operand, OldError> {
+    fn atom(&mut self) -> Result<Operand, StringError> {
         let (token, pos) = self.take()?;
         let name = |names: &[&str]| Value::Path(Path::new(names.iter().map(|s| (*s).to_owned()).collect()), None);
         Ok(match token.as_str() {

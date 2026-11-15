@@ -24,7 +24,7 @@ model Note {
   secret String
   @@inherit.extends(Base)
   @@outside.tag("installed")
-  @@query.filter("positive", "id > 0")
+  @@query.filter("positive", id > 0)
   @@outside.guard
   @@map("pkg1d_seam_notes")
 }

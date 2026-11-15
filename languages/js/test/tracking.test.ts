@@ -153,7 +153,7 @@ model Doc {
   id      Int       @id
   shop    Int
   @@soft_delete.deleted_at("deleted", mode: "application")
-  @@query.filter("tenant", "shop == scope.shop")
+  @@query.filter("tenant", shop == scope.shop)
   @@map("tracking_node_tenant_docs")
 }`);
     const Doc = models.Doc!, docs = Doc.objects.using(db);
@@ -186,7 +186,7 @@ model Doc {
   id      Int       @id
   shop    Int
   @@soft_delete.deleted_at("deleted", mode: "application")
-  @@query.filter("tenant", "shop == scope.shop")
+  @@query.filter("tenant", shop == scope.shop)
   @@map("tracking_node_tenant_hard_docs")
 }`);
     const Doc = models.Doc!, docs = Doc.objects.using(db);
@@ -286,7 +286,7 @@ model PostTag {
 model Doc {
   id      Int       @id
   @@soft_delete.deleted_at("deleted", mode: "application")
-  @@query.filter("deleted", "id > 0")
+  @@query.filter("deleted", id > 0)
   @@map("tracking_node_clash_docs")
 }`), /default name is set by both monorm\.soft-delete default "deleted" and monorm\.query-defaults default "deleted"/);
   });

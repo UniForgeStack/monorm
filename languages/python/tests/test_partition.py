@@ -123,7 +123,7 @@ async def test_rewards_proxy_partition_inherits_scope_and_soft_delete():
     source = source.replace("deleted DateTime?", '@@soft_delete.deleted_at("deleted")')
     source = source.replace(
         '@@map("partition_proxy_reward")',
-        '@@map("partition_proxy_reward")\n @@query.filter("tenant", "shop == scope.shop and deleted == null")',
+        '@@map("partition_proxy_reward")\n @@query.filter("tenant", (shop == scope.shop) & (deleted == null))',
     )
     registry = monorm.Registry()
     models = monorm.loads(source, registry=registry)

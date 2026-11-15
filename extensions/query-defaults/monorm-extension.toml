@@ -34,7 +34,7 @@ target = "field"
 [[attributes]]
 name = "query.filter"
 target = "model"
-# `@@query.filter("<name>", "<expr>")`; the compiler rejects a missing expression with the full form.
+# `@@query.filter("<name>", <expr>)`; the compiler rejects a missing expression with the full form.
 [[attributes.positional]]
 kind = "string"
 required = true

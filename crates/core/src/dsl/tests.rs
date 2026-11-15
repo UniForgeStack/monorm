@@ -1515,9 +1515,14 @@ fn filter_manifest() -> crate::behavior::Manifest {
 fn resolved(argument: &str) -> Result<(serde_json::Value, Vec<expr::Warning>), String> {
     let mut ir = ok(FILTER_MODELS);
     let manifest = filter_manifest();
-    let source = format!("{FILTER_MODELS}\nmodel Other {{\n  @@test.filter({argument})\n}}\n").replace("model Other", "model Item2");
+    let source = format!("{FILTER_MODELS}\nmodel Item2 {{\n  @@test.filter({argument})\n}}\n");
     let mut items = syntax::parse(&source).unwrap();
-    let mut declarations = super::lower::behavior_declarations(&mut items, "t.prisma", std::slice::from_ref(&manifest)).map_err(|e| e.msg)?;
+    let mut declarations = super::lower::behavior_declarations(
+        &mut items,
+        "t.prisma",
+        std::slice::from_ref(&manifest),
+    )
+    .map_err(|e| e.msg)?;
     for d in &mut declarations {
         d.model = "Item".into();
         expr_arg::stamp(d, "t.prisma", 1);
@@ -1526,7 +1531,123 @@ fn resolved(argument: &str) -> Result<(serde_json::Value, Vec<expr::Warning>), S
     let mut warnings = vec![];
     expr_arg::resolve(&mut ir, std::slice::from_ref(&manifest), &mut warnings)?;
     let d = &ir.behavior.declarations[0];
-    Ok((d.positional.get(1).cloned().unwrap_or_else(|| d.arguments["filter"].clone()), warnings))
+    Ok((
+        d.positional
+            .get(1)
+            .cloned()
+            .unwrap_or_else(|| d.arguments["filter"].clone()),
+        warnings,
+    ))
+}
+
+/// Resolves `@@test.filter(<argument>)` once for each name in `models`, on the final shape of `ir`.
+fn resolved_each(
+    ir: &mut SchemaIr,
+    models: &[&str],
+    argument: &str,
+) -> Result<Vec<serde_json::Value>, String> {
+    let manifest = filter_manifest();
+    let source = format!("{FILTER_MODELS}\nmodel Item2 {{\n  @@test.filter({argument})\n}}\n");
+    let mut items = syntax::parse(&source).unwrap();
+    let declared = super::lower::behavior_declarations(
+        &mut items,
+        "t.prisma",
+        std::slice::from_ref(&manifest),
+    )
+    .map_err(|e| e.msg)?;
+    ir.behavior.declarations = models
+        .iter()
+        .map(|m| {
+            let mut d = declared[0].clone();
+            d.model = (*m).into();
+            expr_arg::stamp(&mut d, "t.prisma", 1);
+            d
+        })
+        .collect();
+    expr_arg::resolve(ir, std::slice::from_ref(&manifest), &mut vec![])?;
+    Ok(ir
+        .behavior
+        .declarations
+        .iter()
+        .map(|d| d.positional[1].clone())
+        .collect())
+}
+
+const SHAPED_MODELS: &str = "model Full {\n  id BigInt @id\n  a Int\n  b Boolean\n}\nmodel Lean {\n  id BigInt @id\n  b Boolean\n}\n";
+
+#[test]
+fn one_filter_of_an_abstract_model_resolves_against_each_concrete_model() {
+    let mut ir = ok(SHAPED_MODELS);
+    let trees = resolved_each(&mut ir, &["Full", "Lean"], "\"x\", b").unwrap();
+    assert_eq!(trees[0], trees[1]);
+    let error = resolved_each(&mut ir, &["Full", "Lean"], "\"x\", a > 1").unwrap_err();
+    assert!(
+        error.contains("a") && error.starts_with("t.prisma:"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_filter_resolves_against_a_field_that_an_earlier_pass_added() {
+    let mut ir = ok(SHAPED_MODELS);
+    assert!(resolved_each(&mut ir, &["Lean"], "\"x\", a > 1").is_err());
+    let mut added = ir
+        .models
+        .iter()
+        .find(|m| m.name == "Full")
+        .unwrap()
+        .fields
+        .iter()
+        .find(|f| f.name == "a")
+        .unwrap()
+        .clone();
+    added.nullable = false;
+    ir.models
+        .iter_mut()
+        .find(|m| m.name == "Lean")
+        .unwrap()
+        .fields
+        .push(added);
+    let trees = resolved_each(&mut ir, &["Lean"], "\"x\", a > 1").unwrap();
+    assert_eq!(trees[0]["l"], json!({"t":"col","path":[],"name":"a"}));
+}
+
+#[test]
+fn a_proxy_filter_that_names_an_omitted_field_fails_and_a_kept_field_resolves() {
+    let mut ir = ok(SHAPED_MODELS);
+    let lean = resolved_each(&mut ir, &["Lean"], "\"x\", b").unwrap();
+    assert_eq!(lean[0], json!({"t":"col","path":[],"name":"b"}));
+    let error = resolved_each(&mut ir, &["Lean"], "\"x\", a == 1").unwrap_err();
+    assert!(
+        error.contains(": @@test.filter: ") && error.contains("a"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_composed_model_filter_names_a_field_that_it_inherits() {
+    let mut ir = ok(SHAPED_MODELS);
+    let full = ir
+        .models
+        .iter()
+        .find(|m| m.name == "Full")
+        .unwrap()
+        .fields
+        .iter()
+        .find(|f| f.name == "a")
+        .unwrap()
+        .clone();
+    ir.models
+        .iter_mut()
+        .find(|m| m.name == "Lean")
+        .unwrap()
+        .fields
+        .push(full);
+    let trees = resolved_each(&mut ir, &["Lean"], "\"x\", a > 1 & b").unwrap();
+    assert_eq!(
+        trees[0]["items"][0]["l"],
+        json!({"t":"col","path":[],"name":"a"})
+    );
 }
 
 #[test]
@@ -1553,6 +1674,20 @@ fn an_expression_argument_keeps_the_json_of_every_old_form() {
         let last = warnings.last().unwrap_or_else(|| panic!("{source}: no warning"));
         assert!(last.message.starts_with("this filter is a string; write the expression: "), "{}", last.message);
         assert_eq!((last.file.as_str(), last.span.line), ("t.prisma", 18), "{source}");
+    }
+}
+
+#[test]
+fn a_native_filter_rejects_the_words_and_or_not_and_names_the_operators() {
+    for (word, operator) in [("b and c", "&"), ("b or c", "|"), ("not b", "~")] {
+        let source =
+            format!("{FILTER_MODELS}\nmodel Item2 {{\n  @@test.filter(\"x\", {word})\n}}\n");
+        let error = syntax::parse(&source).expect_err(word);
+        assert!(
+            error.msg.contains(&format!("use `{operator}`")),
+            "{word}: {}",
+            error.msg
+        );
     }
 }
 
@@ -1601,6 +1736,35 @@ fn an_expression_error_names_file_line_and_column() {
 }
 
 #[test]
+fn fmt_native_writes_the_native_form_of_an_expression_string() {
+    let ir = ok(FILTER_MODELS);
+    let manifests = [filter_manifest()];
+    let model = |attrs: &str| FILTER_MODELS.replace("  title String\n", &format!("  title String\n  {attrs}\n"));
+    let source = model("@@test.filter(\"s\", \"a > 1 and title == \\\"q\\\"\") // keep\n  @@test.filter(\"n\", \"none\")\n  @@test.filter(\"t\", a > 1)\n  @@test.filter(filter: \"tenant == 1 or not b\")");
+    let (out, reports) = super::native::convert_source_with(&source, &ir, &manifests).unwrap();
+    assert!(reports.is_empty(), "{reports:?}");
+    assert_eq!(out, model("@@test.filter(\"s\", (a > 1) & (title == \"q\")) // keep\n  @@test.filter(\"n\", \"none\")\n  @@test.filter(\"t\", a > 1)\n  @@test.filter(filter: (tenant == 1) | ~b)"));
+    let (again, reports) = super::native::convert_source_with(&out, &ir, &manifests).unwrap();
+    assert_eq!((again.as_str(), reports.len()), (out.as_str(), 0));
+    // An extension with no manifest, and a string argument of another kind, stay as written.
+    assert_eq!(super::native::convert_source_with(&source, &ir, &[]).unwrap().0, source);
+    let (same, _) = super::native::convert_source_with(&model("@@test.other(\"a > 1\")"), &ir, &manifests).unwrap();
+    assert_eq!(same, model("@@test.other(\"a > 1\")"));
+}
+
+#[test]
+fn fmt_native_reports_a_filter_string_it_cannot_read_with_its_location() {
+    let ir = ok(FILTER_MODELS);
+    let manifests = [filter_manifest()];
+    let source = FILTER_MODELS.replace("  title String\n", "  title String\n  @@test.filter(\"x\", \"nope == 1\")\n  @@test.filter(\"y\", \"a ?? 1\")\n");
+    let (out, reports) = super::native::convert_source_with(&source, &ir, &manifests).unwrap();
+    assert_eq!(out, source);
+    assert_eq!(reports.len(), 2, "{reports:?}");
+    assert!(reports[0].starts_with("13:") && reports[0].contains("nope"), "{reports:?}");
+    assert!(reports[1].starts_with("14:"), "{reports:?}");
+}
+
+#[test]
 fn a_resolved_tree_is_kept_when_the_step_runs_again() {
     let mut ir = ok(FILTER_MODELS);
     let manifest = filter_manifest();
@@ -1619,7 +1783,7 @@ fn a_resolved_tree_is_kept_when_the_step_runs_again() {
 #[test]
 fn the_parent_filter_is_a_placeholder_until_an_extension_replaces_it() {
     let (tree, _) = resolved("\"x\", \"parent.default_filter and active\"").unwrap();
-    assert_eq!(tree["items"][0], json!({"t": "parent_default_filter"}));
+    assert_eq!(tree["items"][0], json!({"t": monorm::extension::PARENT_PLACEHOLDER}));
     let mut ir = ok(FILTER_MODELS);
     ir.behavior.read_defaults.push(monorm::extension::ReadDefault { model: "Item".into(), filter: Some(tree), ..Default::default() });
     let error = expr_arg::reject_placeholders(&ir).unwrap_err();

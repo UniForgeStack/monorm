@@ -90,6 +90,8 @@ pub struct CompiledProject {
     pub inputs: Vec<PathBuf>,
     /// Warnings of schema expressions, such as a null test on a column that is never null.
     pub warnings: Vec<expr::Warning>,
+    /// The manifests of the artifact and of the selected libraries.
+    pub manifests: Vec<crate::behavior::Manifest>,
 }
 
 struct Loader<'a> {
@@ -381,7 +383,7 @@ fn compile_project_overlay(source: &str, origin: Option<&Path>, update: Option<I
     inputs.extend(catalog_inputs.into_inner());
     inputs.extend(sidecars);
     if ir.identities.is_some() { inputs.push(path); }
-    Ok(CompiledProject { ir, units: loader.units, inputs, warnings })
+    Ok(CompiledProject { ir, units: loader.units, inputs, warnings, manifests: manifests.to_vec() })
 }
 
 pub fn compile_project_file(path: &Path) -> Result<CompiledProject, String> {

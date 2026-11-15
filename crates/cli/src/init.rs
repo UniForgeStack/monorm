@@ -95,7 +95,7 @@ pub const EXTENSIONS: [Ext; 9] = [
         model: Some(Model { name: "Audited", text: "model Audited {\n  created_at DateTime @default(now())\n  @@inherit.abstract\n}\n", stored: false }),
         needs_identities: false,
     },
-    Ext { name: "query-defaults", label: "query-defaults: a named filter on a model", user_attrs: "", post_attrs: "  @@query.filter(\"published_only\", \"published == true\")\n", model: None, needs_identities: false },
+    Ext { name: "query-defaults", label: "query-defaults: a named filter on a model", user_attrs: "", post_attrs: "  @@query.filter(\"published_only\", published == true)\n", model: None, needs_identities: false },
     Ext {
         name: "generic",
         label: "generic: a relation to one of several models",

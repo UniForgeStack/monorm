@@ -140,7 +140,7 @@ model Person {
 model Employee {
  shop_id Int
  @@composition.model(parent: "Person", parentRef: "person", childRef: "employee")
- @@query.filter("tenant", "shop_id == scope.shop")
+ @@query.filter("tenant", shop_id == scope.shop)
  @@map("composition06_scoped_employees")
 }
 """

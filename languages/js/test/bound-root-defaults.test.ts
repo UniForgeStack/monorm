@@ -11,7 +11,7 @@ model BqOwner {
   active Boolean @default(true)
   kids   BqKid[]
   @@map("bqo_owner")
-  @@query.filter("active", "active == true")
+  @@query.filter("active", active == true)
 }
 
 model BqKid {
@@ -20,7 +20,7 @@ model BqKid {
   active  Boolean @default(true)
   owner   BqOwner @relation(fields: [ownerId], references: [id])
   @@map("bqo_kid")
-  @@query.filter("active", "active == true")
+  @@query.filter("active", active == true)
 }
 `;
 

@@ -88,7 +88,7 @@ async def soft(request):
 
 @pytest.fixture(params=["sqlite", "postgres"])
 async def tenanted(request):
-    w = await build(request.param, '@@query.filter("tenant", "owner_id == scope.tenant")')
+    w = await build(request.param, '@@query.filter("tenant", owner_id == scope.tenant)')
     yield w
     await w.db.drop_tables()
     await w.db.close()

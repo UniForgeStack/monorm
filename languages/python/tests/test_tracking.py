@@ -161,7 +161,7 @@ model Doc {
   id      Int       @id
   shop    Int
   @@soft_delete.deleted_at("deleted", mode: "application")
-  @@query.filter("tenant", "shop == scope.shop")
+  @@query.filter("tenant", shop == scope.shop)
   @@map("tracking_tenant_docs")
 }
 """
@@ -1028,7 +1028,7 @@ CLASHING_DEFAULT = """
 model Doc {
   id      Int       @id
   @@soft_delete.deleted_at("deleted", mode: "application")
-  @@query.filter("deleted", "id > 0")
+  @@query.filter("deleted", id > 0)
   @@map("tracking_clash_docs")
 }
 """

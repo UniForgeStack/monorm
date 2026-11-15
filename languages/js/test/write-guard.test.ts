@@ -165,8 +165,8 @@ model Ledger {
   id Int @id
   shop_id Int
   active Boolean @default(true)
-  @@query.filter("active", "active == true")
-  @@query.filter("tenant", "shop_id == scope.shop")
+  @@query.filter("active", active == true)
+  @@query.filter("tenant", shop_id == scope.shop)
 }
 model Doc {
   id Int @id

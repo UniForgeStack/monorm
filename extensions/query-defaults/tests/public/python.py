@@ -141,9 +141,9 @@ async def run(provider: str, url: str) -> None:
         assert await Archive.objects.using(db).count() == 2
         assert [d["name"] for d in Archive.objects.current_filter() if d["name"] != "query"] == ["mine"]
         for source, text in (
-            ('@@query.filter("owner == 1")', 'takes a name and an expression: @@query.filter("<name>", "<expr>")'),
-            ('@@query.filter("query", "owner == 1")', "reserved"),
-            ('@@query.filter("a", "owner == 1")\n @@query.filter("a", "owner == 2")', "is given twice"),
+            ('@@query.filter("owner == 1")', 'takes a name and an expression: @@query.filter("<name>", <expr>)'),
+            ('@@query.filter("query", owner == 1)', "reserved"),
+            ('@@query.filter("a", owner == 1)\n @@query.filter("a", owner == 2)', "is given twice"),
         ):
             try:
                 monorm.loads(f"model Bad {{\n id Int @id\n owner Int\n {source}\n}}", registry=monorm.Registry())

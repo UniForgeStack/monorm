@@ -1,5 +1,5 @@
 //! Optional compiler for model query policies; execution uses prepared host IR.
-use monorm::{extension::{OrderKey, ReadDefault}, ir::{Nulls, SchemaIr}};
+use monorm::{extension::{OrderKey, ReadDefault, PARENT_PLACEHOLDER}, ir::{Nulls, SchemaIr}};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 
@@ -49,15 +49,15 @@ fn options(ir: &SchemaIr, name: &str) -> Result<BTreeMap<&'static str, Value>, S
     Ok(out.into_iter().map(|(k, (v, _))| (k, v)).collect())
 }
 
-/// The `@@query.filter("<name>", "<expr>")` declarations of a model, in source order.
+/// The `@@query.filter("<name>", <expr>)` declarations of a model, in source order.
 fn named_filters(ir: &SchemaIr, model: &str) -> Result<Vec<(String, Value, String)>, String> {
     let mut out: Vec<(String, Value, String)> = vec![];
     for d in ir.behavior.declarations.iter().filter(|d| d.model == model && d.field.is_none() && d.attribute == "query.filter") {
         let at = format!("{}:{}", d.location.file, d.location.line);
         let (Some(name), Some(expr)) = (d.positional.first().and_then(Value::as_str), d.positional.get(1)) else {
-            return Err(format!("{at}: {model}: @@query.filter takes a name and an expression: @@query.filter(\"<name>\", \"<expr>\")"));
+            return Err(format!("{at}: {model}: @@query.filter takes a name and an expression: @@query.filter(\"<name>\", <expr>)"));
         };
-        if d.positional.len() != 2 { return Err(format!("{at}: {model}: @@query.filter takes a name and an expression: @@query.filter(\"<name>\", \"<expr>\")")); }
+        if d.positional.len() != 2 { return Err(format!("{at}: {model}: @@query.filter takes a name and an expression: @@query.filter(\"<name>\", <expr>)")); }
         if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
             return Err(format!("{at}: {model}: filter name {name:?} must be letters, digits and underscores"));
         }
@@ -182,7 +182,7 @@ fn strings(value: &Value) -> Result<Vec<String>, String> {
 /// The checked tree of a filter, with each `parent.default_filter` replaced by the inherited filter.
 fn with_parent(tree: &Value, inherited: Option<&Value>) -> Result<Value, String> {
     match tree {
-        Value::Object(map) if map.get("t").and_then(Value::as_str) == Some("parent_default_filter") => {
+        Value::Object(map) if map.get("t").and_then(Value::as_str) == Some(PARENT_PLACEHOLDER) => {
             inherited.cloned().ok_or_else(|| "parent.default_filter has no inherited filter".to_owned())
         }
         Value::Object(map) => map.iter().map(|(k, v)| Ok((k.clone(), with_parent(v, inherited)?))).collect::<Result<_, String>>().map(Value::Object),
@@ -200,7 +200,7 @@ mod tests {
     fn int(n: i64) -> Value { json!({"t":"int","value":n}) }
     fn id_gt(n: i64) -> Value { cmp("gt", col("id"), int(n)) }
     fn visible_true() -> Value { cmp("eq", col("visible"), json!({"t":"const","value":true})) }
-    fn parent() -> Value { json!({"t":"parent_default_filter"}) }
+    fn parent() -> Value { json!({"t": PARENT_PLACEHOLDER}) }
     fn ir() -> SchemaIr {
         serde_json::from_value(json!({"models":[
             {"name":"Parent","table":"p","fields":[{"name":"id","column":"id","type":"int","primary_key":true},{"name":"visible","column":"visible","type":"bool"},{"name":"bio","column":"bio","type":"text"}]},
@@ -211,6 +211,20 @@ mod tests {
             {"model":"Child","attribute":"query.selectOut","field":"bio","arguments":{},"positional":[],"location":{"file":"test","line":3,"column":1}}
         ]}})).unwrap()
     }
+    /// The manifest takes `expression` arguments, so a host of contract 5.1 must refuse it with both versions in the text.
+    #[test]
+    fn the_manifest_needs_contract_5_2_and_an_older_host_refuses_it_with_both_versions() {
+        use monorm::version::ContractVersion;
+        let text = include_str!("../monorm-extension.toml");
+        let line = text.lines().find_map(|l| l.strip_prefix("schema_contract = ")).expect("the manifest names its schema contract");
+        let needed: ContractVersion = line.trim().trim_matches('"').parse().unwrap();
+        assert_eq!(needed, ContractVersion::new(5, 2));
+        assert!(text.contains("kind = \"expression\""), "the filter arguments are expressions");
+        assert!(needed.check("schema contract", ContractVersion::new(5, 2), "monorm.query-defaults").is_ok());
+        let error = needed.check("schema contract", ContractVersion::new(5, 1), "monorm.query-defaults").unwrap_err();
+        assert!(error.contains("schema contract 5.2 is newer than this engine (schema contract 5.1)") && error.contains("update the ORM"), "{error}");
+    }
+
     /// `parent.default_filter` puts the JSON of the parent filter into the child filter, as one `and` item.
     #[test]
     fn the_parent_filter_is_one_item_of_the_child_filter() {
@@ -465,7 +479,7 @@ mod tests {
     #[test]
     fn named_filter_errors() {
         let error = |args: Value| { let mut s = ir(); declare(&mut s, "Parent", "query.filter", json!({}), args); lower(&mut s).unwrap_err() };
-        assert!(error(json!([id_gt(1)])).contains("@@query.filter takes a name and an expression: @@query.filter(\"<name>\", \"<expr>\")"));
+        assert!(error(json!([id_gt(1)])).contains("@@query.filter takes a name and an expression: @@query.filter(\"<name>\", <expr>)"));
         assert!(error(json!(["a", "b", "c"])).contains("takes a name and an expression"));
         assert!(error(json!(["bad name", id_gt(1)])).contains("must be letters, digits and underscores"));
         assert!(error(json!([POLICY, id_gt(1)])).contains("reserved"));
