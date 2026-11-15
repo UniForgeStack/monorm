@@ -503,6 +503,7 @@
 "languages/js/test/auth/hashers.test.ts" = "The Python twin is in apps/auth/python/tests/test_hashers.py"
 "languages/js/test/auth/auth.test.ts" = "The Python twin is in apps/auth/python/tests/test_auth.py"
 "languages/js/test/auth/password-rules.test.ts" = "The Python twin is in apps/auth/python/tests/test_password_rules.py"
+"languages/js/test/auth/password-breached.test.ts" = "The Python twin is in apps/auth/python/tests/test_password_breached.py"
 
 [typescript-only.ids]
 # languages/js/test/app-imports.test.ts

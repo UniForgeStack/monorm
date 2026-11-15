@@ -16,7 +16,9 @@ use crate::settings::{Settings, Source};
 
 const DEFAULT_MIN: u64 = 8;
 const DEFAULT_SIMILARITY: f64 = 0.7;
-const BUILT_IN: [&str; 4] = ["min_length", "common", "numeric", "user_similarity"];
+const BUILT_IN: [&str; 5] = ["min_length", "common", "numeric", "user_similarity", "breached"];
+const DEFAULT_BREACH_HOST: &str = "https://api.pwnedpasswords.com";
+const DEFAULT_BREACH_TIMEOUT: f64 = 2.0;
 
 /// The bundled list of common passwords: lower case, one for each line (see `docs/apps/auth.md` for the source).
 static COMMON: &str = include_str!("../data/common-passwords.txt");
@@ -37,6 +39,8 @@ enum Rule {
     Common(Option<String>),
     Numeric,
     UserSimilarity { attributes: Vec<String>, max: f64 },
+    /// Opt-in and a network call, so each binding runs it (there is no HTTP client here); `check` skips it.
+    Breached,
 }
 
 /// `(key, what)` of a wrong entry: the option key and what is wrong with it. The key is empty for the entry itself.
@@ -73,6 +77,7 @@ fn parse_built_in(name: &str, entry: &Map<String, Value>, camel: bool) -> Result
         "min_length" => &["min"],
         "common" => &["path"],
         "numeric" => &[],
+        "breached" => &["threshold", "host", "timeout", "fail"],
         _ => &["attributes", "max_similarity"],
     };
     for key in entry.keys().filter(|k| k.as_str() != "rule") {
@@ -104,6 +109,31 @@ fn parse_built_in(name: &str, entry: &Map<String, Value>, camel: bool) -> Result
             Some(_) => Err(fault(&spelled("path", camel), "must be a file name")),
         },
         "numeric" => Ok((Rule::Numeric, json!({"rule": name}))),
+        "breached" => {
+            let threshold = match get("threshold") {
+                None => 0,
+                Some(v) => v.as_u64().ok_or_else(|| fault(&spelled("threshold", camel), "must be a whole number of at least 0"))?,
+            };
+            let host = match get("host") {
+                None => DEFAULT_BREACH_HOST.to_string(),
+                Some(Value::String(h)) if (h.starts_with("http://") || h.starts_with("https://")) && h.len() > h.find("//").unwrap_or(0) + 2 => h.clone(),
+                Some(_) => return Err(fault(&spelled("host", camel), "must be an http:// or https:// address")),
+            };
+            let timeout = match get("timeout") {
+                None => DEFAULT_BREACH_TIMEOUT,
+                Some(v) => match v.as_f64() {
+                    Some(x) if x > 0.0 && x.is_finite() => x,
+                    _ => return Err(fault(&spelled("timeout", camel), "must be a number of seconds above 0")),
+                },
+            };
+            let fail = match get("fail") {
+                None => "open",
+                Some(Value::String(f)) if f == "open" => "open",
+                Some(Value::String(f)) if f == "closed" => "closed",
+                Some(_) => return Err(fault(&spelled("fail", camel), "must be \"open\" or \"closed\"")),
+            };
+            Ok((Rule::Breached, json!({"rule": name, "threshold": threshold, "host": host, "timeout": timeout, "fail": fail})))
+        }
         _ => {
             let attributes = match get("attributes") {
                 None => vec!["username".to_string(), "email".to_string()],
@@ -214,7 +244,7 @@ fn plural(n: u64) -> String {
 
 /// Runs the built-in `entries` on `password`, in list order, and gives every error as `{code, message, params}`.
 /// `attrs` maps an attribute name to its value (a string; anything else is ignored) for `user_similarity`.
-/// An entry that is not a built-in rule, or a `common` file that cannot be read, is an error.
+/// An entry that is not a built-in rule, or a `common` file that cannot be read, is an error. `breached` gives no error here.
 pub fn check(entries: &[Value], password: &str, attrs: &Map<String, Value>) -> Result<Vec<Value>, String> {
     let rules = rules_of(entries)?;
     let pw: String = password.nfc().collect();
@@ -241,6 +271,7 @@ pub fn check(entries: &[Value], password: &str, attrs: &Map<String, Value>) -> R
                     errors.push(error("password_entirely_numeric", "This password is entirely numeric.".to_string(), json!({})));
                 }
             }
+            Rule::Breached => {}
             Rule::UserSimilarity { attributes, max } => {
                 let lower = pw.to_lowercase();
                 for name in attributes {
@@ -264,6 +295,7 @@ pub fn help_texts(entries: &[Value]) -> Result<Vec<String>, String> {
             Rule::Common(_) => "Your password can't be a commonly used password.".to_string(),
             Rule::Numeric => "Your password can't be entirely numeric.".to_string(),
             Rule::UserSimilarity { .. } => "Your password can't be too similar to your other personal information.".to_string(),
+            Rule::Breached => "Your password can't be one that appeared in a known data breach.".to_string(),
         })
         .collect())
 }
@@ -462,11 +494,27 @@ mod tests {
             ("[auth]\npassword_rules = \"min_length\"\n", "monorm.toml: `auth.password_rules` must be a list of rules"),
             ("[auth]\nmin = 3\n", "monorm.toml: `auth.min` is not a setting; the key is `password_rules`"),
             ("[auth]\npassword_rules = [{rule = \"common\", path = \"missing.txt\"}]\n", "monorm.toml: `auth.password_rules[0].path` is not a file"),
+            ("[auth]\npassword_rules = [{rule = \"breached\", fail = \"shut\"}]\n", "monorm.toml: `auth.password_rules[0].fail` must be \"open\" or \"closed\""),
+            ("[auth]\npassword_rules = [{rule = \"breached\", threshold = -1}]\n", "monorm.toml: `auth.password_rules[0].threshold` must be a whole number of at least 0"),
+            ("[auth]\npassword_rules = [{rule = \"breached\", timeout = 0}]\n", "monorm.toml: `auth.password_rules[0].timeout` must be a number of seconds above 0"),
+            ("[auth]\npassword_rules = [{rule = \"breached\", host = \"pwned.local\"}]\n", "monorm.toml: `auth.password_rules[0].host` must be an http:// or https:// address"),
+            ("[auth]\npassword_rules = [{rule = \"breached\", url = \"x\"}]\n", "monorm.toml: `auth.password_rules[0].url` is not an option of `breached`; the options are `threshold`, `host`, `timeout`, `fail`"),
         ];
         for (text, expected) in cases {
             let (s, dir) = settings("monorm.toml", text);
             let e = rules_from_settings(&s, &dir).unwrap_err();
             assert!(e.starts_with(expected), "{e} should start with {expected}");
         }
+    }
+
+    #[test]
+    fn breached_is_opt_in_gets_its_defaults_and_is_left_to_the_binding() {
+        assert!(!default_rules().iter().any(|r| r["rule"] == "breached"));
+        let (s, dir) = settings("monorm.toml", "[auth]\npassword_rules = [{rule = \"breached\"}, {rule = \"breached\", threshold = 3, host = \"http://localhost:9/\", timeout = 0.5, fail = \"closed\"}]\n");
+        let rules = rules_from_settings(&s, &dir).unwrap();
+        assert_eq!(rules[0], json!({"rule": "breached", "threshold": 0, "host": "https://api.pwnedpasswords.com", "timeout": 2.0, "fail": "open"}));
+        assert_eq!(rules[1], json!({"rule": "breached", "threshold": 3, "host": "http://localhost:9/", "timeout": 0.5, "fail": "closed"}));
+        assert!(check(&rules, "password", &Map::new()).unwrap().is_empty());
+        assert_eq!(help_texts(&rules[..1]).unwrap(), ["Your password can't be one that appeared in a known data breach."]);
     }
 }

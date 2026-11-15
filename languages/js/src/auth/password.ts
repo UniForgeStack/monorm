@@ -1,11 +1,13 @@
 /**
  * Password rules: `validatePassword` runs the rules of `[auth] password_rules` (`passwordRules` in `package.json`),
- * or the rules that the caller gives. The built-in rules run the Rust check, the same code as the Python twin.
+ * or the rules that the caller gives. The built-in rules run the Rust check, the same code as the Python twin; `rules.breached` makes a network call in TypeScript instead.
  *
  * A rule has `validate(password, user)`, sync or async, which returns a list of `PasswordError` (it does not throw
  * for a weak password), and `helpText()`. A custom rule is `module:attr` in the settings: a class or a function
  * that gets the other keys of its entry as one options object.
  */
+
+import { createHash } from "node:crypto";
 
 import { loadSpec } from "../load-spec.js";
 import { native } from "../native.js";
@@ -66,6 +68,54 @@ export const rules = {
     const attributes = options.attributes ?? ["username", "email"];
     return builtIn({ rule: "user_similarity", attributes, max_similarity: options.maxSimilarity ?? 0.7 }, attributes);
   },
+  /**
+   * Not in a known data breach: the k-anonymity range query of the Pwned Passwords API (opt-in, a network call).
+   * The server gets the first 5 hex characters of the SHA-1 hash only. Refuses when the breach count is above
+   * `threshold`. A network error accepts the password (`fail: "open"`, with a warning in the log) or refuses it
+   * with `password_check_unavailable` (`fail: "closed"`). `timeout` is in seconds.
+   */
+  breached: (options: { threshold?: number; host?: string; timeout?: number; fail?: "open" | "closed" } = {}): PasswordRule => {
+    const { threshold = 0, host = "https://api.pwnedpasswords.com", timeout = 2, fail = "open" } = options;
+    const base = builtIn({ rule: "breached", threshold, host, timeout, fail });
+    const root = host.replace(/\/+$/, "");
+    return {
+      helpText: base.helpText,
+      async validate(password) {
+        const digest = createHash("sha1").update(password, "utf8").digest("hex").toUpperCase();
+        const suffix = digest.slice(5);
+        let count = 0;
+        try {
+          const response = await fetch(`${root}/range/${digest.slice(0, 5)}`, {
+            headers: { "Add-Padding": "true", "User-Agent": "monorm-auth" },
+            signal: AbortSignal.timeout(timeout * 1000),
+          });
+          if (response.status !== 200) throw new Error(`status ${response.status}`);
+          for (const line of (await response.text()).split(/\r?\n/)) {
+            const [found = "", n = ""] = line.trim().split(":");
+            if (found.toUpperCase() !== suffix) continue;
+            if (!/^\d+$/.test(n.trim())) throw new SyntaxError("bad count");
+            count = Number(n);
+            break;
+          }
+        } catch (e) {
+          // Never log the URL: it holds the hash prefix.
+          console.warn(`breached password check unavailable (${host}): ${e instanceof Error ? e.name : "Error"}`);
+          return fail === "open"
+            ? []
+            : [
+                {
+                  code: "password_check_unavailable",
+                  message: "The password could not be checked against known data breaches. Try again later.",
+                  params: {},
+                },
+              ];
+        }
+        return count > threshold
+          ? [{ code: "password_breached", message: "This password appeared in a known data breach. Choose another one.", params: { count } }]
+          : [];
+      },
+    };
+  },
 };
 
 async function custom(spec: string, options: Entry): Promise<PasswordRule> {
@@ -111,6 +161,9 @@ export async function loadRules(directory: string = process.cwd()): Promise<Pass
         break;
       case "numeric":
         out.push(rules.numeric());
+        break;
+      case "breached":
+        out.push(rules.breached(options as { threshold?: number; host?: string; timeout?: number; fail?: "open" | "closed" }));
         break;
       default:
         out.push(

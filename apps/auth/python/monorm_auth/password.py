@@ -26,6 +26,7 @@ _BUILT_IN: dict[str, Any] = {
     "common": rules.Common,
     "numeric": rules.Numeric,
     "user_similarity": rules.UserSimilarity,
+    "breached": rules.Breached,
 }
 
 
