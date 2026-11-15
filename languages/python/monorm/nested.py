@@ -35,6 +35,7 @@ _ACCEPTS: dict[str, tuple[type, ...]] = {
     "string": (str,),
     "text": (str,),
     "date_time": (dt.datetime,),
+    "time": (dt.time,),
     "date": (dt.date,),
     "uuid": (uuid.UUID, str),
     "decimal": (decimal.Decimal, int, str),
@@ -145,7 +146,7 @@ class NestedType:
             return v
         if isinstance(v, enum.Enum):
             return v.value
-        if sub.type in ("date_time", "date"):
+        if sub.type in ("date_time", "date", "time"):
             return self._json_leaf(sub, v, what)
         return v
 
@@ -219,6 +220,10 @@ class NestedType:
                 if v.tzinfo is None:
                     raise ValueError(f"{at}: a datetime needs a timezone")
                 return v.astimezone(dt.UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            case "time":
+                if v.tzinfo is not None:
+                    raise ValueError(f"{at}: a time must be naive")
+                return v.isoformat(timespec="microseconds")
             case "date":
                 return (v.date() if isinstance(v, dt.datetime) else v).isoformat()
             case "uuid":
@@ -303,6 +308,15 @@ class NestedType:
                     raise bad("a datetime string")
                 out = dt.datetime.fromisoformat(v)
                 return out.replace(tzinfo=dt.UTC) if out.tzinfo is None else out.astimezone(dt.UTC)
+            if t == "time":
+                if not isinstance(v, (dt.time, str)):
+                    raise bad("a time string")
+                if isinstance(v, str) and v[:2] == "24":
+                    raise bad("a time below 24:00:00")
+                clock = v if isinstance(v, dt.time) else dt.time.fromisoformat(v)
+                if clock.tzinfo is not None:
+                    raise bad("a naive time string")
+                return clock
             if t == "date":
                 if isinstance(v, dt.date) and not isinstance(v, dt.datetime):
                     return v

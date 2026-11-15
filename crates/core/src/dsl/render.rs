@@ -79,7 +79,7 @@ fn expand(template: &str, args: &[String]) -> String {
     text
 }
 
-/// A `DateTime`, `Date` or `Uuid` literal in the text form that the SQLite engine stores (`bind` in `engine/src/db/sqlite.rs`).
+/// A `DateTime`, `Date`, `Time` or `Uuid` literal in the text form that the SQLite engine stores (`bind` in `engine/src/db/sqlite.rs`).
 /// SQLite compares those columns as text, so the form the author wrote (RFC 3339, `2024-1-5`, upper case) would not match.
 fn sqlite_stored(ty: ColType, text: &str) -> Option<String> {
     match ty {
@@ -87,6 +87,7 @@ fn sqlite_stored(ty: ColType, text: &str) -> Option<String> {
             let at = chrono::DateTime::parse_from_rfc3339(text).ok()?;
             Some(at.with_timezone(&chrono::Utc).format("%Y-%m-%d %H:%M:%S%.f").to_string())
         }
+        ColType::Time => Some(chrono::NaiveTime::parse_from_str(text, "%H:%M:%S%.f").ok()?.format("%H:%M:%S%.6f").to_string()),
         ColType::Date => Some(chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").ok()?.to_string()),
         ColType::Uuid => Some(uuid::Uuid::parse_str(text).ok()?.to_string()),
         _ => None,

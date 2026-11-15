@@ -96,6 +96,7 @@ pub enum Cell<'a> {
     /// timestamptz, in UTC as on the wire.
     DateTime(DateTime<Utc>),
     Date(NaiveDate),
+    Time(chrono::NaiveTime),
     Uuid(uuid::Uuid),
     Json(serde_json::Value),
     /// A `numeric` as decimal text: `-12.50`, `NaN`.

@@ -57,6 +57,7 @@ fn json_param(d: Dialect, ty: ColType, sql: &str, expr: bool) -> String {
     let value = match ty {
         ColType::Json => return format!("COALESCE({sql}::jsonb, 'null'::jsonb)"),
         ColType::DateTime if expr => return leaf_json(d, ty, &format!("({sql})::timestamptz")),
+        ColType::Time if expr => return leaf_json(d, ty, &format!("({sql})::time")),
         ColType::Date if expr => return leaf_json(d, ty, &format!("({sql})::date")),
         ColType::Int => format!("{sql}::integer"),
         ColType::Float => format!("{sql}::double precision"),
@@ -64,7 +65,7 @@ fn json_param(d: Dialect, ty: ColType, sql: &str, expr: bool) -> String {
         ColType::BigInt => format!("({sql}::bigint)::text"),
         ColType::Decimal => format!("({sql}::numeric)::text"),
         ColType::Uuid => format!("({sql}::uuid)::text"),
-        ColType::String | ColType::Text | ColType::DateTime | ColType::Date => format!("{sql}::text"),
+        ColType::String | ColType::Text | ColType::DateTime | ColType::Date | ColType::Time => format!("{sql}::text"),
     };
     format!("COALESCE(to_jsonb({value}), 'null'::jsonb)")
 }

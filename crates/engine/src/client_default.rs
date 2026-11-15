@@ -14,6 +14,7 @@ fn literal(value: &Literal) -> Value {
         Literal::Bool(v) => Value::Bool(Some(*v)),
         Literal::Text(v) => Value::String(Some(v.clone())),
         Literal::DateTime(v) => Value::ChronoDateTimeWithTimeZone(Some(*v)),
+        Literal::Time(v) => Value::ChronoTime(Some(*v)),
         Literal::Date(v) => Value::ChronoDate(Some(*v)),
         Literal::Uuid(v) => Value::Uuid(Some(*v)),
         Literal::Decimal(v) => Value::BigDecimal(Some(Box::new(v.clone()))),

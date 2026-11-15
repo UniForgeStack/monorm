@@ -169,6 +169,12 @@ class DateTime(Field[T]):
     type_name = "date_time"
 
 
+class Time(Field[T]):
+    """A naive ``datetime.time``; Timetz offsets normalize to UTC."""
+
+    type_name = "time"
+
+
 class Date(Field[T]):
     type_name = "date"
 
@@ -251,7 +257,7 @@ class Enum(Field[T]):
 
 # IR column type -> descriptor class, for models built from a compiled schema.
 BY_TYPE: dict[str, type[Field[Any]]] = {
-    c.type_name: c for c in (BigInt, Integer, Float, Boolean, String, Text, DateTime, Date, Uuid, Json, Decimal)
+    c.type_name: c for c in (BigInt, Integer, Float, Boolean, String, Text, DateTime, Date, Time, Uuid, Json, Decimal)
 }
 
 

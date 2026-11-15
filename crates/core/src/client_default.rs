@@ -16,7 +16,7 @@ pub enum ClientDefault {
 #[derive(Clone, Debug)]
 pub enum Literal {
     Null(ValueType), Int(i32), BigInt(i64), Float(f64), Bool(bool), Text(String),
-    DateTime(chrono::DateTime<chrono::FixedOffset>), Date(chrono::NaiveDate),
+    DateTime(chrono::DateTime<chrono::FixedOffset>), Date(chrono::NaiveDate), Time(chrono::NaiveTime),
     Uuid(uuid::Uuid), Decimal(bigdecimal::BigDecimal), Json(Value), Array(ColType, Vec<Literal>),
 }
 
@@ -40,6 +40,7 @@ impl Literal {
             ColType::String | ColType::Text => Self::Text(text()?.into()),
             ColType::DateTime => Self::DateTime(chrono::DateTime::parse_from_rfc3339(text()?)
                 .map_err(|e| format!("requires an RFC 3339 timestamp with an offset, such as 2026-01-01T00:00:00Z: {e}"))?),
+            ColType::Time => Self::Time(chrono::NaiveTime::parse_from_str(text()?, "%H:%M:%S%.f").map_err(|e| e.to_string())?),
             ColType::Date => Self::Date(chrono::NaiveDate::parse_from_str(text()?, "%Y-%m-%d").map_err(|e| e.to_string())?),
             ColType::Uuid => Self::Uuid(text()?.parse::<uuid::Uuid>().map_err(|e| e.to_string())?),
             ColType::Decimal => {

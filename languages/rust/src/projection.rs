@@ -595,6 +595,7 @@ nullable_codecs!(
     bool,
     String,
     chrono::NaiveDate,
+    chrono::NaiveTime,
     chrono::DateTime<chrono::Utc>,
     uuid::Uuid,
     serde_json::Value,

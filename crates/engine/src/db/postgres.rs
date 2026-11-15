@@ -92,6 +92,7 @@ fn pg_type(v: &Value) -> DbResult<Type> {
         Value::String(_) => Type::TEXT,
         Value::Bytes(_) => Type::BYTEA,
         Value::Json(_) => Type::JSONB,
+        Value::ChronoTime(_) => Type::TIME,
         Value::ChronoDate(_) => Type::DATE,
         Value::ChronoDateTimeWithTimeZone(_) | Value::ChronoDateTimeUtc(_) => Type::TIMESTAMPTZ,
         Value::ChronoDateTime(_) => Type::TIMESTAMP,
@@ -104,6 +105,7 @@ fn pg_type(v: &Value) -> DbResult<Type> {
             ArrayType::Double => Type::FLOAT8_ARRAY,
             ArrayType::String => Type::TEXT_ARRAY,
             ArrayType::Json => Type::JSONB_ARRAY,
+            ArrayType::ChronoTime => Type::TIME_ARRAY,
             ArrayType::ChronoDate => Type::DATE_ARRAY,
             ArrayType::ChronoDateTimeWithTimeZone => Type::TIMESTAMPTZ_ARRAY,
             ArrayType::Uuid => Type::UUID_ARRAY,
@@ -135,6 +137,12 @@ impl ToSql for Param<'_> {
             Value::String(v) => v.as_deref().to_sql(ty, out),
             Value::Bytes(v) => v.as_deref().to_sql(ty, out),
             Value::Json(v) => v.as_deref().to_sql(ty, out),
+            Value::ChronoTime(v) => {
+                let Some(v) = v else { return Ok(IsNull::Yes) };
+                v.to_sql(&Type::TIME, out)?;
+                if *ty == Type::TIMETZ { out.extend_from_slice(&0i32.to_be_bytes()); }
+                Ok(IsNull::No)
+            }
             Value::ChronoDate(v) => v.to_sql(ty, out),
             Value::ChronoDateTimeWithTimeZone(v) => v.to_sql(ty, out),
             Value::ChronoDateTimeUtc(v) => v.to_sql(ty, out),
@@ -284,6 +292,7 @@ fn raw_type(name: &str, ty: &Type) -> DbResult<RawType> {
         Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME => ColType::Text,
         Type::TIMESTAMPTZ => ColType::DateTime,
         Type::DATE => ColType::Date,
+        Type::TIME | Type::TIMETZ => ColType::Time,
         Type::UUID => ColType::Uuid,
         Type::JSON | Type::JSONB => ColType::Json,
         Type::NUMERIC => ColType::Decimal,
@@ -443,7 +452,7 @@ async fn copy_in_alone(c: Object, table: &str, columns: &[String], rows: &[Vec<V
 struct PgRows(Vec<Row>);
 
 fn get<'a, T: FromSql<'a>>(row: &'a Row, idx: usize) -> DbResult<Option<T>> {
-    row.try_get::<_, Option<T>>(idx).map_err(|e| DbError::other(format!("column {idx}: {e}")))
+    row.try_get::<_, Option<T>>(idx).map_err(|e| DbError::other(format!("column {idx}: {e}{}", e.source().map(|s| format!(": {s}")).unwrap_or_default())))
 }
 
 /// Text, or the label of a database enum (sent as its text).
@@ -482,6 +491,21 @@ fn list<'a, T: FromSql<'a>>(row: &'a Row, idx: usize, f: impl Fn(T) -> Cell<'a>)
     Ok(Cell::Array(items.into_iter().map(|v| v.map(&f).unwrap_or(Cell::Null)).collect()))
 }
 
+/// A native clock. TIMETZ carries west-positive offset seconds after its microseconds.
+struct PgTime(chrono::NaiveTime);
+impl<'a> FromSql<'a> for PgTime {
+    fn from_sql(ty: &Type, raw: &'a [u8]) -> Result<Self, Box<dyn StdError + Sync + Send>> {
+        if raw.len() != if *ty == Type::TIMETZ { 12 } else { 8 } { return Err("invalid time payload length".into()); }
+        let micros = i64::from_be_bytes(raw.get(..8).ok_or("invalid time bytes")?.try_into()?);
+        const DAY: i64 = 86_400_000_000;
+        if !(0..DAY).contains(&micros) { return Err("time out of range: 24:00:00 is not representable".into()); }
+        let offset = if *ty == Type::TIMETZ { i32::from_be_bytes(raw.get(8..12).ok_or("invalid timetz bytes")?.try_into()?) as i64 } else { 0 };
+        let utc = (micros + offset * 1_000_000).rem_euclid(DAY);
+        Ok(Self(chrono::NaiveTime::from_num_seconds_from_midnight_opt((utc / 1_000_000) as u32, (utc % 1_000_000) as u32 * 1000).ok_or("time out of range")?))
+    }
+    fn accepts(ty: &Type) -> bool { matches!(*ty, Type::TIME | Type::TIMETZ) }
+}
+
 /// A `timestamp` has no zone: read it as UTC, like other DateTime fields.
 fn timestamp_cell<'a>(v: NaiveDateTime) -> Cell<'a> {
     Cell::DateTime(v.and_utc())
@@ -496,6 +520,7 @@ fn cell(row: &Row, idx: usize, ty: ValueType) -> DbResult<Cell<'_>> {
             ColType::Bool => list(row, idx, Cell::Bool),
             ColType::String | ColType::Text => list(row, idx, |t: Text<'_>| Cell::Text(t.0)),
             ColType::DateTime => list(row, idx, Cell::DateTime),
+            ColType::Time => list(row, idx, |t: PgTime| Cell::Time(t.0)),
             ColType::Date => list(row, idx, Cell::Date),
             ColType::Uuid => list(row, idx, Cell::Uuid),
             ColType::Json => list(row, idx, Cell::Json),
@@ -510,6 +535,7 @@ fn cell(row: &Row, idx: usize, ty: ValueType) -> DbResult<Cell<'_>> {
         ColType::String | ColType::Text => opt(row, idx, |t: Text<'_>| Cell::Text(t.0)),
         // timestamptz is UTC on the wire.
         ColType::DateTime => opt(row, idx, Cell::DateTime),
+        ColType::Time => opt(row, idx, |t: PgTime| Cell::Time(t.0)),
         ColType::Date => opt(row, idx, Cell::Date),
         ColType::Uuid => opt(row, idx, Cell::Uuid),
         ColType::Json => opt(row, idx, Cell::Json),
@@ -560,6 +586,7 @@ impl RowSet for PgRows {
             ColType::DateTime => {
                 Value::ChronoDateTimeWithTimeZone(get::<DateTime<Utc>>(r, col)?.map(|d| d.fixed_offset()))
             }
+            ColType::Time => Value::ChronoTime(get::<PgTime>(r, col)?.map(|t| t.0)),
             ColType::Date => Value::ChronoDate(get(r, col)?),
             ColType::Uuid => Value::Uuid(get(r, col)?),
             ColType::Json => Value::Json(get::<serde_json::Value>(r, col)?.map(Box::new)),
@@ -1729,5 +1756,39 @@ mod failure_tests {
             assert_ne!(db.query_text("SELECT pg_backend_pid()".into()).await.unwrap(), before);
             direct.batch("DROP TABLE monorm_pgb; DROP TYPE monorm_pgb_role; DROP TYPE monorm_pgb_late".into()).await.unwrap();
         });
+    }
+}
+
+#[cfg(test)]
+mod native_time_tests {
+    use super::*;
+
+    #[test]
+    fn time_wire_preserves_micros_and_timetz_normalizes_across_midnight() {
+        let t = chrono::NaiveTime::from_hms_micro_opt(7, 8, 9, 123456).unwrap();
+        let v = Value::ChronoTime(Some(t));
+        for ty in [Type::TIME, Type::TIMETZ] {
+            let mut bytes = BytesMut::new();
+            assert!(matches!(Param(&v).to_sql(&ty, &mut bytes).unwrap(), IsNull::No));
+            assert_eq!(bytes.len(), if ty == Type::TIME { 8 } else { 12 });
+            if ty == Type::TIMETZ { assert_eq!(&bytes[8..], &[0; 4]); }
+            assert_eq!(PgTime::from_sql(&ty, &bytes).unwrap().0, t);
+        }
+        for (local, west, expected) in [(1800i64, -7200i32, (22,30)), (84600,7200,(1,30))] {
+            let mut bytes = (local * 1_000_000).to_be_bytes().to_vec();
+            bytes.extend_from_slice(&west.to_be_bytes());
+            assert_eq!(PgTime::from_sql(&Type::TIMETZ, &bytes).unwrap().0, chrono::NaiveTime::from_hms_opt(expected.0, expected.1, 0).unwrap());
+        }
+    }
+
+    #[test]
+    fn time_wire_rejects_end_of_day_and_invalid_payloads() {
+        for ty in [Type::TIME, Type::TIMETZ] {
+            let mut bytes = 86_400_000_000i64.to_be_bytes().to_vec();
+            if ty == Type::TIMETZ { bytes.extend_from_slice(&0i32.to_be_bytes()); }
+            let e = PgTime::from_sql(&ty, &bytes).err().unwrap();
+            assert!(e.to_string().contains("24:00:00 is not representable"));
+            assert!(PgTime::from_sql(&ty, &[]).is_err());
+        }
     }
 }

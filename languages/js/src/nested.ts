@@ -6,6 +6,7 @@
  * same either way: a reference in queries (`Shop.address.city`) and a value on an instance.
  */
 
+import { parseTime, timeText } from "./date-micros.js";
 import { Decimal } from "./decimal.js";
 import { DecodeError } from "./errors.js";
 import { Column, Expression, Node, ParamRef, wrap, type IR, type IRContext } from "./expr.js";
@@ -160,6 +161,7 @@ export class NestedType {
       case "uuid":
         if (typeof value !== "string") throw bad("a string");
         return value;
+      case "time":
       case "date_time":
       case "date":
         if (!(value instanceof Date) || Number.isNaN(value.getTime())) throw bad("a valid Date");
@@ -182,7 +184,7 @@ export class NestedType {
   bound(sub: Sub, value: unknown, what: string, json: boolean): unknown {
     const v = this.leafValue(sub, value, what);
     if (!json || v === null || v instanceof Node || v instanceof ParamRef) return v;
-    if (sub.type === "date_time" || sub.type === "date") return this.jsonLeaf(sub, v, what);
+    if (sub.type === "time" || sub.type === "date_time" || sub.type === "date") return this.jsonLeaf(sub, v, what);
     return v;
   }
 
@@ -269,6 +271,8 @@ export class NestedType {
       case "big_int":
       case "decimal":
         return String(v);
+      case "time":
+        return timeText(v as Date);
       case "date_time":
         return `${(v as Date).toISOString().slice(0, -1)}000Z`;
       case "date":
@@ -342,6 +346,12 @@ export class NestedType {
         } catch {
           throw bad("a valid decimal");
         }
+      case "time": {
+        if (v instanceof Date) return v;
+        const d = typeof v === "string" ? parseTime(v) : undefined;
+        if (!d) throw bad("a time string");
+        return d;
+      }
       case "date_time": {
         if (v instanceof Date) return v;
         const d = typeof v === "string" ? parseDateTime(v) : undefined;

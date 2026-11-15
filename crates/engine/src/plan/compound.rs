@@ -303,6 +303,7 @@ fn pg_type(t: ValueType) -> &'static str {
         ColType::Bool => "boolean",
         ColType::String | ColType::Text => "text",
         ColType::DateTime => "timestamptz",
+        ColType::Time => "time",
         ColType::Date => "date",
         ColType::Uuid => "uuid",
         ColType::Json => "jsonb",

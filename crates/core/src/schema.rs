@@ -281,6 +281,17 @@ impl Schema {
         let types = ir.types;
         let mut models = Vec::with_capacity(ir.models.len());
         for mut m in ir.models {
+            // Parameters carry TIME, including filters and relation keys. Give TIMETZ
+            // an explicit zero offset instead of PostgreSQL's session-zone cast.
+            if ir.dialect == crate::dialect::Dialect::Postgres {
+                for f in &mut m.fields {
+                    if f.ty == crate::ir::ColType::Time && f.db_type.as_deref().is_some_and(|t| t.starts_with("timetz")) && (f.write_sql.is_none() || f.write_sql.as_deref() == Some(&format!("CAST({{}} AS {})", crate::migrate::model::sql_type(f)))) {
+                        f.write_sql = Some(if f.array {
+                            "CASE WHEN {} IS NULL THEN NULL ELSE ARRAY(SELECT (t::time::text || '+00')::timetz FROM unnest({}) AS t) END"
+                        } else { "({}::time::text || '+00')::timetz" }.into());
+                    }
+                }
+            }
             for f in &mut m.fields {
                 let Some(name) = &f.enum_name else { continue };
                 let i = enums

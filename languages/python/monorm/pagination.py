@@ -11,7 +11,7 @@ import binascii
 import json
 import math
 import re
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal, InvalidOperation
 from hashlib import blake2b
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
@@ -29,7 +29,7 @@ T = TypeVar("T")
 __all__ = ["Page"]
 
 # Column types with a cursor value; JSON, arrays and enums have none.
-_CURSOR_TYPES = {"big_int", "int", "float", "bool", "string", "text", "date_time", "date", "uuid", "decimal"}
+_CURSOR_TYPES = {"big_int", "int", "float", "bool", "string", "text", "date_time", "date", "time", "uuid", "decimal"}
 
 
 class Page(Generic[T]):
@@ -122,7 +122,7 @@ def _encode(f: Field[Any], v: Any) -> Any:
         if math.isnan(v):
             return "NaN"
         return v if math.isfinite(v) else ("Infinity" if v > 0 else "-Infinity")
-    if f.type_name in ("date_time", "date"):
+    if f.type_name in ("date_time", "date", "time"):
         return v.isoformat()
     if f.type_name == "decimal" and not v.is_finite():
         raise QueryError(f"paginate() can't make a cursor from the decimal {v}")
@@ -150,6 +150,10 @@ def _decode(f: Field[Any], nullable: bool, v: Any) -> Any:
             dt = datetime.fromisoformat(v)
             if dt.tzinfo is not None:
                 return dt
+        elif t == "time" and isinstance(v, str):
+            out = time.fromisoformat(v)
+            if out.tzinfo is None:
+                return out
         elif t == "date" and isinstance(v, str):
             return date.fromisoformat(v)
     except (ValueError, InvalidOperation):

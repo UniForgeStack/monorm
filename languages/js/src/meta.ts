@@ -14,6 +14,7 @@ export type ColType =
   | "bool"
   | "string"
   | "text"
+  | "time"
   | "date_time"
   | "date"
   | "uuid"

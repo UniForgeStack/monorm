@@ -107,7 +107,7 @@ fn fits(widget: &str, ty: ValueType) -> bool {
         "number" => plain && matches!(ty.ty, ColType::Int | ColType::BigInt | ColType::Float | ColType::Decimal),
         "date" => plain && ty.ty == ColType::Date,
         "datetime" => plain && ty.ty == ColType::DateTime,
-        "text" | "textarea" | "email" | "url" => plain && matches!(ty.ty, ColType::String | ColType::Text | ColType::Uuid),
+        "text" | "textarea" | "email" | "url" => plain && matches!(ty.ty, ColType::String | ColType::Text | ColType::Uuid | ColType::Time),
         _ => false,
     }
 }

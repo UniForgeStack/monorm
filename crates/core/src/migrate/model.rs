@@ -281,6 +281,7 @@ fn json_default(ty: crate::ir::ColType, v: &serde_json::Value) -> serde_json::Va
     use serde_json::Value;
     match (ty, v) {
         (ColType::BigInt | ColType::Decimal, Value::Number(n)) => Value::String(n.to_string()),
+        (ColType::Time, Value::String(s)) => chrono::NaiveTime::parse_from_str(s, "%H:%M:%S%.f").map(|t| Value::String(t.format("%H:%M:%S%.6f").to_string())).unwrap_or_else(|_| v.clone()),
         (ColType::DateTime, Value::String(s)) => match chrono::DateTime::parse_from_rfc3339(s) {
             Ok(t) => Value::String(t.with_timezone(&chrono::Utc).format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()),
             Err(_) => v.clone(),
@@ -553,6 +554,7 @@ fn scalar_sql_type(f: &FieldIr) -> String {
         },
         ColType::Text => "text".into(),
         ColType::DateTime => "timestamp with time zone".into(),
+        ColType::Time => "time".into(),
         ColType::Date => "date".into(),
         ColType::Uuid => "uuid".into(),
         ColType::Json => "jsonb".into(),

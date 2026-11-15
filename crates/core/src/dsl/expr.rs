@@ -397,7 +397,7 @@ impl Checker<'_> {
                 let span = source_span(pos, s.chars().count() + 2);
                 let ty = match hint {
                     Some(Ty::Enum(_)) => return fail(span, format!("write the member `{s}`, not a string")),
-                    Some(Ty::Scalar(t @ (ColType::DateTime | ColType::Date | ColType::Uuid))) => {
+                    Some(Ty::Scalar(t @ (ColType::DateTime | ColType::Date | ColType::Time | ColType::Uuid))) => {
                         if let Err(message) = check_literal(*t, s) {
                             return fail(span, message);
                         }
@@ -821,6 +821,7 @@ fn check_literal(t: ColType, text: &str) -> Result<(), String> {
         ColType::DateTime if chrono::DateTime::parse_from_rfc3339(text).is_err() => {
             Err(format!("`{text}` is not an RFC 3339 date-time, e.g. \"2024-01-01T00:00:00Z\""))
         }
+        ColType::Time if chrono::NaiveTime::parse_from_str(text, "%H:%M:%S%.f").is_err() => { Err("expected a time (HH:MM:SS[.ffffff])".into()) }
         ColType::Date if chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").is_err() => {
             Err(format!("`{text}` is not a date; write YYYY-MM-DD"))
         }
@@ -915,6 +916,7 @@ fn scalar_name(t: ColType) -> &'static str {
         ColType::String => "String",
         ColType::Text => "Text",
         ColType::DateTime => "DateTime",
+        ColType::Time => "Time",
         ColType::Date => "Date",
         ColType::Uuid => "Uuid",
         ColType::Json => "Json",

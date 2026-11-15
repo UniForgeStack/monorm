@@ -48,7 +48,7 @@ fn element_type(f: &FieldIr) -> String {
         ColType::Int | ColType::Float => "number",
         ColType::Bool => "boolean",
         ColType::String | ColType::Text | ColType::Uuid => "string",
-        ColType::DateTime | ColType::Date => "Date",
+        ColType::DateTime | ColType::Date | ColType::Time => "Date",
         ColType::Json => "JsonValue",
         ColType::Decimal => "Decimal",
     }

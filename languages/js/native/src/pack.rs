@@ -78,6 +78,7 @@ fn cell(out: &mut Vec<u8>, c: Cell<'_>) {
                 out.extend_from_slice(&(us as u16).to_le_bytes());
             }
         }
+        Cell::Time(t) => cell(out, Cell::DateTime(chrono::NaiveDate::from_ymd_opt(1970, 1, 1).expect("epoch").and_time(t).and_utc())),
         Cell::Date(d) => {
             out.push(tag::DATE);
             out.extend_from_slice(&midnight_ms(d).to_le_bytes());

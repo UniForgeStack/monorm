@@ -226,6 +226,10 @@ impl Conv {
                 Kind::Date => Value::ChronoDateTimeWithTimeZone(Some(self.datetime_micros(v)?.fixed_offset())),
                 _ => return Err(self.expected("a Date", v)),
             },
+            ColType::Time => match kind {
+                Kind::Date => Value::ChronoTime(Some(self.datetime_micros(v)?.time())),
+                _ => return Err(self.expected("a Date", v)),
+            },
             ColType::Date => match kind {
                 Kind::Date => Value::ChronoDate(Some(self.datetime(v)?.date_naive())),
                 _ => return Err(self.expected("a Date", v)),
@@ -289,6 +293,7 @@ impl Conv {
                 }
                 Ok(date)
             }
+            Cell::Time(t) => self.cell(Cell::DateTime(chrono::NaiveDate::from_ymd_opt(1970, 1, 1).expect("epoch").and_time(t).and_utc())),
             Cell::Date(d) => js.date(midnight_ms(d)),
             Cell::Uuid(u) => js.str(u.hyphenated().encode_lower(&mut uuid::Uuid::encode_buffer())),
             Cell::Json(j) => self.json_out(&j),

@@ -17,6 +17,12 @@ use crate::ir::{ColType, NestedStorage};
 pub fn leaf_json(d: Dialect, ty: ColType, sql: &str) -> String {
     match (d, ty) {
         (Dialect::Postgres, ColType::DateTime) => format!("to_char({sql} AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"')"),
+        (Dialect::Postgres, ColType::Time) => {
+            // A time retains its clock; timetz normalizes the stored offset to UTC.
+            // Text casts keep both branches valid for either PostgreSQL wire type.
+            let clock = format!("CASE WHEN pg_typeof({sql}) = 'timetz'::regtype THEN (({sql})::text::timetz AT TIME ZONE 'UTC')::time ELSE ({sql})::time END");
+            format!("CASE WHEN ({sql})::time = '24:00:00'::time THEN '24:00:00.000000' ELSE to_char(date '1970-01-01' + ({clock}), 'HH24:MI:SS.US') END")
+        },
         (Dialect::Postgres, ColType::Date) => format!("to_char({sql}, 'YYYY-MM-DD')"),
         (Dialect::Postgres, ColType::BigInt | ColType::Decimal) => format!("{sql}::text"),
         (Dialect::Sqlite, ColType::BigInt) => format!("CAST({sql} AS TEXT)"),
@@ -101,6 +107,7 @@ fn derive_type(sql: &str, d: Dialect) -> ColType {
         "double precision" | "real" => ColType::Float,
         "boolean" => ColType::Bool,
         "date" => ColType::Date,
+        t if t.starts_with("time") && !t.starts_with("timestamp") => ColType::Time,
         "uuid" => ColType::Uuid,
         "jsonb" | "json" => ColType::Json,
         "text" => ColType::Text,

@@ -63,7 +63,9 @@ pub fn validate(ir: &SchemaIr) -> Result<(), String> {
             if f.comment.is_some() { require(Feature::Comments, &what)?; }
             if !f.requires.is_empty() { require(Feature::Extensions, &what)?; }
             if ir.dialect == Dialect::Sqlite {
-                if f.db_type.is_some() || f.read_sql.is_some() || f.write_sql.is_some() {
+                let native_clock = f.ty == ColType::Time && f.db_type.as_deref().is_some_and(|t|
+                    t == "time" || t == "timetz" || t.starts_with("time(") || t.starts_with("timetz("));
+                if (f.db_type.is_some() && !native_clock) || f.read_sql.is_some() || f.write_sql.is_some() {
                     return Err(format!("{what}: sqlite does not support PostgreSQL native types or SQL conversion templates"));
                 }
                 if f.auto_increment && !f.primary_key {

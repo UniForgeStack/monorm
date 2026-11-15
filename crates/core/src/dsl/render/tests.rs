@@ -107,7 +107,7 @@ fn a_column_named_like_a_reserved_word_is_quoted() {
 }
 
 fn typed_sql(datasource: &str, expr: &str) -> Result<String, String> {
-    let model = format!("model Ev {{\n  id Int @id\n  seen_at DateTime\n  born DateTime @db.Date\n  uid String @db.Uuid\n  label String\n  @@check({expr})\n}}\n");
+    let model = format!("model Ev {{\n  id Int @id\n  seen_at DateTime\n  born DateTime @db.Date\n  at DateTime @db.Time\n  uid String @db.Uuid\n  label String\n  @@check({expr})\n}}\n");
     match &super::super::compile(&format!("{datasource}{model}"), None)?.models[0].constraints[..] {
         [ConstraintIr::Check { expr, .. }] => Ok(expr.clone()),
         other => panic!("one check expected, found {other:?}"),
@@ -117,7 +117,7 @@ fn typed_sql(datasource: &str, expr: &str) -> Result<String, String> {
 #[test]
 fn a_typed_literal_takes_the_stored_text_form_on_sqlite() {
     // SQLite compares these columns as text; the engine stores UTC `%Y-%m-%d %H:%M:%S%.f`,
-    // `YYYY-MM-DD` and a lower-case hyphenated UUID. Postgres keeps the text as written.
+    // `YYYY-MM-DD`, `%H:%M:%S%.6f` for a time and a lower-case hyphenated UUID. Postgres keeps the text as written.
     // (expression, Postgres, SQLite)
     let table: &[(&str, &str, &str)] = &[
         ("seen_at > \"2024-01-01T00:00:00Z\"", "seen_at > '2024-01-01T00:00:00Z'", "seen_at > '2024-01-01 00:00:00'"),
@@ -134,6 +134,8 @@ fn a_typed_literal_takes_the_stored_text_form_on_sqlite() {
             "coalesce(seen_at, '2024-01-01 00:00:00') > '2024-01-01 00:00:00'",
         ),
         ("born > \"2024-1-5\"", "born > '2024-1-5'", "born > '2024-01-05'"),
+        ("at == \"7:08:09\"", "at = '7:08:09'", "at = '07:08:09.000000'"),
+        ("at > \"07:08:09.123\"", "at > '07:08:09.123'", "at > '07:08:09.123000'"),
         (
             "uid == \"550E8400-E29B-41D4-A716-446655440000\"",
             "uid = '550E8400-E29B-41D4-A716-446655440000'",

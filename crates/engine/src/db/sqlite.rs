@@ -167,6 +167,7 @@ fn bind(v: Value) -> DbResult<SqlValue> {
         Value::Bytes(Some(v)) => SqlValue::Blob(v.to_vec()),
         Value::Json(Some(v)) => SqlValue::Text(v.to_string()),
         Value::Uuid(Some(v)) => SqlValue::Text(v.to_string()),
+        Value::ChronoTime(Some(v)) => SqlValue::Text(v.format("%H:%M:%S%.6f").to_string()),
         Value::ChronoDate(Some(v)) => SqlValue::Text(v.to_string()),
         Value::ChronoDateTimeUtc(Some(v)) => SqlValue::Text(v.format("%Y-%m-%d %H:%M:%S%.f").to_string()),
         Value::ChronoDateTimeWithTimeZone(Some(v)) => SqlValue::Text(v.with_timezone(&Utc).format("%Y-%m-%d %H:%M:%S%.f").to_string()),
@@ -445,6 +446,7 @@ impl RowSet for Rows {
             ColType::String | ColType::Text => Cell::Text(self.text(row, col)?),
             ColType::Json => Cell::Json(serde_json::from_str(self.text(row, col)?).map_err(|e| DbError::other(e.to_string()))?),
             ColType::Uuid => Cell::Uuid(uuid::Uuid::parse_str(self.text(row, col)?).map_err(|e| DbError::other(e.to_string()))?),
+            ColType::Time => Cell::Time(chrono::NaiveTime::parse_from_str(self.text(row, col)?, "%H:%M:%S%.f").map_err(|e| DbError::other(e.to_string()))?),
             ColType::Date => Cell::Date(NaiveDate::parse_from_str(self.text(row, col)?, "%Y-%m-%d").map_err(|e| DbError::other(e.to_string()))?),
             ColType::DateTime => {
                 let s = self.text(row, col)?;
@@ -459,6 +461,7 @@ impl RowSet for Rows {
             Cell::Null => crate::params::null_of(Some(ty)), Cell::Bool(v) => v.into(),
             Cell::Int(v) => v.into(), Cell::BigInt(v) => v.into(), Cell::Float(v) => v.into(),
             Cell::Text(v) => v.into(), Cell::Json(v) => v.into(), Cell::Uuid(v) => v.into(),
+            Cell::Time(v) => v.into(),
             Cell::Date(v) => v.into(), Cell::DateTime(v) => v.into(),
             _ => return Err(DbError::other("unsupported SQLite value")),
         })

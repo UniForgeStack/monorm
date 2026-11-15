@@ -58,6 +58,7 @@ pub enum ColType {
     Text,
     DateTime,
     Date,
+    Time,
     Uuid,
     /// `jsonb`; values are JSON-compatible Python objects.
     Json,
@@ -567,7 +568,7 @@ impl FieldIr {
             ColType::Bool => value.is_boolean(),
             ColType::Json => true,
             ColType::Decimal => value.is_string() || value.is_number(),
-            ColType::String | ColType::Text | ColType::DateTime | ColType::Date | ColType::Uuid => value.is_string(),
+            ColType::String | ColType::Text | ColType::DateTime | ColType::Date | ColType::Time | ColType::Uuid => value.is_string(),
         };
         if fits { return Ok(()); }
         Err(match self.ty {

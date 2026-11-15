@@ -1003,6 +1003,11 @@ fn field(m: &ModelDecl, member: &Member, ctx: &Ctx<'_>, pending: Option<&Pending
                 (ColType::String, "Uuid", []) if !decimal => f.ty = ColType::Uuid,
                 (ColType::String, "Citext", []) if !decimal && !*list => resolve(&mut f, "citext", &[])?,
                 (ColType::DateTime, "Date", []) => f.ty = ColType::Date,
+                (ColType::DateTime, "Time" | "Timetz", _) => {
+                    f.ty = ColType::Time;
+                    let sql = if db == "Timetz" { "timetz" } else { "time" };
+                    f.db_type = Some(if values.is_empty() { sql.into() } else { format!("{sql}({})", values.join(", ")) });
+                }
                 (ty, _, _) => {
                     let Some((sql, same)) = native_type(db, ty) else {
                         return err(a.pos, format!("{what}: unknown native type @db.{db}"));

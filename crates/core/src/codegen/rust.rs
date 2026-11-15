@@ -747,6 +747,7 @@ fn ty(f: &FieldIr) -> String {
                 ColType::Bool => "bool",
                 ColType::String | ColType::Text => "std::string::String",
                 ColType::DateTime => "monorm_client::chrono::DateTime<monorm_client::chrono::Utc>",
+                ColType::Time => "monorm_client::chrono::NaiveTime",
                 ColType::Date => "monorm_client::chrono::NaiveDate",
                 ColType::Uuid => "monorm_client::uuid::Uuid",
                 ColType::Json => "monorm_client::serde_json::Value",

@@ -287,12 +287,21 @@ The first app is [`monorm-auth`](../apps/auth.md): users, roles, permissions and
 | `String @db.Text` | `text` | `str` |
 | `String @db.Uuid` | `uuid` | `uuid.UUID` (strings accepted) |
 | `DateTime`, `DateTime @db.Date` | `timestamp with time zone`, `date` | `datetime` (aware), `date` |
+| `DateTime @db.Time`, `DateTime @db.Timetz` | `time`, `timetz` | naive `datetime.time` |
 | `Json` | `jsonb` | dicts, lists, scalars |
 | `Decimal`, `Decimal @db.Decimal(p, s)` | `numeric`, `numeric(p, s)` | `decimal.Decimal` (exact; `int`, `float`, `"12.50"` accepted) |
 | an enum (below) | a Postgres enum type, `text` or `integer` | members of a generated `StrEnum` / `IntEnum` |
 | `Type[]`, e.g. `String[]`, `Int[]`, `Role[]` | `text[]`, `integer[]`, `"role"[]`, ... | `list` of the element type |
 | `String @db.Citext` | `citext` (the extension type) | `str` |
 | `Unsupported("vector(384)")`, `Unsupported("geography(Point, 4326)")` | an extension type, from its extension file | from the file's `value` |
+
+Time fields preserve microseconds. TypeScript uses a `Date` anchored to 1970-01-01
+UTC, with hidden microsecond metadata as for DateTime fields; the input's UTC clock
+is stored. Python accepts naive `datetime.time` values. `Time` preserves the stored
+clock; `Timetz` normalizes offsets to UTC modulo 24 hours and writes an explicit
+zero offset, independent of the session timezone. PostgreSQL `24:00:00` raises a
+range error because the native values cannot represent it. SQLite stores time text
+(`HH:MM:SS[.ffffff]`); nested JSON uses the same time-only text.
 
 Prisma's other `@db.*` types (`@db.SmallInt`, `@db.Timestamp(3)`, `@db.Char(2)`,
 `@db.Inet`, ...) set the column's SQL type; values convert as the field type's.

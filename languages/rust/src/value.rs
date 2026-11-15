@@ -31,6 +31,7 @@ codec!(i64, BigInt);
 codec!(f64, Float);
 codec!(bool, Bool);
 codec!(chrono::NaiveDate, Date);
+codec!(chrono::NaiveTime, Time);
 codec!(uuid::Uuid, Uuid);
 codec!(serde_json::Value, Json);
 impl Codec for chrono::DateTime<chrono::Utc> {

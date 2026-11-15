@@ -6,7 +6,7 @@
  */
 
 import { blake2b } from "./blake2b.js";
-import { MICROS, MICROS_MS } from "./date-micros.js";
+import { MICROS, MICROS_MS, parseTime, timeText } from "./date-micros.js";
 import { Decimal } from "./decimal.js";
 import { QueryError } from "./errors.js";
 import { Column, Ordering, and, or, type Condition } from "./expr.js";
@@ -37,7 +37,7 @@ export function storedNullable(meta: ModelMeta, f: FieldMeta): boolean {
 }
 
 // Column types with a cursor value; JSON, arrays and enums have none.
-const CURSOR_TYPES = new Set(["big_int", "int", "float", "bool", "string", "text", "date_time", "date", "uuid", "decimal"]);
+const CURSOR_TYPES = new Set(["big_int", "int", "float", "bool", "string", "text", "time", "date_time", "date", "uuid", "decimal"]);
 
 /** @internal The order columns of a page, with the primary key last when the order is not unique and `addKey` is set. */
 export function keyset(meta: ModelMeta, order: readonly Ordering<string, unknown>[], addKey = true): Key[] {
@@ -96,6 +96,8 @@ function encode(f: FieldMeta, v: unknown): unknown {
     case "string":
     case "text":
       return v;
+    case "time":
+      return timeText(v as Date);
     case "date_time":
       return isoDateTime(v as Date);
     case "date":
@@ -158,6 +160,8 @@ function decode(f: FieldMeta, nullable: boolean, v: unknown): unknown {
       }
     case "uuid":
       return text !== undefined && UUID.test(text) ? text : invalid();
+    case "time":
+      return (text !== undefined && parseTime(text)) || invalid();
     case "date_time":
       return text !== undefined ? decodeDateTime(text) : invalid();
     case "date": {

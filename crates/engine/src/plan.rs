@@ -139,7 +139,7 @@ impl PrefetchPlan {
     /// simple type on a database with arrays. `None` for the other shapes, which use [`statement`](Self::statement).
     pub fn statement_any(&self, keys: sea_query::Value) -> Option<SelectStatement> {
         let ([key], [field]) = (self.key.as_slice(), self.key_field.as_slice()) else { return None };
-        let simple = matches!(self.key_type[0].ty, ColType::BigInt | ColType::Int | ColType::String | ColType::Text | ColType::Uuid | ColType::Date | ColType::DateTime);
+        let simple = matches!(self.key_type[0].ty, ColType::BigInt | ColType::Int | ColType::String | ColType::Text | ColType::Uuid | ColType::Time | ColType::Date | ColType::DateTime);
         if self.dialect != Dialect::Postgres || !simple || self.key_type[0].enum_idx.is_some() || param_template(field).is_some() {
             return None;
         }
@@ -302,6 +302,7 @@ pub(crate) fn json_list(list: sea_query::Value) -> Result<sea_query::Value> {
             V::Double(Some(n)) => serde_json::Number::from_f64(n).map(Into::into).ok_or_else(|| query_err("in_(param()) cannot take a NaN or infinite float".to_string()))?,
             V::String(Some(s)) => serde_json::Value::String(s.to_string()),
             V::Uuid(Some(u)) => serde_json::Value::String(u.to_string()),
+            V::ChronoTime(Some(t)) => serde_json::Value::String(t.format("%H:%M:%S%.6f").to_string()),
             V::ChronoDate(Some(d)) => serde_json::Value::String(d.to_string()),
             V::ChronoDateTimeWithTimeZone(Some(t)) => serde_json::Value::String(t.with_timezone(&chrono::Utc).format("%Y-%m-%d %H:%M:%S%.f").to_string()),
             V::Json(Some(j)) => serde_json::Value::String(j.to_string()),
@@ -1823,7 +1824,17 @@ impl<'s> Planner<'s> {
                     if m.field_pos(name).is_ok_and(|p| m.computed(p)) { return Err(Error::query(COMPUTED_READ_ONLY_USE)); }
                 }
                 match self.sub_ref(self.walk(self.root, path)?, name, sub)? {
-                    SubRef::Column(f) => self.resolve(path, &f.name)?,
+                    SubRef::Column(f) => {
+                        let value = self.resolve(path, &f.name)?;
+                        if self.target.dialect == Dialect::Postgres && f.ty == ColType::Time && f.db_type.as_deref().is_some_and(|t| t.starts_with("timetz")) {
+                            // Compare the UTC clock returned by the decoder. Preserve the
+                            // unrepresentable end-of-day value so reads still report its range error.
+                            let sql = if f.array {
+                                "CASE WHEN $1 IS NULL THEN NULL ELSE ARRAY(SELECT CASE WHEN t::time = '24:00:00'::time THEN t ELSE t AT TIME ZONE 'UTC' END FROM unnest($1) AS t) END"
+                            } else { "CASE WHEN $1::time = '24:00:00'::time THEN $1 ELSE $1 AT TIME ZONE 'UTC' END" };
+                            template(self.target.dialect, sql, vec![value])
+                        } else { value }
+                    },
                     SubRef::Json { field, leaf, group, .. } => {
                         let sql = self.target.dialect.json_subfield_sql("$1", sub, leaf);
                         // A stored JSON null is no value: a group reads as SQL NULL then.

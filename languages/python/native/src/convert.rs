@@ -120,6 +120,14 @@ fn extract_decimal(obj: &Bound<'_, PyAny>) -> PyResult<BigDecimal> {
         .map_err(|_| PyTypeError::new_err(format!("expected a finite decimal, got {}", obj.repr().map(|r| r.to_string()).unwrap_or_default())))
 }
 
+fn extract_time(obj: &Bound<'_, PyAny>) -> PyResult<chrono::NaiveTime> {
+    let time = obj.extract()?;
+    if !obj.getattr("tzinfo")?.is_none() {
+        return Err(PyTypeError::new_err("expected a naive datetime.time (without tzinfo)"));
+    }
+    Ok(time)
+}
+
 /// Converts a Python value into a bind parameter. `ty` is the type of the column the
 /// value is compared with or assigned to, when the planner knows it.
 pub fn py_to_value(obj: &Bound<'_, PyAny>, ty: Option<ValueType>) -> PyResult<Value> {
@@ -143,6 +151,7 @@ pub fn py_to_value(obj: &Bound<'_, PyAny>, ty: Option<ValueType>) -> PyResult<Va
         Some(ColType::Bool) => Value::Bool(Some(obj.extract()?)),
         Some(ColType::String | ColType::Text) => Value::String(Some(obj.extract()?)),
         Some(ColType::DateTime) => Value::ChronoDateTimeWithTimeZone(Some(extract_datetime(obj)?)),
+        Some(ColType::Time) => Value::ChronoTime(Some(extract_time(obj)?)),
         Some(ColType::Date) => Value::ChronoDate(Some(obj.extract()?)),
         Some(ColType::Uuid) => Value::Uuid(Some(extract_uuid(obj)?)),
         Some(ColType::Json) => Value::Json(Some(Box::new(py_to_json(obj)?))),
@@ -158,6 +167,8 @@ pub fn py_to_value(obj: &Bound<'_, PyAny>, ty: Option<ValueType>) -> PyResult<Va
                 Value::String(Some(obj.extract()?))
             } else if obj.is_instance_of::<PyDateTime>() {
                 Value::ChronoDateTimeWithTimeZone(Some(extract_datetime(obj)?))
+            } else if obj.is_instance_of::<pyo3::types::PyTime>() {
+                Value::ChronoTime(Some(extract_time(obj)?))
             } else if obj.is_instance_of::<PyDate>() {
                 Value::ChronoDate(Some(obj.extract()?))
             } else if obj.is_instance(decimal_class(obj.py())?)? {
@@ -210,6 +221,7 @@ pub fn cell_to_py(py: Python<'_>, cell: Cell<'_>) -> PyResult<Py<PyAny>> {
         // `DateTime<Utc>` reuses the `datetime.timezone.utc` singleton instead of
         // building a tzinfo per row.
         Cell::DateTime(v) => v.into_py_any(py)?,
+        Cell::Time(v) => v.into_py_any(py)?,
         Cell::Date(v) => v.into_py_any(py)?,
         Cell::Uuid(v) => v.into_py_any(py)?,
         Cell::Json(v) => json_to_py(py, &v)?,

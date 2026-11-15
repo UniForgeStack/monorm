@@ -175,7 +175,7 @@ impl Dialect {
                     C::Bool => "boolean",
                     C::Decimal => "numeric",
                     C::Uuid => "uuid",
-                    C::String | C::Text | C::DateTime | C::Date => return format!("(({sql}) ->> {})", lit(last)),
+                    C::String | C::Text | C::DateTime | C::Date | C::Time => return format!("(({sql}) ->> {})", lit(last)),
                 };
                 format!("((({sql}) ->> {})::{cast})", lit(last))
             }
@@ -195,7 +195,7 @@ impl Dialect {
     pub fn json_subfield_type(self, leaf: crate::ir::ColType) -> crate::ir::ColType {
         use crate::ir::ColType as C;
         match (self, leaf) {
-            (_, C::DateTime | C::Date) | (Dialect::Sqlite, C::Decimal | C::Uuid) => C::Text,
+            (_, C::DateTime | C::Date | C::Time) | (Dialect::Sqlite, C::Decimal | C::Uuid) => C::Text,
             (_, t) => t,
         }
     }
