@@ -13,6 +13,7 @@ pub mod config;
 pub mod files;
 pub mod form;
 pub mod guard;
+pub mod hostwrite;
 pub mod inproc;
 pub mod json;
 pub mod key;

@@ -5,7 +5,8 @@
 //! loaded, the statement, one audit row, then the commit. The admin ignores tenancy: a write sets no
 //! tenant value, and the read defaults that read a `scope.<name>` value are off in the lock read too.
 //!
-//! A model with host behavior (hooks, a hook assignment or default) or `@@protected_write` is read-only here.
+//! A model with host behavior (hooks, a hook assignment or default), a `@@protected_write` model that the resource
+//! opens and a resource with a service write through host code: see `hostwrite`.
 
 use std::collections::BTreeMap;
 use std::net::IpAddr;
@@ -28,6 +29,7 @@ use serde_json::{json, Map, Value};
 
 use crate::audit::{self, Entry};
 use crate::form::Section;
+use crate::hostwrite::{self, Prepared};
 use crate::json;
 use crate::key;
 use crate::list::{self, Binds, ListError};
@@ -45,7 +47,7 @@ const LABEL_WIDTH: usize = 200;
 
 /// Why the admin does not write to this model, or none when it does.
 pub fn read_only_reason(schema: &Schema, r: &Resource) -> Option<String> {
-    model_read_only_reason(schema, r.model)
+    (schema.model(r.model).ir.protected_write && !r.allow_protected).then(|| "this model is @@protected_write: set allow_protected_writes=True on its admin resource to write it".into())
 }
 
 /// `read_only_reason` for a model that is not a resource, such as the join model of a many-to-many relation.
@@ -89,7 +91,9 @@ pub fn form_meta(schema: &Schema, r: &Resource) -> Value {
         .collect();
     let sections = json!({"create": r.form.create.iter().map(Section::json).collect::<Vec<_>>(), "edit": r.form.edit.iter().map(Section::json).collect::<Vec<_>>()});
     let chips: Vec<Value> = r.relations.iter().filter(|x| x.through.is_some()).map(Relation::meta).collect();
-    json!({"writable": reason.is_none(), "read_only_reason": reason, "form": fields, "chips": chips, "sections": sections, "form_component": r.form.component.is_some()})
+    let inputs: Vec<Value> = r.inputs.iter().map(hostwrite::InputConfig::meta).collect();
+    let host_write = [Op::Create, Op::Update, Op::Delete].iter().any(|&op| hostwrite::route(schema, r, op).is_some());
+    json!({"writable": reason.is_none(), "read_only_reason": reason, "form": fields, "chips": chips, "sections": sections, "form_component": r.form.component.is_some(), "inputs": inputs, "host_write": host_write})
 }
 
 pub(crate) fn has_default(f: &FieldIr) -> bool {
@@ -103,8 +107,8 @@ pub(crate) fn writable(c: &Column) -> bool {
 /// Messages for fields, and messages for the form.
 #[derive(Default)]
 pub(crate) struct Problems {
-    fields: BTreeMap<String, Vec<String>>,
-    form: Vec<String>,
+    pub(crate) fields: BTreeMap<String, Vec<String>>,
+    pub(crate) form: Vec<String>,
 }
 
 impl Problems {
@@ -112,7 +116,7 @@ impl Problems {
         self.fields.entry(name.to_owned()).or_default().push(message.into());
     }
 
-    fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.fields.is_empty() && self.form.is_empty()
     }
 
@@ -167,6 +171,10 @@ pub(crate) async fn open_head<'a>(s: &'a State_, user: Option<Extension<User>>, 
     if let Some(reason) = read_only_reason(&s.site.schema, resource) {
         scope.rollback().await;
         return Err(Box::new(reject(StatusCode::FORBIDDEN, "ReadOnly", &reason)));
+    }
+    if s.bridge.is_none() && hostwrite::route(&s.site.schema, resource, op).is_some() {
+        scope.rollback().await;
+        return Err(Box::new(reject(StatusCode::FORBIDDEN, "ReadOnly", "this write needs host code, and this admin has no host")));
     }
     Ok(Call { resource, user, grants, scope, meta, uri, body: Map::new() })
 }
@@ -510,7 +518,7 @@ fn capitalize(m: &str) -> String {
 
 // ---- audit ----
 
-fn user_key_text(user: &User) -> String {
+pub(crate) fn user_key_text(user: &User) -> String {
     match &user.0["key"] {
         Value::String(s) => s.clone(),
         Value::Null => String::new(),
@@ -519,13 +527,19 @@ fn user_key_text(user: &User) -> String {
 }
 
 /// The first text value that is not a key: the record in words. Else the key.
-fn record_label(r: &Resource, cells: &[Value], key_text: &str) -> String {
+pub(crate) fn record_label(r: &Resource, cells: &[Value], key_text: &str) -> String {
     let label = r.detail.iter().zip(cells).find(|(c, v)| !r.key_columns.iter().any(|k| k.field == c.field) && matches!(c.ty.ty, ColType::String | ColType::Text) && !c.ty.array && c.ty.enum_idx.is_none() && v.as_str().is_some_and(|t| !t.is_empty())).and_then(|(_, v)| v.as_str());
     label.unwrap_or(key_text).chars().take(LABEL_WIDTH).collect()
 }
 
 pub(crate) async fn write_audit(s: &State_, c: &Call<'_>, action: &str, key_text: &str, cells: &[Value], diff: Value) -> Result<(), String> {
-    let changes = json!({"request_id": c.meta.request_id, "ip": c.meta.ip, "user_agent": c.meta.agent, "diff": diff});
+    write_audit_with(s, c, action, key_text, cells, diff, Map::new()).await
+}
+
+/// `write_audit` with more keys in `changes`: the inputs and the opt-in of a host write.
+pub(crate) async fn write_audit_with(s: &State_, c: &Call<'_>, action: &str, key_text: &str, cells: &[Value], diff: Value, extra: Map<String, Value>) -> Result<(), String> {
+    let mut changes = json!({"request_id": c.meta.request_id, "ip": c.meta.ip, "user_agent": c.meta.agent, "diff": diff});
+    changes.as_object_mut().expect("an object").extend(extra);
     let entry = Entry { user_key: &user_key_text(&c.user), action, resource: &c.resource.name, record_key: key_text, record_label: &record_label(c.resource, cells, key_text), changes: Some(changes) };
     audit::record(&s.site, c.scope.executor(), entry).await
 }
@@ -689,8 +703,19 @@ async fn apply_links(s: &State_, c: &Call<'_>, links: &[Link<'_>], source: &Valu
 
 // ---- handlers ----
 
+/// The `inputs` of a host route. A route without host code takes none; relation chips do not go through host code.
+fn host_inputs(r: &Resource, host: bool, body: &Map<String, Value>, links: &[Link<'_>], problems: &mut Problems) -> Result<Map<String, Value>, String> {
+    if !host {
+        return Ok(Map::new());
+    }
+    if !links.is_empty() {
+        problems.form.push("Relation chips are not saved through host code.".into());
+    }
+    hostwrite::parse_inputs(r, body, problems)
+}
+
 /// The key of a record from its row of detail cells.
-fn key_of(r: &Resource, cells: &[Value]) -> Vec<Value> {
+pub(crate) fn key_of(r: &Resource, cells: &[Value]) -> Vec<Value> {
     r.key_columns.iter().filter_map(|k| r.detail.iter().position(|d| d.field == k.field).map(|p| cells[p].clone())).collect()
 }
 
@@ -712,7 +737,13 @@ pub(crate) async fn create(State(s): Shared, user: Option<Extension<User>>, Path
         Ok(l) => l,
         Err(m) => return c.bad(&m).await,
     };
-    for col in resource.detail.iter().filter(|col| writable(col)) {
+    let route = hostwrite::route(&site.schema, resource, Op::Create);
+    let inputs = match host_inputs(resource, route.is_some(), &c.body, &links, &mut problems) {
+        Ok(i) => i,
+        Err(m) => return c.bad(&m).await,
+    };
+    // A create service may fill a missing value; the plain writer of the host (`admin.write`) cannot.
+    for col in resource.detail.iter().filter(|col| writable(col) && resource.service.get(Op::Create).is_none()) {
         if let Ok(f) = model.field(&col.field) {
             if !f.nullable && !has_default(f) && !set.contains_key(&col.label) {
                 problems.field(&col.label, "This field is required.");
@@ -728,6 +759,9 @@ pub(crate) async fn create(State(s): Shared, user: Option<Extension<User>>, Path
     if !problems.is_empty() {
         c.scope.rollback().await;
         return problems.response();
+    }
+    if let Some(function) = route {
+        return hostwrite::run(&s, c, Prepared { op: Op::Create, function, values: set, loaded: Map::new(), inputs, key: None, before: None }).await;
     }
     let names: Vec<String> = values.iter().map(|(n, _)| n.clone()).collect();
     let fields: Vec<String> = values.iter().filter_map(|(n, _)| resource.detail.iter().find(|d| &d.label == n).map(|d| d.field.clone())).collect();
@@ -793,7 +827,7 @@ pub(crate) async fn create(State(s): Shared, user: Option<Extension<User>>, Path
 }
 
 /// The key segment of `/resources/<name>/<key>`, decoded to the values of the key columns.
-fn key_of_path(r: &Resource, uri: &Uri) -> Result<(String, Vec<Value>), String> {
+pub(crate) fn key_of_path(r: &Resource, uri: &Uri) -> Result<(String, Vec<Value>), String> {
     decode_key(r, crate::server::segment(uri, 0))
 }
 
@@ -810,7 +844,7 @@ pub(crate) fn as_cell(site: &Site, r: &Resource, d: &Column, v: &Value) -> Value
 }
 
 /// The loaded values that no longer match the stored row: field to `{loaded, current}`. A value counts by what it stores, not by how the client wrote it.
-fn conflicts(site: &Site, r: &Resource, cells: &[Value], loaded: &Map<String, Value>, fields: &[String]) -> Map<String, Value> {
+pub(crate) fn conflicts(site: &Site, r: &Resource, cells: &[Value], loaded: &Map<String, Value>, fields: &[String]) -> Map<String, Value> {
     let mut out = Map::new();
     for name in fields {
         let Some(at) = r.detail.iter().position(|d| &d.label == name) else { continue };
@@ -870,6 +904,11 @@ pub(crate) async fn update(State(s): Shared, user: Option<Extension<User>>, Path
         Ok(l) => l,
         Err(m) => return c.bad(&m).await,
     };
+    let route = hostwrite::route(&site.schema, resource, Op::Update);
+    let inputs = match host_inputs(resource, route.is_some(), &c.body, &links, &mut problems) {
+        Ok(i) => i,
+        Err(m) => return c.bad(&m).await,
+    };
     if !problems.is_empty() {
         c.scope.rollback().await;
         return problems.response();
@@ -896,10 +935,21 @@ pub(crate) async fn update(State(s): Shared, user: Option<Extension<User>>, Path
     }
     let mut compared: Vec<String> = set.keys().cloned().collect();
     compared.extend(guards);
-    let found = conflicts(site, resource, &record.cells, &loaded, &compared);
+    let found = if resource.service.get(Op::Update).is_some() { Map::new() } else { conflicts(site, resource, &record.cells, &loaded, &compared) };
     if !found.is_empty() {
         c.scope.rollback().await;
         return conflict_response(found);
+    }
+    if let Some(function) = route {
+        if let Err(r) = check_picks(&s, &c, &set, None, &mut problems).await {
+            c.scope.rollback().await;
+            return r;
+        }
+        if !problems.is_empty() {
+            c.scope.rollback().await;
+            return problems.response();
+        }
+        return hostwrite::run(&s, c, Prepared { op: Op::Update, function, values: set, loaded, inputs, key: Some(key), before: Some(record.cells) }).await;
     }
     let changed = changed_values(site, resource, values, &record.cells);
     let changed_names: Vec<String> = changed.iter().map(|(n, _, _)| n.clone()).collect();
@@ -961,6 +1011,16 @@ pub(crate) async fn destroy(State(s): Shared, user: Option<Extension<User>>, Pat
         Ok(k) => k,
         Err(m) => return c.bad(&m).await,
     };
+    let route = hostwrite::route(&site.schema, resource, Op::Delete);
+    let mut problems = Problems::default();
+    let inputs = match host_inputs(resource, route.is_some(), &c.body, &[], &mut problems) {
+        Ok(i) => i,
+        Err(m) => return c.bad(&m).await,
+    };
+    if !problems.is_empty() {
+        c.scope.rollback().await;
+        return problems.response();
+    }
     let (scope, reach) = match reach(&s, resource, &c.user, &c.grants, Vec::new(), c.scope).await {
         Ok(t) => t,
         Err(r) => return *r,
@@ -982,10 +1042,13 @@ pub(crate) async fn destroy(State(s): Shared, user: Option<Extension<User>>, Pat
         return deny(site, c.scope, &c.user, &resource.name, json!({"reason": "can", "rule": "delete"})).await;
     }
     let compared: Vec<String> = loaded.keys().cloned().collect();
-    let found = conflicts(site, resource, &record.cells, &loaded, &compared);
+    let found = if resource.service.get(Op::Delete).is_some() { Map::new() } else { conflicts(site, resource, &record.cells, &loaded, &compared) };
     if !found.is_empty() {
         c.scope.rollback().await;
         return conflict_response(found);
+    }
+    if let Some(function) = route {
+        return hostwrite::run(&s, c, Prepared { op: Op::Delete, function, values: Map::new(), loaded, inputs, key: Some(key), before: Some(record.cells) }).await;
     }
     let mut binds = Binds::default();
     let filter = match list::key_filter(resource, &key, &mut binds) {

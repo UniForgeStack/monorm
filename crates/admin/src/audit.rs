@@ -37,3 +37,13 @@ pub async fn record(site: &Site, conn: &dyn Executor, entry: Entry<'_>) -> Resul
     ];
     conn.execute(sql, args).await.map(|_| ()).map_err(|e| e.message)
 }
+
+/// Sets the label of the rows of one record that a host wrote with no label (`ctx.audit()`). Rows with a label stay.
+pub async fn fill_label(site: &Site, conn: &dyn Executor, resource: &str, record_key: &str, label: &str) -> Result<(), String> {
+    let table = Table::of(site, "AdminLogEntry")?;
+    let (set, by_resource, by_key, blank) = (table.column("record_label")?, table.column("resource")?, table.column("record_key")?, table.column("record_label")?);
+    let d = conn.dialect();
+    let sql = format!("UPDATE {} SET {set} = {} WHERE {by_resource} = {} AND {by_key} = {} AND {blank} = ''", table.quoted(), mark(d, 1), mark(d, 2), mark(d, 3));
+    let args = vec![Value::from(label.to_string()), Value::from(resource.to_string()), Value::from(record_key.to_string())];
+    conn.execute(sql, args).await.map(|_| ()).map_err(|e| e.message)
+}

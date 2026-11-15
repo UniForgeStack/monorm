@@ -118,6 +118,18 @@ struct ResourceConfig {
     /// The text of a form message for a named `@@check`: the name of the constraint, then the text.
     #[serde(default)]
     check_messages: BTreeMap<String, String>,
+    /// Host functions that run the writes: `create`, `update`, `delete`, each with `sync` for a plain Python function.
+    #[serde(default)]
+    service: crate::hostwrite::ServiceConfig,
+    /// Controls that a form shows next to the fields. Only a service reads them.
+    #[serde(default)]
+    inputs: Vec<crate::hostwrite::InputConfig>,
+    /// The resource opts in to writes of a `@@protected_write` model.
+    #[serde(default)]
+    allow_protected_writes: bool,
+    /// The model has host behavior that the host knows (a field adapter): its writes run through the host.
+    #[serde(default)]
+    host_behavior: bool,
     /// Sections: a list, or `{create, edit}` with a list for each form. A field that no section names goes last.
     form: Option<Value>,
     /// Fields that the form shows and a request cannot write.
@@ -341,6 +353,14 @@ pub struct Resource {
     pub can: Vec<(String, Value)>,
     /// The text that a failed named `@@check` shows in the form.
     pub check_messages: BTreeMap<String, String>,
+    /// The host functions that run the writes.
+    pub service: crate::hostwrite::ServiceConfig,
+    /// The controls of the form that only a service reads.
+    pub inputs: Vec<crate::hostwrite::InputConfig>,
+    /// The resource writes a `@@protected_write` model, by its own opt-in.
+    pub allow_protected: bool,
+    /// The host reports host behavior that the schema does not show.
+    pub host_behavior: bool,
     /// The names of the named read defaults that read no scope value: each one has a bypass permission.
     pub bypass: Vec<String>,
     /// The names of the read defaults that read a `scope.<name>` value: the admin sets no scope value, so every admin read turns them off.
@@ -659,7 +679,7 @@ fn concrete(m: &monorm_core::schema::Model) -> bool {
 
 impl ResourceConfig {
     fn of(model: &str) -> ResourceConfig {
-        ResourceConfig { model: model.to_owned(), list: ListConfig::default(), allow: None, perms: None, label: None, title: None, group: None, field_permissions: Vec::new(), actions: Vec::new(), queryset: None, can: BTreeMap::new(), check_messages: BTreeMap::new(), form: None, readonly: Vec::new(), widgets: BTreeMap::new(), form_component: None, relations: BTreeMap::new(), files: Vec::new() }
+        ResourceConfig { model: model.to_owned(), list: ListConfig::default(), allow: None, perms: None, label: None, title: None, group: None, field_permissions: Vec::new(), actions: Vec::new(), queryset: None, can: BTreeMap::new(), check_messages: BTreeMap::new(), service: Default::default(), inputs: Vec::new(), allow_protected_writes: false, host_behavior: false, form: None, readonly: Vec::new(), widgets: BTreeMap::new(), form_component: None, relations: BTreeMap::new(), files: Vec::new() }
     }
 }
 
@@ -807,6 +827,7 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
     if let Some(k) = config.check_messages.keys().find(|k| !model.ir.constraints.iter().any(|c| matches!(c, ConstraintIr::Check { name: Some(n), .. } if n == *k))) {
         return err(format!("{name}: check_messages names {k:?}, which is not a named @@check of the model"));
     }
+    crate::hostwrite::check_config(&name, &detail, &config.service, &config.inputs)?;
     let form = crate::form::build(schema, idx, &name, &detail, &allow, &FormConfig { form: config.form.clone(), readonly: config.readonly.clone(), widgets: config.widgets.clone(), component: config.form_component.clone() }, global)?;
     let scope_defaults = scope_default_names(model);
     let files = files_of(schema, idx, &name, &config.files)?;
@@ -844,6 +865,10 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
         queryset,
         can,
         check_messages: config.check_messages.clone(),
+        service: config.service.clone(),
+        inputs: config.inputs.clone(),
+        allow_protected: config.allow_protected_writes,
+        host_behavior: config.host_behavior,
         bypass: model.read_defaults.names().into_iter().filter(|n| !scope_defaults.iter().any(|d| d == n)).map(str::to_owned).collect(),
         scope_defaults,
         relations: Vec::new(),

@@ -271,9 +271,20 @@ async fn resources(State(s): Shared, user: Option<Extension<User>>) -> Response 
     if let Err(e) = scope.commit().await {
         return database_error(&e.message);
     }
-    let meta = s.site.metadata(&grants);
+    let mut meta = s.site.metadata(&grants);
+    if s.bridge.is_none() {
+        close_host_forms(&mut meta);
+    }
     let visible: Vec<&str> = meta["resources"].as_array().map(|a| a.iter().filter_map(|r| r["name"].as_str()).collect()).unwrap_or_default();
     Json(json!({"ok": true, "brand": s.site.brand, "nav": s.site.nav(&visible), "resources": meta["resources"], "permissions": meta["permissions"]})).into_response()
+}
+
+/// With no host, a resource whose write needs host code cannot save: say so in its form metadata.
+fn close_host_forms(meta: &mut Value) {
+    for r in meta["resources"].as_array_mut().into_iter().flatten().filter(|r| r["host_write"] == true && r["writable"] == true) {
+        r["writable"] = json!(false);
+        r["read_only_reason"] = json!("this write needs host code, and this admin has no host");
+    }
 }
 
 #[derive(Deserialize)]
