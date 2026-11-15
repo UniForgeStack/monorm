@@ -146,6 +146,7 @@ The `code` is stable: translate the message in your project by `code` and `param
 | `common` | `path`, a file of one password for each line | `password_too_common` |
 | `numeric` | | `password_entirely_numeric` |
 | `user_similarity` | `attributes`, default `["username", "email"]`; `max_similarity`, default `0.7` | `password_too_similar` `{attribute}` |
+| `breached` | Off by default. See [Check for breached passwords](#check-for-breached-passwords). | `password_breached` `{count}` |
 
 The built-in rules run in one Rust function, so Python and TypeScript give the same result.
 The length counts code points after Unicode NFC.
@@ -182,7 +183,52 @@ A name with no `:` is a built-in rule.
 An unknown rule, an unknown option or a bad value is a setting error.
 The message names the file and the key.
 You can also give a list in code: `validate_password(pw, user, rules=[rules.MinLength(min=12)])`.
-In TypeScript the built-in rules are `rules.minLength`, `rules.common`, `rules.numeric` and `rules.userSimilarity`.
+In TypeScript the built-in rules are `rules.minLength`, `rules.common`, `rules.numeric`, `rules.userSimilarity` and `rules.breached`.
+
+### Check for breached passwords
+
+The `breached` rule refuses a password that appears in a known data breach.
+It is off by default, because it needs the network.
+Add it to the list to turn it on:
+
+```toml
+[auth]
+password_rules = [
+  { rule = "min_length", min = 12 },
+  { rule = "common" },
+  { rule = "breached", threshold = 0, timeout = 2, fail = "open" },
+]
+```
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `threshold` | `0` | The rule refuses the password when its breach count is above this number. |
+| `host` | `https://api.pwnedpasswords.com` | The base URL of a service with the Pwned Passwords range API. An `http://` or `https://` address. |
+| `timeout` | `2` | The total time for one check, in seconds. Above `0`. |
+| `fail` | `"open"` | What the rule does when the check does not finish: `"open"` accepts the password, `"closed"` refuses it. |
+
+The rule uses the k-anonymity range API.
+It sends only the first 5 hex characters of the SHA-1 of the password, as `GET <host>/range/<prefix>`.
+The password and the full hash never leave your server.
+The request has the header `Add-Padding: true`, so the size of the answer does not show how many hashes match.
+The rule looks for the other 35 characters of the hash in the answer.
+The password is hashed as typed, with no Unicode normalization.
+
+A password with a count above `threshold` gives the error `password_breached` with `params` `{count}`.
+The check does not finish when the request times out, the network fails, the service answers with a status other than `200`, or the answer is not valid.
+With `fail = "closed"` the rule then gives the error `password_check_unavailable`, with no `params`.
+With `fail = "open"` the rule gives no error.
+Both modes log a warning to the `monorm_auth` logger (Python) or `console.warn` (TypeScript).
+The warning has the host and the kind of the error, and never the password, the hash or the prefix.
+
+The check runs on each call, so a password change waits for the service, up to `timeout`.
+In the admin password change the wait happens inside the open database transaction of the request: the request holds one database connection and the rate-limit slot of the user for that time.
+Keep `timeout` small there.
+With `fail = "closed"` and an unavailable service, the admin answers `400` `WeakPassword`, and the error list holds `password_check_unavailable`.
+`validate_password` awaits the rule, so call it from async code.
+In Python, build the rule in code as `rules.Breached(threshold=0, fail="closed")`.
+In TypeScript, use `rules.breached({ threshold: 0, fail: "closed" })`.
+The Rust function that checks the other built-in rules does not run this rule, because Rust has no HTTP client.
 
 ### Custom rules
 
