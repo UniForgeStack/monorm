@@ -28,18 +28,22 @@ fn bumped<'a>(assignments: &'a [WriteAssignment], model: &str) -> Option<&'a str
 }
 
 /// A user filter that only repeats the `"deleted"` default hides the rows `all_with_deleted()` and the other members must reach.
-fn repeats_default(filter: &str, field: &str) -> bool {
-    let mut text: String = filter.split_whitespace().collect();
-    while text.starts_with('(') && text.ends_with(')') { text = text[1..text.len() - 1].to_owned(); }
-    text == format!("{field}==null") || text == format!("{field}isnull")
+/// The core has resolved the filter into a tree; a string is the string form that IR from other tools can carry.
+fn repeats_default(filter: &serde_json::Value, field: &str) -> bool {
+    if let Some(text) = filter.as_str() {
+        let mut text: String = text.split_whitespace().collect();
+        while text.starts_with('(') && text.ends_with(')') { text = text[1..text.len() - 1].to_owned(); }
+        return text == format!("{field}==null") || text == format!("{field}isnull");
+    }
+    *filter == serde_json::json!({"t": "is_null", "item": {"t": "col", "path": [], "name": field}, "neg": false})
 }
 
 fn reject_leftover_filters(ir: &SchemaIr, roles: &[SoftDelete]) -> Result<(), String> {
     for s in roles {
         for d in ir.behavior.declarations.iter().filter(|d| d.model == s.model && d.field.is_none()) {
             let filter = match d.attribute.as_str() {
-                "query.filter" => d.positional.get(1).and_then(|v| v.as_str()),
-                "query.defaults" => d.arguments.get("filter").and_then(|v| v.as_str()),
+                "query.filter" => d.positional.get(1),
+                "query.defaults" => d.arguments.get("filter"),
                 _ => None,
             };
             if filter.is_some_and(|f| repeats_default(f, &s.field)) {
@@ -348,7 +352,7 @@ mod tests {
     fn a_leftover_filter_on_the_deleted_field_is_rejected() {
         let declare = |attribute: &str, positional: serde_json::Value, arguments: serde_json::Value| serde_json::from_value::<monorm::extension::Declaration>(serde_json::json!({
             "attribute": attribute, "model": "Author", "positional": positional, "arguments": arguments, "location": {"file": "schema.prisma", "line": 6, "column": 1}})).unwrap();
-        for filter in ["deleted == null", "( deleted==null )", "deleted is null"] {
+        for filter in [serde_json::json!("deleted == null"), serde_json::json!("( deleted==null )"), serde_json::json!("deleted is null"), serde_json::json!({"t": "is_null", "item": {"t": "col", "path": [], "name": "deleted"}, "neg": false})] {
             for d in [declare("query.filter", serde_json::json!(["live", filter]), serde_json::json!({})), declare("query.defaults", serde_json::json!([]), serde_json::json!({"filter": filter}))] {
                 let mut ir = schema("postgres", "application");
                 ir.behavior.declarations.push(d);
@@ -358,6 +362,10 @@ mod tests {
         }
         let mut ir = schema("postgres", "application");
         ir.behavior.declarations.push(declare("query.filter", serde_json::json!(["mine", "deleted == null and id > 0"]), serde_json::json!({})));
+        prepared(&mut ir).unwrap();
+        let mut ir = schema("postgres", "application");
+        let tree = serde_json::json!({"t": "and", "items": [{"t": "is_null", "item": {"t": "col", "path": [], "name": "deleted"}, "neg": false}, {"t": "cmp", "op": "gt", "l": {"t": "col", "path": [], "name": "id"}, "r": {"t": "int", "value": 0}}]});
+        ir.behavior.declarations.push(declare("query.filter", serde_json::json!(["mine", tree]), serde_json::json!({})));
         prepared(&mut ir).unwrap();
     }
 

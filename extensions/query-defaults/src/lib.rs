@@ -1,5 +1,5 @@
 //! Optional compiler for model query policies; execution uses prepared host IR.
-use monorm::{extension::{OrderKey, ReadDefault}, ir::{CmpOp, Expr, Nulls, SchemaIr}};
+use monorm::{extension::{OrderKey, ReadDefault}, ir::{Nulls, SchemaIr}};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap};
 
@@ -50,11 +50,11 @@ fn options(ir: &SchemaIr, name: &str) -> Result<BTreeMap<&'static str, Value>, S
 }
 
 /// The `@@query.filter("<name>", "<expr>")` declarations of a model, in source order.
-fn named_filters(ir: &SchemaIr, model: &str) -> Result<Vec<(String, String, String)>, String> {
-    let mut out: Vec<(String, String, String)> = vec![];
+fn named_filters(ir: &SchemaIr, model: &str) -> Result<Vec<(String, Value, String)>, String> {
+    let mut out: Vec<(String, Value, String)> = vec![];
     for d in ir.behavior.declarations.iter().filter(|d| d.model == model && d.field.is_none() && d.attribute == "query.filter") {
         let at = format!("{}:{}", d.location.file, d.location.line);
-        let [Some(name), Some(expr)] = [d.positional.first(), d.positional.get(1)].map(|v| v.and_then(Value::as_str)) else {
+        let (Some(name), Some(expr)) = (d.positional.first().and_then(Value::as_str), d.positional.get(1)) else {
             return Err(format!("{at}: {model}: @@query.filter takes a name and an expression: @@query.filter(\"<name>\", \"<expr>\")"));
         };
         if d.positional.len() != 2 { return Err(format!("{at}: {model}: @@query.filter takes a name and an expression: @@query.filter(\"<name>\", \"<expr>\")")); }
@@ -63,7 +63,7 @@ fn named_filters(ir: &SchemaIr, model: &str) -> Result<Vec<(String, String, Stri
         }
         if name == POLICY { return Err(format!("{at}: {model}: the filter name {POLICY:?} is reserved for the order, fields and related entry; pick another name")); }
         if out.iter().any(|(n, _, _)| n == name) { return Err(format!("{at}: {model}: @@query.filter {name:?} is given twice")); }
-        out.push((name.to_owned(), expr.to_owned(), at));
+        out.push((name.to_owned(), expr.clone(), at));
     }
     Ok(out)
 }
@@ -129,13 +129,13 @@ pub fn lower(ir: &mut SchemaIr) -> Result<(), String> {
         let parent = given.get("parent").and_then(Value::as_str).or(view_parent);
         let inherited = match parent { Some(p) => resolve(ir, p, resolved, order_sources, stack)?, None => ModelPolicy::default() };
         let mut out = inherited.clone(); out.model = name.into();
-        if let Some(source) = given.get("filter") {
-            let source = source.as_str().ok_or("filter must be a string")?;
-            out.filter = if source == "none" { None } else { Some(Parser::parse(source, inherited.filter.as_ref())?) };
+        // A filter is a checked tree (the core resolves the expression); `null` clears it.
+        if let Some(tree) = given.get("filter") {
+            out.filter = if tree.is_null() { None } else { Some(with_parent(tree, inherited.filter.as_ref())?) };
         }
-        for (filter, source, at) in named_filters(ir, name)? {
-            if source == "none" { out.named.remove(&filter); continue; }
-            let parsed = Parser::parse(&source, inherited.named.get(&filter)).map_err(|e| format!("{at}: {name}: @@query.filter {filter:?}: {e}"))?;
+        for (filter, tree, at) in named_filters(ir, name)? {
+            if tree.is_null() { out.named.remove(&filter); continue; }
+            let parsed = with_parent(&tree, inherited.named.get(&filter)).map_err(|e| format!("{at}: {name}: @@query.filter {filter:?}: {e}"))?;
             out.named.insert(filter, parsed);
         }
         if let Some(fields) = given.get("fields") {
@@ -179,73 +179,15 @@ fn strings(value: &Value) -> Result<Vec<String>, String> {
     value.as_array().ok_or("expected a string list")?.iter().map(|v| v.as_str().map(str::to_owned).ok_or("expected a string list".into())).collect()
 }
 
-struct Parser<'a> { tokens: Vec<String>, pos: usize, parent: Option<&'a Value> }
-impl<'a> Parser<'a> {
-    fn parse(source: &str, parent: Option<&'a Value>) -> Result<Value, String> {
-        let mut tokens = vec![];
-        let mut chars = source.chars().peekable();
-        while let Some(c) = chars.next() {
-            if c.is_whitespace() { continue; }
-            let mut token = c.to_string();
-            if c == '"' {
-                let mut escaped = false; let mut closed = false;
-                for c in chars.by_ref() { token.push(c); if c == '"' && !escaped { closed = true; break; } escaped = c == '\\' && !escaped; }
-                if !closed { return Err("unterminated filter string".into()); }
-            } else if c.is_alphanumeric() || c == '_' || c == '-' {
-                while chars.peek().is_some_and(|c| c.is_alphanumeric() || *c == '_' || *c == '.') { token.push(chars.next().unwrap()); }
-            } else if matches!(c, '=' | '!' | '<' | '>' | '&' | '|') && chars.peek().is_some_and(|n| *n == '=' || *n == c) { token.push(chars.next().unwrap()); }
-            tokens.push(token);
+/// The checked tree of a filter, with each `parent.default_filter` replaced by the inherited filter.
+fn with_parent(tree: &Value, inherited: Option<&Value>) -> Result<Value, String> {
+    match tree {
+        Value::Object(map) if map.get("t").and_then(Value::as_str) == Some("parent_default_filter") => {
+            inherited.cloned().ok_or_else(|| "parent.default_filter has no inherited filter".to_owned())
         }
-        if let Some(m) = tokens.iter().filter(|t| !t.starts_with('"')).flat_map(|t| t.split('.')).find(|s| matches!(*s, "or_null" | "and_not_null")) {
-            return Err(format!("{m}() is not available in a default filter; write the NULL test as a condition, for example `(x > 1 or x == null)`"));
-        }
-        let mut p = Self { tokens, pos: 0, parent };
-        let out = p.boolean(0)?;
-        if p.pos != p.tokens.len() { return Err(format!("unexpected filter token {}", p.tokens[p.pos])); }
-        Ok(out.to_json())
-    }
-    fn peek(&self) -> &str { self.tokens.get(self.pos).map(String::as_str).unwrap_or("") }
-    fn take(&mut self) -> Result<String, String> { let t = self.tokens.get(self.pos).cloned().ok_or("incomplete default filter")?; self.pos += 1; Ok(t) }
-    fn boolean(&mut self, min: u8) -> Result<Expr, String> {
-        let mut left = self.unary()?;
-        loop {
-            let (precedence, and) = match self.peek() { "or" | "||" => (1, false), "and" | "&&" => (2, true), _ => break };
-            if precedence < min { break; }
-            self.take()?; let right = self.boolean(precedence + 1)?;
-            left = if and { Expr::and(vec![left, right]) } else { Expr::or(vec![left, right]) };
-        }
-        Ok(left)
-    }
-    /// `not` binds looser than comparisons, as in Python and TypeScript.
-    fn unary(&mut self) -> Result<Expr, String> {
-        if matches!(self.peek(), "!" | "not") { self.take()?; return Ok(Expr::not(self.unary()?)); }
-        self.comparison()
-    }
-    fn comparison(&mut self) -> Result<Expr, String> {
-        let left = self.atom()?;
-        let op = match self.peek() { "==" => CmpOp::Eq, "!=" => CmpOp::Ne, "<" => CmpOp::Lt, "<=" => CmpOp::Le, ">" => CmpOp::Gt, ">=" => CmpOp::Ge, _ => return Ok(left) };
-        self.take()?; let right = self.atom()?;
-        if matches!(right, Expr::Null) { if !matches!(op, CmpOp::Eq | CmpOp::Ne) { return Err("NULL only supports == and !=".into()); } return Ok(Expr::is_null(left, op == CmpOp::Ne)); }
-        if matches!(left, Expr::Null) { return Err("put the column before null".into()); }
-        Ok(Expr::cmp(op, left, right))
-    }
-    fn atom(&mut self) -> Result<Expr, String> {
-        let token = self.take()?;
-        Ok(match token.as_str() {
-            "(" => { let value = self.boolean(0)?; if self.take()? != ")" { return Err("expected ')'".into()); } value },
-            "parent.default_filter" => serde_json::from_value(self.parent.cloned().ok_or("parent.default_filter has no inherited filter")?).map_err(|e| format!("the inherited filter is not an expression: {e}"))?,
-            _ if token.starts_with("scope.") => {
-                let name = &token["scope.".len()..];
-                if name.is_empty() || !name.chars().all(|c| c.is_alphanumeric() || c == '_') { return Err(format!("invalid scope value {token}: write scope.<name>")); }
-                Expr::scope(name)
-            }
-            "null" => Expr::Null,
-            "true" | "false" => Expr::boolean(token == "true"),
-            _ if token.starts_with('"') => Expr::text(&serde_json::from_str::<String>(&token).map_err(|e| e.to_string())?),
-            _ if token.parse::<i64>().is_ok() => Expr::int(token.parse::<i64>().unwrap()),
-            _ if token.chars().all(|c| c.is_alphanumeric() || c == '_') => Expr::col(&token),
-            _ => return Err(format!("unsupported filter token {token}")),
-        })
+        Value::Object(map) => map.iter().map(|(k, v)| Ok((k.clone(), with_parent(v, inherited)?))).collect::<Result<_, String>>().map(Value::Object),
+        Value::Array(items) => items.iter().map(|v| with_parent(v, inherited)).collect::<Result<_, String>>().map(Value::Array),
+        other => Ok(other.clone()),
     }
 }
 
@@ -253,51 +195,32 @@ impl<'a> Parser<'a> {
 mod tests {
     use super::*;
     use serde_json::json;
+    fn col(n: &str) -> Value { json!({"t":"col","path":[],"name":n}) }
+    fn cmp(op: &str, l: Value, r: Value) -> Value { json!({"t":"cmp","op":op,"l":l,"r":r}) }
+    fn int(n: i64) -> Value { json!({"t":"int","value":n}) }
+    fn id_gt(n: i64) -> Value { cmp("gt", col("id"), int(n)) }
+    fn visible_true() -> Value { cmp("eq", col("visible"), json!({"t":"const","value":true})) }
+    fn parent() -> Value { json!({"t":"parent_default_filter"}) }
     fn ir() -> SchemaIr {
         serde_json::from_value(json!({"models":[
             {"name":"Parent","table":"p","fields":[{"name":"id","column":"id","type":"int","primary_key":true},{"name":"visible","column":"visible","type":"bool"},{"name":"bio","column":"bio","type":"text"}]},
             {"name":"Child","table":"p","fields":[{"name":"id","column":"id","type":"int","primary_key":true},{"name":"visible","column":"visible","type":"bool"},{"name":"bio","column":"bio","type":"text"}]}
         ],"behavior":{"declarations":[
-            {"model":"Parent","attribute":"query.defaults","field":null,"arguments":{"filter":"visible == true","fields":["id","visible"]},"positional":[],"location":{"file":"test","line":1,"column":1}},
-            {"model":"Child","attribute":"query.defaults","field":null,"arguments":{"parent":"Parent","filter":"parent.default_filter and id > 0","fields":["*"]},"positional":[],"location":{"file":"test","line":2,"column":1}},
+            {"model":"Parent","attribute":"query.defaults","field":null,"arguments":{"filter":visible_true(),"fields":["id","visible"]},"positional":[],"location":{"file":"test","line":1,"column":1}},
+            {"model":"Child","attribute":"query.defaults","field":null,"arguments":{"parent":"Parent","filter":json!({"t":"and","items":[parent(), id_gt(0)]}),"fields":["*"]},"positional":[],"location":{"file":"test","line":2,"column":1}},
             {"model":"Child","attribute":"query.selectOut","field":"bio","arguments":{},"positional":[],"location":{"file":"test","line":3,"column":1}}
         ]}})).unwrap()
-    }
-    /// The wire shape of a parsed filter, for every shape the parser makes, byte for byte.
-    #[test]
-    fn a_parsed_filter_keeps_the_json_of_every_shape() {
-        let col = |n: &str| json!({"t":"col","path":[],"name":n});
-        let cases = [
-            ("a == 1", json!({"t":"cmp","op":"eq","l":col("a"),"r":{"t":"int","value":1}})),
-            ("a != \"x\"", json!({"t":"cmp","op":"ne","l":col("a"),"r":{"t":"text","value":"x"}})),
-            ("a < 2", json!({"t":"cmp","op":"lt","l":col("a"),"r":{"t":"int","value":2}})),
-            ("a <= 2", json!({"t":"cmp","op":"le","l":col("a"),"r":{"t":"int","value":2}})),
-            ("a > -2", json!({"t":"cmp","op":"gt","l":col("a"),"r":{"t":"int","value":-2}})),
-            ("a >= 2", json!({"t":"cmp","op":"ge","l":col("a"),"r":{"t":"int","value":2}})),
-            ("a == true", json!({"t":"cmp","op":"eq","l":col("a"),"r":{"t":"const","value":true}})),
-            ("a == scope.tenant", json!({"t":"cmp","op":"eq","l":col("a"),"r":{"t":"scope","name":"tenant"}})),
-            ("a == null", json!({"t":"is_null","item":col("a"),"neg":false})),
-            ("a != null", json!({"t":"is_null","item":col("a"),"neg":true})),
-            ("not b", json!({"t":"not","item":col("b")})),
-            ("a and b", json!({"t":"and","items":[col("a"),col("b")]})),
-            ("a or b and c", json!({"t":"or","items":[col("a"),{"t":"and","items":[col("b"),col("c")]}]})),
-        ];
-        for (source, wire) in cases {
-            assert_eq!(Parser::parse(source, None).unwrap().to_string(), wire.to_string(), "{source}");
-        }
     }
     /// `parent.default_filter` puts the JSON of the parent filter into the child filter, as one `and` item.
     #[test]
     fn the_parent_filter_is_one_item_of_the_child_filter() {
         let mut schema = ir();
         lower(&mut schema).unwrap();
-        let col = |n: &str| json!({"t":"col","path":[],"name":n});
-        let parent = json!({"t":"cmp","op":"eq","l":col("visible"),"r":{"t":"const","value":true}});
         assert_eq!(
             schema.behavior.read_defaults[0].filter.as_ref().unwrap(),
-            &parent
+            &visible_true()
         );
-        let child = json!({"t":"and","items":[parent, {"t":"cmp","op":"gt","l":col("id"),"r":{"t":"int","value":0}}]});
+        let child = json!({"t":"and","items":[visible_true(), id_gt(0)]});
         assert_eq!(
             schema.behavior.read_defaults[1].filter.as_ref().unwrap(),
             &child
@@ -335,19 +258,13 @@ mod tests {
     fn cycles_and_parent_reference_errors() {
         let mut schema = ir(); schema.behavior.declarations[0].arguments.insert("parent".into(), json!("Child"));
         assert!(lower(&mut schema).unwrap_err().contains("cycle"));
-        assert!(Parser::parse("parent.default_filter", None).is_err());
-        assert!(Parser::parse("visible == true trailing", None).is_err());
-        assert!(Parser::parse("name == \"quoted value\" or id >= 4", None).is_ok());
     }
     #[test]
-    fn null_methods_are_rejected_with_a_clear_error() {
-        for source in ["(id > 1).or_null()", "id.in([1]).and_not_null()", "writer.or_null.name == 1", "writer.and_not_null == 1"] {
-            let err = Parser::parse(source, None).unwrap_err();
-            assert!(err.contains("not available in a default filter") && err.contains("x == null"), "{err}");
-        }
-        assert!(Parser::parse("(id > 1 or id == null)", None).is_ok());
-        assert!(Parser::parse("name == \"or_null\"", None).is_ok());
-        assert!(Parser::parse("name == \"a.or_null\"", None).is_ok());
+    fn a_parent_filter_without_an_inherited_one_is_an_error() {
+        let mut schema = ir();
+        schema.behavior.declarations[1].arguments.remove("parent");
+        let error = lower(&mut schema).unwrap_err();
+        assert!(error.contains("parent.default_filter has no inherited filter"), "{error}");
     }
     #[test]
     fn inheritance_clear_and_replacement_are_distinct() {
@@ -358,12 +275,12 @@ mod tests {
         assert_eq!(schema.behavior.read_defaults[0].filter, schema.behavior.read_defaults[1].filter);
         assert_eq!(schema.behavior.read_defaults[0].fields, schema.behavior.read_defaults[1].fields);
         let mut schema = ir();
-        schema.behavior.declarations[1].arguments.insert("filter".into(), json!("id == 1"));
+        schema.behavior.declarations[1].arguments.insert("filter".into(), cmp("eq", col("id"), int(1)));
         lower(&mut schema).unwrap();
         assert_eq!(schema.behavior.read_defaults[1].filter.as_ref().unwrap()["t"], "cmp");
         let mut schema = ir();
         schema.behavior.declarations.retain(|d| d.attribute != "query.selectOut");
-        schema.behavior.declarations[1].arguments.insert("filter".into(), json!("none"));
+        schema.behavior.declarations[1].arguments.insert("filter".into(), Value::Null);
         schema.behavior.declarations[1].arguments.insert("related".into(), json!([]));
         lower(&mut schema).unwrap();
         assert!(schema.behavior.read_defaults[1].filter.is_none());
@@ -406,7 +323,7 @@ mod tests {
         declare(&mut short, "Parent", "query.order", json!({}), json!(["-bio nulls last", "id"]));
         let child = short.behavior.declarations.iter().position(|d| d.model == "Child").unwrap();
         short.behavior.declarations[child].arguments.remove("parent");
-        declare(&mut short, "Parent", "query.defaults", json!({"filter":"visible == true"}), json!([]));
+        declare(&mut short, "Parent", "query.defaults", json!({"filter":visible_true()}), json!([]));
         declare(&mut short, "Child", "query.parent", json!({}), json!(["Parent"]));
         lower(&mut short).unwrap();
         assert_eq!(serde_json::to_value(&long.behavior.read_defaults).unwrap(), serde_json::to_value(&short.behavior.read_defaults).unwrap());
@@ -511,15 +428,15 @@ mod tests {
         assert_eq!(schema.behavior.read_defaults[1].order, schema.behavior.read_defaults[0].order);
         assert_eq!(schema.behavior.read_defaults[1].order.as_ref().unwrap().len(), 2);
     }
-    fn named(schema: &mut SchemaIr, model: &str, name: &str, expr: &str) { declare(schema, model, "query.filter", json!({}), json!([name, expr])); }
+    fn named(schema: &mut SchemaIr, model: &str, name: &str, expr: Value) { declare(schema, model, "query.filter", json!({}), json!([name, expr])); }
     fn entries(schema: &SchemaIr, model: &str) -> Vec<(String, Option<Value>)> {
         schema.behavior.read_defaults.iter().filter(|d| d.model == model).map(|d| (d.name.clone(), d.filter.clone())).collect()
     }
     #[test]
     fn named_filters_are_separate_entries_beside_the_query_entry() {
         let mut schema = ir();
-        named(&mut schema, "Parent", "tenant", "id > 1");
-        named(&mut schema, "Parent", "published", "visible == true");
+        named(&mut schema, "Parent", "tenant", id_gt(1));
+        named(&mut schema, "Parent", "published", visible_true());
         lower(&mut schema).unwrap();
         let parent = entries(&schema, "Parent");
         assert_eq!(parent.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["published", "tenant", POLICY]);
@@ -533,11 +450,11 @@ mod tests {
     #[test]
     fn a_child_inherits_each_name_replaces_one_and_removes_one() {
         let mut schema = ir();
-        named(&mut schema, "Parent", "tenant", "id > 1");
-        named(&mut schema, "Parent", "published", "visible == true");
-        named(&mut schema, "Parent", "extra", "id > 5");
-        named(&mut schema, "Child", "published", "parent.default_filter and id > 9");
-        named(&mut schema, "Child", "extra", "none");
+        named(&mut schema, "Parent", "tenant", id_gt(1));
+        named(&mut schema, "Parent", "published", visible_true());
+        named(&mut schema, "Parent", "extra", id_gt(5));
+        named(&mut schema, "Child", "published", json!({"t":"and","items":[parent(), id_gt(9)]}));
+        named(&mut schema, "Child", "extra", Value::Null);
         lower(&mut schema).unwrap();
         let child = entries(&schema, "Child");
         let names: Vec<&str> = child.iter().map(|(n, _)| n.as_str()).collect();
@@ -548,31 +465,13 @@ mod tests {
     #[test]
     fn named_filter_errors() {
         let error = |args: Value| { let mut s = ir(); declare(&mut s, "Parent", "query.filter", json!({}), args); lower(&mut s).unwrap_err() };
-        assert!(error(json!(["id > 1"])).contains("@@query.filter takes a name and an expression: @@query.filter(\"<name>\", \"<expr>\")"));
+        assert!(error(json!([id_gt(1)])).contains("@@query.filter takes a name and an expression: @@query.filter(\"<name>\", \"<expr>\")"));
         assert!(error(json!(["a", "b", "c"])).contains("takes a name and an expression"));
-        assert!(error(json!(["bad name", "id > 1"])).contains("must be letters, digits and underscores"));
-        assert!(error(json!([POLICY, "id > 1"])).contains("reserved"));
-        assert!(error(json!(["a", "id >"])).contains("@@query.filter \"a\":"));
-        let mut s = ir(); named(&mut s, "Parent", "a", "id > 1"); named(&mut s, "Parent", "a", "id > 2");
+        assert!(error(json!(["bad name", id_gt(1)])).contains("must be letters, digits and underscores"));
+        assert!(error(json!([POLICY, id_gt(1)])).contains("reserved"));
+        assert!(error(json!(["a", parent()])).contains("@@query.filter \"a\": parent.default_filter has no inherited filter"));
+        let mut s = ir(); named(&mut s, "Parent", "a", id_gt(1)); named(&mut s, "Parent", "a", id_gt(2));
         assert!(lower(&mut s).unwrap_err().contains("@@query.filter \"a\" is given twice"));
-    }
-    #[test]
-    fn scope_values() {
-        let filter = Parser::parse("shop_id == scope.shop and active == true", None).unwrap();
-        assert_eq!(filter["items"][0]["r"], json!({"t":"scope","name":"shop"}));
-        assert!(Parser::parse("shop_id == scope.", None).is_err());
-        assert!(Parser::parse("shop_id == scope.a.b", None).is_err());
-    }
-    #[test]
-    fn operator_precedence_and_null() {
-        let not = Parser::parse("not id == 1", None).unwrap();
-        assert_eq!((not["t"].as_str(), not["item"]["t"].as_str()), (Some("not"), Some("cmp")));
-        assert_eq!(Parser::parse("! visible", None).unwrap()["item"]["t"], "col");
-        assert_eq!(Parser::parse("a or b and c", None).unwrap()["items"][1]["t"], "and");
-        assert_eq!(Parser::parse("a and b or c", None).unwrap()["items"][0]["t"], "and");
-        assert_eq!(Parser::parse("a != null", None).unwrap()["neg"], true);
-        assert_eq!(Parser::parse("a == null", None).unwrap()["neg"], false);
-        assert!(Parser::parse("a < null", None).is_err());
     }
 }
 
