@@ -523,6 +523,35 @@ model Doc {
       assert.ok((await docs.get(Doc.id.eq(1))).changed > OLD);
     } finally { await db.dropTables(); await db.close(); }
   });
+
+  test(`a raw upsert fires the updated_at trigger in database mode (${dialect})`, { skip: !hasExtension("monorm.timestamps") }, async () => {
+    const [db, models] = await open(dialect, upsertDoc({ mode: "database" }));
+    const Doc = models.Doc!, docs = Doc.objects.using(db);
+    try {
+      await docs.insert({ id: 1, title: "a", changed: OLD });
+      await db.execute("INSERT INTO tracking_node_upsert_docs (id, title) VALUES (1, 'b') ON CONFLICT (id) DO UPDATE SET title = excluded.title");
+      const row = await docs.get(Doc.id.eq(1));
+      assert.equal(row.title, "b");
+      assert.ok(row.changed > OLD);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
+  test(`a raw delete in database mode stores fractional seconds (${dialect})`, { skip: !hasExtension("monorm.soft-delete") }, async () => {
+    const [db, models] = await open(dialect, `
+model Note {
+  id Int @id
+  @@soft_delete.deleted_at("deleted", mode: "database")
+  @@map("tracking_node_fraction_notes")
+}`);
+    const Note = models.Note!, notes = Note.objects.using(db);
+    try {
+      await notes.insert({ id: 1 });
+      const before = Date.now() - 5;
+      await db.execute("DELETE FROM tracking_node_fraction_notes WHERE id = 1");
+      const row = await notes.allWithDeleted().get(Note.id.eq(1));
+      assert.ok(row.deleted.getTime() >= before);
+    } finally { await db.dropTables(); await db.close(); }
+  });
 }
 
 for (const dialect of ["sqlite", "postgres"]) {

@@ -72,7 +72,7 @@ fn delete_trigger(dialect: Dialect, model: &ModelIr, field: &str, version: Optio
     let bump = bump(version.map(|v| column(model, v)).transpose()?);
     let (body, when) = match dialect {
         Dialect::Postgres => (format!("BEGIN UPDATE {t} SET {c} = now(){bump} WHERE {pk}; RETURN NULL; END;"), format!("OLD.{c} IS NULL AND pg_trigger_depth() = 0")),
-        Dialect::Sqlite => (format!("UPDATE {t} SET {c} = CURRENT_TIMESTAMP{bump} WHERE {pk}; SELECT RAISE(IGNORE)"), format!("OLD.{c} IS NULL")),
+        Dialect::Sqlite => (format!("UPDATE {t} SET {c} = strftime('%Y-%m-%d %H:%M:%f', 'now'){bump} WHERE {pk}; SELECT RAISE(IGNORE)"), format!("OLD.{c} IS NULL")),
     };
     Ok(TriggerIr { name: "soft_delete".into(), timing: TriggerTiming::Before, events: vec![TriggerEvent::Delete], when: Some(when), body: Some(body), ..Default::default() })
 }

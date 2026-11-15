@@ -1,7 +1,7 @@
 """Run with an artifact that selects the timestamps, soft-delete or locking extension."""
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import NamedTuple
 
 import pytest
@@ -470,6 +470,47 @@ async def test_an_upsert_fires_the_updated_at_trigger_in_database_mode(dialect):
         await docs.insert(id=1, title="a", changed=OLD)
         await docs.insert(id=1, title="b").on_conflict(Doc.id, update=True)
         assert as_utc((await docs.get(Doc.id == 1)).changed) > OLD
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@requires("monorm.timestamps")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_a_raw_upsert_fires_the_updated_at_trigger_in_database_mode(dialect):
+    db, models = await connect(dialect, upsert_doc("database"))
+    Doc = models["Doc"]
+    try:
+        docs = Doc.objects.using(db)
+        await docs.insert(id=1, title="a", changed=OLD)
+        await db.execute("INSERT INTO tracking_upsert_docs (id, title) VALUES (1, 'b') ON CONFLICT (id) DO UPDATE SET title = excluded.title")
+        row = await docs.get(Doc.id == 1)
+        assert row.title == "b"
+        assert as_utc(row.changed) > OLD
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@requires("monorm.soft-delete")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_a_raw_delete_in_database_mode_stores_fractional_seconds(dialect):
+    doc = """
+model Note {
+  id Int @id
+  @@soft_delete.deleted_at("deleted", mode: "database")
+  @@map("tracking_fraction_notes")
+}
+"""
+    db, models = await connect(dialect, doc)
+    Note = models["Note"]
+    try:
+        notes = Note.objects.using(db)
+        await notes.insert(id=1)
+        before = datetime.now(timezone.utc) - timedelta(milliseconds=5)
+        await db.execute("DELETE FROM tracking_fraction_notes WHERE id = 1")
+        row = await notes.all_with_deleted().get(Note.id == 1)
+        assert as_utc(row.deleted) >= before
     finally:
         await db.drop_tables()
         await db.close()
