@@ -253,6 +253,11 @@ impl SchemaIr {
             self.behavior.schema_contract = SCHEMA_CONTRACT;
             self.behavior.schema_contract_minor = self.behavior.schema_contract_minor.max(1);
         }
+        // Contract 5.2 holds default filters of any expression shape. An engine of 5.1 reads only the shapes in `filter_needs_5_2`'s allow list.
+        if self.behavior.read_defaults.iter().filter_map(|r| r.filter.as_ref()).any(filter_needs_5_2) {
+            self.behavior.schema_contract = SCHEMA_CONTRACT;
+            self.behavior.schema_contract_minor = self.behavior.schema_contract_minor.max(2);
+        }
     }
 
     /// Parse the IR that generated models embed; an older ORM can write fields this one rejects.
@@ -274,6 +279,22 @@ impl SchemaIr {
             return Err(format!("schema contract {found} is older than this engine (schema contract {}); regenerate the models and rebuild the native artifact", crate::extension::SCHEMA_CONTRACT_VERSION));
         }
         Ok(ir)
+    }
+}
+
+/// True when a default filter holds an `Expr` that an engine of contract 5.1 cannot read: only a column of the root model,
+/// a comparison, `and`, `or`, `not`, a null test and an `int`, `text`, `const` or `scope` operand are 5.1 shapes.
+fn filter_needs_5_2(filter: &serde_json::Value) -> bool {
+    use serde_json::Value;
+    let Value::Object(node) = filter else { return true };
+    let children = |keys: &[&str]| keys.iter().filter_map(|k| node.get(*k)).any(filter_needs_5_2);
+    match node.get("t").and_then(Value::as_str) {
+        Some("col") => node.get("path").and_then(Value::as_array).is_none_or(|p| !p.is_empty()) || node.get("sub").is_some_and(|s| s.as_array().is_none_or(|s| !s.is_empty())),
+        Some("cmp") => children(&["l", "r"]),
+        Some("and" | "or") => node.get("items").and_then(Value::as_array).is_none_or(|items| items.iter().any(filter_needs_5_2)),
+        Some("not" | "is_null") => children(&["item"]),
+        Some("int" | "text" | "const" | "scope") => false,
+        _ => true,
     }
 }
 

@@ -29,6 +29,7 @@
 pub mod expr;
 pub mod sql_expr;
 pub mod native;
+pub(crate) mod expr_arg;
 mod lower;
 mod render;
 mod syntax;
@@ -283,10 +284,13 @@ fn compile_project_overlay(source: &str, origin: Option<&Path>, update: Option<I
     let mut declarations = lower::behavior_declarations(&mut items, &label, manifests).map_err(|e| loader.located(e))?;
     for declaration in &mut declarations {
         let location = &mut declaration.location;
-        if let Some((start, _, file)) = loader.locations.iter().find(|(start, end, _)| location.line >= *start && location.line < *end) {
-            location.file = file.clone();
-            location.line = location.line - start + 1;
-        }
+        let (file, base) = match loader.locations.iter().find(|(start, end, _)| location.line >= *start && location.line < *end) {
+            Some((start, _, file)) => (file.clone(), *start),
+            None => (location.file.clone(), 1),
+        };
+        location.file = file.clone();
+        location.line = location.line + 1 - base;
+        expr_arg::stamp(declaration, &file, base);
     }
     // An attribute of a missing extension can take its field out of the model: the namespace error comes before lowering.
     if let Some(d) = declarations.iter().find(|d| d.field.is_some() && lower::declared(manifests, &d.attribute, true).is_none()) {
@@ -336,7 +340,7 @@ fn compile_project_overlay(source: &str, origin: Option<&Path>, update: Option<I
     };
     let owned_types = lower::owned_types(manifests);
     let (mut ir, diagnostics) = lower::Lowering { load: &load, deferred_identity: &deferred_identity, views: &views, owned_types: &owned_types }.lower(items).map_err(|e| loader.located(e))?;
-    let warnings = diagnostics.into_iter().map(|d| {
+    let mut warnings: Vec<expr::Warning> = diagnostics.into_iter().map(|d| {
         let (file, span) = loader.located_span(d.span);
         expr::Warning { file, span, message: d.message }
     }).collect();
@@ -346,7 +350,7 @@ fn compile_project_overlay(source: &str, origin: Option<&Path>, update: Option<I
         ir.behavior.declarations = declarations;
     }
     if update.is_none() {
-        crate::behavior::prepare_with(&mut ir, None, plan.as_ref())?;
+        crate::behavior::prepare_collecting(&mut ir, None, plan.as_ref(), &mut warnings)?;
         crate::partition::validate(&ir)?;
         for model in &ir.models {
             if !model.fields.iter().any(|field| field.primary_key) {

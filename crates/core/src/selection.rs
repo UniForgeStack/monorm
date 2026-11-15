@@ -131,13 +131,14 @@ fn target<'m>(models: &'m [Model], model: &'m Model, path: &[String]) -> Result<
     let mut current = model;
     for hop in path {
         let (r, _) = current.relation(hop)?;
-        current = models.iter().find(|m| m.ir.name == r.target).expect("validated relation");
+        current = models.iter().find(|m| m.ir.name == r.target).ok_or_else(|| format!("{}: relation {hop} is not available here", model.ir.name))?;
     }
     Ok(current)
 }
 
 /// Checks a default expression and collects its `scope.<name>` names, in one pass so the
-/// two cannot differ. A filter has root columns, literals, comparisons and boolean composition.
+/// two cannot differ. A filter has columns (also behind to-one relation hops), literals, comparisons,
+/// boolean composition, `in`, `like`, arithmetic and scalar calls.
 /// An annotation is a relation aggregate; its arguments may also use arithmetic, calls and
 /// columns behind relation hops.
 fn walk(models: &[Model], model: &Model, expr: &Expr, annotation: bool, scopes: &mut Vec<String>) -> Result<(), String> {
@@ -145,12 +146,24 @@ fn walk(models: &[Model], model: &Model, expr: &Expr, annotation: bool, scopes: 
     match expr {
         Expr::Col { path, name, .. } if path.is_empty() => { model.field(name)?; }
         Expr::Col { path, name, .. } if annotation => { target(models, model, path)?.field(name)?; }
+        Expr::Col { path, name, .. } => {
+            let mut current = model;
+            for hop in path {
+                let (r, _) = current.relation(hop)?;
+                if r.kind != crate::ir::RelKind::One { return Err(format!("{}: a default filter cannot use the to-many relation {hop}", model.ir.name)); }
+                current = target(models, current, std::slice::from_ref(hop))?;
+            }
+            current.field(name)?;
+        }
         Expr::Const { .. } | Expr::Int { .. } | Expr::Text { .. } => {}
         Expr::Scope { name } => { if !scopes.contains(name) { scopes.push(name.clone()); } }
         Expr::Cmp { l, r, .. } => children.extend([&**l, &**r]),
         Expr::And { items } | Expr::Or { items } => children.extend(items),
         Expr::Not { item } | Expr::IsNull { item, .. } => children.push(item),
-        Expr::Arith { l, r, .. } if annotation => children.extend([&**l, &**r]),
+        Expr::Arith { l, r, .. } => children.extend([&**l, &**r]),
+        Expr::In { item, values, .. } => children.extend(std::iter::once(&**item).chain(values)),
+        Expr::Like { item, pattern, .. } => children.extend([&**item, &**pattern]),
+        Expr::Func { args, rel: None, filter: None, order_by, .. } if !annotation && order_by.is_empty() => children.extend(args),
         Expr::Func { args, filter, order_by, rel, .. } if annotation => {
             if let Some(rel) = rel { target(models, model, rel)?; }
             children.extend(args.iter().chain(filter.as_deref()).chain(order_by.iter().map(|o| &o.expr)));

@@ -1663,6 +1663,8 @@ impl<'s> Planner<'s> {
                 let item = if padded { template(self.target.dialect, "CAST($1 AS text)", vec![item]) } else { item };
                 let text = match pattern.as_ref() {
                     Expr::Param { i } => self.params.text(self.param(*i)?)?,
+                    // A schema default filter writes its pattern as a literal.
+                    Expr::Text { value } => value.clone(),
                     _ => return Err(Error::query("LIKE pattern must be a string parameter")),
                 };
                 if *ci && !self.caps.ilike {
@@ -2784,9 +2786,15 @@ impl<'s> Planner<'s> {
     }
 
     fn target_default(&self, model: usize, alias: &str, filter: &Expr) -> Result<SExpr> {
-        let mut planner = Planner::new(self.schema, self.virt, self.target, &self.model(model).ir.name, None, self.params, vec![], 0)?;
+        // The aliases of a related model in the filter must not repeat one that is in use.
+        let mut planner = Planner::new(self.schema, self.virt, self.target, &self.model(model).ir.name, None, self.params, vec![], self.next_alias)?;
         planner.scopes[0].alias = alias.into();
-        planner.cond(filter)
+        let cond = planner.cond(filter)?;
+        // This planner's joins are dropped, so a filter that needs one would read an unjoined alias.
+        if !planner.joins.is_empty() {
+            return Err(Error::query(format!("the default filter of {} reads a related model and cannot apply to a read through a relation; use without_defaults() or filter the root model", self.model(model).ir.name)));
+        }
+        Ok(cond)
     }
 
     fn apply_joins(&self, stmt: &mut SelectStatement) {

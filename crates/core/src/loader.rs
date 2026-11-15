@@ -7,6 +7,7 @@ use monorm::ir::SchemaIr;
 use monorm::version::ContractVersion;
 use monorm::resolve::resolve;
 use crate::behavior::{capture_storage, validate_declarations, validate_requirements, Manifest, Pass};
+use monorm::extension::Phase;
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -180,6 +181,12 @@ impl Plan {
     /// Runs every pass of the artifact and of the libraries in the resolved order.
     /// `run_static` runs a compiled pass by id and tells whether the artifact has it.
     pub fn lower(&self, ir: &mut SchemaIr, language: Option<&str>, run_static: &dyn Fn(&mut SchemaIr, &str) -> Result<bool, String>) -> Result<(), String> {
+        self.lower_collecting(ir, language, run_static, &mut vec![])
+    }
+
+    /// [`Plan::lower`] that also collects the warnings of the expression arguments.
+    /// Each argument is checked before the first behavior pass, once the earlier passes have settled the model shape.
+    pub fn lower_collecting(&self, ir: &mut SchemaIr, language: Option<&str>, run_static: &dyn Fn(&mut SchemaIr, &str) -> Result<bool, String>, warnings: &mut Vec<crate::dsl::expr::Warning>) -> Result<(), String> {
         if ir.behavior.schema_contract != 0 && ir.behavior.schema_contract != SCHEMA_CONTRACT {
             return Err(format!("schema contract {} unavailable (artifact {}); rebuild native artifact", ir.behavior.schema_contract, SCHEMA_CONTRACT));
         }
@@ -197,7 +204,12 @@ impl Plan {
                 language_members: d.manifest.language_sections().map(|(l, s)| (l.to_owned(), s.clone())).collect(),
             });
         }
+        let mut resolved = false;
         for pass in &self.order {
+            if !resolved && pass.phase >= Phase::Behavior {
+                crate::dsl::expr_arg::resolve(ir, &self.manifests, warnings)?;
+                resolved = true;
+            }
             match owner_of.get(pass.id.as_str()) {
                 Some(owner) => {
                     let generated = generated_fields(ir);
@@ -214,6 +226,8 @@ impl Plan {
                 }
             }
         }
+        if !resolved { crate::dsl::expr_arg::resolve(ir, &self.manifests, warnings)?; }
+        crate::dsl::expr_arg::reject_placeholders(ir)?;
         for declaration in &mut ir.behavior.declarations { declaration.lowered = true; }
         ir.behavior.declarations.extend(previous);
         ir.behavior.lowered_models = ir.models.iter().map(|m| m.name.clone()).collect();

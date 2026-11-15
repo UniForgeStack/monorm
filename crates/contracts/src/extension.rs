@@ -5,7 +5,7 @@ use crate::ir::{ColType, SchemaIr, ValueType};
 pub use crate::version::ContractVersion;
 
 /// The IR records. A library of the same major and a lower or equal minor fits.
-pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(5, 1);
+pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(5, 2);
 /// The C ABI that `monorm::extension!` writes.
 pub const ABI_VERSION: ContractVersion = ContractVersion::new(0, 2);
 /// The stamps of an IR and an artifact keep the major only.
@@ -591,7 +591,12 @@ impl Attribute {
 }
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum ArgumentKind { String, Integer, Boolean, List, Value }
+pub enum ArgumentKind {
+    String, Integer, Boolean, List, Value,
+    /// A schema expression of the default-filter context. The core checks it and passes the engine filter form (JSON); `null` is `"none"`.
+    /// A string is the string form of a filter, which the core reads into the same tree.
+    Expression,
+}
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AttributeTarget { Model, Field }
@@ -710,7 +715,7 @@ pub fn validate_declarations(ir: &SchemaIr, manifests: &[Manifest], language: Op
         let matches = |v: &serde_json::Value, arg: &Argument| match arg.kind {
             ArgumentKind::String => v.is_string(), ArgumentKind::Integer => v.is_i64(),
             ArgumentKind::Boolean => v.is_boolean(), ArgumentKind::List => v.is_array() && literal(v),
-            ArgumentKind::Value => true,
+            ArgumentKind::Value | ArgumentKind::Expression => true,
         };
         for (name, value) in &d.arguments {
             let arg = a.arguments.get(name).ok_or_else(|| fail(d, format!("unknown argument {name}")))?;
@@ -1059,6 +1064,9 @@ pub fn specialization_storage(model: &crate::ir::ModelIr, requirements: &Require
     Ok(vec![physical])
 }
 
+/// The tag (`t`) of the node that stands for `parent.default_filter` until an extension puts the inherited filter in its place.
+pub const PARENT_PLACEHOLDER: &str = "parent_default_filter";
+
 /// A named read default contributed by any extension. Expressions are query IR, never SQL.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -1147,6 +1155,17 @@ mod tests {
         assert!(check("tags", serde_json::json!(["a", null])).unwrap_err().contains("wrong type for tags"));
         assert!(check("tags", serde_json::json!([{"k": 1}])).is_err());
         assert!(check("payload", serde_json::json!({"labels": [null]})).is_ok());
+    }
+
+    #[test]
+    fn an_expression_argument_takes_a_string_a_marker_or_a_tree() {
+        let mut manifest = manifest(&["python"], &["sqlite"]);
+        manifest.attributes[0].arguments = serde_json::from_value(serde_json::json!({"filter": {"kind": "expression"}})).unwrap();
+        for value in [serde_json::json!("a == 1"), serde_json::json!(null), serde_json::json!({"t": "col", "path": [], "name": "a"})] {
+            let mut ir = schema(crate::dialect::Dialect::Sqlite);
+            ir.behavior.declarations[0].arguments.insert("filter".into(), value.clone());
+            validate_declarations(&ir, std::slice::from_ref(&manifest), None).unwrap_or_else(|e| panic!("{value}: {e}"));
+        }
     }
 
     #[test]
@@ -1444,6 +1463,37 @@ mod tests {
         generated.stamp_expression_records();
         assert_eq!((generated.behavior.schema_contract, minor(&generated)), (SCHEMA_CONTRACT, 1));
         assert!(check_requirements(&generated, &Artifact { schema_contract: SCHEMA_CONTRACT, ..Artifact::default() }).is_ok());
+        // a default filter needs contract 5.2 only with a shape that the string form could not write
+        let col = |name: &str| serde_json::json!({"t": "col", "path": [], "name": name});
+        let filtered = |filter: serde_json::Value| {
+            let mut ir: SchemaIr = serde_json::from_value(serde_json::json!({
+                "models": [{"name": "User", "table": "users", "fields": [{"name": "id", "column": "id", "type": "int", "primary_key": true}, {"name": "name", "column": "name", "type": "string"}]}],
+                "behavior": {"read_defaults": [{"source": "acme.lib", "name": "query", "model": "User", "filter": filter}]},
+            })).unwrap();
+            ir.stamp_expression_records();
+            ir
+        };
+        let plain = serde_json::json!({"t": "and", "items": [
+            {"t": "cmp", "op": "eq", "l": col("name"), "r": {"t": "text", "value": "a"}},
+            {"t": "not", "item": {"t": "or", "items": [{"t": "is_null", "item": col("id"), "neg": false}, {"t": "cmp", "op": "gt", "l": col("id"), "r": {"t": "scope", "name": "shop"}}]}},
+            col("name"),
+        ]});
+        let plain = filtered(plain);
+        assert_eq!((plain.behavior.schema_contract, minor(&plain)), (0, 0), "a 5.1 filter keeps the stamp");
+        let new_shapes = [
+            ("a to-one path", serde_json::json!({"t": "cmp", "op": "eq", "l": {"t": "col", "path": ["owner"], "name": "name"}, "r": {"t": "text", "value": "a"}})),
+            ("in", serde_json::json!({"t": "in", "item": col("id"), "values": [{"t": "int", "value": 1}], "neg": false})),
+            ("like", serde_json::json!({"t": "like", "item": col("name"), "pattern": {"t": "text", "value": "a%"}, "ci": false, "neg": false})),
+            ("arith", serde_json::json!({"t": "cmp", "op": "gt", "l": {"t": "arith", "op": "add", "l": col("id"), "r": {"t": "int", "value": 1}}, "r": {"t": "int", "value": 2}})),
+            ("func", serde_json::json!({"t": "cmp", "op": "eq", "l": {"t": "func", "name": "lower", "args": [col("name")]}, "r": {"t": "text", "value": "a"}})),
+            ("a shape inside and, not and or", serde_json::json!({"t": "and", "items": [col("name"), {"t": "not", "item": {"t": "or", "items": [col("id"), {"t": "in", "item": col("id"), "values": [], "neg": true}]}}]})),
+        ];
+        for (what, filter) in new_shapes {
+            let ir = filtered(filter);
+            assert_eq!((ir.behavior.schema_contract, minor(&ir)), (SCHEMA_CONTRACT, 2), "{what}");
+            let error = check_requirements(&ir, &Artifact { schema_contract: SCHEMA_CONTRACT, ..Artifact::default() });
+            assert!(error.is_ok(), "{what}: {error:?}");
+        }
         for (what, ir) in [
             ("an expression default", stamped(serde_json::json!({}), serde_json::json!({"expr": expr}))),
             ("a hook default", stamped(serde_json::json!({}), serde_json::json!({"hook": {"export": "acme.lib.x"}}))),

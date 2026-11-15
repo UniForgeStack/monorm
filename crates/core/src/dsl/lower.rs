@@ -1918,9 +1918,13 @@ fn param(pos: Pos, v: &Value) -> Result<String> {
 }
 
 /// A behavioral declaration argument as literal JSON: a bare identifier is a string.
+/// An argument of kind `expression` keeps its syntax (`expr_arg`); the core checks it once the model shape is final.
 /// Bare names, `null` and objects are literals only for arguments of kind `value`
 /// (or of an attribute no compiled manifest declares, which validation rejects later).
 fn declaration_value(pos: Pos, value: &Value, kind: Option<ArgumentKind>) -> Result<serde_json::Value> {
+    if kind == Some(ArgumentKind::Expression) {
+        return Ok(super::expr_arg::marker(pos, value));
+    }
     if kind.is_some_and(|k| k != ArgumentKind::Value) {
         return json_of(pos, value);
     }

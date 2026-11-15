@@ -42,7 +42,9 @@
 
 use std::fmt;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct Pos {
     pub line: u32,
     pub col: u32,
@@ -220,7 +222,7 @@ fn dedent(s: &str) -> String {
 // ---------------------------------------------------------------------------------------
 
 /// A binary operator of an expression. `|` and `&` are the boolean operators.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BinOp {
     Or,
     And,
@@ -255,7 +257,7 @@ impl BinOp {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Value {
     Str(String),
     Num(String),
@@ -279,7 +281,7 @@ pub enum Value {
 
 /// A dotted name. The parser keeps where each name is (`a . b` has spaces); a path that the
 /// compiler writes has no positions.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Path {
     names: Vec<String>,
     positions: Vec<Pos>,
@@ -308,7 +310,7 @@ impl std::ops::Deref for Path {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Default)]
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct Args {
     pub pos: Pos,
     pub positional: Vec<(Pos, Value)>,

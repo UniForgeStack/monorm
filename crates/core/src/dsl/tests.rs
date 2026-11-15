@@ -1497,3 +1497,142 @@ fn deprecated_errors() {
         assert!(fails(&source).contains(message), "{message}: {}", fails(&source));
     }
 }
+
+// ---- Arguments of kind `expression` ----------------------------------------------------------
+
+const FILTER_MODELS: &str = "model Owner {\n  id BigInt @id\n  name String\n}\nmodel Item {\n  id BigInt @id\n  a Int\n  b Boolean\n  c Boolean\n  active Boolean\n  tenant Int\n  title String\n  owner_id BigInt\n  owner Owner @relation(fields: [owner_id], references: [id])\n}\n";
+
+fn filter_manifest() -> crate::behavior::Manifest {
+    serde_json::from_value(json!({
+        "id": "test", "version": "1", "schema_contract": "5.2", "languages": [], "databases": [],
+        "attributes": [{"name": "test.filter", "target": "model",
+            "arguments": {"filter": {"kind": "expression"}},
+            "positional": [{"kind": "string"}, {"kind": "expression"}]}]
+    })).unwrap()
+}
+
+/// Resolves `@@test.filter(<argument>)` on `Item`; returns the resolved argument, the warnings and the declaration.
+fn resolved(argument: &str) -> Result<(serde_json::Value, Vec<expr::Warning>), String> {
+    let mut ir = ok(FILTER_MODELS);
+    let manifest = filter_manifest();
+    let source = format!("{FILTER_MODELS}\nmodel Other {{\n  @@test.filter({argument})\n}}\n").replace("model Other", "model Item2");
+    let mut items = syntax::parse(&source).unwrap();
+    let mut declarations = super::lower::behavior_declarations(&mut items, "t.prisma", std::slice::from_ref(&manifest)).map_err(|e| e.msg)?;
+    for d in &mut declarations {
+        d.model = "Item".into();
+        expr_arg::stamp(d, "t.prisma", 1);
+    }
+    ir.behavior.declarations = declarations;
+    let mut warnings = vec![];
+    expr_arg::resolve(&mut ir, std::slice::from_ref(&manifest), &mut warnings)?;
+    let d = &ir.behavior.declarations[0];
+    Ok((d.positional.get(1).cloned().unwrap_or_else(|| d.arguments["filter"].clone()), warnings))
+}
+
+#[test]
+fn an_expression_argument_keeps_the_json_of_every_old_form() {
+    let col = |n: &str| json!({"t":"col","path":[],"name":n});
+    let cases = [
+        ("tenant == 1", json!({"t":"cmp","op":"eq","l":col("tenant"),"r":{"t":"int","value":1}})),
+        ("title != \\\"x\\\"", json!({"t":"cmp","op":"ne","l":col("title"),"r":{"t":"text","value":"x"}})),
+        ("a < 2", json!({"t":"cmp","op":"lt","l":col("a"),"r":{"t":"int","value":2}})),
+        ("a <= 2", json!({"t":"cmp","op":"le","l":col("a"),"r":{"t":"int","value":2}})),
+        ("a > -2", json!({"t":"cmp","op":"gt","l":col("a"),"r":{"t":"int","value":-2}})),
+        ("a >= 2", json!({"t":"cmp","op":"ge","l":col("a"),"r":{"t":"int","value":2}})),
+        ("active == true", json!({"t":"cmp","op":"eq","l":col("active"),"r":{"t":"const","value":true}})),
+        ("tenant == scope.tenant", json!({"t":"cmp","op":"eq","l":col("tenant"),"r":{"t":"scope","name":"tenant"}})),
+        ("a == null", json!({"t":"is_null","item":col("a"),"neg":false})),
+        ("a != null", json!({"t":"is_null","item":col("a"),"neg":true})),
+        ("not b", json!({"t":"not","item":col("b")})),
+        ("b and c", json!({"t":"and","items":[col("b"),col("c")]})),
+        ("b or c and active", json!({"t":"or","items":[col("b"),{"t":"and","items":[col("c"),col("active")]}]})),
+    ];
+    for (source, wire) in cases {
+        let (tree, warnings) = resolved(&format!("\"x\", \"{source}\"")).unwrap_or_else(|e| panic!("{source}: {e}"));
+        assert_eq!(tree.to_string(), wire.to_string(), "{source}");
+        let last = warnings.last().unwrap_or_else(|| panic!("{source}: no warning"));
+        assert!(last.message.starts_with("this filter is a string; write the expression: "), "{}", last.message);
+        assert_eq!((last.file.as_str(), last.span.line), ("t.prisma", 18), "{source}");
+    }
+}
+
+#[test]
+fn a_native_expression_and_its_string_give_the_same_tree() {
+    for (native, string) in [
+        ("tenant == scope.tenant & active", "tenant == scope.tenant and active"),
+        ("a > 1 | b", "a > 1 or b"),
+        ("~b", "not b"),
+    ] {
+        let (a, none) = resolved(&format!("\"x\", {native}")).unwrap_or_else(|e| panic!("{native}: {e}"));
+        let (b, warned) = resolved(&format!("\"x\", \"{string}\"")).unwrap();
+        assert_eq!(a, b, "{native}");
+        assert!(none.is_empty(), "{native}: {none:?}");
+        assert_eq!(warned.len(), 1, "{string}");
+        // The text of the warning is a native expression: it gives the same tree.
+        let advice = warned[0].message.strip_prefix("this filter is a string; write the expression: ").unwrap();
+        let (round, again) = resolved(&format!("\"x\", {advice}")).unwrap_or_else(|e| panic!("{advice}: {e}"));
+        assert_eq!(round, b, "{advice}");
+        assert!(again.is_empty());
+    }
+}
+
+#[test]
+fn none_clears_a_filter_without_a_warning() {
+    let (tree, warnings) = resolved("\"x\", \"none\"").unwrap();
+    assert!(tree.is_null());
+    assert!(warnings.is_empty());
+}
+
+#[test]
+fn an_expression_error_names_file_line_and_column() {
+    for (argument, text) in [
+        ("\"x\", nope == 1", "nope"),
+        ("\"x\", \"nope == 1\"", "nope"),
+        ("\"x\", title == 1", "cannot compare String with Int"),
+        ("\"x\", \"a or_null\"", "or_null() is not available"),
+        ("\"x\", sql(\"a = 1\")", "sql"),
+        ("\"x\", \"a == scope\"", "scope"),
+    ] {
+        let error = resolved(argument).unwrap_err();
+        assert!(error.starts_with("t.prisma:"), "{argument}: {error}");
+        assert!(error.contains(": @@test.filter: "), "{argument}: {error}");
+        assert!(error.contains(text), "{argument}: {error}");
+    }
+}
+
+#[test]
+fn a_resolved_tree_is_kept_when_the_step_runs_again() {
+    let mut ir = ok(FILTER_MODELS);
+    let manifest = filter_manifest();
+    let mut items = syntax::parse(&format!("{FILTER_MODELS}\nmodel Item2 {{\n  @@test.filter(\"x\", a > 1)\n}}\n")).unwrap();
+    let mut declarations = super::lower::behavior_declarations(&mut items, "t.prisma", std::slice::from_ref(&manifest)).unwrap();
+    declarations[0].model = "Item".into();
+    ir.behavior.declarations = declarations;
+    let mut warnings = vec![];
+    expr_arg::resolve(&mut ir, std::slice::from_ref(&manifest), &mut warnings).unwrap();
+    let once = ir.behavior.declarations[0].positional[1].clone();
+    assert_eq!(once["t"], "cmp");
+    expr_arg::resolve(&mut ir, std::slice::from_ref(&manifest), &mut warnings).unwrap();
+    assert_eq!(ir.behavior.declarations[0].positional[1], once);
+}
+
+#[test]
+fn the_parent_filter_is_a_placeholder_until_an_extension_replaces_it() {
+    let (tree, _) = resolved("\"x\", \"parent.default_filter and active\"").unwrap();
+    assert_eq!(tree["items"][0], json!({"t": "parent_default_filter"}));
+    let mut ir = ok(FILTER_MODELS);
+    ir.behavior.read_defaults.push(monorm::extension::ReadDefault { model: "Item".into(), filter: Some(tree), ..Default::default() });
+    let error = expr_arg::reject_placeholders(&ir).unwrap_err();
+    assert!(error.contains("parent.default_filter has no inherited filter"), "{error}");
+}
+
+#[test]
+fn a_filter_through_a_to_one_relation_and_the_native_text_functions_resolve() {
+    let (tree, warnings) = resolved("\"x\", owner.name == \"x\"").unwrap();
+    assert_eq!(tree["l"], json!({"t":"col","path":["owner"],"name":"name"}));
+    assert!(warnings.is_empty());
+    let (tree, _) = resolved("\"x\", title.startswith(\"ab_\")").unwrap();
+    assert_eq!(tree, json!({"t":"like","item":{"t":"col","path":[],"name":"title"},"pattern":{"t":"text","value":"ab\\_%"},"ci":false,"neg":false}));
+    let (tree, _) = resolved("\"x\", a.between(1, 3)").unwrap();
+    assert_eq!(tree["t"], "and");
+}

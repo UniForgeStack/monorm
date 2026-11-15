@@ -287,6 +287,17 @@ Schema contract 5.0 removes `Requirements.file_fields` and the `file-storage` ho
 Contract 5.0 also has no `Requirements.extensions`, `Requirements.completed_passes` or `Requirements.methods`. The IR crosses the ABI as JSON, so an extension library that was built before this removal fails to parse the IR with an unknown-field error: rebuild it. After the first publish of the `monorm` crate, such a removal needs a major bump.
 Schema contract 5.1 holds `FieldIr.generated` (the SQL of a generated column and `stored`). `stamp_expression_records` sets `schema_contract_minor = 1` when a field has it. An extension library that was built before 5.1 drops the field when it runs a pass, because it parses and writes its own `FieldIr`; rebuild such a library.
 Models of contract 4 fail `define` with a "schema contract 4 is older" error; regenerate them.
+Schema contract 5.2 adds the argument kind `expression` to the manifest.
+An attribute argument of this kind holds a schema expression.
+The core checks it against its model once the model shape is final.
+It gives the extension the checked engine tree (JSON), or `null` for `"none"`.
+A string is the old filter language: the core reads it into the same tree and warns with the native form.
+An older host fails to read a manifest with the kind `expression`; install an older release of the extension or update the ORM.
+`query-defaults` declares 5.2.
+`stamp_expression_records` sets `schema_contract_minor = 2` when a read-default filter holds a shape that the old string language could not write.
+These shapes are a path, `in`, `like`, a function and arithmetic.
+An older engine then refuses the IR with "newer than this engine".
+A filter of plain `==`, `<`, `&`, `|`, `~` and null tests keeps the old stamp.
 A `ModelView` (`model`, `source`, `root`, `row_filter`, `insert_table`) makes `model` read and write the table of `root`; `source` is the nearest parent. `row_filter` is a `field` and a list of `values`. Each value must be an enum member of `field`, or `define()` fails. The core builds the literal SQL; an extension never gives SQL text. The filter applies to root reads, joins, and update and delete targets, and `without_defaults()` does not remove it.
 A `ResultCheck` (`model`, `field`, `non_null`, `allowed`, `code`) makes the engine warn when a result row breaks the check. The warning carries `code`.
 An attribute with `view_source = true` declares the source model of a view. The DSL lowering finds views through this key, not through an attribute name.

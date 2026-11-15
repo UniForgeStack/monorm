@@ -742,3 +742,118 @@ fn writes_return_the_default_selection_or_the_named_columns() {
 
     }
 }
+
+fn filter_schema(filter: serde_json::Value) -> Result<Schema, String> {
+    let raw = json!({"models":[
+        {"name":"Selected","table":"selected","fields":[
+            {"name":"id","column":"id","type":"int","primary_key":true},
+            {"name":"level","column":"level","type":"int"},
+            {"name":"title","column":"title","type":"text"}],
+         "relations":[{"name":"parent","kind":"one","target":"Parent","from":"id","to":"id","foreign_key":true},
+                      {"name":"kids","kind":"many","target":"Kid","from":"id","to":"parent_id"}]},
+        {"name":"Parent","table":"parents","fields":[
+            {"name":"id","column":"id","type":"int","primary_key":true},
+            {"name":"label","column":"label","type":"text"}]},
+        {"name":"Kid","table":"kids","fields":[
+            {"name":"id","column":"id","type":"int","primary_key":true},
+            {"name":"parent_id","column":"parent_id","type":"int"}]}
+    ],"behavior":{"schema_contract":5,"read_defaults":[{"source":"ext","name":"d","model":"Selected","filter":filter}]}});
+    Schema::from_ir(serde_json::from_value(raw).unwrap())
+}
+
+fn col(path: &[&str], name: &str) -> serde_json::Value { json!({"t":"col","path":path,"name":name}) }
+
+/// The shapes a schema expression can give a default filter all reach the SQL of reads, updates and deletes.
+#[test]
+fn a_default_filter_may_use_a_to_one_path_in_like_arith_and_functions() {
+    use monorm_engine::db;
+    let filters = [
+        (json!({"t":"cmp","op":"eq","l":col(&["parent"], "label"),"r":{"t":"text","value":"x"}}), "label"),
+        (json!({"t":"in","item":col(&[], "level"),"values":[{"t":"int","value":1},{"t":"int","value":2}],"neg":false}), " IN "),
+        (json!({"t":"like","item":col(&[], "title"),"pattern":{"t":"text","value":"ab\\_%"},"ci":false,"neg":false}), "LIKE"),
+        (json!({"t":"cmp","op":"gt","l":{"t":"arith","op":"add","l":col(&[], "level"),"r":{"t":"int","value":1}},"r":{"t":"int","value":2}}), " + "),
+        (json!({"t":"cmp","op":"gt","l":{"t":"func","name":"length","args":[col(&[], "title")]},"r":{"t":"int","value":2}}), "LENGTH"),
+    ];
+    for (filter, needle) in filters {
+        let schema = filter_schema(filter.clone()).unwrap_or_else(|e| panic!("{filter}: {e}"));
+        for dialect in [Dialect::Postgres, Dialect::Sqlite] {
+            let operation = serde_json::from_value(json!({"op":"select","model":"Selected"})).unwrap();
+            let Plan::Select(plan) = Planner::plan(&schema, Target::new(dialect), &operation, &NoParams).unwrap() else { panic!("select") };
+            let sql = db::build(dialect, &plan.stmt).0;
+            assert!(sql.contains(needle) && sql.contains(" WHERE "), "{filter}: {sql}");
+            for op in ["update", "delete"] {
+                let operation = serde_json::from_value(json!({"op":op,"model":"Selected","set":[{"field":"title","value":{"t":"text","value":"u"}}]})).unwrap();
+                let sql = match Planner::plan(&schema, Target::new(dialect), &operation, &NoParams).unwrap() {
+                    Plan::Update(stmt, _) => db::build(dialect, &stmt).0,
+                    Plan::Delete(stmt, _) => db::build(dialect, &stmt).0,
+                    _ => panic!("write"),
+                };
+                assert!(sql.contains(needle) && sql.contains(" WHERE "), "{op} {filter}: {sql}");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_default_filter_through_a_to_many_path_is_rejected() {
+    let error = filter_schema(json!({"t":"cmp","op":"eq","l":col(&["kids"], "id"),"r":{"t":"int","value":1}})).err().expect("rejected");
+    assert!(error.contains("kids") || error.contains("many"), "{error}");
+}
+
+/// A to-one path in the default of a relation target gets its own alias: it never repeats the alias of the target.
+#[test]
+fn a_to_one_default_through_a_relation_target_keeps_its_aliases_apart() {
+    use monorm_engine::db;
+    let raw = json!({"models":[
+        {"name":"Owner","table":"owners","fields":[{"name":"id","column":"id","type":"int","primary_key":true}],
+         "relations":[{"name":"items","kind":"many","target":"Selected","from":"id","to":"parent_id"}]},
+        {"name":"Selected","table":"selected","fields":[
+            {"name":"id","column":"id","type":"int","primary_key":true},
+            {"name":"parent_id","column":"parent_id","type":"int"}],
+         "relations":[{"name":"parent","kind":"one","target":"Parent","from":"parent_id","to":"id","foreign_key":true}]},
+        {"name":"Parent","table":"parents","fields":[{"name":"id","column":"id","type":"int","primary_key":true},{"name":"label","column":"label","type":"text"}]}
+    ],"behavior":{"schema_contract":5,"read_defaults":[{"source":"ext","name":"d","model":"Selected",
+        "filter":{"t":"cmp","op":"eq","l":col(&["parent"], "label"),"r":{"t":"text","value":"x"}}}]}});
+    let schema = Schema::from_ir(serde_json::from_value(raw).unwrap()).unwrap();
+    for dialect in [Dialect::Postgres, Dialect::Sqlite] {
+        let filtered = json!({"op":"select","model":"Owner","filters":[{"t":"cmp","op":"eq","l":col(&["items"], "id"),"r":{"t":"int","value":1}}]});
+        let Plan::Select(plan) = Planner::plan(&schema, Target::new(dialect), &serde_json::from_value(filtered).unwrap(), &NoParams).unwrap() else { panic!("select") };
+        let sql = db::build(dialect, &plan.stmt).0;
+        assert!(sql.contains(r#""t2"."id" = "t1"."parent_id""#) && sql.contains(r#""t2"."label""#), "{sql}");
+        let bypass = json!({"op":"select","model":"Owner","without_defaults":true,"filters":[{"t":"cmp","op":"eq","l":col(&["items"], "id"),"r":{"t":"int","value":1}}]});
+        let Plan::Select(plan) = Planner::plan(&schema, Target::new(dialect), &serde_json::from_value(bypass).unwrap(), &NoParams).unwrap() else { panic!("select") };
+        assert!(!db::build(dialect, &plan.stmt).0.contains("label"));
+    }
+}
+
+fn joined_parent_default(filter: serde_json::Value) -> Schema {
+    let raw = json!({"models":[
+        {"name":"Selected","table":"selected","fields":[
+            {"name":"id","column":"id","type":"int","primary_key":true},
+            {"name":"parent_id","column":"parent_id","type":"int"}],
+         "relations":[{"name":"parent","kind":"one","target":"Parent","from":"parent_id","to":"id","foreign_key":true}]},
+        {"name":"Parent","table":"parents","fields":[
+            {"name":"id","column":"id","type":"int","primary_key":true},
+            {"name":"owner_id","column":"owner_id","type":"int"}],
+         "relations":[{"name":"owner","kind":"one","target":"Owner","from":"owner_id","to":"id","foreign_key":true}]},
+        {"name":"Owner","table":"owners","fields":[
+            {"name":"id","column":"id","type":"int","primary_key":true},
+            {"name":"label","column":"label","type":"text"}]}
+    ],"behavior":{"schema_contract":5,"read_defaults":[
+        {"source":"ext","name":"load","model":"Selected","load":[["parent"]]},
+        {"source":"ext","name":"d","model":"Parent","filter":filter}]}});
+    Schema::from_ir(serde_json::from_value(raw).unwrap()).unwrap()
+}
+
+/// A to-one path in the default of a joined target is an EXISTS in the join condition, so the source row survives.
+#[test]
+fn a_to_one_default_of_a_joined_target_is_an_exists_in_the_join_condition() {
+    use monorm_engine::db;
+    let schema = joined_parent_default(json!({"t":"cmp","op":"eq","l":col(&["owner"], "label"),"r":{"t":"text","value":"x"}}));
+    for dialect in [Dialect::Postgres, Dialect::Sqlite] {
+        let operation = serde_json::from_value(json!({"op":"select","model":"Selected"})).unwrap();
+        let Plan::Select(plan) = Planner::plan(&schema, Target::new(dialect), &operation, &NoParams).unwrap() else { panic!("select") };
+        let sql = db::build(dialect, &plan.stmt).0;
+        assert!(sql.contains("LEFT JOIN \"parents\"") && sql.contains(" AND EXISTS(SELECT") && sql.contains("\"label\""), "{sql}");
+    }
+}

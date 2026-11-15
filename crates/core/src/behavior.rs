@@ -30,9 +30,14 @@ pub fn prepare(ir: &mut crate::ir::SchemaIr, language: Option<&str>) -> Result<(
 /// [`prepare`] with the plan of the installed extension libraries that the schema selected.
 /// The plan runs their passes and the compiled passes in one order.
 pub fn prepare_with(ir: &mut crate::ir::SchemaIr, language: Option<&str>, plan: Option<&crate::loader::Plan>) -> Result<(), String> {
+    prepare_collecting(ir, language, plan, &mut vec![])
+}
+
+/// [`prepare_with`] that also collects the warnings of the expression arguments.
+pub fn prepare_collecting(ir: &mut crate::ir::SchemaIr, language: Option<&str>, plan: Option<&crate::loader::Plan>, warnings: &mut Vec<crate::dsl::expr::Warning>) -> Result<(), String> {
     if ir.behavior.storage.is_none() && (!ir.behavior.field_storage.is_empty() || !ir.behavior.owner_links.is_empty()) { return Err("storage ownership contributions require an explicit physical schema".into()); }
     if let Some(plan) = plan {
-        plan.lower(ir, language, &run_static_pass)?;
+        plan.lower_collecting(ir, language, &run_static_pass, warnings)?;
     } else {
         validate_declarations(ir, &[], language)?;
     }
