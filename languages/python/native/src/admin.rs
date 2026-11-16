@@ -58,7 +58,7 @@ impl Drop for CancelOnDrop {
 }
 
 /// Runs host functions (async functions of `(database, args)`) on the app's asyncio loop, each one
-/// inside `Database.bind_request`, so it sees the request's transaction, scope and tenant.
+/// inside `Database.bind_request`, so it sees the request's transaction and scope.
 struct PyBridge {
     event_loop: Py<PyAny>,
     submit: Py<PyAny>,
@@ -82,8 +82,7 @@ impl PyBridge {
                 Some(inner) => Some(Py::new(py, Transaction { inner, failure: Mutex::new(None) })?),
                 None => None,
             };
-            let tenant = ctx.tenant.map(|t| t.to_string());
-            let args = (&self.event_loop, function, &self.database, tx, payload.to_string(), ctx.scope.to_string(), tenant);
+            let args = (&self.event_loop, function, &self.database, tx, payload.to_string(), ctx.scope.to_string());
             let fut = self.submit.call1(py, args)?;
             let (sender, receiver) = oneshot::channel();
             fut.call_method1(py, "add_done_callback", (Done(Mutex::new(Some(sender))),))?;

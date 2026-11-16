@@ -67,7 +67,7 @@ export const HOST: Readonly<Record<string, HostFunction>> = {
 
 /** The one function that the native service calls for every host call. It answers an envelope: `{ok, value}` or `{ok: false, kind, message}`. */
 export function hostDispatch(database: Database, host: Readonly<Record<string, HostFunction>> = HOST): NativeHostDispatch {
-  return async (name, tx, payload, scope, tenant) => {
+  return async (name, tx, payload, scope) => {
     try {
       const fn = host[name];
       if (fn === undefined) throw new Error(`no host function ${name}`);
@@ -76,7 +76,7 @@ export function hostDispatch(database: Database, host: Readonly<Record<string, H
       const value =
         tx === null
           ? await run()
-          : await database.bindRequest(tx, { scope: JSON.parse(scope), ...(tenant === null ? {} : { tenant: JSON.parse(tenant) }) }, run);
+          : await database.bindRequest(tx, { scope: JSON.parse(scope) }, run);
       return JSON.stringify({ ok: true, value: value ?? null });
     } catch (e) {
       const error = e instanceof Error ? e : new Error(String(e));

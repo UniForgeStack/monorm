@@ -303,42 +303,6 @@ test('replicas answer reads outside a transaction; writes and transactions use t
   await assertBackends(url, before);
 });
 
-test('tenant inside a transaction of another tenant raises', async () => {
-  const registry = new Registry();
-  const Note = loads(NOTES, { registry })['Note'] as any;
-  const url = getDatabase().url;
-  const admin = await connect(url, { registry, default: false, maxConnections: 1 });
-  await admin.dropTables();
-  await admin.createTables();
-  await admin.execute(RLS);
-  await Note.objects.using(admin).insertMany([{ tenant: 'a', body: '1' }, { tenant: 'b', body: '2' }]);
-  const app = await connect(`postgres://monorm_s6_app:app@${url.split('@')[1]}`, { registry, default: false, maxConnections: 2 });
-  const bodies = async () => (await Note.objects.using(app)).map((n: any) => n.body);
-  const other = () => app.tenant('b', () => app.transaction(bodies));
-  try {
-    await app.tenant('a', async () => {
-      // A call made outside the transaction does not see it: it opens its own.
-      const task = other();
-      await app.transaction(async () => {
-        assert.deepEqual(await task, ['2']);
-        assert.throws(() => app.tenant('b', async () => {}), /another tenant/);
-        // A savepoint keeps the tenant of its transaction.
-        await app.transaction(async () => assert.throws(() => app.tenant('b', async () => {}), /another tenant/));
-        // The same tenant is allowed.
-        await app.tenant('a', async () => assert.deepEqual(await bodies(), ['1']));
-      });
-    });
-    // A transaction with no tenant counts as different.
-    await app.transaction(async () => assert.throws(() => app.tenant('a', async () => {}), /another tenant/));
-    // Outside any transaction the tenant switches freely.
-    await app.tenant('a', () => app.tenant('b', async () => assert.deepEqual(await bodies(), ['2'])));
-  } finally {
-    await app.close();
-    await admin.dropTables();
-    await admin.close();
-  }
-});
-
 test('load reload reads the primary on a database with replicas', async () => {
   const db = getDatabase(), url = await replicaUrl();
   const routed = await connect(db.url, { replicas: [url], default: false, maxConnections: 2 });
@@ -373,74 +337,9 @@ test('a to-one reload reads the primary on a database with replicas', async () =
   }
 });
 
-test('tenant ids are checked', async () => {
+test('the tenant block is gone', async () => {
   const db = getDatabase();
-  for (const bad of [true, null, NaN, Infinity]) {
-    assert.throws(() => db.tenant(bad as never, async () => {}), /tenant id/);
-  }
-  // An empty id would look like no tenant: Postgres gives '' for a setting a pooled
-  // connection had before.
-  assert.throws(() => db.tenant('', async () => {}), /empty/);
-});
-
-const NOTES = `datasource db { provider = "postgresql" }
-model Note {
-  id     Int    @id @default(autoincrement())
-  tenant String
-  body   String
-  @@map("s6_js_notes")
-}
-`;
-
-const RLS = `
-DO $$ BEGIN
-  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'monorm_s6_app') THEN
-    CREATE ROLE monorm_s6_app LOGIN PASSWORD 'app';
-  END IF;
-END $$;
-GRANT SELECT, INSERT, UPDATE, DELETE ON s6_js_notes TO monorm_s6_app;
-GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO monorm_s6_app;
-ALTER TABLE s6_js_notes ENABLE ROW LEVEL SECURITY;
-CREATE POLICY tenant ON s6_js_notes
-  USING (tenant = current_setting('app.tenant', true))
-  WITH CHECK (tenant = current_setting('app.tenant', true));
-`;
-
-test('tenant sets app.tenant in each transaction for row-level security', async () => {
-  const registry = new Registry();
-  const Note = loads(NOTES, { registry })['Note'] as any;
-  const url = getDatabase().url;
-  const admin = await connect(url, { registry, default: false, maxConnections: 1 });
-  await admin.dropTables();
-  await admin.createTables();
-  await admin.execute(RLS);
-  await Note.objects.using(admin).insertMany([{ tenant: 'a', body: '1' }, { tenant: 'b', body: '2' }]);
-  const app = await connect(`postgres://monorm_s6_app:app@${url.split('@')[1]}`, { registry, default: false, maxConnections: 1 });
-  try {
-    assert.equal(await Note.objects.using(app).count(), 0);
-    await app.tenant('a', async () => {
-      assert.deepEqual((await Note.objects.using(app)).map((n: any) => n.body), ['1']);
-      await app.transaction(async () => {
-        assert.equal(await Note.objects.using(app).count(), 1);
-        await Note.objects.using(app).insert({ tenant: 'a', body: '3' });
-      });
-      await assert.rejects(Note.objects.using(app).insert({ tenant: 'b', body: 'x' }), /row-level security/);
-      await app.tenant(7, async () => assert.equal(await Note.objects.using(app).count(), 0));
-      await app.primary.transaction(async () => assert.equal(await Note.objects.using(app).count(), 2));
-    });
-    assert.equal(await Note.objects.using(admin).count(), 3);
-    assert.equal(await Note.objects.using(app).count(), 0);
-  } finally {
-    await app.close();
-    await admin.dropTables();
-    await admin.close();
-  }
-  const sqlite = await sqliteDb();
-  try {
-    assert.throws(() => sqlite.tenant('a', async () => {}), /row-level security/);
-  } finally {
-    await sqlite.close();
-  }
+  assert.equal('tenant' in db, false);
 });
 
 const queryDefaults = hasExtension("monorm.query-defaults");

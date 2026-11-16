@@ -297,14 +297,13 @@ async def test_timeout_at_transaction_start(pg):
     # BEGIN and the settings. Both leave nothing open when the error arrives. The Rust fake-driver tests
     # pin each phase; a real server cannot slow the settings step deterministically.
     solo = await pg.open(max_connections=1)
-    with solo.tenant(7):
-        with pytest.raises(monorm.TransactionTimeoutError) as caught:
-            async with solo.transaction(timeout=1e-9):
-                await solo.execute("SELECT 1")
-        assert caught.value.outcome == "rolled_back"
-        assert await open_transactions(await pg.open()) == 0
-        async with solo.transaction():
-            assert (await solo.fetch("SELECT current_setting('app.tenant', true) AS t"))[0]["t"] == "7"
+    with pytest.raises(monorm.TransactionTimeoutError) as caught:
+        async with solo.transaction(timeout=1e-9):
+            await solo.execute("SELECT 1")
+    assert caught.value.outcome == "rolled_back"
+    assert await open_transactions(await pg.open()) == 0
+    async with solo.transaction():
+        assert (await solo.fetch("SELECT 1 AS t"))[0]["t"] == 1
 
 
 async def test_timeout_running_statement(backend):

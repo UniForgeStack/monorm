@@ -282,7 +282,7 @@ pub(crate) async fn run(s: &State_, c: Call<'_>, p: Prepared) -> Response {
         "service": resource.service.get(p.op).is_some(),
         "sync": resource.service.get(p.op).is_some_and(|o| o.sync),
     });
-    let ctx = CallContext { request_id: auth.security.call_id(), tenant: None, scope: json!({}), tx: None };
+    let ctx = CallContext { request_id: auth.security.call_id(), scope: json!({}), tx: None };
     let answer = match bridge.call(&p.function, payload, ctx).await {
         Ok(v) => v,
         Err(e) => return host_failure(&meta, &p.function, e),

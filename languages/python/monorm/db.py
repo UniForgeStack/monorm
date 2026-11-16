@@ -37,13 +37,9 @@ _open: ContextVar[frozenset[str]] = ContextVar("monorm_open", default=frozenset(
 # The extensions whose triggers `skip_triggers()` blocks of the current task skip.
 _skip: ContextVar[frozenset[str]] = ContextVar("monorm_skip", default=frozenset())
 # The scope index of a key that `unscoped()` opened: no parameter holds its value.
-OPEN_INDEX = 4294967295
+OPEN_INDEX: int = _native.OPEN_INDEX
 # For each open database: the extensions with triggers that `skip_triggers()` may skip.
 _skippable: dict[Database, frozenset[str]] = {}
-# For each database in a `tenant()` block: the tenant id.
-_tenant_ids: ContextVar[dict[Database, str]] = ContextVar("monorm_tenant_ids", default={})
-# For each database with an open transaction in the current task: the tenant id it began under.
-_tx_tenants: ContextVar[dict[Database, str | None]] = ContextVar("monorm_tx_tenants", default={})
 # The `scope.<name>` values of default filters.
 _scope: ContextVar[dict[str, Any]] = ContextVar("monorm_scope", default={})
 # For each open database: the scope keys its schema reads or writes. `scope()` accepts these only.
@@ -144,15 +140,12 @@ class Database:
         return view
 
     def _with_settings(self, engine: _native.Engine) -> _native.Engine:
-        """``engine`` with the database settings of the current blocks: the tenant, the keys of
+        """``engine`` with the database settings of the current blocks: the keys of
         `unscoped()` and the extensions of `skip_triggers()`. Inside a Postgres transaction it
         is always an engine with settings, so that a setting that a block no longer sets
         is reset before the next statement."""
         names: list[str] = []
         values: list[str] = []
-        if (tenant := _tenant_ids.get().get(self._root)) is not None:
-            names.append("app.tenant")
-            values.append(tenant)
         sqlite = self.url.startswith("sqlite://")
         if (skip := _skip.get()) and sqlite:
             raise QueryError("skip_triggers() skips triggers of the database; sqlite has none that a block can skip")
@@ -187,55 +180,16 @@ class Database:
         return self._with_settings(self._replicas[self._turn])
 
     @contextmanager
-    def tenant(self, id: str | int) -> Iterator[None]:
-        """``with db.tenant(id):`` — every transaction on this database in the block first
-        runs ``SELECT set_config('app.tenant', <id>, true)`` (``SET LOCAL``), so Postgres
-        row-level security policies can read ``current_setting('app.tenant')``. A
-        statement outside a transaction runs in a transaction of its own. A transaction
-        that is already open keeps its setting, so entering the block with another tenant
-        while this database has a transaction open under a different tenant (or none)
-        raises :class:`~monorm.QueryError`. Tasks started in the block get it."""
-        if self.url.startswith("sqlite://"):
-            raise QueryError("db.tenant() sets a Postgres setting for row-level security; sqlite has none")
-        if isinstance(id, bool) or not isinstance(id, (str, int)):
-            raise TypeError(f"tenant id must be a str or an int, got {id!r}")
-        if id == "":
-            raise ValueError("tenant id must not be empty: a pooled connection reads '' for no tenant")
-        root, value = self._root, [str(id)]
-        if root in _current_tx.get() and _tx_tenants.get().get(root) != value[0]:
-            raise QueryError(
-                "db.tenant() inside a transaction opened under another tenant: the transaction keeps its tenant; "
-                "open the transaction inside the tenant block"
-            )
-        id_token = _tenant_ids.set({**_tenant_ids.get(), root: value[0]})
-        try:
-            yield
-        finally:
-            _tenant_ids.reset(id_token)
-
-    @contextmanager
-    def bind_request(
-        self, tx: _native.Transaction, *, scope: Mapping[str, Any] | None = None, tenant: str | int | None = None
-    ) -> Iterator[None]:
-        """``with db.bind_request(tx, scope={...}, tenant=id):`` — runs the block on a transaction
+    def bind_request(self, tx: _native.Transaction, *, scope: Mapping[str, Any] | None = None) -> Iterator[None]:
+        """``with db.bind_request(tx, scope={...}):`` — runs the block on a transaction
         that something else opened and will end, such as the admin service for each host
         call. Every statement of this database in the block uses ``tx``; a ``transaction()``
         block in it is a savepoint; the caller commits or rolls back ``tx``. ``scope`` gives
-        the values of :func:`scope`. ``tenant`` is the tenant id that ``tx`` began under (leave it
-        out when there is none): ``db.tenant(id)`` with the same id in the block works, and with
-        another id raises :class:`~monorm.QueryError`, as in a transaction opened by Python.
-        ``on_commit`` in the block raises :class:`~monorm.TransactionRequired`, because the commit
-        happens outside Python.
+        the values of :func:`scope`. ``on_commit`` in the block raises
+        :class:`~monorm.TransactionRequired`, because the commit happens outside Python.
         Tasks started in the block get the binding."""
-        if tenant is not None and (isinstance(tenant, bool) or not isinstance(tenant, (str, int))):
-            raise TypeError(f"tenant id must be a str or an int, got {tenant!r}")
-        root, tenant_id = self._root, None if tenant is None else str(tenant)
-        tenant_ids = {k: v for k, v in _tenant_ids.get().items() if k is not root}
-        if tenant_id is not None:
-            tenant_ids[root] = tenant_id
+        root = self._root
         tx_token = _current_tx.set({**_current_tx.get(), root: tx})
-        tx_tenant_token = _tx_tenants.set({**_tx_tenants.get(), root: tenant_id})
-        id_token = _tenant_ids.set(tenant_ids)
         check_scope(scope or {})
         scope_token = _scope.set({**_scope.get(), **(scope or {})})
         cb_token = _callbacks.set({**_callbacks.get(), root: _BoundCallbacks()})
@@ -244,8 +198,6 @@ class Database:
         finally:
             _callbacks.reset(cb_token)
             _scope.reset(scope_token)
-            _tenant_ids.reset(id_token)
-            _tx_tenants.reset(tx_tenant_token)
             _current_tx.reset(tx_token)
 
     def on_query(self, hook: Callable[[QueryEvent], object]) -> Callable[[], None]:
@@ -492,7 +444,6 @@ class Database:
         outer = enclosing is None
         tx = await self._restore_cause(self._engine.begin(enclosing, isolation, timeout), enclosing)
         token = _current_tx.set({**_current_tx.get(), self._root: tx})
-        tx_tenant_token = _tx_tenants.set({**_tx_tenants.get(), self._root: _tenant_ids.get().get(self._root)})
         callbacks = _Callbacks()
         cb_token = _callbacks.set({**_callbacks.get(), self._root: callbacks})
         try:
@@ -500,13 +451,11 @@ class Database:
         except BaseException:
             callbacks.ended = True
             _callbacks.reset(cb_token)
-            _tx_tenants.reset(tx_tenant_token)
             _current_tx.reset(token)
             await tx.rollback()
             raise
         callbacks.ended = True
         _callbacks.reset(cb_token)
-        _tx_tenants.reset(tx_tenant_token)
         _current_tx.reset(token)
         await self._restore_cause(tx.commit(), tx)
         await self._after_commit(callbacks, outer)

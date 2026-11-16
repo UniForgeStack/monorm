@@ -48,34 +48,6 @@ test('scope values are set in the block', async () => {
   assert.deepEqual(currentScope(), {});
 });
 
-test('the tenant counts as the one the transaction began under', async () => {
-  const db = getDatabase();
-  let tx = await begin();
-  await db.bindRequest(tx, { tenant: 'a' }, async () => {
-    await db.tenant('a', async () => { assert.equal(await User.objects.count(), 0); });
-    assert.throws(() => db.tenant('b', async () => {}), /another tenant/);
-    // A savepoint keeps the tenant of its transaction.
-    await db.transaction(async () => assert.throws(() => db.tenant('b', async () => {}), /another tenant/));
-    await db.transaction(async () => { await db.tenant('a', async () => {}); });
-  });
-  await tx.rollback();
-
-  tx = await begin();
-  await db.bindRequest(tx, {}, async () => {
-    assert.throws(() => db.tenant('a', async () => {}), (e) => e instanceof QueryError && /another tenant/.test(e.message));
-  });
-  await tx.rollback();
-});
-
-test('a bad tenant id raises before the binding', async () => {
-  const db = getDatabase();
-  const tx = await begin();
-  assert.throws(() => db.bindRequest(tx, { tenant: '' }, async () => {}), RangeError);
-  assert.throws(() => db.bindRequest(tx, { tenant: Number.NaN }, async () => {}), TypeError);
-  assert.equal(db.tx(), null);
-  await tx.rollback();
-});
-
 test('on_commit in the block raises because the commit happens outside', async () => {
   const db = getDatabase();
   const tx = await begin();
@@ -84,5 +56,17 @@ test('on_commit in the block raises because the commit happens outside', async (
     await assert.rejects(db.transaction(async () => { await db.onCommit(() => {}); }), /bindRequest/);
     await db.transaction(async () => {}); // a savepoint with no callback is fine
   });
+  await tx.rollback();
+});
+
+test('bind request takes no tenant argument', async () => {
+  const db = getDatabase();
+  const tx = await begin();
+  let ran = false;
+  await assert.rejects(
+    async () => db.bindRequest(tx, { tenant: 1 } as never, async () => { ran = true; }),
+    (e: unknown) => e instanceof TypeError && /takes no `tenant` option/.test(e.message),
+  );
+  assert.equal(ran, false);
   await tx.rollback();
 });

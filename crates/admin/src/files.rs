@@ -326,7 +326,7 @@ pub(crate) async fn upload(State(s): Shared, user: Option<Extension<User>>, Path
         return server_error(meta, &format!("the upload file: {m}"));
     }
     let payload = json!({"model": site.schema.model(resource.model).ir.name, "field": field, "path": temp.text(), "filename": part.filename, "content_type": part.content_type, "size": size, "max_size": MAX_UPLOAD});
-    let ctx = CallContext { request_id: auth.security.call_id(), tenant: None, scope: json!({}), tx: None };
+    let ctx = CallContext { request_id: auth.security.call_id(), scope: json!({}), tx: None };
     let reference = match bridge.call("file.store", payload, ctx).await {
         Ok(v) if v.is_object() => v,
         Ok(_) => return server_error(meta, "file.store returns the reference of the file"),
@@ -405,7 +405,7 @@ pub(crate) async fn download(State(s): Shared, user: Option<Extension<User>>, Pa
     let content_type = object.get("content_type").and_then(Value::as_str).map(clean_type).unwrap_or_else(|| "application/octet-stream".to_owned());
     let temp = Temp::new();
     let payload = json!({"model": s.site.schema.model(resource.model).ir.name, "field": field, "reference": reference, "path": temp.text()});
-    let ctx = CallContext { request_id: auth.security.call_id(), tenant: None, scope: json!({}), tx: None };
+    let ctx = CallContext { request_id: auth.security.call_id(), scope: json!({}), tx: None };
     if let Err(e) = bridge.call("file.fetch", payload, ctx).await {
         return host_failure(&meta, "file.fetch", e);
     }

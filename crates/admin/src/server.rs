@@ -264,7 +264,7 @@ pub(crate) async fn queryset_rows(s: &State_, resource: &Resource, q: &crate::si
     }
     if let Some(function) = &q.function {
         let Some((bridge, auth)) = &s.bridge else { return Err(ListError::Engine("a queryset function needs the host bridge".into())) };
-        let ctx = CallContext { request_id: auth.security.call_id(), tenant: None, scope: json!({}), tx: Some(scope.transaction()) };
+        let ctx = CallContext { request_id: auth.security.call_id(), scope: json!({}), tx: Some(scope.transaction()) };
         let payload = json!({"resource": resource.name, "user": user_key(user)});
         let answer = bridge.call(function, payload, ctx).await.map_err(|e| ListError::Engine(format!("{}: {}", e.kind(), e.message())))?;
         let filter = answer.get("filter").filter(|f| f.is_object()).cloned().ok_or_else(|| ListError::Engine("the queryset function returns {\"filter\": expression}".into()))?;
@@ -358,7 +358,7 @@ const FOUND_KEYS: usize = 1000;
 pub(crate) async fn found_keys(s: &State_, resource: &Resource, scope: &Scoped, q: Option<&str>) -> Result<Option<Vec<Vec<Value>>>, ListError> {
     let (Some(name), Some(text)) = (resource.search_with.as_deref(), q.map(str::trim).filter(|t| !t.is_empty())) else { return Ok(None) };
     let Some((bridge, auth)) = &s.bridge else { return Err(ListError::Engine("search_with needs the host bridge".into())) };
-    let ctx = CallContext { request_id: auth.security.call_id(), tenant: None, scope: json!({}), tx: Some(scope.transaction()) };
+    let ctx = CallContext { request_id: auth.security.call_id(), scope: json!({}), tx: Some(scope.transaction()) };
     let answer = bridge.call(name, json!({"q": text, "limit": FOUND_KEYS}), ctx).await.map_err(|e| ListError::Engine(format!("{}: {}", e.kind(), e.message())))?;
     let Value::Array(items) = answer else { return Err(ListError::Engine("the search function returns a list of keys".into())) };
     if items.len() > FOUND_KEYS {
@@ -489,7 +489,7 @@ async fn fill_batch(s: &State_, resource: &Resource, scope: &Scoped, page: &mut 
     for &i in &page.batch {
         let c = &resource.columns[i];
         let Source::Batch(name) = &c.source else { continue };
-        let ctx = CallContext { request_id: auth.security.call_id(), tenant: None, scope: json!({}), tx: Some(scope.transaction()) };
+        let ctx = CallContext { request_id: auth.security.call_id(), scope: json!({}), tx: Some(scope.transaction()) };
         let answer = bridge.call(name, json!({"keys": keys, "column": c.label}), ctx).await.map_err(|e| ListError::Engine(format!("{}: {}", e.kind(), e.message())))?;
         let Value::Array(values) = answer else { return Err(ListError::Engine(format!("the function of column {:?} returns a list with one value for each key", c.label))) };
         if values.len() != page.rows.len() {

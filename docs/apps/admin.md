@@ -396,17 +396,17 @@ A statement on another handle waits for a connection of its own.
 `bind_request` and `bindRequest` are public:
 
 ```python
-with db.bind_request(tx, scope={"user": 1}, tenant="acme"):
+with db.bind_request(tx, scope={"user": 1}):
     ...  # every statement of `db` uses `tx`; the caller commits or rolls back
 ```
 
 ```ts
-await db.bindRequest(tx, { scope: { user: 1 }, tenant: "acme" }, async () => { /* ... */ });
+await db.bindRequest(tx, { scope: { user: 1 } }, async () => { /* ... */ });
 ```
 
 - `tx` is a transaction that something else opened and will end.
 - A `transaction()` block in the binding is a savepoint.
-- `tenant` is the tenant id that `tx` began under: `db.tenant(sameId)` works, and another id raises `QueryError`.
+- `scope` goes through the same scope context as `scope()`: it checks the keys. The statements publish the same `scope.<key>` settings as `scope()`: none in this release, since no database object reads a key yet.
 - `on_commit` in the binding raises `TransactionRequired`, because the commit happens outside.
 
 When a request times out, Python cancels the host task, and Node cannot cancel a Promise: its work runs on and the service discards the result.
@@ -1141,7 +1141,7 @@ A failure includes a database without the admin tables: the message names the mi
 
 `db_settings` is a table of text values.
 On PostgreSQL, the admin runs `set_config(key, value, true)` at the start of each request transaction for every entry.
-A row-level security policy can read the value with `current_setting('app.tenant')`.
+A row-level security policy can read the value with `current_setting('app.tenant')`. The setting name is free: `db_settings` is separate from the `scope.<key>` settings of `monorm.scope()`.
 The value is static for the whole process.
 SQLite has no such settings: the admin ignores the key and writes one message at startup.
 

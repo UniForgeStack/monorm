@@ -275,7 +275,7 @@ async fn run(s: &State_, o: Open<'_>, name: &str, body: axum::body::Body) -> Res
             "user_agent": meta.agent,
             "allow_protected": s.site.schema.model(resource.model).ir.protected_write && resource.allow_protected,
         });
-        let ctx = CallContext { request_id: auth.security.call_id(), tenant: None, scope: json!({}), tx: None };
+        let ctx = CallContext { request_id: auth.security.call_id(), scope: json!({}), tx: None };
         let answer = match bridge.call(&function, payload, ctx).await {
             Ok(v) => v,
             Err(e) => return hostwrite::host_failure(&meta, &function, e),

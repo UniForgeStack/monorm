@@ -1,4 +1,4 @@
-"""Commit callbacks, session advisory locks, read replicas and tenants."""
+"""Commit callbacks, session advisory locks, read replicas."""
 
 import asyncio
 import time
@@ -418,15 +418,6 @@ async def test_using_primary_resolves_the_default_database(clean):
         monorm.db._default = db
 
 
-NOTES = """datasource db { provider = "postgresql" }
-model Note {
-  id     Int    @id @default(autoincrement())
-  tenant String
-  body   String
-  @@map("s6_notes")
-}
-"""
-
 RLS_ROLE = """
 DO $$ BEGIN
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'monorm_s6_app') THEN
@@ -434,108 +425,6 @@ DO $$ BEGIN
   END IF;
 END $$;
 """
-
-RLS = (
-    RLS_ROLE
-    + """
-GRANT SELECT, INSERT, UPDATE, DELETE ON s6_notes TO monorm_s6_app;
-GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO monorm_s6_app;
-ALTER TABLE s6_notes ENABLE ROW LEVEL SECURITY;
-CREATE POLICY tenant ON s6_notes
-  USING (tenant = current_setting('app.tenant', true))
-  WITH CHECK (tenant = current_setting('app.tenant', true));
-"""
-)
-
-
-async def test_tenant_sets_app_tenant_in_each_transaction_for_row_level_security(db):
-    registry = monorm.Registry()
-    Note = monorm.loads(NOTES, registry=registry)["Note"]
-    admin = await monorm.connect(db.url, registry=registry, default=False, max_connections=1)
-    await admin.drop_tables()
-    await admin.create_tables()
-    await admin.execute(RLS)
-    await Note.objects.using(admin).insert_many([{"tenant": "a", "body": "1"}, {"tenant": "b", "body": "2"}])
-    app = await monorm.connect(
-        "postgres://monorm_s6_app:app@" + db.url.split("@", 1)[1], registry=registry, default=False, max_connections=1
-    )
-    try:
-        assert await Note.objects.using(app).count() == 0  # no tenant: the policy hides every row
-        with app.tenant("a"):
-            assert [n.body for n in await Note.objects.using(app)] == ["1"]
-            async with app.transaction():
-                assert await Note.objects.using(app).count() == 1
-                await Note.objects.using(app).insert(tenant="a", body="3")
-            with pytest.raises(monorm.DatabaseError, match="row-level security"):
-                await Note.objects.using(app).insert(tenant="b", body="x")
-            with app.tenant(7):
-                assert await Note.objects.using(app).count() == 0
-            async with app.primary.transaction():
-                assert await Note.objects.using(app).count() == 2
-        assert await Note.objects.using(admin).count() == 3
-        # SET LOCAL ends with its transaction: the pooled connection keeps no tenant.
-        assert await Note.objects.using(app).count() == 0
-    finally:
-        await app.close()
-        await admin.drop_tables()
-        await admin.close()
-    sqlite = await sqlite_db()
-    try:
-        with pytest.raises(monorm.QueryError, match="row-level security"):
-            with sqlite.tenant("a"):
-                pass
-    finally:
-        await sqlite.close()
-
-
-async def test_tenant_inside_a_transaction_of_another_tenant_raises(db):
-    registry = monorm.Registry()
-    Note = monorm.loads(NOTES, registry=registry)["Note"]
-    admin = await monorm.connect(db.url, registry=registry, default=False, max_connections=1)
-    await admin.drop_tables()
-    await admin.create_tables()
-    await admin.execute(RLS)
-    await Note.objects.using(admin).insert_many([{"tenant": "a", "body": "1"}, {"tenant": "b", "body": "2"}])
-    app = await monorm.connect(
-        "postgres://monorm_s6_app:app@" + db.url.split("@", 1)[1], registry=registry, default=False, max_connections=2
-    )
-    try:
-
-        async def other():
-            with app.tenant("b"):
-                async with app.transaction():
-                    return [n.body for n in await Note.objects.using(app)]
-
-        with app.tenant("a"):
-            # A task made outside the transaction does not see it: it opens its own.
-            task = asyncio.create_task(other())
-            async with app.transaction():
-                assert await task == ["2"]
-                with pytest.raises(monorm.QueryError, match="another tenant"):
-                    with app.tenant("b"):
-                        pass
-                # A savepoint keeps the tenant of its transaction.
-                async with app.transaction():
-                    with pytest.raises(monorm.QueryError, match="another tenant"):
-                        with app.tenant("b"):
-                            pass
-                # The same tenant is allowed.
-                with app.tenant("a"):
-                    assert [n.body for n in await Note.objects.using(app)] == ["1"]
-        # A transaction with no tenant counts as different.
-        async with app.transaction():
-            with pytest.raises(monorm.QueryError, match="another tenant"):
-                with app.tenant("a"):
-                    pass
-        # Outside any transaction the tenant switches freely.
-        with app.tenant("a"):
-            with app.tenant("b"):
-                assert [n.body for n in await Note.objects.using(app)] == ["2"]
-    finally:
-        await app.close()
-        await admin.drop_tables()
-        await admin.close()
-
 
 async def test_refresh_reads_the_primary_on_a_database_with_replicas(clean):
     db = clean
@@ -552,16 +441,9 @@ async def test_refresh_reads_the_primary_on_a_database_with_replicas(clean):
         await routed.close()
 
 
-async def test_tenant_ids_are_checked(db):
-    for bad in (True, None, 1.5):
-        with pytest.raises(TypeError, match="tenant id"):
-            with db.tenant(bad):  # type: ignore[arg-type]
-                pass
-    # An empty id would look like no tenant: Postgres gives '' for a setting a pooled
-    # connection had before.
-    with pytest.raises(ValueError, match="empty"):
-        with db.tenant(""):
-            pass
+async def test_the_tenant_block_is_gone(db):
+    assert not hasattr(db, "tenant")
+    assert not hasattr(monorm, "tenant")
 
 
 QUERY_DEFAULTS = has_extension("monorm.query-defaults")

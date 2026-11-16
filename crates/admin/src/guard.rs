@@ -53,7 +53,7 @@ async fn renew(g: &Guard, s: &Session, request_id: u64) -> Result<Renewal, Respo
         scope.rollback().await;
         return Ok(Renewal::Ended);
     }
-    let ctx = CallContext { request_id, tenant: None, scope: json!({}), tx: Some(scope.transaction()) };
+    let ctx = CallContext { request_id, scope: json!({}), tx: Some(scope.transaction()) };
     let fresh = match g.auth.bridge.call(USER, json!({"key": s.user["key"]}), ctx).await {
         Ok(v) => v,
         Err(e) => {

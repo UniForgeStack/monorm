@@ -514,11 +514,6 @@ async def test_insert_many_copy_in_a_transaction(clean):
     assert await Tag.objects.count() == 0
 
 
-async def test_copy_in_a_tenant_block(clean):
-    with clean.tenant(7):
-        assert await Tag.objects.insert_many([{"name": "a"}], copy=True) == 1
-
-
 async def test_copy_is_seen_by_query_hooks(clean):
     events: list[monorm.QueryEvent] = []
     remove = clean.on_query(events.append)

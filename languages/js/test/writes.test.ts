@@ -403,12 +403,12 @@ test("insertMany copy in a transaction", async () => {
   assert.equal(await Tag.objects.count(), 0);
 });
 
-test("insertMany copy in a tenant block and seen by query hooks", async () => {
+test("copy is seen by query hooks", async () => {
   const db = getDatabase();
   const events: QueryEvent[] = [];
   const off = db.onQuery((e) => events.push(e));
   try {
-    await db.tenant(7, async () => assert.equal(await Tag.objects.insertMany([{ name: "a" }, { name: "b" }], { copy: true, batchSize: undefined } as never), 2));
+    assert.equal(await Tag.objects.insertMany([{ name: "a" }, { name: "b" }], { copy: true, batchSize: undefined } as never), 2);
   } finally {
     off();
   }

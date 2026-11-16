@@ -155,7 +155,7 @@ fn user_key(user: &Value) -> String {
 
 impl Ctx {
     fn context(&self, scope: &Scoped) -> CallContext {
-        CallContext { request_id: self.auth.security.call_id(), tenant: None, scope: json!({}), tx: Some(scope.transaction()) }
+        CallContext { request_id: self.auth.security.call_id(), scope: json!({}), tx: Some(scope.transaction()) }
     }
 
     async fn audit(&self, scope: &Scoped, entry: Entry<'_>) -> Result<(), String> {

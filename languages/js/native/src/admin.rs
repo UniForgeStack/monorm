@@ -13,9 +13,9 @@ use serde_json::Value;
 
 use crate::{Engine, JsSchema, Trace, Transaction};
 
-/// `(name, transaction or null, payload JSON, scope JSON, tenant JSON or null)`, spread into five JS arguments
+/// `(name, transaction or null, payload JSON, scope JSON)`, spread into four JS arguments
 /// (`FnArgs`; a plain tuple would arrive as one array). The Promise gives an envelope JSON.
-type Args = FnArgs<(String, Option<Transaction>, String, String, Option<String>)>;
+type Args = FnArgs<(String, Option<Transaction>, String, String)>;
 type Dispatch = ThreadsafeFunction<Args, Promise<String>, Args, Status, false, true>;
 
 /// Calls the host functions (async functions of `(database, args)`) through one JS dispatch function that runs
@@ -32,7 +32,6 @@ impl HostBridge for NodeBridge {
             ctx.tx.map(|inner| Transaction { inner }),
             payload.to_string(),
             ctx.scope.to_string(),
-            ctx.tenant.map(|t| t.to_string()),
         )
             .into();
         let dispatch = self.dispatch.clone();

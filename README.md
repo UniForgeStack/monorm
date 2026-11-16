@@ -89,7 +89,7 @@ These come with the ORM:
 - Queries: window functions, CTEs (also recursive), subqueries and `EXISTS`, aggregates over relations, full-text search, JSON and array columns, cursor pagination.
 - Writes: upsert (`ON CONFLICT`), bulk insert, bulk update, update and delete with `RETURNING`.
 - Schema: check and exclusion constraints, partial and non-btree indexes, triggers and SQL functions, declarative partitions, all with migrations.
-- Operations: row and advisory locks, read replicas, tenants with row-level security, N+1 detection, query hooks and OpenTelemetry.
+- Operations: row and advisory locks, read replicas, one scope for the app and for row-level security, N+1 detection, query hooks and OpenTelemetry.
 - [Raw SQL](docs/api/python-api.md#raw-sql-and-query-plans) is still there when you need it.
 
 Some features are PostgreSQL only; [schema.md](docs/schema/schema.md) lists the SQLite limits.

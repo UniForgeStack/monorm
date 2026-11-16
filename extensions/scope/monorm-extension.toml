@@ -1,5 +1,5 @@
 id = "monorm.scope"
-version = "0.1.0"
+version = "0.1.2"
 abi = "0.2"
 library = "monorm_scope"
 schema_contract = "5.3"

@@ -1476,7 +1476,7 @@ async with db.transaction(isolation="serializable", timeout=5.0):
 
 `isolation` is `"read_committed"`, `"repeatable_read"` or `"serializable"`.
 Omit it to use the database default.
-Postgres starts the transaction with `BEGIN ISOLATION LEVEL ...`, before the tenant settings.
+Postgres starts the transaction with `BEGIN ISOLATION LEVEL ...`, before the transaction settings.
 SQLite accepts each level and runs every transaction as serializable (`BEGIN IMMEDIATE`).
 The ORM does not retry a serialization failure (`40001`).
 
@@ -1668,25 +1668,26 @@ fresh = await User.objects.using("primary").get(...)    # the primary
 * No health checks or failover: an error on a replica goes to the caller.
 * `max_connections` applies to each pool. `db.close()` closes all of them.
 
-### Tenants and row-level security
+### Scope and row-level security
+
+`db.tenant()` is removed. One scope serves the application and the database:
 
 ```python
-with db.tenant(shop.id):                 # a sync `with`: it does no I/O
-    orders = await Order.objects.all()    # RLS policies see current_setting('app.tenant')
+with monorm.scope(shop=shop.id, user=7):     # a sync `with`: it does no I/O
+    orders = await Order.objects.all()       # the filter, the insert fill and the write check use shop
 ```
 
-* Every transaction on `db` in the block first runs `SELECT set_config('app.tenant', '<id>', true)`, the same as `SET LOCAL app.tenant = ...`, with the value bound as a parameter.
-* A statement outside a transaction runs in a transaction of its own: `BEGIN`, `set_config`, the statement, `COMMIT`. That is four round trips instead of one (estimated); put many statements in one `db.transaction()`.
-* A transaction that is already open keeps its setting. Savepoints use the setting of their transaction.
-  `db.tenant(x)` raises `QueryError` when this task has an open transaction on `db` that began under a different tenant (a transaction with no tenant counts as different); re-entering the same tenant is allowed. Open the transaction inside the block, or give the helper a transaction of its own in another task.
-* The setting ends with each transaction, so pooled connections keep no tenant.
-  A connection that had a tenant reads `''` (not `NULL`) for the setting after that, so a policy should read `NULLIF(current_setting('app.tenant', true), '')`; `tenant("")` raises `ValueError`.
-* Raw `db.execute(...)` in the block also runs in a transaction of its own, so a statement that cannot run in a transaction (`CREATE INDEX CONCURRENTLY`, `VACUUM`) fails there; run it outside the block.
-* A composed model (model composition) stores its rows in a table for each level: each of these tables needs its own policy, for example a child policy `USING (EXISTS (SELECT 1 FROM parent p WHERE p.id = child.id))`.
-* Replicas get the same setting. Session locks (`session=True`) do not.
-* The policy must read the setting, for example `USING (shop_id::text = current_setting('app.tenant', true))`. The ORM does not create policies. A superuser and the table owner bypass RLS unless the table has `FORCE ROW LEVEL SECURITY`.
-* SQLite raises `QueryError`.
-* `monorm.scope(shop=...)` is the application-side filter (see `docs/schema/selection-and-defaults.md`, "Scope values").
+* `@@scope.by(shop: shop_id)` (the built-in `scope` extension) adds the read filter `shop_id = scope.shop`, fills `shop_id` on insert and checks it on update and delete. A write with another `shop_id` raises `ScopeMismatch`. A write with no scope value raises `ScopeMissing`; both are `QueryError`.
+* On PostgreSQL, a key that a database object reads (a policy, in the next part) is also set as the transaction-local setting `scope.<key>`, with `set_config(..., true)`. No database object reads a key in this release, so no `scope.<key>` setting is sent yet. A setting travels with the first statement in the same flight, so a scoped transaction needs no extra round trip when the statement is cached (measured, 40 ms delay proxy: about 1.1 round trips warm, 2.1 cold).
+* Once a key is sent, a setting that a block no longer sets reads `''`, not `NULL`, in the next transaction of the same connection: a policy should read `NULLIF(current_setting('scope.shop', true), '')`.
+* `with monorm.unscoped("shop"):` turns off the fill, the check and the filter of the named keys, and sets `monorm.bypass` (a list of the open keys). A write that needs a key that is neither set nor open raises `ScopeMissing`.
+* `with monorm.skip_triggers("timestamps"):` sets `monorm.skip`. A trigger that the extension declares skippable skips only for a role in `bypass_roles` of the `datasource` block (empty by default, so nothing skips). SQLite has no such triggers: it raises `QueryError`.
+* `scope()` rejects a key that no open schema reads, `None`, `''` and a list with `ValueError`.
+* The settings and the scope of a statement are in `QueryEvent.settings` (the trace).
+* Raw `db.execute(...)` is not scoped by the ORM. The ORM does not create policies; a superuser and the table owner bypass RLS unless the table has `FORCE ROW LEVEL SECURITY`.
+* A composed model (model composition) stores its rows in a table for each level: each table needs its own policy.
+* Session locks (`session=True`) set no scope setting. SQLite sets no settings: the application filter, the fill and the check still work.
+* To migrate from `db.tenant(x)`: use `monorm.scope(<key>=x)` with a schema key for the application filter, the fill and the check. Nothing sets `app.tenant` or `scope.<key>` in this release, so a hand-written policy that read `app.tenant` sees no value. Until the generated policies ship, set your own setting with a raw `set_config('app.tenant', value, true)` statement at the start of the transaction, or with `db_settings` of the admin. Do not upgrade a deployment that depends on such a policy before the policies ship.
 
 ### Finding N+1 queries: `monorm.debug`
 
@@ -1772,9 +1773,9 @@ remove = db.on_query(log_slow)
 * Each call to the database gives one event per statement: the prefetch queries that `load()` runs, each `update_many` batch, each `db.execute`, also `db.execute("A; B")`.
   A call keeps its events until it ends, so a call with many statements holds them all in memory (the review reported 200k events at about +113 MB; not measured here).
   Reads sent to a replica and the lock and unlock of `db.lock(..., session=True)` give events too.
-  `COMMIT`, `ROLLBACK` and the `set_config` statements of `db.tenant()` give no event.
+  `COMMIT`, `ROLLBACK` and the `set_config` statements of the scope settings give no event.
 * The hooks belong to the database: `db.primary` shares them.
-* The engine times the statement in Rust, from the send to the last row, with the wait for a connection and, under `db.tenant()`, its transaction, without the conversion to Python objects.
+* The engine times the statement in Rust, from the send to the last row, with the wait for a connection and, in a scoped block, its transaction, without the conversion to Python objects.
 * The hook runs after the ORM call ends, in the task that made the call.
   So context variables, for example the current span or a request id, are those of the caller.
   A hook can be a coroutine function: the ORM awaits the result.

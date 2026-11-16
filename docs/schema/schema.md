@@ -939,8 +939,8 @@ runs without one, on PostgreSQL only. A `down.sql` can carry the same first line
   Write `IF NOT EXISTS` (`IF EXISTS` in a `down.sql`) in the statement, so the next run passes.
 * **Refused**: a folder with a data step (`data.py` / `data.ts`), and any use on SQLite.
   The error names the folder (`<folder>/down.sql` for a down file).
-* **A tenant database** (`db.tenant(...)`) runs each statement in a transaction of its own,
-  so `CONCURRENTLY` fails there. Run a `Migrator` on the plain database, not on a tenant one.
+* **A scoped block** (`monorm.scope(...)`) sets transaction settings, which need a transaction,
+  so `CONCURRENTLY` fails there. Run a `Migrator` outside a scope block.
 * **A normal migrator that waits** for a no-transaction run polls the lock every 100 ms.
   A blocked wait would hold a snapshot that the index build waits for, and the two would hang.
 * The destructive gate applies as for other migrations, but its check takes no table lock:

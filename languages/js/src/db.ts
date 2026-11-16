@@ -30,10 +30,6 @@ export async function restoreCause<T>(pending: Promise<T>, tx: NativeTransaction
 
 /** For each database (its root) with an open transaction in the current async context: the innermost one. */
 const current = new AsyncLocalStorage<ReadonlyMap<Database, NativeTransaction>>();
-/** For each database in a `tenant()` call: its primary and replica engines with the tenant set. */
-const tenants = new AsyncLocalStorage<ReadonlyMap<Database, { readonly primary: NativeEngine; readonly replicas: readonly NativeEngine[]; readonly id: string }>>();
-/** For each database with an open transaction in this async context: the tenant id it began under. */
-const txTenants = new AsyncLocalStorage<ReadonlyMap<Database, string | undefined>>();
 /** The `scope.<name>` values of default filters. */
 const scopeValues = new AsyncLocalStorage<Readonly<Record<string, unknown>>>();
 /** For each open database: the scope keys its schema reads or writes. `scope()` accepts these only. */
@@ -46,8 +42,6 @@ const skipped = new AsyncLocalStorage<ReadonlySet<string>>();
 const skippable = new Map<Database, ReadonlySet<string>>();
 /** @internal The value of an open key in a scope record: no value, no filter, no fill, no check. */
 export const OPEN = Symbol("open");
-/** @internal The parameter index that marks an open key in a statement's `scope` map. */
-export const OPEN_INDEX = 4294967295;
 /** For each database with an open transaction: the onCommit callbacks of the innermost one. */
 const callbacks = new AsyncLocalStorage<ReadonlyMap<Database, (() => unknown)[]>>();
 /** The callback lists of transactions that committed or rolled back: a call started in the
@@ -273,7 +267,7 @@ export class Database {
   }
 
   /**
-   * `engine` with the database settings of the current blocks: the tenant, the keys of `unscoped()` and the
+   * `engine` with the database settings of the current blocks: the keys of `unscoped()` and the
    * extensions of `skipTriggers()`. Inside a Postgres transaction it is always an engine with
    * settings once any block set one, so a setting that a block no longer sets is reset before
    * the next statement.
@@ -281,11 +275,6 @@ export class Database {
   private withSettings(engine: NativeEngine): NativeEngine {
     const names: string[] = [];
     const values: string[] = [];
-    const tenant = tenants.getStore()?.get(this.root)?.id;
-    if (tenant !== undefined) {
-      names.push("app.tenant");
-      values.push(tenant);
-    }
     const sqlite = this.url.startsWith("sqlite://");
     const skip = skipped.getStore();
     if (skip?.size && sqlite) {
@@ -333,66 +322,23 @@ export class Database {
   }
 
   /**
-   * Runs `fn` with a tenant: every transaction on this database in it first runs
-   * `SELECT set_config('app.tenant', <id>, true)` (`SET LOCAL`), so Postgres row-level
-   * security policies can read `current_setting('app.tenant')`. A statement outside a
-   * transaction runs in a transaction of its own. A transaction that is already open keeps
-   * its setting, so a call with another tenant while this database has a transaction open under a
-   * different tenant (or none) throws `QueryError`. Gives what `fn` gives.
-   */
-  tenant<T>(id: string | number | bigint, fn: () => Promise<T>): Promise<T> {
-    const engines = this.tenantEngines(id);
-    const root = this.root;
-    if (current.getStore()?.has(root) && txTenants.getStore()?.get(root) !== engines.id) {
-      throw new QueryError(
-        "db.tenant() inside a transaction opened under another tenant: the transaction keeps its tenant; open the transaction inside the tenant block",
-      );
-    }
-    return tenants.run(new Map(tenants.getStore() ?? []).set(root, engines), async () => await fn());
-  }
-
-  /**
    * Runs `fn` on a transaction that something else opened and will end (commit or roll back).
-   * Statements in `fn` run on `tx`. The transaction counts as opened under `options.tenant`, so
-   * `db.tenant(sameId)` inside `fn` works, and `options.scope` sets the `scope.<name>` values.
+   * Statements in `fn` run on `tx`, and `options.scope` sets the `scope.<name>` values.
    * `onCommit` inside `fn` throws `TransactionRequired`: the commit happens outside it. `fn` must not end `tx`. Gives what `fn` gives.
+   * A `tenant` option throws `TypeError`: `db.tenant()` is removed.
    */
   bindRequest<T>(
     tx: NativeTransaction,
-    options: { readonly scope?: Readonly<Record<string, unknown>>; readonly tenant?: string | number | bigint },
+    options: { readonly scope?: Readonly<Record<string, unknown>> },
     fn: () => Promise<T>,
   ): Promise<T> {
+    if ("tenant" in options) throw new TypeError("bindRequest() takes no `tenant` option: db.tenant() is removed; pass `scope` instead");
     const root = this.root;
     checkScope(options.scope ?? {});
-    const engines = options.tenant === undefined ? undefined : this.tenantEngines(options.tenant);
-    const tenantMap = new Map(tenants.getStore() ?? []);
-    if (engines === undefined) tenantMap.delete(root);
-    else tenantMap.set(root, engines);
     const bound = new Map(callbacks.getStore() ?? []).set(root, noCommitWork());
     const run = async (): Promise<T> => await fn();
     return current.run(new Map(current.getStore() ?? []).set(root, tx), () =>
-      txTenants.run(new Map(txTenants.getStore() ?? []).set(root, engines?.id), () =>
-        tenants.run(tenantMap, () =>
-          callbacks.run(bound, () => scopeValues.run({ ...scopeValues.getStore(), ...options.scope }, run)))));
-  }
-
-  /** The primary and replica engines with the tenant `id` set. */
-  private tenantEngines(id: string | number | bigint) {
-    if (this.url.startsWith("sqlite://")) {
-      throw new QueryError("db.tenant() sets a Postgres setting for row-level security; sqlite has none");
-    }
-    if (!["string", "number", "bigint"].includes(typeof id) || (typeof id === "number" && !Number.isFinite(id))) {
-      throw new TypeError(`tenant id must be a string or a finite number, got ${String(id)}`);
-    }
-    if (id === "") {
-      throw new RangeError("tenant id must not be empty: a pooled connection reads '' for no tenant");
-    }
-    const root = this.root, value = [String(id)];
-    return {
-      id: value[0]!,
-      primary: root.base.withSettings(["app.tenant"], value),
-      replicas: root.replicas.map((r) => r.withSettings(["app.tenant"], value)),
-    };
+      callbacks.run(bound, () => scopeValues.run({ ...scopeValues.getStore(), ...options.scope }, run)));
   }
 
   /** @internal */
@@ -457,9 +403,8 @@ export class Database {
     const scoped = new Map(callbacks.getStore() ?? []).set(this.root, mine);
     let result: T;
     const txs = new Map(current.getStore() ?? []).set(this.root, tx);
-    const txTenant = new Map(txTenants.getStore() ?? []).set(this.root, tenants.getStore()?.get(this.root)?.id);
     try {
-      result = await current.run(txs, async () => await txTenants.run(txTenant, async () => await callbacks.run(scoped, async () => await fn())));
+      result = await current.run(txs, async () => await callbacks.run(scoped, async () => await fn()));
     } catch (e) {
       ended.add(mine);
       await wait(() => tx.rollback());
@@ -796,11 +741,12 @@ export function scopeParams(scope: Readonly<Record<string, unknown>>): unknown[]
   return Object.values(scope).filter((value) => value !== OPEN);
 }
 
-/** @internal The `scope` map of a statement: a set key gets a parameter index from `base`, an open key {@link OPEN_INDEX}. */
+/** @internal The `scope` map of a statement: a set key gets a parameter index from `base`, an open key the engine's `OPEN_INDEX`. */
 export function scopeIndex(shape: readonly string[], base: number): Record<string, number> {
   const index: Record<string, number> = {};
+  const open = native().OPEN_INDEX;
   let next = base;
-  for (const name of shape) index[name.startsWith("!") ? name.slice(1) : name] = name.startsWith("!") ? OPEN_INDEX : next++;
+  for (const name of shape) index[name.startsWith("!") ? name.slice(1) : name] = name.startsWith("!") ? open : next++;
   return index;
 }
 

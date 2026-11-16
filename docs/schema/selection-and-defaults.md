@@ -188,10 +188,10 @@ await scope({ shop: shop.id }, async () => { const orders = await Order.objects.
 * `sql()`, prepared queries and `prepare_update()` / `prepareUpdate()` read the scope as the query does.
 * `without_defaults()` / `withoutDefaults()` skips the filter and the check.
 * Inner `scope()` values replace outer ones.
-* Inserts do not read the scope: set `shop_id` yourself.
+* A model with `@@scope.by` fills the scope column on insert and checks it on update and delete. Any other model: set `shop_id` yourself.
   A composed model reads its new or changed rows back by key, without the default filter.
 * An awaited query set keeps its rows; awaiting it again under another scope gives the first rows.
-* For a check in the database as well, use Postgres row-level security with `db.tenant(id)` (see the API docs).
+* `@@scope.by(shop: shop_id)` fills `shop_id` on insert and checks it on every write, and `unscoped("shop")` opens the key. For a check in the database as well, use Postgres row-level security that reads `scope.shop` (see the API docs).
 
 The default order is one string for each order column: a field, `-` before it for descending, and an optional ` nulls first` or ` nulls last`.
 `@@query.defaults` takes the same strings as a list: `order: ["-created_at", "id"]`.

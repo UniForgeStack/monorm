@@ -276,12 +276,10 @@ test('timeout at transaction start', async () => {
   // pin each phase; a real server cannot slow the settings step deterministically.
   await onBackends(async (b) => {
     const solo = await b.open(1);
-    await solo.tenant(7, async () => {
-      await assert.rejects(solo.transaction(() => solo.execute('SELECT 1'), { timeout: 1e-9 }), isTimeout());
-      assert.equal(await openTransactions(await b.open()), 0);
-      await solo.transaction(async () => {
-        assert.equal((await solo.fetch("SELECT current_setting('app.tenant', true) AS t"))[0]!['t'], '7');
-      });
+    await assert.rejects(solo.transaction(() => solo.execute('SELECT 1'), { timeout: 1e-9 }), isTimeout());
+    assert.equal(await openTransactions(await b.open()), 0);
+    await solo.transaction(async () => {
+      assert.equal((await solo.fetch("SELECT 1 AS t"))[0]!['t'], 1);
     });
   }, ['postgres']);
 });

@@ -2,8 +2,8 @@
 //!
 //! A write runs in the request transaction: the permission checks, a `SELECT ... FOR UPDATE` with the
 //! `queryset` filter and the `can=` rule, a compare of the stored values with the values that the form
-//! loaded, the statement, one audit row, then the commit. The admin ignores tenancy: a write sets no
-//! tenant value, and the read defaults that read a `scope.<name>` value are off in the lock read too.
+//! loaded, the statement, one audit row, then the commit. The admin sets no scope value of its own: the read defaults that
+//! read a `scope.<name>` value are off in the lock read too.
 //!
 //! A model with host behavior (hooks, a hook assignment or default), a `@@protected_write` model that the resource
 //! opens and a resource with a service write through host code: see `hostwrite`.

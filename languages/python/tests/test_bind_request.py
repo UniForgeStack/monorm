@@ -50,39 +50,6 @@ async def test_scope_values_are_set_in_the_block(clean, monkeypatch):
     assert monorm.db._scope.get() == {}
 
 
-async def test_the_tenant_counts_as_the_one_the_transaction_began_under(clean):
-    db = clean
-    tx = await db._engine.begin(None, None, None)
-    with db.bind_request(tx, tenant="a"):
-        with db.tenant("a"):  # the same id is allowed
-            assert await User.objects.count() == 0
-        with pytest.raises(monorm.QueryError, match="another tenant"):
-            with db.tenant("b"):
-                pass
-        async with db.transaction():  # a savepoint keeps the tenant
-            with pytest.raises(monorm.QueryError, match="another tenant"):
-                with db.tenant("b"):
-                    pass
-    await tx.rollback()
-
-    tx = await db._engine.begin(None, None, None)
-    with db.bind_request(tx):  # no tenant
-        with pytest.raises(monorm.QueryError, match="another tenant"):
-            with db.tenant("a"):
-                pass
-    await tx.rollback()
-
-
-async def test_a_bad_tenant_id_raises_before_the_binding(clean):
-    db = clean
-    tx = await db._engine.begin(None, None, None)
-    with pytest.raises(TypeError, match="tenant id"):
-        with db.bind_request(tx, tenant=1.5):  # type: ignore[arg-type]
-            pass
-    assert db._tx() is None
-    await tx.rollback()
-
-
 async def test_on_commit_in_the_block_raises_because_the_commit_happens_outside(clean):
     db = clean
     tx = await db._engine.begin(None, None, None)
@@ -93,5 +60,14 @@ async def test_on_commit_in_the_block_raises_because_the_commit_happens_outside(
             async with db.transaction():
                 await db.on_commit(lambda: None)
         async with db.transaction():  # a savepoint with no callback is fine
+            pass
+    await tx.rollback()
+
+
+async def test_bind_request_takes_no_tenant_argument(clean):
+    db = clean
+    tx = await db._engine.begin(None, None, None)
+    with pytest.raises(TypeError, match="tenant"):
+        with db.bind_request(tx, tenant=1):  # type: ignore[call-arg]
             pass
     await tx.rollback()

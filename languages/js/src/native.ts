@@ -183,8 +183,8 @@ export interface NativeAdminSite {
   serve(engine: NativeEngine, settingsJson: string, dispatch: NativeHostDispatch, secret: string | null): Promise<NativeAdminServer>;
 }
 
-/** Runs one host function: `(name, transaction or null, payload JSON, scope JSON, tenant JSON or null)`; the Promise gives an envelope JSON. */
-export type NativeHostDispatch = (name: string, tx: NativeTransaction | null, payload: string, scope: string, tenant: string | null) => Promise<string>;
+/** Runs one host function: `(name, transaction or null, payload JSON, scope JSON)`; the Promise gives an envelope JSON. */
+export type NativeHostDispatch = (name: string, tx: NativeTransaction | null, payload: string, scope: string) => Promise<string>;
 
 /** The served router with login, called in memory. `headers` are `[name, value]` pairs; every `set-cookie` stays. */
 export interface NativeAdminRouter {
@@ -282,6 +282,8 @@ interface Addon {
   adminSite(schema: NativeSchema, configJson: string): NativeAdminSite;
   /** The `[admin]` settings of the project in `dir` as JSON; throws the text of a wrong setting. */
   adminSettings(dir: string): string;
+  /** The parameter index of an open scope key in a statement's `scope` map. */
+  OPEN_INDEX: number;
   connect(url: string, schema: NativeSchema, maxConnections: number, disable: string[]): Promise<NativeEngine>;
   prepareSchema(schemaJson: string, contextJson?: string): string;
   nativeArtifact(): string;

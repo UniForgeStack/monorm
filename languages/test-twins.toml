@@ -488,8 +488,6 @@
 "validation_error::a_copy_keeps_the_paths_and_messages" = "one-language: Python pickle protocol; TypeScript has no copy protocol for errors"
 # languages/python/tests/test_writes.py
 "writes::copy_column_types" = "change: twin writes::insert_many_copy_column_types; TS COPYs one Profile row only: TS must add the second row with `links: []` and the Tag `priority` COPY;"
-"writes::copy_in_a_tenant_block" = "change: TS checks the tenant block and the hook event in one test: merge this test and `copy_is_seen_by_query_hooks` into"
-"writes::copy_is_seen_by_query_hooks" = "change: Merge into the one Python test named in `copy_in_a_tenant_block` above, so that it matches the combined TS test."
 "writes::copy_loads_many_rows" = "change: twin writes::insert_many_copy_loads_many_rows; TS must add the `createdAt` check;"
 "writes::copy_rejections" = "change: twin writes::insert_many_copy_rejections; TS has no onConflict case (TS `copyRows` checks `'onConflict' in options` but no test reaches it): TS must add `{"
 "writes::insert_many_gives_a_count_and_returning_the_rows" = "change: TS must add the id check;"
@@ -794,7 +792,6 @@
 "writes::add_rejects_an_unknown_option" = "one-language: TypeScript options object; Python keyword arguments reject an unknown name natively"
 "writes::get_or_insert_ignores_an_undefined_lookup_key" = "one-language: JavaScript undefined has no Python value"
 "writes::insert_many_copy_column_types" = "change: twin writes::copy_column_types; Must add a second row with empty `links` and a Tag COPY with `priority: Priority.high`, as Python does."
-"writes::insert_many_copy_in_a_tenant_block_and_seen_by_query_hooks" = "change: twin writes::copy_in_a_tenant_block; Python merges `copy_in_a_tenant_block` and `copy_is_seen_by_query_hooks` into one test of this name."
 "writes::insert_many_copy_loads_many_rows" = "change: twin writes::copy_loads_many_rows; Must add the `createdAt` set check that Python has;"
 "writes::insert_many_copy_rejections" = "change: twin writes::copy_rejections; Must add the onConflict rejection that Python asserts (`{ copy: true, onConflict } as never` rejects /onConflict/)."
 "writes::insert_many_gives_a_count_returning_gives_the_rows" = "change: Must add the check that every returned row has an id;"

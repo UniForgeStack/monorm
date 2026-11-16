@@ -966,7 +966,7 @@ await db.transaction(async () => { ... }, { isolation: "serializable", timeout: 
 
 `isolation` is `"read_committed"`, `"repeatable_read"` or `"serializable"`.
 Omit it to use the database default.
-Postgres starts the transaction with `BEGIN ISOLATION LEVEL ...`, before the tenant settings.
+Postgres starts the transaction with `BEGIN ISOLATION LEVEL ...`, before the transaction settings.
 SQLite accepts each level and runs every transaction as serializable (`BEGIN IMMEDIATE`).
 The ORM does not retry a serialization failure (`40001`).
 
@@ -1088,17 +1088,27 @@ Writes, raw `db.execute`, migrations, and every statement inside `db.transaction
 A replica can lag behind the primary: to read your own write, read in the same transaction or use `using("primary")`.
 There are no health checks or failover. `maxConnections` applies to each pool, and `db.close()` closes all of them.
 
-### Tenants and row-level security
+### Scope and row-level security
 
-`await db.tenant(shop.id, async () => {...})` runs `SELECT set_config('app.tenant', '<id>', true)` (`SET LOCAL`) at the start of every transaction on `db` in the function, so RLS policies can read `current_setting('app.tenant', true)`.
-A statement outside a transaction runs in a transaction of its own (four round trips instead of one, estimated).
-A transaction that is already open keeps its setting, and the setting ends with each transaction.
-`db.tenant(x, fn)` throws `QueryError` when this async context has an open transaction on `db` that began under a different tenant (a transaction with no tenant counts as different); the same tenant is allowed. Open the transaction inside `fn`.
-A connection that had a tenant reads `''` (not `NULL`) for the setting after that, so a policy should read `NULLIF(current_setting('app.tenant', true), '')`; an empty id throws `RangeError`.
-Raw `db.execute(...)` in the function also runs in a transaction of its own, so `CREATE INDEX CONCURRENTLY` or `VACUUM` fails there.
-Each table of a composed model needs its own policy.
-Replicas get the same setting. SQLite throws `QueryError`.
-`scope({ shop }, fn)` is the application-side filter (see `docs/schema/selection-and-defaults.md`, "Scope values").
+`db.tenant()` is removed. One scope serves the application and the database:
+
+```ts
+await scope({ shop: shop.id, user: 7 }, async () => {
+  const orders = await Order.objects.all();  // the filter, the insert fill and the write check use shop
+});
+```
+
+* `@@scope.by(shop: shop_id)` (the built-in `scope` extension) adds the read filter `shop_id = scope.shop`, fills `shop_id` on insert and checks it on update and delete. A write with another `shop_id` raises `ScopeMismatch`. A write with no scope value raises `ScopeMissing`; both are `QueryError`.
+* On PostgreSQL, a key that a database object reads (a policy, in the next part) is also set as the transaction-local setting `scope.<key>`, with `set_config(..., true)`. No database object reads a key in this release, so no `scope.<key>` setting is sent yet. A setting travels with the first statement in the same flight, so a scoped transaction needs no extra round trip when the statement is cached (measured, 40 ms delay proxy: about 1.1 round trips warm, 2.1 cold).
+* Once a key is sent, a setting that a block no longer sets reads `''`, not `NULL`, in the next transaction of the same connection: a policy should read `NULLIF(current_setting('scope.shop', true), '')`.
+* `await unscoped(["shop"], async () => {...})` turns off the fill, the check and the filter of the named keys, and sets `monorm.bypass` (a list of the open keys). A write that needs a key that is neither set nor open raises `ScopeMissing`.
+* `await skipTriggers(["timestamps"], async () => {...})` sets `monorm.skip`. A trigger that the extension declares skippable skips only for a role in `bypass_roles` of the `datasource` block (empty by default, so nothing skips). SQLite has no such triggers: it raises `QueryError`.
+* `scope()` rejects a key that no open schema reads, `None`, `''` and a list with `TypeError`.
+* The settings and the scope of a statement are in `QueryEvent.settings` (the trace).
+* Raw `db.execute(...)` is not scoped by the ORM. The ORM does not create policies; a superuser and the table owner bypass RLS unless the table has `FORCE ROW LEVEL SECURITY`.
+* A composed model (model composition) stores its rows in a table for each level: each table needs its own policy.
+* Session locks (`session=True`) set no scope setting. SQLite sets no settings: the application filter, the fill and the check still work.
+* To migrate from `db.tenant(x)`: use `scope({ <key>: x }, fn)` with a schema key for the application filter, the fill and the check. Nothing sets `app.tenant` or `scope.<key>` in this release, so a hand-written policy that read `app.tenant` sees no value. Until the generated policies ship, set your own setting with a raw `set_config('app.tenant', value, true)` statement at the start of the transaction, or with `db_settings` of the admin. Do not upgrade a deployment that depends on such a policy before the policies ship.
 
 SQLite has no row or advisory locks; they throw `QueryError` there.
 

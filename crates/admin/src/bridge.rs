@@ -13,8 +13,6 @@ pub type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 #[derive(Clone)]
 pub struct CallContext {
     pub request_id: u64,
-    /// The tenant id (a JSON number or string) the host binds with `db.tenant`; none for an admin call.
-    pub tenant: Option<Value>,
     /// The `scope.<name>` values of default filters.
     pub scope: Value,
     /// The request's transaction; `None` for a call that needs no database.
