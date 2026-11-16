@@ -760,7 +760,7 @@ class AdminTestClient:
             if headers or csrf is not _AUTO or origin is not _AUTO:
                 raise TypeError("the `user=` client takes only a method, a path, `json` and `file`")
             trace = _native.Trace()
-            if file is not None or "/files/" in path:
+            if file is not None or "/files/" in path or "/export/" in path:
                 kind, data = _multipart(file) if file is not None else (None, None)
                 code, reply, raw = await self._site.request_raw(self._database._engine, method, path, self._user, trace, self._database, self._host, kind, data)
                 events = trace.take()

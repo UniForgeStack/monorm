@@ -752,7 +752,7 @@ export class AdminTestClient {
       if (Object.keys(options).some((k) => k !== "json" && k !== "file")) throw new TypeError("the `user` client takes only a method, a path, `json` and `file`");
       if (options.file !== undefined && options.json !== undefined) throw new TypeError("a request takes `json` or `file`, not both");
       const trace = new (native().Trace)();
-      if (options.file !== undefined || path.includes("/files/")) {
+      if (options.file !== undefined || path.includes("/files/") || path.includes("/export/")) {
         const part = options.file === undefined ? null : multipartBody(options.file);
         const raw = await wait(() => this.site.requestRaw(this.database.engine, method, path, this.#user, trace, hostDispatch(this.database, this.host), part?.type ?? null, part?.data ?? null));
         const events = trace.take();

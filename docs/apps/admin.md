@@ -251,6 +251,29 @@ A cancelled statement answers `504`, on a list, a count, the size check of a sor
 The largest value is 2,147,483 seconds (the limit of PostgreSQL); a larger value is an error in `check()`.
 SQLite has no statement timeout.
 
+### CSV export
+
+`GET {prefix}/export/{name}` sends the list as a CSV file (`text/csv; charset=utf-8`, `content-disposition: attachment; filename="<name>.csv"`).
+It takes the list state of the query string: `q`, `f.*`, `n.*` and `sort`. It ignores `cursor`, `before`, `last`, `page` and `limit`.
+The `queryset` filter of the resource applies, so a user exports only the rows that the user may list. The user needs read access.
+The first row holds the column titles of the list. The last column is the key (`Id`). Computed and aggregate columns are in the file.
+
+The server reads the rows with the keyset pages of the list, 1,000 rows each, and sends each page as soon as Rust has encoded it.
+Memory stays flat, so a large table needs no more memory than a small one. Each page after the first runs in its own short transaction.
+The server reads the first page before it sends the head. A bad request (`400`, `422`, `404`, `403`, `401`) is therefore a normal JSON error, not a cut file.
+
+Cells follow these rules:
+
+- A cell with a comma, a quote, a CR or an LF is in quotes, and a quote inside is doubled. A line ends with CRLF. The file has no BOM.
+- A text cell that starts with `=`, `+`, `-`, `@`, a tab or a CR gets a `'` in front, so a spreadsheet does not run it as a formula. A number, a BigInt and a Decimal are never changed.
+- A null is an empty cell. A date and a time are ISO 8601, as in the list.
+
+The `timeout` setting limits the head of the answer only, so it does not cut a long export.
+An export has its own idle timeout: the stream ends with an error when the client takes no data for `export_idle_timeout_ms` (default 30,000; `0` turns it off). This is a site setting of the Rust crate.
+
+Each export writes one `AdminLogEntry` with `action` `export`, the `resource`, and `changes` `{"query": "<the query string>"}`. The row count is not known at that point. A refused export (`403`) writes a `permission_denied` row, as for a write.
+The test client reads `/export/` paths like any other path: `client.get("/admin/api/export/Order?f.status=new")` gives `status`, `header(...)` (`headers` in Python) and `text`.
+
 ## Test client
 
 `test_client` (Python) and `testClient` (TypeScript) send a request to the router in memory.
@@ -952,6 +975,7 @@ The path prefix is a config value, and the default is `/admin/api`.
 | `GET {prefix}/resources` | The `brand`, the navigation groups (`nav`), and the resources that the user may read. Each resource has a `title`, its `fields`, its `key` fields, its columns (with `title`, `widget` and `choices`), order, page size, sort columns and search fields. It also lists the permission names that the user holds. |
 | `GET {prefix}/resources/{name}?cursor=&before=&last=&page=&limit=&sort=&q=&f.*=&n.*=` | One page: `columns`, `rows`, `keys`, `next` and `prev`. See [Lists](#lists). |
 | `GET {prefix}/counts/{name}?q=&f.*=&n.*=&exact=` | `{"count", "capped"}`. See [Count](#count). |
+| `GET {prefix}/export/{name}?q=&f.*=&n.*=&sort=` | The list as a CSV file, streamed. See [CSV export](#csv-export). |
 | `GET {prefix}/resources/{name}/{key}/{relation}`, `GET {prefix}/counts/{name}/{key}/{relation}` | The list and the count of a to-many tab. See [To-many tabs](#to-many-tabs). |
 | `GET {prefix}/resources/{name}/{key}` | One record: `fields`, `values` and `links` to the to-one targets that the user may read. A key is encoded as in [The UI](#the-ui). |
 | `POST {prefix}/actions/{name}/{action}`, `POST {prefix}/tab-actions/{name}/{key}/{relation}/{action}` | Run an action. The body is `{"keys", "all", "inputs", "confirm_large"}`. The answer is `{"ok", "count", "capped", "result"}`. See [Actions](#actions). |
