@@ -85,6 +85,8 @@ fn text() -> String {
 }
 
 pub const INPUT_KINDS: [&str; 5] = ["text", "textarea", "number", "checkbox", "select"];
+/// An action input may also hold an uploaded file.
+pub const ACTION_INPUT_KINDS: [&str; 6] = ["text", "textarea", "number", "checkbox", "select", "file"];
 
 impl InputConfig {
     pub fn meta(&self) -> Value {
@@ -94,7 +96,11 @@ impl InputConfig {
 
 /// The inputs as the audit row stores them: the value of a secret input is the mask. An input that the request left out stays out.
 pub(crate) fn audit_inputs(r: &Resource, inputs: &Map<String, Value>) -> Map<String, Value> {
-    inputs.iter().map(|(k, v)| (k.clone(), if !v.is_null() && r.inputs.iter().any(|i| &i.name == k && i.secret) { Value::String(SECRET_MASK.into()) } else { v.clone() })).collect()
+    audit_input_list(&r.inputs, inputs)
+}
+
+pub(crate) fn audit_input_list(list: &[InputConfig], inputs: &Map<String, Value>) -> Map<String, Value> {
+    inputs.iter().map(|(k, v)| (k.clone(), if !v.is_null() && list.iter().any(|i| &i.name == k && i.secret) { Value::String(SECRET_MASK.into()) } else { v.clone() })).collect()
 }
 
 /// The checks of `Site::build` for the service and the inputs of one resource.
@@ -129,6 +135,31 @@ pub fn check_config(name: &str, detail: &[Column], service: &ServiceConfig, inpu
     Ok(())
 }
 
+/// The checks of the inputs of one action.
+pub fn check_action_inputs(resource: &str, action: &str, inputs: &[InputConfig]) -> Result<(), ConfigError> {
+    let mut seen: Vec<&str> = Vec::new();
+    for i in inputs {
+        let at = format!("{resource}: action {action:?}: input {:?}", i.name);
+        if i.name.is_empty() || !i.name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return err(format!("{at} has a name of letters, digits and _"));
+        }
+        if seen.contains(&i.name.as_str()) {
+            return err(format!("{at} is declared twice"));
+        }
+        if !ACTION_INPUT_KINDS.contains(&i.kind.as_str()) {
+            return err(format!("{at} has type {:?}, not one of {}", i.kind, ACTION_INPUT_KINDS.join(", ")));
+        }
+        if (i.kind == "select") == i.choices.is_empty() {
+            return err(format!("{at}: choices go with the type select, and only with it"));
+        }
+        if i.kind == "file" && i.secret {
+            return err(format!("{at}: a file input cannot be secret"));
+        }
+        seen.push(&i.name);
+    }
+    Ok(())
+}
+
 /// The model has host behavior in its schema: hooks, a hook assignment or a hook default.
 pub fn schema_host_behavior(schema: &Schema, model: usize) -> bool {
     let m = schema.model(model);
@@ -157,16 +188,21 @@ pub fn op_name(op: Op) -> &'static str {
 
 /// The values of the `inputs` object of a body: only declared names, each of its type. A problem names the input.
 pub(crate) fn parse_inputs(r: &Resource, body: &Map<String, Value>, problems: &mut Problems) -> Result<Map<String, Value>, String> {
+    parse_input_list(&r.inputs, body, problems)
+}
+
+/// `parse_inputs` for any list of inputs: the list of a resource or of an action.
+pub(crate) fn parse_input_list(list: &[InputConfig], body: &Map<String, Value>, problems: &mut Problems) -> Result<Map<String, Value>, String> {
     let given = match body.get("inputs") {
         None | Some(Value::Null) => Map::new(),
         Some(Value::Object(m)) => m.clone(),
         Some(_) => return Err("\"inputs\" is an object".into()),
     };
     let mut out = Map::new();
-    for name in given.keys().filter(|n| !r.inputs.iter().any(|i| &i.name == *n)) {
+    for name in given.keys().filter(|n| !list.iter().any(|i| &i.name == *n)) {
         problems.field(name, "This input does not exist.");
     }
-    for i in &r.inputs {
+    for i in list {
         let v = given.get(&i.name).cloned().unwrap_or(Value::Null);
         let empty = v.is_null() || v.as_str().is_some_and(str::is_empty);
         if empty {
@@ -180,6 +216,7 @@ pub(crate) fn parse_inputs(r: &Resource, body: &Map<String, Value>, problems: &m
             "number" => v.is_number() || v.as_str().is_some_and(|t| t.trim().parse::<f64>().is_ok()),
             "checkbox" => v.is_boolean(),
             "select" => v.as_str().is_some_and(|t| i.choices.iter().any(|c| c == t)),
+            "file" => v.get("name").is_some_and(Value::is_string) && v.get("base64").is_some_and(Value::is_string),
             _ => v.is_string(),
         };
         if !ok {
@@ -258,11 +295,11 @@ pub(crate) async fn run(s: &State_, c: Call<'_>, p: Prepared) -> Response {
     answer_of(s, c, p, answer).await
 }
 
-fn host_failure(meta: &crate::write::Meta, name: &str, e: BridgeError) -> Response {
+pub(crate) fn host_failure(meta: &crate::write::Meta, name: &str, e: BridgeError) -> Response {
     server_error(meta, &format!("{name}: {}: {}", e.kind(), e.message()))
 }
 
-fn texts(v: Option<&Value>) -> Vec<String> {
+pub(crate) fn texts(v: Option<&Value>) -> Vec<String> {
     v.and_then(Value::as_array).map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_owned)).collect()).unwrap_or_default()
 }
 

@@ -598,7 +598,7 @@ fn filter_exprs(site: &Site, resource: &Resource, request: &ListRequest, binds: 
 }
 
 /// Every condition of a request: the search, then the filters. `None`: no row matches.
-fn where_filters(site: &Site, resource: &Resource, request: &ListRequest, binds: &mut Binds) -> Result<Option<Vec<Value>>, ListError> {
+pub(crate) fn where_filters(site: &Site, resource: &Resource, request: &ListRequest, binds: &mut Binds) -> Result<Option<Vec<Value>>, ListError> {
     let Some(mut filters) = search_filters(site, resource, request.q.as_deref(), request.found.as_deref(), binds)? else { return Ok(None) };
     filters.extend(filter_exprs(site, resource, request, binds)?);
     filters.extend(request.scope.push(binds));
@@ -615,7 +615,7 @@ pub(crate) async fn run_select(site: &Site, conn: &dyn Executor, target: Target,
     }
 }
 
-async fn run_count(site: &Site, conn: &dyn Executor, target: Target, op: Value, binds: Binds) -> Result<i64, ListError> {
+pub(crate) async fn run_count(site: &Site, conn: &dyn Executor, target: Target, op: Value, binds: Binds) -> Result<i64, ListError> {
     let op: Operation = serde_json::from_value(op).map_err(|e| ListError::Engine(e.to_string()))?;
     let plan = Planner::plan(&site.schema, target, &op, &binds).map_err(engine)?;
     match exec::run(conn, target, plan).await.map_err(engine)? {

@@ -129,8 +129,8 @@ impl Site {
             for f in &r.field_permissions {
                 push(format!("{l}.{f}"));
             }
-            for a in &r.actions {
-                push(format!("{l}.{a}_{k}"));
+            for p in r.actions.iter().filter_map(|a| a.permission.as_ref()) {
+                push(format!("{l}.{p}_{k}"));
             }
             for d in &r.bypass {
                 push(bypass_name(r, d));
@@ -231,7 +231,7 @@ impl Site {
             .filter(|r| self.allows(grants, r, Op::Read))
             .map(|r| {
                 let mut meta = r.meta.clone();
-                meta["actions"] = json!(r.actions.iter().filter(|a| self.allowed_extra(grants, r, &format!("{}.{a}_{}", r.label, r.key))).collect::<Vec<_>>());
+                meta["actions"] = json!(r.actions.iter().filter(|a| a.placement.is_some() && self.action_allowed(grants, r, a)).map(action_meta).collect::<Vec<_>>());
                 meta["ops"] = json!([Op::Create, Op::Update, Op::Delete].iter().filter(|o| r.allow.contains(o) && self.allows(grants, r, **o)).map(|o| o.name()).collect::<Vec<_>>());
                 meta["bypass"] = json!(self.bypassable(grants, r));
                 meta["field_permissions"] = json!(r.field_permissions.iter().filter(|f| self.allowed_extra(grants, r, &format!("{}.{f}", r.label))).collect::<Vec<_>>());
@@ -255,6 +255,17 @@ impl Site {
             .collect();
         let permissions: Vec<String> = if self.gate(grants) { self.permission_names().into_iter().filter(|n| grants.has(n)).collect() } else { Vec::new() };
         json!({"resources": resources, "permissions": permissions})
+    }
+
+    /// The user may run the action: the permission of the action, or `manage` when it has none. Bulk delete is not an action: it needs `delete`.
+    pub fn action_allowed(&self, grants: &Grants, r: &Resource, action: &crate::site::Action) -> bool {
+        if !self.gate(grants) || !self.allows(grants, r, Op::Read) {
+            return false;
+        }
+        match &action.permission {
+            Some(p) => grants.has(&format!("{}.{p}_{}", r.label, r.key)),
+            None => self.allows(grants, r, Op::Update),
+        }
     }
 
     /// The read defaults of `r` that the user may switch off for a request.
@@ -392,4 +403,16 @@ fn plan(site: &Site) -> Result<Option<Plan>, String> {
         user_role: link(roles)?,
         role_permission: link(role_perms)?,
     }))
+}
+
+/// What the SPA needs to show one action.
+fn action_meta(a: &crate::site::Action) -> Json {
+    json!({
+        "name": a.name,
+        "label": a.label,
+        "placement": a.placement.map(|p| p.name()),
+        "confirm": a.confirm,
+        "inputs": a.inputs.iter().map(|i| i.meta()).collect::<Vec<_>>(),
+        "applies": a.applies.is_some(),
+    })
 }

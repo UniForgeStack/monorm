@@ -65,6 +65,27 @@ pub fn bind_json(schema: &Schema, ty: ValueType, b: &Bind) -> Value {
     cell(schema, ty, bind_cell(b))
 }
 
+/// A bind value for a host: plain JSON for a bool, an int, a double and a string, and `{"$": tag, "v": text-or-value}` for the types that JSON cannot tell apart.
+/// The host decodes the tag back to its native value (a big integer, a datetime, a date, a time, a uuid, a decimal, an array).
+pub fn bind_tagged(b: &Bind) -> Value {
+    let tag = |t: &str, v: Value| json!({"$": t, "v": v});
+    match b {
+        Bind::Bool(Some(x)) => json!(x),
+        Bind::Int(Some(x)) => json!(x),
+        Bind::Double(Some(x)) => json!(x),
+        Bind::String(Some(x)) => json!(x),
+        Bind::BigInt(Some(x)) => tag("bigint", json!(x.to_string())),
+        Bind::ChronoDateTimeWithTimeZone(Some(x)) => tag("datetime", json!(x.to_rfc3339_opts(SecondsFormat::AutoSi, false))),
+        Bind::ChronoTime(Some(x)) => tag("time", json!(x.to_string())),
+        Bind::ChronoDate(Some(x)) => tag("date", json!(x.format("%Y-%m-%d").to_string())),
+        Bind::Uuid(Some(x)) => tag("uuid", json!(x.to_string())),
+        Bind::Json(Some(x)) => tag("json", (**x).clone()),
+        Bind::BigDecimal(Some(x)) => tag("decimal", json!(x.to_string())),
+        Bind::Array(_, Some(items)) => tag("array", Value::Array(items.iter().map(bind_tagged).collect())),
+        _ => Value::Null,
+    }
+}
+
 fn bind_cell(b: &Bind) -> Cell<'_> {
     match b {
         Bind::Bool(Some(x)) => Cell::Bool(*x),

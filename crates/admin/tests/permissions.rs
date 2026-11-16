@@ -107,7 +107,7 @@ async fn page_names_are_read_and_manage_and_a_split_delete_adds_one() {
 #[tokio::test]
 async fn model_names_are_the_four_codenames_and_access_is_the_gate_only() {
     let schema = schema();
-    let resources = json!([{"model": "Note", "actions": ["publish"], "field_permissions": ["see_cost"]}]);
+    let resources = json!([{"model": "Note", "actions": [{"name": "publish", "permission": "publish"}], "field_permissions": ["see_cost"]}]);
     let model = site(&schema, json!({"permissions": "model", "label": "shop", "resources": resources}));
     assert_eq!(
         model.permission_names(),
@@ -125,8 +125,8 @@ fn a_wrong_permission_config_is_rejected_with_the_model_name() {
     assert!(build(json!({"resources": [{"model": "Note", "allow": ["write"]}]})).contains("Note: allow has \"write\""));
     assert!(build(json!({"resources": [{"model": "Note", "perms": ["read"]}]})).contains("Note: perms must name read and manage"));
     assert!(build(json!({"permissions": "model", "resources": [{"model": "Note", "perms": ["read", "manage"]}]})).contains("page strategy only"));
-    assert!(build(json!({"permissions": "access", "resources": [{"model": "Note", "actions": ["x"]}]})).contains("page or model strategy"));
-    assert!(build(json!({"resources": [{"model": "Note", "actions": ["a.b"]}]})).contains("lowercase letters"));
+    assert!(build(json!({"permissions": "access", "resources": [{"model": "Note", "actions": [{"name": "x", "permission": "x"}]}]})).contains("page or model strategy"));
+    assert!(build(json!({"resources": [{"model": "Note", "actions": [{"name": "a.b", "permission": "a.b"}]}]})).contains("lowercase letters"));
 }
 
 #[tokio::test]
@@ -192,13 +192,13 @@ async fn the_access_strategy_needs_only_the_gate_and_the_page_strategy_needs_the
 #[tokio::test]
 async fn metadata_lists_only_what_the_user_can_use_with_the_filtered_names() {
     let schema = schema();
-    let site = site(&schema, json!({"resources": [{"model": "Note", "actions": ["publish"]}, {"model": "Order"}]}));
+    let site = site(&schema, json!({"resources": [{"model": "Note", "actions": [{"name": "publish", "permission": "publish"}]}, {"model": "Order"}]}));
     let mut grants = Grants::default();
     grants.names.extend(["admin.access", "admin.read_note", "admin.publish_note", "admin.manage_order", "other.x"].map(String::from));
     let meta = site.metadata(&grants);
     let names: Vec<&str> = meta["resources"].as_array().unwrap().iter().map(|r| r["name"].as_str().unwrap()).collect();
     assert_eq!(names, ["Note", "Order"]);
-    assert_eq!(meta["resources"][0]["actions"], json!(["publish"]));
+    assert_eq!(meta["resources"][0]["actions"], json!([]), "an action with no placement is a permission only");
     assert_eq!(meta["permissions"], json!(["admin.access", "admin.read_note", "admin.publish_note", "admin.manage_order"]));
     grants.names.remove("admin.access");
     assert_eq!(site.metadata(&grants), json!({"resources": [], "permissions": []}));

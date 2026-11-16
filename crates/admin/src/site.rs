@@ -107,9 +107,12 @@ struct ResourceConfig {
     /// Names of field permissions (`see_cost`): `<label>.<name>`.
     #[serde(default)]
     field_permissions: Vec<String>,
-    /// Names of actions: `<label>.<action>_<resource>`.
+    /// Actions: a permission name (`<label>.<action>_<resource>`), a placement, a confirmation and inputs.
     #[serde(default)]
-    actions: Vec<String>,
+    actions: Vec<ActionConfig>,
+    /// Bulk delete is on by default: `false` removes it from the list.
+    #[serde(default = "yes")]
+    bulk_delete: bool,
     /// The rows that staff see and touch.
     queryset: Option<QuerysetConfig>,
     /// Per-row rules, `change` and `delete`: prepared expressions that the list and the detail select as flags.
@@ -373,7 +376,9 @@ pub struct Resource {
     /// `delete` is its own page level, and `manage` does not include it.
     pub split_delete: bool,
     pub field_permissions: Vec<String>,
-    pub actions: Vec<String>,
+    pub actions: Vec<Action>,
+    /// Bulk delete of the list: on by default.
+    pub bulk_delete: bool,
     pub title: String,
     pub group: Option<String>,
     /// The key fields as columns, in key order.
@@ -447,7 +452,89 @@ pub struct Queryset {
     pub function: Option<String>,
 }
 
+/// Where an action shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Placement {
+    /// The list, on the selected rows or on all rows that match.
+    Bulk,
+    /// One row of a list or of a tab.
+    Row,
+    /// The detail page of one record.
+    Detail,
+    /// The list, with no rows.
+    List,
+    /// The form, next to the save button: runs on the saved record.
+    Submit,
+}
+
+impl Placement {
+    pub const NAMES: [&'static str; 5] = ["bulk", "row", "detail", "list", "submit"];
+
+    pub fn parse(text: &str) -> Option<Placement> {
+        Some(match text {
+            "bulk" => Placement::Bulk,
+            "row" => Placement::Row,
+            "detail" => Placement::Detail,
+            "list" => Placement::List,
+            "submit" => Placement::Submit,
+            _ => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        Self::NAMES[self as usize]
+    }
+}
+
+/// The config of one action as a host sends it. An entry with no placement only declares a permission.
+#[derive(Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct ActionConfig {
+    pub name: String,
+    pub label: Option<String>,
+    pub placement: Option<String>,
+    /// The permission name `<label>.<permission>_<resource>`. None: the action needs `manage`.
+    pub permission: Option<String>,
+    /// The text of the confirmation. None: no confirmation.
+    pub confirm: Option<String>,
+    #[serde(default)]
+    pub inputs: Vec<crate::hostwrite::InputConfig>,
+    /// A prepared filter: the rows that the action applies to.
+    pub applies_to: Option<Value>,
+    #[serde(default)]
+    pub sync: bool,
+    #[serde(default)]
+    pub threaded: bool,
+}
+
+/// One action of a resource, checked.
+#[derive(Debug, Clone)]
+pub struct Action {
+    pub name: String,
+    pub label: String,
+    pub placement: Option<Placement>,
+    pub permission: Option<String>,
+    pub confirm: Option<String>,
+    pub inputs: Vec<crate::hostwrite::InputConfig>,
+    pub applies: Option<Value>,
+    pub sync: bool,
+    pub threaded: bool,
+}
+
+impl Action {
+    /// The name of the flag of a row that tells whether `applies_to` holds.
+    pub fn flag(&self) -> String {
+        format!("applies:{}", self.name)
+    }
+}
+
+fn yes() -> bool {
+    true
+}
+
 /// The per-row rules. Each one is a flag of a row.
+/// The name of the built-in action that deletes the selected rows.
+pub const BULK_DELETE: &str = "bulk_delete";
 pub const CAN_NAMES: [&str; 2] = ["change", "delete"];
 
 /// What a filter reads.
@@ -901,7 +988,7 @@ fn concrete(m: &monorm_core::schema::Model) -> bool {
 
 impl ResourceConfig {
     fn of(model: &str) -> ResourceConfig {
-        ResourceConfig { model: model.to_owned(), list: ListConfig::default(), allow: None, perms: None, label: None, title: None, group: None, field_permissions: Vec::new(), actions: Vec::new(), queryset: None, can: BTreeMap::new(), check_messages: BTreeMap::new(), service: Default::default(), inputs: Vec::new(), allow_protected_writes: false, host_behavior: false, form: None, readonly: Vec::new(), widgets: BTreeMap::new(), form_component: None, relations: BTreeMap::new(), files: Vec::new(), inlines: Vec::new() }
+        ResourceConfig { model: model.to_owned(), list: ListConfig::default(), allow: None, perms: None, label: None, title: None, group: None, field_permissions: Vec::new(), actions: Vec::new(), bulk_delete: true, queryset: None, can: BTreeMap::new(), check_messages: BTreeMap::new(), service: Default::default(), inputs: Vec::new(), allow_protected_writes: false, host_behavior: false, form: None, readonly: Vec::new(), widgets: BTreeMap::new(), form_component: None, relations: BTreeMap::new(), files: Vec::new(), inlines: Vec::new() }
     }
 }
 
@@ -946,14 +1033,33 @@ fn permission_options(name: &str, config: &ResourceConfig, strategy: Strategy, s
             return err(format!("{name}: perms must name read and manage"));
         }
     }
-    if strategy == Strategy::Access && (!config.field_permissions.is_empty() || !config.actions.is_empty()) {
+    if strategy == Strategy::Access && (!config.field_permissions.is_empty() || config.actions.iter().any(|a| a.permission.is_some())) {
         return err(format!("{name}: field and action names need the page or model strategy"));
     }
+    // An unnamed action needs `update`, and the access strategy has no such grant: every staff user would run it.
+    if strategy == Strategy::Access {
+        if let Some(a) = config.actions.iter().find(|a| a.permission.is_none()) {
+            return err(format!("{name}: action {:?} has no permission, and the access strategy has no grant to check: use the page or model strategy", a.name));
+        }
+    }
     let mut seen = BTreeSet::new();
-    for n in config.field_permissions.iter().chain(&config.actions) {
+    for n in &config.field_permissions {
         check_name(&format!("{name}: permission name"), n)?;
         if !seen.insert(n) {
             return err(format!("{name}: permission name {n:?} is declared twice"));
+        }
+    }
+    let mut actions = BTreeSet::new();
+    for a in &config.actions {
+        if let Some(p) = &a.permission {
+            check_name(&format!("{name}: permission name"), p)?;
+            if config.field_permissions.contains(p) {
+                return err(format!("{name}: permission name {p:?} is declared twice"));
+            }
+        }
+        check_name(&format!("{name}: action"), &a.name)?;
+        if !actions.insert(&a.name) {
+            return err(format!("{name}: action {:?} is declared twice", a.name));
         }
     }
     Ok(PermissionOptions { label, allow, split_delete })
@@ -1045,7 +1151,8 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
     let filters = filter_specs(schema, idx, &name, list)?;
     let named_filters = named_filters(schema, idx, &name, list)?;
     let queryset = queryset_of(schema, idx, &name, config.queryset.as_ref())?;
-    let can = can_rules(schema, &name, &config.can)?;
+    let mut can = can_rules(schema, &name, &config.can)?;
+    let actions = actions_of(schema, &name, &config.actions, &mut can)?;
     if let Some(k) = config.check_messages.keys().find(|k| !model.ir.constraints.iter().any(|c| matches!(c, ConstraintIr::Check { name: Some(n), .. } if n == *k))) {
         return err(format!("{name}: check_messages names {k:?}, which is not a named @@check of the model"));
     }
@@ -1065,7 +1172,8 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
         allow,
         split_delete,
         field_permissions: config.field_permissions.clone(),
-        actions: config.actions.clone(),
+        actions,
+        bulk_delete: config.bulk_delete,
         title,
         group: config.group.clone(),
         key_columns,
@@ -1676,6 +1784,42 @@ fn can_rules(schema: &Schema, name: &str, config: &BTreeMap<String, Value>) -> R
     }
     if let Some(other) = config.keys().find(|k| !CAN_NAMES.contains(&k.as_str())) {
         return err(format!("{name}: can has {other:?}, not one of {}", CAN_NAMES.join(", ")));
+    }
+    Ok(out)
+}
+
+/// The actions of one resource. An `applies_to` filter becomes a flag after the `can` rules: the list and the detail select it.
+fn actions_of(schema: &Schema, name: &str, config: &[ActionConfig], can: &mut Vec<(String, Value)>) -> Result<Vec<Action>, ConfigError> {
+    let mut out = Vec::new();
+    for a in config {
+        if a.name == BULK_DELETE {
+            return err(format!("{name}: {BULK_DELETE:?} is the name of the built-in action: bulk_delete=False removes it"));
+        }
+        let placement = match &a.placement {
+            Some(p) => Some(Placement::parse(p).ok_or_else(|| ConfigError(format!("{name}: action {:?} has placement {p:?}, not one of {}", a.name, Placement::NAMES.join(", "))))?),
+            None => None,
+        };
+        if placement.is_none() && (a.confirm.is_some() || !a.inputs.is_empty() || a.applies_to.is_some()) {
+            return err(format!("{name}: action {:?} has no placement: only a placed action takes a confirmation, inputs or applies_to", a.name));
+        }
+        if let Some(label) = &a.label {
+            if label.is_empty() || label.chars().count() > 80 {
+                return err(format!("{name}: action {:?}: the label has 1 to 80 characters", a.name));
+            }
+        }
+        crate::hostwrite::check_action_inputs(name, &a.name, &a.inputs)?;
+        let action = Action { name: a.name.clone(), label: a.label.clone().unwrap_or_else(|| crate::meta::humanize(&a.name)), placement, permission: a.permission.clone(), confirm: a.confirm.clone(), inputs: a.inputs.clone(), applies: a.applies_to.clone(), sync: a.sync, threaded: a.threaded };
+        if let Some(expr) = &a.applies_to {
+            if has_binding(expr) {
+                return err(format!("{name}: action {:?}: applies_to has no parameters or scope values", a.name));
+            }
+            let ty = probe_type(schema, name, expr).map_err(|e| ConfigError(format!("{name}: action {:?}: applies_to: {e}", a.name)))?;
+            if ty.ty != ColType::Bool || ty.array {
+                return err(format!("{name}: action {:?}: applies_to is not a boolean condition", a.name));
+            }
+            can.push((action.flag(), expr.clone()));
+        }
+        out.push(action);
     }
     Ok(out)
 }

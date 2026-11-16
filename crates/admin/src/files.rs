@@ -27,14 +27,14 @@ use crate::write::{convert, decode_key, finish, list_failure, meta_of, open_head
 pub const MAX_UPLOAD: usize = 25 * 1024 * 1024;
 
 /// A temporary file that the host reads or writes. The file goes away when the guard drops.
-struct Temp(PathBuf);
+pub(crate) struct Temp(pub(crate) PathBuf);
 
 impl Temp {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self(std::env::temp_dir().join(format!("monorm-admin-{}", uuid::Uuid::new_v4().simple())))
     }
 
-    async fn write(&self, data: Vec<u8>) -> Result<(), String> {
+    pub(crate) async fn write(&self, data: Vec<u8>) -> Result<(), String> {
         let path = self.0.clone();
         tokio::task::spawn_blocking(move || {
             use std::io::Write;

@@ -49,7 +49,9 @@ pub fn api_with(site: Arc<Site>, conn: Arc<dyn Executor>, auth: Option<AuthConfi
     let prefix = site.prefix.clone();
     let routes = Router::new().route("/resources", get(resources)).route("/resources/{name}", get(rows).post(crate::write::create)).route("/resources/{name}/{key}", get(detail).patch(crate::write::update).delete(crate::write::destroy)).route("/resources/{name}/{key}/{rel}", get(tab_rows))
         .route("/resources/{name}/{key}/inlines/{inline}", post(crate::inlinewrite::row_create))
-        .route("/resources/{name}/{key}/inlines/{inline}/{row}", patch(crate::inlinewrite::row_update).delete(crate::inlinewrite::row_destroy)).route("/forms/{name}", get(form_module)).route("/counts/{name}", get(counts)).route("/counts/{name}/{key}/{rel}", get(tab_counts)).route("/autocomplete/{name}/{rel}", get(crate::relations::autocomplete)).route("/links/{name}/{key}/{rel}", get(crate::relations::links)).route("/files/{name}/{key}/{field}", get(crate::files::download).post(crate::files::upload));
+        .route("/resources/{name}/{key}/inlines/{inline}/{row}", patch(crate::inlinewrite::row_update).delete(crate::inlinewrite::row_destroy)).route("/forms/{name}", get(form_module)).route("/counts/{name}", get(counts)).route("/counts/{name}/{key}/{rel}", get(tab_counts)).route("/autocomplete/{name}/{rel}", get(crate::relations::autocomplete)).route("/links/{name}/{key}/{rel}", get(crate::relations::links)).route("/files/{name}/{key}/{field}", get(crate::files::download).post(crate::files::upload))
+        .route("/actions/{name}/{action}", post(crate::actions::on_list))
+        .route("/tab-actions/{name}/{key}/{rel}/{action}", post(crate::actions::on_tab));
     let bridge = auth.clone().map(|a| (a.bridge.clone(), a));
     let extra = auth.map(|auth| auth::routes(auth, site.clone(), conn.clone()));
     let state = Arc::new(State_ { site, conn, target, bridge });
@@ -317,6 +319,11 @@ fn flag(v: &Option<String>) -> bool {
 /// The preamble of a read route: authorize, find the resource, check the read permission.
 async fn open_resource<'a>(s: &'a State_, user: Option<Extension<User>>, name: &str, uri: &Uri) -> Result<(Scoped, &'a Resource, Reach), Box<Response>> {
     let (user, scope, grants) = authorize(s, user).await?;
+    open_resource_with(s, user, scope, grants, name, uri).await.map(|(scope, resource, reach, _)| (scope, resource, reach))
+}
+
+/// `open_resource` for a caller that authorized already and needs the user and the grants after it.
+pub(crate) async fn open_resource_with<'a>(s: &'a State_, user: User, scope: Scoped, grants: Grants, name: &str, uri: &Uri) -> Result<(Scoped, &'a Resource, Reach, (User, Grants)), Box<Response>> {
     let Some(resource) = s.site.resource(name) else {
         scope.rollback().await;
         return Err(Box::new(reject(StatusCode::NOT_FOUND, "NotFound", &format!("no resource {name:?}"))));
@@ -328,7 +335,7 @@ async fn open_resource<'a>(s: &'a State_, user: Option<Extension<User>>, name: &
         return Err(Box::new(deny(&s.site, scope, &user, &resource.name, json!({"needs": s.site.requires(resource, Op::Read)})).await));
     }
     let (scope, reach) = reach(s, resource, &user, &grants, without_of(uri), scope).await?;
-    Ok((scope, resource, reach))
+    Ok((scope, resource, reach, (user, grants)))
 }
 
 /// The module that replaces the form of a resource, for a user who may read the resource.
@@ -416,7 +423,7 @@ async fn query(scope: Scoped, q: Result<Query<ListQuery>, QueryRejection>) -> Re
 type Filters = (Vec<FilterClause>, Vec<(String, String)>);
 
 /// The filter bar of a request: `f.<name>=v` (repeated for several values), `f.<name>:gte=v` and `n.<name>=<choice>`.
-fn filters_of(uri: &Uri) -> Result<Filters, ListError> {
+pub(crate) fn filters_of(uri: &Uri) -> Result<Filters, ListError> {
     let mut clauses: Vec<FilterClause> = Vec::new();
     let mut named: Vec<(String, String)> = Vec::new();
     for (key, value) in form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes()) {
@@ -580,20 +587,26 @@ async fn counts(State(s): Shared, user: Option<Extension<User>>, Path(name): Pat
 
 /// The preamble of a tab route: the parent (read permission), the tab (404), the child (read permission),
 /// and the pins that fix the child rows to the parent record.
-type Tab<'a> = (Scoped, Related<'a>, Vec<(crate::site::Column, Value)>, Reach);
+pub(crate) type Tab<'a> = (Scoped, Related<'a>, Vec<(crate::site::Column, Value)>, Reach);
 
 async fn open_tab<'a>(s: &'a State_, user: Option<Extension<User>>, name: &str, raw: &str, rel: &str, uri: &Uri) -> Result<Tab<'a>, Box<Response>> {
     let (user, scope, grants) = authorize(s, user).await?;
+    open_tab_with(s, &user, scope, &grants, name, raw, rel, uri).await
+}
+
+/// `open_tab` for a caller that authorized already.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn open_tab_with<'a>(s: &'a State_, user: &User, scope: Scoped, grants: &Grants, name: &str, raw: &str, rel: &str, uri: &Uri) -> Result<Tab<'a>, Box<Response>> {
     let Some(parent) = s.site.resource(name) else {
         scope.rollback().await;
         return Err(Box::new(reject(StatusCode::NOT_FOUND, "NotFound", &format!("no resource {name:?}"))));
     };
     for r in [Some(parent), s.site.plan_related(parent, rel).map(|r| r.child)].into_iter().flatten() {
         if !r.allow.contains(&Op::Read) {
-            return Err(Box::new(deny(&s.site, scope, &user, &r.name, json!({"reason": "allow"})).await));
+            return Err(Box::new(deny(&s.site, scope, user, &r.name, json!({"reason": "allow"})).await));
         }
-        if !s.site.allows(&grants, r, Op::Read) {
-            return Err(Box::new(deny(&s.site, scope, &user, &r.name, json!({"needs": s.site.requires(r, Op::Read)})).await));
+        if !s.site.allows(grants, r, Op::Read) {
+            return Err(Box::new(deny(&s.site, scope, user, &r.name, json!({"needs": s.site.requires(r, Op::Read)})).await));
         }
     }
     let Some(related) = s.site.plan_related(parent, rel) else {
@@ -609,8 +622,8 @@ async fn open_tab<'a>(s: &'a State_, user: Option<Extension<User>>, name: &str, 
         }
     };
     // The parent record must be inside the queryset of its resource, with its read defaults on.
-    let (scope, parent_reach) = reach(s, parent, &user, &grants, Vec::new(), scope).await?;
-    let (scope, child_reach) = reach(s, related.child, &user, &grants, without_of(uri), scope).await?;
+    let (scope, parent_reach) = reach(s, parent, user, grants, Vec::new(), scope).await?;
+    let (scope, child_reach) = reach(s, related.child, user, grants, without_of(uri), scope).await?;
     match list::parent_values(&s.site, parent, &related, scope.executor(), s.target, &key, &parent_reach.rows).await {
         Ok(Some(values)) => {
             let pins = related.child_to.iter().cloned().zip(values).collect();

@@ -5,6 +5,7 @@
 //! config. A request then goes through [`server::call`]: the router, the list planner of
 //! [`list`] and the engine. Only [`serve`] binds a socket, and nothing here names a host language.
 
+pub mod actions;
 pub mod audit;
 pub mod auth;
 pub mod bridge;

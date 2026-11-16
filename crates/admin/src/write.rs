@@ -42,7 +42,7 @@ use crate::service::{ErrorNote, RequestId};
 use crate::site::{Column, Resource, Site, Source};
 
 /// The largest body of a write: a form, not an upload.
-const MAX_BODY: usize = 1 << 20;
+pub(crate) const MAX_BODY: usize = 1 << 20;
 /// The width of the record label in the audit row.
 const LABEL_WIDTH: usize = 200;
 
