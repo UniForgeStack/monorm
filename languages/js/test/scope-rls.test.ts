@@ -63,8 +63,10 @@ async function world(body: (owner: Database, connectAs: (kind: string) => Promis
     for (const db of opened) await db.close();
     await owner.dropTables();
     for (const role of Object.values(names)) {
-      await owner.execute(`DROP OWNED BY ${role}`);
-      await owner.execute(`DROP ROLE ${role}`);
+      if ((await owner.fetch(`SELECT 1 FROM pg_roles WHERE rolname = '${role}'`)).length > 0) {
+        await owner.execute(`DROP OWNED BY ${role}`);
+        await owner.execute(`DROP ROLE ${role}`);
+      }
     }
     await owner.close();
   }
@@ -99,14 +101,14 @@ scenario("a role with no scope sees and writes nothing", async (owner, connectAs
   await assert.rejects(app.execute("INSERT INTO rls_js_orders (shop_id, total) VALUES (1, 1)"), refused);
 });
 
-scenario("a scope shows its rows and the orm equals a raw read", async (owner, connectAs, Order) => {
+scenario("a scope shows its rows and the client equals a raw read", async (owner, connectAs, Order) => {
   await seed(owner, Order);
   const app = await connectAs("app");
   const totals = async (shop: number) => ((await scope({ shop }, () => Order.objects.using(app))) as Any[]).map((o) => o.total).sort((a, b) => a - b);
-  const orm = await totals(1);
+  const viaTheClient = await totals(1);
   const rawRows = (await raw(app, 1, () => app.fetch("SELECT total FROM rls_js_orders"))).map((r) => Number(r["total"])).sort((a, b) => a - b);
-  assert.deepEqual(orm, rawRows);
-  assert.deepEqual(orm, [10, 11]);
+  assert.deepEqual(viaTheClient, rawRows);
+  assert.deepEqual(viaTheClient, [10, 11]);
   assert.deepEqual(await totals(2), [20]);
 });
 
@@ -143,9 +145,40 @@ scenario("an exempt role reads every row and writes none", async (owner, connect
   await assert.rejects(auditor.execute("INSERT INTO rls_js_orders (shop_id, total) VALUES (1, 1)"), /row-level security/);
 });
 
+scenario("a bypass role that is gone does not break a read", async (owner, connectAs, Order, names) => {
+  await seed(owner, Order);
+  const app = await connectAs("app");
+  for (const kind of ["boss", "admin"]) {
+    await owner.execute(`DROP OWNED BY ${names[kind]}`);
+    await owner.execute(`DROP ROLE ${names[kind]}`);
+  }
+  const totals = (await raw(app, 1, () => app.fetch("SELECT total FROM rls_js_orders"))).map((r) => Number(r["total"])).sort((a, b) => a - b);
+  assert.deepEqual(totals, [10, 11]);
+});
+
 scenario("the setting read is one initplan", async (_owner, connectAs) => {
   const app = await connectAs("app");
   const plan = (await raw(app, 1, () => app.fetch("EXPLAIN SELECT * FROM rls_js_orders"))).map((r) => String(r["QUERY PLAN"])).join("\n");
   assert.ok(plan.includes("InitPlan"), plan);
   assert.ok(!plan.split("InitPlan")[0]!.includes("current_setting"), plan);
+});
+
+const COMPOSED = `
+datasource db {
+  provider = "postgresql"
+}
+model Person {
+  id Int @id @default(autoincrement())
+  shop_id Int
+  @@scope.by(shop: shop_id)
+}
+model Employee {
+  salary Int
+  @@composition.model(parent: "Person", parentRef: "person", childRef: "employee")
+}
+`;
+
+test("a scope on a composed chain is refused so no level table is open", { skip: !hasExtension("monorm.scope") || !hasExtension("monorm.composition") }, () => {
+  // A level policy (a join to the direct parent) is built only for a scoped parent, and the compile step refuses that schema today.
+  assert.throws(() => loads(COMPOSED, { registry: new Registry() }), /not supported in a multi-table model's ownership chain/);
 });

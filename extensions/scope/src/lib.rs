@@ -35,13 +35,19 @@ fn setting(key: &Key) -> String {
     format!("(SELECT NULLIF(current_setting({}, true), '')::{})", literal(&format!("scope.{}", key.name)), key.sql_type)
 }
 
+/// `current_user` is a member of one of the roles. The catalog lookup keeps a role that does not exist from raising an error:
+/// `pg_has_role` with a name fails for an unknown role, and the policy runs for every statement.
+fn member_of(roles: &[String]) -> String {
+    let names = roles.iter().map(|r| literal(r)).collect::<Vec<_>>().join(", ");
+    format!("(SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname IN ({names}) AND pg_has_role(current_user, oid, 'member')))")
+}
+
 /// The term of one key: the column equals the setting, or an open `unscoped` bypass of a bypass role.
 fn term(key: &Key, bypass_roles: &[String]) -> String {
     let equal = format!("{} = {}", ident(&key.column), setting(key));
     if bypass_roles.is_empty() { return format!("({equal})"); }
     let open = format!("(SELECT {} = ANY(NULLIF(current_setting('monorm.bypass', true), '')::text[]))", literal(&key.name));
-    let member = bypass_roles.iter().map(|r| format!("pg_has_role(current_user, {}, 'member')", literal(r))).collect::<Vec<_>>().join(" OR ");
-    format!("({equal} OR ({open} AND (SELECT {member})))")
+    format!("({equal} OR ({open} AND {}))", member_of(bypass_roles))
 }
 
 fn expression(keys: &[Key], bypass_roles: &[String]) -> String {
@@ -228,7 +234,8 @@ mod tests {
         let p = &m.policies[0];
         let eq = "\"shop_id\" = (SELECT NULLIF(current_setting('scope.shop', true), '')::integer)";
         let open = "(SELECT 'shop' = ANY(NULLIF(current_setting('monorm.bypass', true), '')::text[]))";
-        let expected = format!("({eq} OR ({open} AND (SELECT pg_has_role(current_user, 'admin', 'member'))))");
+        let member = "(SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname IN ('admin') AND pg_has_role(current_user, oid, 'member')))";
+        let expected = format!("({eq} OR ({open} AND {member}))");
         assert_eq!((p.name.as_str(), p.using.as_deref(), p.with_check.as_deref()), (POLICY, Some(expected.as_str()), Some(expected.as_str())));
         let t = &m.triggers[0];
         assert_eq!(t.name, FILL);
@@ -255,6 +262,29 @@ mod tests {
         assert_eq!(m.triggers.iter().filter(|t| t.name == FILL).count(), 1);
         let e = &m.policies[1];
         assert_eq!((e.name.as_str(), e.command, e.roles.as_slice(), e.using.as_deref(), e.if_roles_exist), ("monorm_scope_exempt_auditor", PolicyCommand::Select, ["auditor".to_string()].as_slice(), Some("true"), true));
+    }
+
+    #[test]
+    fn each_level_table_joins_its_direct_parent_and_the_exempt_roles_read_it() {
+        let mut ir = secured(serde_json::json!(["admin"]), serde_json::json!(["auditor"]));
+        let level = |name: &str, table: &str, column: &str| serde_json::json!({"name": name, "table": table, "fields": [
+            {"name": "id", "column": "id", "type": "int", "primary_key": true},
+            {"name": column, "column": column, "type": "int"}
+        ]});
+        ir.models.push(serde_json::from_value(level("Line", "lines", "order_id")).unwrap());
+        ir.models.push(serde_json::from_value(level("Note", "notes", "line_id")).unwrap());
+        ir.behavior.owner_links = serde_json::from_value(serde_json::json!([
+            {"child": "Note", "parent": "Line", "child_key": "line_id", "parent_key": "id"},
+            {"child": "Line", "parent": "Order", "child_key": "order_id", "parent_key": "id"}
+        ])).unwrap();
+        prepare(&mut ir).unwrap();
+        for (index, (parent, child, column)) in [("orders", "lines", "order_id"), ("lines", "notes", "line_id")].into_iter().enumerate() {
+            let m = &ir.models[index + 1];
+            let on = format!("EXISTS (SELECT 1 FROM \"{parent}\" r WHERE r.\"id\" = \"{child}\".\"{column}\")");
+            assert!(m.rls.enabled && m.rls.forced, "{child}");
+            assert_eq!((m.policies[0].name.as_str(), m.policies[0].using.as_deref(), m.policies[0].with_check.as_deref()), (POLICY, Some(on.as_str()), Some(on.as_str())), "{child}");
+            assert_eq!(m.policies[1].name, "monorm_scope_exempt_auditor", "{child}");
+        }
     }
 
     #[test]

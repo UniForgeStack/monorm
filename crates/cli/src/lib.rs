@@ -732,10 +732,35 @@ fn print_gaps(gaps: &[String]) {
     }
 }
 
-/// Whether the schema file compiles and turns row-level security on for a table. A file that does not compile counts as no.
-fn schema_has_row_security(schema: &Path, args: &Args) -> bool {
-    let Ok(installed) = args.installed() else { return false };
-    dsl::compile_project_file_with(schema, &installed).map(|p| p.ir.models.iter().any(|m| m.rls.enabled)).unwrap_or(false)
+/// The `bypass_roles` and `exempt_roles` of a schema that has row-level security, or `None` when it has none or does not compile.
+fn row_security_roles(schema: &Path, args: &Args) -> Option<(Vec<String>, Vec<String>)> {
+    let installed = args.installed().ok()?;
+    let project = dsl::compile_project_file_with(schema, &installed).ok()?;
+    project.ir.models.iter().any(|m| m.rls.enabled).then(|| (project.ir.bypass_roles.clone(), project.ir.exempt_roles.clone()))
+}
+
+/// Names each role of `bypass_roles` and `exempt_roles` that the database lacks: a missing exempt role gets no policy,
+/// and a missing bypass role never opens the bypass.
+async fn missing_role_warnings(driver: &dyn monorm_engine::db::Executor, bypass: &[String], exempt: &[String]) -> Vec<String> {
+    if driver.dialect() != monorm_core::dialect::Dialect::Postgres || (bypass.is_empty() && exempt.is_empty()) {
+        return vec![];
+    }
+    let mut out = vec![];
+    for (list, roles) in [("bypass_roles", bypass), ("exempt_roles", exempt)] {
+        let names = roles.iter().map(|r| format!("'{}'", r.replace('\'', "''"))).collect::<Vec<_>>().join(", ");
+        if roles.is_empty() {
+            continue;
+        }
+        let sql = format!("SELECT r FROM unnest(ARRAY[{names}]::text[]) AS r WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = r) ORDER BY r");
+        let Ok(rows) = driver.query_text(sql).await else { continue };
+        let effect = if list == "bypass_roles" { "it never opens the bypass" } else { "it gets no read policy" };
+        for row in rows {
+            if let Some(Some(role)) = row.first() {
+                out.push(format!("the role {role} of {list} does not exist in the database: {effect}"));
+            }
+        }
+    }
+    out
 }
 
 /// Says so when the connected role skips row-level security (a superuser or a role with `BYPASSRLS`): the policies do not apply to it.
@@ -762,9 +787,12 @@ async fn database(command: &str, args: &Args, dir: &Path, schema: &Path) -> Resu
     let result = async {
         match command {
             "migrate" => {
-                if schema_has_row_security(schema, args) {
+                if let Some((bypass, exempt)) = row_security_roles(schema, args) {
                     if let Some(w) = role_warning(&*driver).await {
                         eprintln!("warning: this schema has row-level security; {w}");
+                    }
+                    for w in missing_role_warnings(&*driver, &bypass, &exempt).await {
+                        eprintln!("warning: {w}");
                     }
                 }
                 let done = migrate::upgrade(&*driver, dir, args.arg(0), args.flag("--allow-destructive")).await?;
@@ -838,10 +866,13 @@ async fn database(command: &str, args: &Args, dir: &Path, schema: &Path) -> Resu
                 }
             }
             "audit" => {
-                let (_, compiled) = load(schema, args)?;
+                let (ir, compiled) = load(schema, args)?;
                 let target = files::snapshot(&compiled).map_err(failed)?;
                 let warning = role_warning(&*driver).await;
                 if let Some(w) = &warning {
+                    println!("warning: {w}");
+                }
+                for w in missing_role_warnings(&*driver, &ir.bypass_roles, &ir.exempt_roles).await {
                     println!("warning: {w}");
                 }
                 let (steps, _) = introspect::compare_with(&*driver, &target, introspect::Kind::Security).await?;

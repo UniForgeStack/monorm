@@ -227,7 +227,7 @@ pub struct SchemaIr {
     /// Behavioral requirements are separate from the database extension catalog.
     #[serde(default, skip_serializing_if = "crate::extension::Requirements::is_empty")]
     pub behavior: crate::extension::Requirements,
-    /// Roles of the datasource's `exempt_roles` list: a role that reads every row of a scoped table.
+    /// Roles of the datasource's `exempt_roles` list: roles that an extension may give read access to the rows of its tables.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub exempt_roles: Vec<String>,
     /// Roles of the datasource's `bypass_roles` list. A trigger that is skippable runs no skip in the database

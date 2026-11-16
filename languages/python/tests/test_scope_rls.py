@@ -67,8 +67,9 @@ async def world():
             await db.close()
         await owner.drop_tables()
         for role in names.values():
-            await owner.execute(f"DROP OWNED BY {role}")
-            await owner.execute(f"DROP ROLE {role}")
+            if await owner.fetch(f"SELECT 1 FROM pg_roles WHERE rolname = '{role}'"):
+                await owner.execute(f"DROP OWNED BY {role}")
+                await owner.execute(f"DROP ROLE {role}")
         await owner.close()
 
 
@@ -112,15 +113,15 @@ async def test_a_role_with_no_scope_sees_and_writes_nothing(world):
         await app.execute("INSERT INTO rls_orders (shop_id, total) VALUES (1, 1)")
 
 
-async def test_a_scope_shows_its_rows_and_the_orm_equals_a_raw_read(world):
+async def test_a_scope_shows_its_rows_and_the_client_equals_a_raw_read(world):
     owner, connect_as, Order, _ = world
     await seed(owner, Order)
     app = await connect_as("app")
     with monorm.scope(shop=1):
-        orm = sorted(r.total for r in await Order.objects.using(app).all())
+        via_the_client = sorted(r.total for r in await Order.objects.using(app).all())
     async with Raw(app, 1):
         raw = sorted(r["total"] for r in await app.fetch("SELECT total FROM rls_orders"))
-    assert orm == raw == [10, 11]
+    assert via_the_client == raw == [10, 11]
     with monorm.scope(shop=2):
         assert [r.total for r in await Order.objects.using(app).all()] == [20]
 
@@ -163,6 +164,18 @@ async def test_an_exempt_role_reads_every_row_and_writes_none(world):
         await auditor.execute("INSERT INTO rls_orders (shop_id, total) VALUES (1, 1)")
 
 
+async def test_a_bypass_role_that_is_gone_does_not_break_a_read(world):
+    owner, connect_as, Order, names = world
+    await seed(owner, Order)
+    app = await connect_as("app")
+    await owner.execute(f"DROP OWNED BY {names['boss']}")
+    await owner.execute(f"DROP ROLE {names['boss']}")
+    await owner.execute(f"DROP OWNED BY {names['admin']}")
+    await owner.execute(f"DROP ROLE {names['admin']}")
+    async with Raw(app, 1):
+        assert sorted(r["total"] for r in await app.fetch("SELECT total FROM rls_orders")) == [10, 11]
+
+
 async def test_the_setting_read_is_one_initplan(world):
     owner, connect_as, _, _ = world
     app = await connect_as("app")
@@ -190,3 +203,47 @@ async def test_audit_names_a_dropped_policy_and_a_forced_flag_that_is_off(world,
     assert f"- create policy monorm_scope_exempt_{names['auditor']} on rls_orders" in lines, drift.stdout
     assert "- enable row level security on rls_orders, forced" in lines, drift.stdout
     assert "superuser" in drift.stdout
+
+
+async def test_audit_names_a_missing_role_and_a_leftover_hand_written_policy(world, tmp_path):
+    owner, _, _, names = world
+    (tmp_path / "schema.prisma").write_text(SCHEMA.format(**names))
+    env = {**os.environ, "MONORM_DATABASE_URL": os.environ["ORM_TEST_DATABASE_URL"]}
+
+    def audit():
+        return subprocess.run([sys.executable, "-m", "monorm", "--schema", "schema.prisma", "audit"], cwd=tmp_path, env=env, capture_output=True, text=True)
+
+    await owner.execute("CREATE POLICY tenant_shop ON rls_orders USING (true)")
+    left = audit()
+    assert left.returncode == 1, left.stdout + left.stderr
+    assert "- drop policy tenant_shop on rls_orders" in [line.strip() for line in left.stdout.splitlines()], left.stdout
+    await owner.execute("DROP POLICY tenant_shop ON rls_orders")
+    await owner.execute(f"DROP OWNED BY {names['boss']}")
+    await owner.execute(f"DROP ROLE {names['boss']}")
+    await owner.execute(f"DROP OWNED BY {names['admin']}")
+    await owner.execute(f"DROP ROLE {names['admin']}")
+    gone = audit()
+    assert f"warning: the role {names['admin']} of bypass_roles does not exist" in gone.stdout, gone.stdout + gone.stderr
+
+
+COMPOSED = """
+datasource db {
+ provider = "postgresql"
+}
+model Person {
+ id Int @id @default(autoincrement())
+ shop_id Int
+ @@scope.by(shop: shop_id)
+}
+model Employee {
+ salary Int
+ @@composition.model(parent: "Person", parentRef: "person", childRef: "employee")
+}
+"""
+
+
+@pytest.mark.skipif(not has_extension("monorm.composition"), reason="requires the monorm.composition package")
+def test_a_scope_on_a_composed_chain_is_refused_so_no_level_table_is_open():
+    # A level policy (a join to the direct parent) is built only for a scoped parent, and the compile step refuses that schema today.
+    with pytest.raises(Exception, match="not supported in a multi-table model's ownership chain"):
+        monorm.loads(COMPOSED, registry=monorm.Registry())
