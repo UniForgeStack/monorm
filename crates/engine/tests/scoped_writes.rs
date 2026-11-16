@@ -88,6 +88,18 @@ fn insert_fills_checks_and_refuses() {
 }
 
 #[test]
+fn an_open_index_marks_the_key_open_and_gives_no_value() {
+    use monorm_engine::params::{Scoped, OPEN_INDEX};
+    let base = Ctx::shop(7);
+    let scope = BTreeMap::from([("shop".to_string(), OPEN_INDEX), ("user".to_string(), 0)]);
+    let scoped = Scoped { params: &base, scope: &scope };
+    assert!(scoped.unscoped("shop") && !scoped.unscoped("user"));
+    assert_eq!(scoped.scope("shop"), None);
+    assert_eq!(scoped.scope("user"), Some(0));
+    assert_eq!(scoped.scope_values(), vec![("user".to_string(), 0)]);
+}
+
+#[test]
 fn upsert_checks_each_row_and_keeps_the_stored_scope() {
     let schema = schema();
     let conflict = |update: &[&str]| Some(Conflict::Update { target: vec!["id".into()], index: Default::default(), update: update.iter().map(|u| u.to_string()).collect(), set: vec![] });

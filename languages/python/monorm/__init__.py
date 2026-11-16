@@ -11,7 +11,7 @@ expressions over model attributes, Django-style managers on top::
 from ._extensions import OrmStaleModelsWarning as OrmStaleModelsWarning
 from .inspection import QueryInspection, StatementInspection
 from . import debug, fields, otel
-from .db import Database, Isolation, QueryEvent, connect, get_database, scope
+from .db import Database, Isolation, QueryEvent, connect, get_database, scope, skip_triggers, unscoped
 from .nested import NestedRef, NestedValue
 from .errors import (
     DatabaseError,
@@ -98,6 +98,8 @@ __all__ = [
     "QueryEvent",
     "connect",
     "scope",
+    "skip_triggers",
+    "unscoped",
     "get_database",
     "Model",
     "registry",

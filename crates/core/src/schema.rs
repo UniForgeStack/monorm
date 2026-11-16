@@ -268,6 +268,11 @@ impl Schema {
         out
     }
 
+    /// The names that `skip_triggers` accepts: the `skippable` name of each trigger of a model.
+    pub fn skippable_triggers(&self) -> std::collections::BTreeSet<String> {
+        self.models.iter().flat_map(|m| m.ir.triggers.iter()).filter_map(|t| t.skippable.clone()).collect()
+    }
+
     /// True when a hook of a model reads the request context. A hook names no key it reads, so `scope()` accepts any
     /// key for such a schema.
     pub fn scope_keys_open(&self) -> bool {

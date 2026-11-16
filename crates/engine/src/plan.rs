@@ -904,6 +904,11 @@ pub struct Planner<'s> {
 }
 
 impl<'s> Planner<'s> {
+    /// The read defaults of `model` that apply here: `bypass` and the keys that an `unscoped` block opened switch some off.
+    fn active_filter(&self, model: &Model, bypass: &Bypass) -> Option<Expr> {
+        active_filter(model, bypass, &|k| self.params.unscoped(k))
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         schema: &'s Schema,
@@ -1296,7 +1301,7 @@ impl<'s> Planner<'s> {
         let parts = together?;
         // Thousands of conjuncts fold into a shallow tree; the defaults below stay separate.
         let mut out = if parts.len() > FOLD_FAN_OUT { vec![fold(parts, true)] } else { parts };
-        if let Some(filter) = active_filter(self.model(self.root), without_defaults).filter(|_| !without_root_filter) {
+        if let Some(filter) = self.active_filter(self.model(self.root), without_defaults).filter(|_| !without_root_filter) {
             out.push(self.cond(&filter)?); self.root_filtered = true;
         }
         if let Some(filter) = self.view_filter(self.root, self.root_alias()) { out.push(filter); }
@@ -1388,7 +1393,7 @@ impl<'s> Planner<'s> {
                     stmt.from_as(table, Alias::new(&alias)).and_where(link);
                 } else if left {
                     // A default in the WHERE would drop the rows that the LEFT JOIN keeps.
-                    let link = match active_filter(tm, &self.policy_bypass) {
+                    let link = match self.active_filter(tm, &self.policy_bypass) {
                         Some(filter) => link.and(self.target_default(target, &alias, &filter)?),
                         None => link,
                     };
@@ -1414,10 +1419,10 @@ impl<'s> Planner<'s> {
                     stmt.join_as(JoinType::InnerJoin, jtable, Alias::new(&jalias), to_source)
                         .join_as(JoinType::InnerJoin, table, Alias::new(&alias), to_target);
                 }
-                if let Some(filter) = active_filter(jm, &self.policy_bypass) { stmt.and_where(self.target_default(self.model_idx(&th.model)?, &jalias, &filter)?); }
+                if let Some(filter) = self.active_filter(jm, &self.policy_bypass) { stmt.and_where(self.target_default(self.model_idx(&th.model)?, &jalias, &filter)?); }
             }
         }
-        if let Some(filter) = active_filter(tm, &self.policy_bypass) { stmt.and_where(self.target_default(target, &alias, &filter)?); }
+        if let Some(filter) = self.active_filter(tm, &self.policy_bypass) { stmt.and_where(self.target_default(target, &alias, &filter)?); }
         if let Some(filter) = self.view_filter(target, &alias) { stmt.and_where(filter); }
         Ok(alias)
     }
@@ -2778,7 +2783,7 @@ impl<'s> Planner<'s> {
             }
             let new_alias = self.alias("j");
             let on = self.link((&alias, model), rel, (&new_alias, target))?;
-            let on = match active_filter(self.model(target), &self.policy_bypass) {
+            let on = match self.active_filter(self.model(target), &self.policy_bypass) {
                 Some(filter) => { self.filtered_joins.push(prefix.to_vec()); on.and(self.target_default(target, &new_alias, &filter)?) }
                 None => on,
             };
@@ -3422,9 +3427,11 @@ fn validate_bypass(model: &Model, bypass: &Bypass) -> Result<()> {
     Ok(())
 }
 
-fn active_filter(model: &Model, bypass: &Bypass) -> Option<Expr> {
+/// The read defaults of `model` that apply: `bypass` names the ones a query switches off, and `open` tells
+/// which scope keys an `unscoped` block opens. A default that reads an open key does not apply.
+fn active_filter(model: &Model, bypass: &Bypass, open: &dyn Fn(&str) -> bool) -> Option<Expr> {
     let mut filters: Vec<_> = model.read_defaults.parts.iter()
-        .filter(|p| !bypass.skips(&p.identity.name)).filter_map(|p| p.filter.clone()).collect();
+        .filter(|p| !bypass.skips(&p.identity.name) && !p.scopes.iter().any(|k| open(k))).filter_map(|p| p.filter.clone()).collect();
     match filters.len() { 0 => None, 1 => filters.pop(), _ => Some(Expr::And { items: filters }) }
 }
 
@@ -3477,7 +3484,7 @@ pub fn effective_order_json(schema: &Schema, select_json: &str) -> Result<serde_
             _ => Err(Error::query("a default order is a root column")),
         })
         .collect::<Result<Vec<_>>>()?;
-    Ok(serde_json::json!({"order":keys, "filtered":!q.without_root_filter && active_filter(schema.model(schema.model_idx(&q.model).map_err(query_err)?), &q.without_defaults).is_some()}))
+    Ok(serde_json::json!({"order":keys, "filtered":!q.without_root_filter && active_filter(schema.model(schema.model_idx(&q.model).map_err(query_err)?), &q.without_defaults, &|_| false).is_some()}))
 }
 
 /// The filter defaults of a select IR document, as `[{source, name, expr, active}]`.
@@ -3663,7 +3670,7 @@ fn plan_prefetch(
             let (src, dst) = (jm.field(&th.source).map_err(query_err)?, jm.field(&th.target).map_err(query_err)?);
             let jalias = p.alias("m");
             let mut on = col(&jalias, &dst.column).eq(col(p.root_alias(), &cm.field(&rel.to[0]).map_err(query_err)?.column));
-            if let Some(filter) = active_filter(jm, &p.policy_bypass) { on = on.and(p.target_default(schema.model_idx(&th.model).map_err(query_err)?, &jalias, &filter)?); }
+            if let Some(filter) = p.active_filter(jm, &p.policy_bypass) { on = on.and(p.target_default(schema.model_idx(&th.model).map_err(query_err)?, &jalias, &filter)?); }
             plan.stmt.join_as(JoinType::InnerJoin, Alias::new(jm.table()), Alias::new(&jalias), on);
             let k = col(&jalias, &src.column);
             plan.stmt.expr_as(k.clone(), Alias::new("_key"));
@@ -3915,7 +3922,7 @@ fn assigned(e: &Expr) -> crate::scoped::Assigned {
     match e {
         Expr::Param { i } => crate::scoped::Assigned::Param(*i),
         Expr::Null => crate::scoped::Assigned::Null,
-        _ => crate::scoped::Assigned::Other,
+        _ => crate::scoped::Assigned::NonLiteral,
     }
 }
 
@@ -4058,7 +4065,7 @@ pub(crate) fn insert_statement(
                 // The INSERT names the partition table, so the existing row is read through it.
                 planner.scopes[0].alias = table.into();
                 // Defaults constrain the existing row, independently of the index predicate.
-                if let Some(filter) = active_filter(m, without_defaults) {
+                if let Some(filter) = planner.active_filter(m, without_defaults) {
                     clause.action_and_where(planner.cond(&filter)?);
                 }
                 for a in &set {

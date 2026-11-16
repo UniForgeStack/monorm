@@ -227,6 +227,10 @@ pub struct SchemaIr {
     /// Behavioral requirements are separate from the database extension catalog.
     #[serde(default, skip_serializing_if = "crate::extension::Requirements::is_empty")]
     pub behavior: crate::extension::Requirements,
+    /// Roles of the datasource's `bypass_roles` list. A trigger that is skippable runs no skip in the database
+    /// for any other role, so an empty list means no skip.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub bypass_roles: Vec<String>,
 }
 
 impl SchemaIr {
@@ -893,6 +897,10 @@ pub struct TriggerIr {
     pub body: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub language: Option<String>,
+    /// The name that a caller gives to `skip_triggers` to switch this trigger off for a block. The extension that
+    /// generates the trigger adds the test of `monorm.skip` to its `WHEN` clause (see `sql::skip_guard`).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub skippable: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]

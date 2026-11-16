@@ -14,7 +14,7 @@
  */
 
 import { Builder } from "./build.js";
-import { currentScope } from "./db.js";
+import { currentScope, scopeIndex, scopeParams, scopeShape } from "./db.js";
 import { QueryError } from "./errors.js";
 import { Column, Slot, SlotParams, type IR, type RowsRef } from "./expr.js";
 import { emptyInspection, inspection, inspector, type QueryInspection } from "./inspection.js";
@@ -260,14 +260,14 @@ class RowsCompiled {
       if (v === undefined) throw new TypeError(`param(${JSON.stringify(name)}) can't be undefined; use null for NULL`);
       params[i] = transform && v !== null ? transform(v) : v;
     }
-    for (const k in scope) params.push(scope[k]);
+    params.push(...scopeParams(scope));
     return params;
   }
 
   /** The options with the indexes of the scope values. */
   scoped(scope: readonly string[]): Record<string, unknown> {
     const options = { ...this.options };
-    const index = Object.fromEntries(scope.map((n, i) => [n, this.params.length + i]));
+    const index = scopeIndex(scope, this.params.length);
     if (this.kind === "insert") {
       if (scope.length) options["scope"] = index;
     } else {
@@ -282,7 +282,7 @@ class RowsCompiled {
     const key = scope.join("\0");
     let held = byScope.get(key);
     if (held === undefined) {
-      const declared = [...this.#declared, ...scope.map(() => null)];
+      const declared = [...this.#declared, ...scope.filter((n) => !n.startsWith("!")).map(() => null)];
       const options = JSON.stringify(this.scoped(scope));
       held = call(() =>
         this.kind === "insert"
@@ -307,7 +307,7 @@ class RowsWrite implements Held {
   ) {
     this.names = new Set([...plan.names, ...compiled.names]);
     try {
-      compiled.native(inspector(qs.meta, qs.state.db), Object.keys(currentScope())); // a statement that cannot be held fails here
+      compiled.native(inspector(qs.meta, qs.state.db), scopeShape(currentScope())); // a statement that cannot be held fails here
     } catch (e) {
       if (!(e instanceof QueryError) || !e.message.includes("which is not set")) throw e; // a scope not set yet waits for the first call
     }
@@ -321,7 +321,7 @@ class RowsWrite implements Held {
     const c = this.compiled;
     const params = c.bind(rest, scope);
     const db = this.qs.db();
-    const held = c.native(db.engine, Object.keys(scope));
+    const held = c.native(db.engine, scopeShape(scope));
     const allowed = allowedWrites();
     const res = await db.send((tx, trace) => held.run(rows, params, tx, allowed, trace), { key: this.key });
     if (this.shape === "count") return res;
@@ -338,7 +338,7 @@ class RowsWrite implements Held {
     const c = this.compiled;
     const params = c.bind(rest, scope);
     const engine = inspector(this.qs.meta, this.qs.state.db);
-    const options = c.scoped(Object.keys(scope));
+    const options = c.scoped(scopeShape(scope));
     const returning = this.shape !== "count";
     const text =
       c.kind === "insert"

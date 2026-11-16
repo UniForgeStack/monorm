@@ -17,7 +17,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from operator import itemgetter
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
-from .db import _scope, check_scope, resolve
+from .db import resolve, scope_index, scope_params, scope_shape, scope_values
 from .errors import QueryError
 from .expr import Param, SlotParams, _Slot
 from .inspection import QueryInspection, _native as _inspection_native
@@ -51,10 +51,7 @@ def _known(names: frozenset[str], values: Mapping[str, Any]) -> None:
 
 def _scope_values(scope: Mapping[str, Any] | None) -> dict[str, Any]:
     """The scope values of a call: ``scope=`` over the ``monorm.scope()`` context."""
-    merged = _scope.get()
-    if scope:
-        check_scope(scope)
-    return {**merged, **scope} if scope else merged
+    return scope_values(scope)
 
 
 class _CompiledWrite(_Compiled):
@@ -75,14 +72,14 @@ class _CompiledWrite(_Compiled):
         return params
 
     def native(self, engine: Any, scope: Mapping[str, Any]) -> Any:
-        key = (engine, tuple(scope))
+        key = (engine, scope_shape(scope))
         write = self.natives.get(key)
         if write is None:
             op = self.json
             if scope:
-                index = json.dumps({name: len(self.params) + i for i, name in enumerate(scope)})
+                index = json.dumps(scope_index(len(self.params), scope))
                 op = f'{op[:-1]},"scope":{index}}}'
-            declared = [*self.declared, *([None] * len(scope))]
+            declared = [*self.declared, *([None] * len(scope_params(scope)))]
             write = self.natives[key] = engine.prepare_write(op, len(declared), declared)
         return write
 
@@ -249,19 +246,19 @@ class _CompiledRows:
         self.declared: list[str | None] = [p.type if isinstance(p, _Slot) else None for p in params]
         self.returning = returning
         self.batch = batch
-        self.natives: dict[tuple[Any, tuple[str, ...]], Any] = {}
+        self.natives: dict[tuple[Any, tuple[tuple[str, bool], ...]], Any] = {}
 
     def bind(self, values: Mapping[str, Any], merged: Mapping[str, Any]) -> list[Any]:
         params = self.params.copy()
         for i, name in self.slots:
             params[i] = values[name]
-        params.extend(merged.values())
+        params.extend(scope_params(merged))
         return params
 
     def scoped(self, merged: Mapping[str, Any]) -> dict[str, Any]:
         """The options with the indexes of the scope values."""
         options = dict(self.options)
-        index = {name: len(self.params) + i for i, name in enumerate(merged)}
+        index = scope_index(len(self.params), merged)
         if self.kind == "insert":
             if index:
                 options["scope"] = index
@@ -270,10 +267,10 @@ class _CompiledRows:
         return options
 
     def native(self, engine: Any, merged: Mapping[str, Any]) -> Any:
-        key = (engine, tuple(merged))
+        key = (engine, scope_shape(merged))
         held = self.natives.get(key)
         if held is None:
-            declared = [*self.declared, *([None] * len(merged))]
+            declared = [*self.declared, *([None] * len(scope_params(merged)))]
             prepare = engine.prepare_insert if self.kind == "insert" else engine.prepare_update_many
             held = self.natives[key] = prepare(
                 self.model, self.fields, json.dumps(self.scoped(merged)), len(declared), declared, self.returning, self.batch

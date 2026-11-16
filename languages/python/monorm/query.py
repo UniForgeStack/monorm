@@ -1549,7 +1549,7 @@ class _Compiled:
         self.slots = [(i, p.name, p.transform) for i, p in enumerate(params) if isinstance(p, _Slot)]
         self.names = frozenset(name for _, name, _ in self.slots)
         self.declared: list[str | None] = [p.type if isinstance(p, _Slot) else None for p in params]
-        self.natives: dict[tuple[Any, tuple[str, ...]], Any] = {}
+        self.natives: dict[tuple[Any, tuple[tuple[str, bool], ...]], Any] = {}
 
     def bind(self, values: Mapping[str, Any], known: frozenset[str]) -> list[Any]:
         if missing := self.names - values.keys():
@@ -1566,38 +1566,36 @@ class _Compiled:
 
     def native(self, engine: Any, scope: Mapping[str, Any]) -> Any:
         """The engine's prepared read for these scope names (planned on first use)."""
-        key = (engine, tuple(scope))
+        from .db import scope_index, scope_params, scope_shape
+
+        key = (engine, scope_shape(scope))
         read = self.natives.get(key)
         if read is None:
             op = self.json
             if scope:
-                index = json.dumps({name: len(self.params) + i for i, name in enumerate(scope)})
-                op = f'{op[:-1]},"scope":{index}}}'
-            declared = [*self.declared, *([None] * len(scope))]
+                op = f'{op[:-1]},"scope":{json.dumps(scope_index(len(self.params), scope))}}}'
+            declared = [*self.declared, *([None] * len(scope_params(scope)))]
             read = self.natives[key] = engine.prepare_read(op, len(declared), declared)
         return read
 
     def call_values(self, values: Mapping[str, Any], known: frozenset[str], scope: Mapping[str, Any] | None) -> tuple[list[Any], dict[str, Any]]:
         """The parameter list of a call, the scope values after it, and the scope itself:
         ``scope=`` over the ``monorm.scope()`` context."""
-        from .db import _scope, check_scope
+        from .db import scope_params, scope_values
 
-        merged = _scope.get()
-        if scope:
-            check_scope(scope)
-            merged = {**merged, **scope}
+        merged = scope_values(scope)
         params = self.bind(values, known)
-        params.extend(merged.values())
+        params.extend(scope_params(merged))
         return params, merged
 
     def validate(self, qs: Any) -> None:
         """Plans the statement now, so a shape that cannot become a slot fails at ``prepare()``.
         A scope that is not set yet waits for the first call."""
-        from .db import _scope
+        from .db import scope_values
         from .inspection import _native as inspection_native
 
         try:
-            self.native(inspection_native(qs), _scope.get())
+            self.native(inspection_native(qs), scope_values())
         except QueryError as e:
             if "which is not set" not in str(e):
                 raise

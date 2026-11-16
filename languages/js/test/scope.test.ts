@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { connect, loads, QueryError, Registry, scope, ScopeMismatch, ScopeMissing, type Database } from "../src/index.js";
+import { connect, loads, param, QueryError, Registry, scope, ScopeMismatch, ScopeMissing, skipTriggers, unscoped, type Database } from "../src/index.js";
 import { hasExtension } from "./artifact-caps.js";
 
 type Any = any; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -14,16 +14,17 @@ model Order {
   shop_id Int
   total Int
   @@scope.by(shop: shop_id)
+  @@timestamps.updated_at("changed")
   @@map("sc_js_orders")
 }
 `;
 
-const skip = !hasExtension("monorm.scope");
+const skip = !hasExtension("monorm.scope", "monorm.timestamps");
 const urlOf = (provider: string) => (provider === "sqlite" ? "sqlite://:memory:" : (process.env["ORM_TEST_DATABASE_URL"] ?? "postgres://postgres:postgres@localhost/orm_test"));
 
-async function withOrders(provider: string, body: (db: Database, Order: Any) => Promise<void>): Promise<void> {
+async function withOrders(provider: string, body: (db: Database, Order: Any) => Promise<void>, datasource = ""): Promise<void> {
   const registry = new Registry();
-  const models = loads(`datasource db {\n  provider = "${provider}"\n}\n${SCHEMA}`, { registry }) as Record<string, Any>;
+  const models = loads(`datasource db {\n  provider = "${provider}"\n${datasource}}\n${SCHEMA}`, { registry }) as Record<string, Any>;
   const db = await connect(urlOf(provider), { registry, default: false });
   await db.dropTables();
   await db.createTables();
@@ -92,6 +93,92 @@ for (const provider of ["sqlite", "postgresql"]) {
     await assert.rejects(Order.objects.using(db).insert({ total: 1 }), (e: Any) => e instanceof ScopeMissing && e.model === "Order" && e.key === "shop");
     assert.deepEqual(await rows(db, Order), []);
   });
+
+  const seed = async (db: Database, Order: Any) => {
+    for (const shop of [1, 2]) await scope({ shop }, () => Order.objects.using(db).insert({ total: shop * 10 }));
+  };
+  const totals = async (db: Database, Order: Any) => ((await Order.objects.using(db)) as Any[]).map((o) => o.total).sort((a, b) => a - b);
+
+  scenario("unscoped opens one key for reads and writes and closes after the block", async (db, Order) => {
+    await seed(db, Order);
+    await scope({ shop: 1 }, async () => {
+      await unscoped(["shop"], async () => {
+        assert.deepEqual(await totals(db, Order), [10, 20]);
+        await Order.objects.using(db).insert({ shopId: 2, total: 21 });
+        await Order.objects.using(db).filter(Order.shopId.eq(2)).update({ shopId: 3 });
+      });
+      assert.deepEqual(await totals(db, Order), [10]);
+      await assert.rejects(Order.objects.using(db).insert({ shopId: 2, total: 1 }), ScopeMismatch);
+    });
+    await unscoped(["shop"], () => Order.objects.using(db).insert({ shopId: 9, total: 90 }));
+    await assert.rejects(Order.objects.using(db).insert({ total: 1 }), ScopeMissing);
+    assert.deepEqual(await rows(db, Order), [[1, 10], [3, 20], [3, 21], [9, 90]]);
+  });
+
+  scenario("unscoped needs a declared key", async () => {
+    await assert.rejects(unscoped([], async () => 0), /at least one key/);
+    await assert.rejects(unscoped(["nope"], async () => 0), /no key nope/);
+    await assert.rejects(unscoped(["shop", "nope"], async () => 0), /no key nope/);
+  });
+
+  scenario("nested unscoped blocks add keys and a prepared read never keeps a block", async (db, Order) => {
+    await seed(db, Order);
+    const q = Order.objects.using(db).orderBy(Order.id).prepare();
+    const all = async () => ((await q.all({})) as Any[]).map((o) => o.total);
+    await unscoped(["shop"], async () => {
+      await unscoped(["shop"], async () => assert.deepEqual(await all(), [10, 20]));
+      assert.deepEqual(await all(), [10, 20]);
+    });
+    await scope({ shop: 2 }, async () => {
+      assert.deepEqual(await all(), [20]);
+      await unscoped(["shop"], async () => assert.deepEqual(await all(), [10, 20]));
+      assert.deepEqual(await all(), [20]);
+    });
+    await scope({ shop: 1 }, async () => assert.deepEqual(await all(), [10]));
+  });
+
+  scenario("a prepared write checks the scope unless unscoped", async (db, Order) => {
+    await seed(db, Order);
+    const edit = () => Order.objects.using(db).filter(Order.total.eq(param("t"))).update({ total: param("n") }).prepare();
+    await scope({ shop: 1 }, () => edit().run({ t: 10, n: 11 }));
+    await unscoped(["shop"], () => edit().run({ t: 20, n: 21 }));
+    assert.deepEqual(await rows(db, Order), [[1, 11], [2, 21]]);
+  });
+
+  scenario("unscoped publishes the bypass setting on postgresql", async (db, Order) => {
+    const events: Any[] = [];
+    db.onQuery((e) => void events.push(e));
+    await scope({ shop: 1 }, () => unscoped(["shop"], () => Order.objects.using(db)));
+    await Order.objects.using(db).withoutDefaults();
+    assert.equal(events[0].settings["monorm.bypass"], provider === "postgresql" ? "{shop}" : undefined);
+    assert.ok(!("monorm.bypass" in events[1].settings));
+  });
+
+  scenario("a block in an open transaction changes the setting and restores it", async (db, Order) => {
+    if (provider !== "postgresql") return;
+    const events: Any[] = [];
+    db.onQuery((e) => void events.push(e));
+    await db.transaction(async () => {
+      await Order.objects.using(db).withoutDefaults();
+      await unscoped(["shop"], () => Order.objects.using(db).withoutDefaults());
+      await Order.objects.using(db).withoutDefaults();
+    });
+    const seen = events.filter((e) => e.sql.includes("sc_js_orders")).map((e) => e.settings["monorm.bypass"]);
+    assert.deepEqual(seen, [undefined, "{shop}", undefined]);
+  });
+
+  scenario("skipTriggers raises on sqlite and publishes the setting on postgresql", async (db, Order) => {
+    if (provider === "sqlite") {
+      await assert.rejects(skipTriggers(["timestamps"], () => Order.objects.using(db).withoutDefaults()), /sqlite has none/);
+      return;
+    }
+    const events: Any[] = [];
+    db.onQuery((e) => void events.push(e));
+    await skipTriggers(["timestamps"], () => Order.objects.using(db).withoutDefaults());
+    assert.equal(events[0].settings["monorm.skip"], "{timestamps}");
+    await assert.rejects(skipTriggers(["soft-delete"], async () => 0), /no skippable triggers/);
+    await assert.rejects(skipTriggers([], async () => 0), /at least one/);
+  });
 }
 
 test("the errors are query errors", () => {
@@ -105,3 +192,17 @@ test("scope refuses what the schema does not declare", { skip }, () =>
     await assert.rejects(scope({ shop: null }, async () => 0), /never null/);
     await assert.rejects(scope({ shop: [1, 2] }, async () => 0), /not available yet/);
   }));
+
+test("skipTriggers switches the timestamps trigger off for a bypass role", { skip: skip || !process.env["ORM_TEST_DATABASE_URL"] }, () =>
+  withOrders("postgresql", async (db, Order) => {
+    const year = "SELECT extract(year FROM changed)::int AS y FROM sc_js_orders";
+    await scope({ shop: 1 }, () => Order.objects.using(db).insert({ total: 1 }));
+    await db.execute("UPDATE sc_js_orders SET changed = '2000-01-01'");
+    await db.execute("UPDATE sc_js_orders SET total = 2");
+    const touched = Number((await db.fetch(year))[0]!["y"]);
+    await db.execute("UPDATE sc_js_orders SET changed = '2000-01-01'");
+    await skipTriggers(["timestamps"], () => db.execute("UPDATE sc_js_orders SET total = 3"));
+    const kept = Number((await db.fetch(year))[0]!["y"]);
+    assert.ok(touched > 2000, String(touched));
+    assert.equal(kept, 2000);
+  }, '  bypass_roles = ["postgres"]\n'));

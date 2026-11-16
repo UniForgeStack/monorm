@@ -14,6 +14,15 @@ fn fails(src: &str) -> String {
 }
 
 #[test]
+fn bypass_roles_name_the_database_roles_that_skip_triggers() {
+    let src = |roles: &str| format!("datasource db {{\n  provider = \"postgresql\"\n  {roles}\n}}\nmodel A {{\n  id BigInt @id\n}}\n");
+    assert!(ok(&src("")).bypass_roles.is_empty());
+    assert_eq!(ok(&src(r#"bypass_roles = ["app_admin", "ops", "ops"]"#)).bypass_roles, ["app_admin", "ops"]);
+    assert!(fails(&src(r#"bypass_roles = "app_admin""#)).contains("bypass_roles takes a list of role names"));
+    assert!(fails(&src(r#"bypass_roles = [""]"#)).contains("a bypass role is a non-empty string"));
+}
+
+#[test]
 fn sqlite_targets_and_feature_checks() {
     let prefix = "datasource db {\n  provider = \"sqlite\"\n}\n";
     let source = format!("{prefix}model Item {{\n  id BigInt @id @default(autoincrement())\n  title String\n}}\n");

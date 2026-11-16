@@ -57,6 +57,10 @@ pub trait Params {
     }
 }
 
+/// The "parameter index" of a scope key that an `unscoped` block opens: the key has no value parameter, and the
+/// statement's fill, write check and read default of that key are off.
+pub const OPEN_INDEX: usize = u32::MAX as usize;
+
 /// `params` with the statement's `scope.<name>` parameter indexes.
 pub struct Scoped<'a> {
     pub params: &'a dyn Params,
@@ -83,13 +87,13 @@ impl Params for Scoped<'_> {
         self.params.now(ty)
     }
     fn scope(&self, name: &str) -> Option<usize> {
-        self.scope.get(name).copied()
+        self.scope.get(name).copied().filter(|i| *i != OPEN_INDEX)
     }
     fn unscoped(&self, key: &str) -> bool {
-        self.params.unscoped(key)
+        self.scope.get(key) == Some(&OPEN_INDEX) || self.params.unscoped(key)
     }
     fn scope_values(&self) -> Vec<(String, usize)> {
-        self.scope.iter().map(|(k, v)| (k.clone(), *v)).collect()
+        self.scope.iter().filter(|(_, v)| **v != OPEN_INDEX).map(|(k, v)| (k.clone(), *v)).collect()
     }
 }
 

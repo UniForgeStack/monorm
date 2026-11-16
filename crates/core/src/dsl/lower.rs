@@ -608,6 +608,15 @@ fn datasource_block(ir: &mut SchemaIr, pos: Pos, props: &Props) -> Result<()> {
     for key in ["url", "directUrl", "shadowDatabaseUrl"] {
         n.get(key);
     }
+    if let Some((p, v)) = n.get("bypass_roles") {
+        let Value::List(list) = v else { return err(p, r#"datasource: bypass_roles takes a list of role names, e.g. ["app_admin"]"#) };
+        for (p, v) in list {
+            match v {
+                Value::Str(role) if !role.is_empty() => if !ir.bypass_roles.contains(role) { ir.bypass_roles.push(role.clone()) },
+                _ => return err(*p, "datasource: a bypass role is a non-empty string, e.g. \"app_admin\""),
+            }
+        }
+    }
     if let Some((p, v)) = n.get("extensions") {
         let Value::List(list) = v else { return err(p, "datasource: extensions takes a list, e.g. [postgis, citext]") };
         for (p, v) in list {
@@ -1887,6 +1896,7 @@ fn model_block(m: &mut ModelIr, b: &Attr, pending: Option<&Pendings>) -> Result<
                 },
                 body: n.str("body")?,
                 language: n.name("language")?,
+                skippable: None,
             };
             n.finish()?;
             if t.body.is_some() == t.function.is_some() {

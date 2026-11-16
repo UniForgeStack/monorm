@@ -32,10 +32,14 @@ _READS = frozenset({"select", "count", "exists", "compound"})
 _default: Database | None = None
 # For each database (its root) with an open transaction in the current task: the innermost one.
 _current_tx: ContextVar[dict[Database, _native.Transaction]] = ContextVar("monorm_current_tx", default={})
-# For each database in a `tenant()` block: its primary and replica engines with the tenant set.
-_tenants: ContextVar[dict[Database, tuple[_native.Engine, list[_native.Engine]]]] = ContextVar(
-    "monorm_tenants", default={}
-)
+# The scope keys that `unscoped()` blocks of the current task have opened.
+_open: ContextVar[frozenset[str]] = ContextVar("monorm_open", default=frozenset())
+# The extensions whose triggers `skip_triggers()` blocks of the current task skip.
+_skip: ContextVar[frozenset[str]] = ContextVar("monorm_skip", default=frozenset())
+# The scope index of a key that `unscoped()` opened: no parameter holds its value.
+OPEN_INDEX = 4294967295
+# For each open database: the extensions with triggers that `skip_triggers()` may skip.
+_skippable: dict[Database, frozenset[str]] = {}
 # For each database in a `tenant()` block: the tenant id.
 _tenant_ids: ContextVar[dict[Database, str]] = ContextVar("monorm_tenant_ids", default={})
 # For each database with an open transaction in the current task: the tenant id it began under.
@@ -128,6 +132,9 @@ class Database:
         self._allow_unfiltered_writes = allow_unfiltered_writes
         # The database a `primary` view belongs to: they share transactions and callbacks.
         self._root: Database = self
+        # The engines with settings, by (engine, names, values): one engine for each setting set, so
+        # that the statements prepared on it stay valid.
+        self._settings_engines: dict[tuple[Any, ...], _native.Engine] = {}
 
     @property
     def primary(self) -> Database:
@@ -136,11 +143,38 @@ class Database:
         view._root = self._root
         return view
 
+    def _with_settings(self, engine: _native.Engine) -> _native.Engine:
+        """``engine`` with the database settings of the current blocks: the tenant, the keys of
+        `unscoped()` and the extensions of `skip_triggers()`. Inside a Postgres transaction it
+        is always an engine with settings, so that a setting that a block no longer sets
+        is reset before the next statement."""
+        names: list[str] = []
+        values: list[str] = []
+        if (tenant := _tenant_ids.get().get(self._root)) is not None:
+            names.append("app.tenant")
+            values.append(tenant)
+        sqlite = self.url.startswith("sqlite://")
+        if (skip := _skip.get()) and sqlite:
+            raise QueryError("skip_triggers() skips triggers of the database; sqlite has none that a block can skip")
+        if (open_ := _open.get()) and not sqlite:
+            names.append("monorm.bypass")
+            values.append("{" + ",".join(sorted(open_)) + "}")
+        if skip:
+            names.append("monorm.skip")
+            values.append("{" + ",".join(sorted(skip)) + "}")
+        # Before any block set a setting, no transaction carries one.
+        if not names and (sqlite or self._tx() is None or not self._root._settings_engines):
+            return engine
+        key = (engine, tuple(names), tuple(values))
+        held = self._root._settings_engines.get(key)
+        if held is None:
+            held = self._root._settings_engines[key] = engine.with_settings(names, values)
+        return held
+
     @property
     def _engine(self) -> _native.Engine:
-        """The primary's engine, with the tenant of an enclosing `tenant()` block."""
-        tenant = _tenants.get().get(self._root)
-        return self._base if tenant is None else tenant[0]
+        """The primary's engine, with the settings of the enclosing blocks."""
+        return self._with_settings(self._base)
 
     def _tx(self) -> _native.Transaction | None:
         return _current_tx.get().get(self._root)
@@ -149,10 +183,8 @@ class Database:
         """The engine for a read: the next replica outside a transaction, else the primary."""
         if not self._replicas or self._tx() is not None:
             return self._engine
-        tenant = _tenants.get().get(self._root)
-        replicas = self._replicas if tenant is None else tenant[1]
-        self._turn = (self._turn + 1) % len(replicas)
-        return replicas[self._turn]
+        self._turn = (self._turn + 1) % len(self._replicas)
+        return self._with_settings(self._replicas[self._turn])
 
     @contextmanager
     def tenant(self, id: str | int) -> Iterator[None]:
@@ -175,17 +207,11 @@ class Database:
                 "db.tenant() inside a transaction opened under another tenant: the transaction keeps its tenant; "
                 "open the transaction inside the tenant block"
             )
-        engines = (
-            root._base.with_settings(["app.tenant"], value),
-            [r.with_settings(["app.tenant"], value) for r in root._replicas],
-        )
-        token = _tenants.set({**_tenants.get(), root: engines})
         id_token = _tenant_ids.set({**_tenant_ids.get(), root: value[0]})
         try:
             yield
         finally:
             _tenant_ids.reset(id_token)
-            _tenants.reset(token)
 
     @contextmanager
     def bind_request(
@@ -653,6 +679,7 @@ class Database:
         if self._root is not self:
             return await self._root.close()
         _declared.pop(self, None)
+        _skippable.pop(self, None)
         await self._base.close()
         for replica in self._replicas:
             await replica.close()
@@ -695,6 +722,7 @@ async def connect(
     readers = [await _native.connect(r, schema, max_connections, list(_disable)) for r in replicas]
     db = Database(engine, url, registry, readers, allow_unfiltered_writes)
     _declared[db] = None if engine.scope_keys_open() else frozenset(engine.scope_keys())
+    _skippable[db] = frozenset(engine.skippable_triggers())
     if default:
         _default = db
     return db
@@ -721,6 +749,63 @@ def _scope_block(values: dict[str, Any]) -> Iterator[None]:
         _scope.reset(token)
 
 
+def unscoped(*keys: str) -> AbstractContextManager[None]:
+    """``with monorm.unscoped("shop"):`` — turns off the fill, the check and the app read filter
+    of each named scope key, in the block and in tasks it starts. On Postgres it also sets
+    ``monorm.bypass`` to the open keys for the policies of the database. A write that needs
+    a key that is neither open nor set raises :class:`~monorm.ScopeMissing`.
+
+    Needs at least one key, and each key must be declared by the schema of an open database
+    (``ValueError`` otherwise). A nested block adds its keys to those of the outer block."""
+    if not keys:
+        raise ValueError("unscoped() needs at least one key: name each scope key to open")
+    check_open(keys)
+    return _open_block(frozenset(keys))
+
+
+@contextmanager
+def _open_block(keys: frozenset[str]) -> Iterator[None]:
+    token = _open.set(_open.get() | keys)
+    try:
+        yield
+    finally:
+        _open.reset(token)
+
+
+def check_open(keys: Iterable[str]) -> None:
+    if _declared and None not in _declared.values():
+        valid = frozenset().union(*(k for k in _declared.values() if k is not None))
+        if unknown := sorted(set(keys) - valid):
+            raise ValueError(f"unscoped() has no key {', '.join(unknown)}: the schema declares {', '.join(sorted(valid)) or 'no scope key'}")
+
+
+def skip_triggers(*extensions: str) -> AbstractContextManager[None]:
+    """``with monorm.skip_triggers("timestamps"):`` — the triggers of the named extensions do
+    not run in the block, for a database role that the schema lists in ``bypass_roles``. It
+    sets ``monorm.skip``. Only an extension that declares skippable triggers can be named
+    (``ValueError`` otherwise); soft-delete and scope triggers never are. A statement on SQLite
+    raises :class:`~monorm.QueryError`."""
+    if not extensions:
+        raise ValueError("skip_triggers() needs at least one extension name")
+    if _skippable:
+        valid = frozenset().union(*_skippable.values())
+        if unknown := sorted(set(extensions) - valid):
+            raise ValueError(
+                f"skip_triggers() has no skippable triggers for {', '.join(unknown)}: "
+                f"the schema declares {', '.join(sorted(valid)) or 'none'}"
+            )
+    return _skip_block(frozenset(extensions))
+
+
+@contextmanager
+def _skip_block(names: frozenset[str]) -> Iterator[None]:
+    token = _skip.set(_skip.get() | names)
+    try:
+        yield
+    finally:
+        _skip.reset(token)
+
+
 def check_scope(values: Mapping[str, Any]) -> None:
     """Refuses a scope value that no statement could use: see :func:`scope`."""
     for key, value in values.items():
@@ -736,16 +821,62 @@ def check_scope(values: Mapping[str, Any]) -> None:
             raise ValueError(f"scope() has no key {', '.join(unknown)}: the schema declares {', '.join(sorted(valid)) or 'no scope key'}")
 
 
+class _Open:
+    """The value of a key that `unscoped()` opened: no parameter holds it."""
+
+    def __repr__(self) -> str:
+        return "OPEN"
+
+
+OPEN = _Open()
+
+
+def scope_values(extra: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """The scope of a call: ``scope=`` over the ``monorm.scope()`` context, with ``OPEN`` for
+    each key of an enclosing `unscoped()` block."""
+    values = _scope.get()
+    if extra:
+        check_scope(extra)
+        values = {**values, **extra}
+    if open_ := _open.get():
+        values = {**values, **dict.fromkeys(open_, OPEN)}
+    return values
+
+
+def scope_shape(scope: Mapping[str, Any]) -> tuple[tuple[str, bool], ...]:
+    """The key of a held statement: the scope names, and which of them are open."""
+    return tuple((name, value is OPEN) for name, value in scope.items())
+
+
+def scope_index(base: int, scope: Mapping[str, Any]) -> dict[str, int]:
+    """The parameter index of each scope key; ``base`` is the number of parameters before the
+    scope values. An open key has no parameter."""
+    index: dict[str, int] = {}
+    position = base
+    for name, value in scope.items():
+        if value is OPEN:
+            index[name] = OPEN_INDEX
+        else:
+            index[name] = position
+            position += 1
+    return index
+
+
+def scope_params(scope: Mapping[str, Any]) -> list[Any]:
+    """The values to append to the parameters: the set keys, in the order of ``scope_index``."""
+    return [value for value in scope.values() if value is not OPEN]
+
+
 def _with_scope(op: str, params: list[Any], key: str | None = None) -> tuple[str, list[Any]]:
     """``op`` (a statement's IR, or with ``key`` a list wrapped under it) with the scope's
     parameter indexes, and ``params`` with the scope's values appended."""
-    values = _scope.get()
+    values = scope_values()
     if not values:
         return op, params
-    index = json.dumps({name: len(params) + i for i, name in enumerate(values)})
+    index = json.dumps(scope_index(len(params), values))
     separator = "," if op[1:-1].strip() else ""
     op = f'{{"{key}":{op},"scope":{index}}}' if key else f'{op[:-1]}{separator}"scope":{index}}}'
-    return op, [*params, *values.values()]
+    return op, [*params, *scope_params(values)]
 
 
 def get_database() -> Database:

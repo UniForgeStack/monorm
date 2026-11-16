@@ -38,6 +38,16 @@ const txTenants = new AsyncLocalStorage<ReadonlyMap<Database, string | undefined
 const scopeValues = new AsyncLocalStorage<Readonly<Record<string, unknown>>>();
 /** For each open database: the scope keys its schema reads or writes. `scope()` accepts these only. */
 const declared = new Map<Database, ReadonlySet<string> | null>(); // null: a hook reads the scope, so any key is valid
+/** The scope keys that `unscoped()` opens in this async context. */
+const openKeys = new AsyncLocalStorage<ReadonlySet<string>>();
+/** The extensions whose triggers `skipTriggers()` skips in this async context. */
+const skipped = new AsyncLocalStorage<ReadonlySet<string>>();
+/** For each open database: the extensions that declare a skippable trigger. */
+const skippable = new Map<Database, ReadonlySet<string>>();
+/** @internal The value of an open key in a scope record: no value, no filter, no fill, no check. */
+export const OPEN = Symbol("open");
+/** @internal The parameter index that marks an open key in a statement's `scope` map. */
+export const OPEN_INDEX = 4294967295;
 /** For each database with an open transaction: the onCommit callbacks of the innermost one. */
 const callbacks = new AsyncLocalStorage<ReadonlyMap<Database, (() => unknown)[]>>();
 /** The callback lists of transactions that committed or rolled back: a call started in the
@@ -164,6 +174,8 @@ export class Database {
   /** Hooks live on the root: `primary` views share them. */
   readonly #hooks = new Map<object, (event: QueryEvent) => unknown>();
   private turn = 0;
+  /** @internal Engines with settings, by base engine and setting values; shared by the views of a root. */
+  readonly settingsEngines = new Map<NativeEngine, Map<string, NativeEngine>>();
   /** @internal The database a `primary` view belongs to: they share transactions and callbacks. */
   root: Database = this;
 
@@ -255,9 +267,48 @@ export class Database {
     }
   }
 
-  /** @internal The primary's engine, with the tenant of an enclosing `tenant()` call. */
+  /** @internal The primary's engine, with the settings of the enclosing blocks. */
   get engine(): NativeEngine {
-    return tenants.getStore()?.get(this.root)?.primary ?? this.base;
+    return this.withSettings(this.base);
+  }
+
+  /**
+   * `engine` with the database settings of the current blocks: the tenant, the keys of `unscoped()` and the
+   * extensions of `skipTriggers()`. Inside a Postgres transaction it is always an engine with
+   * settings once any block set one, so a setting that a block no longer sets is reset before
+   * the next statement.
+   */
+  private withSettings(engine: NativeEngine): NativeEngine {
+    const names: string[] = [];
+    const values: string[] = [];
+    const tenant = tenants.getStore()?.get(this.root)?.id;
+    if (tenant !== undefined) {
+      names.push("app.tenant");
+      values.push(tenant);
+    }
+    const sqlite = this.url.startsWith("sqlite://");
+    const skip = skipped.getStore();
+    if (skip?.size && sqlite) {
+      throw new QueryError("skipTriggers() skips triggers of the database; sqlite has none that a block can skip");
+    }
+    const open = openKeys.getStore();
+    if (open?.size && !sqlite) {
+      names.push("monorm.bypass");
+      values.push(`{${[...open].sort().join(",")}}`);
+    }
+    if (skip?.size) {
+      names.push("monorm.skip");
+      values.push(`{${[...skip].sort().join(",")}}`);
+    }
+    const root = this.root;
+    // Before any block set a setting, no transaction carries one.
+    if (names.length === 0 && (sqlite || this.tx() === null || root.settingsEngines.size === 0)) return engine;
+    let byValues = root.settingsEngines.get(engine);
+    if (byValues === undefined) root.settingsEngines.set(engine, (byValues = new Map()));
+    const key = JSON.stringify([names, values]);
+    let held = byValues.get(key);
+    if (held === undefined) byValues.set(key, (held = engine.withSettings(names, values)));
+    return held;
   }
 
   /** This database without its replicas: every statement goes to the primary. */
@@ -277,9 +328,8 @@ export class Database {
     if (this.replicas.length === 0 || this.tx() !== null) {
       return this.engine;
     }
-    const replicas = tenants.getStore()?.get(this.root)?.replicas ?? this.replicas;
-    this.turn = (this.turn + 1) % replicas.length;
-    return replicas[this.turn]!;
+    this.turn = (this.turn + 1) % this.replicas.length;
+    return this.withSettings(this.replicas[this.turn]!);
   }
 
   /**
@@ -575,6 +625,7 @@ export class Database {
       return this.root.close();
     }
     declared.delete(this);
+    skippable.delete(this);
     await wait(() => this.base.close());
     for (const replica of this.replicas) {
       await wait(() => replica.close());
@@ -629,6 +680,7 @@ export async function connect(url: string, options: ConnectOptions = {}): Promis
   }
   const db = new Database(engine, url, reg, readers, options.allowUnfilteredWrites ?? false);
   declared.set(db, engine.scopeKeysOpen() ? null : new Set(engine.scopeKeys()));
+  skippable.set(db, new Set(engine.skippableTriggers()));
   if (options.default ?? true) {
     defaultDb = db;
   }
@@ -684,22 +736,84 @@ export function declareScopeKeys(db: Database, keys: readonly string[]): void {
   declared.set(db, new Set(keys));
 }
 
-/** @internal The values `scope.<name>` reads in this async context. */
-export function currentScope(): Readonly<Record<string, unknown>> {
-  return scopeValues.getStore() ?? {};
+/**
+ * Runs `fn` with the named scope keys open: the fill, the check and the app read filter of each
+ * key are off, in `fn` and in work it starts. On Postgres it also sets `monorm.bypass` to the
+ * open keys for the policies of the database. A write that needs a key that is neither open
+ * nor set throws `ScopeMissing`. Needs at least one key; each key must be declared by the
+ * schema of an open database (`TypeError` otherwise). A nested block adds its keys to those of
+ * the outer block. Gives what `fn` gives.
+ */
+export async function unscoped<T>(keys: readonly string[], fn: () => Promise<T>): Promise<T> {
+  if (keys.length === 0) {
+    throw new TypeError("unscoped() needs at least one key: name each scope key to open");
+  }
+  if (declared.size > 0 && ![...declared.values()].includes(null)) {
+    const valid = new Set([...declared.values()].flatMap((s) => [...(s ?? [])]));
+    const unknown = keys.filter((k) => !valid.has(k)).sort();
+    if (unknown.length > 0) {
+      throw new TypeError(`unscoped() has no key ${unknown.join(", ")}: the schema declares ${[...valid].sort().join(", ") || "no scope key"}`);
+    }
+  }
+  return openKeys.run(new Set([...(openKeys.getStore() ?? []), ...keys]), async () => await fn());
+}
+
+/**
+ * Runs `fn` with the triggers of the named extensions off, for a database role that the schema
+ * lists in `bypass_roles`. It sets `monorm.skip`. Only an extension that declares skippable
+ * triggers can be named (`TypeError` otherwise); soft-delete and scope triggers never are. A
+ * statement on SQLite throws `QueryError`. Gives what `fn` gives.
+ */
+export async function skipTriggers<T>(extensions: readonly string[], fn: () => Promise<T>): Promise<T> {
+  if (extensions.length === 0) {
+    throw new TypeError("skipTriggers() needs at least one extension name");
+  }
+  if (skippable.size > 0) {
+    const valid = new Set([...skippable.values()].flatMap((s) => [...s]));
+    const unknown = extensions.filter((e) => !valid.has(e)).sort();
+    if (unknown.length > 0) {
+      throw new TypeError(`skipTriggers() has no skippable triggers for ${unknown.join(", ")}: the schema declares ${[...valid].sort().join(", ") || "none"}`);
+    }
+  }
+  return skipped.run(new Set([...(skipped.getStore() ?? []), ...extensions]), async () => await fn());
+}
+
+/** @internal The scope of this async context: the values that `scope.<name>` reads, and
+ * {@link OPEN} for each key that `unscoped()` opens (an open key wins over a value). */
+export function currentScope(extra?: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> {
+  const merged: Record<string, unknown> = { ...scopeValues.getStore(), ...extra };
+  for (const key of openKeys.getStore() ?? []) merged[key] = OPEN;
+  return merged;
+}
+
+/** @internal The key of a prepared statement's scope: each name, an open one with a `!` before it. */
+export function scopeShape(scope: Readonly<Record<string, unknown>>): string[] {
+  return Object.entries(scope).map(([name, value]) => (value === OPEN ? `!${name}` : name));
+}
+
+/** @internal The values of the set keys of `scope`, in the order of {@link scopeShape}. */
+export function scopeParams(scope: Readonly<Record<string, unknown>>): unknown[] {
+  return Object.values(scope).filter((value) => value !== OPEN);
+}
+
+/** @internal The `scope` map of a statement: a set key gets a parameter index from `base`, an open key {@link OPEN_INDEX}. */
+export function scopeIndex(shape: readonly string[], base: number): Record<string, number> {
+  const index: Record<string, number> = {};
+  let next = base;
+  for (const name of shape) index[name.startsWith("!") ? name.slice(1) : name] = name.startsWith("!") ? OPEN_INDEX : next++;
+  return index;
 }
 
 /** @internal `json` (a statement's IR, or with `key` a list wrapped under it) with the
  * scope's parameter indexes, and `params` with the scope's values appended. */
 export function withScope(json: string, params: unknown[], key?: string): [string, unknown[]] {
-  const values = scopeValues.getStore();
-  if (values === undefined || Object.keys(values).length === 0) {
+  const scope = currentScope();
+  if (Object.keys(scope).length === 0) {
     return [json, params];
   }
-  const names = Object.keys(values);
-  const index = JSON.stringify(Object.fromEntries(names.map((n, i) => [n, params.length + i])));
+  const index = JSON.stringify(scopeIndex(scopeShape(scope), params.length));
   const op = key === undefined ? `${json.slice(0, -1)}${json.slice(1, -1).trim() ? "," : ""}"scope":${index}}` : `{"${key}":${json},"scope":${index}}`;
-  return [op, [...params, ...names.map((n) => values[n])]];
+  return [op, [...params, ...scopeParams(scope)]];
 }
 
 /** A validated lock key: a decimal 64-bit integer, or the UTF-8 name the engine hashes. */

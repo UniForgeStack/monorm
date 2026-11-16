@@ -14,7 +14,7 @@ const SQLITE_NOW: &str = "strftime('%Y-%m-%d %H:%M:%f','now')";
 
 /// The trigger that sets `column` on an update that leaves it unchanged, so a written value
 /// wins. SQLite can't assign `NEW`, so its trigger updates the row after the update.
-fn trigger(dialect: Dialect, model: &ModelIr, column: &str) -> Result<TriggerIr, String> {
+fn trigger(dialect: Dialect, model: &ModelIr, column: &str, roles: &[String]) -> Result<TriggerIr, String> {
     let key: Vec<_> = model.fields.iter().filter(|f| f.primary_key).map(|f| format!("{c} = NEW.{c}", c = ident(&f.column))).collect();
     if key.is_empty() { return Err(format!("{} has no primary key", model.name)); }
     let c = ident(column);
@@ -25,7 +25,9 @@ fn trigger(dialect: Dialect, model: &ModelIr, column: &str) -> Result<TriggerIr,
         Dialect::Sqlite => (TriggerTiming::After, format!("NEW.{c} IS OLD.{c} AND NEW.{c} IS NOT {SQLITE_NOW}"),
             format!("UPDATE {} SET {c} = {SQLITE_NOW} WHERE {}", ident(&model.table), key.join(" AND "))),
     };
-    Ok(TriggerIr { name: format!("updated_at_{column}"), timing, events: vec![TriggerEvent::Update], when: Some(when), body: Some(body), ..Default::default() })
+    // A block of `skip_triggers("timestamps")` switches the PostgreSQL trigger off for a bypass role.
+    let when = match (dialect, monorm::sql::skip_guard("timestamps", roles)) { (Dialect::Postgres, Some(g)) => format!("({when}) AND {g}"), _ => when };
+    Ok(TriggerIr { name: format!("updated_at_{column}"), timing, events: vec![TriggerEvent::Update], when: Some(when), body: Some(body), skippable: Some("timestamps".into()), ..Default::default() })
 }
 
 pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
@@ -37,9 +39,9 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
         let field = model.fields.iter().find(|f| f.name == name).ok_or_else(|| error(d, "unknown field"))?;
         if ir.behavior.write_assignments.iter().any(|a| a.source == SOURCE && a.model == d.model && a.field == name) { return Err(error(d, "is given twice")); }
         if mode == Mode::Database {
-            let (column, dialect) = (field.column.clone(), ir.dialect);
+            let (column, dialect, roles) = (field.column.clone(), ir.dialect, ir.bypass_roles.clone());
             for model in ir.models_named_mut(&d.model) {
-                let trigger = trigger(dialect, model, &column)?;
+                let trigger = trigger(dialect, model, &column, &roles)?;
                 model.push_trigger(trigger).map_err(|e| error(d, e))?;
             }
         }
@@ -304,6 +306,30 @@ mod tests {
         let up = migration(&ir);
         assert!(up.iter().any(|s| s.starts_with("CREATE OR REPLACE FUNCTION \"posts_updated_at_changed\"() RETURNS trigger")), "{up:?}");
         assert!(up.contains(&"CREATE TRIGGER \"updated_at_changed\" BEFORE UPDATE ON \"posts\" FOR EACH ROW WHEN (NEW.\"changed\" IS NOT DISTINCT FROM OLD.\"changed\") EXECUTE FUNCTION \"posts_updated_at_changed\"()".to_owned()), "{up:?}");
+    }
+
+    #[test]
+    fn the_trigger_is_skippable_and_skips_only_for_bypass_roles_on_postgres() {
+        let mut ir = schema("postgres", None);
+        prepared(&mut ir).unwrap();
+        assert_eq!(ir.models[0].triggers[0].skippable.as_deref(), Some("timestamps"));
+        let mut roled = schema("postgres", None);
+        roled.bypass_roles = vec!["app_admin".into()];
+        prepared(&mut roled).unwrap();
+        let up = migration(&roled).join("\n");
+        assert!(up.contains("WHEN ((NEW.\"changed\" IS NOT DISTINCT FROM OLD.\"changed\") AND NOT ('timestamps' = ANY("), "{up}");
+        assert!(up.contains("pg_has_role(session_user, 'app_admin', 'member')"), "{up}");
+        assert!(!migration(&ir).join("\n").contains("monorm.skip"));
+    }
+
+    #[test]
+    fn the_sqlite_trigger_ignores_bypass_roles() {
+        let mut plain = schema("sqlite", None);
+        prepared(&mut plain).unwrap();
+        let mut roled = schema("sqlite", None);
+        roled.bypass_roles = vec!["app_admin".into()];
+        prepared(&mut roled).unwrap();
+        assert_eq!(migration(&plain), migration(&roled));
     }
 
     #[test]

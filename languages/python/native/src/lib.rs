@@ -985,6 +985,11 @@ impl Engine {
         self.schema.scope_keys_open()
     }
 
+    /// The names that `skip_triggers()` accepts.
+    fn skippable_triggers(&self) -> Vec<String> {
+        self.schema.skippable_triggers().into_iter().collect()
+    }
+
     /// The scope keys that this schema reads or writes: the keys `scope()` accepts.
     fn scope_keys(&self) -> Vec<String> {
         self.schema.scope_keys().into_iter().collect()
@@ -1504,6 +1509,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Trace>()?;
     m.add_class::<SessionLock>()?;
     m.add("DEFAULT", Py::new(py, DefaultMarker)?)?;
+    m.add("OPEN_INDEX", monorm_engine::params::OPEN_INDEX)?;
     errors::add_defaults(py)?;
     m.add("DatabaseError", py.get_type::<errors::DatabaseError>())?;
     m.add("IntegrityError", py.get_type::<errors::IntegrityError>())?;

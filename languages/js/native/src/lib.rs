@@ -205,6 +205,10 @@ fn shared(env: &Env) -> napi::Result<&'static mut Shared> {
     env.get_instance_data::<Shared>()?.ok_or_else(|| napi::Error::from_reason("the per-environment data is missing"))
 }
 
+/// The parameter index that marks an open scope key in a statement's `scope` map.
+#[napi]
+pub const OPEN_INDEX: u32 = monorm_engine::params::OPEN_INDEX as u32;
+
 /// Registers the class decimal values are read as (and recognized by, as parameters):
 /// `decimal.js`'s `Decimal`. The runtime calls this once when it loads.
 #[napi]
@@ -1276,6 +1280,12 @@ impl Engine {
     #[napi]
     pub fn scope_keys_open(&self) -> bool {
         self.schema.scope_keys_open()
+    }
+
+    /// The names that `skipTriggers()` accepts.
+    #[napi]
+    pub fn skippable_triggers(&self) -> Vec<String> {
+        self.schema.skippable_triggers().into_iter().collect()
     }
 
     /// The scope keys that this schema reads or writes: the keys `scope()` accepts.

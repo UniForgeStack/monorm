@@ -6,7 +6,7 @@
 import { inspection, inspector, emptyInspection, type QueryInspection } from "./inspection.js";
 import { Builder } from "./build.js";
 import type { BoundQuerySet, BoundQuerySetOf } from "./bound.js";
-import { checkScope, currentScope, resolve, withScope, type Database } from "./db.js";
+import { checkScope, currentScope, resolve, scopeIndex, scopeParams, scopeShape, withScope, type Database } from "./db.js";
 import {
   asCondition,
   Column,
@@ -2460,10 +2460,10 @@ export class Compiled {
     if (read === undefined) {
       let op = this.json;
       if (scope.length) {
-        const index = JSON.stringify(Object.fromEntries(scope.map((n, i) => [n, this.params.length + i])));
+        const index = JSON.stringify(scopeIndex(scope, this.params.length));
         op = `${op.slice(0, -1)},"scope":${index}}`;
       }
-      const declared = [...this.declared, ...scope.map(() => null)];
+      const declared = [...this.declared, ...scope.filter((n) => !n.startsWith("!")).map(() => null)];
       read = call(() => (this.write ? engine.prepareWrite(op, declared.length, declared) : engine.prepareRead(op, declared.length, declared)));
       byScope.set(key, read);
     }
@@ -2475,15 +2475,15 @@ export class Compiled {
   callValues(values: Record<string, unknown> | undefined, known: Set<string>): [unknown[], string[]] {
     const [rest, scope] = splitScope(values);
     const params = this.bind(rest, known);
-    params.push(...Object.values(scope));
-    return [params, Object.keys(scope)];
+    params.push(...scopeParams(scope));
+    return [params, scopeShape(scope)];
   }
 
   /** Plans the statement now, so a shape that cannot become a slot fails at `prepare()`.
    * A scope that is not set yet waits for the first call. */
   validate(engine: NativeInspector): void {
     try {
-      this.held(engine, Object.keys(currentScope()));
+      this.held(engine, scopeShape(currentScope()));
     } catch (e) {
       if (!(e instanceof QueryError) || !e.message.includes("which is not set")) throw e;
     }
@@ -2512,16 +2512,15 @@ export class Compiled {
 
 /** @internal The values of a call without `scope`, and the scope values: `values.scope` over the `scope()` context. */
 export function splitScope(values: Record<string, unknown> | undefined): [Record<string, unknown>, Readonly<Record<string, unknown>>] {
-  let scope: Readonly<Record<string, unknown>> = currentScope();
   if (values !== undefined && "scope" in values) {
     const { scope: given, ...rest } = values;
     if (given !== undefined && given !== null) {
       checkScope(given as Record<string, unknown>);
-      scope = { ...scope, ...(given as Record<string, unknown>) };
+      return [rest, currentScope(given as Record<string, unknown>)];
     }
-    return [rest, scope];
+    return [rest, currentScope()];
   }
-  return [values ?? {}, scope];
+  return [values ?? {}, currentScope()];
 }
 
 /** The `scope.<name>` values of one call: they win over the `scope()` context. */
