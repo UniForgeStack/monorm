@@ -170,6 +170,7 @@ pub struct Schema {
     model_index: HashMap<String, usize>,
     storage: Option<Box<Schema>>,
     pub owner_links: Vec<crate::behavior::PreparedOwnerLink>,
+    published_scope_keys: std::collections::BTreeSet<String>,
 }
 
 /// The view and check records must name known models, and a view shares the table of its root.
@@ -268,6 +269,12 @@ impl Schema {
             }
         }
         out
+    }
+
+    /// The scope keys that an object of the database reads (a policy, a trigger). A statement sends each one that
+    /// has a value as the transaction setting `scope.<key>`.
+    pub fn published_scope_keys(&self) -> impl Iterator<Item = &str> {
+        self.published_scope_keys.iter().map(String::as_str)
     }
 
     /// The names that `skip_triggers` accepts: the `skippable` name of each trigger of a model.
@@ -441,6 +448,7 @@ impl Schema {
             model_index,
             storage,
             owner_links,
+            published_scope_keys: ir.behavior.published_scope_keys.iter().map(|k| k.key.clone()).collect(),
         })
     }
 

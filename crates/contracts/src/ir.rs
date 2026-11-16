@@ -967,6 +967,12 @@ pub struct PolicyIr {
     pub if_roles_exist: bool,
 }
 
+impl Default for PolicyIr {
+    fn default() -> Self {
+        PolicyIr { name: String::new(), command: PolicyCommand::All, roles: vec![], using: None, with_check: None, permissive: true, if_roles_exist: false }
+    }
+}
+
 #[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct FunctionIr {
     pub name: String,

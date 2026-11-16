@@ -80,6 +80,14 @@ pub struct InstanceGuard {
     pub field: String,
 }
 
+/// A scope key that a database object (a policy, a trigger) reads as the setting `scope.<key>`.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PublishedScopeKey {
+    pub source: String,
+    pub key: String,
+}
+
 /// A field that holds a value of the request scope: an insert fills it from `scope.<key>`, and a write that sets another value fails.
 /// The key names the scope value, not the field. A statement that opens the key (`unscoped`) skips both.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]

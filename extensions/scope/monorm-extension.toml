@@ -10,7 +10,7 @@ databases = ["postgres", "sqlite"]
 [[passes]]
 id = "monorm.scope.prepare"
 phase = "behavior"
-effects = ["behavior.read_defaults", "behavior.scoped_fields"]
+effects = ["behavior.published_scope_keys", "behavior.read_defaults", "behavior.scoped_fields", "models.row_security", "storage.row_security"]
 
 # `@@scope.by(shop: shop_id, mode: livemode)`: each name is a scope key, each value the field that holds it.
 [[attributes]]

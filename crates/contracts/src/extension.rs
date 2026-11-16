@@ -94,6 +94,9 @@ pub struct Requirements {
     /// Fields that hold a scope value: the insert fills them and a write checks them (contract 5.3).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub scoped_fields: Vec<crate::writes::ScopedField>,
+    /// Scope keys that an object of the database reads: the engine sends each as the setting `scope.<key>` (contract 5.3).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub published_scope_keys: Vec<crate::writes::PublishedScopeKey>,
     /// Models that have no table: the fields of each, for the generated types.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub type_models: Vec<crate::ir::TypeModel>,
@@ -180,7 +183,7 @@ impl Requirements {
     pub fn is_empty(&self) -> bool {
         self.read_defaults.is_empty() && self.model_views.is_empty() && self.result_checks.is_empty() && self.declarations.is_empty() && self.packages.is_empty()
             && self.lowered_models.is_empty() && self.result_fields.is_empty() && self.storage.is_none() && self.field_storage.is_empty() && self.owner_links.is_empty() && self.field_adapters.is_empty()
-            && self.write_assignments.is_empty() && self.delete_rewrites.is_empty() && self.instance_guards.is_empty() && self.scoped_fields.is_empty() && self.type_models.is_empty() && self.model_overrides.is_empty() && self.schema_contract == 0
+            && self.write_assignments.is_empty() && self.delete_rewrites.is_empty() && self.instance_guards.is_empty() && self.scoped_fields.is_empty() && self.published_scope_keys.is_empty() && self.type_models.is_empty() && self.model_overrides.is_empty() && self.schema_contract == 0
             && self.schema_contract_minor == 0 && self.hooks.is_empty() && self.extension_data.is_empty()
     }
 }
@@ -1025,6 +1028,7 @@ pub fn merge_definition(mut context: SchemaIr, mut incoming: SchemaIr) -> Result
     c.delete_rewrites.extend(n.delete_rewrites);
     c.instance_guards.extend(n.instance_guards);
     c.scoped_fields.extend(n.scoped_fields);
+    c.published_scope_keys.extend(n.published_scope_keys);
     c.hooks.extend(n.hooks);
     for (id, data) in n.extension_data {
         if c.extension_data.insert(id.clone(), data).is_some() {

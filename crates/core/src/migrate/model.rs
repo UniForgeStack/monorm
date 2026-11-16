@@ -560,27 +560,9 @@ pub fn sql_type(f: &FieldIr) -> String {
 }
 
 fn scalar_sql_type(f: &FieldIr) -> String {
-    if let Some(t) = &f.db_type {
-        return normalize_ws(t);
-    }
-    match f.ty {
-        ColType::BigInt => "bigint".into(),
-        ColType::Int => "integer".into(),
-        ColType::Float => "double precision".into(),
-        ColType::Bool => "boolean".into(),
-        ColType::String => match f.max_length {
-            Some(n) => format!("varchar({n})"),
-            // text[], as Prisma does: array operators take text[] parameters as they are
-            None if f.array => "text".into(),
-            None => "varchar".into(),
-        },
-        ColType::Text => "text".into(),
-        ColType::DateTime => "timestamp with time zone".into(),
-        ColType::Time => "time".into(),
-        ColType::Date => "date".into(),
-        ColType::Uuid => "uuid".into(),
-        ColType::Json => "jsonb".into(),
-        ColType::Decimal => "numeric".into(),
+    match &f.db_type {
+        Some(t) => normalize_ws(t),
+        None => monorm::sql::column_type(f.ty, f.max_length, f.array),
     }
 }
 

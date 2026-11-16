@@ -131,6 +131,8 @@ class Database:
         # The engines with settings, by (engine, names, values): one engine for each setting set, so
         # that the statements prepared on it stay valid.
         self._settings_engines: dict[tuple[Any, ...], _native.Engine] = {}
+        # The scope keys that a policy or trigger of the database reads; each goes out as `scope.<key>`.
+        self._published: tuple[str, ...] = ()
 
     @property
     def primary(self) -> Database:
@@ -155,13 +157,23 @@ class Database:
         if skip:
             names.append("monorm.skip")
             values.append("{" + ",".join(sorted(skip)) + "}")
+        if self._root._published and not sqlite:
+            current = _scope.get()
+            for name in self._root._published:
+                if name in current:
+                    names.append(f"scope.{name}")
+                    values.append(_setting_text(current[name]))
         # Before any block set a setting, no transaction carries one.
         if not names and (sqlite or self._tx() is None or not self._root._settings_engines):
             return engine
         key = (engine, tuple(names), tuple(values))
         held = self._root._settings_engines.get(key)
         if held is None:
-            held = self._root._settings_engines[key] = engine.with_settings(names, values)
+            engines = self._root._settings_engines
+            # A scope value makes a new key for each tenant; an engine is a thin handle on the pool.
+            if len(engines) >= _SETTINGS_ENGINES_MAX:
+                del engines[next(iter(engines))]
+            held = engines[key] = engine.with_settings(names, values)
         return held
 
     @property
@@ -671,6 +683,7 @@ async def connect(
     readers = [await _native.connect(r, schema, max_connections, list(_disable)) for r in replicas]
     db = Database(engine, url, registry, readers, allow_unfiltered_writes)
     _declared[db] = None if engine.scope_keys_open() else frozenset(engine.scope_keys())
+    db._published = tuple(sorted(engine.published_scope_keys()))
     _skippable[db] = frozenset(engine.skippable_triggers())
     if default:
         _default = db
@@ -778,6 +791,14 @@ class _Open:
 
 
 OPEN = _Open()
+
+
+_SETTINGS_ENGINES_MAX = 1024
+
+
+def _setting_text(value: Any) -> str:
+    """A scope value as the text of a database setting; the policy casts it back to the column type."""
+    return ("true" if value else "false") if isinstance(value, bool) else str(value)
 
 
 def scope_values(extra: Mapping[str, Any] | None = None) -> dict[str, Any]:

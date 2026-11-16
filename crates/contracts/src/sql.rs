@@ -10,6 +10,29 @@ pub fn literal(text: &str) -> String {
     format!("'{}'", text.replace('\'', "''"))
 }
 
+/// The PostgreSQL type of a column that has no `db_type`. `array` only changes `String`: `text[]` takes text parameters as they are.
+pub fn column_type(ty: crate::ir::ColType, max_length: Option<u32>, array: bool) -> String {
+    use crate::ir::ColType::*;
+    match ty {
+        BigInt => "bigint".into(),
+        Int => "integer".into(),
+        Float => "double precision".into(),
+        Bool => "boolean".into(),
+        String => match max_length {
+            Some(n) => format!("varchar({n})"),
+            None if array => "text".into(),
+            None => "varchar".into(),
+        },
+        Text => "text".into(),
+        DateTime => "timestamp with time zone".into(),
+        Time => "time".into(),
+        Date => "date".into(),
+        Uuid => "uuid".into(),
+        Json => "jsonb".into(),
+        Decimal => "numeric".into(),
+    }
+}
+
 /// The `WHEN` term that lets a block switch a trigger off on PostgreSQL: the transaction setting `monorm.skip`
 /// names `name`, and the session user is a member of one of `roles` (the datasource's `bypass_roles`). Returns
 /// `None` for no roles: the database then lets nobody skip the trigger. AND the term into the `WHEN` clause.

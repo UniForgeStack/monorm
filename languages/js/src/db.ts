@@ -31,6 +31,7 @@ export async function restoreCause<T>(pending: Promise<T>, tx: NativeTransaction
 /** For each database (its root) with an open transaction in the current async context: the innermost one. */
 const current = new AsyncLocalStorage<ReadonlyMap<Database, NativeTransaction>>();
 /** The `scope.<name>` values of default filters. */
+const SETTINGS_ENGINES_MAX = 1024;
 const scopeValues = new AsyncLocalStorage<Readonly<Record<string, unknown>>>();
 /** For each open database: the scope keys its schema reads or writes. `scope()` accepts these only. */
 const declared = new Map<Database, ReadonlySet<string> | null>(); // null: a hook reads the scope, so any key is valid
@@ -170,6 +171,8 @@ export class Database {
   private turn = 0;
   /** @internal Engines with settings, by base engine and setting values; shared by the views of a root. */
   readonly settingsEngines = new Map<NativeEngine, Map<string, NativeEngine>>();
+  /** @internal The scope keys that a policy or trigger of the database reads; each goes out as `scope.<key>`. */
+  published: readonly string[] = [];
   /** @internal The database a `primary` view belongs to: they share transactions and callbacks. */
   root: Database = this;
 
@@ -290,13 +293,26 @@ export class Database {
       values.push(`{${[...skip].sort().join(",")}}`);
     }
     const root = this.root;
+    const current = scopeValues.getStore();
+    if (current && !sqlite) {
+      for (const key of root.published) {
+        if (key in current) {
+          names.push(`scope.${key}`);
+          values.push(String(current[key]));
+        }
+      }
+    }
     // Before any block set a setting, no transaction carries one.
     if (names.length === 0 && (sqlite || this.tx() === null || root.settingsEngines.size === 0)) return engine;
     let byValues = root.settingsEngines.get(engine);
     if (byValues === undefined) root.settingsEngines.set(engine, (byValues = new Map()));
     const key = JSON.stringify([names, values]);
     let held = byValues.get(key);
-    if (held === undefined) byValues.set(key, (held = engine.withSettings(names, values)));
+    if (held === undefined) {
+      // A scope value makes a new key for each tenant; an engine is a thin handle on the pool.
+      if (byValues.size >= SETTINGS_ENGINES_MAX) byValues.delete(byValues.keys().next().value as string);
+      byValues.set(key, (held = engine.withSettings(names, values)));
+    }
     return held;
   }
 
@@ -625,6 +641,7 @@ export async function connect(url: string, options: ConnectOptions = {}): Promis
   }
   const db = new Database(engine, url, reg, readers, options.allowUnfilteredWrites ?? false);
   declared.set(db, engine.scopeKeysOpen() ? null : new Set(engine.scopeKeys()));
+  db.published = [...engine.publishedScopeKeys()].sort();
   skippable.set(db, new Set(engine.skippableTriggers()));
   if (options.default ?? true) {
     defaultDb = db;

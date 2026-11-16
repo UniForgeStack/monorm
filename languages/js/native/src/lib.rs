@@ -1294,6 +1294,12 @@ impl Engine {
         self.schema.scope_keys().into_iter().collect()
     }
 
+    /// The scope keys that an object of the database reads: each is sent as the setting `scope.<key>`.
+    #[napi]
+    pub fn published_scope_keys(&self) -> Vec<String> {
+        self.schema.published_scope_keys().map(str::to_owned).collect()
+    }
+
     /// Session advisory lock on a pinned connection; `null` when it is not taken.
     #[napi]
     #[allow(clippy::too_many_arguments)]
