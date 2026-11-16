@@ -10,7 +10,7 @@ How to run each benchmark: [`RUNNING.md`](RUNNING.md).
 |---|---|---|---|
 | [Our scenarios](#speed-up-summary) | 20 cases of our own, Python and TypeScript, against Django, SQLAlchemy, Prisma, Drizzle and `pg` | 2026-10-28, `d428e01`, cloud VM | [`summary.md`](compare/results/2026-10-28-d428e01/summary.md) |
 | [IMDBench scenarios](#imdbench-scenarios) | The 3 IMDBench queries, Python and Node, against Django, SQLAlchemy, TypeORM, Prisma and the raw drivers | 2026-10-30, `5e1379d` (MonOrm 0.1.1), cloud VM | [`results.md`](imdbench/results/2026-10-30-5e1379d/results.md) |
-| [Where a call spends its time](#where-a-call-spends-its-time) | 6 cases through 3 call paths, Python and Node, PostgreSQL and SQLite | 2026-10-30, `6332db55`, cloud VM | [`2026-10-30-report.md`](internal/results/2026-10-30-report.md) |
+| [Where a call spends its time](#where-a-call-spends-its-time) | 6 cases through 3 call paths, and 2 admin cases, Python and Node, PostgreSQL and SQLite | 2026-11-16, `e4abb284`, Apple M5 (macOS arm64) | [`summary.md`](internal/results/2026-11-16-e4abb284-postgresql/summary.md) (PostgreSQL), [`summary.md`](internal/results/2026-11-16-e4abb284-sqlite/summary.md) (SQLite) |
 | [Rust engine only](#rust-engine-only) | 5 cases and 9 read paths, against SeaORM, Diesel and raw SQLx | 2026-10-03, `7b7538e` (inferred), macOS arm64 | [`results.md`](rust-compare/results/2026-10-03-7b7538e/results.md) |
 
 ## Speed-up summary
@@ -58,9 +58,10 @@ MonOrm leads every ORM on every query, except Python `get_user`, where it ties S
 
 [`internal/`](internal/README.md) splits one MonOrm call into layers.
 
-- Building model instances (hop + instances) is the largest MonOrm layer everywhere: 770–1,475 µs for 1,000 rows on PostgreSQL.
-- The Python query builder is next: a fifth to a third of a primary-key get.
-- Value binding is small; the engine layer cannot be read on PostgreSQL (the Rust driver is faster than `psycopg` and `pg`).
+- Building model instances (hop + instances) is the largest MonOrm layer for 1,000 rows: 1,397 µs of 3,460 µs in Python on PostgreSQL.
+- The Python query builder is 42% of a primary-key get there.
+- Value binding is small; the engine layer is negative on PostgreSQL (the Rust driver is faster than `psycopg` and `pg`).
+- Admin list route: 1,072 µs against 240 µs for the driver query alone (Python, PostgreSQL). Admin CSV export: 4,868 µs through the route, 14,045 µs when the host language encodes the rows.
 
 ## Rust engine only
 

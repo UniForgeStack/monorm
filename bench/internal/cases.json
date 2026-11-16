@@ -245,5 +245,38 @@
     }
    ]
   }
+ ],
+ "admin_note": "The admin cases: only the Python and TypeScript runners run them (the Rust engine-only row does not). The SQL is the floor of the same rows.",
+ "admin_cases": [
+  {
+   "name": "admin_list",
+   "inner": 20,
+   "values": [
+    {
+     "n": 50
+    }
+   ],
+   "sql": [
+    {
+     "text": "SELECT p.title, p.views, u.name, length(p.title), p.id FROM posts p JOIN users u ON u.id = p.author_id ORDER BY p.id LIMIT ?",
+     "args": [
+      "n"
+     ]
+    }
+   ]
+  },
+  {
+   "name": "admin_export",
+   "inner": 5,
+   "values": [
+    {}
+   ],
+   "sql": [
+    {
+     "text": "SELECT p.title, p.views, u.name, length(p.title), p.id FROM posts p JOIN users u ON u.id = p.author_id ORDER BY p.id",
+     "args": []
+    }
+   ]
+  }
  ]
 }

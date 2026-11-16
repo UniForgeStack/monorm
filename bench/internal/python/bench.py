@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import csv
+import io
 import json
 import os
 import platform
@@ -27,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 import monorm
-from monorm import param
+from monorm import admin, param
 from monorm import _native
 from monorm.protection import allowed_writes
 from monorm.write import prepare_rows
@@ -210,6 +212,67 @@ def build_cases(models: Any, db: Any, driver: Driver) -> list[Case]:
     return cases
 
 
+def admin_cases(models: Any, db: Any, driver: Driver) -> list[Case]:
+    """The admin list (a to-one and a computed column) and the CSV export of the same rows.
+
+    `admin` calls the route through the test client, `host` reads the posts with the query set and encodes the CSV in Python,
+    `driver` runs the SQL only. The export adds one audit row per call, as any export does."""
+    User, Post = models["User"], models["Post"]
+    specs = {c["name"]: c for c in SPEC["admin_cases"]}
+    site = admin.Admin()
+    site.register(
+        Post,
+        {
+            "list": {
+                "columns": [Post.title, Post.views, Post.author.name, "title_length"],
+                "computed": [{"name": "title_length", "type": "int", "nullable": False, "sortable": True, "expr": monorm.func.length(Post.title)}],
+                "order": [Post.id],
+            }
+        },
+    )
+    site.register(User, {"list": {"columns": [User.name], "order": [User.id]}})
+    client = site.test_client(db, user={"key": 1, "is_superuser": True})
+
+    async def listed(k: int) -> Any:
+        r = await client.get("/admin/api/resources/Post?limit=50")
+        assert r.status == 200, r.text
+        return r.json()["rows"]
+
+    async def exported(_k: int) -> Any:
+        r = await client.get("/admin/api/export/Post")
+        assert r.status == 200, r.text
+        return r.text
+
+    async def host(_k: int) -> Any:
+        posts = await Post.objects.order_by(Post.id).load(Post.author)
+        out = io.StringIO()
+        w = csv.writer(out)
+        w.writerow(["Title", "Views", "Author name", "Title length", "Id"])
+        for p in posts:
+            w.writerow([p.title, p.views, p.author.name, len(p.title), p.id])
+        return out.getvalue()
+
+    def cells(rows: Any) -> list[list[str]]:
+        return [[str(x) for x in row[:4]] for row in rows]
+
+    lst = Case(specs["admin_list"])
+    lst.paths["admin"] = listed
+    lst.norm = lambda path, r: cells(r[0] if path == "driver" else r)
+
+    exp = Case(specs["admin_export"])
+    exp.paths["admin"] = exported
+    exp.paths["host"] = host
+    exp.norm = lambda path, r: cells(r[0]) if path == "driver" else [row[:4] for row in list(csv.reader(io.StringIO(r, newline="")))[1:]]
+
+    out = [lst, exp]
+    for c in out:
+        if driver.skip is not None:
+            c.paths["driver"] = driver.skip
+        else:
+            c.paths["driver"] = lambda k, c=c: driver.run(c.sql, c.values[k % len(c.values)])
+    return out
+
+
 async def check(case: Case) -> None:
     """Every path returns the same result for the first value set."""
     got: dict[str, Any] = {}
@@ -219,10 +282,11 @@ async def check(case: Case) -> None:
         got[path] = case.norm(path, await fn(0))
         if case.cleanup is not None:
             await case.cleanup()
-    ref = got["unprepared"]
+    first = next(iter(got))
+    ref = got[first]
     for path, value in got.items():
         if value != ref:
-            raise SystemExit(f"{case.name}: {path} returned {value!r}, unprepared returned {ref!r}")
+            raise SystemExit(f"{case.name}: {path} returned {value!r}, {first} returned {ref!r}")
     if not ref and case.name != "insert_one":
         raise SystemExit(f"{case.name}: the check result is empty")
 
@@ -266,8 +330,12 @@ async def main() -> None:
     args = ap.parse_args()
 
     backend = "sqlite" if args.url.startswith("sqlite") else "postgresql"
-    src = (HERE.parent / "schema.prisma").read_text().replace("BACKEND", backend)
-    models = monorm.loads(src)
+    # The admin cases need the admin app tables, and an app import needs a schema file.
+    src = (HERE.parent / "schema.prisma").read_text().replace("BACKEND", backend) + '\nimport "app:monorm-admin" (prefix: "admin_")\n'
+    schema = HERE.parent / "build" / f"schema-{backend}.prisma"
+    schema.parent.mkdir(exist_ok=True)
+    schema.write_text(src)
+    models = monorm.load(schema)
     db = await monorm.connect(args.url, max_connections=1)
     if args.seed:
         await db.drop_tables()
@@ -281,9 +349,10 @@ async def main() -> None:
     driver = Driver(args.url)
     await driver.open()
     cases = build_cases(models, db, driver)
+    admin_runs = admin_cases(models, db, driver)
 
     result: dict[str, Any] = {"environment": environment(backend), "quick": args.quick, "cases": {}}
-    for case in cases:
+    for case in [*cases, *admin_runs]:
         await check(case)
         rounds, inner = (1, 1) if args.quick else (args.rounds, case.inner)
         paths = await measure(case, rounds, inner, warm=not args.quick)
@@ -295,7 +364,7 @@ async def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
     (out / f"python-{backend}.json").write_text(json.dumps(result, indent=1))
     if args.dump:
-        dump = {c.name: {**c.dump, "inner": c.inner, "values": c.values} for c in cases}
+        dump = {c.name: {**c.dump, "inner": c.inner, "values": c.values} for c in cases}  # the admin cases have no IR to replay
         Path(args.dump).write_text(json.dumps(dump))
     await driver.close()
     await db.close()

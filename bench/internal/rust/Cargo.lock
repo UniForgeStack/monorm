@@ -642,7 +642,7 @@ dependencies = [
 
 [[package]]
 name = "monorm"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "semver",
  "serde",
@@ -661,6 +661,8 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "toml",
+ "unicode-normalization",
+ "unicode-properties",
  "uuid",
 ]
 
@@ -672,6 +674,7 @@ dependencies = [
  "blake2",
  "bytes",
  "chrono",
+ "deadpool",
  "deadpool-postgres",
  "monorm",
  "monorm-core",
@@ -680,7 +683,6 @@ dependencies = [
  "sea-query",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "tokio",
  "tokio-postgres",
  "tokio-postgres-rustls",

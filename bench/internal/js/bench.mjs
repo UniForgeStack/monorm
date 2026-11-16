@@ -9,6 +9,7 @@
 // The Python runner (`../python/bench.py --seed`) seeds the database.
 import { execFileSync } from "node:child_process";
 import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { cpus, loadavg, platform, arch } from "node:os";
 import { performance } from "node:perf_hooks";
 import { join } from "node:path";
@@ -16,7 +17,8 @@ import { parseArgs } from "node:util";
 
 const HERE = new URL(".", import.meta.url);
 const SRC = new URL("../../../languages/js/dist/src/", HERE);
-const { connect, loads, param } = await import(new URL("index.js", SRC));
+const { connect, load, func, param } = await import(new URL("index.js", SRC));
+const { Admin } = await import(new URL("admin.js", SRC));
 const { Builder } = await import(new URL("build.js", SRC));
 const { allowedWrites } = await import(new URL("protection.js", SRC));
 
@@ -84,8 +86,11 @@ async function openDriver() {
   };
 }
 
-const src = readFileSync(new URL("../schema.prisma", HERE), "utf8").replaceAll("BACKEND", backend);
-const { User, Post } = loads(src);
+// The admin cases need the admin app tables, and an app import needs a schema file.
+const schemaFile = new URL(`../build/schema-${backend}.prisma`, HERE);
+mkdirSync(new URL("../build/", HERE), { recursive: true });
+writeFileSync(schemaFile, readFileSync(new URL("../schema.prisma", HERE), "utf8").replaceAll("BACKEND", backend) + '\nimport "app:admin" (prefix: "admin_")\n');
+const { User, Post } = load(fileURLToPath(schemaFile));
 const db = await connect(opt.url, { maxConnections: 1 });
 const driver = await openDriver();
 const specs = Object.fromEntries(SPEC.cases.map(c => [c.name, c]));
@@ -181,6 +186,50 @@ for (const c of cases) {
   c.paths.driver = driver.skip ?? (k => driver.run(c.sql, c.values[k % c.values.length]));
 }
 
+/**
+ * The admin list (a to-one and a computed column) and the CSV export of the same rows.
+ * `admin` calls the route through the test client, `host` reads the posts with the query set and encodes the CSV in TypeScript,
+ * `driver` runs the SQL only. The export adds one audit row per call, as any export does.
+ */
+function adminCases() {
+  const adminSpecs = Object.fromEntries(SPEC.admin_cases.map(c => [c.name, c]));
+  const site = new Admin();
+  site.register(Post, {
+    list: {
+      columns: [Post.title, Post.views, Post.author.name, "title_length"],
+      computed: [{ name: "title_length", type: "int", nullable: false, sortable: true, expr: func.length(Post.title) }],
+      order: [Post.id],
+    },
+  });
+  site.register(User, { list: { columns: [User.name], order: [User.id] } });
+  const client = site.testClient(db, { user: { key: 1, is_superuser: true } });
+  const get = async path => {
+    const r = await client.get(path);
+    if (r.status !== 200) throw new Error(`${path}: ${r.status} ${r.text}`);
+    return r;
+  };
+  const quote = x => (/[",\r\n]/.test(x) ? `"${x.replaceAll('"', '""')}"` : x);
+  const cells = rows => rows.map(row => row.slice(0, 4).map(String));
+
+  const list = { name: "admin_list", ...adminSpecs.admin_list, paths: {} };
+  list.paths.admin = async () => (await get("/admin/api/resources/Post?limit=50")).json().rows;
+  list.norm = (path, r) => cells(path === "driver" ? r[0] : r);
+
+  const exp = { name: "admin_export", ...adminSpecs.admin_export, paths: {} };
+  exp.paths.admin = async () => (await get("/admin/api/export/Post")).text;
+  exp.paths.host = async () => {
+    const posts = await Post.objects.orderBy(Post.id).load(Post.author).all();
+    const lines = [["Title", "Views", "Author name", "Title length", "Id"]];
+    for (const p of posts) lines.push([p.title, p.views, p.author.name, p.title.length, p.id]);
+    return lines.map(l => l.map(x => quote(String(x))).join(",")).join("\r\n") + "\r\n";
+  };
+  // No title or name holds a comma, a quote or a line break, so splitting is enough here.
+  exp.norm = (path, r) => (path === "driver" ? cells(r[0]) : r.trimEnd().split("\r\n").slice(1).map(l => l.split(",").slice(0, 4)));
+  return [list, exp];
+}
+const adminRuns = adminCases();
+for (const c of adminRuns) c.paths.driver = driver.skip ?? (k => driver.run(c.sql, c.values[k % c.values.length]));
+
 async function check(c) {
   const got = {};
   for (const [path, fn] of Object.entries(c.paths)) {
@@ -188,9 +237,9 @@ async function check(c) {
     got[path] = JSON.stringify(c.norm(path, await fn(0)));
     if (c.cleanup) await c.cleanup();
   }
-  const ref = got.unprepared;
+  const [first, ref] = Object.entries(got)[0];
   for (const [path, value] of Object.entries(got)) {
-    if (value !== ref) throw new Error(`${c.name}: ${path} returned ${value}, unprepared returned ${ref}`);
+    if (value !== ref) throw new Error(`${c.name}: ${path} returned ${value}, ${first} returned ${ref}`);
   }
   if ((ref === "[]" || ref === "0") && c.name !== "insert_one") throw new Error(`${c.name}: the check result is empty`);
 }
@@ -236,7 +285,7 @@ const result = {
   quick: opt.quick,
   cases: {},
 };
-for (const c of cases) {
+for (const c of [...cases, ...adminRuns]) {
   await check(c);
   const [rounds, inner] = opt.quick ? [1, 1] : [Number(opt.rounds), c.inner];
   const paths = await measure(c, rounds, inner, !opt.quick);

@@ -19,6 +19,7 @@ from typing import Any
 
 LANGS = [("python", "Python"), ("js", "TypeScript on Node")]
 PATHS = ["unprepared", "prepared", "direct", "engine", "driver"]
+ADMIN_PREFIX = "admin_"  # the admin cases have their own paths: the route, the host encode, the driver
 
 
 def load(path: Path) -> dict[str, Any] | None:
@@ -84,6 +85,8 @@ def main(out: Path) -> None:
         lines += ["| case | unprepared | prepared | direct IR | engine only | driver only |", "|---|---|---|---|---|---|"]
         rows = []
         for case in run["cases"]:
+            if case.startswith(ADMIN_PREFIX):
+                continue
             v: dict[str, Value] = {p: us(engine_run if p == "engine" else run, case, p) for p in PATHS}
             if engine_run is None:
                 v["engine"] = ("skipped", meta["rust"] or "no Rust result")
@@ -110,6 +113,19 @@ def main(out: Path) -> None:
             if known:
                 biggest[case] = max(known, key=lambda k: known[k])
         lines += [""]
+        admin_rows = [c for c in run["cases"] if c.startswith(ADMIN_PREFIX)]
+        if admin_rows:
+            lines += ["Admin cases in µs per call (the route runs auth, the list or the export, and one audit row for an export):", ""]
+            lines += ["| case | admin route | host encode | driver only | route ÷ driver |", "|---|---|---|---|---|"]
+            for case in admin_rows:
+                a, h, d = (us(run, case, p) for p in ("admin", "host", "driver"))
+                ratio = "–" if num(a) is None or not num(d) else f"{num(a) / num(d):.1f}×"  # type: ignore[operator]
+                lines.append(f"| {case} | {cell(a)} | {cell(h)} | {cell(d)} | {ratio} |")
+            lines += [
+                "",
+                "`host encode` reads the same rows with the query set (the to-one author loaded) and writes the CSV in the host language; it is only in the export case.",
+                "",
+            ]
         if biggest:
             lines += ["Biggest monorm layer per case (the driver is the floor, not counted): " + "; ".join(f"{c}: {k}" for c, k in biggest.items()) + ".", ""]
     lines += [

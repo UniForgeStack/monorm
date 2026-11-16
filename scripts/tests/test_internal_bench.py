@@ -10,6 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 CASES = ["pk_get", "filter_order_50", "read_1000", "filtered_count", "insert_one", "prefetch_posts"]
 PATHS = ["unprepared", "prepared", "direct", "driver"]
+ADMIN_CASES = {"admin_list": ["admin", "driver"], "admin_export": ["admin", "host", "driver"]}
 
 
 # It builds release artifacts for minutes, so pytest skips it unless asked (the CLAUDE.md check line sets the variable).
@@ -42,7 +43,7 @@ class InternalBenchQuick(unittest.TestCase):
     def test_every_case_and_path_has_a_number(self):
         for language in ("python", "js"):
             run = json.loads((self.out / f"{language}-sqlite.json").read_text())
-            self.assertEqual(list(run["cases"]), CASES)
+            self.assertEqual(list(run["cases"]), [*CASES, *ADMIN_CASES])
             for case in CASES:
                 entry = run["cases"][case]
                 self.assertIs(entry["checked"], True, f"{language} {case}: the equality check did not run")
@@ -56,6 +57,25 @@ class InternalBenchQuick(unittest.TestCase):
                         continue
                     self.assertIn("median_us", result, f"{language} {case} {path}: no number")
                     self.assertGreater(result["median_us"], 0)
+
+    def test_the_admin_cases_have_a_number_on_each_path(self):
+        for language in ("python", "js"):
+            run = json.loads((self.out / f"{language}-sqlite.json").read_text())
+            for case, paths in ADMIN_CASES.items():
+                entry = run["cases"][case]
+                self.assertIs(entry["checked"], True, f"{language} {case}: the equality check did not run")
+                self.assertEqual(sorted(entry["paths"]), sorted(paths))
+                for path in paths:
+                    result = entry["paths"][path]
+                    if path == "driver" and result.get("skipped"):
+                        continue
+                    self.assertIn("median_us", result, f"{language} {case} {path}: no number")
+                    self.assertGreater(result["median_us"], 0)
+
+    def test_the_summary_has_the_admin_table(self):
+        summary = (self.out / "summary.md").read_text()
+        self.assertIn("| admin_list |", summary)
+        self.assertIn("| admin_export |", summary)
 
     def test_only_the_insert_has_no_prepared_path(self):
         for language in ("python", "js"):

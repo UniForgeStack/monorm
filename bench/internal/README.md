@@ -2,6 +2,7 @@
 
 This benchmark shows where one monorm call spends its time.
 It runs six cases through three call paths in Python and in TypeScript (Node), on PostgreSQL and on SQLite.
+Two more cases time the admin: a list page and a CSV export (see [Admin cases](#admin-cases)).
 It does not compare other ORMs: that is [`../compare/`](../compare).
 
 | Path | What it calls |
@@ -26,6 +27,26 @@ Each case binds its values, with no literals.
 Before the timing, each case checks that all paths return the same result.
 `schema.prisma` has a `BACKEND` placeholder that the runners replace with `postgresql` or `sqlite`, because `examples/blog` cannot run on SQLite.
 
+## Admin cases
+
+`admin_cases` in `cases.json` holds the two admin cases.
+They run the admin site through `admin.test_client` on the same data, with `schema.prisma` plus `import "app:monorm-admin" (prefix: "admin_")` (generated into `build/schema-<backend>.prisma`).
+The Post resource has a to-one column (`Post.author.name`) and a computed column (`length(title)`).
+
+| Case | What it reads | Paths |
+|---|---|---|
+| `admin_list` | `GET /admin/api/resources/Post?limit=50`, one page of 50 rows | Admin route, driver only |
+| `admin_export` | `GET /admin/api/export/Post`, all 1,000 rows as a CSV file (Rust encodes the rows) | Admin route, host encode, driver only |
+
+- **Admin route:** the request through the test client: auth, the list or the export, and (for the export) one audit row.
+- **Host encode:** the same rows read with the query set (author loaded) and written as CSV with the host language (`csv.writer` in Python, a small writer in TypeScript).
+  It is the comparison for "Rust encodes the rows".
+- **Driver only:** the same SQL on the raw driver.
+
+The runners check that the paths agree on the first four cells of each row before the timing.
+The Rust engine-only run does not take these cases: the dump holds the six database cases only.
+`summary.md` has an own table for them.
+
 ## Run
 
 The run drops and creates the tables `users` and `posts`.
@@ -48,6 +69,7 @@ The test `scripts/tests/test_internal_bench.py` runs it on SQLite.
 
 ## Results
 
+`results/` keeps the latest run of each backend only: delete the older directories when a new run replaces them.
 `results/<date>-<commit>-<backend>/` holds `python-<backend>.json`, `js-<backend>.json`, `rust-<backend>.json`, `run.json` and `summary.md`.
 Each JSON file records the machine, the load average and the date.
 Every number is measured: the median of the timed batches, in µs per operation, with the batches rotating the path order.

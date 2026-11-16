@@ -86,7 +86,7 @@ else
   RUST=$BUILD/target/release/monorm-internal-bench
   build_python() {
     [ -x "$PY" ] || uv venv -q -p "$PYTHON" "$VENV"
-    uv pip install -q --python "$PY" maturin "psycopg[binary]"
+    uv pip install -q --python "$PY" maturin "psycopg[binary]" argon2-cffi
     rm -rf "$BUILD/wheels" && mkdir -p "$BUILD/wheels"
     "$PY" "$ROOT/languages/python/packaging/stage.py"
     (cd "$ROOT" && "$VENV/bin/maturin" build --release -q -i "$PY" -o "$BUILD/wheels")
@@ -94,7 +94,7 @@ else
   }
   build_node() {
     (cd "$ROOT/languages/js" && npm install --no-audit --no-fund -s && npm run -s build)
-    (cd "$ROOT" && cargo build -q --release -p monorm-node --no-default-features --features profile-combined)
+    (cd "$ROOT" && cargo build -q --release -p monorm-node --no-default-features --features profile-tooling)
     cp "$CARGO_TARGET_DIR/release/libmonorm_node.$DYLIB" "$NATIVE"
     (cd "$HERE/js" && npm install --no-audit --no-fund -s)
   }
