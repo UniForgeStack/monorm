@@ -51,7 +51,7 @@ import { irNames, type DefaultNames, type DeleteArgs, type Hop, type HopKind, ty
 import { DB, IndexRef, columnOf, fieldValue, RELATED, registerQueries, type Instance, type ModelClass, type ModelMeta } from "./model.js";
 import { call, wait, type NativeInspector, type NativePreparedRead, type NativePreparedWrite, type NativeReturned, type NativeSelect, type NativeTrace, type NativeTransaction } from "./native.js";
 import { adaptedInsert, adaptedInsertMany, adaptedUpdate, adaptedUpdateMany, FieldAdapterError, prepareValues, splitAdapted, splitBatch } from "./adapters.js";
-import { assignments, lookupValues, prepareRows, prepareUpdateRows, prepareAttach } from "./write.js";
+import { assignments, lookupValues, prepareRows, prepareUpdateRows, prepareAttach, prepareAttachMany } from "./write.js";
 import { after, checkPaging, decodeCursor, encodeCursor, fingerprint, keyset, type Page, type PageOptions } from "./pagination.js";
 import { allowedWrites } from "./protection.js";
 import { PreparedWrite, prepareInsertMany, prepareInsertOne, prepareSet, prepareUpdateManyRows, type WriteShape } from "./prepared-write.js";
@@ -1769,6 +1769,16 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     const db = this.db();
     const res = await db_wait(db, (tx, allowed, trace) => db.engine.attach(this.meta.name, parentId, prepared.fields, prepared.rows, tx, allowed, trace), ["attach", this.meta.name, prepared.fields]);
     return (new Builder(db.registry, this.state.db).returned(res as NativeReturned) as M["row"][])[0]!;
+  }
+
+  /** `attach` for many parents: `[parentId, values]` each. One multi-row insert; the rows come back in input order. */
+  async attachMany(items: readonly (readonly [In<M["pk"]>, M extends { readonly attach: infer A extends object } ? A : never])[]): Promise<M["row"][]> {
+    if (!items.length) return [];
+    const prepared = prepareAttachMany(this.meta, items.map(([, values]) => values));
+    const ids = items.map(([id]) => [id]);
+    const db = this.db();
+    const res = await db_wait(db, (tx, allowed, trace) => db.engine.attachMany(this.meta.name, ids, prepared.fields, prepared.rows, tx, allowed, trace), ["attachMany", this.meta.name, prepared.fields]);
+    return new Builder(db.registry, this.state.db).returned(res as NativeReturned) as M["row"][];
   }
 
   /** `INSERT` many rows; gives the number of rows inserted, or the new instances in

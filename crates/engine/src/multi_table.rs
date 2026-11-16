@@ -11,6 +11,7 @@ use monorm_core::{
     dialect::Target,
     ir::{Bypass, Delete, FieldIr, Select, Update, ValueType},
     schema::Schema,
+    writes::{AssignValue, WriteKind},
 };
 use sea_query::{
     Alias, Expr, ExprTrait, JoinType, LockType, Query, SelectStatement, SimpleExpr, Value,
@@ -32,6 +33,8 @@ pub struct Insert {
     types: Vec<ValueType>,
     shape: Option<monorm_core::behavior::ResultShape>,
     computed: Vec<crate::hooks::Computed>,
+    /// One multi-row statement for each level, with the keys taken first (see [`run_bulk`]).
+    bulk: bool,
 }
 
 impl Insert {
@@ -39,9 +42,10 @@ impl Insert {
     /// contain the generated joins of the logical model.
     pub(crate) fn inspection(&self) -> Vec<crate::inspect::Statement> {
         use sea_query::QueryStatementBuilder;
-        let batching = self.rows.len() > 1;
+        // A bulk insert runs one statement for each level, whatever the row count.
+        let batching = self.rows.len() > 1 && !self.bulk;
         let mut statements = vec![];
-        for row in &self.rows {
+        for row in self.rows.iter().take(if self.bulk { 1 } else { usize::MAX }) {
             for (index, step) in row.iter().enumerate() {
                 let mut insert = Query::insert();
                 insert.into_table(Alias::new(&step.table));
@@ -152,6 +156,15 @@ pub fn prepare_insert(
 ) -> Result<Insert> {
     let model_idx = schema.model_idx(model).map_err(query_err)?;
     let logical = schema.model(model_idx);
+    // The scope column lives on the root level; every level's insert shares the one fill.
+    let mut fields = fields.to_vec();
+    let mut rows = rows;
+    if !logical.scoped.is_empty() {
+        if rows.iter().any(|r| r.len() != fields.len()) {
+            return Err(Error::query("insert row length does not match fields"));
+        }
+        crate::scoped::fill(logical, &mut fields, &mut rows, params)?;
+    }
     let positions = fields
         .iter()
         .map(|f| logical.field_pos(f).map_err(query_err))
@@ -173,7 +186,6 @@ pub fn prepare_insert(
     {
         return Err(Error::query("computed fields are read-only"));
     }
-    let mut rows = rows;
     if logical.hooks.is_some() {
         let map = crate::hooks::input_map(logical.fields().len(), &positions)?;
         crate::hooks::insert_rows(logical, &map, &mut rows, false, &crate::params::NoParams)?;
@@ -222,7 +234,27 @@ pub fn prepare_insert(
         computed: crate::hooks::computations(logical, 0, &positions, params)?,
         read: read.stmt,
         shape,
+        bulk: false,
     })
+}
+
+/// `insert_many` on a model of several tables: the keys first, then one multi-row insert
+/// for each table, and one read in input order. Only PostgreSQL has the key statement.
+#[allow(clippy::too_many_arguments)]
+pub fn prepare_bulk_insert(
+    schema: &Schema,
+    target: Target,
+    model: &str,
+    fields: &[String],
+    rows: Vec<Vec<Option<Value>>>,
+    params: &dyn crate::Params,
+    model_fields: Option<&[String]>,
+    without_defaults: &Bypass,
+) -> Result<Insert> {
+    debug_assert!(target.dialect == monorm_core::dialect::Dialect::Postgres);
+    let mut insert = prepare_insert(schema, target, model, fields, rows, params, model_fields, without_defaults)?;
+    insert.bulk = true;
+    Ok(insert)
 }
 
 pub async fn run_insert(conn: &dyn Executor, target: Target, insert: Insert, own_tx: bool) -> Result<Outcome> {
@@ -231,6 +263,10 @@ pub async fn run_insert(conn: &dyn Executor, target: Target, insert: Insert, own
         Some(t) => t.as_ref(),
         None => conn,
     };
+    if insert.bulk {
+        let result = run_bulk(exec, target, insert).await;
+        return finish(tx, result).await;
+    }
     let result = async {
         let mut fetched = vec![];
         for row in insert.rows {
@@ -292,11 +328,138 @@ pub async fn run_insert(conn: &dyn Executor, target: Target, insert: Insert, own
     finish(tx, result).await
 }
 
+/// The position of the primary key column among the fields of a step.
+fn key_position(step: &OwnerInsert) -> Option<usize> {
+    step.fields.iter().position(|f| f.primary_key)
+}
+
+/// Puts `key` last among the columns of a step, so that every row of one level has the same columns.
+fn set_key(step: &mut OwnerInsert, key: Value) {
+    if let Some(at) = key_position(step) {
+        step.fields.remove(at);
+        step.values.remove(at);
+    }
+    step.fields.push(step.key.clone());
+    step.values.push(Some(key));
+}
+
+fn quoted(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+/// The statement that takes `count` new root keys: the next values of the key's sequence, or
+/// its default expression evaluated for each row.
+fn key_statement(table: &str, key: &FieldIr, count: usize) -> Result<String> {
+    let source = if key.auto_increment {
+        let table = quoted(table).replace('\'', "''");
+        format!("nextval(pg_get_serial_sequence('{table}', '{}'))", key.column.replace('\'', "''"))
+    } else if let Some(expr) = &key.default_sql {
+        expr.clone()
+    } else {
+        return Err(Error::query(format!(
+            "multi-table insert_many needs a value for {table}.{} in every row: the key has no sequence or default",
+            key.column
+        )));
+    };
+    // `nextval` gives a bigint; the cast keeps the key in the type of its column.
+    Ok(format!("SELECT ({source})::{} FROM generate_series(1, {count})", monorm_core::migrate::model::sql_type(key)))
+}
+
+/// `insert_many` on PostgreSQL, and attach for many parents: the root keys in one statement
+/// (rows with a key of their own skip it), one multi-row `INSERT` for each level in level
+/// order, then one read by key that returns the rows in input order.
+async fn run_bulk(exec: &dyn Executor, target: Target, insert: Insert) -> Result<Outcome> {
+    let Insert { mut rows, read, table, key, model, types, shape, computed, .. } = insert;
+    let max_params = target.caps.max_params.max(4);
+    let missing: Vec<usize> = (0..rows.len()).filter(|&i| rows[i][0].fields.iter().zip(&rows[i][0].values).all(|(f, v)| !f.primary_key || v.is_none())).collect();
+    if !missing.is_empty() {
+        let root = &rows[missing[0]][0];
+        let sql = key_statement(&root.table, &root.key, missing.len())?;
+        let keys = exec.query(sql, vec![]).await?;
+        if keys.len() != missing.len() {
+            return Err(Error::query("multi-table insert could not take its keys"));
+        }
+        let key_type = root.key.value_type();
+        for (n, &i) in missing.iter().enumerate() {
+            let value = keys.value(n, 0, key_type).map_err(|e| Error::query(format!("multi-table insert_many: cannot read the new key: {e}")))?;
+            set_key(&mut rows[i][0], value);
+        }
+    }
+    let mut keys = Vec::with_capacity(rows.len());
+    for row in &mut rows {
+        let at = key_position(&row[0]).ok_or_else(|| Error::query("multi-table insert has no key"))?;
+        let value = row[0].values[at].clone().ok_or_else(|| Error::query("multi-table insert has no key"))?;
+        for step in row.iter_mut() {
+            set_key(step, value.clone());
+        }
+        keys.push(value);
+    }
+    for level in 0..rows.first().map_or(0, Vec::len) {
+        let first = &rows[0][level];
+        let used: Vec<usize> = (0..first.fields.len())
+            .filter(|&c| rows.iter().any(|r| r[level].values[c].is_some()))
+            .collect();
+        let per_statement = (max_params / used.len().max(1)).max(1);
+        for chunk in rows.chunks(per_statement) {
+            let mut statement = Query::insert();
+            statement.into_table(Alias::new(&first.table));
+            statement.columns(used.iter().map(|&c| Alias::new(&first.fields[c].column)));
+            for row in chunk {
+                let step = &row[level];
+                let cells: Vec<SimpleExpr> = used
+                    .iter()
+                    .map(|&c| match &step.values[c] {
+                        Some(v) => plan::bind(v.clone(), Some(&step.fields[c])),
+                        None => SimpleExpr::Keyword(sea_query::Keyword::Default),
+                    })
+                    .collect();
+                statement.values(cells).map_err(|e| query_err(e.to_string()))?;
+            }
+            let (sql, args) = db::build(target.dialect, &statement);
+            exec.execute(sql, args).await?;
+        }
+    }
+    let mut fetched = vec![];
+    for chunk in keys.chunks(((max_params - 1) / 2).max(1)) {
+        let key_column = || Expr::col((Alias::new(&table), Alias::new(&key.column)));
+        let mut read = read.clone();
+        read.clear_order_by();
+        read.and_where(key_column().is_in(chunk.iter().map(|k| plan::bind(k.clone(), Some(&key)))));
+        let mut order = sea_query::CaseStatement::new();
+        for (position, k) in chunk.iter().enumerate() {
+            order = order.case(key_column().eq(plan::bind(k.clone(), Some(&key))), Expr::val(position as i64));
+        }
+        read.order_by_expr(order.into(), sea_query::Order::Asc);
+        let (sql, args) = db::build(target.dialect, &read);
+        let returned = exec.query(sql, args).await?;
+        if returned.len() != chunk.len() {
+            return Err(Error::query("multi-table insert could not read its stored rows"));
+        }
+        fetched.push(returned);
+    }
+    Ok(Outcome::Rows {
+        model,
+        types,
+        rows: crate::hooks::compute(Box::new(ChainedRows::new(fetched)), &computed)?,
+        shape,
+    })
+}
+
+/// Where an owner column gets its new value.
+enum Source {
+    /// A column of the matched row after the model's fields (the value of a `set` item).
+    Matched(usize),
+    /// A value fixed at plan time (the current time).
+    Value(Value),
+    /// The column plus a number, in SQL.
+    Add(i64),
+}
+
 struct Assignment {
     table: String,
     key: FieldIr,
     field: FieldIr,
-    position: usize,
+    source: Source,
 }
 /// One captured identity set governs every table mutation.
 pub struct Mutation {
@@ -337,7 +500,10 @@ impl Mutation {
                     update.table(Alias::new(&assignment.table)).and_where(Expr::col(Alias::new(&assignment.key.column)).eq(0));
                     update
                 });
-                update.value(Alias::new(&assignment.field.column), plan::bind(Value::Int(Some(0)), Some(&assignment.field)));
+                update.value(Alias::new(&assignment.field.column), match &assignment.source {
+                    Source::Add(n) => Expr::col(Alias::new(&assignment.field.column)).add(*n),
+                    _ => plan::bind(Value::Int(Some(0)), Some(&assignment.field)),
+                });
             }
             for update in writes.into_values() {
                 statements.push(crate::inspect::statement(&update.into_sub_query_statement(), true));
@@ -426,20 +592,55 @@ pub fn prepare_delete(
     query: &Delete,
     params: &dyn crate::Params,
 ) -> Result<Mutation> {
-    mutation(
+    let logical = schema.model(schema.model_idx(&query.model).map_err(query_err)?);
+    // A delete rewrite of the root (a soft delete) updates only the root row; `hard` removes every level.
+    let rewrite = logical.delete_rewrite.as_ref().filter(|_| !query.hard);
+    let mut filters = query.filters.clone();
+    if let Some(rewrite) = rewrite { filters.push(rewrite.guard.clone()); }
+    let mut plan = mutation(
         schema,
         target,
         &query.model,
-        query.filters.clone(),
+        filters,
         query.with.clone(),
         params,
         query.returning,
         query.model_fields.as_deref(),
-        true,
+        rewrite.is_none(),
         query.without_defaults.clone(),
         query.without_root_filter,
         None,
-    )
+    )?;
+    if let Some(rewrite) = rewrite {
+        let owners = &schema.physical().models;
+        let storage = logical.resolved_fields[rewrite.field].storage;
+        let owner = &owners[storage.owner.0];
+        let field = owner.fields()[storage.column].clone();
+        plan.assignments.push(Assignment { table: owner.table().into(), key: owner.pk_field().clone(), source: Source::Value(params.now(field.ty)), field });
+        plan.assignments.extend(maintained(schema, logical, WriteKind::DeleteRewrite, |_| false, params)?);
+    }
+    Ok(plan)
+}
+
+/// The columns the root maintains on a write of kind `kind` that the caller does not set: the current time or `column + 1`.
+/// A composed model keeps them on the owner that stores the field, which is the root.
+fn maintained(schema: &Schema, logical: &monorm_core::schema::Model, kind: WriteKind, is_set: impl Fn(&str) -> bool, params: &dyn crate::Params) -> Result<Vec<Assignment>> {
+    let owners = &schema.physical().models;
+    let mut out = vec![];
+    for a in logical.assignments.iter().filter(|a| a.applies_to(kind)) {
+        let name = &logical.fields()[a.field].name;
+        if is_set(name) { continue; }
+        let storage = logical.resolved_fields[a.field].storage;
+        let owner = &owners[storage.owner.0];
+        let field = owner.fields()[storage.column].clone();
+        let source = match a.value {
+            AssignValue::Now => Source::Value(params.now(field.ty)),
+            AssignValue::Increment => Source::Add(1),
+            _ => return Err(Error::query(format!("{}.{name}: a hook or expression assignment is not supported on a composed model", logical.ir.name))),
+        };
+        out.push(Assignment { table: owner.table().into(), key: owner.pk_field().clone(), field, source });
+    }
+    Ok(out)
 }
 
 pub fn prepare_update(
@@ -485,9 +686,12 @@ pub fn prepare_update(
             table: owner.table().into(),
             key: owner.pk_field().clone(),
             field,
-            position: logical.fields().len() + offset,
+            source: Source::Matched(logical.fields().len() + offset),
         });
     }
+    // A change on any level touches the root: its time and version columns change even when only a child level does.
+    let assigned: Vec<&str> = query.set.iter().map(|a| a.field.as_str()).collect();
+    plan.assignments.extend(maintained(schema, logical, WriteKind::Update, |name| assigned.contains(&name), params)?);
     Ok(plan)
 }
 
@@ -536,8 +740,11 @@ pub async fn run_mutation(conn: &dyn Executor, target: Target, plan: Mutation, o
             } else {
                 let mut writes = std::collections::BTreeMap::new();
                 for assignment in &plan.assignments {
-                    let value =
-                        matched.value(row, assignment.position, assignment.field.value_type())?;
+                    let value = match &assignment.source {
+                        Source::Matched(position) => Some(matched.value(row, *position, assignment.field.value_type())?),
+                        Source::Value(value) => Some(value.clone()),
+                        Source::Add(_) => None,
+                    };
                     let statement = writes.entry(assignment.table.clone()).or_insert_with(|| {
                         let mut update = Query::update();
                         update.table(Alias::new(&assignment.table)).and_where(
@@ -546,10 +753,11 @@ pub async fn run_mutation(conn: &dyn Executor, target: Target, plan: Mutation, o
                         );
                         update
                     });
-                    statement.value(
-                        Alias::new(&assignment.field.column),
-                        plan::bind(value, Some(&assignment.field)),
-                    );
+                    match (&assignment.source, value) {
+                        (Source::Add(n), _) => statement.value(Alias::new(&assignment.field.column), Expr::col(Alias::new(&assignment.field.column)).add(*n)),
+                        (_, Some(value)) => statement.value(Alias::new(&assignment.field.column), plan::bind(value, Some(&assignment.field))),
+                        _ => unreachable!("a value source has a value"),
+                    };
                 }
                 for statement in writes.into_values() {
                     let (sql, args) = db::build(target.dialect, &statement);
@@ -584,6 +792,31 @@ pub fn prepare_attach(
     fields: &[String],
     rows: Vec<Vec<Option<Value>>>,
 ) -> Result<Insert> {
+    let rows = rows.into_iter().map(|row| (identity.clone(), row)).collect();
+    prepare_attach_rows(schema, target, model, fields, rows)
+}
+
+/// The child rows of several existing parents, each row with its parent identity: one
+/// multi-row insert for the child table, and one read in input order.
+pub fn prepare_attach_many(
+    schema: &Schema,
+    target: Target,
+    model: &str,
+    fields: &[String],
+    rows: Vec<(Value, Vec<Option<Value>>)>,
+) -> Result<Insert> {
+    let mut insert = prepare_attach_rows(schema, target, model, fields, rows)?;
+    insert.bulk = true;
+    Ok(insert)
+}
+
+fn prepare_attach_rows(
+    schema: &Schema,
+    target: Target,
+    model: &str,
+    fields: &[String],
+    rows: Vec<(Value, Vec<Option<Value>>)>,
+) -> Result<Insert> {
     if !is_multi_table(schema, model)? {
         return Err(Error::query("attach requires a child model of several tables"));
     }
@@ -602,8 +835,8 @@ pub fn prepare_attach(
     fields.push(logical.pk_field().name.clone());
     let rows = rows
         .into_iter()
-        .map(|mut row| {
-            row.push(Some(identity.clone()));
+        .map(|(identity, mut row)| {
+            row.push(Some(identity));
             row
         })
         .collect();

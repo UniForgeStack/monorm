@@ -902,6 +902,30 @@ impl Engine {
         })
     }
 
+    /// Attach local values to several existing shared-key parents: `parent_ids[i]` owns `rows[i]`.
+    #[pyo3(signature = (model, parent_ids, fields, rows, tx = None, db = None, allowed = vec![], trace = None))]
+    #[allow(clippy::too_many_arguments)]
+    fn attach_many<'py>(&self, py: Python<'py>, model: &str, parent_ids: &Bound<'py, PyList>, fields: Vec<String>, rows: &Bound<'py, PyList>, tx: Option<&Bound<'py, Transaction>>, db: Option<Bound<'py, PyAny>>, allowed: Vec<String>, trace: Option<&Bound<'py, Trace>>) -> PyResult<Bound<'py, PyAny>> {
+        protect::ensure_writable(&self.schema, model, &allowed).map_err(engine_err)?;
+        let model_idx = self.schema.model_idx(model).map_err(schema_err)?;
+        let key_type = self.schema.model(model_idx).pk_field().value_type();
+        let identities = parent_ids.iter().map(|id| py_to_value(&id, Some(key_type))).collect::<PyResult<Vec<_>>>()?;
+        let values = convert_rows(&self.schema, model, &fields, rows, true)?;
+        if identities.len() != values.len() {
+            return Err(pyo3::exceptions::PyValueError::new_err("attach_many: one parent id for each row"));
+        }
+        let plan = monorm_engine::multi_table::prepare_attach_many(&self.schema, self.target, model, &fields, identities.into_iter().zip(values).collect()).map_err(engine_err)?;
+        let target = self.target;
+        let own_tx = tx.is_none();
+        let conn = self.traced(tx, trace);
+        let classes = self.classes.clone();
+        let db = db.map(Bound::unbind);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let out = monorm_engine::multi_table::run_insert(conn.as_ref(), target, plan, own_tx).await.map_err(engine_err)?;
+            Python::attach(|py| outcome_to_py(py, out, &classes, db, None))
+        })
+    }
+
     /// Updates each row (a sequence aligned with `fields`, the primary key first) to its
     /// own values, among the rows matching `filters_json` (JSON list of filter IR, values
     /// in `params`). Big inputs run as several statements in one transaction (inside `tx`

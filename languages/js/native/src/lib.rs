@@ -1626,6 +1626,30 @@ impl Engine {
         )
     }
 
+    /// Attach local values to several existing shared-key parents: `parent_ids[i]` is `[id]` of `rows[i]`.
+    #[napi(ts_return_type = "Promise<unknown>")]
+    #[allow(clippy::too_many_arguments)]
+    pub fn attach_many<'env>(&self, env: &'env Env, model: String, parent_ids: Unknown<'_>, fields: Vec<String>, rows: Unknown<'_>, tx: Option<&Transaction>, allowed: Option<Vec<String>>, trace: Option<&Trace>) -> napi::Result<PromiseRaw<'env, Raw>> {
+        protect::ensure_writable(&self.schema, &model, allowed.as_deref().unwrap_or_default()).map_err(engine_err)?;
+        let model_idx = self.schema.model_idx(&model).map_err(schema_err)?;
+        let key_type = self.schema.model(model_idx).pk_field().value_type();
+        let identities = convert_cells(env, &[key_type], parent_ids, false)?;
+        let values = convert_rows(env, &self.schema, &model, &fields, rows, true)?;
+        if identities.len() != values.len() {
+            return Err(napi::Error::from_reason("attachMany: one parent id for each row"));
+        }
+        let identities = identities.into_iter().map(|mut id| id.pop().flatten().ok_or_else(|| napi::Error::from_reason("attachMany: a parent id is missing"))).collect::<napi::Result<Vec<_>>>()?;
+        let plan = monorm_engine::multi_table::prepare_attach_many(&self.schema, self.target, &model, &fields, identities.into_iter().zip(values).collect()).map_err(engine_err)?;
+        let target = self.target;
+        let own_tx = tx.is_none();
+        let conn = self.traced(tx, trace);
+        let schema = self.schema.clone();
+        env.spawn_future_with_callback(
+            async move { monorm_engine::multi_table::run_insert(conn.as_ref(), target, plan, own_tx).await.map_err(engine_err) },
+            move |env, out| outcome_js(env, &schema, out),
+        )
+    }
+
 }
 
 // -- schema compiler ------------------------------------------------------------------------------

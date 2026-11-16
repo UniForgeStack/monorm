@@ -170,16 +170,24 @@ export function assignments(meta: ModelMeta, values: object, ctx: IRContext): IR
 
 /** Validate explicit local-only attachment using definition-prepared inputs. */
 export function prepareAttach(meta: ModelMeta, row: object): { fields: string[]; rows: unknown[][] } {
+  return prepareAttachMany(meta, [row]);
+}
+
+/** `prepareAttach` for several rows: the fields set by any row, a row that leaves one out takes its default. */
+export function prepareAttachMany(meta: ModelMeta, rows: readonly object[]): { fields: string[]; rows: unknown[][] } {
   const local = meta.attachInputFields;
   if (local === undefined) throw new TypeError(`${meta.name} is not a child of a multi-table model`);
-  const values = normalize(meta, row, "attach", false);
   const allowed = new Set(local.map((f) => f.ir));
-  for (const name of values.keys()) {
-    if (!allowed.has(name)) throw new TypeError(`${meta.name}.${name}: attach accepts only local child fields`);
-  }
-  for (const field of local) {
-    if (!values.has(field.ir) && !(field.hasServerValue || field.nullable)) throw new TypeError(`${meta.name}.${field.name} is required`);
-  }
-  const fields = local.filter((f) => values.has(f.ir)).map((f) => f.ir);
-  return { fields, rows: [fields.map((f) => values.get(f))] };
+  const normalized = rows.map((row) => {
+    const values = normalize(meta, row, "attach", false);
+    for (const name of values.keys()) {
+      if (!allowed.has(name)) throw new TypeError(`${meta.name}.${name}: attach accepts only local child fields`);
+    }
+    for (const field of local) {
+      if (!values.has(field.ir) && !(field.hasServerValue || field.nullable)) throw new TypeError(`${meta.name}.${field.name} is required`);
+    }
+    return values;
+  });
+  const fields = local.filter((f) => normalized.some((v) => v.has(f.ir))).map((f) => f.ir);
+  return { fields, rows: normalized.map((v) => fields.map((f) => v.get(f))) };
 }

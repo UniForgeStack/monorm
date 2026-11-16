@@ -171,14 +171,36 @@ model Person {
   id Int @id @default(autoincrement())
   shop_id Int
   @@scope.by(shop: shop_id)
+  @@map("rls_comp_js_people")
 }
 model Employee {
   salary Int
   @@composition.model(parent: "Person", parentRef: "person", childRef: "employee")
+  @@map("rls_comp_js_employees")
 }
 `;
 
-test("a scope on a composed chain is refused so no level table is open", { skip: !hasExtension("monorm.scope") || !hasExtension("monorm.composition") }, () => {
-  // A level policy (a join to the direct parent) is built only for a scoped parent, and the compile step refuses that schema today.
-  assert.throws(() => loads(COMPOSED, { registry: new Registry() }), /not supported in a multi-table model's ownership chain/);
+test("a scope on the root of a composed chain secures every level table and scopes the insert", { skip: skip || !hasExtension("monorm.composition") }, async () => {
+  const registry = new Registry();
+  const models = loads(COMPOSED, { registry });
+  const employees = (db: Database) => (models["Employee"] as Any).objects.using(db);
+  const db = await connect(base!, { registry, default: false });
+  try {
+    await db.dropTables();
+    await db.createTables();
+    for (const table of ["rls_comp_js_people", "rls_comp_js_employees"]) {
+      const policies = (await db.fetch(`SELECT policyname FROM pg_policies WHERE tablename = '${table}'`)).map((r) => r["policyname"]);
+      assert.ok(policies.includes("monorm_scope"), `${table}: ${policies.join(",")}`);
+    }
+    await scope({ shop: 1 }, async () => {
+      const made = (await employees(db).insertMany([{ salary: 1 }, { salary: 2 }]).returning()) as Any[];
+      assert.deepEqual(made.map((e) => [e.shopId, e.salary]), [[1, 1], [1, 2]]);
+      await assert.rejects(employees(db).insertMany([{ salary: 3, shopId: 2 }]).returning(), /scoped by shop/);
+    });
+    assert.equal(await scope({ shop: 2 }, () => employees(db).count()), 0);
+    assert.equal(await scope({ shop: 1 }, () => employees(db).count()), 2);
+  } finally {
+    await db.dropTables();
+    await db.close();
+  }
 });

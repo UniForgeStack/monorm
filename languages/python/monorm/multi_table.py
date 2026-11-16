@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
+from . import _native
 from .expr import Expression
 from .protection import allowed_writes
 
@@ -15,9 +16,7 @@ if TYPE_CHECKING:
 M = TypeVar("M", bound="Model")
 
 
-async def attach(qs: QuerySet[M], parent_id: Any, values: Mapping[str, Any]) -> M:
-    from .db import resolve
-
+def _local_values(qs: QuerySet[M], values: Mapping[str, Any]) -> dict[str, Any]:
     meta = qs.model._meta
     fields = meta.attach_fields
     if fields is None:
@@ -36,6 +35,14 @@ async def attach(qs: QuerySet[M], parent_id: Any, values: Mapping[str, Any]) -> 
             local[name] = field.default()
         elif not (field.has_server_value or field.nullable):
             raise ValueError(f"{meta.name}.{name} is required")
+    return local
+
+
+async def attach(qs: QuerySet[M], parent_id: Any, values: Mapping[str, Any]) -> M:
+    from .db import resolve
+
+    meta = qs.model._meta
+    local = _local_values(qs, values)
     names = list(local)
     db = resolve(qs._db)
     local_rows, tx, allowed = [[local[n] for n in names]], db._tx(), allowed_writes()
@@ -44,3 +51,23 @@ async def attach(qs: QuerySet[M], parent_id: Any, values: Mapping[str, Any]) -> 
         ("attach", meta.name, names),
     )
     return cast(M, rows[0])
+
+
+async def attach_many(qs: QuerySet[M], items: Iterable[tuple[Any, Mapping[str, Any]]]) -> list[M]:
+    """Attach child values to many existing parents: one multi-row insert, rows in input order."""
+    from .db import resolve
+
+    meta = qs.model._meta
+    pairs = [(parent_id, _local_values(qs, values)) for parent_id, values in items]
+    if not pairs:
+        return []
+    names = list(dict.fromkeys(name for _, local in pairs for name in local))
+    local_rows = [[local.get(n, _native.DEFAULT) for n in names] for _, local in pairs]
+    parent_ids = [parent_id for parent_id, _ in pairs]
+    db = resolve(qs._db)
+    tx, allowed = db._tx(), allowed_writes()
+    rows = await db._call(
+        lambda t: db._engine.attach_many(meta.name, parent_ids, names, local_rows, tx, qs._db, allowed, t),
+        ("attach_many", meta.name, names),
+    )
+    return cast("list[M]", list(rows))

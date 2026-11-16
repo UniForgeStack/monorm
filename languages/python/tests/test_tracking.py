@@ -636,43 +636,6 @@ async def test_an_instance_rejects_an_explicit_version(dialect):
         await db.close()
 
 
-@requires("monorm.composition")
-@pytest.mark.parametrize(
-    "extension,field,attribute",
-    [
-        ("monorm.timestamps", "changed", '@@timestamps.updated_at("changed")'),
-        ("monorm.soft-delete", "deleted", '@@soft_delete.deleted_at("deleted")'),
-        ("monorm.locking", "version", '@@locking.version'),
-    ],
-)
-@pytest.mark.parametrize("owner", ["Person", "Employee", "Manager"])
-def test_composed_ownership_chain_rejects_tracking_records(extension, field, attribute, owner):
-    if not has_extension(extension):
-        pytest.skip(f"requires {extension}")
-    source = f"""
-model Person {{
- id Int @id
- name String
- {attribute if owner == "Person" else ""}
-}}
-model Employee {{
- salary Int
- {attribute if owner == "Employee" else ""}
- @@composition.model(parent: "Person", parentRef: "person", childRef: "employee")
-}}
-model Manager {{
- level Int
- {attribute if owner == "Manager" else ""}
- @@composition.model(parent: "Employee", parentRef: "employee", childRef: "manager")
-}}
-"""
-    with pytest.raises(monorm.SchemaError) as error:
-        monorm.loads(source, registry=monorm.Registry())
-    message = str(error.value)
-    assert owner in message and field in message and extension in message
-    assert "Employee" in message or "Manager" in message
-
-
 class Tracking(NamedTuple):
     extension: str
     attribute: str

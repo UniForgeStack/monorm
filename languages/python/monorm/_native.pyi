@@ -287,6 +287,17 @@ class Engine:
         allowed: Sequence[str] = ...,
         trace: Trace | None = None,
     ) -> Awaitable[list[Any]]: ...
+    def attach_many(
+        self,
+        model: str,
+        parent_ids: list[Any],
+        fields: list[str],
+        rows: list[list[Any]],
+        tx: Transaction | None = None,
+        db: Any = None,
+        allowed: Sequence[str] = ...,
+        trace: Trace | None = None,
+    ) -> Awaitable[list[Any]]: ...
     def update_many(
         self,
         model: str,

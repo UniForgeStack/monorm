@@ -233,6 +233,7 @@ export interface NativeEngine extends NativeInspector {
   ): Promise<unknown>;
   copyInsert(model: string, fields: string[], rows: unknown[][], tx: NativeTransaction | null, allowed?: readonly string[], trace?: NativeTrace | null): Promise<number>;
   attach(model: string, parentId: unknown, fields: string[], rows: unknown[][], tx: NativeTransaction | null, allowed?: readonly string[], trace?: NativeTrace | null): Promise<unknown>;
+  attachMany(model: string, parentIds: unknown[][], fields: string[], rows: unknown[][], tx: NativeTransaction | null, allowed?: readonly string[], trace?: NativeTrace | null): Promise<unknown>;
   updateMany(
     model: string,
     fields: string[],

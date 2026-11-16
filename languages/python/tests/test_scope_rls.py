@@ -234,16 +234,37 @@ model Person {
  id Int @id @default(autoincrement())
  shop_id Int
  @@scope.by(shop: shop_id)
+ @@map("rls_comp_people")
 }
 model Employee {
  salary Int
  @@composition.model(parent: "Person", parentRef: "person", childRef: "employee")
+ @@map("rls_comp_employees")
 }
 """
 
 
 @pytest.mark.skipif(not has_extension("monorm.composition"), reason="requires the monorm.composition package")
-def test_a_scope_on_a_composed_chain_is_refused_so_no_level_table_is_open():
-    # A level policy (a join to the direct parent) is built only for a scoped parent, and the compile step refuses that schema today.
-    with pytest.raises(Exception, match="not supported in a multi-table model's ownership chain"):
-        monorm.loads(COMPOSED, registry=monorm.Registry())
+async def test_a_scope_on_the_root_of_a_composed_chain_secures_every_level_table_and_scopes_the_insert():
+    registry = monorm.Registry()
+    models = monorm.loads(COMPOSED, registry=registry)
+    Employee = models["Employee"]
+    db = await monorm.connect(os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test"), registry=registry, default=False)
+    try:
+        await db.drop_tables()
+        await db.create_tables()
+        for table in ("rls_comp_people", "rls_comp_employees"):
+            policies = {r["policyname"] for r in await db.fetch(f"SELECT policyname FROM pg_policies WHERE tablename = '{table}'")}
+            assert "monorm_scope" in policies, (table, policies)
+        with monorm.scope(shop=1):
+            made = await Employee.objects.using(db).insert_many([{"salary": 1}, {"salary": 2}]).returning()
+            assert [(e.shop_id, e.salary) for e in made] == [(1, 1), (1, 2)]
+            with pytest.raises(Exception, match="scoped by shop"):
+                await Employee.objects.using(db).insert_many([{"salary": 3, "shop_id": 2}]).returning()
+        with monorm.scope(shop=2):
+            assert await Employee.objects.using(db).count() == 0
+        with monorm.scope(shop=1):
+            assert await Employee.objects.using(db).count() == 2
+    finally:
+        await db.drop_tables()
+        await db.close()

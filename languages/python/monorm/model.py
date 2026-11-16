@@ -59,6 +59,17 @@ def _peek(row: Model, name: str) -> Any:
     return data[name] if name in data else data.get("_orm_internal", {}).get(name, _ABSENT)
 
 
+def _record_owner(behavior: dict[str, Any], name: str) -> str:
+    """The model that holds the write records of ``name``: the root of its ownership chain."""
+    links = behavior.get("owner_links", ())
+    for _ in range(len(links)):
+        link = next((x for x in links if x["child"] == name), None)
+        if link is None:
+            break
+        name = link["parent"]
+    return name
+
+
 def _key_fields(name: str, fields: dict[str, Field[Any]], order: Sequence[str] | None) -> tuple[Field[Any], ...]:
     """The primary key fields in key order (``@@id`` order, else declaration order)."""
     pks = [n for n, f in fields.items() if f.primary_key]
@@ -282,7 +293,15 @@ class Registry:
             tuple[type[Model], dict[str, Any], dict[str, Field[Any]], dict[str, Relation[Any, Any]]]
         ] = []
         multi_table = _multi_table(prepared["models"], prepared.get("behavior", {}))
-        scoped = {(s["model"], s["field"]) for s in prepared.get("behavior", {}).get("scoped_fields", ())}
+        behavior = prepared.get("behavior", {})
+        parents = {link["child"]: link["parent"] for link in behavior.get("owner_links", ())}
+        scoped = {(s["model"], s["field"]) for s in behavior.get("scoped_fields", ())}
+        # A composed model below the root takes its scope fill from the root.
+        for child in parents:
+            root = child
+            while root in parents:
+                root = parents[root]
+            scoped |= {(child, field) for model, field in scoped if model == root}
         for ir in prepared["models"]:
             if ir["name"] not in snapshot._models:
                 raise TypeError(
@@ -359,13 +378,14 @@ class Registry:
             if isinstance(getattr(model, "indexes", None), (_Indexes, type(None))):
                 setattr(model, "indexes", _Indexes(model, meta.index_names))
             behavior = prepared.get("behavior", {})
+            owner = _record_owner(behavior, meta.name)
             meta.guards = tuple(
-                dict.fromkeys(d["field"] for d in behavior.get("instance_guards", ()) if d["model"] == meta.name)
+                dict.fromkeys(d["field"] for d in behavior.get("instance_guards", ()) if d["model"] == owner)
             )
             meta.upsert_drop = frozenset(
                 d["field"]
                 for d in behavior.get("write_assignments", ())
-                if d["model"] == meta.name and d["upsert"] == "drop" and "upsert" in d["on"]
+                if d["model"] == owner and d["upsert"] == "drop" and "upsert" in d["on"]
             )
             meta.narrowed = frozenset(
                 c["field"]

@@ -47,11 +47,24 @@ class ModelLike(Protocol):
     def qs(self) -> BoundQuerySet[Any]: ...
 
 
+_ROOT_KINDS = frozenset({"delete_rewrites", "write_assignments", "instance_guards"})
+
+
 def behavior_records(model: Any, kind: str) -> list[dict[str, Any]]:
     """The prepared behavior records of ``kind`` for ``model`` (a model class or an instance)."""
     meta = model._meta
-    records: list[dict[str, Any]] = meta.registry._behavior.get(kind, ())
-    return [r for r in records if r["model"] == meta.name]
+    behavior = meta.registry._behavior
+    records: list[dict[str, Any]] = behavior.get(kind, ())
+    name = meta.name
+    if kind in _ROOT_KINDS:
+        # The write records of a composed model live on the root of its ownership chain.
+        links = behavior.get("owner_links", ())
+        for _ in range(len(links)):
+            link = next((x for x in links if x["child"] == name), None)
+            if link is None:
+                break
+            name = link["parent"]
+    return [r for r in records if r["model"] == name]
 
 
 def behavior_value(kind: str, registry: Registry | None = None) -> Any:

@@ -480,7 +480,6 @@
 # languages/python/tests/test_tracking.py
 "tracking::a_soft_deleted_join_row_is_hidden_from_loads_and_filters" = "add-ts: a soft-deleted join row is hidden from loads and filters"
 "tracking::a_stale_instance_write_raises_version_conflict" = "change: TS must add both."
-"tracking::composed_ownership_chain_rejects_tracking_records" = "add-ts: composed ownership chain rejects tracking records"
 # languages/python/tests/test_transaction_failures.py
 "transaction_failures::a_caught_error_aborts_the_commit" = "change: TS adds the sqlstate and 'earlier error' checks;"
 "transaction_failures::a_failed_related_set_marks_the_enclosing_transaction" = "change: The TS twin is one merged Postgres-only test in writes.test.ts;"

@@ -3142,6 +3142,9 @@ impl<'s> Planner<'s> {
         let root = self.model(self.root);
         let positions = q.set.iter().map(|a| root.field_pos(&a.field).map_err(query_err)).collect::<Result<Vec<_>>>()?;
         if positions.iter().collect::<std::collections::BTreeSet<_>>().len() != positions.len() { return Err(Error::query("duplicate update field")); }
+        for a in &q.set {
+            crate::scoped::check_set(root, &a.field, assigned(&a.value), self.params)?;
+        }
         self.set_values(&q.set)
     }
 

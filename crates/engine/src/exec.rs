@@ -456,6 +456,9 @@ pub fn plan_inserts(
         return Err(Error::query("batch_size must be at least 1"));
     }
     if crate::multi_table::is_multi_table(schema, model)? {
+        if conflict.is_none() && target.dialect == monorm_core::dialect::Dialect::Postgres {
+            return Ok(vec![Plan::MultiTableInsert(Box::new(crate::multi_table::prepare_bulk_insert(schema, target, model, fields, rows, params, model_fields, without_defaults)?))]);
+        }
         return Ok(vec![plan_insert_with(schema, target, model, fields, rows, conflict, params, returning, model_fields, without_defaults)?]);
     }
     let m = schema.model(schema.model_idx(model).map_err(query_err)?);

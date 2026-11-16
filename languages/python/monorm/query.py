@@ -1444,6 +1444,14 @@ class QuerySet(Generic[M]):
 
         return await attach(self, parent_id, values)
 
+    async def attach_many(self, items: Iterable[tuple[Any, Mapping[str, Any]]]) -> list[M]:
+        """Attach local child values to many existing parents, ``(parent_id, values)`` each.
+
+        One multi-row insert; the instances come back in input order."""
+        from .multi_table import attach_many
+
+        return await attach_many(self, items)
+
     @overload
     def insert_many(
         self, rows: Iterable[Mapping[str, Any]] | Param, *, batch_size: int | None = None, copy: Literal[False] = False

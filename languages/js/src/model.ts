@@ -774,6 +774,8 @@ async function instanceLoad(this: Row, ...args: unknown[]): Promise<Row> {
  * {@link registry} unless `define(..., { registry })` says otherwise, which is how one
  * process can hold two versions of a schema (e.g. in migration tests).
  */
+const ROOT_RECORD_KINDS: ReadonlySet<string> = new Set(["delete_rewrites", "write_assignments", "instance_guards", "scoped_fields"]);
+
 export class Registry {
   private readonly models = new Map<string, ModelMeta>();
   private readonly enums = new Map<string, IREnum>();
@@ -917,7 +919,19 @@ export class Registry {
   /** The prepared behavior records of `kind` for one model. */
   behaviorRecords(kind: string, model: string): readonly Readonly<Record<string, unknown>>[] {
     const records = this.behavior[kind];
-    return Array.isArray(records) ? (records as Record<string, unknown>[]).filter((r) => r["model"] === model) : [];
+    let name = model;
+    if (ROOT_RECORD_KINDS.has(kind)) {
+      // The write records of a composed model live on the root of its ownership chain.
+      const links = this.behavior["owner_links"];
+      if (Array.isArray(links)) {
+        for (let hops = 0; hops < links.length; hops++) {
+          const link = (links as Record<string, unknown>[]).find((l) => l["child"] === name);
+          if (link === undefined) break;
+          name = String(link["parent"]);
+        }
+      }
+    }
+    return Array.isArray(records) ? (records as Record<string, unknown>[]).filter((r) => r["model"] === name) : [];
   }
 
   /** The schema IR of every registered model. */
@@ -1050,7 +1064,14 @@ export function define(
       continue;
     }
     const meta = new ModelMeta(m, reg);
-    const records = (key: string) => ((ir.behavior as Record<string, { model: string; field: string }[] | undefined> | undefined)?.[key] ?? []).filter((d) => d.model === m.name);
+    const links = (ir.behavior as { owner_links?: { child: string; parent: string }[] } | undefined)?.owner_links ?? [];
+    let owner = m.name;
+    for (let i = 0; i < links.length; i++) {
+      const link = links.find((x) => x.child === owner);
+      if (!link) break;
+      owner = link.parent;
+    }
+    const records = (key: string) => ((ir.behavior as Record<string, { model: string; field: string }[] | undefined> | undefined)?.[key] ?? []).filter((d) => d.model === owner);
     meta.guards = [...new Set(records("instance_guards").map((d) => d.field))].flatMap((f) => meta.fieldByIr.get(f) ?? []);
     meta.upsertDrop = new Set((records("write_assignments") as unknown as { field: string; on: string[]; upsert?: string }[]).filter((d) => (d.upsert ?? "drop") === "drop" && d.on.includes("upsert")).map((d) => d.field));
     const checks = (ir.behavior as { result_checks?: { model: string; field: string; non_null?: boolean }[] } | undefined)?.result_checks ?? [];

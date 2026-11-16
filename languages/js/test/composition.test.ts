@@ -134,7 +134,7 @@ for (const [attribute, extension] of [
   ['@@soft_delete.deleted_at("deleted")', "monorm.soft-delete"],
   ['@@timestamps.updated_at("changed")', "monorm.timestamps"],
 ] as const) {
-  test(`a tracking attribute on a composed model is rejected (${extension}) (${extension})`, { skip: !enabled || !hasExtension(extension) }, () => {
+  test(`a tracking attribute below the root of a composed model is rejected (${extension}) (${extension})`, { skip: !enabled || !hasExtension(extension) }, () => {
     const roleSource = `datasource db {\n provider = "sqlite"\n}
 model Person {
  id Int @id
@@ -148,7 +148,7 @@ model Employee {
  @@map("composition06_node_role_employees")
 }
 `;
-    assert.throws(() => loads(roleSource, { registry: new Registry() }), /not supported in a multi-table model's ownership chain/);
+    assert.throws(() => loads(roleSource, { registry: new Registry() }), /below the root of its ownership chain; declare it on Person/);
   });
 }
 
