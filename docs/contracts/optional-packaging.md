@@ -236,6 +236,8 @@ Writes across owner tables belong to `monorm_engine::multi_table`.
 Any extension can write a two-table model with these records; `tests/outside-extension` does so.
 It plans creates, attaches, filtered updates and deletes, and each runs in one transaction or savepoint.
 `update_many` on a multi-table model is rejected.
+The generic write records (`write_assignments`, `delete_rewrites`, `instance_guards`, `scoped_fields`) of the root apply to every level below it; a record on a level below the root is a schema error that names the root.
+On PostgreSQL, `insert_many` and a bulk attach run one multi-row `INSERT` for each level after one key statement.
 Ordinary model writes reject inherited storage instead of writing nonexistent columns.
 Code generation and both runtimes derive the child models, their own fields and the key default from `behavior.owner_links` and `behavior.field_storage`; a pass writes no hint for them.
 The language APIs of these features are in [model-composition.md](../extensions/model-composition.md), [proxy-models.md](../extensions/proxy-models.md) and [selection-and-defaults.md](../schema/selection-and-defaults.md).

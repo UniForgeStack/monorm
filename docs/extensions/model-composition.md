@@ -52,6 +52,9 @@ await Manager.objects.filter(Manager.salary.eq(20)).update({ level: 4 });
 - Reads, projections and filters on inherited fields compile to ordinary joins through the parent tables.
 - `insert` writes the root row first, then each child row. Each composed write runs in one transaction or savepoint; a failed child insert rolls back the parent rows.
 - `attach(parent_id, values)` inserts only the child row for an existing parent. It takes only the local fields of the child and plain values. A second child row for the same parent, or a parent that does not exist, raises `IntegrityError`.
+- `insert_many` on PostgreSQL takes all new keys in one statement (`nextval` of the root key sequence, or the key default, for each row) and then runs one multi-row `INSERT` for each level, in one transaction, and one read by key in input order: L + 2 statements for L levels, whatever the row count. Keys that the caller gives skip the key statement. SQLite stays row by row, and `copy=True` keeps its error.
+- `attach_many(items)` (TypeScript `attachMany`) takes `(parent_id, values)` pairs and inserts the child levels for existing parents with one multi-row `INSERT` for each level; it returns the rows in input order.
+- Column roles (`updated_at`, soft delete, version) live on the root. A change on any level bumps the root; a soft delete updates only the root. See [schema extensions](schema-extensions.md).
 - `update` takes a filter on local or inherited fields.
 - `delete` removes the child row. Parent rows and sibling children stay.
 - Generated modules have an `<Model>Attach` type for each composed model.

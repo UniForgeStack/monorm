@@ -123,9 +123,13 @@ model Book {
   Delete or hard-delete the children first.
 * Migration: a changed trigger body (the depth guard, the version bump) shows in the next migration diff; apply that migration to an existing database.
 * Application mode has no cascade; the schema check above is the same in both modes.
-* A composed model (`model-composition`) keeps its own hard delete plan and takes no role.
-  Schema definition rejects `updated_at`, soft-delete and version fields anywhere in its ownership chain, including the composed model and every ancestor through the root.
-  The error names the composed model, the owner, the field and the extension id that wrote the record (`monorm.timestamps`, `monorm.soft-delete` or `monorm.locking`), because composed writes cannot maintain those records.
+* A composed model (`model-composition`) takes the roles on its root only.
+  `@@timestamps.updated_at`, `@@soft_delete.deleted_at` and `@@locking.version` on a level below the root are a schema error that names the root.
+  A change on any level bumps the root's `updated_at` and its version.
+  A soft delete updates only the root row and keeps every level row; `undelete()` restores the whole row; `hard_delete()` through the root model removes every level (in database mode a live row needs a second call, because the root trigger soft-deletes it first); through a child model it removes only that level.
+  In database mode the root has the triggers, and each level table below it has an `AFTER UPDATE` trigger `updated_at_<column>_root` that touches the root, so a raw update of a level table bumps `updated_at`; `skip_triggers("timestamps")` skips it.
+  The version bump comes from the ORM in both modes; the touch trigger bumps `updated_at` only, so a raw update does not bump the version.
+  A composed update or delete with a hook or expression assignment on a role is rejected.
 * A proxy model takes the roles of its root storage owner: the soft-delete, `updated_at` and version records.
   The proxy must keep those fields.
   In application mode, a proxy that excludes the `updated_at` field is rejected, and the error names the field.
@@ -164,7 +168,7 @@ What changes after the move:
 ### Behavior changes
 
 * Error messages changed when the role code left the host.
-  A composed-chain error names the extension id, not the attribute: `a write record from monorm.timestamps on Person.changed is not supported in a multi-table model's ownership chain`.
+  A role on a level below the composed root names the extension id, not the attribute: `a write record from monorm.timestamps on Employee.changed is not allowed on a model below the root of its ownership chain; declare it on Person`.
   A write record on a field of the wrong type says `wrong type for a time assignment` (it said `wrong type for updated_at`).
   The soft-delete extension still requires a nullable `DateTime`; the host rule for a delete rewrite accepts any `DateTime`, so another extension can rewrite deletes on a required column.
 

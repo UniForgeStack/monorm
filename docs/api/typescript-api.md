@@ -883,7 +883,7 @@ A field that a default hides is `NotLoaded` after a write, also when the caller 
   An instance `hardDelete()` bypasses only `"deleted"` too; it deletes the row it holds, and no scope check applies to it.
   A to-one reference to the model is `opt` (`T | null`).
   A stale versioned instance write throws `VersionConflict`.
-* `Composed.objects.attach(parentId, values)` adds a composed child to an existing parent
+* `Composed.objects.attach(parentId, values)` adds a composed child to an existing parent, and `attachMany([[parentId, values], ...])` adds the children of many parents with one `INSERT` for each level
   ([`model-composition.md`](../extensions/model-composition.md)).
 
 Values in `update()` can be expressions over the same model (`Post.views.add(1)`).
