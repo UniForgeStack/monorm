@@ -1908,6 +1908,7 @@ fn model_block(m: &mut ModelIr, b: &Attr, pending: Option<&Pendings>) -> Result<
                 body: n.str("body")?,
                 language: n.name("language")?,
                 skippable: None,
+                replaces_rule: None,
             };
             n.finish()?;
             if t.body.is_some() == t.function.is_some() {

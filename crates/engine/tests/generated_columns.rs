@@ -79,7 +79,7 @@ async fn pulls_back_and_matches(url: &str, dialect: Dialect, create: &str, expec
     let db = db::connect(url, 1).await.unwrap();
     let conn = db.begin().await.unwrap();
     conn.batch(create.to_owned()).await.unwrap();
-    let pulled = monorm_engine::introspect::pull(conn.as_ref()).await.unwrap();
+    let pulled = monorm_engine::introspect::pull(conn.as_ref(), &Default::default()).await.unwrap();
     for want in expected {
         assert!(pulled.schema.contains(want), "{dialect:?}: missing {want} in\n{}", pulled.schema);
     }

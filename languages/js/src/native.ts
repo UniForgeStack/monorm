@@ -137,7 +137,7 @@ export interface NativeSchema extends NativeInspector {
   snapshot(): string;
   migration(previous?: string | null): string;
   planMigration(dir: string, online?: boolean | null): string;
-  makeMigration(dir: string, name?: string | null, empty?: boolean | null, online?: boolean | null): string[];
+  makeMigration(dir: string, name?: string | null, empty?: boolean | null, online?: boolean | null, baseline?: boolean | null): string[];
 }
 
 /** One traced statement: `start` in Unix milliseconds, `duration` in milliseconds. */
@@ -262,7 +262,7 @@ export interface NativeEngine extends NativeInspector {
   migrationStatus(dir: string): Promise<string>;
   migrateUp(dir: string, target: string | null, allowDestructive: boolean): Promise<string[]>;
   migrateDown(dir: string, steps: number, target: string | null, force: boolean, allowDestructive: boolean): Promise<string[]>;
-  pullSchema(): Promise<string>;
+  pullSchema(extensions?: Record<string, string> | null): Promise<string>;
   migrationDrift(dir: string): Promise<string>;
   migrateBaseline(dir: string): Promise<string>;
   migrationPending(dir: string, target: string | null, allowDestructive: boolean): Promise<NativePendingMigration[]>;

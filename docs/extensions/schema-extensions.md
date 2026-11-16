@@ -8,7 +8,7 @@ They come with the `monorm` Python wheel and the `monorm` npm package (`monorm/e
 | Crate | Extension id | Attribute |
 |---|---|---|
 | `extensions/timestamps` | `monorm.timestamps` | `@@timestamps.updated_at(name, map:, mode:, upsert:)` |
-| `extensions/soft-delete` | `monorm.soft-delete` | `@@soft_delete.deleted_at(name, map:, mode:)` |
+| `extensions/soft-delete` | `monorm.soft-delete` | `@@soft_delete.deleted_at(name, map:, mode:, rule:)` |
 | `extensions/locking` | `monorm.locking` | `@@locking.version(name, map:, upsert:)` |
 
 The model attribute adds the column and gives it the role.
@@ -129,6 +129,37 @@ model Book {
 * A proxy model takes the roles of its root storage owner: the soft-delete, `updated_at` and version records.
   The proxy must keep those fields.
   In application mode, a proxy that excludes the `updated_at` field is rejected, and the error names the field.
+
+### Moving from guitars
+
+guitars soft-deletes with an `ON DELETE ... DO INSTEAD UPDATE` rule.
+monorm adds no rule mode: it replaces the rule with its triggers, in one migration.
+
+1. Run `monorm pull`.
+   It reads a rule of the guitars shape, and the plain shape `DO INSTEAD UPDATE t SET col = now() WHERE key = OLD.key`, as `@@soft_delete.deleted_at("<column>", rule: "<rule name>")`.
+   Check that `pull` printed `The schema reproduces the database.`
+   A `serial` column adds a `// gap:` line: `pull` then prints `The schema matches the database, except for what is not reproduced.` Read the gap lines instead.
+   A rule that you turned off (`ALTER TABLE ... DISABLE RULE`) is not claimed: it stays a gap line, with the note `the rule is disabled`.
+   A rule of another shape stays a `// gap:` line. The move never drops it.
+   The cascade rules of guitars (`ON UPDATE ... DO ALSO UPDATE child`) are such a gap too.
+   Leave them in place: a Django foreign key has no `ON DELETE CASCADE`, so the monorm cascade trigger does not reach those children, and the rule still does.
+   Drop such a rule by hand only when the relation has `onDelete: Cascade`.
+2. Run `baseline` on an empty migrations folder, before any `makemigrations`.
+   The baseline leaves the soft-delete triggers out and keeps the rule names, so the database stays as it is.
+3. Run `makemigrations`. The move migration has `DROP RULE IF EXISTS` for each recognized rule before the trigger statements.
+   `migrate` runs it in one transaction, so no delete is hard in between.
+   A new database has no rule, so the drop does nothing there.
+4. A parent with `onDelete: Cascade` to a child without soft delete now fails the schema load (see above).
+   Add `@@soft_delete.deleted_at` to the child, or `@soft_delete.keep_child_rows` to the relation.
+5. If code sets `rules.hard_deletion` to delete rows for real, change it before you run the move migration.
+   After the move that setting has no effect: use `hard_delete()`.
+
+What changes after the move:
+
+* The setting `rules.hard_deletion` has no effect. Use `hard_delete()`, or delete rows that are already soft-deleted.
+* A second `DELETE` of a soft-deleted row deletes it. The guitars rule left it as it was.
+* `rule:` needs `mode: "database"` and PostgreSQL. The schema load refuses `rule:` on SQLite, which has no rules.
+* The `down` of the move migration warns and does not bring the rule back, so deletes are hard after the `down` until you create the rule again.
 
 ### Behavior changes
 

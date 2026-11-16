@@ -821,7 +821,7 @@ async fn database(command: &str, args: &Args, dir: &Path, schema: &Path) -> Resu
             }
             "pull" => {
                 let out = args.opt(&["-o", "--out"]).map(PathBuf::from).unwrap_or_else(|| schema.to_path_buf());
-                let pulled = introspect::pull(&*driver).await?;
+                let pulled = introspect::pull(&*driver, &args.installed()?).await?;
                 write(&out, &pulled.schema)?;
                 println!("wrote {}", out.display());
                 for (path, body) in &pulled.views {
@@ -849,7 +849,7 @@ async fn database(command: &str, args: &Args, dir: &Path, schema: &Path) -> Resu
                     return Err(failed(format!("the database already has applied migrations ({}); baseline only marks the first", applied.join(", "))));
                 }
                 if files::files::list(dir).map_err(failed)?.is_empty() {
-                    if let Some((folder, _)) = files::files::make(dir, &compiled, None, false, false).map_err(failed)?.into_iter().next() {
+                    if let Some((folder, _)) = files::files::make_with(dir, &compiled, None, false, false, true).map_err(failed)?.into_iter().next() {
                         println!("Created {}", folder.path.display());
                     }
                 }

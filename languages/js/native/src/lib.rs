@@ -664,8 +664,8 @@ impl JsSchema {
     /// Writes the next migration into `dir`; returns the folder names in order (one, or
     /// more with `online`), or an empty list when nothing changed (and not `empty`).
     #[napi]
-    pub fn make_migration(&self, dir: String, name: Option<String>, empty: Option<bool>, online: Option<bool>) -> napi::Result<Vec<String>> {
-        let made = migrate::files::make(std::path::Path::new(&dir), &self.inner, name.as_deref(), empty.unwrap_or(false), online.unwrap_or(false))
+    pub fn make_migration(&self, dir: String, name: Option<String>, empty: Option<bool>, online: Option<bool>, baseline: Option<bool>) -> napi::Result<Vec<String>> {
+        let made = migrate::files::make_with(std::path::Path::new(&dir), &self.inner, name.as_deref(), empty.unwrap_or(false), online.unwrap_or(false), baseline.unwrap_or(false))
             .map_err(schema_err)?;
         Ok(made.into_iter().map(|(folder, _)| folder.name).collect())
     }
@@ -1464,10 +1464,11 @@ impl Engine {
     /// The live database as a schema file: JSON `{schema, gaps, steps: [{summary, sql}], views: {path: sql}}`
     /// (see `monorm_engine::introspect::pull`).
     #[napi]
-    pub fn pull_schema<'env>(&self, env: &'env Env) -> napi::Result<PromiseRaw<'env, String>> {
+    pub fn pull_schema<'env>(&self, env: &'env Env, extensions: Option<std::collections::HashMap<String, String>>) -> napi::Result<PromiseRaw<'env, String>> {
         let driver = self.driver.clone();
+        let installed = installed(None, extensions);
         env.spawn_future(async move {
-            let p = monorm_engine::introspect::pull(&*driver).await.map_err(engine_err)?;
+            let p = monorm_engine::introspect::pull(&*driver, &installed).await.map_err(engine_err)?;
             Ok(serde_json::json!({"schema": p.schema, "gaps": p.gaps, "steps": p.steps, "views": p.views}).to_string())
         })
     }

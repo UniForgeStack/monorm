@@ -21,6 +21,7 @@ use monorm_core::migrate::model::{
     Check, Column, DbSchema, EnumType, Exclusion, ExclusionElement, Extension, ForeignKey, Function, Index, IndexKey,
     PrimaryKey, Policy, SqlView, Table, Trigger, Unique,
 };
+use monorm_core::migrate::pull::LiveRule;
 use monorm_core::migrate::{diff, Op, Step};
 
 use crate::db::Executor;
@@ -33,6 +34,14 @@ pub struct Introspection {
     pub schema: DbSchema,
     /// Objects the schema language can't describe, one line each.
     pub gaps: Vec<String>,
+    /// The rules of the database; each one also has a line in `gaps` (see [`rule_gap`]).
+    pub rules: Vec<LiveRule>,
+}
+
+/// The gap line of a rule that the schema language cannot say.
+pub fn rule_gap(rule: &LiveRule) -> String {
+    let disabled = if rule.enabled { "" } else { " (the rule is disabled)" };
+    format!("rule {} on {}: rules are not supported, so a database made from this schema behaves differently (a rule can rewrite a statement, e.g. keep rows that a DELETE would remove){disabled}: {}", rule.name, rule.table, monorm_core::migrate::model::normalize_ws(&rule.def))
 }
 
 fn bad(e: impl std::fmt::Display) -> Error {
@@ -323,11 +332,14 @@ fn enums_sql() -> String {
 fn others_sql() -> String {
     format!(
         "SELECT coalesce(json_agg(x), '[]') FROM ( \
-         SELECT 'rule' AS kind, rulename AS name, tablename AS \"table\", definition AS def FROM pg_rules WHERE schemaname = current_schema() \
-         UNION ALL SELECT 'sequence', c.relname, NULL, NULL FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
+         SELECT 'rule' AS kind, rulename AS name, tablename AS \"table\", definition AS def, \
+             (SELECT r.ev_enabled <> 'D' FROM pg_rewrite r WHERE r.rulename = pg_rules.rulename \
+                 AND r.ev_class = format('%I.%I', pg_rules.schemaname, pg_rules.tablename)::regclass) AS enabled \
+             FROM pg_rules WHERE schemaname = current_schema() \
+         UNION ALL SELECT 'sequence', c.relname, NULL, NULL, NULL FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
              WHERE {IN_SCHEMA} AND c.relkind = 'S' AND {} \
              AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = c.oid AND d.deptype IN ('a', 'i')) \
-         UNION ALL SELECT CASE t.typtype WHEN 'd' THEN 'domain' ELSE 'type' END, t.typname, NULL, NULL \
+         UNION ALL SELECT CASE t.typtype WHEN 'd' THEN 'domain' ELSE 'type' END, t.typname, NULL, NULL, NULL \
              FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace \
              WHERE {IN_SCHEMA} AND (t.typtype IN ('d', 'r', 'm') OR (t.typtype = 'c' AND (SELECT relkind FROM pg_class WHERE oid = t.typrelid) = 'c')) \
              AND {} \
@@ -340,6 +352,9 @@ fn others_sql() -> String {
 #[derive(Deserialize)]
 struct PgOther {
     kind: String,
+    /// A rule only: `pg_rewrite.ev_enabled` is not `D`.
+    #[serde(default)]
+    enabled: Option<bool>,
     #[serde(flatten)]
     named: PgNamed,
 }
@@ -431,6 +446,7 @@ async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
 
     let mut out = Introspection::default();
     let gaps = &mut out.gaps;
+    let rules = &mut out.rules;
     let db = &mut out.schema;
     db.dialect = Dialect::Postgres;
     db.version = 1;
@@ -679,7 +695,12 @@ async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
     for o in others {
         let n = o.named;
         gaps.push(match o.kind.as_str() {
-            "rule" => format!("rule {} on {}: rules are not supported, so a database made from this schema behaves differently (a rule can rewrite a statement, e.g. keep rows that a DELETE would remove): {}", n.name, n.table.unwrap_or_default(), monorm_core::migrate::model::normalize_ws(&n.def.unwrap_or_default())),
+            "rule" => {
+                let rule = LiveRule { name: n.name, table: n.table.unwrap_or_default(), def: n.def.unwrap_or_default(), enabled: o.enabled.unwrap_or(true) };
+                let gap = rule_gap(&rule);
+                rules.push(rule);
+                gap
+            }
             "sequence" => format!("sequence {}: a sequence not owned by a column is not supported", n.name),
             kind => format!("{kind} {}: domains, composite and range types are not supported", n.name),
         });
@@ -1361,7 +1382,9 @@ pub struct Pull {
 }
 
 /// The live database as a schema file, checked by creating it again in a shadow.
-pub async fn pull(conn: &dyn Executor) -> Result<Pull> {
+/// A rule that an installed extension claims becomes an attribute of its model, not a gap; the check then compares the database
+/// with the baseline form of the schema, which still holds the rule (see `monorm_core::migrate::baseline_snapshot`).
+pub async fn pull(conn: &dyn Executor, installed: &monorm_core::dsl::Installed) -> Result<Pull> {
     let mut live = introspect(conn).await?;
     for t in &mut live.schema.tables {
         if !t.rls.is_off() {
@@ -1373,11 +1396,35 @@ pub async fn pull(conn: &dyn Executor) -> Result<Pull> {
             live.gaps.push(format!("row-level security policy {} on {}: policies are not supported", p.name, t.name));
         }
     }
-    let pulled = monorm_core::migrate::pull::pull(&live.schema, &live.gaps);
-    let (_, compiled) = monorm_core::dsl::compile_with_overrides(&pulled.schema, None, &pulled.views)
-        .and_then(monorm_core::dsl::check)
-        .map_err(|e| Error::Migration(format!("the pulled schema doesn't compile (a bug in pull): {e}")))?;
-    let snapshot = monorm_core::migrate::snapshot(&compiled).map_err(Error::Migration)?;
+    let claims: Vec<_> = monorm_core::migrate::pull::installed_rule_claims(installed);
+    let claimed = monorm_core::migrate::pull::claim_rules(&live.schema, &live.rules, &claims);
+    let compile = |pulled: &monorm_core::migrate::pull::Pulled| {
+        monorm_core::dsl::compile_installed_with_overrides(&pulled.schema, None, installed, &pulled.views).and_then(monorm_core::dsl::check)
+    };
+    let mut pulled = monorm_core::migrate::pull::pull(&live.schema, &live.gaps);
+    let mut compiled = None;
+    if !claimed.is_empty() {
+        let mut gaps = live.gaps.clone();
+        for (i, _) in &claimed {
+            let line = rule_gap(&live.rules[*i]);
+            if let Some(at) = gaps.iter().position(|g| *g == line) { gaps.remove(at); }
+        }
+        let rules: Vec<_> = claimed.iter().map(|(_, c)| c.clone()).collect();
+        let with = monorm_core::migrate::pull::pull_with(&live.schema, &gaps, &rules, installed);
+        // a claim that makes the schema fail to compile is not a claim: the rules stay gaps, and a gap line says why
+        match compile(&with) {
+            Ok(c) => {
+                pulled = with;
+                compiled = Some(c);
+            }
+            Err(e) => pulled.gaps.push(format!("rule claims skipped, the schema with them does not compile: {e}")),
+        }
+    }
+    let compiled = match compiled {
+        Some(c) => c,
+        None => compile(&pulled).map_err(|e| Error::Migration(format!("the pulled schema doesn't compile (a bug in pull): {e}")))?,
+    };
+    let snapshot = monorm_core::migrate::baseline_snapshot(&compiled.1).map_err(Error::Migration)?;
     let (mut gaps, schema, views) = (pulled.gaps, pulled.schema, pulled.views);
     // the check needs CREATE and enough locks; the schema file does not
     let steps = match compare_with(conn, &snapshot, Kind::Schema).await {
@@ -1421,6 +1468,8 @@ pub async fn compare_with(conn: &dyn Executor, target: &DbSchema, kind: Kind) ->
     let live = introspect(conn).await?;
     let mut target = target.clone();
     target.dialect = conn.dialect();
+    // a rule that a snapshot records is a live object that introspection leaves out: it is no difference
+    for t in &mut target.tables { t.rules.clear(); }
     let shadow = materialize(conn, &target).await?.schema;
     let shadow = DbSchema { extensions: target.extensions.clone(), ..shadow };
     // Postgres' deparsed text is not always stable when it is parsed again, so the live

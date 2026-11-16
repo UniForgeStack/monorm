@@ -358,9 +358,10 @@ impl PySchema {
 
     /// Writes the next migration into `dir`; returns the folder names in order (one,
     /// or more with `online`), or an empty list when nothing changed (and not `empty`).
-    #[pyo3(signature = (dir, name = None, empty = false, online = false))]
-    fn make_migration(&self, dir: &str, name: Option<&str>, empty: bool, online: bool) -> PyResult<Vec<String>> {
-        let made = migrate::files::make(std::path::Path::new(dir), &self.inner, name, empty, online).map_err(schema_err)?;
+    /// With `baseline` the snapshot is the baseline form: a trigger that replaces a database rule is left out, and the rule is recorded.
+    #[pyo3(signature = (dir, name = None, empty = false, online = false, baseline = false))]
+    fn make_migration(&self, dir: &str, name: Option<&str>, empty: bool, online: bool, baseline: bool) -> PyResult<Vec<String>> {
+        let made = migrate::files::make_with(std::path::Path::new(dir), &self.inner, name, empty, online, baseline).map_err(schema_err)?;
         Ok(made.into_iter().map(|(folder, _)| folder.name).collect())
     }
 
@@ -1166,10 +1167,12 @@ impl Engine {
 
     /// The live database as a schema file: `(schema, gaps, [(summary, sql, warning)], [(view path, view SQL)])`,
     /// the steps being what a migration from the schema would still change (see `monorm_engine::introspect`).
-    fn pull_schema<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    #[pyo3(signature = (extensions = None))]
+    fn pull_schema<'py>(&self, py: Python<'py>, extensions: Option<std::collections::BTreeMap<String, std::path::PathBuf>>) -> PyResult<Bound<'py, PyAny>> {
         let driver = self.driver.clone();
+        let installed = installed(None, extensions);
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let p = monorm_engine::introspect::pull(&*driver).await.map_err(engine_err)?;
+            let p = monorm_engine::introspect::pull(&*driver, &installed).await.map_err(engine_err)?;
             let views = p.views.into_iter().map(|(path, body)| (path.to_string_lossy().into_owned(), body)).collect::<Vec<_>>();
             Ok((p.schema, p.gaps, p.steps.into_iter().map(|s| (s.summary, s.sql, s.warning)).collect::<Vec<_>>(), views))
         })

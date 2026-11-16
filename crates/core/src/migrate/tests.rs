@@ -2105,3 +2105,39 @@ fn plan_between_goes_from_one_snapshot_to_another_and_back() {
     assert!(sql(&to_empty.up).iter().any(|s| s.starts_with("DROP TABLE \"posts\"")));
     assert_eq!(to_empty.snapshot, empty);
 }
+
+fn replacing_rule() -> Schema {
+    schema(blog(vec![], json!({
+        "triggers": [{"name": "soft_delete", "timing": "before", "events": ["delete"], "body": "BEGIN RETURN OLD; END;", "replaces_rule": "posts_soft_delete"}],
+    })))
+}
+
+#[test]
+fn the_baseline_form_holds_the_rule_and_leaves_its_replacement_out() {
+    let baseline = baseline_snapshot(&replacing_rule()).unwrap();
+    let posts = baseline.tables.iter().find(|t| t.name == "posts").unwrap();
+    assert_eq!(posts.rules, vec!["posts_soft_delete".to_owned()]);
+    assert!(posts.triggers.is_empty());
+}
+
+#[test]
+fn the_first_migration_after_the_baseline_drops_the_rule_before_the_trigger() {
+    let s = replacing_rule();
+    let baseline = baseline_snapshot(&s).unwrap();
+    let plan = super::plan(&s, &baseline).unwrap();
+    let up = sql(&plan.up);
+    let drop = up.iter().position(|q| *q == "DROP RULE IF EXISTS \"posts_soft_delete\" ON \"posts\"").expect("the rule is dropped");
+    let create = up.iter().position(|q| q.starts_with("CREATE TRIGGER \"soft_delete\"")).expect("the trigger is created");
+    assert!(drop < create, "{up:?}");
+    // the down does not recreate the rule; it says so
+    let down = plan.down.iter().find(|s| s.sql.contains("posts_soft_delete")).expect("a down step names the rule");
+    assert!(down.sql.contains("RAISE WARNING") && down.warning.is_some());
+    settled(&s, &plan);
+}
+
+#[test]
+fn a_schema_made_without_a_baseline_drops_no_rule() {
+    let plan = super::plan(&replacing_rule(), &DbSchema::default()).unwrap();
+    assert!(!sql(&plan.up).iter().any(|q| q.starts_with("DROP RULE")));
+    assert!(sql(&plan.up).iter().any(|q| q.starts_with("CREATE TRIGGER \"soft_delete\"")));
+}

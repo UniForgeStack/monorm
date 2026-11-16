@@ -140,6 +140,10 @@ pub struct Table {
     pub indexes: Vec<Index>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub triggers: Vec<Trigger>,
+    /// Database rules of the table that a later migration drops, because triggers replace them. Only a baseline
+    /// snapshot holds them; no introspection fills them, so a comparison with a live database ignores them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<String>,
     #[serde(default, skip_serializing_if = "crate::ir::RlsIr::is_off")]
     pub rls: crate::ir::RlsIr,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -622,6 +626,8 @@ struct Builder<'a> {
     names: BTreeSet<String>,
     local_names: BTreeSet<(String, String)>,
     trigger_functions: Vec<Function>,
+    /// A trigger that replaces a rule is left out and the rule is recorded (see `TriggerIr::replaces_rule`).
+    baseline: bool,
 }
 
 impl Builder<'_> {
@@ -917,6 +923,10 @@ impl Builder<'_> {
         }
 
         for tr in &m.ir.triggers {
+            if let (true, Some(rule)) = (self.baseline, &tr.replaces_rule) {
+                if !table.rules.contains(rule) { table.rules.push(rule.clone()); }
+                continue;
+            }
             if tr.events.is_empty() {
                 return Err(format!("trigger {t}.{}: no events", tr.name));
             }
@@ -1003,6 +1013,11 @@ fn sql_view(schema: &Schema, m: &Model, v: &crate::ir::SqlViewIr, table: Table) 
 }
 
 pub fn build(schema: &Schema) -> Result<(DbSchema, Renames)> {
+    build_with(schema, false)
+}
+
+/// [`build`]; with `baseline`, the schema as a database that still holds the rules that its triggers replace.
+pub fn build_with(schema: &Schema, baseline: bool) -> Result<(DbSchema, Renames)> {
     let mut b = Builder {
         schema,
         catalog: Catalog::new(&[schema.catalog.as_slice(), schema.extensions.as_slice()].concat()),
@@ -1010,6 +1025,7 @@ pub fn build(schema: &Schema) -> Result<(DbSchema, Renames)> {
         names: BTreeSet::new(),
         local_names: BTreeSet::new(),
         trigger_functions: vec![],
+        baseline,
     };
     let mut db = DbSchema { identities: schema.identities.clone(), dialect: schema.dialect, version: if schema.models.iter().any(|m| m.ir.sql_view.is_some()) { SNAPSHOT_VERSION } else if !schema.partitions.is_empty() { 4 } else if schema.identities.is_some() { 3 } else if schema.dialect.is_postgres() { 1 } else { 2 }, ..Default::default() };
     let mut renames = Renames::default();

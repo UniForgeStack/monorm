@@ -8,6 +8,10 @@ use crate::ir::{Deferrable, ForEach, Nulls, OnDelete, TriggerEvent, TriggerTimin
 
 pub use monorm::sql::ident;
 
+fn lit(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "''"))
+}
+
 fn idents(names: &[String]) -> String {
     names.iter().map(|n| ident(n)).collect::<Vec<_>>().join(", ")
 }
@@ -405,6 +409,12 @@ pub fn render_with(op: &Op, idempotent: bool, online: Online) -> String {
         Op::RenameIndex { from, to } => format!("ALTER INDEX {} RENAME TO {}", ident(from), ident(to)),
         Op::CreateTrigger { table, trigger } => trigger_def(table, trigger, idempotent),
         Op::DropTrigger { table, name } => format!("DROP TRIGGER {} ON {}", ident(name), ident(table)),
+        Op::DropRule { table, name } => format!("DROP RULE IF EXISTS {} ON {}", ident(name), ident(table)),
+        // a no-op that tells the operator; the migration runner still shows the step
+        Op::RuleNotRestored { table, name } => format!(
+            "DO $monorm$ BEGIN RAISE WARNING 'monorm does not recreate rule % on table %', {}, {}; END $monorm$",
+            lit(name), lit(table)
+        ),
         Op::SetRowSecurity { table, rls } => format!(
             "ALTER TABLE {} {} ROW LEVEL SECURITY, {} ROW LEVEL SECURITY",
             ident(table), if rls.enabled { "ENABLE" } else { "DISABLE" }, if rls.forced { "FORCE" } else { "NO FORCE" },
@@ -463,6 +473,8 @@ pub fn summary(op: &Op) -> String {
         Op::RenameIndex { from, to } => format!("rename index {from} to {to}"),
         Op::CreateTrigger { table, trigger } => format!("create trigger {} on {table}", trigger.name),
         Op::DropTrigger { table, name } => format!("drop trigger {name} on {table}"),
+        Op::DropRule { table, name } => format!("drop rule {name} on {table}"),
+        Op::RuleNotRestored { table, name } => format!("rule {name} on {table} is not recreated"),
         Op::SetRowSecurity { table, rls } => format!("{} row level security on {table}{}", if rls.enabled { "enable" } else { "disable" }, if rls.forced { ", forced" } else { "" }),
         Op::CreatePolicy { table, policy } => format!("create policy {} on {table}", policy.name),
         Op::DropPolicy { table, name } => format!("drop policy {name} on {table}"),

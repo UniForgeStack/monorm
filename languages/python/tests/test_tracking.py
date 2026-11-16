@@ -1139,3 +1139,16 @@ def test_the_keep_child_rows_attribute_is_checked_for_its_place_and_arguments():
     with pytest.raises(monorm.SchemaError) as error:
         monorm.loads(with_argument, registry=monorm.Registry())
     assert "too many positional arguments" in str(error.value)
+
+
+@requires("monorm.soft-delete")
+def test_the_rule_argument_needs_postgres():
+    source = """
+model Doc {
+  id Int @id
+  @@soft_delete.deleted_at("deleted", mode: "database", rule: "soft_delete")
+  @@map("tracking_rule_docs")
+}"""
+    assert "Doc" in monorm.loads(source, registry=monorm.Registry())
+    with pytest.raises(monorm.SchemaError, match="SQLite has no rules to replace"):
+        monorm.loads('datasource db { provider = "sqlite" }\n' + source, registry=monorm.Registry())

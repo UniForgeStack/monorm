@@ -305,6 +305,10 @@ The engine fills an unset column with the scope value, accepts an equal value, a
 `stamp_expression_records` sets `schema_contract_minor = 3` when `scoped_fields` is not empty.
 An older engine then refuses the IR with "newer than this engine", because it would write rows with no scope.
 `scope` declares 5.3.
+Schema contract 5.3 also adds `Manifest.rule_claims`, a `RuleClaim` (`attribute`, `rule_argument`, `patterns`) for each database rule shape that `pull` reads as a model attribute; `TriggerIr.replaces_rule`, the rule that a trigger replaces; and the snapshot field `Table.rules`.
+The core drops a claimed rule (`DROP RULE IF EXISTS`) before it creates the triggers that replace it, and the baseline form leaves out a trigger with `replaces_rule`.
+A new database has no rule, so the drop does nothing there.
+`soft-delete` declares the claim.
 A `ModelView` (`model`, `source`, `root`, `row_filter`, `insert_table`) makes `model` read and write the table of `root`; `source` is the nearest parent. `row_filter` is a `field` and a list of `values`. Each value must be an enum member of `field`, or `define()` fails. The core builds the literal SQL; an extension never gives SQL text. The filter applies to root reads, joins, and update and delete targets, and `without_defaults()` does not remove it.
 A `ResultCheck` (`model`, `field`, `non_null`, `allowed`, `code`) makes the engine warn when a result row breaks the check. The warning carries `code`.
 An attribute with `view_source = true` declares the source model of a view. The DSL lowering finds views through this key, not through an attribute name.

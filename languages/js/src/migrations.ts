@@ -127,7 +127,12 @@ export class Migrations {
    * Without `online` the list has one folder. With `online` it has one folder for each step
    * (main, concurrent index, validate), and each name starts with the migration label. */
   make(name?: string, options: { readonly empty?: boolean } = {}): Migration[] {
-    const folders = call(() => this.schema.makeMigration(this.directory, name ?? null, options.empty ?? false, this.options.online ?? false));
+    return this.write(name, options.empty ?? false, false);
+  }
+
+  /** `make` with the baseline form: a trigger that replaces a database rule is left out, and the rule is recorded. */
+  write(name: string | undefined, empty: boolean, baseline: boolean): Migration[] {
+    const folders = call(() => this.schema.makeMigration(this.directory, name ?? null, empty, this.options.online ?? false, baseline));
     return folders.map((f) => new Migration(f, join(this.directory, f)));
   }
 
@@ -170,7 +175,7 @@ export class Pulled {
  * (SQLite: an in-memory database).
  */
 export async function pull(db: Database): Promise<Pulled> {
-  const out = JSON.parse(await wait(() => db.engine.pullSchema())) as {
+  const out = JSON.parse(await wait(() => db.engine.pullSchema(resolveExtensions()))) as {
     schema: string;
     gaps: string[];
     steps: Step[];
@@ -359,7 +364,7 @@ export class Migrator {
   async baseline(): Promise<Migration> {
     if (this.migrations.all().length === 0) {
       await this.status(); // fails first if the database has applied migrations
-      this.migrations.make();
+      this.migrations.write(undefined, false, true);
     }
     const name = await wait(() => this.db.engine.migrateBaseline(this.dir));
     return new Migration(name, join(this.dir, name));

@@ -17,6 +17,8 @@ struct SoftDelete {
     model: String,
     field: String,
     mode: Mode,
+    /// The database rule that the triggers of this model replace (the `rule` argument).
+    rule: Option<String>,
 }
 
 /// Runs before the logical passes, so a proxy of the model copies the field too.
@@ -157,7 +159,7 @@ fn live(field: &str) -> serde_json::Value { Expr::is_null(Expr::col(field), fals
 pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
     // Models of an earlier batch keep their records; their mode is unknown (Application is a placeholder), and only the models of this batch use it.
     let mut roles: Vec<SoftDelete> = ir.behavior.delete_rewrites.iter().filter(|d| d.source == SOURCE)
-        .map(|d| SoftDelete { model: d.model.clone(), field: d.field.clone(), mode: Mode::Application }).collect();
+        .map(|d| SoftDelete { model: d.model.clone(), field: d.field.clone(), mode: Mode::Application, rule: None }).collect();
     let mut added = vec![];
     for d in &TRACKED.declarations_besides(ir, &[KEEP_ROWS])? {
         let name = TRACKED.field_name(d)?;
@@ -165,7 +167,13 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
         let model = ir.models.iter().find(|m| m.name == d.model).ok_or_else(|| error(d, "unknown model"))?;
         if !model.fields.iter().any(|f| f.name == name) { return Err(error(d, "unknown field")); }
         if roles.iter().any(|s| s.model == d.model) { return Err(error(d, format!("{} has more than one soft-delete field", d.model))); }
-        roles.push(SoftDelete { model: d.model.clone(), field: name, mode });
+        let rule = match d.arguments.get("rule") {
+            None => None,
+            Some(_) if ir.dialect == Dialect::Sqlite => return Err(error(d, "rule names a PostgreSQL rule; SQLite has no rules to replace")),
+            Some(r) if mode == Mode::Database => Some(r.as_str().ok_or_else(|| error(d, "rule must be a string"))?.to_owned()),
+            Some(_) => return Err(error(d, "rule names a database rule that the triggers replace; it needs mode \"database\"")),
+        };
+        roles.push(SoftDelete { model: d.model.clone(), field: name, mode, rule });
         added.push(d.model.clone());
     }
     // A proxy follows the shared storage of its root; its logical rows need the same ORM
@@ -174,7 +182,7 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
         let has = |model: &str| roles.iter().any(|s| s.model == model);
         let split = views_keeping(ir, &source.model, &source.field, has);
         if let Some(view) = split.lacking.first() { return Err(format!("{view}: proxy must keep the soft-delete field {}", source.field)); }
-        roles.extend(split.keeping.into_iter().map(|model| SoftDelete { model, field: source.field.clone(), mode: source.mode }));
+        roles.extend(split.keeping.into_iter().map(|model| SoftDelete { model, field: source.field.clone(), mode: source.mode, rule: None }));
     }
     ir.behavior.read_defaults.retain(|d| d.source != SOURCE);
     for s in &roles {
@@ -208,7 +216,10 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
                 }).collect::<Result<Vec<_>, String>>()?;
                 triggers.push(cascade_trigger(dialect, model, &s.field, &resolved)?);
             }
-            for t in triggers { model.push_trigger(t)?; }
+            for mut t in triggers {
+                t.replaces_rule = s.rule.clone();
+                model.push_trigger(t)?;
+            }
         }
     }
     Ok(())
@@ -393,6 +404,16 @@ mod tests {
         let again = ir.behavior.declarations[0].clone();
         ir.behavior.declarations.push(again);
         assert_eq!(prepared(&mut ir).unwrap_err(), "schema.prisma:3:3: @soft_delete.deleted_at: Author has more than one soft-delete field");
+    }
+
+    #[test]
+    fn a_rule_needs_postgres() {
+        for (dialect, want) in [("postgres", Ok(())), ("sqlite", Err("schema.prisma:3:3: @soft_delete.deleted_at: rule names a PostgreSQL rule; SQLite has no rules to replace".to_string()))] {
+            let mut ir = declared(dialect, vec![at("Author", 3, serde_json::json!(["deleted"]), serde_json::json!({"mode": "database", "rule": "soft_delete"}), None)]);
+            monorm::extension::capture_storage(&mut ir).unwrap();
+            add_fields(&mut ir).unwrap();
+            assert_eq!(prepare(&mut ir), want, "{dialect}");
+        }
     }
 
     #[test]

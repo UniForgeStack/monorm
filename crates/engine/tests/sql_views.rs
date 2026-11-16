@@ -10,7 +10,7 @@ async fn pulls_back_and_matches(url: &str, dialect: Dialect, statements: &[&str]
     let db = db::connect(url, 1).await.unwrap();
     let conn = db.begin().await.unwrap();
     for s in statements { conn.batch((*s).to_owned()).await.unwrap(); }
-    let pulled = introspect::pull(conn.as_ref()).await.unwrap();
+    let pulled = introspect::pull(conn.as_ref(), &Default::default()).await.unwrap();
     for want in expected {
         assert!(pulled.schema.contains(want), "{dialect:?}: missing {want} in\n{}", pulled.schema);
     }

@@ -110,6 +110,10 @@ pub enum Op {
     RenameIndex { from: String, to: String },
     CreateTrigger { table: String, trigger: Trigger },
     DropTrigger { table: String, name: String },
+    /// `DROP RULE IF EXISTS`: the baseline of a pulled database holds a rule that triggers replace; a new database has none.
+    DropRule { table: String, name: String },
+    /// The down of [`Op::DropRule`]: monorm does not rebuild a rule, so the step only warns.
+    RuleNotRestored { table: String, name: String },
     /// `ENABLE`/`DISABLE` and `FORCE`/`NO FORCE ROW LEVEL SECURITY`.
     SetRowSecurity { table: String, rls: crate::ir::RlsIr },
     CreatePolicy { table: String, policy: Policy },
@@ -133,6 +137,10 @@ impl Op {
                 format!("changes {table}.{column} from {from} to {to}; existing values must convert")
             }
             Op::SetNotNull { table, column } => format!("fails if {table}.{column} holds NULLs"),
+            Op::DropRule { table, name } => format!("drops rule {name} on {table}; a delete no longer follows the rule"),
+            Op::RuleNotRestored { table, name } => {
+                format!("does not recreate rule {name} on {table}; the rule stays dropped")
+            }
             Op::CopyColumns { table, .. } => format!("copies the data of a nested type in {table} to its new storage"),
             Op::AddColumn { table, column }
                 if !column.nullable && column.default.is_none() && !column.identity =>
@@ -665,6 +673,7 @@ fn affects_views(op: &Op) -> bool {
             | Op::AddIdentity { .. } | Op::DropIdentity { .. } | Op::BackfillColumn { .. } | Op::BackfillJson { .. } | Op::CopyColumns { .. }
             | Op::AddConstraint { .. } | Op::DropConstraint { .. } | Op::RenameConstraint { .. }
             | Op::CreateIndex { .. } | Op::DropIndex { .. } | Op::RenameIndex { .. } | Op::CreateTrigger { .. } | Op::DropTrigger { .. }
+            | Op::DropRule { .. } | Op::RuleNotRestored { .. }
             | Op::SetRowSecurity { .. } | Op::CreatePolicy { .. } | Op::DropPolicy { .. }
             | Op::CommentOnTable { .. } | Op::CommentOnColumn { .. } | Op::CreateView(_) | Op::DropView { .. }
     )
@@ -941,6 +950,16 @@ fn diff_tables(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<Vec<
                 drop_triggers.push(Op::DropTrigger { table: o.name.clone(), name: t.name.clone() });
             }
         }
+        for r in &o.rules {
+            if !n.rules.contains(r) {
+                drop_triggers.push(Op::DropRule { table: o.name.clone(), name: r.clone() });
+            }
+        }
+        for r in &n.rules {
+            if !o.rules.contains(r) {
+                drop_triggers.push(Op::RuleNotRestored { table: table.clone(), name: r.clone() });
+            }
+        }
         for t in &n.triggers {
             if ro.triggers.iter().find(|x| x.name == t.name) != Some(t) {
                 create_triggers.push(Op::CreateTrigger { table: table.clone(), trigger: t.clone() });
@@ -1116,6 +1135,7 @@ fn diff_tables(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<Vec<
         bare.foreign_keys.clear();
         bare.indexes.clear();
         bare.triggers.clear();
+        bare.rules.clear();
         bare.policies.clear();
         bare.rls = Default::default();
         ops.push(Op::CreateTable { table: bare, foreign_keys: inline });

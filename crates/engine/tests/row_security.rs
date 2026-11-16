@@ -36,7 +36,7 @@ async fn pull_keeps_policies_as_gaps(url: &str) {
     let db = db::connect(url, 1).await.unwrap();
     let conn = db.begin().await.unwrap();
     conn.batch(CREATE.to_owned()).await.unwrap();
-    let pulled = introspect::pull(conn.as_ref()).await.unwrap();
+    let pulled = introspect::pull(conn.as_ref(), &Default::default()).await.unwrap();
     assert!(pulled.gaps.iter().any(|g| g.contains("rls_probe has row-level security (forced)")), "{:?}", pulled.gaps);
     assert!(pulled.gaps.iter().any(|g| g.contains("policy probe_shop on rls_probe")), "{:?}", pulled.gaps);
     assert!(pulled.steps.is_empty(), "{:?}", pulled.steps);

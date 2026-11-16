@@ -247,6 +247,11 @@ pub fn compile_with_overrides(source: &str, origin: Option<&Path>, overrides: &s
     compile_project_overlay(source, origin, None, &Installed::new(), overrides).map(|project| project.ir)
 }
 
+/// [`compile_with_overrides`] with the installed extensions and apps, for a schema that uses their attributes.
+pub fn compile_installed_with_overrides(source: &str, origin: Option<&Path>, installed: &Installed, overrides: &std::collections::BTreeMap<PathBuf, String>) -> Result<SchemaIr, String> {
+    compile_project_overlay(source, origin, None, installed, overrides).map(|project| project.ir)
+}
+
 pub fn compile_project(source: &str, origin: Option<&Path>) -> Result<CompiledProject, String> {
     compile_project_mode(source, origin, None, &Installed::new())
 }

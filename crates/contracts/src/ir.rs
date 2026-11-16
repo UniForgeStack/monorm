@@ -918,6 +918,10 @@ pub struct TriggerIr {
     /// generates the trigger adds the test of `monorm.skip` to its `WHEN` clause (see `sql::skip_guard`).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub skippable: Option<String>,
+    /// The name of a database rule on the table that this trigger replaces (schema contract 5.3). A baseline
+    /// snapshot leaves the trigger out and records the rule; the next migration drops the rule and creates the trigger.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub replaces_rule: Option<String>,
 }
 
 /// Row-level security of a table. `forced` makes the table owner obey the policies as well.

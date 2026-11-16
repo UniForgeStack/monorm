@@ -888,3 +888,17 @@ test("the keep child rows attribute is checked for its place and arguments", { s
     (e: Error) => e.message.includes("too many positional arguments"),
   );
 });
+
+test("the rule argument needs postgres", { skip: !hasExtension("monorm.soft-delete") }, () => {
+  const source = `
+model Doc {
+  id Int @id
+  @@soft_delete.deleted_at("deleted", mode: "database", rule: "soft_delete")
+  @@map("tracking_rule_docs")
+}`;
+  assert.ok("Doc" in loads(source, { registry: new Registry() }));
+  assert.throws(
+    () => loads('datasource db { provider = "sqlite" }\n' + source, { registry: new Registry() }),
+    (e: Error) => e.message.includes("SQLite has no rules to replace"),
+  );
+});

@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use super::{plan, plan_between, plan_online, plan_squash, DbSchema, FolderKind, MigrationPlan, Step};
+use super::{plan, plan_with, plan_between, plan_online, plan_squash, DbSchema, FolderKind, MigrationPlan, Step};
 use crate::schema::{Result, Schema};
 
 #[derive(Debug, Clone)]
@@ -87,8 +87,14 @@ pub fn next(dir: &Path, schema: &Schema) -> Result<MigrationPlan> {
 /// What the next migration would contain, as the folders `make` would write: one, or with `online`
 /// on PostgreSQL the folders of [`plan_online`].
 pub fn next_folders(dir: &Path, schema: &Schema, online: bool) -> Result<Vec<MigrationPlan>> {
+    next_folders_with(dir, schema, online, false)
+}
+
+/// [`next_folders`]; with `baseline` the snapshot of the folder is the baseline form (see [`super::baseline_snapshot`]).
+/// The baseline form is for the first folder of a database that `pull` read; it never combines with `online`.
+pub fn next_folders_with(dir: &Path, schema: &Schema, online: bool, baseline: bool) -> Result<Vec<MigrationPlan>> {
     let previous = latest_snapshot(dir)?;
-    if online { plan_online(schema, &previous) } else { plan(schema, &previous).map(|p| vec![p]) }
+    if online { plan_online(schema, &previous) } else { plan_with(schema, &previous, baseline).map(|p| vec![p]) }
 }
 
 /// The folders of `plans` as one plan: the steps in order; the down steps in reverse folder order;
@@ -168,7 +174,12 @@ fn folder_text(kind: &FolderKind) -> FolderText {
 /// order. Returns no folder when the schema is unchanged (unless `empty`, which writes one anyway for
 /// hand-written SQL).
 pub fn make(dir: &Path, schema: &Schema, name: Option<&str>, empty: bool, online: bool) -> Result<Vec<(MigrationFolder, MigrationPlan)>> {
-    let plans = next_folders(dir, schema, online)?;
+    make_with(dir, schema, name, empty, online, false)
+}
+
+/// [`make`]; with `baseline` the snapshot is the baseline form (see [`next_folders_with`]).
+pub fn make_with(dir: &Path, schema: &Schema, name: Option<&str>, empty: bool, online: bool, baseline: bool) -> Result<Vec<(MigrationFolder, MigrationPlan)>> {
+    let plans = next_folders_with(dir, schema, online, baseline)?;
     if plans.iter().all(|p| p.up.is_empty()) && !empty {
         return Ok(vec![]);
     }

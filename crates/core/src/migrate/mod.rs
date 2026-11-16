@@ -107,6 +107,12 @@ pub fn snapshot(schema: &Schema) -> Result<DbSchema> {
     model::build(schema).map(|(s, _)| s)
 }
 
+/// [`snapshot`] of a database that still holds the rules that triggers of the schema replace: the baseline of a database that `pull` read.
+pub fn baseline_snapshot(schema: &Schema) -> Result<DbSchema> {
+    let schema = schema.physical();
+    model::build_with(schema, true).map(|(s, _)| s)
+}
+
 /// What `plan` and `plan_online` both start from: the schema after the change and its checks.
 struct Prepared {
     current: DbSchema,
@@ -116,9 +122,9 @@ struct Prepared {
     fills: Vec<Op>,
 }
 
-fn prepare(schema: &Schema, previous: &DbSchema) -> Result<Prepared> {
+fn prepare(schema: &Schema, previous: &DbSchema, baseline: bool) -> Result<Prepared> {
     let schema = schema.physical();
-    let (mut current, renames) = model::build(schema)?;
+    let (mut current, renames) = model::build_with(schema, baseline)?;
     reconcile::reconcile(schema, previous, &mut current);
     if let Some(old) = &previous.identities {
         let next = current.identities.as_ref().ok_or("identity manifest removed from schema; retain frozen identities and tombstones")?;
@@ -146,7 +152,12 @@ fn pg_ops(previous: &DbSchema, p: &Prepared) -> Result<(Vec<Op>, Vec<Op>)> {
 /// The migration from `previous` (an earlier snapshot; empty for the first migration)
 /// to `schema`.
 pub fn plan(schema: &Schema, previous: &DbSchema) -> Result<MigrationPlan> {
-    let p = prepare(schema, previous)?;
+    plan_with(schema, previous, false)
+}
+
+/// [`plan`]; with `baseline` the new snapshot is the baseline form (see [`baseline_snapshot`]).
+pub fn plan_with(schema: &Schema, previous: &DbSchema, baseline: bool) -> Result<MigrationPlan> {
+    let p = prepare(schema, previous, baseline)?;
     if p.current.dialect == crate::dialect::Dialect::Sqlite {
         return sqlite_plan(previous, p);
     }

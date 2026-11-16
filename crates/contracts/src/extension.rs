@@ -361,6 +361,22 @@ pub struct ResultDeclaration {
     pub dependencies: Vec<String>,
 }
 
+/// A database rule that `pull` reads as a model attribute instead of a `// gap:` line, and that the first migration
+/// after `baseline` drops when the triggers of the extension replace it (see `TriggerIr::replaces_rule`).
+/// A pattern is the rule text as PostgreSQL deparses it, with the placeholders `{rule}`, `{table}`, `{column}` and `{key}`:
+/// each names one identifier, and the same placeholder must match the same identifier. `{key}` must be the single
+/// primary key column of the table, and `{column}` a nullable timestamp column. A rule that matches no pattern stays a gap.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RuleClaim {
+    /// The model attribute that `pull` writes, with the column as its field name: `@@<attribute>("<field>", <rule_argument>: "<rule>")`;
+    /// `map: "<column>"` is added when the database column name differs from the field name.
+    pub attribute: String,
+    /// The argument of the attribute that carries the rule name.
+    pub rule_argument: String,
+    pub patterns: Vec<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
@@ -381,6 +397,9 @@ pub struct Manifest {
     pub databases: Vec<String>,
     #[serde(default)]
     pub attributes: Vec<Attribute>,
+    /// Database rules that `pull` reads as one of the attributes of this extension (schema contract 5.3).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rule_claims: Vec<RuleClaim>,
     #[serde(default)]
     pub passes: Vec<Pass>,
     #[serde(default)]

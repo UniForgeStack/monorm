@@ -21,6 +21,131 @@ pub struct Pulled {
     pub views: BTreeMap<PathBuf, String>,
 }
 
+/// A database rule as introspection reads it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveRule {
+    pub name: String,
+    pub table: String,
+    /// `pg_get_ruledef`.
+    pub def: String,
+    /// `false` for a rule that `ALTER TABLE … DISABLE RULE` turned off: it does nothing, so no claim takes it over.
+    pub enabled: bool,
+}
+
+/// A rule that an installed extension claims (see [`crate::behavior::RuleClaim`]): `pull` writes an attribute on the model of
+/// the table instead of a `// gap:` line, and the column of the rule is the field that the attribute adds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimedRule {
+    pub attribute: String,
+    pub rule_argument: String,
+    pub table: String,
+    pub column: String,
+    pub rule: String,
+}
+
+/// An identifier of the rule text at the start of `text`, unquoted, and the rest of the text.
+fn take_identifier(text: &str) -> Option<(String, &str)> {
+    if let Some(rest) = text.strip_prefix('"') {
+        let mut name = String::new();
+        let mut chars = rest.char_indices();
+        while let Some((i, c)) = chars.next() {
+            if c != '"' {
+                name.push(c);
+            } else if rest[i + 1..].starts_with('"') {
+                name.push('"');
+                chars.next();
+            } else {
+                return (!name.is_empty()).then(|| (name, &rest[i + 1..]));
+            }
+        }
+        return None;
+    }
+    let end = text.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(text.len());
+    (end > 0).then(|| (text[..end].to_owned(), &text[end..]))
+}
+
+/// The identifiers that fill the placeholders of `pattern` when it matches the whole `text`; both with single spaces.
+fn match_pattern(pattern: &str, text: &str) -> Option<BTreeMap<String, String>> {
+    let mut bound = BTreeMap::new();
+    let (mut pattern, mut text) = (pattern, text);
+    while !pattern.is_empty() {
+        if let Some(rest) = pattern.strip_prefix('{') {
+            let (name, after) = rest.split_once('}')?;
+            let (value, remaining) = take_identifier(text)?;
+            if bound.entry(name.to_owned()).or_insert_with(|| value.clone()) != &value {
+                return None;
+            }
+            (pattern, text) = (after, remaining);
+        } else {
+            let c = pattern.chars().next()?;
+            text = text.strip_prefix(c)?;
+            pattern = &pattern[c.len_utf8()..];
+        }
+    }
+    text.is_empty().then_some(bound)
+}
+
+/// The field name that an extension attribute gets for `column`: the column without leading underscores, if that is snake_case.
+fn claimed_field_name(column: &str) -> Option<String> {
+    let name = column.trim_start_matches('_');
+    (name.starts_with(|c: char| c.is_ascii_lowercase()) && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'))
+        .then(|| name.to_owned())
+}
+
+/// The rule claims of the manifests of `installed`; a manifest that does not read claims nothing.
+pub fn installed_rule_claims(installed: &crate::dsl::Installed) -> Vec<crate::behavior::RuleClaim> {
+    installed.extensions.iter()
+        .filter_map(|(id, path)| crate::loader::read_manifest(id, path).ok())
+        .flat_map(|d| d.manifest.rule_claims)
+        .collect()
+}
+
+/// The rules of `rules` that a claim of `claims` matches, with their index in `rules`: one rule per table, and only a rule
+/// whose `{rule}` and `{table}` are the rule and table themselves, `{key}` the single primary key column, and `{column}`
+/// a nullable `timestamptz` column that has no default, comment or unique constraint. A rule that fails any test is not claimed.
+pub fn claim_rules(db: &DbSchema, rules: &[LiveRule], claims: &[crate::behavior::RuleClaim]) -> Vec<(usize, ClaimedRule)> {
+    let mut found: Vec<(usize, ClaimedRule)> = vec![];
+    for (i, rule) in rules.iter().enumerate().filter(|(_, r)| r.enabled) {
+        let text = super::model::normalize_ws(&rule.def);
+        let Some(table) = db.tables.iter().find(|t| t.name == rule.table) else { continue };
+        if found.iter().any(|(_, c)| c.table == rule.table) {
+            continue;
+        }
+        for claim in claims {
+            for pattern in &claim.patterns {
+                let Some(bound) = match_pattern(&super::model::normalize_ws(pattern), &text) else { continue };
+                let get = |name: &str| bound.get(name).map(String::as_str);
+                let key_ok = match (get("key"), &table.primary_key) {
+                    (Some(k), Some(pk)) => pk.columns == [k],
+                    (None, _) => true,
+                    _ => false,
+                };
+                let column = get("column").and_then(|c| table.column(c));
+                let column_ok = column.is_some_and(|c| {
+                    c.nullable && c.default.is_none() && !c.identity && c.generated.is_none() && c.comment.is_none()
+                        && c.ty == "timestamp with time zone"
+                        && table.uniques.iter().all(|u| !u.columns.contains(&c.name))
+                        && table.primary_key.as_ref().is_none_or(|pk| !pk.columns.contains(&c.name))
+                });
+                if get("rule") == Some(&rule.name) && get("table") == Some(&rule.table) && key_ok && column_ok && column.and_then(|c| claimed_field_name(&c.name)).is_some() {
+                    found.push((i, ClaimedRule {
+                        attribute: claim.attribute.clone(),
+                        rule_argument: claim.rule_argument.clone(),
+                        table: rule.table.clone(),
+                        column: get("column").unwrap_or_default().to_owned(),
+                        rule: rule.name.clone(),
+                    }));
+                    break;
+                }
+            }
+            if found.last().is_some_and(|(j, _)| *j == i) {
+                break;
+            }
+        }
+    }
+    found
+}
+
 /// Type names the schema language reserves.
 const RESERVED: [&str; 14] = [
     "BigInt", "Int", "Float", "Boolean", "String", "DateTime", "Json", "Decimal", "Unsupported", "Generic", "Bytes",
@@ -315,6 +440,12 @@ impl ModelOut<'_> {
 /// Writes `db` as a schema file. `gaps` are the introspection's own gaps; the result
 /// adds what the writer leaves out.
 pub fn pull(db: &DbSchema, gaps: &[String]) -> Pulled {
+    pull_with(db, gaps, &[], &crate::dsl::Installed::new())
+}
+
+/// [`pull`] with rules that extensions claim (see [`claim_rules`]): each becomes an attribute on its model, and `installed` lets the
+/// emitted schema compile.
+pub fn pull_with(db: &DbSchema, gaps: &[String], claimed: &[ClaimedRule], installed: &crate::dsl::Installed) -> Pulled {
     let mut gaps = gaps.to_vec();
     let dialect = db.dialect;
     let mut type_names = BTreeSet::new();
@@ -397,7 +528,16 @@ pub fn pull(db: &DbSchema, gaps: &[String]) -> Pulled {
             .filter(|u| shorthand_unique(t, u))
             .map(|u| u.columns[0].as_str())
             .collect();
+        let claim = claimed.iter().find(|c| c.table == t.name);
         for c in &t.columns {
+            if let Some(claim) = claim.filter(|claim| claim.column == c.name) {
+                // the attribute adds this field
+                let name = claimed_field_name(&c.name).unwrap_or_else(|| c.name.clone());
+                m.fields.insert(c.name.clone(), name.clone());
+                let map = if name == c.name { String::new() } else { format!(", map: {}", quoted(&c.name)) };
+                m.attrs.push(format!("@@{}({}{map}, {}: {})", claim.attribute, quoted(&name), claim.rule_argument, quoted(&claim.rule)));
+                continue;
+            }
             let field = m.field(&c.name);
             let Some((ty, db_attr, array)) = field_type(&c.ty, dialect, &enums) else {
                 gaps.push(format!("column {}.{} has type {}, which the schema can't declare; it is left out", t.name, c.name, c.ty));
@@ -753,7 +893,7 @@ pub fn pull(db: &DbSchema, gaps: &[String]) -> Pulled {
     }
     // Compile the complete emitted schema so translation uses the final mapped
     // and disambiguated identifiers, enum types and destination context checks.
-    if let Ok(ir) = crate::dsl::compile_with_overrides(&out, None, &sidecars) {
+    if let Ok(ir) = crate::dsl::compile_installed_with_overrides(&out, None, installed, &sidecars) {
         if let Ok((native, _)) = crate::dsl::native::convert_source(&out, &ir) { out = native; }
     }
     Pulled { schema: out, gaps, views: sidecars }
@@ -821,6 +961,61 @@ mod tests {
 
     fn col(name: &str, ty: &str) -> Column {
         Column { name: name.into(), ty: ty.into(), nullable: false, default: None, identity: false, comment: None, generated: None, nested: Default::default() }
+    }
+
+    const SHAPE: &str = "CREATE RULE {rule} AS ON DELETE TO public.{table} DO INSTEAD UPDATE {table} SET {column} = now() WHERE ({table}.{key} = old.{key});";
+
+    fn claim() -> crate::behavior::RuleClaim {
+        crate::behavior::RuleClaim { attribute: "ext.mark".into(), rule_argument: "rule".into(), patterns: vec![SHAPE.into()] }
+    }
+
+    fn rule_db(deleted: Column) -> DbSchema {
+        let mut t = Table { name: "things".into(), columns: vec![col("id", "bigint"), deleted], ..Default::default() };
+        t.primary_key = Some(PrimaryKey { name: "things_pkey".into(), columns: vec!["id".into()] });
+        DbSchema { dialect: Dialect::Postgres, tables: vec![t], ..Default::default() }
+    }
+
+    fn live(def: &str) -> LiveRule {
+        LiveRule { name: "mark".into(), table: "things".into(), def: def.into(), enabled: true }
+    }
+
+    fn mark_column() -> Column {
+        Column { nullable: true, ..col("_marked_at", "timestamp with time zone") }
+    }
+
+    const DEF: &str = "CREATE RULE mark AS\n    ON DELETE TO public.things DO INSTEAD  UPDATE things SET _marked_at = now()\n  WHERE (things.id = old.id);";
+
+    #[test]
+    fn claims_a_rule_of_the_claimed_shape() {
+        let db = rule_db(mark_column());
+        let found = claim_rules(&db, &[live(DEF)], &[claim()]);
+        assert_eq!(found.len(), 1);
+        let ClaimedRule { table, column, rule, .. } = &found[0].1;
+        assert_eq!((table.as_str(), column.as_str(), rule.as_str()), ("things", "_marked_at", "mark"));
+
+        let pulled = pull_with(&db, &[], &[found[0].1.clone()], &crate::dsl::Installed::new());
+        assert!(pulled.schema.contains("@@ext.mark(\"marked_at\", map: \"_marked_at\", rule: \"mark\")"), "{}", pulled.schema);
+        assert!(!pulled.schema.contains("_marked_at DateTime"), "the attribute adds the field:\n{}", pulled.schema);
+        assert!(!pulled.schema.contains("// gap"), "{}", pulled.schema);
+    }
+
+    #[test]
+    fn leaves_other_rules_alone() {
+        let db = rule_db(mark_column());
+        let other_shape = DEF.replace("things.id = old.id", "things.id = old.id AND things.id > 0");
+        let other_column = DEF.replace("_marked_at", "id");
+        let other_table = DEF.replace("things SET", "others SET");
+        for def in [other_shape, other_column, other_table, DEF.replace("ON DELETE", "ON UPDATE")] {
+            assert!(claim_rules(&db, &[live(&def)], &[claim()]).is_empty(), "{def}");
+        }
+        // a disabled rule does nothing: it is not claimed
+        assert!(claim_rules(&db, &[LiveRule { enabled: false, ..live(DEF) }], &[claim()]).is_empty());
+        // the rule name in the text must be the name of the rule
+        assert!(claim_rules(&db, &[LiveRule { name: "other".into(), ..live(DEF) }], &[claim()]).is_empty());
+        // the column must be a nullable timestamptz without a default
+        for bad in [col("_marked_at", "timestamp with time zone"), Column { nullable: true, ..col("_marked_at", "bigint") }, Column { default: Some("now()".into()), ..mark_column() }] {
+            assert!(claim_rules(&rule_db(bad), &[live(DEF)], &[claim()]).is_empty());
+        }
     }
 
     #[test]

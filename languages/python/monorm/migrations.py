@@ -154,7 +154,10 @@ class Migrations:
         Without ``online`` the list has one folder. With ``online`` it has one folder for each step
         (main, concurrent index, validate), and each name starts with the migration label.
         """
-        folders = self.schema.make_migration(str(self.directory), name, empty, self.online)
+        return self._make(name, empty, False)
+
+    def _make(self, name: str | None, empty: bool, baseline: bool) -> list[Migration]:
+        folders = self.schema.make_migration(str(self.directory), name, empty, self.online, baseline)
         return [Migration(f, self.directory / f) for f in folders]
 
     def squash(self, *, to: str, name: str | None = None) -> Migration:
@@ -193,7 +196,7 @@ async def pull(db: Database) -> Pulled:
     """Reads the database ``db`` connects to (Postgres: its current schema) as a schema
     file, and checks the result by creating it again in a shadow schema that is rolled
     back (SQLite: an in-memory database)."""
-    schema, gaps, steps, views = await db._engine.pull_schema()
+    schema, gaps, steps, views = await db._engine.pull_schema(resolve_extensions())
     return Pulled(schema, gaps, [Step(*step) for step in steps], dict(views))
 
 
@@ -378,7 +381,7 @@ class Migrator:
         schema when the directory has none. Fails once any migration is applied."""
         if not self.migrations.all():
             await self.status()  # fails first if the database has applied migrations
-            self.migrations.make()
+            self.migrations._make(None, False, True)
         name = await self.db._engine.migrate_baseline(self._dir)
         return Migration(name, self.migrations.directory / name)
 

@@ -37,6 +37,9 @@ kind = "string"
 kind = "string"
 [attributes.arguments.map]
 kind = "string"
+# The name of a database rule that the triggers replace: `pull` writes it, and the first migration after `baseline` drops it.
+[attributes.arguments.rule]
+kind = "string"
 
 # The field form; the pass rejects it with the model attribute to write instead.
 [[attributes]]
@@ -44,6 +47,16 @@ name = "soft_delete.deleted_at"
 target = "field"
 [attributes.arguments.mode]
 kind = "string"
+
+# The `ON DELETE DO INSTEAD` rules that `pull` reads as `@@soft_delete.deleted_at`, in the text PostgreSQL deparses.
+# The first is the guitars rule, with its `rules.hard_deletion` bypass; the second is the plain rule.
+[[rule_claims]]
+attribute = "soft_delete.deleted_at"
+rule_argument = "rule"
+patterns = [
+  "CREATE RULE {rule} AS ON DELETE TO public.{table} WHERE (COALESCE(current_setting('rules.hard_deletion'::text, true), ''::text) <> 'on'::text) DO INSTEAD UPDATE {table} SET {column} = now() WHERE (({table}.{key} = old.{key}) AND ({table}.{column} IS NULL));",
+  "CREATE RULE {rule} AS ON DELETE TO public.{table} DO INSTEAD UPDATE {table} SET {column} = now() WHERE ({table}.{key} = old.{key});",
+]
 
 # `@soft_delete.keep_child_rows` on a relation field with `onDelete: Cascade`: a soft delete of the parent keeps the child rows.
 # Without it, a cascade from a soft-delete model into a model without soft delete fails the schema load.

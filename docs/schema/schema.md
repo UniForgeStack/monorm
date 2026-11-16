@@ -1059,8 +1059,11 @@ migration from the schema would still run. What the schema language cannot say i
 out, printed, and listed at the end of the file as `// gap:` lines:
 
 * rules (`CREATE RULE`; a gap that changes behaviour: a database made from the schema
-  runs the statement that a rule rewrote, for example it deletes rows that a soft-delete
-  rule keeps), row-level security policies, domains, composite and
+  runs the statement that a rule rewrote). A rule that an extension claims is not a gap:
+  a soft-delete rule becomes `@@soft_delete.deleted_at(..., rule: "<name>")`, and the first
+  migration after `baseline` drops it
+  ([moving from guitars](../extensions/schema-extensions.md#moving-from-guitars)).
+  Row-level security policies, domains, composite and
   range types, column collations;
 * tables without a primary key, columns of a type
   without a schema type (`tstzrange`, `interval`, ...);

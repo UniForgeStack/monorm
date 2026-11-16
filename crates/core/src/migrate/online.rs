@@ -114,7 +114,7 @@ fn folder(kind: FolderKind, up: Vec<Step>, down: Vec<Step>, snapshot: DbSchema) 
 /// the folder that validates the constraints. The last folder carries the snapshot of `schema`.
 /// Other than on PostgreSQL, or when nothing moves, this is the one plan of [`super::plan`].
 pub fn plan_online(schema: &Schema, previous: &DbSchema) -> Result<Vec<MigrationPlan>> {
-    let p = super::prepare(schema, previous)?;
+    let p = super::prepare(schema, previous, false)?;
     if p.current.dialect == Dialect::Sqlite {
         return Ok(vec![super::sqlite_plan(previous, p)?]);
     }
