@@ -121,25 +121,51 @@ pub fn prepare(models: &mut [Model], index: &HashMap<String, usize>, r: &Require
     Ok(())
 }
 
-/// A model in an ownership chain accepts no write record: a multi-table write cannot run it on every owner.
-pub fn reject_multi_table(models: &[Model], owners: &[Model], owner_links: &[crate::behavior::PreparedOwnerLink], r: &Requirements) -> Result<()> {
-    let mut records = r.write_assignments.iter().map(|x| (&x.model, &x.field, &x.source))
+/// Write records live on the root of an ownership chain (a composed model). A record that names a model below the
+/// root is an error that names the root. Each composed model then holds the prepared records of its root, with the
+/// field positions of its own field list, so the composed write plan applies them at the root level.
+pub fn resolve_composed(models: &mut [Model], owner_names: &[String], owner_links: &[crate::behavior::PreparedOwnerLink], r: &Requirements) -> Result<()> {
+    if owner_links.is_empty() { return Ok(()); }
+    let root_of = |owner: crate::behavior::OwnerId| {
+        let mut current = owner;
+        while let Some(link) = owner_links.iter().find(|l| l.child == current) { current = link.parent; }
+        current
+    };
+    let composed: Vec<(usize, usize)> = models.iter().enumerate()
+        .filter(|(_, m)| owner_links.iter().any(|l| l.child == m.owner))
+        .filter_map(|(i, m)| {
+            let root_name = &owner_names[root_of(m.owner).0];
+            models.iter().position(|x| &x.ir.name == root_name).map(|root| (i, root))
+        })
+        .collect();
+    let records = r.write_assignments.iter().map(|x| (&x.model, &x.field, &x.source))
         .chain(r.delete_rewrites.iter().map(|x| (&x.model, &x.field, &x.source)))
         .chain(r.instance_guards.iter().map(|x| (&x.model, &x.field, &x.source)))
-        .chain(r.scoped_fields.iter().map(|x| (&x.model, &x.field, &x.source)))
-        .peekable();
-    if records.peek().is_none() { return Ok(()); }
-    let records: Vec<_> = records.collect();
-    for m in models.iter().filter(|m| owner_links.iter().any(|l| l.child == m.owner)) {
-        let mut current = m.owner;
-        loop {
-            let owner = &owners[current.0].ir.name;
-            if let Some((_, field, source)) = records.iter().find(|(model, _, _)| *model == owner) {
-                return Err(format!("model {}: a write record from {source} on {owner}.{field} is not supported in a multi-table model's ownership chain", m.ir.name));
-            }
-            let Some(link) = owner_links.iter().find(|l| l.child == current) else { break };
-            current = link.parent;
+        .chain(r.scoped_fields.iter().map(|x| (&x.model, &x.field, &x.source)));
+    for (model, field, source) in records {
+        if let Some(&(_, root)) = composed.iter().find(|(i, _)| &models[*i].ir.name == model) {
+            return Err(format!("model {model}: a write record from {source} on {model}.{field} is not allowed on a model below the root of its ownership chain; declare it on {}", models[root].ir.name));
         }
+    }
+    for (i, root) in composed {
+        let (assignments, delete_rewrite, scoped, guards) = {
+            let r = &models[root];
+            (r.assignments.clone(), r.delete_rewrite.clone(), r.scoped.clone(), r.guards.clone())
+        };
+        let own = |m: &Model, p: usize| -> Result<usize> {
+            let name = &models[root].fields()[p].name;
+            m.field_pos(name).map_err(|_| format!("model {}: the write records of the root {} name the field {name}, which the model does not have", m.ir.name, models[root].ir.name))
+        };
+        let mut moved = (vec![], delete_rewrite, vec![], vec![]);
+        for a in assignments { let mut a = a; a.field = own(&models[i], a.field)?; moved.0.push(a); }
+        if let Some(d) = moved.1.as_mut() { d.field = own(&models[i], d.field)?; }
+        for s in scoped { let mut s = s; s.field = own(&models[i], s.field)?; moved.2.push(s); }
+        for g in guards { moved.3.push(own(&models[i], g)?); }
+        let m = &mut models[i];
+        m.assignments = moved.0;
+        m.delete_rewrite = moved.1;
+        m.scoped = moved.2;
+        m.guards = moved.3;
     }
     Ok(())
 }

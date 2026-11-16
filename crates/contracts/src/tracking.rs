@@ -50,6 +50,25 @@ pub fn upsert(d: &Declaration) -> Result<UpsertDefault, String> {
     }
 }
 
+/// The root of the composition chain that `model` is a level of; `None` when `model` is a root or stands alone.
+pub fn composed_root(ir: &SchemaIr, model: &str) -> Option<String> {
+    let mut current = model;
+    // A chain is as long as the link list at most, so a cyclic list cannot loop.
+    for _ in 0..=ir.behavior.owner_links.len() {
+        match ir.behavior.owner_links.iter().find(|l| l.child == current) {
+            Some(link) => current = &link.parent,
+            None => return (current != model).then(|| current.to_owned()),
+        }
+    }
+    None
+}
+
+/// The links of every level below `root`, in the order of the link list.
+/// A link names the level table (`child`) that holds the shared key `child_key`.
+pub fn composed_levels<'a>(ir: &'a SchemaIr, root: &str) -> Vec<&'a crate::extension::OwnerLink> {
+    ir.behavior.owner_links.iter().filter(|l| composed_root(ir, &l.child).as_deref() == Some(root)).collect()
+}
+
 /// A tracking model attribute and the default name of the field it adds.
 #[derive(Clone, Copy, Debug)]
 pub struct Tracked {
@@ -254,5 +273,34 @@ mod tests {
         assert_eq!(upsert(&declared(Some(json!("drop")))), Ok(UpsertDefault::Drop));
         assert_eq!(upsert(&declared(Some(json!("pick")))), Ok(UpsertDefault::Pick));
         assert_eq!(upsert(&declared(Some(json!("merge")))), Err("schema.prisma:4:3: @timestamps.updated_at: upsert must be \"drop\" or \"pick\"".into()));
+    }
+
+    /// Manager -> Employee -> Person, and Customer -> Person: two chains with one root.
+    fn chains() -> SchemaIr {
+        let link = |child: &str, parent: &str| json!({"child": child, "parent": parent, "child_key": "id", "parent_key": "id"});
+        serde_json::from_value(json!({
+            "models": [],
+            "behavior": {"schema_contract": 5, "owner_links": [link("Employee", "Person"), link("Manager", "Employee"), link("Customer", "Person")]}
+        })).unwrap()
+    }
+
+    #[test]
+    fn the_root_of_a_composed_level_is_the_top_of_its_chain() {
+        let ir = chains();
+        assert_eq!(composed_root(&ir, "Manager").as_deref(), Some("Person"));
+        assert_eq!(composed_root(&ir, "Employee").as_deref(), Some("Person"));
+        assert_eq!(composed_root(&ir, "Person"), None);
+        assert_eq!(composed_root(&ir, "Other"), None);
+    }
+
+    #[test]
+    fn the_levels_of_a_root_are_every_child_below_it_and_a_cycle_ends() {
+        let ir = chains();
+        let names = |root: &str| composed_levels(&ir, root).iter().map(|l| l.child.as_str()).collect::<Vec<_>>();
+        assert_eq!(names("Person"), ["Employee", "Manager", "Customer"]);
+        assert!(names("Manager").is_empty());
+        let mut cyclic = chains();
+        cyclic.behavior.owner_links[0].parent = "Manager".into();
+        assert_eq!(composed_root(&cyclic, "Manager"), None);
     }
 }

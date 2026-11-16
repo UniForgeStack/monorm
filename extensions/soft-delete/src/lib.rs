@@ -2,7 +2,7 @@
 //! soft-deletes rows instead of deleting them.
 //! Database mode adds row triggers, so a raw `DELETE` soft-deletes too
 //! and the soft delete cascades to soft-delete children.
-use monorm::{dialect::Dialect, extension::{views_keeping, Declaration, ReadDefault}, ir::{ColType, Expr, FieldIr, ModelIr, OnDelete, SchemaIr, TriggerEvent, TriggerIr, TriggerTiming}, sql::ident, tracking::{error, Mode, Tracked}, writes::{AssignValue, DeleteRewrite, WriteAssignment, WriteKind}};
+use monorm::{dialect::Dialect, extension::{views_keeping, Declaration, ReadDefault}, ir::{ColType, Expr, FieldIr, ModelIr, OnDelete, SchemaIr, TriggerEvent, TriggerIr, TriggerTiming}, sql::ident, tracking::{self, composed_root, error, Mode, Tracked}, writes::{AssignValue, DeleteRewrite, WriteAssignment, WriteKind}};
 
 /// The read default that hides soft-deleted rows; `without_defaults("deleted")` bypasses it.
 const SOURCE: &str = "monorm.soft-delete";
@@ -88,10 +88,15 @@ fn lost_children(ir: &SchemaIr) -> Result<(), String> {
     }
     let table = |name: &str| models.iter().find(|m| m.name == name).map(|m| m.table.as_str());
     let soft: Vec<&str> = ir.behavior.delete_rewrites.iter().filter(|d| d.source == SOURCE).filter_map(|d| table(&d.model)).collect();
-    for child in models.iter().filter(|m| !soft.contains(&m.table.as_str())) {
+    // A level of a composed model follows the soft delete of its root: the root row holds the flag for every level.
+    let soft_roots: Vec<&str> = ir.behavior.delete_rewrites.iter().filter(|d| d.source == SOURCE).map(|d| d.model.as_str()).collect();
+    let follows_root = |name: &str| tracking::composed_root(ir, name).is_some_and(|r| soft_roots.contains(&r.as_str()));
+    for child in models.iter().filter(|m| !soft.contains(&m.table.as_str()) && !follows_root(&m.name)) {
         let owner = root(&child.name);
         for r in child.relations.iter().filter(|r| r.foreign_key && r.on_delete == Some(OnDelete::Cascade)) {
             if !table(&r.target).is_some_and(|t| soft.contains(&t)) { continue; }
+            // The link of a level to its parent is the composition itself.
+            if ir.behavior.owner_links.iter().any(|l| l.child == child.name && l.parent == r.target && r.from == [l.child_key.clone()]) { continue; }
             if opt_outs.iter().any(|d| (d.model == child.name || d.model == owner) && d.field.as_deref() == Some(r.name.as_str())) { continue; }
             let (parent, child_name, relation) = (&r.target, &child.name, &r.name);
             let message = format!("{parent} is soft-deleted, but {child_name}.{relation} cascades deletes (onDelete: Cascade) and {child_name} has no soft delete, so a soft delete of {parent} keeps the {child_name} rows; \
@@ -132,18 +137,24 @@ fn delete_trigger(dialect: Dialect, model: &ModelIr, field: &str, version: Optio
     Ok(TriggerIr { name: "soft_delete".into(), timing: TriggerTiming::Before, events: vec![TriggerEvent::Delete], when: Some(when), body: Some(body), ..Default::default() })
 }
 
-type Child = (String, String, Option<String>, Vec<(String, String)>);
+/// A table that a soft delete of a parent reaches. `keys` pairs a foreign key column with the referenced parent column.
+/// A composed level keeps no soft-delete column of its own: `table` is the root table, and `via` names the level table
+/// that holds the foreign key, as `(level table, its key column, the root key column)`.
+struct Child { table: String, soft: String, version: Option<String>, keys: Vec<(String, String)>, via: Option<(String, String, String)> }
 
 /// `AFTER UPDATE OF` the field, when a row becomes soft-deleted: soft-delete the live rows
-/// of each soft-delete child whose relation cascades deletes. A child is
-/// `(table, soft-delete column, version column, [(foreign key column, referenced parent column)])`.
+/// of each soft-delete child whose relation cascades deletes.
 fn cascade_trigger(dialect: Dialect, parent: &ModelIr, field: &str, children: &[Child]) -> Result<TriggerIr, String> {
     let c = ident(column(parent, field)?);
-    let statements: Vec<String> = children.iter().map(|(table, child, version, keys)| {
+    let statements: Vec<String> = children.iter().map(|Child { table, soft, version, keys, via }| {
         let bump = bump(version.as_deref());
-        let (table, child) = (ident(table), ident(child));
+        let (table, soft) = (ident(table), ident(soft));
         let link: Vec<String> = keys.iter().map(|(key, to)| format!("{} = NEW.{}", ident(key), ident(to))).collect();
-        format!("UPDATE {table} SET {child} = NEW.{c}{bump} WHERE {} AND {child} IS NULL", link.join(" AND "))
+        let matched = match via {
+            None => link.join(" AND "),
+            Some((level, level_key, root_key)) => format!("{} IN (SELECT {} FROM {} WHERE {})", ident(root_key), ident(level_key), ident(level), link.join(" AND ")),
+        };
+        format!("UPDATE {table} SET {soft} = NEW.{c}{bump} WHERE {matched} AND {soft} IS NULL")
     }).collect();
     let body = match dialect {
         Dialect::Postgres => format!("BEGIN {}; RETURN NULL; END;", statements.join("; ")),
@@ -188,6 +199,13 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
     for s in &roles {
         ir.behavior.read_defaults.push(ReadDefault { source: SOURCE.into(), name: DEFAULT.into(), model: s.model.clone(),
             filter: Some(live(&s.field)), ..Default::default() });
+        // The levels below a composed root read the root's flag through the join to the root.
+        let levels: Vec<String> = tracking::composed_levels(ir, &s.model).iter().map(|l| l.child.clone()).collect();
+        for child in levels {
+            if roles.iter().any(|r| r.model == child) || ir.behavior.read_defaults.iter().any(|d| d.source == SOURCE && d.model == child) { continue; }
+            ir.behavior.read_defaults.push(ReadDefault { source: SOURCE.into(), name: DEFAULT.into(), model: child,
+                filter: Some(live(&s.field)), ..Default::default() });
+        }
     }
     ir.behavior.delete_rewrites.retain(|d| d.source != SOURCE);
     for s in &roles {
@@ -195,14 +213,33 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
     }
     let dialect = ir.dialect;
     for s in roles.iter().filter(|s| s.mode == Mode::Database && added.contains(&s.model)) {
-        // Children: soft-delete models with a cascading foreign key to this model.
+        // Children: soft-delete models, and the levels of a composed model with a soft-delete root, with a cascading foreign key to this model.
         let mut children = vec![];
         for child in &ir.models {
-            let Some(child_field) = roles.iter().find(|c| c.model == child.name) else { continue };
+            let composed = composed_root(ir, &child.name);
+            let role_model = composed.as_deref().unwrap_or(&child.name);
+            let Some(child_field) = roles.iter().find(|c| c.model == role_model) else { continue };
+            let Some(soft_model) = ir.models.iter().find(|m| m.name == role_model) else { continue };
             for r in child.relations.iter().filter(|r| r.foreign_key && r.target == s.model && r.on_delete == Some(OnDelete::Cascade)) {
-                let keys = r.from.iter().map(|f| Ok(column(child, f)?.to_owned())).collect::<Result<Vec<_>, String>>()?;
-                let version = bumped(&ir.behavior.write_assignments, &child.name).map(|f| column(child, f).map(str::to_owned)).transpose()?;
-                children.push((child.table.clone(), column(child, &child_field.field)?.to_owned(), version, keys, r.to.clone()));
+                // The link of a level to its parent is the composition itself: the root's soft delete covers every level.
+                if ir.behavior.owner_links.iter().any(|l| l.child == child.name && l.parent == r.target && r.from == [l.child_key.clone()]) { continue; }
+                let version = bumped(&ir.behavior.write_assignments, role_model).map(|f| column(soft_model, f).map(str::to_owned)).transpose()?;
+                let mut keys = vec![];
+                let mut holders = std::collections::BTreeSet::new();
+                for f in &r.from {
+                    keys.push(column(child, f)?.to_owned());
+                    holders.insert(ir.behavior.field_storage.iter().find(|m| m.model == child.name && &m.field == f).map_or(child.name.as_str(), |m| m.owner.as_str()));
+                }
+                let via = match (composed.is_some(), holders.iter().next()) {
+                    (true, Some(&holder)) if holder != role_model => {
+                        if holders.len() > 1 { return Err(format!("{}.{}: the foreign key fields of a soft-deleted cascade must sit in one level table", child.name, r.name)); }
+                        let level = ir.behavior.storage.iter().flat_map(|st| &st.models).chain(&ir.models).find(|m| m.name == holder).ok_or_else(|| format!("unknown composition level {holder}"))?;
+                        let key = |m: &ModelIr| m.key_fields().first().map(|f| column(m, f).map(str::to_owned)).unwrap_or_else(|| Err(format!("{} has no primary key", m.name)));
+                        Some((level.table.clone(), key(level)?, key(soft_model)?))
+                    }
+                    _ => None,
+                };
+                children.push((Child { table: soft_model.table.clone(), soft: column(soft_model, &child_field.field)?.to_owned(), version, keys: vec![], via }, keys, r.to.clone()));
             }
         }
         let version = bumped(&ir.behavior.write_assignments, &s.model).map(str::to_owned);
@@ -210,9 +247,9 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
             let version = version.as_deref();
             let mut triggers = vec![delete_trigger(dialect, model, &s.field, version)?];
             if !children.is_empty() {
-                let resolved = children.iter().map(|(t, c, v, keys, to)| {
+                let resolved = children.iter().map(|(child, keys, to)| {
                     let pairs = keys.iter().zip(to).map(|(k, to)| Ok((k.clone(), column(model, to)?.to_owned()))).collect::<Result<Vec<_>, String>>()?;
-                    Ok((t.clone(), c.clone(), v.clone(), pairs))
+                    Ok(Child { table: child.table.clone(), soft: child.soft.clone(), version: child.version.clone(), keys: pairs, via: child.via.clone() })
                 }).collect::<Result<Vec<_>, String>>()?;
                 triggers.push(cascade_trigger(dialect, model, &s.field, &resolved)?);
             }

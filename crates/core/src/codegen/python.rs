@@ -564,7 +564,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
             writeln!(body, "    def without_defaults(self, *names: Literal[{literal}]) -> Self: ...  # type: ignore[override]").unwrap();
         }
         if view {
-            for method in ["insert", "insert_many", "get_or_insert", "update", "update_many", "attach", "delete"] {
+            for method in ["insert", "insert_many", "get_or_insert", "update", "update_many", "attach", "attach_many", "delete"] {
                 let asyn = if matches!(method, "insert" | "insert_many" | "update" | "update_many") { "" } else { "async " };
                 writeln!(body, "    {asyn}def {method}(self, _view: Never, /, *args: Never, **kwargs: Never) -> Never: ...  # type: ignore[override]").unwrap();
             }
@@ -573,6 +573,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         if attach_names.contains(&&m.ir.name) {
             let key_type = value_type(m.pk_field());
             writeln!(body, "    async def attach(self, parent_id: {key_type}, values: {name}Attach) -> {name}: ...  # type: ignore[override]").unwrap();
+            writeln!(body, "    async def attach_many(self, items: Iterable[tuple[{key_type}, {name}Attach]]) -> list[{name}]: ...  # type: ignore[override]").unwrap();
         }
         writeln!(
             body,

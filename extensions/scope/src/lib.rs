@@ -8,7 +8,7 @@ use monorm::{
     extension::{Declaration, ReadDefault},
     ir::{ColType, ModelIr, PolicyCommand, PolicyIr, RlsIr, SchemaIr, TriggerEvent, TriggerIr, TriggerTiming},
     sql::{column_type, ident, literal},
-    tracking::error,
+    tracking::{composed_levels, error},
     writes::{PublishedScopeKey, ScopedField},
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -146,6 +146,11 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
                 secured.entry(owner).or_default().insert(key.clone(), Key { name, column: column.unwrap_or_else(|| f.column.clone()), sql_type });
             }
             let filter = serde_json::json!({"t": "cmp", "op": "eq", "l": {"t": "col", "path": [], "name": field}, "r": {"t": "scope", "name": key}});
+            // A level below a composed root reads the scope column it inherits from the root.
+            let levels: Vec<String> = composed_levels(ir, &d.model).iter().map(|l| l.child.clone()).collect();
+            for child in levels {
+                read_defaults.push(ReadDefault { source: SOURCE.into(), name: key.clone(), model: child, filter: Some(filter.clone()), ..Default::default() });
+            }
             read_defaults.push(ReadDefault { source: SOURCE.into(), name: key.clone(), model: d.model.clone(), filter: Some(filter), ..Default::default() });
             scoped.push(ScopedField { source: SOURCE.into(), model: d.model.clone(), field, key });
         }

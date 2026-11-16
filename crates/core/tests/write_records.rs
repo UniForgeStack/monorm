@@ -67,40 +67,62 @@ fn neutral_rules_reject_bad_records() {
     assert!(err(json!({"delete_rewrites": [rewrite("ext-a", "nope")]})).contains("nope"));
 }
 
-#[test]
-fn a_composed_chain_rejects_every_write_record() {
+fn composed(records: Value) -> Result<Schema, String> {
     let physical = json!([
-        {"name": "Parent", "table": "parents", "fields": [{"name": "id", "column": "id", "type": "int", "primary_key": true}, {"name": "changed", "column": "changed_at", "type": "date_time"}, {"name": "removed", "column": "removed_at", "type": "date_time", "nullable": true}]},
+        {"name": "Parent", "table": "parents", "fields": [{"name": "id", "column": "id", "type": "int", "primary_key": true}, {"name": "changed", "column": "changed_at", "type": "date_time"}, {"name": "removed", "column": "removed_at", "type": "date_time", "nullable": true}, {"name": "rev", "column": "rev", "type": "int"}]},
         {"name": "Child", "table": "children", "fields": [{"name": "id", "column": "id", "type": "int", "primary_key": true}],
          "relations": [{"name": "parent", "kind": "one", "target": "Parent", "from": "id", "to": "id", "foreign_key": true}]}
     ]);
     let mut logical = physical.clone();
-    logical[1]["fields"].as_array_mut().unwrap().push(json!({"name": "changed", "column": "changed_at", "type": "date_time"}));
-    let build = |records: Value| {
-        let mut behavior = json!({"schema_contract": SCHEMA_CONTRACT, "storage": {"models": physical},
-            "field_storage": [{"model": "Child", "field": "changed", "owner": "Parent", "column": "changed_at"}],
-            "owner_links": [{"child": "Child", "parent": "Parent", "child_key": "id", "parent_key": "id"}]});
-        behavior.as_object_mut().unwrap().extend(records.as_object().unwrap().clone());
-        Schema::from_ir(serde_json::from_value(json!({"models": logical, "behavior": behavior})).unwrap())
-    };
-    assert!(build(json!({})).is_ok());
-    let mut parent = assign("changed", "now", json!(["update"]));
-    parent["model"] = "Parent".into();
-    let err = build(json!({"write_assignments": [parent]})).err().unwrap();
-    assert!(err.contains("write record from ext-a on Parent.changed is not supported in a multi-table model's ownership chain"), "{err}");
-    let rewrite = json!({"source": "ext-b", "model": "Parent", "field": "removed", "guard": {"t": "is_null", "item": {"t": "col", "path": [], "name": "removed"}, "neg": false}});
-    let err = build(json!({"delete_rewrites": [rewrite]})).err().unwrap();
-    assert!(err.contains("write record from ext-b on Parent.removed is not supported in a multi-table model's ownership chain"), "{err}");
-    let err = build(json!({"instance_guards": [{"source": "ext-c", "model": "Parent", "field": "changed"}]})).err().unwrap();
-    assert!(err.contains("write record from ext-c on Parent.changed is not supported in a multi-table model's ownership chain"), "{err}");
-    let mut own = assign("changed", "now", json!(["update"]));
-    own["model"] = "Child".into();
-    let err = build(json!({"write_assignments": [own]})).err().unwrap();
-    assert!(err.contains("write record from ext-a on Child.changed is not supported in a multi-table model's ownership chain"), "{err}");
+    // The logical child lists its own field first, so the inherited positions differ from the root's.
+    let inherited: Vec<Value> = ["changed", "removed", "rev"].iter().map(|n| physical[0]["fields"].as_array().unwrap().iter().find(|f| f["name"] == *n).unwrap().clone()).collect();
+    logical[1]["fields"].as_array_mut().unwrap().extend(inherited.into_iter().rev());
+    let field_storage: Vec<Value> = ["changed", "removed", "rev"].iter().map(|n| json!({"model": "Child", "field": n, "owner": "Parent", "column": physical[0]["fields"].as_array().unwrap().iter().find(|f| f["name"] == *n).unwrap()["column"]})).collect();
+    let mut behavior = json!({"schema_contract": SCHEMA_CONTRACT, "storage": {"models": physical}, "field_storage": field_storage,
+        "owner_links": [{"child": "Child", "parent": "Parent", "child_key": "id", "parent_key": "id"}]});
+    behavior.as_object_mut().unwrap().extend(records.as_object().unwrap().clone());
+    Schema::from_ir(serde_json::from_value(json!({"models": logical, "behavior": behavior})).unwrap())
+}
+
+fn on(model: &str, mut record: Value) -> Value {
+    record["model"] = model.into();
+    record
+}
+
+fn rewrite(model: &str) -> Value {
+    json!({"source": "ext-b", "model": model, "field": "removed", "guard": {"t": "is_null", "item": {"t": "col", "path": [], "name": "removed"}, "neg": false}})
 }
 
 #[test]
-fn a_write_record_on_the_root_of_a_deep_chain_is_found_through_every_link() {
+fn a_composed_chain_holds_the_write_records_of_its_root() {
+    let schema = composed(json!({
+        "write_assignments": [on("Parent", assign("changed", "now", json!(["update"]))), on("Parent", assign("rev", "increment", json!(["update", "delete_rewrite"])))],
+        "delete_rewrites": [rewrite("Parent")],
+        "instance_guards": [{"source": "ext-c", "model": "Parent", "field": "rev"}],
+    })).unwrap();
+    let child = schema.models.iter().find(|m| m.ir.name == "Child").unwrap();
+    let names: Vec<_> = child.assignments.iter().map(|a| child.fields()[a.field].name.as_str()).collect();
+    assert_eq!(names, ["changed", "rev"]);
+    assert_eq!(child.fields()[child.delete_rewrite.as_ref().unwrap().field].name, "removed");
+    assert_eq!(child.guards.iter().map(|&p| child.fields()[p].name.as_str()).collect::<Vec<_>>(), ["rev"]);
+    let root = schema.models.iter().find(|m| m.ir.name == "Parent").unwrap();
+    assert_eq!(root.assignments.len(), 2);
+}
+
+#[test]
+fn a_write_record_below_the_root_names_the_root() {
+    for (records, source) in [
+        (json!({"write_assignments": [on("Child", assign("changed", "now", json!(["update"])))]}), "ext-a"),
+        (json!({"delete_rewrites": [rewrite("Child")]}), "ext-b"),
+        (json!({"instance_guards": [{"source": "ext-c", "model": "Child", "field": "rev"}]}), "ext-c"),
+    ] {
+        let err = composed(records).err().unwrap();
+        assert!(err.contains(&format!("model Child: a write record from {source} on Child.")) && err.contains("below the root") && err.contains("declare it on Parent"), "{err}");
+    }
+}
+
+#[test]
+fn a_write_record_on_the_root_of_a_deep_chain_reaches_every_level() {
     let model = |name: &str, table: &str, parent: Option<(&str, &str)>| {
         let mut m = json!({"name": name, "table": table, "fields": [{"name": "id", "column": "id", "type": "int", "primary_key": true}]});
         if let Some((target, relation)) = parent {
@@ -124,8 +146,11 @@ fn a_write_record_on_the_root_of_a_deep_chain_is_found_through_every_link() {
         Schema::from_ir(serde_json::from_value(json!({"models": logical, "behavior": behavior})).unwrap())
     };
     assert!(build(json!({})).is_ok());
-    let mut root = assign("changed", "now", json!(["update"]));
-    root["model"] = "Grand".into();
-    let err = build(json!({"write_assignments": [root]})).err().unwrap();
-    assert!(err.contains("model Child: a write record from ext-a on Grand.changed is not supported in a multi-table model's ownership chain"), "{err}");
+    let schema = build(json!({"write_assignments": [on("Grand", assign("changed", "now", json!(["update"])))]})).unwrap();
+    for name in ["Child", "Parent", "Grand"] {
+        let m = schema.models.iter().find(|m| m.ir.name == name).unwrap();
+        assert_eq!(m.assignments.len(), 1, "{name}");
+    }
+    let err = build(json!({"write_assignments": [on("Parent", assign("changed", "now", json!(["update"])))]})).err().unwrap();
+    assert!(err.contains("model Parent:") && err.contains("declare it on Grand"), "{err}");
 }

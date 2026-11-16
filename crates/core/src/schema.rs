@@ -421,7 +421,8 @@ impl Schema {
         crate::writes::prepare(&mut models, &model_index, &ir.behavior)?;
         if let (true, Some(packages)) = (behavioral, packages) { crate::hooks::bind(&mut models, &model_index, &ir.behavior, packages)?; }
         let owner_links = crate::ownership::resolve(&mut models, storage.as_deref(), &ir.behavior.field_storage, &ir.behavior.owner_links)?;
-        crate::writes::reject_multi_table(&models, storage.as_ref().map(|s| s.models.as_slice()).unwrap_or(&models), &owner_links, &ir.behavior)?;
+        let owner_names: Vec<String> = storage.as_ref().map(|s| s.models.as_slice()).unwrap_or(&models).iter().map(|m| m.ir.name.clone()).collect();
+        crate::writes::resolve_composed(&mut models, &owner_names, &owner_links, &ir.behavior)?;
         let physical = storage.as_deref();
         validate_views(&ir.behavior, &models, &model_index, physical)?;
         let mut result_checks = Vec::with_capacity(models.len());

@@ -30,6 +30,18 @@ fn trigger(dialect: Dialect, model: &ModelIr, column: &str, roles: &[String]) ->
     Ok(TriggerIr { name: format!("updated_at_{column}"), timing, events: vec![TriggerEvent::Update], when: Some(when), body: Some(body), skippable: Some("timestamps".into()), ..Default::default() })
 }
 
+/// `AFTER UPDATE` of a level table below the root of a composed model: touch the root row, so the root's
+/// trigger sets the one change time. The root update runs the root trigger once, whatever the level.
+fn touch_trigger(dialect: Dialect, level: &ModelIr, key: &str, root: &ModelIr, root_key: &str, column: &str, roles: &[String]) -> Result<TriggerIr, String> {
+    let col = |m: &ModelIr, field: &str| m.fields.iter().find(|f| f.name == field).map(|f| ident(&f.column)).ok_or_else(|| format!("{} has no field {field}", m.name));
+    let (c, root_table, level_key, root_pk) = (ident(column), ident(&root.table), col(level, key)?, col(root, root_key)?);
+    let (when, body) = match dialect {
+        Dialect::Postgres => (monorm::sql::skip_guard("timestamps", roles), format!("BEGIN UPDATE {root_table} SET {c} = now() WHERE {root_pk} = NEW.{level_key}; RETURN NULL; END;")),
+        Dialect::Sqlite => (None, format!("UPDATE {root_table} SET {c} = {SQLITE_NOW} WHERE {root_pk} = NEW.{level_key}")),
+    };
+    Ok(TriggerIr { name: format!("updated_at_{column}_root"), timing: TriggerTiming::After, events: vec![TriggerEvent::Update], when, body: Some(body), skippable: Some("timestamps".into()), ..Default::default() })
+}
+
 pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
     for d in &TRACKED.declarations(ir)? {
         let name = TRACKED.field_name(d)?;
@@ -43,6 +55,18 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
             for model in ir.models_named_mut(&d.model) {
                 let trigger = trigger(dialect, model, &column, &roles)?;
                 model.push_trigger(trigger).map_err(|e| error(d, e))?;
+            }
+            // A composed model: a write to any level table below the root touches the root row.
+            let physical = |name: &str| ir.behavior.storage.iter().flat_map(|s| &s.models).chain(&ir.models).find(|m| m.name == name);
+            let root = physical(&d.model).ok_or_else(|| error(d, "unknown model"))?;
+            let root_key = *root.key_fields().first().ok_or_else(|| error(d, format!("{} has no primary key", d.model)))?;
+            let mut touches = vec![];
+            for link in tracking::composed_levels(ir, &d.model) {
+                let level = physical(&link.child).ok_or_else(|| error(d, format!("unknown composition level {}", link.child)))?;
+                touches.push((link.child.clone(), touch_trigger(dialect, level, &link.child_key, root, root_key, &column, &roles)?));
+            }
+            for (level, trigger) in touches {
+                for model in ir.models_named_mut(&level) { model.push_trigger(trigger.clone()).map_err(|e| error(d, e))?; }
             }
         }
         // A proxy that shares the table but hides the field would leave the column unset on its writes.
@@ -357,6 +381,43 @@ mod tests {
         for i in 0..2000 { db.execute_batch("UPDATE posts SET id = 1").unwrap_or_else(|e| panic!("update {i}: {e}")); }
         let value: String = db.query_row("SELECT changed FROM posts", [], |r| r.get(0)).unwrap();
         assert!(value.len() == 23 && value.as_bytes()[19] == b'.', "{value}");
+    }
+
+    /// A root `Post` and a level `Detail` below it, both on `dialect`, with the root's declaration.
+    fn composed(dialect: &str, mode: &str) -> SchemaIr {
+        let mut ir: SchemaIr = serde_json::from_value(serde_json::json!({
+            "dialect": dialect,
+            "models": [
+                {"name": "Post", "table": "posts", "fields": [{"name": "id", "column": "id", "type": "int", "primary_key": true}]},
+                {"name": "Detail", "table": "details", "fields": [{"name": "id", "column": "id", "type": "int", "primary_key": true}, {"name": "body", "column": "body", "type": "string"}]}
+            ],
+            "behavior": {"schema_contract": 5,
+                "owner_links": [{"child": "Detail", "parent": "Post", "child_key": "id", "parent_key": "id"}],
+                "declarations": [{"attribute": "timestamps.updated_at", "model": "Post", "field": null, "positional": ["changed"], "arguments": {"mode": mode}, "location": {"file": "schema.prisma", "line": 4, "column": 3}}]}
+        })).unwrap();
+        monorm::extension::capture_storage(&mut ir).unwrap();
+        add_fields(&mut ir).unwrap();
+        prepared(&mut ir).unwrap();
+        ir
+    }
+
+    #[test]
+    fn a_level_below_a_composed_root_gets_a_touch_trigger_on_the_root_in_database_mode() {
+        for dialect in ["postgres", "sqlite"] {
+            let ir = composed(dialect, "database");
+            let stored = |name: &str| ir.behavior.storage.as_ref().unwrap().models.iter().find(|m| m.name == name).unwrap().triggers.iter().map(|t| t.name.clone()).collect::<Vec<_>>();
+            assert_eq!(stored("Post"), ["updated_at_changed"], "{dialect}");
+            assert_eq!(stored("Detail"), ["updated_at_changed_root"], "{dialect}");
+            let touch = &ir.behavior.storage.as_ref().unwrap().models.iter().find(|m| m.name == "Detail").unwrap().triggers[0];
+            assert!(touch.body.as_deref().unwrap().contains("UPDATE \"posts\"") || touch.body.as_deref().unwrap().contains("UPDATE posts"), "{:?}", touch.body);
+            assert_eq!(touch.skippable.as_deref(), Some("timestamps"));
+        }
+    }
+
+    #[test]
+    fn application_mode_adds_no_touch_trigger() {
+        let ir = composed("postgres", "application");
+        assert!(ir.behavior.storage.as_ref().unwrap().models.iter().all(|m| m.triggers.is_empty()));
     }
 }
 
