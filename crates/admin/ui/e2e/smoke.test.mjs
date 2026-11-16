@@ -59,6 +59,22 @@ model Paper {
   reviewer    Reviewer? @relation(fields: [reviewer_id], references: [id])
   @@map("papers")
 }
+
+model Album {
+  id     BigInt  @id @default(autoincrement())
+  title  String
+  tracks Track[]
+  @@map("albums")
+}
+
+model Track {
+  id       BigInt @id @default(autoincrement())
+  title    String
+  plays    Int    @default(0)
+  album_id BigInt
+  album    Album  @relation(fields: [album_id], references: [id])
+  @@map("tracks")
+}
 `;
 
 // A custom form: the module default-exports a function from React to a component.
@@ -89,6 +105,8 @@ async def main():
         {"title": "Second", "created_at": at, "author_id": None},
     ])
     await models.Reviewer.objects.insert_many([{"name": f"Rev {n:02d}"} for n in range(1, 26)])
+    (debut,) = await models.Album.objects.insert_many([{"title": "Debut"}]).returning()
+    await models.Track.objects.insert_many([{"title": "Intro", "plays": 1, "album_id": debut.id}])
     await db.close()
 
 asyncio.run(main())
@@ -118,8 +136,11 @@ before(async () => {
   writeFileSync(join(dir, "note-form.js"), NOTE_FORM);
   // Paper: a picker over Reviewer (with a create modal) and a file field in a memory store.
   assert.ok(module.includes("admin.register(Reviewer)") && module.includes("admin.register(Paper)"), "the generated admin.py registers Reviewer and Paper");
+  assert.ok(module.includes("admin.register(Album)") && module.includes("admin.register(Track)"), "the generated admin.py registers Album and Track");
   const withStorage = module
-    .replace("from monorm.admin import Admin\n", "from monorm.admin import Admin\nfrom monorm_file_storage import Registry\nfrom opendal import AsyncOperator\n")
+    .replace("from monorm.admin import Admin\n", "from monorm.admin import Admin, inline\nfrom monorm_file_storage import Registry\nfrom opendal import AsyncOperator\n")
+    // Album: its Track rows as an inline that saves with the album.
+    .replace("admin.register(Album)", 'admin.register(Album, {"inlines": [inline(Track)]})')
     .replace("admin = Admin()", 'admin = Admin(storage=Registry({"media": AsyncOperator("memory")}))')
     .replace("admin.register(Reviewer)", 'admin.register(Reviewer, {"list": {"search": [Reviewer.name]}})')
     .replace("admin.register(Paper)", 'admin.register(Paper, {"relations": {"reviewer": {"create": True}}, "files": {"cover": "media"}})');
@@ -450,6 +471,32 @@ test("pick a record with the autocomplete, create one in a modal, and upload a f
   assert.match(got.headers()["content-disposition"], /^attachment/);
   assert.equal(got.headers()["content-type"], "text/plain");
   assert.equal(await got.text(), "cover bytes");
+  await page.waitForLoadState("networkidle");
+  assert.deepEqual(problems, []);
+  await context.close();
+});
+
+test("change an inline row and add another with the album, in one save", async () => {
+  const { context, page, problems } = await signedIn();
+  await page.goto(`${base}/admin/Album/1/edit`);
+  await page.getByRole("heading", { name: "Change Album" }).waitFor();
+  const tracks = page.locator("details.inline");
+  await tracks.getByText("Tracks", { exact: true }).waitFor();
+  const titles = tracks.getByLabel("Title");
+  assert.equal(await titles.first().inputValue(), "Intro");
+  await titles.first().fill("Intro, revised");
+  await tracks.getByRole("button", { name: "Add row" }).click();
+  await titles.nth(1).fill("Outro");
+  await tracks.getByLabel("Plays").nth(1).fill("7");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.waitForURL(`${base}/admin/Album/1`);
+  // The detail page shows the stored rows.
+  await page.getByRole("cell", { name: "Intro, revised" }).waitFor();
+  await page.getByRole("cell", { name: "Outro" }).waitFor();
+  const stored = await (await context.request.get(`${base}/admin/api/resources/Album/1`)).json();
+  const rows = stored.inlines.tracks.rows.map((r) => JSON.stringify(r.values));
+  assert.equal(rows.length, 2);
+  assert.ok(rows[0].includes("Intro, revised") && rows[1].includes("Outro") && rows[1].includes("7"), rows.join(" | "));
   await page.waitForLoadState("networkidle");
   assert.deepEqual(problems, []);
   await context.close();

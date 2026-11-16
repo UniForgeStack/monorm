@@ -119,3 +119,14 @@ details.section[open] summary { margin-bottom: .75rem; }
 .dialog::backdrop { background: rgb(0 0 0 / 40%); }
 .dialog .form { padding-bottom: 0; }
 .file-now { margin: 0 0 .5rem; }
+
+/* Inlines: the rows of a child model on the form of the parent */
+.inline-table { border-collapse: collapse; width: 100%; margin-bottom: .75rem; }
+.inline-table th, .inline-table td { text-align: left; vertical-align: top; padding: .25rem .5rem .25rem 0; }
+.inline-table th { font-size: .8rem; color: var(--muted); }
+.inline-table input:not([type="checkbox"]), .inline-table select, .inline-table textarea { width: 100%; box-sizing: border-box; padding: .35rem; border: 1px solid var(--line); border-radius: 4px; font: inherit; }
+.inline-removed { opacity: .5; text-decoration: line-through; }
+.inline-actions { display: flex; gap: .5rem; align-items: center; white-space: nowrap; }
+.inline-view { margin-top: 1.5rem; }
+fieldset.section.inline-removed { opacity: .5; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

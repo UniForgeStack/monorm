@@ -4,6 +4,7 @@ import * as api from "./api";
 import { cell, type Zone } from "./format";
 import { ListView, useListState } from "./List";
 import { Link, detailUrl, editUrl, listBack, navigate, newUrl } from "./router";
+import { InlineRowsView } from "./Inlines";
 import { InputFields, inputBody, startInputs, type InputValues } from "./Inputs";
 import { Alert, Bypass, Button, message } from "./ui";
 
@@ -49,6 +50,7 @@ export function DetailPage({ resource, id, zone, site }: { resource: string; id:
           ))}
         </dl>
       )}
+      {!tab && meta && <InlineRowsView meta={meta} rows={d.inlines} zone={zone} />}
     </section>
   );
 }

@@ -112,6 +112,32 @@ export interface Resource {
   inputs?: InputInfo[];
   /** True when host code does the writes of this resource. */
   host_write?: boolean;
+  /** The to-many relations that the page edits in place, for the writes that this user may do. */
+  inlines?: InlineInfo[];
+}
+
+/** An inline: the rows of a to-many relation on the page of the parent. `form`, `sections` and `inputs` are those of the inline page. */
+export interface InlineInfo {
+  name: string;
+  label: string;
+  style: "table" | "stacked";
+  max: number;
+  collapsed: boolean;
+  delete: boolean;
+  /** `with_parent`: the rows go along with the parent save. `row`: each row saves alone. */
+  save: "with_parent" | "row";
+  /** The resource of the row page, when the user may read it. */
+  link: string | null;
+  model: string;
+  fields: Column[];
+  /** The child fields that the parent fixes: the form does not show them. */
+  pins: string[];
+  key: string[];
+  can?: string[];
+  ops?: string[];
+  form?: FormField[];
+  writable?: boolean;
+  read_only_reason?: string | null;
 }
 
 export interface InputInfo {
@@ -180,7 +206,18 @@ export interface Detail {
   values: unknown[];
   flags?: Flags;
   links: { name: string; title: string; resource: string; key: string }[];
+  /** The rows of each inline of the record. */
+  inlines?: Record<string, InlineRows>;
 }
+
+export interface InlineRows {
+  rows: { key: string; values: unknown[]; flags?: Flags }[];
+  truncated: boolean;
+  link: string | null;
+}
+
+/** The inline rows of a parent save, for each inline. An update row and a delete row name the row by its encoded key. */
+export type InlineChanges = Record<string, { create: { set: Values }[]; update: { key: string; set: Values; loaded: Values }[]; delete: { key: string; loaded: Values }[] }>;
 
 export interface User {
   key: unknown;
@@ -289,15 +326,23 @@ export interface Option {
 }
 
 /** Create a record from the fields that the user filled in, and the links of its chips. The answer has the encoded key of the new record. */
-export const create = (resource: string, set: Values, links?: Links, inputs?: Values) =>
-  call<{ key: string }>("POST", `/resources/${encodeURIComponent(resource)}`, { set, ...(links ? { links } : {}), ...(inputs ? { inputs } : {}) });
+export const create = (resource: string, set: Values, links?: Links, inputs?: Values, inlines?: InlineChanges) =>
+  call<{ key: string }>("POST", `/resources/${encodeURIComponent(resource)}`, { set, ...(links ? { links } : {}), ...(inputs ? { inputs } : {}), ...(inlines ? { inlines } : {}) });
 
 /** Change a record: `set` holds only the changed fields, `loaded` the values that the form was loaded with. */
-export const update = (resource: string, key: string, set: Values, loaded: Values, links?: Links, inputs?: Values) =>
-  call<{ key: string; changed: string[] }>("PATCH", recordPath(resource, key), { set, loaded, ...(links ? { links } : {}), ...(inputs ? { inputs } : {}) });
+export const update = (resource: string, key: string, set: Values, loaded: Values, links?: Links, inputs?: Values, inlines?: InlineChanges) =>
+  call<{ key: string; changed: string[] }>("PATCH", recordPath(resource, key), { set, loaded, ...(links ? { links } : {}), ...(inputs ? { inputs } : {}), ...(inlines ? { inlines } : {}) });
 
 export const destroy = (resource: string, key: string, loaded: Values, inputs?: Values) =>
   call<{ key: string }>("DELETE", recordPath(resource, key), inputs ? { loaded, inputs } : { loaded });
+
+const rowPath = (resource: string, key: string, inline: string) => `${recordPath(resource, key)}/inlines/${encodeURIComponent(inline)}`;
+
+/** Row mode: each call writes one row of an inline alone, through the page of the child. */
+export const rowCreate = (resource: string, key: string, inline: string, set: Values) => call<{ key: string }>("POST", rowPath(resource, key, inline), { set });
+export const rowUpdate = (resource: string, key: string, inline: string, row: string, set: Values, loaded: Values) =>
+  call<{ key: string; changed: string[] }>("PATCH", `${rowPath(resource, key, inline)}/${row}`, { set, loaded });
+export const rowDestroy = (resource: string, key: string, inline: string, row: string, loaded: Values) => call<{ key: string }>("DELETE", `${rowPath(resource, key, inline)}/${row}`, { loaded });
 
 /** One page of the picker of a relation field, by keyset: `next` is the cursor of the following page. */
 export function autocomplete(resource: string, rel: string, q: string, cursor?: string) {

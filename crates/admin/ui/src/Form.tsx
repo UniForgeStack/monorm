@@ -4,55 +4,15 @@ import { createPortal } from "react-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Label from "@radix-ui/react-label";
 import * as api from "./api";
-import { cell, type Zone } from "./format";
+import { cell, fromInput, inputType, toInput, type Input, type Zone } from "./format";
 import { Link, detailUrl, editUrl, listBack, navigate, newUrl, useSearch } from "./router";
 import { Chips, FileField, Picker } from "./relations";
+import { InlineSections, planInlines, startInlines, type InlineState } from "./Inlines";
 import { InputFields, inputBody, startInputs, type InputValues } from "./Inputs";
 import { Alert, Button, message } from "./ui";
 
-type Input = string | boolean;
 type Problems = { fields: Record<string, string[]>; form: string[] };
 type Action = "save" | "continue" | "add";
-
-const pad = (n: number) => String(n).padStart(2, "0");
-
-/** The text that the input of a field starts with, from the value that the server sent. */
-function toInput(value: unknown, w: string, zone: Zone): Input {
-  if (w === "checkbox") return value === true;
-  if (value === null || value === undefined) return "";
-  if (w === "json" || w === "list") return JSON.stringify(value);
-  if (w === "datetime" && typeof value === "string") {
-    const d = new Date(/(Z|[+-]\d\d:?\d\d)$/i.test(value) ? value : `${value}Z`);
-    if (Number.isNaN(d.getTime())) return value;
-    if (zone === "utc") return d.toISOString().slice(0, 19);
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-  }
-  return String(value);
-}
-
-const STRINGS = ["text", "textarea", "select", "radio", "email", "url"];
-
-/** The value to send for the text of an input, or a message when the text cannot be a value of the field. */
-function fromInput(input: Input, w: string, nullable: boolean, zone: Zone): { value: unknown } | { error: string } {
-  if (typeof input === "boolean") return { value: input };
-  const text = input.trim();
-  if (STRINGS.includes(w)) {
-    if (text === "" && nullable) return { value: null };
-    return { value: w === "text" || w === "textarea" ? input : text };
-  }
-  if (text === "") return { value: nullable ? null : "" };
-  if (w === "json" || w === "list") {
-    try {
-      return { value: JSON.parse(text) };
-    } catch {
-      return { error: w === "list" ? "Must be a JSON list, like [1, 2]" : "Must be valid JSON" };
-    }
-  }
-  if (w === "datetime") return { value: zone === "local" ? new Date(text).toISOString() : text };
-  return { value: text };
-}
-
-const inputType = (w: string) => (w === "datetime" ? "datetime-local" : w === "date" || w === "email" || w === "url" ? w : "text");
 
 /** The form of a record: the create form, or the edit form with the values that the server sent. */
 export function FormPage({ resource, id, zone, site }: { resource: string; id?: string; zone: Zone; site: api.Site | undefined }) {
@@ -77,7 +37,7 @@ export function FormPage({ resource, id, zone, site }: { resource: string; id?: 
   return (
     <section>
       {head}
-      <FormBody key={`${q.dataUpdatedAt}:${search}`} meta={meta} columns={columns} cells={cells} id={id} zone={zone} site={site} reload={() => q.refetch()} />
+      <FormBody key={`${q.dataUpdatedAt}:${search}`} meta={meta} columns={columns} cells={cells} rows={id === undefined ? undefined : (q.data as api.Detail).inlines} id={id} zone={zone} site={site} reload={() => q.refetch()} />
     </section>
   );
 }
@@ -181,7 +141,7 @@ function CreateDialog({ target, relation, zone, site, done }: { target: api.Reso
 
 type Modal = { done: (key: string) => void; cancel: () => void };
 
-function FormBody({ meta, columns, cells, id, zone, site, reload, modal }: { meta: api.Resource; columns: api.Column[]; cells: Record<string, unknown>; id?: string; zone: Zone; site: api.Site | undefined; reload: () => void; modal?: Modal }) {
+function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }: { meta: api.Resource; columns: api.Column[]; cells: Record<string, unknown>; rows?: Record<string, api.InlineRows>; id?: string; zone: Zone; site: api.Site | undefined; reload: () => void; modal?: Modal }) {
   const client = useQueryClient();
   const creating = id === undefined;
   const fields = (meta.form ?? []).flatMap((f) => {
@@ -200,6 +160,9 @@ function FormBody({ meta, columns, cells, id, zone, site, reload, modal }: { met
   const [busy, setBusy] = useState(false);
   const [ins, setIns] = useState<InputValues>(() => startInputs(meta.inputs));
   const custom = useCustom(meta);
+  // The inline rows: a modal has none, and a custom form does not show them.
+  const inlined = !modal && !meta.form_component;
+  const [inl, setInl] = useState<InlineState>(() => (inlined ? startInlines(meta, rows, zone) : {}));
   // Many-to-many chips: the saved links and the links on the form. The save sends the difference.
   const chipRelations = modal ? [] : (meta.chips ?? []);
   const empty = () => Object.fromEntries(chipRelations.map((r) => [r.name, [] as api.Option[]]));
@@ -248,14 +211,14 @@ function FormBody({ meta, columns, cells, id, zone, site, reload, modal }: { met
   const dirty = (c: api.Column, w: string) => vals[c.label] !== blank(c, w);
 
   /** The one write of both paths. The guard values go along even for a field that the form cannot change. */
-  const send = async (set: api.Values, action: Action, changes?: api.Links): Promise<boolean> => {
+  const send = async (set: api.Values, action: Action, changes?: api.Links, inlines?: api.InlineChanges): Promise<boolean> => {
     const loaded: api.Values = {};
     if (!creating) for (const { column: c } of fields) loaded[c.label] = c.label in uploaded ? uploaded[c.label] : cells[c.label];
     setConflicts({});
     setProblems({ fields: {}, form: [] });
     setBusy(true);
     try {
-      const done = creating ? await api.create(meta.name, set, changes, inputBody(meta.inputs, ins)) : await api.update(meta.name, id, set, loaded, changes, inputBody(meta.inputs, ins));
+      const done = creating ? await api.create(meta.name, set, changes, inputBody(meta.inputs, ins), inlines) : await api.update(meta.name, id, set, loaded, changes, inputBody(meta.inputs, ins), inlines);
       await client.invalidateQueries({ queryKey: ["list"] });
       await client.invalidateQueries({ queryKey: ["count"] });
       await client.invalidateQueries({ queryKey: ["detail"] });
@@ -269,6 +232,7 @@ function FormBody({ meta, columns, cells, id, zone, site, reload, modal }: { met
           setSaved(empty());
           setChips(empty());
           setIns(startInputs(meta.inputs));
+          setInl(startInlines(meta, undefined, zone));
         } else navigate(newUrl(meta.name));
       } else if (action === "continue") {
         if (creating) navigate(editUrl(meta.name, done.key));
@@ -300,9 +264,11 @@ function FormBody({ meta, columns, cells, id, zone, site, reload, modal }: { met
       if ("error" in out) local[c.label] = [out.error];
       else set[c.label] = out.value;
     }
+    const plan = inlined ? planInlines(meta, inl, zone) : { body: undefined, local: {} };
+    Object.assign(local, plan.local);
     setConflicts({});
     if (Object.keys(local).length > 0) return setProblems({ fields: local, form: [] });
-    await send(set, action, links());
+    await send(set, action, links(), plan.body);
   };
   const on = (action: Action) => (e: FormEvent) => {
     e.preventDefault();
@@ -332,7 +298,8 @@ function FormBody({ meta, columns, cells, id, zone, site, reload, modal }: { met
   }
 
   const stale = Object.keys(conflicts).length > 0;
-  const unplaced = Object.keys(problems.fields).filter((n) => !fields.some(({ column }) => column.label === n) && !(meta.inputs ?? []).some((d) => d.name === n));
+  const inlineNames = (meta.inlines ?? []).map((i) => `${i.name}.`);
+  const unplaced = Object.keys(problems.fields).filter((n) => !inlineNames.some((p) => n.startsWith(p)) && !fields.some(({ column }) => column.label === n) && !(meta.inputs ?? []).some((d) => d.name === n));
   const layout = (creating ? meta.sections?.create : meta.sections?.edit) ?? [{ title: null, fields: fields.map(({ column }) => column.label), collapsed: false }];
 
   const input = ({ f, column: c, w }: (typeof fields)[number]) => {
@@ -442,6 +409,7 @@ function FormBody({ meta, columns, cells, id, zone, site, reload, modal }: { met
           {capped.includes(r.name) && <p className="muted">Only the first 200 links show. The others stay as they are.</p>}
         </div>
       ))}
+      {inlined && <InlineSections meta={meta} state={inl} setState={setInl} errors={problems.fields} conflicts={conflicts} zone={zone} site={site} parentKey={id} />}
       <div className="savebar">
         <Button type="submit" disabled={busy}>Save</Button>
         {modal ? (
