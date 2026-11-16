@@ -196,6 +196,45 @@ fn prefill(schema: &Schema, parent: &Resource, tab: &crate::site::Tab) -> Value 
     Value::Array(pairs.collect())
 }
 
+/// The metadata of one inline: how it looks and saves, and the form of its rows without the fields that the parent fixes.
+fn inline(schema: &Schema, inline: &crate::site::Inline) -> Value {
+    let r = &inline.resource;
+    let pins: Vec<&str> = inline.child_to.iter().map(|c| c.label.as_str()).collect();
+    let mut form = crate::write::form_meta(schema, r);
+    if let Some(fields) = form["form"].as_array_mut() {
+        fields.retain(|f| !pins.contains(&f["name"].as_str().unwrap_or_default()));
+    }
+    for part in ["create", "edit"] {
+        if let Some(sections) = form["sections"][part].as_array_mut() {
+            for s in sections.iter_mut() {
+                if let Some(fields) = s["fields"].as_array_mut() {
+                    fields.retain(|f| !pins.contains(&f.as_str().unwrap_or_default()));
+                }
+            }
+            sections.retain(|s| s["fields"].as_array().is_none_or(|f| !f.is_empty()));
+        }
+    }
+    let mut out = json!({
+        "name": inline.name,
+        "label": inline.label,
+        "style": inline.style,
+        "max": inline.max,
+        "collapsed": inline.collapsed,
+        "delete": inline.delete,
+        "save": match inline.save { crate::site::InlineSave::WithParent => "with_parent", crate::site::InlineSave::Row => "row" },
+        "link": inline.link,
+        "model": r.name,
+        "fields": r.detail.iter().map(|c| list_column(schema, r, c)).collect::<Vec<_>>(),
+        "pins": pins,
+        "key": r.key_columns.iter().map(|c| c.label.clone()).collect::<Vec<_>>(),
+        "can": r.can.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
+    });
+    if let (Some(m), Value::Object(form)) = (out.as_object_mut(), form) {
+        m.extend(form);
+    }
+    out
+}
+
 /// The metadata of one resource that does not depend on the user.
 pub fn resource(schema: &Schema, r: &Resource, builds: &AtomicUsize) -> Value {
     builds.fetch_add(1, Ordering::SeqCst);
@@ -218,6 +257,7 @@ pub fn resource(schema: &Schema, r: &Resource, builds: &AtomicUsize) -> Value {
         "filters": r.filters.iter().map(|f| filter(schema, r, f)).collect::<Vec<_>>(),
         "named_filters": r.named_filters.iter().map(|n| json!({"name": n.name, "title": n.label, "default": n.default, "choices": n.choices.iter().map(|c| json!({"name": c.name, "title": c.label})).collect::<Vec<_>>()})).collect::<Vec<_>>(),
         "tabs": r.tabs.iter().map(|t| json!({"name": t.name, "title": r.labels.get(&t.name).cloned().unwrap_or_else(|| humanize(&t.name)), "target": t.target, "prefill": prefill(schema, r, t)})).collect::<Vec<_>>(),
+        "inlines": r.inlines.iter().map(|i| inline(schema, i)).collect::<Vec<_>>(),
         "empty": r.empty,
         "can": r.can.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
     });

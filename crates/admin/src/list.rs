@@ -827,6 +827,71 @@ pub(crate) fn key_filter(resource: &Resource, key: &[Value], binds: &mut Binds) 
     Ok(json!({"t": "and", "items": items}))
 }
 
+/// The scope with one `column = value` filter for each pin: the rows of one parent.
+pub(crate) fn pin_scope(rows: &RowScope, pins: &[(Column, Value)]) -> Result<RowScope, ListError> {
+    let mut out = rows.clone();
+    for (c, v) in pins {
+        out.values.push(json::bind(c.ty.ty, v).map_err(ListError::Bad)?);
+        out.filters.push(json!({"t": "cmp", "op": "eq", "l": col(c), "r": {"t": "param", "i": out.values.len() - 1}}));
+    }
+    Ok(out)
+}
+
+/// One row of an inline: the encoded key, the detail cells and the `can` flags.
+pub struct InlineRow {
+    pub key: String,
+    pub cells: Vec<Value>,
+    pub flags: Value,
+}
+
+/// The detail columns of the rows that the pins fix (`column = value`), in the order of the resource, within `scope`.
+/// With `lock` the select takes the row locks of a write (PostgreSQL only).
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn read_pinned(site: &Site, resource: &Resource, conn: &dyn Executor, target: Target, pins: &[(Column, Value)], scope: &RowScope, limit: usize, lock: bool) -> Result<Vec<InlineRow>, ListError> {
+    let mut binds = Binds::default();
+    let mut filters = Vec::new();
+    for (c, v) in pins {
+        let param = binds.push(json::bind(c.ty.ty, v).map_err(ListError::Bad)?);
+        filters.push(json!({"t": "cmp", "op": "eq", "l": col(c), "r": param}));
+    }
+    filters.extend(scope.push(&mut binds));
+    let model = &site.schema.model(resource.model).ir.name;
+    let mut columns: Vec<Value> = resource.detail.iter().map(|c| json!({"t": "expr", "expr": col(c)})).collect();
+    columns.extend(resource.can.iter().map(|(_, expr)| json!({"t": "expr", "expr": expr})));
+    let mut op = json!({
+        "op": "select",
+        "model": model,
+        "columns": columns,
+        "order": resource.order.iter().map(|o| json!({"expr": col(&o.column), "desc": o.desc})).collect::<Vec<_>>(),
+        "filters": filters,
+        "limit": limit,
+    });
+    if lock && target.dialect == monorm_core::dialect::Dialect::Postgres {
+        op["lock"] = json!({"exclusive": true});
+    }
+    scope.apply(&mut op);
+    let selected = run_select(site, conn, target, op, binds).await?;
+    let key_at: Vec<usize> = resource.key_columns.iter().map(|k| resource.detail.iter().position(|d| d.label == k.label).ok_or_else(|| ListError::Engine(format!("the key {:?} is not a detail column", k.label)))).collect::<Result<_, _>>()?;
+    let mut out = Vec::new();
+    for r in 0..selected.rows.len() {
+        let mut cells = Vec::new();
+        let mut flags = serde_json::Map::new();
+        for (c, ty) in selected.plan.types.iter().enumerate() {
+            let cell = selected.rows.cell(r, c, *ty).map_err(|e| ListError::Engine(e.to_string()))?;
+            let value = json::cell(&site.schema, *ty, cell);
+            match resource.detail.get(c) {
+                Some(_) => cells.push(value),
+                None => {
+                    flags.insert(resource.can[c - resource.detail.len()].0.clone(), json!(value.as_bool().unwrap_or(false)));
+                }
+            }
+        }
+        let key = key::encode(&key_at.iter().map(|&p| cells[p].clone()).collect::<Vec<_>>());
+        out.push(InlineRow { key, cells, flags: Value::Object(flags) });
+    }
+    Ok(out)
+}
+
 /// The detail columns of the record with this key, as JSON cells, or none when no row has the key.
 pub async fn detail(site: &Site, resource: &Resource, conn: &dyn Executor, target: Target, key: &[Value], scope: &RowScope) -> Result<Option<Record>, ListError> {
     read_record(site, resource, conn, target, key, scope, false).await

@@ -13,7 +13,7 @@ use sea_query::Value;
 use serde_json::{json, Value as Json};
 
 use crate::json;
-use crate::site::{Resource, Site};
+use crate::site::{Inline, Resource, Site};
 use crate::sql::{mark, Table};
 
 /// The site gate: every strategy needs it.
@@ -135,6 +135,18 @@ impl Site {
             for d in &r.bypass {
                 push(bypass_name(r, d));
             }
+            for i in &r.inlines {
+                match (&i.permission, self.strategy) {
+                    (_, Strategy::Access) => {}
+                    (Some(own), _) => push(own.clone()),
+                    (None, Strategy::Model) => {
+                        for verb in ["add", "change", "delete", "view"] {
+                            push(format!("{}.{verb}_{}", i.resource.label, i.resource.key));
+                        }
+                    }
+                    (None, Strategy::Page) => {}
+                }
+            }
         }
         out
     }
@@ -145,6 +157,11 @@ impl Site {
         for r in &self.resources {
             if !out.contains(&r.label) {
                 out.push(r.label.clone());
+            }
+            for i in r.inlines.iter().filter(|i| self.strategy == Strategy::Model && i.permission.is_none()) {
+                if !out.contains(&i.resource.label) {
+                    out.push(i.resource.label.clone());
+                }
             }
         }
         out
@@ -164,6 +181,32 @@ impl Site {
             (Strategy::Model, Op::Delete) => &["delete"],
         };
         names.iter().map(|n| format!("{l}.{n}_{k}")).collect()
+    }
+
+    /// The names of which one is enough for `op` on the rows of `inline`. Empty in the `access` strategy.
+    /// An inline with its own permission reads with the parent and writes with its own name.
+    /// Otherwise the `page` strategy follows the parent, and the `model` strategy asks for the names of the child model.
+    pub fn inline_requires(&self, parent: &Resource, inline: &Inline, op: Op) -> Vec<String> {
+        match (self.strategy, &inline.permission) {
+            (Strategy::Access, _) => Vec::new(),
+            (_, Some(_)) if op == Op::Read => self.requires(parent, Op::Read),
+            (_, Some(own)) => vec![own.clone()],
+            (Strategy::Model, None) => self.requires(&inline.resource, op),
+            (Strategy::Page, None) => self.requires(parent, if op == Op::Create { Op::Update } else { op }),
+        }
+    }
+
+    /// `allow=` of the inline page, then the delete switch, the gate, the read of the parent, and the names of the inline.
+    /// A write of a row also needs the parent to take an update: its `allow=` and its model must not be read-only.
+    pub fn inline_allows(&self, grants: &Grants, parent: &Resource, inline: &Inline, op: Op) -> bool {
+        if !inline.resource.allow.contains(&op) || (op == Op::Delete && !inline.delete) || !self.allows(grants, parent, Op::Read) {
+            return false;
+        }
+        if op != Op::Read && (!parent.allow.contains(&Op::Update) || crate::write::read_only_reason(&self.schema, parent).is_some()) {
+            return false;
+        }
+        let needed = self.inline_requires(parent, inline, op);
+        self.gate(grants) && (needed.is_empty() || grants.has_any(&needed))
     }
 
     /// True when the user passes the site gate.
@@ -192,6 +235,21 @@ impl Site {
                 meta["ops"] = json!([Op::Create, Op::Update, Op::Delete].iter().filter(|o| r.allow.contains(o) && self.allows(grants, r, **o)).map(|o| o.name()).collect::<Vec<_>>());
                 meta["bypass"] = json!(self.bypassable(grants, r));
                 meta["field_permissions"] = json!(r.field_permissions.iter().filter(|f| self.allowed_extra(grants, r, &format!("{}.{f}", r.label))).collect::<Vec<_>>());
+                let shown: Vec<Json> = r
+                    .inlines
+                    .iter()
+                    .zip(r.meta["inlines"].as_array().into_iter().flatten())
+                    .filter(|(i, _)| self.inline_allows(grants, r, i, Op::Read))
+                    .map(|(i, m)| {
+                        let mut m = m.clone();
+                        m["ops"] = json!([Op::Create, Op::Update, Op::Delete].iter().filter(|o| self.inline_allows(grants, r, i, **o)).map(|o| o.name()).collect::<Vec<_>>());
+                        if m["link"].as_str().and_then(|l| self.resource(l)).is_none_or(|l| !self.allows(grants, l, Op::Read)) {
+                            m["link"] = Json::Null;
+                        }
+                        m
+                    })
+                    .collect();
+                meta["inlines"] = Json::Array(shown);
                 meta
             })
             .collect();

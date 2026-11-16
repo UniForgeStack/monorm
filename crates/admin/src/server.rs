@@ -7,7 +7,7 @@ use axum::extract::rejection::QueryRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::{Request, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, patch, post};
 use axum::{Extension, Json, Router};
 use monorm_core::dialect::{Dialect, Target};
 use monorm_engine::db::Executor;
@@ -47,7 +47,9 @@ pub fn api(site: Arc<Site>, conn: Arc<dyn Executor>) -> Router {
 pub fn api_with(site: Arc<Site>, conn: Arc<dyn Executor>, auth: Option<AuthConfig>) -> Router {
     let target = Target::new(conn.dialect());
     let prefix = site.prefix.clone();
-    let routes = Router::new().route("/resources", get(resources)).route("/resources/{name}", get(rows).post(crate::write::create)).route("/resources/{name}/{key}", get(detail).patch(crate::write::update).delete(crate::write::destroy)).route("/resources/{name}/{key}/{rel}", get(tab_rows)).route("/forms/{name}", get(form_module)).route("/counts/{name}", get(counts)).route("/counts/{name}/{key}/{rel}", get(tab_counts)).route("/autocomplete/{name}/{rel}", get(crate::relations::autocomplete)).route("/links/{name}/{key}/{rel}", get(crate::relations::links)).route("/files/{name}/{key}/{field}", get(crate::files::download).post(crate::files::upload));
+    let routes = Router::new().route("/resources", get(resources)).route("/resources/{name}", get(rows).post(crate::write::create)).route("/resources/{name}/{key}", get(detail).patch(crate::write::update).delete(crate::write::destroy)).route("/resources/{name}/{key}/{rel}", get(tab_rows))
+        .route("/resources/{name}/{key}/inlines/{inline}", post(crate::inlinewrite::row_create))
+        .route("/resources/{name}/{key}/inlines/{inline}/{row}", patch(crate::inlinewrite::row_update).delete(crate::inlinewrite::row_destroy)).route("/forms/{name}", get(form_module)).route("/counts/{name}", get(counts)).route("/counts/{name}/{key}/{rel}", get(tab_counts)).route("/autocomplete/{name}/{rel}", get(crate::relations::autocomplete)).route("/links/{name}/{key}/{rel}", get(crate::relations::links)).route("/files/{name}/{key}/{field}", get(crate::files::download).post(crate::files::upload));
     let bridge = auth.clone().map(|a| (a.bridge.clone(), a));
     let extra = auth.map(|auth| auth::routes(auth, site.clone(), conn.clone()));
     let state = Arc::new(State_ { site, conn, target, bridge });
@@ -207,6 +209,15 @@ pub(crate) fn without_of(uri: &Uri) -> Vec<String> {
         }
     }
     out
+}
+
+/// The row scope of a child page inside an inline: the `queryset` filter and the read defaults that read a scope value.
+pub(crate) async fn child_rows(s: &State_, resource: &Resource, user: &User, scope: &Scoped) -> Result<RowScope, ListError> {
+    let mut rows = RowScope { without: resource.scope_defaults.clone(), ..RowScope::default() };
+    if let Some(q) = &resource.queryset {
+        queryset_rows(s, resource, q, user, scope, &mut rows).await?;
+    }
+    Ok(rows)
 }
 
 /// The row scope of one request on `resource`: the `queryset` filter (never bypassed), the read defaults that read a scope value
@@ -648,6 +659,43 @@ pub(crate) fn segment(uri: &Uri, back: usize) -> &str {
 }
 
 
+/// The rows of each inline of the record that the user may read: the child rows that the record fixes, inside the `queryset` of the inline page.
+async fn inline_rows(s: &State_, parent: &Resource, user: &User, grants: &Grants, key: &[Value], parent_reach: &Reach, mut scope: Scoped) -> Result<(Scoped, Value), Box<Response>> {
+    let mut out = serde_json::Map::new();
+    for inline in &parent.inlines {
+        if !s.site.inline_allows(grants, parent, inline, Op::Read) {
+            continue;
+        }
+        let related = s.site.inline_related(inline);
+        let values = match list::parent_values(&s.site, parent, &related, scope.executor(), s.target, key, &parent_reach.rows).await {
+            Ok(Some(v)) => v,
+            Ok(None) => {
+                scope.rollback().await;
+                return Err(Box::new(reject(StatusCode::NOT_FOUND, "NotFound", "no such record")));
+            }
+            Err(e) => {
+                scope.rollback().await;
+                return Err(Box::new(error_response(e)));
+            }
+        };
+        let pins: Vec<_> = inline.child_to.iter().cloned().zip(values).collect();
+        let (next, child_reach) = reach(s, &inline.resource, user, grants, Vec::new(), scope).await?;
+        scope = next;
+        let rows = match list::read_pinned(&s.site, &inline.resource, scope.executor(), s.target, &pins, &child_reach.rows, inline.max + 1, false).await {
+            Ok(r) => r,
+            Err(e) => {
+                scope.rollback().await;
+                return Err(Box::new(error_response(e)));
+            }
+        };
+        let truncated = rows.len() > inline.max;
+        let link = inline.link.as_deref().filter(|l| s.site.resource(l).is_some_and(|t| s.site.allows(grants, t, Op::Read)));
+        let shown: Vec<Value> = rows.into_iter().take(inline.max).map(|r| json!({"key": r.key, "values": r.cells, "flags": r.flags})).collect();
+        out.insert(inline.name.clone(), json!({"rows": shown, "truncated": truncated, "link": link}));
+    }
+    Ok((scope, Value::Object(out)))
+}
+
 /// One record: its fields, and a link to each to-one target that the user may read.
 async fn detail(State(s): Shared, user: Option<Extension<User>>, Path((name, _)): Path<(String, String)>, uri: Uri) -> Response {
     let (user, scope, grants) = match authorize(&s, user).await {
@@ -680,6 +728,10 @@ async fn detail(State(s): Shared, user: Option<Extension<User>>, Path((name, _))
     match list::detail(&s.site, resource, scope.executor(), s.target, &key, &reach.rows).await {
         Ok(Some(record)) => {
             let values = record.cells;
+            let (scope, inlines) = match inline_rows(&s, resource, &user, &grants, &key, &reach, scope).await {
+                Ok(t) => t,
+                Err(r) => return *r,
+            };
             if let Err(e) = scope.commit().await {
                 return database_error(&e.message);
             }
@@ -699,7 +751,7 @@ async fn detail(State(s): Shared, user: Option<Extension<User>>, Path((name, _))
                     Some(json!({"name": l.name, "title": title, "resource": target.name, "key": key::encode(&parts)}))
                 })
                 .collect();
-            Json(json!({"ok": true, "resource": resource.name, "key": raw, "fields": resource.meta["fields"], "values": values, "flags": record.flags, "links": links})).into_response()
+            Json(json!({"ok": true, "resource": resource.name, "key": raw, "fields": resource.meta["fields"], "values": values, "flags": record.flags, "links": links, "inlines": inlines})).into_response()
         }
         Ok(None) => {
             scope.rollback().await;

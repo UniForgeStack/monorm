@@ -206,6 +206,8 @@ pub(crate) struct Prepared {
     pub key: Option<Vec<Value>>,
     /// The detail cells of the record before the write (update, delete).
     pub before: Option<Vec<Value>>,
+    /// The checked change set of the inlines (`with_parent`): the rows the service writes with the record.
+    pub inlines: Option<Value>,
 }
 
 /// A map by form label as a map by field name.
@@ -234,6 +236,7 @@ pub(crate) async fn run(s: &State_, c: Call<'_>, p: Prepared) -> Response {
         "loaded": by_field(resource, &p.loaded),
         "inputs": p.inputs,
         "audit_inputs": audit_inputs(resource, &p.inputs),
+        "inlines": p.inlines,
         "user": user.0,
         "request_id": meta.request_id,
         "ip": meta.ip,
@@ -333,6 +336,9 @@ async fn answer_of(s: &State_, c: Call<'_>, p: Prepared, answer: Value) -> Respo
         extra.insert("inputs".into(), Value::Object(audit_inputs(resource, &p.inputs)));
         extra.insert("allow_protected_writes".into(), Value::Bool(s.site.schema.model(resource.model).ir.protected_write && resource.allow_protected));
         extra.insert("service".into(), Value::Bool(resource.service.get(p.op).is_some()));
+        if let Some(rows) = &p.inlines {
+            extra.insert("inlines".into(), rows.clone());
+        }
         if let Err(m) = write_audit_with(s, &c, op_name(p.op), &key_text, &cells, diff, extra).await {
             let response = server_error(&c.meta, &format!("the write ran but its audit row failed: {m}"));
             c.scope.rollback().await;

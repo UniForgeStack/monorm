@@ -30,6 +30,7 @@ use serde_json::{json, Map, Value};
 use crate::audit::{self, Entry};
 use crate::form::Section;
 use crate::hostwrite::{self, Prepared};
+use crate::inlinewrite;
 use crate::json;
 use crate::key;
 use crate::list::{self, Binds, ListError};
@@ -181,7 +182,12 @@ pub(crate) async fn open_head<'a>(s: &'a State_, user: Option<Extension<User>>, 
 
 /// `open_head`, then the JSON body (400, 413).
 async fn open<'a>(s: &'a State_, user: Option<Extension<User>>, name: &str, op: Op, req: Request) -> Result<Call<'a>, Box<Response>> {
-    let mut c = open_head(s, user, name, op, meta_of(s, &req)).await?;
+    let c = open_head(s, user, name, op, meta_of(s, &req)).await?;
+    read_body(c, req).await
+}
+
+/// The JSON body of a request into the call (400, 413). The call rolls back when the body is wrong.
+pub(crate) async fn read_body<'a>(mut c: Call<'a>, req: Request) -> Result<Call<'a>, Box<Response>> {
     let bytes = match axum::body::to_bytes(req.into_body(), MAX_BODY).await {
         Ok(b) => b,
         Err(_) => {
@@ -205,13 +211,13 @@ async fn open<'a>(s: &'a State_, user: Option<Extension<User>>, name: &str, op: 
 }
 
 impl Call<'_> {
-    async fn bad(self, message: &str) -> Response {
+    pub(crate) async fn bad(self, message: &str) -> Response {
         self.scope.rollback().await;
         reject(StatusCode::BAD_REQUEST, "BadRequest", message)
     }
 
     /// The `set` object: field to value.
-    fn set(&self) -> Result<Map<String, Value>, String> {
+    pub(crate) fn set(&self) -> Result<Map<String, Value>, String> {
         match self.body.get("set") {
             Some(Value::Object(m)) => Ok(m.clone()),
             None if self.body.contains_key("links") => Ok(Map::new()),
@@ -219,7 +225,7 @@ impl Call<'_> {
         }
     }
 
-    fn loaded(&self) -> Map<String, Value> {
+    pub(crate) fn loaded(&self) -> Map<String, Value> {
         match self.body.get("loaded") {
             Some(Value::Object(m)) => m.clone(),
             _ => Map::new(),
@@ -244,7 +250,7 @@ pub(crate) fn list_failure(meta: &Meta, e: ListError) -> Response {
 }
 
 /// The failure of a statement: a constraint becomes a message for a field or the form; anything else a server error.
-fn statement_failure(site: &Site, r: &Resource, meta: &Meta, written: &[String], deleting: bool, e: Error) -> Response {
+pub(crate) fn statement_failure(site: &Site, r: &Resource, meta: &Meta, written: &[String], deleting: bool, e: Error) -> Response {
     if let Error::Db(d) = &e {
         if let Some(p) = constraint_problems(&site.schema, r, written, deleting, d) {
             return p.response();
@@ -483,7 +489,7 @@ pub(crate) fn convert(schema: &Schema, f: &FieldIr, v: &Value) -> Result<Bind, S
 }
 
 /// The fields of a `set`, as bind values. A field that the form does not have, or a message, goes to `problems`.
-fn convert_set(site: &Site, r: &Resource, set: &Map<String, Value>, updating: bool, problems: &mut Problems) -> Vec<(String, Bind)> {
+pub(crate) fn convert_set(site: &Site, r: &Resource, set: &Map<String, Value>, updating: bool, problems: &mut Problems) -> Vec<(String, Bind)> {
     let model = site.schema.model(r.model);
     let mut out = Vec::new();
     for (name, v) in set {
@@ -538,9 +544,15 @@ pub(crate) async fn write_audit(s: &State_, c: &Call<'_>, action: &str, key_text
 
 /// `write_audit` with more keys in `changes`: the inputs and the opt-in of a host write.
 pub(crate) async fn write_audit_with(s: &State_, c: &Call<'_>, action: &str, key_text: &str, cells: &[Value], diff: Value, extra: Map<String, Value>) -> Result<(), String> {
+    write_audit_for(s, c, c.resource, action, key_text, cells, diff, extra).await
+}
+
+/// `write_audit_with` for a resource that is not the page of the call: the child page of an inline row.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn write_audit_for(s: &State_, c: &Call<'_>, resource: &Resource, action: &str, key_text: &str, cells: &[Value], diff: Value, extra: Map<String, Value>) -> Result<(), String> {
     let mut changes = json!({"request_id": c.meta.request_id, "ip": c.meta.ip, "user_agent": c.meta.agent, "diff": diff});
     changes.as_object_mut().expect("an object").extend(extra);
-    let entry = Entry { user_key: &user_key_text(&c.user), action, resource: &c.resource.name, record_key: key_text, record_label: &record_label(c.resource, cells, key_text), changes: Some(changes) };
+    let entry = Entry { user_key: &user_key_text(&c.user), action, resource: &resource.name, record_key: key_text, record_label: &record_label(resource, cells, key_text), changes: Some(changes) };
     audit::record(&s.site, c.scope.executor(), entry).await
 }
 
@@ -605,8 +617,7 @@ fn parse_links<'a>(s: &State_, resource: &'a Resource, body: &Map<String, Value>
 }
 
 /// The picker values of the body that must be rows the list offers: `only` limits them to the changed fields.
-async fn check_picks(s: &State_, c: &Call<'_>, set: &Map<String, Value>, only: Option<&[String]>, problems: &mut Problems) -> Result<(), Response> {
-    let resource = c.resource;
+pub(crate) async fn check_picks(s: &State_, c: &Call<'_>, resource: &Resource, set: &Map<String, Value>, only: Option<&[String]>, problems: &mut Problems) -> Result<(), Response> {
     for relation in resource.relations.iter().filter(|r| !r.field.is_empty()) {
         let Some(col) = resource.detail.iter().find(|d| d.field == relation.field) else { continue };
         let Some(v) = set.get(&col.label).filter(|v| !v.is_null()) else { continue };
@@ -724,6 +735,63 @@ pub(crate) async fn create(State(s): Shared, user: Option<Extension<User>>, Path
         Ok(c) => c,
         Err(r) => return *r,
     };
+    create_in(&s, c, None).await
+}
+
+/// The parent of the rows that an inline route writes: the values that tie a row to it, and the row cap.
+pub(crate) struct Pin {
+    pub(crate) pins: Vec<(Column, Value)>,
+    pub(crate) max: usize,
+}
+
+/// The labels of the pinned fields: the parent sets them, a request never does.
+fn pinned_labels(pin: Option<&Pin>) -> Vec<String> {
+    pin.map(|p| p.pins.iter().map(|(c, _)| c.label.clone()).collect()).unwrap_or_default()
+}
+
+/// A row that would pass the cap of the inline is a form problem.
+async fn check_cap(s: &State_, c: &Call<'_>, p: &Pin, problems: &mut Problems) -> Result<(), Response> {
+    let rows = crate::server::child_rows(s, c.resource, &c.user, &c.scope).await.map_err(|e| list_failure(&c.meta, e))?;
+    let have = list::read_pinned(&s.site, c.resource, c.scope.executor(), s.target, &p.pins, &rows, p.max, false).await.map_err(|e| list_failure(&c.meta, e))?;
+    if have.len() >= p.max {
+        problems.form.push(format!("This list holds at most {} rows.", p.max));
+    }
+    Ok(())
+}
+
+/// The INSERT of one row, with the fixed values of the parent in an inline. The result is the detail cells of the new row. The caller rolls back on an error.
+pub(crate) async fn plain_insert(s: &State_, c: &Call<'_>, resource: &Resource, values: Vec<(String, Bind)>, fixed: &[(Column, Value)]) -> Result<Vec<Value>, Response> {
+    let site = &s.site;
+    let model = site.schema.model(resource.model);
+    let names: Vec<String> = values.iter().map(|(n, _)| n.clone()).collect();
+    let mut fields: Vec<String> = values.iter().filter_map(|(n, _)| resource.detail.iter().find(|d| &d.label == n).map(|d| d.field.clone())).collect();
+    let mut row: Vec<Option<Bind>> = values.into_iter().map(|(_, b)| Some(b)).collect();
+    for (col, v) in fixed {
+        fields.push(col.field.clone());
+        row.push(Some(json::bind(col.ty.ty, v).map_err(|m| server_error(&c.meta, &m))?));
+    }
+    let bypass = if resource.scope_defaults.is_empty() { ir::Bypass::default() } else { ir::Bypass::Names(resource.scope_defaults.clone()) };
+    let planned = exec::plan_inserts(&site.schema, s.target, &model.ir.name, &fields, vec![row], None, &NoParams, None, true, None, &bypass);
+    let outcome = match planned {
+        Ok(plans) => exec::run_inserts(c.scope.executor(), s.target, plans, false, true).await,
+        Err(e) => Err(e),
+    };
+    match outcome {
+        Ok(Outcome::Rows { rows, types, shape: None, .. }) if !rows.is_empty() => {
+            let mut cells = Vec::new();
+            for col in &resource.detail {
+                let cell = model.field_pos(&col.field).map_err(Error::query).and_then(|pos| rows.cell(0, pos, types[pos]).map(|cell| json::cell(&site.schema, types[pos], cell)).map_err(Error::Db));
+                cells.push(cell.map_err(|e| server_error(&c.meta, &e.to_string()))?);
+            }
+            Ok(cells)
+        }
+        Ok(_) => Err(server_error(&c.meta, "the insert returned no row")),
+        Err(e) => Err(statement_failure(site, resource, &c.meta, &names, false, e)),
+    }
+}
+
+/// `create`, with the pins of an inline row.
+pub(crate) async fn create_in(s: &State_, c: Call<'_>, pin: Option<&Pin>) -> Response {
     let set = match c.set() {
         Ok(m) => m,
         Err(m) => return c.bad(&m).await,
@@ -733,7 +801,11 @@ pub(crate) async fn create(State(s): Shared, user: Option<Extension<User>>, Path
     let mut problems = Problems::default();
     let values = convert_set(site, resource, &set, false, &mut problems);
     refuse_files(resource, &set, &mut problems);
-    let links = match parse_links(&s, resource, &c.body, &mut problems) {
+    let pinned = pinned_labels(pin);
+    for label in pinned.iter().filter(|l| set.contains_key(*l)) {
+        problems.field(label, "The parent sets this field.");
+    }
+    let links = match parse_links(s, resource, &c.body, &mut problems) {
         Ok(l) => l,
         Err(m) => return c.bad(&m).await,
     };
@@ -743,15 +815,25 @@ pub(crate) async fn create(State(s): Shared, user: Option<Extension<User>>, Path
         Err(m) => return c.bad(&m).await,
     };
     // A create service may fill a missing value; the plain writer of the host (`admin.write`) cannot.
-    for col in resource.detail.iter().filter(|col| writable(col) && resource.service.get(Op::Create).is_none()) {
+    for col in resource.detail.iter().filter(|col| writable(col) && resource.service.get(Op::Create).is_none() && !pinned.contains(&col.label)) {
         if let Ok(f) = model.field(&col.field) {
             if !f.nullable && !has_default(f) && !set.contains_key(&col.label) {
                 problems.field(&col.label, "This field is required.");
             }
         }
     }
+    if let Some(p) = pin {
+        if let Err(r) = check_cap(s, &c, p, &mut problems).await {
+            c.scope.rollback().await;
+            return r;
+        }
+    }
+    let changes = match inlinewrite::check(s, &c, Op::Create, None, &mut problems).await {
+        Ok(ch) => ch,
+        Err(f) => return inlinewrite::refuse(s, c, f).await,
+    };
     if problems.is_empty() {
-        if let Err(r) = check_picks(&s, &c, &set, None, &mut problems).await {
+        if let Err(r) = check_picks(s, &c, resource, &set, None, &mut problems).await {
             c.scope.rollback().await;
             return r;
         }
@@ -761,42 +843,17 @@ pub(crate) async fn create(State(s): Shared, user: Option<Extension<User>>, Path
         return problems.response();
     }
     if let Some(function) = route {
-        return hostwrite::run(&s, c, Prepared { op: Op::Create, function, values: set, loaded: Map::new(), inputs, key: None, before: None }).await;
+        let mut values = set;
+        for (col, v) in pin.map(|p| p.pins.as_slice()).unwrap_or_default() {
+            values.insert(col.label.clone(), v.clone());
+        }
+        return hostwrite::run(s, c, Prepared { op: Op::Create, function, values, loaded: Map::new(), inputs, key: None, before: None, inlines: (!changes.is_empty()).then(|| changes.json()) }).await;
     }
-    let names: Vec<String> = values.iter().map(|(n, _)| n.clone()).collect();
-    let fields: Vec<String> = values.iter().filter_map(|(n, _)| resource.detail.iter().find(|d| &d.label == n).map(|d| d.field.clone())).collect();
-    let row: Vec<Option<Bind>> = values.into_iter().map(|(_, b)| Some(b)).collect();
-    let bypass = if resource.scope_defaults.is_empty() { ir::Bypass::default() } else { ir::Bypass::Names(resource.scope_defaults.clone()) };
-    let planned = exec::plan_inserts(&site.schema, s.target, &model.ir.name, &fields, vec![row], None, &NoParams, None, true, None, &bypass);
-    let outcome = match planned {
-        Ok(plans) => exec::run_inserts(c.scope.executor(), s.target, plans, false, true).await,
-        Err(e) => Err(e),
-    };
-    let cells = match outcome {
-        Ok(Outcome::Rows { rows, types, shape: None, .. }) if !rows.is_empty() => {
-            let mut cells = Vec::new();
-            for col in &resource.detail {
-                let cell = model.field_pos(&col.field).map_err(Error::query).and_then(|pos| rows.cell(0, pos, types[pos]).map(|cell| json::cell(&site.schema, types[pos], cell)).map_err(Error::Db));
-                match cell {
-                    Ok(v) => cells.push(v),
-                    Err(e) => {
-                        let response = server_error(&c.meta, &e.to_string());
-                        c.scope.rollback().await;
-                        return response;
-                    }
-                }
-            }
-            cells
-        }
-        Ok(_) => {
-            let response = server_error(&c.meta, "the insert returned no row");
+    let cells = match plain_insert(s, &c, resource, values, pin.map(|p| p.pins.as_slice()).unwrap_or_default()).await {
+        Ok(cells) => cells,
+        Err(r) => {
             c.scope.rollback().await;
-            return response;
-        }
-        Err(e) => {
-            let response = statement_failure(site, resource, &c.meta, &names, false, e);
-            c.scope.rollback().await;
-            return response;
+            return r;
         }
     };
     let new_key = key_of(resource, &cells);
@@ -804,7 +861,7 @@ pub(crate) async fn create(State(s): Shared, user: Option<Extension<User>>, Path
     let mut diff: Map<String, Value> = resource.detail.iter().zip(&cells).filter(|(_, v)| !v.is_null()).map(|(d, v)| (d.label.clone(), json!({"from": null, "to": v}))).collect();
     if !links.is_empty() {
         let source = new_key.first().cloned().unwrap_or(Value::Null);
-        match apply_links(&s, &c, &links, &source, &mut problems).await {
+        match apply_links(s, &c, &links, &source, &mut problems).await {
             Ok(d) => diff.extend(d),
             Err(r) => {
                 c.scope.rollback().await;
@@ -816,10 +873,16 @@ pub(crate) async fn create(State(s): Shared, user: Option<Extension<User>>, Path
             return problems.response();
         }
     }
-    if let Err(m) = write_audit(&s, &c, "create", &key_text, &cells, Value::Object(diff)).await {
+    if let Err(m) = write_audit(s, &c, "create", &key_text, &cells, Value::Object(diff)).await {
         let response = server_error(&c.meta, &m);
         c.scope.rollback().await;
         return response;
+    }
+    if !changes.is_empty() {
+        if let Err(r) = inlinewrite::apply(s, &c, &changes, Some(&cells)).await {
+            c.scope.rollback().await;
+            return r;
+        }
     }
     let body = Json(json!({"ok": true, "resource": resource.name, "key": key_text, "values": cells}));
     let response = (StatusCode::CREATED, body).into_response();
@@ -858,7 +921,7 @@ pub(crate) fn conflicts(site: &Site, r: &Resource, cells: &[Value], loaded: &Map
 }
 
 /// The converted fields whose stored value really changes: name, bind value and the new value as the JSON of a cell.
-fn changed_values(site: &Site, r: &Resource, values: Vec<(String, Bind)>, cells: &[Value]) -> Vec<(String, Bind, Value)> {
+pub(crate) fn changed_values(site: &Site, r: &Resource, values: Vec<(String, Bind)>, cells: &[Value]) -> Vec<(String, Bind, Value)> {
     let model = site.schema.model(r.model);
     values
         .into_iter()
@@ -870,7 +933,7 @@ fn changed_values(site: &Site, r: &Resource, values: Vec<(String, Bind)>, cells:
         .collect()
 }
 
-fn conflict_response(map: Map<String, Value>) -> Response {
+pub(crate) fn conflict_response(map: Map<String, Value>) -> Response {
     (StatusCode::CONFLICT, Json(json!({"ok": false, "error": {"kind": "Conflict", "message": "the record changed since the form loaded"}, "conflicts": map}))).into_response()
 }
 
@@ -879,6 +942,11 @@ pub(crate) async fn update(State(s): Shared, user: Option<Extension<User>>, Path
         Ok(c) => c,
         Err(r) => return *r,
     };
+    update_in(&s, c, None).await
+}
+
+/// `update`, inside the pins of an inline row.
+pub(crate) async fn update_in(s: &State_, c: Call<'_>, pin: Option<&Pin>) -> Response {
     let (site, resource) = (&s.site, c.resource);
     let model = site.schema.model(resource.model);
     let set = match c.set() {
@@ -900,7 +968,10 @@ pub(crate) async fn update(State(s): Shared, user: Option<Extension<User>>, Path
     let mut problems = Problems::default();
     let values = convert_set(site, resource, &set, true, &mut problems);
     refuse_files(resource, &set, &mut problems);
-    let links = match parse_links(&s, resource, &c.body, &mut problems) {
+    for label in pinned_labels(pin).iter().filter(|l| set.contains_key(*l)) {
+        problems.field(label, "The parent sets this field.");
+    }
+    let links = match parse_links(s, resource, &c.body, &mut problems) {
         Ok(l) => l,
         Err(m) => return c.bad(&m).await,
     };
@@ -913,11 +984,19 @@ pub(crate) async fn update(State(s): Shared, user: Option<Extension<User>>, Path
         c.scope.rollback().await;
         return problems.response();
     }
-    let (scope, reach) = match reach(&s, resource, &c.user, &c.grants, Vec::new(), c.scope).await {
+    let (scope, reach) = match reach(s, resource, &c.user, &c.grants, Vec::new(), c.scope).await {
         Ok(t) => t,
         Err(r) => return *r,
     };
     let c = Call { scope, ..c };
+    let reach = match pinned_reach(reach, pin) {
+        Ok(r) => r,
+        Err(e) => {
+            let response = list_failure(&c.meta, e);
+            c.scope.rollback().await;
+            return response;
+        }
+    };
     let record = match list::read_record(site, resource, c.scope.executor(), s.target, &key, &reach.rows, true).await {
         Ok(Some(r)) => r,
         Ok(None) => {
@@ -940,8 +1019,12 @@ pub(crate) async fn update(State(s): Shared, user: Option<Extension<User>>, Path
         c.scope.rollback().await;
         return conflict_response(found);
     }
+    let changes = match inlinewrite::check(s, &c, Op::Update, Some((&key, &reach.rows)), &mut problems).await {
+        Ok(ch) => ch,
+        Err(f) => return inlinewrite::refuse(s, c, f).await,
+    };
     if let Some(function) = route {
-        if let Err(r) = check_picks(&s, &c, &set, None, &mut problems).await {
+        if let Err(r) = check_picks(s, &c, resource, &set, None, &mut problems).await {
             c.scope.rollback().await;
             return r;
         }
@@ -949,11 +1032,15 @@ pub(crate) async fn update(State(s): Shared, user: Option<Extension<User>>, Path
             c.scope.rollback().await;
             return problems.response();
         }
-        return hostwrite::run(&s, c, Prepared { op: Op::Update, function, values: set, loaded, inputs, key: Some(key), before: Some(record.cells) }).await;
+        let mut values = set;
+        for (col, v) in pin.map(|p| p.pins.as_slice()).unwrap_or_default() {
+            values.insert(col.label.clone(), v.clone());
+        }
+        return hostwrite::run(s, c, Prepared { op: Op::Update, function, values, loaded, inputs, key: Some(key), before: Some(record.cells), inlines: (!changes.is_empty()).then(|| changes.json()) }).await;
     }
     let changed = changed_values(site, resource, values, &record.cells);
     let changed_names: Vec<String> = changed.iter().map(|(n, _, _)| n.clone()).collect();
-    if let Err(r) = check_picks(&s, &c, &set, Some(&changed_names), &mut problems).await {
+    if let Err(r) = check_picks(s, &c, resource, &set, Some(&changed_names), &mut problems).await {
         c.scope.rollback().await;
         return r;
     }
@@ -961,19 +1048,19 @@ pub(crate) async fn update(State(s): Shared, user: Option<Extension<User>>, Path
         c.scope.rollback().await;
         return problems.response();
     }
-    if changed.is_empty() && links.is_empty() {
+    if changed.is_empty() && links.is_empty() && changes.is_empty() {
         let response = Json(json!({"ok": true, "key": raw, "changed": []})).into_response();
         return finish(c, response).await;
     }
     if !changed.is_empty() {
-        if let Err(r) = run_update(&s, &c, &reach, &key, &changed).await {
+        if let Err(r) = update_rows(s, &c, resource, &reach, &key, &changed).await {
             c.scope.rollback().await;
             return r;
         }
     }
     let mut diff: Map<String, Value> = changed.iter().filter_map(|(n, _, to)| resource.detail.iter().position(|d| &d.label == n).map(|at| (n.clone(), json!({"from": record.cells[at], "to": to})))).collect();
     if !links.is_empty() {
-        match apply_links(&s, &c, &links, &key[0], &mut problems).await {
+        match apply_links(s, &c, &links, &key[0], &mut problems).await {
             Ok(d) => diff.extend(d),
             Err(r) => {
                 c.scope.rollback().await;
@@ -985,11 +1072,17 @@ pub(crate) async fn update(State(s): Shared, user: Option<Extension<User>>, Path
             return problems.response();
         }
     }
+    if !changes.is_empty() {
+        if let Err(r) = inlinewrite::apply(s, &c, &changes, None).await {
+            c.scope.rollback().await;
+            return r;
+        }
+    }
     if diff.is_empty() {
         let response = Json(json!({"ok": true, "key": raw, "changed": []})).into_response();
         return finish(c, response).await;
     }
-    if let Err(m) = write_audit(&s, &c, "update", &raw, &record.cells, Value::Object(diff.clone())).await {
+    if let Err(m) = write_audit(s, &c, "update", &raw, &record.cells, Value::Object(diff.clone())).await {
         let response = server_error(&c.meta, &m);
         c.scope.rollback().await;
         return response;
@@ -1004,8 +1097,12 @@ pub(crate) async fn destroy(State(s): Shared, user: Option<Extension<User>>, Pat
         Ok(c) => c,
         Err(r) => return *r,
     };
+    destroy_in(&s, c, None).await
+}
+
+/// `destroy`, inside the pins of an inline row.
+pub(crate) async fn destroy_in(s: &State_, c: Call<'_>, pin: Option<&Pin>) -> Response {
     let (site, resource) = (&s.site, c.resource);
-    let model = site.schema.model(resource.model);
     let loaded = c.loaded();
     let (raw, key) = match key_of_path(resource, &c.uri) {
         Ok(k) => k,
@@ -1021,11 +1118,19 @@ pub(crate) async fn destroy(State(s): Shared, user: Option<Extension<User>>, Pat
         c.scope.rollback().await;
         return problems.response();
     }
-    let (scope, reach) = match reach(&s, resource, &c.user, &c.grants, Vec::new(), c.scope).await {
+    let (scope, reach) = match reach(s, resource, &c.user, &c.grants, Vec::new(), c.scope).await {
         Ok(t) => t,
         Err(r) => return *r,
     };
     let c = Call { scope, ..c };
+    let reach = match pinned_reach(reach, pin) {
+        Ok(r) => r,
+        Err(e) => {
+            let response = list_failure(&c.meta, e);
+            c.scope.rollback().await;
+            return response;
+        }
+    };
     let record = match list::read_record(site, resource, c.scope.executor(), s.target, &key, &reach.rows, true).await {
         Ok(Some(r)) => r,
         Ok(None) => {
@@ -1048,35 +1153,14 @@ pub(crate) async fn destroy(State(s): Shared, user: Option<Extension<User>>, Pat
         return conflict_response(found);
     }
     if let Some(function) = route {
-        return hostwrite::run(&s, c, Prepared { op: Op::Delete, function, values: Map::new(), loaded, inputs, key: Some(key), before: Some(record.cells) }).await;
+        return hostwrite::run(s, c, Prepared { op: Op::Delete, function, values: Map::new(), loaded, inputs, key: Some(key), before: Some(record.cells), inlines: None }).await;
     }
-    let mut binds = Binds::default();
-    let filter = match list::key_filter(resource, &key, &mut binds) {
-        Ok(f) => f,
-        Err(e) => {
-            let response = list_failure(&c.meta, e);
-            c.scope.rollback().await;
-            return response;
-        }
-    };
-    let mut filters = vec![filter];
-    filters.extend(reach.rows.push(&mut binds));
-    let mut op = json!({"op": "delete", "model": model.ir.name, "filters": filters});
-    reach.rows.apply(&mut op);
-    match run_mutation(site, &c, s.target, op, binds).await {
-        Ok(Outcome::Affected(1)) => {}
-        Ok(_) => {
-            c.scope.rollback().await;
-            return reject(StatusCode::NOT_FOUND, "NotFound", "no such record");
-        }
-        Err(e) => {
-            let response = statement_failure(site, resource, &c.meta, &[], true, e);
-            c.scope.rollback().await;
-            return response;
-        }
+    if let Err(r) = delete_row(s, &c, resource, &reach, &key).await {
+        c.scope.rollback().await;
+        return r;
     }
     let diff: Map<String, Value> = resource.detail.iter().zip(&record.cells).filter(|(_, v)| !v.is_null()).map(|(d, v)| (d.label.clone(), json!({"from": v, "to": null}))).collect();
-    if let Err(m) = write_audit(&s, &c, "delete", &raw, &record.cells, Value::Object(diff)).await {
+    if let Err(m) = write_audit(s, &c, "delete", &raw, &record.cells, Value::Object(diff)).await {
         let response = server_error(&c.meta, &m);
         c.scope.rollback().await;
         return response;
@@ -1087,7 +1171,36 @@ pub(crate) async fn destroy(State(s): Shared, user: Option<Extension<User>>, Pat
 
 /// The UPDATE of the changed fields of one record, with the `queryset` filter and the `can=` rule. The caller rolls back on an error.
 pub(crate) async fn run_update(s: &State_, c: &Call<'_>, reach: &crate::server::Reach, key: &[Value], changed: &[(String, Bind, Value)]) -> Result<(), Response> {
-    let (site, resource) = (&s.site, c.resource);
+    update_rows(s, c, c.resource, reach, key, changed).await
+}
+
+/// The same reach with the pins of an inline row added to its row scope.
+fn pinned_reach(mut reach: crate::server::Reach, pin: Option<&Pin>) -> Result<crate::server::Reach, ListError> {
+    if let Some(p) = pin {
+        reach.rows = list::pin_scope(&reach.rows, &p.pins)?;
+    }
+    Ok(reach)
+}
+
+/// The DELETE of one record, within the row scope of the reach. The caller rolls back on an error.
+pub(crate) async fn delete_row(s: &State_, c: &Call<'_>, resource: &Resource, reach: &crate::server::Reach, key: &[Value]) -> Result<(), Response> {
+    let site = &s.site;
+    let mut binds = Binds::default();
+    let filter = list::key_filter(resource, key, &mut binds).map_err(|e| list_failure(&c.meta, e))?;
+    let mut filters = vec![filter];
+    filters.extend(reach.rows.push(&mut binds));
+    let mut op = json!({"op": "delete", "model": site.schema.model(resource.model).ir.name, "filters": filters});
+    reach.rows.apply(&mut op);
+    match run_mutation(site, c, s.target, op, binds).await {
+        Ok(Outcome::Affected(1)) => Ok(()),
+        Ok(_) => Err(reject(StatusCode::NOT_FOUND, "NotFound", "no such record")),
+        Err(e) => Err(statement_failure(site, resource, &c.meta, &[], true, e)),
+    }
+}
+
+/// The UPDATE of the changed fields of one record of `resource`, as `run_update`.
+pub(crate) async fn update_rows(s: &State_, c: &Call<'_>, resource: &Resource, reach: &crate::server::Reach, key: &[Value], changed: &[(String, Bind, Value)]) -> Result<(), Response> {
+    let site = &s.site;
     let model = site.schema.model(resource.model);
     let mut binds = Binds::default();
     let filter = list::key_filter(resource, key, &mut binds).map_err(|e| list_failure(&c.meta, e))?;
@@ -1110,7 +1223,7 @@ pub(crate) async fn run_update(s: &State_, c: &Call<'_>, reach: &crate::server::
 }
 
 /// Plans and runs an update or a delete on the request transaction.
-async fn run_mutation(site: &Site, c: &Call<'_>, target: monorm_core::dialect::Target, op: Value, binds: Binds) -> Result<Outcome, Error> {
+pub(crate) async fn run_mutation(site: &Site, c: &Call<'_>, target: monorm_core::dialect::Target, op: Value, binds: Binds) -> Result<Outcome, Error> {
     let op: Operation = serde_json::from_value(op).map_err(|e| Error::query(e.to_string()))?;
     let plan = Planner::plan(&site.schema, target, &op, &binds)?;
     exec::run_in(c.scope.executor(), target, plan, false).await

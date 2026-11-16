@@ -13,7 +13,7 @@ use monorm_engine::plan::{Plan, Planner};
 use monorm_engine::params::null_of;
 use monorm_engine::{Params, Result as EngineResult};
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{json, Map, Value};
 
 use crate::form::FormConfig;
 use crate::key;
@@ -146,6 +146,62 @@ struct ResourceConfig {
     /// Json fields that hold an uploaded file: the form uploads and downloads them.
     #[serde(default)]
     files: Vec<String>,
+    /// To-many relations whose rows the detail page edits in place. `Site::build` merges the page of the child into each one.
+    #[serde(default)]
+    inlines: Vec<InlineConfig>,
+}
+
+/// The wrapper of an inline: what a page cannot say. `page` holds the page keys that the wrapper overrides, merged over the registered page of the child model.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InlineConfig {
+    model: String,
+    /// The to-many relation of the parent that leads to the child model. Needed when more than one does.
+    via: Option<String>,
+    /// `with_parent` (default): the rows save with the parent in one change set. `row`: each row saves alone.
+    save: Option<String>,
+    /// The name of a permission (`<label>.<name>`) that replaces the write permission of the parent.
+    permission: Option<String>,
+    /// `table` (default) or `stacked`.
+    style: Option<String>,
+    /// The most rows an inline shows and holds. Default 20, at most 200.
+    max: Option<usize>,
+    label: Option<String>,
+    #[serde(default)]
+    collapsed: bool,
+    /// Whether a row can be deleted. Default true.
+    delete: Option<bool>,
+    page: Option<Box<ResourceConfig>>,
+}
+
+pub const DEFAULT_INLINE_MAX: usize = 20;
+pub const MAX_INLINE_MAX: usize = 200;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InlineSave {
+    WithParent,
+    Row,
+}
+
+/// A to-many relation of a page, shown and edited in place on its detail page: the page of the child with the wrapper settings.
+#[derive(Debug)]
+pub struct Inline {
+    /// The relation name: the name of the inline in the URL and in a change set.
+    pub name: String,
+    pub label: String,
+    pub style: String,
+    pub max: usize,
+    pub collapsed: bool,
+    pub delete: bool,
+    pub save: InlineSave,
+    /// The full name of the own write permission: `<label>.<name>`.
+    pub permission: Option<String>,
+    /// The page of the child model, with the overrides of the wrapper.
+    pub resource: Resource,
+    pub parent_from: Vec<Column>,
+    pub child_to: Vec<Column>,
+    /// The name of the registered page of the child model, when there is one: a row links to it.
+    pub link: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -369,6 +425,8 @@ pub struct Resource {
     pub relations: Vec<crate::relations::Relation>,
     /// The Json fields that hold an uploaded file.
     pub files: Vec<String>,
+    /// The to-many relations that the detail page edits in place.
+    pub inlines: Vec<Inline>,
     tabs_config: Option<Vec<String>>,
     /// Whether the table is large, and when it was read.
     large: Mutex<Option<(Instant, bool)>>,
@@ -488,7 +546,9 @@ impl Site {
         let config: Config = if config_json.trim().is_empty() {
             Config::default()
         } else {
-            serde_json::from_str(config_json).map_err(|e| ConfigError(format!("invalid admin config: {e}")))?
+            let mut value: Value = serde_json::from_str(config_json).map_err(|e| ConfigError(format!("invalid admin config: {e}")))?;
+            merge_inline_pages(&mut value)?;
+            serde_json::from_value(value).map_err(|e| ConfigError(format!("invalid admin config: {e}")))?
         };
         let prefix = normalize_prefix(config.prefix.as_deref().unwrap_or(DEFAULT_PREFIX))?;
         let strategy = match config.permissions.as_deref() {
@@ -538,7 +598,7 @@ impl Site {
                 return err(format!("{}: its page {} is the API prefix", r.name, key::url(&r.name, "").trim_end_matches('/')));
             }
         }
-        let links: Vec<Vec<Link>> = (0..resources.len()).map(|i| links_of(&schema, &resources, i)).collect();
+        let links: Vec<Vec<Link>> = resources.iter().map(|r| links_of(&schema, &resources, r)).collect();
         for (r, l) in resources.iter_mut().zip(links) {
             r.links = l;
         }
@@ -547,8 +607,14 @@ impl Site {
             r.tabs = t;
         }
         for (r, c) in config.resources.iter().enumerate() {
-            let built = crate::relations::build(&schema, &resources, r, &c.relations)?;
+            let built = crate::relations::build(&schema, &resources, &resources[r], &c.relations)?;
             resources[r].relations = built;
+        }
+        if !config.resources.is_empty() {
+            for (i, c) in config.resources.iter().enumerate() {
+                let built = inlines_of(&schema, &resources, i, c, strategy, label, &global, &mut warnings)?;
+                resources[i].inlines = built;
+            }
         }
         for r in &resources {
             for f in &r.filters {
@@ -606,6 +672,11 @@ impl Site {
         self.resources.iter().find(|r| r.name == name)
     }
 
+    /// The rows of an inline of a record: the child rows whose `child_to` equals the `parent_from` of the record.
+    pub fn inline_related<'a>(&self, inline: &'a Inline) -> Related<'a> {
+        Related { child: &inline.resource, parent_from: inline.parent_from.clone(), child_to: inline.child_to.clone() }
+    }
+
     /// The rows of the to-many relation `rel` of a record of `parent`: none when `rel` is not a tab of the resource.
     pub fn plan_related<'a>(&'a self, parent: &Resource, rel: &str) -> Option<Related<'a>> {
         let tab = parent.tabs.iter().find(|t| t.name == rel)?;
@@ -626,6 +697,157 @@ fn field_columns(schema: &Schema, model: usize, names: &[String]) -> Option<Vec<
             column(schema, model, &f.name).ok()
         })
         .collect()
+}
+
+/// Gives each inline the page of its child model: the registered page without its own inlines, with the keys of the wrapper's `page` laid over it, top level key by key.
+fn merge_inline_pages(config: &mut Value) -> Result<(), ConfigError> {
+    let Some(resources) = config.get("resources").and_then(Value::as_array).cloned() else { return Ok(()) };
+    let mut merged = resources.clone();
+    for (r, parent) in resources.iter().enumerate() {
+        let Some(inlines) = parent.get("inlines").and_then(Value::as_array) else { continue };
+        let at = parent.get("model").and_then(Value::as_str).unwrap_or("?");
+        let mut built = Vec::new();
+        for inline in inlines {
+            let Some(model) = inline.get("model").and_then(Value::as_str) else {
+                built.push(inline.clone());
+                continue;
+            };
+            let mut page = resources.iter().find(|p| p.get("model").and_then(Value::as_str) == Some(model)).cloned().unwrap_or_else(|| json!({"model": model}));
+            if let Some(page) = page.as_object_mut() {
+                // A wrapped page does not bring its inlines: an inline is never nested.
+                page.remove("inlines");
+            }
+            let overrides = match inline.get("page") {
+                None | Some(Value::Null) => Map::new(),
+                Some(Value::Object(m)) => m.clone(),
+                Some(_) => return err(format!("{at}: inline {model}: page is an object")),
+            };
+            if overrides.get("inlines").is_some_and(|i| i.as_array().is_none_or(|a| !a.is_empty())) {
+                return err(format!("{at}: inline {model}: an inline has no inlines of its own: inlines are never nested"));
+            }
+            if overrides.get("model").is_some_and(|m| m.as_str() != Some(model)) {
+                return err(format!("{at}: inline {model}: page.model is the model of the inline"));
+            }
+            if let Some(page) = page.as_object_mut() {
+                page.extend(overrides);
+            }
+            let mut inline = inline.clone();
+            inline["page"] = page;
+            built.push(inline);
+        }
+        merged[r]["inlines"] = Value::Array(built);
+    }
+    config["resources"] = Value::Array(merged);
+    Ok(())
+}
+
+/// The to-many relation of `parent` that an inline named: `via`, or the only one that leads to the child model.
+fn inline_relation<'a>(schema: &'a Schema, parent: &Resource, child: usize, via: Option<&str>, at: &str) -> Result<&'a monorm_core::ir::RelationIr, ConfigError> {
+    let pm = schema.model(parent.model);
+    let child_name = &schema.model(child).ir.name;
+    let leads = |rel: &monorm_core::ir::RelationIr| rel.kind == RelKind::Many && rel.through.is_none() && matches!(pm.relation(&rel.name), Ok((_, t)) if t == child);
+    match via {
+        Some(v) => {
+            let Some(rel) = pm.ir.relations.iter().find(|r| r.name == v) else { return err(format!("{at}: via {v:?} is not a relation of {}", parent.name)) };
+            if !leads(rel) {
+                return err(format!("{at}: via {v:?} is not a to-many relation (not a many-to-many) to {child_name}"));
+            }
+            Ok(rel)
+        }
+        None => {
+            let found: Vec<_> = pm.ir.relations.iter().filter(|r| leads(r)).collect();
+            match found.as_slice() {
+                [] => err(format!("{at}: {} has no to-many relation to {child_name}", parent.name)),
+                [one] => Ok(one),
+                many => err(format!("{at}: ambiguous: {} has {} relations to {child_name} ({}): name one with via", parent.name, many.len(), many.iter().map(|r| r.name.as_str()).collect::<Vec<_>>().join(", "))),
+            }
+        }
+    }
+}
+
+/// The inlines of resource `i`: the page of each child with its wrapper, checked.
+#[allow(clippy::too_many_arguments)]
+fn inlines_of(schema: &Schema, resources: &[Resource], i: usize, config: &ResourceConfig, strategy: Strategy, site_label: &str, global: &[(crate::form::Key, String)], warnings: &mut Vec<String>) -> Result<Vec<Inline>, ConfigError> {
+    let parent = &resources[i];
+    let mut out: Vec<Inline> = Vec::new();
+    for c in &config.inlines {
+        let at = format!("{}: inline {}", parent.name, c.model);
+        let child = schema.model_idx(&c.model).map_err(|_| ConfigError(format!("{at}: unknown model")))?;
+        if !concrete(schema.model(child)) {
+            return err(format!("{at}: not a concrete model"));
+        }
+        let rel = inline_relation(schema, parent, child, c.via.as_deref(), &at)?;
+        if out.iter().any(|o| o.name == rel.name) {
+            return err(format!("{at}: the relation {:?} is already an inline of {}", rel.name, parent.name));
+        }
+        let default;
+        let page = match &c.page {
+            Some(p) => p,
+            None => {
+                default = Box::new(ResourceConfig::of(&c.model));
+                &default
+            }
+        };
+        let mut inline_resource = resource(schema, child, page, strategy, site_label, global, warnings)?;
+        if !inline_resource.files.is_empty() {
+            return err(format!("{at}: file fields are not edited in an inline: leave files out of the page of {}", c.model));
+        }
+        let (Some(parent_from), Some(child_to)) = (field_columns(schema, parent.model, &rel.from), field_columns(schema, child, &rel.to)) else {
+            return err(format!("{at}: the relation {:?} needs fields on both sides", rel.name));
+        };
+        let save = match c.save.as_deref() {
+            None | Some("with_parent") => InlineSave::WithParent,
+            Some("row") => InlineSave::Row,
+            Some(other) => return err(format!("{at}: save is {other:?}, not with_parent or row")),
+        };
+        let style = match c.style.as_deref() {
+            None | Some("table") => "table",
+            Some("stacked") => "stacked",
+            Some(other) => return err(format!("{at}: style is {other:?}, not table or stacked")),
+        };
+        let max = c.max.unwrap_or(DEFAULT_INLINE_MAX);
+        if max == 0 || max > MAX_INLINE_MAX {
+            return err(format!("{at}: max is {max}, between 1 and {MAX_INLINE_MAX}"));
+        }
+        let permission = match &c.permission {
+            None => None,
+            Some(_) if strategy == Strategy::Access => return err(format!("{at}: permission needs the page or model strategy")),
+            Some(name) => {
+                check_name(&format!("{at}: permission"), name)?;
+                Some(format!("{}.{name}", parent.label))
+            }
+        };
+        if c.label.as_ref().is_some_and(|l| l.trim().is_empty() || l.chars().count() > 80) {
+            return err(format!("{at}: label has 1 to 80 characters"));
+        }
+        if save == InlineSave::WithParent {
+            let child_host = [Op::Create, Op::Update, Op::Delete].iter().any(|&op| crate::hostwrite::route(schema, &inline_resource, op).is_some());
+            for op in [Op::Create, Op::Update] {
+                match crate::hostwrite::route(schema, parent, op) {
+                    None if child_host => return err(format!("{at}: the page of {} has a service or host behavior, so its rows cannot save in one change set with a parent that writes the plain way: use save \"row\", or a service on {}", c.model, parent.name)),
+                    Some(f) if !f.starts_with("service.") => return err(format!("{at}: {} has host behavior and no service for {}: use save \"row\", or a service", parent.name, crate::hostwrite::op_name(op))),
+                    _ => {}
+                }
+            }
+        }
+        inline_resource.links = links_of(schema, resources, &inline_resource);
+        inline_resource.relations = crate::relations::build(schema, resources, &inline_resource, &page.relations)?;
+        out.push(Inline {
+            name: rel.name.clone(),
+            label: c.label.clone().unwrap_or_else(|| meta::humanize(&rel.name)),
+            style: style.to_owned(),
+            max,
+            collapsed: c.collapsed,
+            delete: c.delete.unwrap_or(true),
+            save,
+            permission,
+            resource: inline_resource,
+            parent_from,
+            child_to,
+            link: resources.iter().find(|r| r.model == child).map(|r| r.name.clone()),
+        });
+    }
+    Ok(out)
 }
 
 /// The tabs of resource `i`: the to-many relations that lead to a resource, and are not a many-to-many.
@@ -679,7 +901,7 @@ fn concrete(m: &monorm_core::schema::Model) -> bool {
 
 impl ResourceConfig {
     fn of(model: &str) -> ResourceConfig {
-        ResourceConfig { model: model.to_owned(), list: ListConfig::default(), allow: None, perms: None, label: None, title: None, group: None, field_permissions: Vec::new(), actions: Vec::new(), queryset: None, can: BTreeMap::new(), check_messages: BTreeMap::new(), service: Default::default(), inputs: Vec::new(), allow_protected_writes: false, host_behavior: false, form: None, readonly: Vec::new(), widgets: BTreeMap::new(), form_component: None, relations: BTreeMap::new(), files: Vec::new() }
+        ResourceConfig { model: model.to_owned(), list: ListConfig::default(), allow: None, perms: None, label: None, title: None, group: None, field_permissions: Vec::new(), actions: Vec::new(), queryset: None, can: BTreeMap::new(), check_messages: BTreeMap::new(), service: Default::default(), inputs: Vec::new(), allow_protected_writes: false, host_behavior: false, form: None, readonly: Vec::new(), widgets: BTreeMap::new(), form_component: None, relations: BTreeMap::new(), files: Vec::new(), inlines: Vec::new() }
     }
 }
 
@@ -873,6 +1095,7 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
         scope_defaults,
         relations: Vec::new(),
         files,
+        inlines: Vec::new(),
         tabs_config: list.tabs.clone(),
         large: Mutex::new(None),
     })
@@ -903,8 +1126,8 @@ fn seen_group(resources: &[Resource], group: &str, until: &str) -> bool {
 }
 
 /// The to-one relations of resource `i` whose `to` columns are exactly the key of another resource.
-fn links_of(schema: &Schema, resources: &[Resource], i: usize) -> Vec<Link> {
-    let model = schema.model(resources[i].model);
+fn links_of(schema: &Schema, resources: &[Resource], r: &Resource) -> Vec<Link> {
+    let model = schema.model(r.model);
     let mut out = Vec::new();
     for rel in &model.ir.relations {
         let Ok((_, target_idx)) = model.relation(&rel.name) else { continue };
@@ -920,7 +1143,7 @@ fn links_of(schema: &Schema, resources: &[Resource], i: usize) -> Vec<Link> {
         let mut from = Vec::new();
         for k in &keys {
             let Some(n) = rel.to.iter().position(|t| *t == k.column || *t == k.name) else { break };
-            let Some(p) = resources[i].detail.iter().position(|d| model.ir.fields.iter().any(|f| f.name == d.field && (f.column == rel.from[n] || f.name == rel.from[n]))) else { break };
+            let Some(p) = r.detail.iter().position(|d| model.ir.fields.iter().any(|f| f.name == d.field && (f.column == rel.from[n] || f.name == rel.from[n]))) else { break };
             from.push(p);
         }
         if from.len() == keys.len() {

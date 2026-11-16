@@ -82,9 +82,8 @@ fn plain_text(c: &Column) -> bool {
     matches!(c.ty.ty, ColType::String | ColType::Text) && !c.ty.array && c.ty.enum_idx.is_none() && c.path.is_empty() && c.source == Source::Field
 }
 
-/// The picker and chip settings of resource `i`, checked against the target resources.
-pub(crate) fn build(schema: &Schema, resources: &[Resource], i: usize, config: &std::collections::BTreeMap<String, RelationConfig>) -> Result<Vec<Relation>, ConfigError> {
-    let r = &resources[i];
+/// The picker and chip settings of a resource, checked against the target resources.
+pub(crate) fn build(schema: &Schema, resources: &[Resource], r: &Resource, config: &std::collections::BTreeMap<String, RelationConfig>) -> Result<Vec<Relation>, ConfigError> {
     let model = schema.model(r.model);
     let mut out = Vec::new();
     for (name, c) in config {
