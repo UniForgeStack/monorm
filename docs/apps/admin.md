@@ -988,6 +988,8 @@ The path prefix is a config value, and the default is `/admin/api`.
 | `POST {prefix}/resources/{name}/{key}/inlines/{inline}`, `PATCH`, `DELETE` on `.../inlines/{inline}/{row}` | Save one row of a `row` inline. See [Inlines](#inlines). |
 | `POST`, `GET {prefix}/files/{name}/{key}/{field}` | Upload a file (multipart) and download it (attachment). |
 | `GET {prefix}/forms/{name}` | The module of a custom form, as `text/javascript` with `cache-control: no-store`; `401`, `403` and `404` as above. See [Custom form component](#custom-form-component). |
+| `GET`, `POST`, `PUT`, `PATCH`, `DELETE` on `{prefix}/routes/{path}` | A custom route of the host. The answer is the JSON or the stream that the route function returns. See [Custom routes](#custom-routes). |
+| `GET {prefix}/packages/{package}/{file}` | A file of an extension package, with its type and `cache-control: no-cache`; `401` and `404` as above. See [Extension packages](#extension-packages). |
 
 A row is an array that follows `columns`.
 `next` is a cursor for the next page, or `null` on the last page.
@@ -1006,6 +1008,131 @@ A date and a time are ISO 8601 with an offset.
 | 504 | The statement timeout cancelled a statement. |
 
 An error body is `{"ok": false, "error": {"kind": "...", "message": "..."}}`.
+
+## Custom routes
+
+`admin.route(method, path, fn)` adds a JSON or stream endpoint of your own at `{prefix}/routes/{path}`.
+The admin runs the session, the CSRF check and the permission check, so a route function never handles a login.
+A request without a session gets `401`.
+A user without `admin.access` or without the `permission` of the route gets `403`.
+
+```python
+from monorm.admin import Reply, Stream
+
+async def summary(ctx, request):
+    row = await Book.objects.using(ctx.database).filter(Book.id == int(request.params["id"])).first()
+    if row is None:
+        return Reply({"error": "no such book"}, status=404)
+    return {"title": row.title}
+
+admin.route("GET", "books/{id}/summary", summary, permission="library.read_summary")
+```
+
+```ts
+import { Reply, Stream } from "monorm/admin";
+
+admin.route("GET", "books/{id}/summary", async (ctx, request) => {
+  const row = await Book.objects.using(ctx.database).filter(Book.id.eq(Number(request.params.id))).first();
+  return row === null ? new Reply({ error: "no such book" }, { status: 404 }) : { title: row.title };
+}, { permission: "library.read_summary" });
+```
+
+- **Method and path.** The method is `GET`, `POST`, `PUT`, `PATCH` or `DELETE`. A path part in braces (`{id}`) matches one segment and appears in `request.params`. The other parts are letters, digits and `_ . ~ -`.
+- **Order.** The route with the most fixed parts wins, so `books/export` beats `books/{id}`. The same method and path twice is a build error. A path with another method gives `405` with the allowed methods; `HEAD` on a `GET` route is another method, so it gives `405` too. A `GET` route skips the CSRF check, so it must not change state: use `POST`, `PUT`, `PATCH` or `DELETE` for a write.
+- **Request.** The function gets `ctx` (the same `Context` as a [service](#services), with `ctx.database` for queries) and a `RouteRequest` with `method`, `path`, `params`, `query` and `body`. `query` maps a name to a string, or to a list when the name repeats. `body` is the JSON body, or `None` (`null`) when it is empty. A body over 1 MiB is a `413`.
+- **Answer.** Return a JSON value, `Reply(json, status=)` for another status code, or `Stream(chunks, content_type=, filename=)`. A value that JSON cannot hold is an error, except dates, times, UUID and Decimal (text) and bytes (base64).
+- **Permission.** `permission` is a full name, `<label>.<name>`. It is part of [`admin.permissions`](#adminpermissions-and-sync-permissions), so `sync-permissions` creates it. A permission needs the page or the model strategy: with the access strategy it is a build error. The build checks the label only, not the name part, so a typo in the name makes a new permission that no role holds. A refused route writes one `permission_denied` audit row; a route that succeeds writes none, so call `ctx.audit()` when it changes data.
+- **Streams.** `chunks` is an iterable or an async iterable of `bytes` or `str`. The admin pulls one chunk at a time, so a slow client slows the producer and no layer holds the whole body. The stream closes when it ends, fails, idles past the export timeout or the client leaves. A failure after the first chunk cuts the response. A sync iterator in Python runs in a worker thread.
+- **Tests.** `admin.test_client` (`admin.testClient`) sends a request to a route as to any other path. See [Test client](#test-client).
+
+## Widget contract
+
+A widget replaces the input of one field.
+It is a module with two exports: `adminMajor` (a number) and a default React component.
+`adminMajor` is the version of this contract, and it is `1`.
+A package that is built for another major version does not load: the build of the site fails with `package "x" is built for admin major 2; this admin is major 1`.
+
+```js
+import { createElement as h } from "react";
+
+export const adminMajor = 1;
+export default function Stars({ id, value, onChange, onError, readOnly, disabled, errors }) {
+  return h("button", { id, type: "button", disabled: readOnly || disabled, onClick: () => onChange((value ?? 0) + 1) }, String(value ?? 0));
+}
+```
+
+| Prop | Value |
+|---|---|
+| `id`, `name` | The id of the input element (a label points at it), and the field name. |
+| `value` | The value of the field as the server sent it (`null` on a new record). |
+| `onChange(value)` | Sets the value that the form sends, any JSON value. The form sends it only when it differs from the loaded value. |
+| `onError(message)` | A message blocks the save and shows with the field. `null` clears it. |
+| `field` | `name`, `title`, `type`, `array`, `required`, `nullable`, `choices` and `max_length`. |
+| `record` | The loaded value of each field of the form. |
+| `readOnly`, `disabled` | The field is read-only, or the form is saving. |
+| `errors` | The messages of the server for this field. |
+| `call(method, path, body?)` | Calls a [custom route](#custom-routes) (`path` is the part after `routes/`) and resolves to the JSON answer. A status of 400 or more throws. |
+| `stream(method, path, body?)` | The same call, but it resolves to the raw `Response`, to read a stream. |
+
+A widget is named `<package>.<widget>` in the `widgets` config, as in `{"widgets": {"stars": "rating.stars"}}` on a resource.
+A name of a package that does not exist is a build error.
+
+The widget contract stays the same inside one major version.
+A new prop or a new field in `field` is not a major change, so a widget must ignore what it does not know.
+
+## Extension packages
+
+An extension package is a directory of `.js`, `.mjs` and `.css` files that the admin serves to its own page.
+It brings widgets, form modules, detail tabs and styles, and a function that also adds routes and actions of its own.
+The admin names no package: the host chooses which ones to add.
+
+```python
+admin.package("rating", Path(__file__).parent / "rating", widgets={"stars": "stars.js"}, tabs={"summary": "summary.js"}, styles=["rating.css"])
+```
+
+```ts
+admin.package("rating", new URL("./rating/", import.meta.url).pathname, { widgets: { stars: "stars.js" }, tabs: { summary: "summary.js" }, styles: ["rating.css"] });
+```
+
+- **Files.** The admin reads the directory once when it builds the site, and it serves only what it read at `GET {prefix}/packages/{package}/{file}` for a signed-in user. No request reads the disk. The limits are 256 files, 1 MiB for one file and 8 MiB in all (design values). A file over a limit is a build error.
+- **Names.** `widgets`, `forms` and `tabs` map a short name to a file of the directory. Outside the package, the name is `<package>.<name>`. A name of a missing file, of a path with `..`, or of a package that is added twice is a build error.
+- **Styles.** `styles` lists `.css` files. The page loads them with the first widget of the package, as `<link>` elements of the same origin, so `style-src 'self'` stays the same.
+- **One React.** A page with packages carries an import map in `<head>`, so `import "react"`, `"react-dom"`, `"react-dom/client"` and `"react/jsx-runtime"` in a module resolve to the React of the admin. The map is an inline script, and `script-src` allows it by its `sha256` hash. A site without packages has no map and the plain policy. Do not bundle a second React.
+- **The policy.** The rest of the policy does not change: `default-src 'none'`, `script-src 'self'` (and the one hash), `frame-ancestors 'none'` and the `X-Frame-Options` header. A package gets no frame and no inline script.
+- **Trust.** A package module is code that every staff user of the admin runs: add only packages that you wrote or reviewed.
+- **The form module.** A form module that exports `adminMajor` is a plain default component with the props of [Custom form component](#custom-form-component). A module without `adminMajor` is the older form: a default function from React to a component, and it works as before.
+
+`GET {prefix}/resources` lists the packages in `packages`, and a resource lists its tabs in `package_tabs`.
+
+### Detail tabs
+
+A resource can show a tab of a package on its detail page, after the tabs of its relations.
+The tab is a component of the page, not a frame.
+It reads its data from a [custom route](#custom-routes).
+
+```python
+admin.register(Movie, {"detail_tabs": ["rating.summary"]})   # TypeScript: detailTabs
+```
+
+The address of the tab is `{base}/Movie/1?tab=rating.summary`.
+The module has the same two exports as a widget, and its default component gets these props:
+
+| Prop | Value |
+|---|---|
+| `resource` | The resource name. |
+| `id` | The key of the record, URL-encoded as in the address. |
+| `record` | The loaded field labels and values of the record. |
+| `call`, `stream` | As for a widget. |
+
+The tab title is the part of the name after the dot, in the same readable form as other titles (`order_notes` is `Order notes`).
+A tab of a package that does not exist is a build error.
+
+### Example
+
+`examples/admin-package` has one package for a `Movie` model with an integer `stars` field: a stars widget, a Summary tab, a route that gives the title and the average, and an action that clears the stars.
+`rating.py` is for a Python project and `rating.mjs` for a TypeScript project, and both serve the same `rating/` directory.
+Each has one function, `install(admin, Movie)`.
+The tests run it through the test client on SQLite and PostgreSQL, and the [browser smoke test](#browser-smoke-test) opens the widget and the tab.
 
 ## The UI
 
@@ -1084,7 +1211,7 @@ Both languages also export `url` at module level for the default admin.
 ### Browser smoke test
 
 `crates/admin/ui/e2e` holds the first browser suite of the repository.
-It starts a real `python -m monorm admin` process on SQLite (it makes a temporary project, migrates, and seeds a user and two rows), signs in, sorts a list, searches it, opens a record, adds, changes and deletes a record through the forms, saves an inline row and a new inline row with their parent, opens a section layout and a custom form, and fails on any console error, CSP violation or failed request.
+It starts a real `python -m monorm admin` process on SQLite (it makes a temporary project, migrates, and seeds a user and two rows), signs in, sorts a list, searches it, opens a record, adds, changes and deletes a record through the forms, saves an inline row and a new inline row with their parent, opens a section layout and a custom form, opens a widget and a detail tab of the example package (it saves through the widget and reads the route of the tab), and fails on any console error, CSP violation or failed request.
 The driver is Playwright (`playwright` 1.65.0, pinned) with `node:test`.
 Playwright downloads a browser, so the install is not part of the default `npm install` of any package.
 Run it from a checkout, with the `monorm` wheel installed in the active Python (`maturin develop`):

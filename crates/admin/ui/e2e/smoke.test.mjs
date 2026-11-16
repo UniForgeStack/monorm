@@ -3,7 +3,7 @@
 // Needs: the `monorm` wheel in the active Python (`maturin develop`), `npm install` and `npm run install-browser` here.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { after, before, test } from "node:test";
@@ -67,6 +67,13 @@ model Ticket {
   @@map("tickets")
 }
 
+model Movie {
+  id    BigInt @id @default(autoincrement())
+  title String
+  stars Int?
+  @@map("movies")
+}
+
 model Album {
   id     BigInt  @id @default(autoincrement())
   title  String
@@ -122,6 +129,7 @@ async def main():
     ])
     await models.Reviewer.objects.insert_many([{"name": f"Rev {n:02d}"} for n in range(1, 26)])
     await models.Ticket.objects.insert_many([{"title": f"Ticket {n}"} for n in range(1, 4)])
+    await models.Movie.objects.insert_many([{"title": "Alpha", "stars": 4}, {"title": "Beta", "stars": 2}])
     (debut,) = await models.Album.objects.insert_many([{"title": "Debut"}]).returning()
     await models.Track.objects.insert_many([{"title": "Intro", "plays": 1, "album_id": debut.id}])
     await db.close()
@@ -155,6 +163,9 @@ before(async () => {
   assert.ok(module.includes("admin.register(Reviewer)") && module.includes("admin.register(Paper)"), "the generated admin.py registers Reviewer and Paper");
   assert.ok(module.includes("admin.register(Ticket)"), "the generated admin.py registers Ticket");
   assert.ok(module.includes("admin.register(Album)") && module.includes("admin.register(Track)"), "the generated admin.py registers Album and Track");
+  assert.ok(module.includes("admin.register(Movie)"), "the generated admin.py registers Movie");
+  // Movie: the example extension package (a stars widget, a Summary tab, a route and an action).
+  cpSync(join(ROOT, "examples", "admin-package"), join(dir, "package"), { recursive: true });
   const withStorage = module
     .replace("from monorm.admin import Admin\n", "from monorm.admin import Admin, inline\nfrom monorm_file_storage import Registry\nfrom opendal import AsyncOperator\n")
     // Album: its Track rows as an inline that saves with the album.
@@ -162,6 +173,7 @@ before(async () => {
     .replace("admin = Admin()", 'admin = Admin(storage=Registry({"media": AsyncOperator("memory")}))')
     .replace("from monorm.admin import Admin, inline\n", "from monorm.admin import Admin, inline, action, message\n")
     .replace("admin.register(Ticket)", TICKET)
+    .replace("admin.register(Movie)", "import sys\nsys.path.insert(0, str(__import__('pathlib').Path(__file__).parent / 'package'))\nfrom rating import install\n\ninstall(admin, Movie)")
     .replace("admin.register(Reviewer)", 'admin.register(Reviewer, {"list": {"search": [Reviewer.name]}})')
     .replace("admin.register(Paper)", 'admin.register(Paper, {"relations": {"reviewer": {"create": True}}, "files": {"cover": "media"}})');
   writeFileSync(join(dir, "admin.py"), withStorage.replace("admin.register(Book)", book).replace("admin.register(Note)", 'admin.register(Note, {"form_component": "note-form.js"})'));
@@ -571,6 +583,30 @@ test("run a bulk action on the selected rows, and on all rows that match", async
   await page.getByRole("button", { name: "Close", exact: true }).click();
   await page.getByRole("alertdialog", { name: "Confirm Close" }).getByRole("button", { name: "Close", exact: true }).click();
   await page.getByRole("status").filter({ hasText: "Closed 3 tickets" }).waitFor();
+  await idle();
+  assert.deepEqual(problems, []);
+  await context.close();
+});
+
+test("a package widget and a package detail tab load under the page policy and call a custom route", async () => {
+  const { context, page, problems, idle } = await signedIn();
+  await page.goto(`${base}/admin/Movie/1/edit`);
+  await page.getByRole("heading", { name: "Change Movie" }).waitFor();
+  // The widget comes from the package file, with the page's own React through the import map.
+  const stars = page.getByRole("group", { name: "Stars" });
+  await stars.waitFor();
+  assert.equal(await stars.getByRole("button", { pressed: true }).count(), 4);
+  await stars.getByRole("button", { name: "5", exact: true }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.waitForURL(`${base}/admin/Movie/1`);
+  const rows = (await (await context.request.get(`${base}/admin/api/resources/Movie`)).json()).rows.map((r) => JSON.stringify(r));
+  assert.ok(rows[0].includes("Alpha") && rows[0].includes("5") && !rows[0].includes("4"), rows.join(" | "));
+  // The tab is a component of the page (no frame) and reads the route `rating/1/summary`.
+  await page.getByRole("tab", { name: "Summary" }).click();
+  await page.waitForURL(`${base}/admin/Movie/1?tab=rating.summary`);
+  await page.getByText("Stars: 5").waitFor();
+  await page.getByText("Average of 2 rated: 3.5").waitFor();
+  assert.equal(await page.locator("iframe").count(), 0);
   await idle();
   assert.deepEqual(problems, []);
   await context.close();

@@ -1,0 +1,4 @@
+.rating-stars button { border: 0; background: none; cursor: pointer; font-size: 1.25rem; }
+.rating-on { color: goldenrod; }
+.rating-off { color: lightgray; }
+.rating-summary { padding: 0.5rem 0; }
