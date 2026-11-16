@@ -804,6 +804,79 @@ The browser never sees a storage URL.
 A new record has no key yet: the form says to save first, then upload.
 A replaced file stays in the storage.
 
+### Inlines
+
+An inline edits the rows of a to-many relation on the form of the parent.
+It wraps the registered page of the child, so the child keeps its fields, form layout, read-only fields, widgets, computed fields, `choices`, `queryset`, `can` rules and services.
+
+```python
+from monorm.admin import inline
+
+admin.register(Order, {"inlines": [inline(OrderLine, max=50, style="table")]})
+admin.register(OrderLine)
+```
+
+In TypeScript, `inline(OrderLine, { max: 50 })` in the `inlines` list.
+A bare model in the list means `inline(Model)`.
+
+The wrapper takes these keys:
+
+| Key | Meaning |
+|---|---|
+| `via` | The relation of the parent. It is required when two relations lead to the child. Two relations with no `via` is an error of `admin.check()`. |
+| `save` | `"with_parent"` (default) sends the rows with the parent in one change set and one transaction. `"row"` saves each row alone through the page of the child. |
+| `permission` | A bare name, for example `"edit_lines"`. The engine makes it `<label>.edit_lines`, and it replaces the write permission of the parent for this inline. |
+| `style` | `"table"` (default) or `"stacked"`. |
+| `max` | The row cap, 1 to 200. The default is 20. |
+| `label`, `collapsed`, `delete` | The title, the collapsed state, and whether a row may be deleted (default yes). |
+| `page` | Page keys that replace the keys of the registered page. A child with no page needs the keys here. |
+
+`page` takes `list`, `queryset`, `can`, `check_messages`, `form`, `readonly`, `widgets`, `relations`, `inputs` and `allow`.
+Other page keys have no meaning for a row, and the build refuses them with a reason: `create`, `update` and `delete` (a service writes one record), `inlines` (an inline is never nested), `files` (a change set carries no file), `title` and `group`, `perms` and `label`, `field_permissions`, `actions`, `form_component` and `allow_protected_writes`.
+The field that points at the parent is fixed by the parent, so a row has no control for it.
+
+An inline is to-many only and is never nested.
+A page with `files` cannot be an inline: the build refuses it, and the files stay on the page of the child.
+The rows of one inline are read and written with the `queryset` of the inline, and a write of a row outside it fails as if the row did not exist.
+On the host path, the registered `queryset` and `can` of the child page also apply to a row write.
+A wrapper `queryset` that is wider than the registered one does not widen the rows: the result is the intersection, and a row outside it fails as if it did not exist.
+
+**`with_parent`.**
+The write of the parent carries `inlines: {name: {"create": [{"set"}], "update": [{"key", "set", "loaded"}], "delete": [key]}}`.
+The admin applies deletes, then updates, then creates, in the transaction of the parent write.
+A conflict or a field error names the row: `{name}.new.{i}.{field}` for a new row and `{name}.{key}.{field}` for a stored row.
+A new parent takes only `create` rows.
+A change of the rows needs the `update` permission of the parent, also with an own `permission`: use `save="row"` for rows that a user may change without it.
+With the `page` strategy and no own `permission`, deleting a row needs the `delete` permission of the parent.
+A service of the parent reads `ctx.inlines` (Python and TypeScript) and writes the child rows itself.
+A parent with host behavior and no service needs `save="row"` or a service: the build says so.
+A child page with a service or host behavior needs `save="row"` or a service on the parent: the build says so.
+
+**`row`.**
+The page of the parent saves, and each row has its own buttons.
+The routes are `POST {prefix}/resources/{name}/{key}/inlines/{inline}` with `{"set"}`, and `PATCH` and `DELETE` on `.../inlines/{inline}/{row}` with `{"set", "loaded"}` and `{"loaded"}`.
+Another inline mode answers `404`.
+A row goes through the write path of the child page, with its audit row.
+The user needs the permission of the inline alone (the own `permission`, or the write permission of the child), and the `read` permission of the parent.
+The parent must also take an update: its `allow` lists `update`, its model is not read-only, and its `change` rule does not lock the record. A failed check answers `403`, and a read-only parent shows no row buttons.
+The own `permission` of the inline differs by mode: `with_parent` also needs the write permission of the parent, `row` does not.
+A new parent has no rows to save yet: the form says to save first.
+
+**Permissions.**
+An inline follows the parent unless it has its own `permission`.
+In the `model` strategy it checks the permissions of the child model.
+A row links to its own page when the user may read the child.
+
+**Audit.**
+On the plain path, each changed child row adds one audit row under the resource of the child page, with `inline` (`Parent.name`) in `changes`, and the parent adds its own row.
+A `row` save adds the same audit row for its row.
+A service writes the audit rows of its child rows itself, with `ctx.audit`.
+
+The detail answer has `inlines: {name: {"rows": [{"key", "values", "flags"}], "truncated", "link"}}`, and the resource list describes each inline (`resources[i].inlines`): its columns, form fields, `ops` and `can` flags for the user.
+The UI shows a table or stacked blocks, with "Add row" (off at the cap), "Remove" and "Delete".
+A problem in a collapsed inline opens it.
+An `admin.input` of the child page has no control in the inline, and a `with_parent` change set carries no inputs: only a `row` save runs the inputs of the child page, through the API.
+
 ## Routes and answers
 
 The path prefix is a config value, and the default is `/admin/api`.
@@ -818,6 +891,7 @@ The path prefix is a config value, and the default is `/admin/api`.
 | `POST`, `PATCH`, `DELETE` on `{prefix}/resources/{name}[/{key}]` | Create, change and delete one record. See [Writes and forms](#writes-and-forms). |
 | `GET {prefix}/autocomplete/{name}/{relation}?q=&cursor=&limit=` | One page of the picker: `items` and `next`. See [Relation fields and files](#relation-fields-and-files). |
 | `GET {prefix}/links/{name}/{key}/{relation}` | The records that a many-to-many relation links: `items` and `truncated`. |
+| `POST {prefix}/resources/{name}/{key}/inlines/{inline}`, `PATCH`, `DELETE` on `.../inlines/{inline}/{row}` | Save one row of a `row` inline. See [Inlines](#inlines). |
 | `POST`, `GET {prefix}/files/{name}/{key}/{field}` | Upload a file (multipart) and download it (attachment). |
 | `GET {prefix}/forms/{name}` | The module of a custom form, as `text/javascript` with `cache-control: no-store`; `401`, `403` and `404` as above. See [Custom form component](#custom-form-component). |
 
@@ -916,7 +990,7 @@ Both languages also export `url` at module level for the default admin.
 ### Browser smoke test
 
 `crates/admin/ui/e2e` holds the first browser suite of the repository.
-It starts a real `python -m monorm admin` process on SQLite (it makes a temporary project, migrates, and seeds a user and two rows), signs in, sorts a list, searches it, opens a record, adds, changes and deletes a record through the forms, opens a section layout and a custom form, and fails on any console error, CSP violation or failed request.
+It starts a real `python -m monorm admin` process on SQLite (it makes a temporary project, migrates, and seeds a user and two rows), signs in, sorts a list, searches it, opens a record, adds, changes and deletes a record through the forms, saves an inline row and a new inline row with their parent, opens a section layout and a custom form, and fails on any console error, CSP violation or failed request.
 The driver is Playwright (`playwright` 1.65.0, pinned) with `node:test`.
 Playwright downloads a browser, so the install is not part of the default `npm install` of any package.
 Run it from a checkout, with the `monorm` wheel installed in the active Python (`maturin develop`):
