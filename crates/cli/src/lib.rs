@@ -19,6 +19,7 @@
 //!   pull [-o FILE] [--force]
 //!   baseline
 //!   drift
+//!   audit
 //! ```
 //!
 //! The schema file and the migrations directory come from `--schema` / `--dir`, else
@@ -99,6 +100,8 @@ const COMMANDS: &str = "  init [dir] [--lang python|typescript] [--tool uv|pip|n
                                            it applied; it does not run (after pull)
   drift                                    compare the database with the last migration's
                                            snapshot; exit 1 if they differ
+  audit                                    compare the row-level security of the database with the
+                                           schema; exit 1 if it differs, warn when the role skips it
 
 The schema and migrations directory come from --schema / --dir, else from the first settings
 file: monorm.toml, [tool.monorm] in pyproject.toml, or \"monorm\" in package.json (the files
@@ -502,7 +505,7 @@ async fn command(argv: &[String], host: Host) -> Result<i32> {
             let m = migrate::find(&migrations_dir(&args, &settings)?, name)?;
             print!("{}", if args.flag("--down") { m.down_sql()? } else { m.up_sql()? });
         }
-        "migrate" | "rollback" | "showmigrations" | "pull" | "baseline" | "drift" => {
+        "migrate" | "rollback" | "showmigrations" | "pull" | "baseline" | "drift" | "audit" => {
             match command {
                 "migrate" => args.allow(command, &["--allow-destructive"], 1)?,
                 "rollback" => args.allow(command, &["--steps", "--to", "--force", "--allow-destructive"], 0)?,
@@ -729,6 +732,27 @@ fn print_gaps(gaps: &[String]) {
     }
 }
 
+/// Whether the schema file compiles and turns row-level security on for a table. A file that does not compile counts as no.
+fn schema_has_row_security(schema: &Path, args: &Args) -> bool {
+    let Ok(installed) = args.installed() else { return false };
+    dsl::compile_project_file_with(schema, &installed).map(|p| p.ir.models.iter().any(|m| m.rls.enabled)).unwrap_or(false)
+}
+
+/// Says so when the connected role skips row-level security (a superuser or a role with `BYPASSRLS`): the policies do not apply to it.
+async fn role_warning(driver: &dyn monorm_engine::db::Executor) -> Option<String> {
+    if driver.dialect() != monorm_core::dialect::Dialect::Postgres {
+        return None;
+    }
+    let rows = driver.query_text("SELECT rolsuper::text, rolbypassrls::text FROM pg_roles WHERE rolname = current_user".into()).await.ok()?;
+    let row = rows.first()?;
+    let on = |i: usize| row.get(i).and_then(|c| c.as_deref()) == Some("true");
+    match (on(0), on(1)) {
+        (true, _) => Some("the connected role is a superuser: row-level security does not apply to it, so run the application as another role".into()),
+        (_, true) => Some("the connected role has BYPASSRLS: row-level security does not apply to it, so run the application as another role".into()),
+        _ => None,
+    }
+}
+
 async fn database(command: &str, args: &Args, dir: &Path, schema: &Path) -> Result<i32> {
     let env = std::env::var("MONORM_DATABASE_URL").ok().filter(|u| !u.is_empty());
     let Some(url) = args.opt(&["--url"]).map(String::from).or(env) else {
@@ -738,6 +762,11 @@ async fn database(command: &str, args: &Args, dir: &Path, schema: &Path) -> Resu
     let result = async {
         match command {
             "migrate" => {
+                if schema_has_row_security(schema, args) {
+                    if let Some(w) = role_warning(&*driver).await {
+                        eprintln!("warning: this schema has row-level security; {w}");
+                    }
+                }
                 let done = migrate::upgrade(&*driver, dir, args.arg(0), args.flag("--allow-destructive")).await?;
                 for m in &done {
                     println!("Applied {}", m.name);
@@ -807,6 +836,22 @@ async fn database(command: &str, args: &Args, dir: &Path, schema: &Path) -> Resu
                     Ok(_) => {}
                     Err(e) => println!("warning: the database was not compared with {}: {e}", m.name),
                 }
+            }
+            "audit" => {
+                let (_, compiled) = load(schema, args)?;
+                let target = files::snapshot(&compiled).map_err(failed)?;
+                let warning = role_warning(&*driver).await;
+                if let Some(w) = &warning {
+                    println!("warning: {w}");
+                }
+                let (steps, _) = introspect::compare_with(&*driver, &target, introspect::Kind::Security).await?;
+                if steps.is_empty() {
+                    println!("The row-level security of the database equals the schema.");
+                    return Ok(0);
+                }
+                println!("The row-level security of the database differs from the schema; a migration to it would:");
+                print_steps(&steps);
+                return Ok(1);
             }
             "drift" => {
                 let found = introspect::drift(&*driver, dir).await?;

@@ -12,6 +12,8 @@
 "languages/python/tests/test_sql_view_typing.py" = "Python type test: mypy and pyright; the twin is the tsc test in sql-view-typing.test.ts"
 
 [python-only.ids]
+# languages/python/tests/test_scope_rls.py
+"scope_rls::audit_names_a_dropped_policy_and_a_forced_flag_that_is_off" = "one-language: Python-only: runs `python -m monorm audit`, the Rust command both hosts share; crates/cli reaches the same code"
 # languages/python/tests/test_admin_services.py
 "admin_services::a_threaded_sync_service_gets_plain_values_and_runs_database_calls_through_ctx_run" = "one-language: Python-only: a sync service runs in a thread; a TypeScript service is always async"
 "admin_services::a_threaded_service_that_returns_an_async_call_is_a_500_that_names_ctx_run" = "one-language: Python-only: the thread rule of sync services; a TypeScript service is always async"
