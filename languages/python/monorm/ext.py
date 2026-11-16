@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Protocol, Sequence, TypeVar
 
@@ -32,8 +33,10 @@ __all__ = [
     "bound_objects",
     "bound_query",
     "bound_write",
+    "canonical_hash",
     "database_of",
     "hard_delete_statement",
+    "json_diff",
     "key_condition",
 ]
 
@@ -78,6 +81,21 @@ def behavior_field(model: Any, record: dict[str, Any]) -> ColumnRef[Any]:
     """The column that a behavior record names in its ``field`` key."""
     cls: Any = model if isinstance(model, type) else type(model)
     return ColumnRef(cls, (), cls._meta.fields[record["field"]])
+
+
+def canonical_hash(value: Any) -> str:
+    """The sha256 (hex) of the canonical JSON text of ``value``: keys sorted, no spaces. Both languages give the same hash."""
+    from . import _native
+
+    return _native.canonical_hash(json.dumps(value))
+
+
+def json_diff(old: dict[str, Any], new: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """The keys that differ between two objects, as ``{key: {"old": .., "new": ..}}``; a missing side is ``None``."""
+    from . import _native
+
+    result: dict[str, dict[str, Any]] = json.loads(_native.json_diff(json.dumps(old), json.dumps(new)))
+    return result
 
 
 def hard_delete_statement(qs: QuerySet[Any]) -> Delete[Any]:

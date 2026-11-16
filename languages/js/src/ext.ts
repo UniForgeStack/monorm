@@ -5,6 +5,7 @@ import { QuerySet } from "./query.js";
 import { rowKey, type BoundQuerySet } from "./bound.js";
 import type { Row } from "./model.js";
 import type { Database } from "./db.js";
+import { native } from "./native.js";
 
 export { hardDeleteStatement } from "./query.js";
 
@@ -41,6 +42,13 @@ export function loadedValue(object: object, field: { readonly name: string }): u
 
 /** Whether `bound` is the set of an instance write: it matches the loaded guard values of its row already, so a bound-write extension adds no such check. */
 export const boundGuarded: (bound: object) => boolean = ((bound: { guarded: boolean }) => bound.guarded) as never;
+
+/** The sha256 (hex) of the canonical JSON text of `value`: keys sorted, no spaces. Both languages give the same hash. */
+export const canonicalHash = (value: unknown): string => native().canonicalHash(JSON.stringify(value));
+
+/** The keys that differ between two objects, as `{key: {old, new}}`; a missing side is `null`. */
+export const jsonDiff = (oldValue: Record<string, unknown>, newValue: Record<string, unknown>): Record<string, { old: unknown; new: unknown }> =>
+  JSON.parse(native().jsonDiff(JSON.stringify(oldValue), JSON.stringify(newValue))) as Record<string, { old: unknown; new: unknown }>;
 
 /** The own properties of an object; a merge changes the plain objects under its symbol keys in place, so copy them. */
 function snapshot(o: object) {

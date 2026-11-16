@@ -308,6 +308,10 @@ interface Addon {
   passwordCheck(rulesJson: string, password: string, attrsJson: string): string;
   /** The help text of each built-in rule entry, as JSON. */
   passwordHelp(rulesJson: string): string;
+  /** The sha256 (hex) of the canonical text of a JSON value: keys sorted, no spaces. */
+  canonicalHash(json: string): string;
+  /** The difference of two JSON objects as JSON: `{key: {old, new}}`, a missing side is `null`. */
+  jsonDiff(old: string, new_: string): string;
   /** Test hook: reads a `ValidationError` into the engine's typed error and throws that error; any other value is thrown as it is. */
   _testRaiseValidationError(error: unknown): void;
   /** Test hook: the engine's text of a `ValidationError`. */

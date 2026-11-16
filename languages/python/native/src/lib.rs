@@ -1568,6 +1568,8 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(password_rules, m)?)?;
     m.add_function(wrap_pyfunction!(password_check, m)?)?;
     m.add_function(wrap_pyfunction!(password_help, m)?)?;
+    m.add_function(wrap_pyfunction!(canonical_hash, m)?)?;
+    m.add_function(wrap_pyfunction!(json_diff, m)?)?;
     m.add_function(wrap_pyfunction!(test_raise_validation_error, m)?)?;
     m.add_function(wrap_pyfunction!(test_validation_text, m)?)?;
     Ok(())
@@ -1603,6 +1605,18 @@ fn password_check(rules_json: &str, password: &str, attrs_json: &str) -> PyResul
 #[pyfunction]
 fn password_help(rules_json: &str) -> PyResult<String> {
     monorm_core::password::json::help(rules_json).map_err(pyo3::exceptions::PyValueError::new_err)
+}
+
+/// The sha256 (lowercase hex) of the canonical text of a JSON value: keys sorted, no spaces.
+#[pyfunction]
+fn canonical_hash(json: &str) -> PyResult<String> {
+    monorm_core::json_util::text::hash(json).map_err(pyo3::exceptions::PyValueError::new_err)
+}
+
+/// The difference of two JSON objects as a JSON object `{key: {"old": .., "new": ..}}`; a missing side is `null`.
+#[pyfunction]
+fn json_diff(old: &str, new: &str) -> PyResult<String> {
+    monorm_core::json_util::text::diff(old, new).map_err(pyo3::exceptions::PyValueError::new_err)
 }
 
 /// For tests only: the display text that Rust writes for a `ValidationError`.

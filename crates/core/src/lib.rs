@@ -14,6 +14,7 @@ pub mod dialect;
 pub mod dsl;
 pub mod ext;
 pub mod ir;
+pub mod json_util;
 pub mod migrate;
 pub mod partition;
 pub mod password;

@@ -162,6 +162,18 @@ pub fn password_help(rules_json: String) -> napi::Result<String> {
     monorm_core::password::json::help(&rules_json).map_err(napi::Error::from_reason)
 }
 
+/// The sha256 (lowercase hex) of the canonical text of a JSON value: keys sorted, no spaces.
+#[napi(js_name = "canonicalHash")]
+pub fn canonical_hash(json: String) -> napi::Result<String> {
+    monorm_core::json_util::text::hash(&json).map_err(napi::Error::from_reason)
+}
+
+/// The difference of two JSON objects as a JSON object `{key: {"old": .., "new": ..}}`; a missing side is `null`.
+#[napi(js_name = "jsonDiff")]
+pub fn json_diff(old: String, new: String) -> napi::Result<String> {
+    monorm_core::json_util::text::diff(&old, &new).map_err(napi::Error::from_reason)
+}
+
 /// Test hook, the crossing of the binding: reads a JS `ValidationError` into the engine's typed error and
 /// throws that error back. Any other value is thrown as it is.
 #[napi(js_name = "_testRaiseValidationError")]
