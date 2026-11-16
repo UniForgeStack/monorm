@@ -78,6 +78,19 @@ export interface ContextOptions {
   readonly op?: string;
   readonly ip?: string | null;
   readonly userAgent?: string | null;
+  readonly inlines?: Readonly<Record<string, InlineChanges>> | null;
+}
+
+/**
+ * The checked change set of one inline: `create` is a list of value objects, `update` a list of `{ key, set, loaded, before }`,
+ * `delete` a list of `{ key, before }`. `pin` pairs each child field with the parent field it holds. The values are by field name.
+ */
+export interface InlineChanges {
+  readonly model: AnyModel;
+  readonly pin: readonly { readonly child: string; readonly parent: string; readonly value: unknown }[];
+  readonly create: readonly Record<string, unknown>[];
+  readonly update: readonly { readonly key: Record<string, unknown>; readonly set: Record<string, unknown>; readonly loaded: Record<string, unknown>; readonly before: Record<string, unknown> }[];
+  readonly delete: readonly { readonly key: Record<string, unknown>; readonly before: Record<string, unknown> }[];
 }
 
 export interface AuditEntry {
@@ -105,6 +118,8 @@ export class Context {
   readonly op: string;
   readonly ip: string | null;
   readonly userAgent: string | null;
+  /** The checked rows of the inlines that the form sent with the record. The service writes them in its own transaction: deletes, then updates, then creates. A service that ignores them drops the rows. */
+  readonly inlines: Readonly<Record<string, InlineChanges>>;
   readonly audits: AuditEntry[] = [];
   /** @internal */
   readonly auditInputs: Record<string, unknown>;
@@ -125,6 +140,7 @@ export class Context {
     this.op = options.op ?? "";
     this.ip = options.ip ?? null;
     this.userAgent = options.userAgent ?? null;
+    this.inlines = { ...(options.inlines ?? {}) };
   }
 
   /**
@@ -353,7 +369,25 @@ function failure(meta: ModelMeta, e: unknown): Record<string, unknown> | undefin
   return undefined;
 }
 
-function contextOf(database: Database, args: Loose, meta: ModelMeta): Context {
+/** The change set of the inlines with the values of each row decoded to the types of the child model. */
+function decodeInlines(raw: Loose | null | undefined, models: ReadonlyMap<string, AnyModel>): Record<string, InlineChanges> {
+  const out: Record<string, InlineChanges> = {};
+  for (const [name, spec] of Object.entries(raw ?? {}) as [string, Loose][]) {
+    const child = models.get(spec.model);
+    if (child === undefined) throw new Error(`no admin model ${String(spec.model)}`);
+    const meta = child._meta;
+    out[name] = {
+      model: child,
+      pin: spec.pin,
+      create: spec.create.map((r: Loose) => decodeValues(meta, r.set)),
+      update: spec.update.map((r: Loose) => ({ key: r.key, set: decodeValues(meta, r.set), loaded: decodeValues(meta, r.loaded), before: decodeValues(meta, r.before) })),
+      delete: spec.delete.map((r: Loose) => ({ key: r.key, before: decodeValues(meta, r.before) })),
+    };
+  }
+  return out;
+}
+
+function contextOf(database: Database, args: Loose, meta: ModelMeta, models: ReadonlyMap<string, AnyModel>): Context {
   const ctx = new Context({
     user: args.user,
     requestId: args.request_id ?? "",
@@ -366,6 +400,7 @@ function contextOf(database: Database, args: Loose, meta: ModelMeta): Context {
     op: args.op ?? "",
     ip: args.ip,
     userAgent: args.user_agent,
+    inlines: decodeInlines(args.inlines, models),
   });
   ctx.meta = meta;
   return ctx;
@@ -403,10 +438,10 @@ export function defaultWriter(model: AnyModel, config: Loose): HostFunction {
 }
 
 /** The host function of one service function (`service.<Resource>.<op>`). */
-export function serviceFunction(model: AnyModel, config: Loose, op: string, fn: (...args: any[]) => unknown): HostFunction {
+export function serviceFunction(model: AnyModel, config: Loose, op: string, fn: (...args: any[]) => unknown, models: ReadonlyMap<string, AnyModel> = new Map()): HostFunction {
   const meta = model._meta;
   return async (database, args) => {
-    const ctx = contextOf(database, args, meta);
+    const ctx = contextOf(database, args, meta, models);
     const values = decodeValues(meta, args.values ?? {});
     let result: unknown;
     try {
@@ -429,9 +464,13 @@ export function serviceFunction(model: AnyModel, config: Loose, op: string, fn: 
   };
 }
 
-/** The host function `admin.write`: one function for every resource, chosen by the model name of the call. */
-export function writerHost(resources: ReadonlyMap<string, { readonly model: AnyModel; readonly config: Loose }>): HostFunction {
-  const writers = new Map([...resources].map(([name, { model, config }]) => [name, defaultWriter(model, config)] as const));
+/**
+ * The host function `admin.write`: one function for every resource, chosen by the model name of the call.
+ * `models` are the child models of the inlines: one with no page of its own gets a writer with no filters.
+ */
+export function writerHost(resources: ReadonlyMap<string, { readonly model: AnyModel; readonly config: Loose }>, models: ReadonlyMap<string, AnyModel> = new Map()): HostFunction {
+  const writers = new Map<string, HostFunction>([...models].map(([name, model]) => [name, defaultWriter(model, {})] as const));
+  for (const [name, { model, config }] of resources) writers.set(name, defaultWriter(model, config));
   return async (database, args) => {
     const writer = writers.get(args.model);
     if (writer === undefined) throw new Error(`no admin resource ${String(args.model)}`);

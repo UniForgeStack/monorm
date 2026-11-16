@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from .db import Database
     from .model import Registry
 
-__all__ = ["Admin", "AdminConfigError", "AdminResponse", "AdminTestClient", "AggregateColumn", "BrandConfig", "BrandLink", "ComputedColumn", "Context", "ListConfig", "NamedChoice", "NamedFilter", "ResourceConfig", "RoleSeedReport", "SyncReport", "check", "input", "log", "register", "test_client", "threaded", "url"]
+__all__ = ["Admin", "AdminConfigError", "AdminResponse", "AdminTestClient", "AggregateColumn", "BrandConfig", "BrandLink", "ComputedColumn", "Context", "InlineDef", "ListConfig", "NamedChoice", "NamedFilter", "ResourceConfig", "RoleSeedReport", "SyncReport", "check", "inline", "input", "log", "register", "test_client", "threaded", "url"]
 
 DEFAULT_PREFIX = "/admin/api"
 
@@ -194,6 +194,77 @@ class ResourceConfig(TypedDict, total=False):
     """Controls of the form that are no field (``admin.input("reason", type="textarea")``). Only a service reads them (``ctx.inputs``)."""
     allow_protected_writes: bool
     """A model with ``@@protected_write`` is closed to the admin. ``True`` opens it; the audit row records the opt-in."""
+    inlines: Sequence[Any]
+    """To-many relations that the detail page shows and edits in place: ``admin.inline(OrderLine)`` for each one (a bare model works too).
+    The inline takes the registered page of the child model; ``admin.inline(..., page={...})`` overrides page keys."""
+
+
+_INLINE_SAVE = ("with_parent", "row")
+_INLINE_STYLE = ("table", "stacked")
+# A page key that an inline wrapper cannot override, with the reason.
+_INLINE_PAGE_SAVE_REASON = "a service writes one record: an inline row is written by the page of the parent (with_parent) or by the page of the child (row)"
+_INLINE_PAGE_REFUSED = {
+    "create": _INLINE_PAGE_SAVE_REASON,
+    "update": _INLINE_PAGE_SAVE_REASON,
+    "delete": _INLINE_PAGE_SAVE_REASON,
+    "inlines": "an inline is never nested",
+    "files": "a file field needs a multipart body, which a change set does not carry",
+    "title": "an inline is not in the navigation",
+    "group": "an inline is not in the navigation",
+    "perms": "the permission of an inline follows its parent: use permission= of the inline",
+    "label": "the permission of an inline follows its parent: use permission= of the inline",
+    "field_permissions": "field permissions belong to the registered page of the child",
+    "actions": "an inline has no actions",
+    "form_component": "a replaced form cannot be a row of a table",
+    "allow_protected_writes": "the opt-in belongs to the registered page of the child",
+}
+
+
+class InlineDef:
+    """A to-many relation that the detail page of the parent edits in place; see :func:`inline`."""
+
+    def __init__(self, model: type[Model], via: str | None, save: str, permission: str | None, style: str, max: int, label: str | None, collapsed: bool, delete: bool, page: Mapping[str, Any] | None) -> None:
+        self.model = model
+        self.via = via
+        self.save = save
+        self.permission = permission
+        self.style = style
+        self.max = max
+        self.label = label
+        self.collapsed = collapsed
+        self.delete = delete
+        self.page: Mapping[str, Any] = dict(page or {})
+
+    def tag(self, parent: str) -> str:
+        """The suffix of the host function names of the page keys that this wrapper overrides."""
+        return f"@{parent}.{self.model.__name__}" + (f".{self.via}" if self.via else "")
+
+
+def inline(
+    model: type[Model],
+    *,
+    via: str | None = None,
+    save: Literal["with_parent", "row"] = "with_parent",
+    permission: str | None = None,
+    style: Literal["table", "stacked"] = "table",
+    max: int = 20,
+    label: str | None = None,
+    collapsed: bool = False,
+    delete: bool = True,
+    page: ResourceConfig | None = None,
+) -> InlineDef:
+    """The inline of a to-many relation: the registered page of ``model`` (or ``page``, for a model with no page) as rows of the parent.
+
+    ``via`` names the relation of the parent when more than one leads to ``model``. ``save="with_parent"`` sends the rows with the parent
+    in one change set and one transaction; ``"row"`` saves each row alone through the page of the child. ``permission`` is a name
+    (``"edit_lines"`` becomes ``<label>.edit_lines``) that replaces the write permission of the parent. ``max`` is the row cap (1 to 200). ``page`` overrides page keys of the child:
+    ``queryset``, ``can``, ``list``, ``form``, ``readonly``, ``widgets``, ``relations``, ``inputs`` and ``check_messages``.
+    """
+    if save not in _INLINE_SAVE:
+        raise AdminConfigError(f"inline {model.__name__}: save is one of {', '.join(_INLINE_SAVE)}")
+    if style not in _INLINE_STYLE:
+        raise AdminConfigError(f"inline {model.__name__}: style is one of {', '.join(_INLINE_STYLE)}")
+    return InlineDef(model, via, save, permission, style, max, label, collapsed, delete, page)
 
 
 class RelationConfig(TypedDict, total=False):
@@ -238,7 +309,7 @@ def _form(name: str, form: Any) -> Any:
 
 
 _LIST_KEYS = {"columns", "order", "page_size", "sortable", "search", "search_with", "filters", "named_filters", "computed", "aggregates", "labels", "empty", "empty_fields", "tabs"}
-_RESOURCE_KEYS = {"list", "title", "group", "allow", "perms", "label", "field_permissions", "actions", "queryset", "can", "check_messages", "form", "readonly", "widgets", "form_component", "relations", "files", "create", "update", "delete", "inputs", "allow_protected_writes"}
+_RESOURCE_KEYS = {"list", "title", "group", "allow", "perms", "label", "field_permissions", "actions", "queryset", "can", "check_messages", "form", "readonly", "widgets", "form_component", "relations", "files", "create", "update", "delete", "inputs", "allow_protected_writes", "inlines"}
 _BRAND_KEYS = {"name", "logo", "colors", "links", "environment"}
 Strategy = Literal["page", "model", "access"]
 
@@ -295,11 +366,11 @@ def _inline(ir: Any, params: list[Any], what: str) -> Any:
     return {k: _inline(v, params, what) for k, v in ir.items()}
 
 
-def _batch_name(model: type[Model], column: str) -> str:
-    return f"column.{model.__name__}.{column}"
+def _batch_name(model: type[Model], column: str, tag: str = "") -> str:
+    return f"column.{model.__name__}{tag}.{column}"
 
 
-def _computed(model: type[Model], items: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+def _computed(model: type[Model], items: Sequence[Mapping[str, Any]], tag: str = "") -> list[dict[str, Any]]:
     out = []
     for item in items:
         entry = {k: v for k, v in item.items() if k not in ("expr", "function")}
@@ -308,7 +379,7 @@ def _computed(model: type[Model], items: Sequence[Mapping[str, Any]]) -> list[di
         if item.get("expr") is not None:
             entry["expr"] = _ir(model, item["expr"], f"computed {item.get('name')!r}")
         else:
-            entry["function"] = _batch_name(model, str(item["name"]))
+            entry["function"] = _batch_name(model, str(item["name"]), tag)
         out.append(entry)
     return out
 
@@ -343,7 +414,7 @@ def _named(model: type[Model], items: Sequence[Mapping[str, Any]]) -> list[dict[
     return out
 
 
-def _list(model: type[Model], config: Mapping[str, Any]) -> dict[str, Any]:
+def _list(model: type[Model], config: Mapping[str, Any], tag: str = "") -> dict[str, Any]:
     if unknown := sorted(set(config) - _LIST_KEYS):
         raise AdminConfigError(f"{model.__name__}: unknown list option {unknown[0]!r}")
     out: dict[str, Any] = {}
@@ -355,7 +426,7 @@ def _list(model: type[Model], config: Mapping[str, Any]) -> dict[str, Any]:
     if "named_filters" in config:
         out["named_filters"] = _named(model, config["named_filters"])
     if "computed" in config:
-        out["computed"] = _computed(model, config["computed"])
+        out["computed"] = _computed(model, config["computed"], tag)
     if "aggregates" in config:
         out["aggregates"] = _aggregates(model, config["aggregates"])
     for key in ("labels", "empty_fields"):
@@ -381,16 +452,16 @@ def _list(model: type[Model], config: Mapping[str, Any]) -> dict[str, Any]:
         if key in config:
             out[key] = [_label(model, c) for c in config[key]]
     if "search_with" in config:
-        out["search_with"] = _search_name(model)
+        out["search_with"] = _search_name(model, tag)
     return out
 
 
-def _search_name(model: type[Model]) -> str:
-    return f"search.{model.__name__}"
+def _search_name(model: type[Model], tag: str = "") -> str:
+    return f"search.{model.__name__}{tag}"
 
 
-def _queryset_name(model: type[Model]) -> str:
-    return f"queryset.{model.__name__}"
+def _queryset_name(model: type[Model], tag: str = "") -> str:
+    return f"queryset.{model.__name__}{tag}"
 
 
 _SLOTS = ("user",)
@@ -414,12 +485,12 @@ def _slot_ir(model: type[Model], ir: Any, params: list[Any], slots: list[str]) -
     return {k: _slot_ir(model, v, params, slots) for k, v in ir.items()}
 
 
-def _queryset(model: type[Model], config: Any) -> tuple[dict[str, Any], list[str] | None]:
+def _queryset(model: type[Model], config: Any, tag: str = "") -> tuple[dict[str, Any], list[str] | None]:
     """The queryset of a resource as config JSON, and the order it sets (column names) or None."""
     from .query import Prepared
 
     if callable(config) and not isinstance(config, Prepared):
-        return {"function": _queryset_name(model)}, None
+        return {"function": _queryset_name(model, tag)}, None
     if not isinstance(config, Prepared):
         raise AdminConfigError(f"{model.__name__}: queryset takes a prepared query set (Model.objects.filter(...).prepare()) or an async function")
     qs = config._qs
@@ -749,6 +820,29 @@ class AdminTestClient:
         return await self.post(f"{self._prefix}/logout", json={})
 
 
+def _inline_defs(name: str, items: Any) -> list[InlineDef]:
+    if isinstance(items, (str, InlineDef)) or not isinstance(items, Sequence):
+        raise AdminConfigError(f"{name}: inlines is a list of admin.inline(...) wrappers or models")
+    out: list[InlineDef] = []
+    for item in items:
+        if isinstance(item, InlineDef):
+            out.append(item)
+        elif isinstance(item, type) and issubclass(item, Model):
+            out.append(inline(item))
+        else:
+            raise AdminConfigError(f"{name}: inlines is a list of admin.inline(...) wrappers or models")
+    return out
+
+
+def _check_inline_page(name: str, d: InlineDef) -> None:
+    at = f"{name}: inline {d.model.__name__}"
+    for key in d.page:
+        if key in _INLINE_PAGE_REFUSED:
+            raise AdminConfigError(f"{at}: page does not take {key!r}: {_INLINE_PAGE_REFUSED[key]}")
+        if key not in _RESOURCE_KEYS:
+            raise AdminConfigError(f"{at}: unknown page option {key!r}")
+
+
 class Admin:
     """The resources of one registry.
 
@@ -808,67 +902,97 @@ class Admin:
         self._resources[model.__name__] = (model, config)
         self._planned = None
 
+    def _resource_json(self, name: str, model: type[Model], config: Mapping[str, Any], tag: str = "") -> dict[str, Any]:
+        """The config JSON of one page. ``tag`` names the host functions of an inline wrapper's overrides."""
+        resource: dict[str, Any] = {"model": name}
+        if "list" in config:
+            resource["list"] = _list(model, config["list"], tag)
+        if "queryset" in config:
+            resource["queryset"], order = _queryset(model, config["queryset"], tag)
+            if order is not None:
+                listing = resource.setdefault("list", {})
+                if "order" in listing:
+                    raise AdminConfigError(f"{name}: the order is in the queryset or in the list, not in both")
+                listing["order"] = order
+        if "can" in config:
+            resource["can"] = _can(model, config["can"])
+        if "check_messages" in config:
+            messages = config["check_messages"]
+            if not isinstance(messages, Mapping) or not all(isinstance(k, str) and isinstance(v, str) for k, v in messages.items()):
+                raise AdminConfigError(f"{name}: check_messages maps a check name to a message")
+            resource["check_messages"] = dict(messages)
+        if "form" in config:
+            resource["form"] = _form(name, config["form"])
+        if "readonly" in config:
+            names = config["readonly"]
+            if isinstance(names, str) or not all(isinstance(n, str) for n in names):
+                raise AdminConfigError(f"{name}: readonly is a list of field names")
+            resource["readonly"] = list(names)
+        if "widgets" in config:
+            resource["widgets"] = _widgets(name, config["widgets"])
+        if "form_component" in config:
+            path = config["form_component"]
+            if not isinstance(path, (str, os.PathLike)):
+                raise AdminConfigError(f"{name}: form_component is the path of a JavaScript file")
+            resource["form_component"] = os.fspath(path)
+        if "relations" in config:
+            resource["relations"] = _relations(name, model, config["relations"])
+        if "files" in config:
+            resource["files"] = list(_files(name, config["files"]))
+            if self._storage is None:
+                raise AdminConfigError(f"{name}: files needs the storage option of Admin (a monorm_file_storage Registry)")
+        services = {op: fn for op in ("create", "update", "delete") if (fn := config.get(op)) is not None}
+        if services:
+            for op, fn in services.items():
+                if not callable(fn):
+                    raise AdminConfigError(f"{name}: {op} is a service function (ctx, ...)")
+            resource["service"] = {op: {"sync": is_sync(fn), "threaded": is_threaded(fn)} for op, fn in services.items()}
+        if "inputs" in config:
+            defs = config["inputs"]
+            if isinstance(defs, (str, InputDef)) or not all(isinstance(d, InputDef) for d in defs):
+                raise AdminConfigError(f"{name}: inputs is a list of admin.input(...) controls")
+            resource["inputs"] = [d.json() for d in defs]
+        if config.get("allow_protected_writes"):
+            resource["allow_protected_writes"] = True
+        if _adapters.get(model):
+            resource["host_behavior"] = True
+        raw: dict[str, Any] = dict(config)
+        for key in ("title", "group", "allow", "perms", "label", "field_permissions", "actions"):
+            if key in raw:
+                value = raw[key]
+                resource[key] = value if isinstance(value, str) else list(value)
+        if "inlines" in config:
+            resource["inlines"] = [self._inline_json(name, d) for d in _inline_defs(name, config["inlines"])]
+        return resource
+
+    def _inline_json(self, parent: str, d: InlineDef) -> dict[str, Any]:
+        _check_inline_page(parent, d)
+        child = d.model.__name__
+        out: dict[str, Any] = {"model": child, "save": d.save, "style": d.style, "max": d.max, "collapsed": d.collapsed, "delete": d.delete}
+        for key in ("via", "permission", "label"):
+            if (value := getattr(d, key)) is not None:
+                out[key] = value
+        page = self._resource_json(child, d.model, d.page, d.tag(parent))
+        if len(page) > 1:
+            out["page"] = page
+        return out
+
+    def _pages(self) -> list[tuple[type[Model], Mapping[str, Any], str]]:
+        """Every page the site builds: the registered ones, and the page keys that an inline wrapper overrides. Each with its host function tag."""
+        pages: list[tuple[type[Model], Mapping[str, Any], str]] = []
+        for parent, (model, config) in self._resources.items():
+            pages.append((model, config, ""))
+            for d in _inline_defs(parent, config.get("inlines", ())):
+                if d.page:
+                    _check_inline_page(parent, d)
+                    pages.append((d.model, d.page, d.tag(parent)))
+        return pages
+
+    def _inline_models(self) -> dict[str, type[Model]]:
+        return {d.model.__name__: d.model for parent, (_, config) in self._resources.items() for d in _inline_defs(parent, config.get("inlines", ()))}
+
     def _config_json(self) -> str:
-        resources = []
-        for name, (model, config) in self._resources.items():
-            resource: dict[str, Any] = {"model": name}
-            if "list" in config:
-                resource["list"] = _list(model, config["list"])
-            if "queryset" in config:
-                resource["queryset"], order = _queryset(model, config["queryset"])
-                if order is not None:
-                    listing = resource.setdefault("list", {})
-                    if "order" in listing:
-                        raise AdminConfigError(f"{name}: the order is in the queryset or in the list, not in both")
-                    listing["order"] = order
-            if "can" in config:
-                resource["can"] = _can(model, config["can"])
-            if "check_messages" in config:
-                messages = config["check_messages"]
-                if not isinstance(messages, Mapping) or not all(isinstance(k, str) and isinstance(v, str) for k, v in messages.items()):
-                    raise AdminConfigError(f"{name}: check_messages maps a check name to a message")
-                resource["check_messages"] = dict(messages)
-            if "form" in config:
-                resource["form"] = _form(name, config["form"])
-            if "readonly" in config:
-                names = config["readonly"]
-                if isinstance(names, str) or not all(isinstance(n, str) for n in names):
-                    raise AdminConfigError(f"{name}: readonly is a list of field names")
-                resource["readonly"] = list(names)
-            if "widgets" in config:
-                resource["widgets"] = _widgets(name, config["widgets"])
-            if "form_component" in config:
-                path = config["form_component"]
-                if not isinstance(path, (str, os.PathLike)):
-                    raise AdminConfigError(f"{name}: form_component is the path of a JavaScript file")
-                resource["form_component"] = os.fspath(path)
-            if "relations" in config:
-                resource["relations"] = _relations(name, model, config["relations"])
-            if "files" in config:
-                resource["files"] = list(_files(name, config["files"]))
-                if self._storage is None:
-                    raise AdminConfigError(f"{name}: files needs the storage option of Admin (a monorm_file_storage Registry)")
-            services = {op: fn for op in ("create", "update", "delete") if (fn := cast("Mapping[str, Any]", config).get(op)) is not None}
-            if services:
-                for op, fn in services.items():
-                    if not callable(fn):
-                        raise AdminConfigError(f"{name}: {op} is a service function (ctx, ...)")
-                resource["service"] = {op: {"sync": is_sync(fn), "threaded": is_threaded(fn)} for op, fn in services.items()}
-            if "inputs" in config:
-                defs = config["inputs"]
-                if isinstance(defs, (str, InputDef)) or not all(isinstance(d, InputDef) for d in defs):
-                    raise AdminConfigError(f"{name}: inputs is a list of admin.input(...) controls")
-                resource["inputs"] = [d.json() for d in defs]
-            if config.get("allow_protected_writes"):
-                resource["allow_protected_writes"] = True
-            if _adapters.get(model):
-                resource["host_behavior"] = True
-            raw: dict[str, Any] = dict(config)
-            for key in ("title", "group", "allow", "perms", "label", "field_permissions", "actions"):
-                if key in raw:
-                    value = raw[key]
-                    resource[key] = value if isinstance(value, str) else list(value)
-            resources.append(resource)
+        resources = [self._resource_json(name, model, config) for name, (model, config) in self._resources.items()]
         out: dict[str, Any] = {"prefix": self.prefix, "permissions": self._strategy, "label": self._label, "resources": resources}
         if self._brand is not None:
             out["brand"] = self._brand
@@ -883,23 +1007,24 @@ class Admin:
     def _host(self) -> dict[str, Any]:
         """The host functions: login, the ``search_with`` function of each resource and the function of each computed column."""
         host: dict[str, Any] = dict(_HOST)
-        for model, config in self._resources.values():
+        for model, config, tag in self._pages():
             listing = config.get("list", {})
             scope = config.get("queryset")
             if scope is not None and callable(scope) and not _is_prepared(scope):
-                host[_queryset_name(model)] = _queryset_host(model, cast(Callable[..., Awaitable[Any]], scope))
+                host[_queryset_name(model, tag)] = _queryset_host(model, cast(Callable[..., Awaitable[Any]], scope))
             search = listing.get("search_with")
             if search is not None:
-                host[_search_name(model)] = _search_host(model, search)
+                host[_search_name(model, tag)] = _search_host(model, search)
             for column in listing.get("computed", ()):
                 function = column.get("function")
                 if function is not None:
-                    host[_batch_name(model, column.get("name", ""))] = _batch_host(model, function)
-        host["admin.write"] = writer_host(self._resources)
+                    host[_batch_name(model, column.get("name", ""), tag)] = _batch_host(model, function)
+        models = self._inline_models()
+        host["admin.write"] = writer_host(self._resources, models)
         for model, config in self._resources.values():
             for op in ("create", "update", "delete"):
                 if (fn := cast("Mapping[str, Any]", config).get(op)) is not None:
-                    host[f"service.{model.__name__}.{op}"] = service_function(model, config, op, fn)
+                    host[f"service.{model.__name__}.{op}"] = service_function(model, config, op, fn, models)
         files = {(model.__name__, field): storage for model, config in self._resources.values() for field, storage in _files(model.__name__, config.get("files", {})).items()}
         if files:
             host.update(_file_host(self._storage, files))

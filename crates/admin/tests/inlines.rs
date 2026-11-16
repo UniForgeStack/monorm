@@ -349,6 +349,36 @@ async fn row_mode_saves_each_row_alone_and_pins_it_to_the_parent() {
 }
 
 #[tokio::test]
+async fn a_row_write_needs_the_parent_to_take_an_update_its_allow_its_state_and_its_change_rule() {
+    let note = json!({"set": {"body": "n"}});
+    let edit = json!({"set": {"body": "x"}, "loaded": {"body": "first"}});
+    // A parent that allows no update: no row route writes, and the metadata offers no operation.
+    let mut cfg = config();
+    cfg["resources"][0]["allow"] = json!(["read"]);
+    let w = world(cfg).await;
+    assert_eq!(w.send("POST", "/resources/Order/1/inlines/notes", Some(note.clone())).await.0, 403);
+    assert_eq!(w.send("PATCH", "/resources/Order/1/inlines/notes/1", Some(edit.clone())).await.0, 403);
+    assert_eq!(w.send("DELETE", "/resources/Order/1/inlines/notes/1", None).await.0, 403);
+    assert_eq!(w.rows("SELECT count(*) FROM \"Note\"").await[0][0].as_deref(), Some("2"));
+    let (_, meta) = w.send("GET", "/resources", None).await;
+    let order = meta["resources"].as_array().unwrap().iter().find(|r| r["name"] == "Order").unwrap();
+    assert!(order["inlines"].as_array().unwrap().iter().all(|i| i["ops"] == json!([])), "{order}");
+    // A `change` rule that locks a shipped order.
+    let mut cfg = config();
+    cfg["resources"][0]["can"] = json!({"change": {"t": "cmp", "op": "ne", "l": {"t": "col", "path": [], "name": "status"}, "r": {"t": "text", "value": "shipped"}}});
+    let w = world(cfg).await;
+    w.conn.batch("UPDATE \"Order\" SET status = 'shipped' WHERE id = 1".into()).await.unwrap();
+    assert_eq!(w.send("POST", "/resources/Order/1/inlines/notes", Some(note.clone())).await.0, 403);
+    assert_eq!(w.send("PATCH", "/resources/Order/1/inlines/notes/1", Some(edit.clone())).await.0, 403);
+    assert_eq!(w.send("DELETE", "/resources/Order/1/inlines/notes/1", None).await.0, 403);
+    assert_eq!(w.rows("SELECT count(*) FROM \"Note\"").await[0][0].as_deref(), Some("2"));
+    let audit = w.audit().await;
+    assert_eq!(audit.iter().map(|r| (text(&r[0]), text(&r[1]))).collect::<Vec<_>>(), [("permission_denied", "Order"); 3]);
+    // The same rule lets an open order through.
+    assert_eq!(w.send("POST", "/resources/Order/2/inlines/notes", Some(note)).await.0, 201);
+}
+
+#[tokio::test]
 async fn the_inline_queryset_filter_applies_on_read_and_on_inline_writes() {
     let mut cfg = config();
     cfg["resources"][0]["inlines"][0]["page"] = json!({"queryset": {"filter": {"t": "cmp", "op": "ne", "l": {"t": "col", "path": [], "name": "kind"}, "r": {"t": "text", "value": "fee"}}}});
@@ -466,9 +496,9 @@ async fn a_service_of_the_parent_gets_the_checked_change_set_and_writes_nothing_
     assert_eq!(seen[0].0, "service.Order.update");
     let lines = &seen[0].1["inlines"]["lines"];
     assert_eq!(lines["create"][0]["set"], json!({"sku": "N"}));
-    assert_eq!(lines["update"][0]["key"], "1");
+    assert_eq!(lines["update"][0]["key"], json!({"id": 1}));
     assert_eq!(lines["update"][0]["set"], json!({"qty": 4}));
-    assert_eq!(lines["delete"][0]["key"], "2");
+    assert_eq!(lines["delete"][0]["key"], json!({"id": 2}));
     assert_eq!(w.lines().await, LINES);
 }
 

@@ -14,6 +14,7 @@ use axum::Extension;
 use serde_json::{json, Map, Value};
 
 use crate::key;
+use crate::hostwrite::{by_field, key_object};
 use crate::list::{self, RowScope};
 use crate::permissions::Op;
 use crate::server::{authorize, child_rows, deny, error_response, segment, reach, reject, Reach, Shared, State_, User};
@@ -67,21 +68,24 @@ impl Changes<'_> {
         self.parts.iter().all(|p| p.creates.is_empty() && p.updates.is_empty() && p.deletes.is_empty())
     }
 
-    /// The change set as the service of the parent gets it: with the stored values before the change.
+    /// The change set as the service of the parent gets it: values by field name, keys as objects, the stored values before the change.
+    /// `model` names the child model; `pin` pairs each child field with the parent field and its value (null while the parent is new).
     pub(crate) fn json(&self) -> Value {
         let mut out = Map::new();
         for p in &self.parts {
-            let create: Vec<Value> = p.creates.iter().map(|r| json!({"set": r.set})).collect();
-            let update: Vec<Value> = p.updates.iter().map(|r| json!({"key": r.raw, "set": r.set, "loaded": r.loaded, "before": labelled(&p.inline.resource, &r.before)})).collect();
-            let delete: Vec<Value> = p.deletes.iter().map(|r| json!({"key": r.raw, "before": labelled(&p.inline.resource, &r.before)})).collect();
-            out.insert(p.inline.name.clone(), json!({"create": create, "update": update, "delete": delete}));
+            let (child, name) = (&p.inline.resource, &p.inline.name);
+            let create: Vec<Value> = p.creates.iter().map(|r| json!({"set": by_field(child, &r.set)})).collect();
+            let update: Vec<Value> = p.updates.iter().map(|r| json!({"key": key_object(child, &r.key), "set": by_field(child, &r.set), "loaded": by_field(child, &r.loaded), "before": before(child, &r.before)})).collect();
+            let delete: Vec<Value> = p.deletes.iter().map(|r| json!({"key": key_object(child, &r.key), "before": before(child, &r.before)})).collect();
+            let pin: Vec<Value> = p.inline.child_to.iter().zip(&p.inline.parent_from).enumerate().map(|(i, (c, f))| json!({"child": c.field, "parent": f.field, "value": p.pins.get(i).map(|(_, v)| v)})).collect();
+            out.insert(name.clone(), json!({"model": child.name, "pin": pin, "create": create, "update": update, "delete": delete}));
         }
         Value::Object(out)
     }
 }
 
-fn labelled(r: &Resource, cells: &[Value]) -> Value {
-    Value::Object(r.detail.iter().zip(cells).map(|(d, v)| (d.label.clone(), v.clone())).collect())
+fn before(r: &Resource, cells: &[Value]) -> Value {
+    Value::Object(r.detail.iter().zip(cells).map(|(d, v)| (d.field.clone(), v.clone())).collect())
 }
 
 fn bad(message: impl AsRef<str>) -> Fail {
@@ -146,8 +150,10 @@ pub(crate) async fn check<'a>(s: &State_, c: &Call<'a>, parent_op: Op, parent: O
                 return Err(Fail::Deny { resource: child.name.clone(), changes: json!({"needs": site.inline_requires(c.resource, inline, op)}) });
             }
         }
-        if (!create.is_empty() || !update.is_empty() || !delete.is_empty()) && write::read_only_reason(&site.schema, child).is_some() {
-            return Err(Fail::Reply(reject(StatusCode::FORBIDDEN, "ReadOnly", &write::read_only_reason(&site.schema, child).unwrap_or_default())));
+        if !create.is_empty() || !update.is_empty() || !delete.is_empty() {
+            if let Some(reason) = write::read_only_reason(&site.schema, child) {
+                return Err(Fail::Reply(reject(StatusCode::FORBIDDEN, "ReadOnly", &reason)));
+            }
         }
         let unpinned = child_rows(s, child, &c.user, &c.scope).await.map_err(|e| Fail::Reply(write::list_failure(&c.meta, e)))?;
         let (pins, rows) = match parent {
@@ -356,12 +362,16 @@ async fn open_inline<'a>(s: &'a State_, user: Option<Extension<User>>, parent: &
     if !child.allow.contains(&op) {
         return Err(Box::new(deny(&s.site, scope, &user, &child.name, json!({"reason": "allow"})).await));
     }
-    if !s.site.inline_allows(&grants, parent, inline, op) {
-        return Err(Box::new(deny(&s.site, scope, &user, &child.name, json!({"needs": s.site.inline_requires(parent, inline, op)})).await));
+    // A row write changes the parent: the parent `allow` and its read-only state hold, as on a write of the parent itself.
+    if !parent.allow.contains(&Op::Update) {
+        return Err(Box::new(deny(&s.site, scope, &user, &parent.name, json!({"reason": "allow"})).await));
     }
-    if let Some(reason) = write::read_only_reason(&s.site.schema, child) {
+    if let Some(reason) = write::read_only_reason(&s.site.schema, parent).or_else(|| write::read_only_reason(&s.site.schema, child)) {
         scope.rollback().await;
         return Err(Box::new(reject(StatusCode::FORBIDDEN, "ReadOnly", &reason)));
+    }
+    if !s.site.inline_allows(&grants, parent, inline, op) {
+        return Err(Box::new(deny(&s.site, scope, &user, &child.name, json!({"needs": s.site.inline_requires(parent, inline, op)})).await));
     }
     if s.bridge.is_none() && crate::hostwrite::route(&s.site.schema, child, op).is_some() {
         scope.rollback().await;
@@ -375,6 +385,22 @@ async fn open_inline<'a>(s: &'a State_, user: Option<Extension<User>>, parent: &
         }
     };
     let (scope, parent_reach) = reach(s, parent, &user, &grants, Vec::new(), scope).await?;
+    if parent.can.iter().any(|(name, _)| name == "change") {
+        let locked = match list::read_record(&s.site, parent, scope.executor(), s.target, &parent_key, &parent_reach.rows, false).await {
+            Ok(Some(r)) => r.flags.get("change") == Some(&Value::Bool(false)),
+            Ok(None) => {
+                scope.rollback().await;
+                return Err(Box::new(reject(StatusCode::NOT_FOUND, "NotFound", "no such record")));
+            }
+            Err(e) => {
+                scope.rollback().await;
+                return Err(Box::new(error_response(e)));
+            }
+        };
+        if locked {
+            return Err(Box::new(deny(&s.site, scope, &user, &parent.name, json!({"reason": "can", "rule": "change"})).await));
+        }
+    }
     let related = s.site.inline_related(inline);
     let values = match list::parent_values(&s.site, parent, &related, scope.executor(), s.target, &parent_key, &parent_reach.rows).await {
         Ok(Some(v)) => v,

@@ -90,8 +90,14 @@ class Context:
     """What a service function knows about the request.
 
     ``user`` is the plain user of the admin, ``request_id`` the id of the request, ``loaded`` the values that the form showed
-    (by field name; empty on a create) and ``inputs`` the values of the ``admin.input`` controls. ``database`` is the database
+    (by field name; empty on a create), ``inputs`` the values of the ``admin.input`` controls and ``inlines`` the change set of the
+    inline rows that the form sent with the record (see below). ``database`` is the database
     of the request. A unit test builds a ``Context`` by hand and calls the service function: no admin is needed.
+
+    ``inlines`` maps an inline name to ``{"model", "pin", "create", "update", "delete"}``: ``create`` is a list of value dicts,
+    ``update`` a list of ``{"key", "set", "loaded", "before"}``, ``delete`` a list of ``{"key", "before"}``. ``pin`` pairs each
+    child field with the parent field it holds. The admin has checked every row; the service writes them in its own transaction,
+    deletes first, then updates, then creates. A service that ignores ``ctx.inlines`` drops the inline rows.
     """
 
     def __init__(
@@ -108,7 +114,9 @@ class Context:
         op: str = "",
         ip: str | None = None,
         user_agent: str | None = None,
+        inlines: Mapping[str, Any] | None = None,
     ) -> None:
+        self.inlines: dict[str, Any] = dict(inlines or {})
         self.user: dict[str, Any] = {k: v for k, v in (user or {}).items() if k not in _PLAIN_USER_DROP}
         self.request_id = request_id
         self.loaded: dict[str, Any] = dict(loaded or {})
@@ -356,7 +364,22 @@ def _invalid(e: ValidationError) -> dict[str, Any]:
     return {"ok": False, "kind": "invalid", "fields": e.fields, "form": e.non_field_messages}
 
 
-def _context(database: Any, args: Mapping[str, Any], model: Any) -> Context:
+def _decode_inlines(raw: Mapping[str, Any] | None, models: Mapping[str, Any]) -> dict[str, Any]:
+    """The change set of the inlines with the values of each row decoded to the types of the child model."""
+    out: dict[str, Any] = {}
+    for name, spec in (raw or {}).items():
+        child = models[spec["model"]]
+        out[name] = {
+            "model": child,
+            "pin": spec["pin"],
+            "create": [decode_values(child, r["set"]) for r in spec["create"]],
+            "update": [{"key": r["key"], "set": decode_values(child, r["set"]), "loaded": decode_values(child, r["loaded"]), "before": decode_values(child, r["before"])} for r in spec["update"]],
+            "delete": [{"key": r["key"], "before": decode_values(child, r["before"])} for r in spec["delete"]],
+        }
+    return out
+
+
+def _context(database: Any, args: Mapping[str, Any], model: Any, models: Mapping[str, Any] | None = None) -> Context:
     ctx = Context(
         user=args.get("user"),
         request_id=args.get("request_id") or "",
@@ -369,6 +392,7 @@ def _context(database: Any, args: Mapping[str, Any], model: Any) -> Context:
         op=args.get("op") or "",
         ip=args.get("ip"),
         user_agent=args.get("user_agent"),
+        inlines=_decode_inlines(args.get("inlines"), models or {}),
     )
     ctx._model = model
     return ctx
@@ -406,12 +430,12 @@ def default_writer(model: Any, config: Mapping[str, Any]) -> Callable[[Any, dict
     return write
 
 
-def service_function(model: Any, config: Mapping[str, Any], op: str, fn: Callable[..., Any]) -> Callable[[Any, dict[str, Any]], Awaitable[Any]]:
+def service_function(model: Any, config: Mapping[str, Any], op: str, fn: Callable[..., Any], models: Mapping[str, Any] | None = None) -> Callable[[Any, dict[str, Any]], Awaitable[Any]]:
     """The host function of one service function (``service.<Resource>.<op>``)."""
     sync = is_sync(fn)
 
     async def call(database: Any, args: dict[str, Any]) -> Any:
-        ctx = _context(database, args, model)
+        ctx = _context(database, args, model, models)
         ctx._loop = asyncio.get_running_loop()
         values = decode_values(model, args.get("values") or {})
         user = args.get("user") or {}
@@ -453,9 +477,12 @@ def service_function(model: Any, config: Mapping[str, Any], op: str, fn: Callabl
     return call
 
 
-def writer_host(resources: Mapping[str, tuple[Any, Mapping[str, Any]]]) -> Callable[[Any, dict[str, Any]], Awaitable[Any]]:
-    """The host function ``admin.write``: one function for every resource, chosen by the model name of the call."""
-    writers = {name: default_writer(model, config) for name, (model, config) in resources.items()}
+def writer_host(resources: Mapping[str, tuple[Any, Mapping[str, Any]]], models: Mapping[str, Any] | None = None) -> Callable[[Any, dict[str, Any]], Awaitable[Any]]:
+    """The host function ``admin.write``: one function for every resource, chosen by the model name of the call.
+
+    ``models`` are the child models of the inlines: one with no page of its own gets a writer with no filters."""
+    writers = {name: default_writer(model, {}) for name, model in (models or {}).items()}
+    writers.update({name: default_writer(model, config) for name, (model, config) in resources.items()})
 
     async def write(database: Any, args: dict[str, Any]) -> Any:
         return await writers[args["model"]](database, args)

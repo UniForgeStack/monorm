@@ -20,7 +20,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { HOST, hostDispatch, type HostFunction } from "./admin-host.js";
 import * as grants from "./admin-permissions.js";
-import { Context, InputDef, input, log, serviceFunction, writerHost } from "./admin-write.js";
+import { Context, InputDef, input, log, serviceFunction, writerHost, type InlineChanges } from "./admin-write.js";
 import { hasFieldAdapters } from "./adapters.js";
 import type { RoleSeedReport, SyncReport } from "./admin-permissions.js";
 import type { Database } from "./db.js";
@@ -193,6 +193,11 @@ export interface ResourceConfig {
   readonly inputs?: readonly InputDef[];
   /** A model with `@@protected_write` is closed to the admin. `true` opens it; the audit row records the opt-in. */
   readonly allowProtectedWrites?: boolean;
+  /**
+   * To-many relations that the detail page shows and edits in place: `inline(OrderLine)` for each one (a bare model works too).
+   * The inline takes the registered page of the child model; `inline(..., { page: {...} })` overrides page keys.
+   */
+  readonly inlines?: readonly (InlineDef | AnyModel)[];
   readonly list?: ListConfig;
   /** The name in the navigation and the page heading (the model name, spaced, by default). */
   readonly title?: string;
@@ -266,7 +271,7 @@ export interface AdminUser {
 
 const LIST_KEYS = new Set(["columns", "order", "pageSize", "sortable", "search", "searchWith", "filters", "namedFilters", "computed", "aggregates", "labels", "empty", "emptyFields", "tabs"]);
 const BRAND_KEYS = new Set(["name", "logo", "colors", "links", "environment"]);
-const RESOURCE_KEYS = new Set(["queryset", "can", "list", "title", "group", "allow", "perms", "label", "fieldPermissions", "actions", "checkMessages", "form", "readonly", "widgets", "formComponent", "relations", "files", "create", "update", "delete", "inputs", "allowProtectedWrites"]);
+const RESOURCE_KEYS = new Set(["queryset", "can", "list", "title", "group", "allow", "perms", "label", "fieldPermissions", "actions", "checkMessages", "form", "readonly", "widgets", "formComponent", "relations", "files", "create", "update", "delete", "inputs", "allowProtectedWrites", "inlines"]);
 
 function widgetsJson(who: string, value: unknown): Record<string, string> {
   if (typeof value !== "object" || value === null || Array.isArray(value) || !Object.values(value).every((v) => typeof v === "string")) {
@@ -392,11 +397,11 @@ function irOf(model: AnyModel, node: unknown, what: string): unknown {
   } catch (e) {
     throw new AdminConfigError(`${where}: ${e instanceof Error ? e.message : String(e)}`);
   }
-  return inline(ir, params, where);
+  return inlineParams(ir, params, where);
 }
 
-function inline(ir: unknown, params: readonly unknown[], where: string): unknown {
-  if (Array.isArray(ir)) return ir.map((item) => inline(item, params, where));
+function inlineParams(ir: unknown, params: readonly unknown[], where: string): unknown {
+  if (Array.isArray(ir)) return ir.map((item) => inlineParams(item, params, where));
   if (ir === null || typeof ir !== "object") return ir;
   const node = ir as Record<string, unknown>;
   if (node["t"] === "param") {
@@ -409,14 +414,14 @@ function inline(ir: unknown, params: readonly unknown[], where: string): unknown
     if (typeof value === "bigint" && value >= BigInt(Number.MIN_SAFE_INTEGER) && value <= BigInt(Number.MAX_SAFE_INTEGER)) return { t: "int", value: Number(value) };
     throw new AdminConfigError(`${where}: a value of this type is not a literal of the admin; use a safe integer, a string or a boolean`);
   }
-  return Object.fromEntries(Object.entries(node).map(([k, v]) => [k, inline(v, params, where)]));
+  return Object.fromEntries(Object.entries(node).map(([k, v]) => [k, inlineParams(v, params, where)]));
 }
 
-function batchName(model: AnyModel, column: string): string {
-  return `column.${model._meta.name}.${column}`;
+function batchName(model: AnyModel, column: string, tag = ""): string {
+  return `column.${model._meta.name}${tag}.${column}`;
 }
 
-function computedJson(model: AnyModel, items: readonly ComputedColumn[]): unknown[] {
+function computedJson(model: AnyModel, items: readonly ComputedColumn[], tag = ""): unknown[] {
   return items.map((item) => {
     if ((item.expr === undefined) === (item.function === undefined)) {
       throw new AdminConfigError(`${model._meta.name}: computed '${item.name}' sets expr or function, one of them`);
@@ -425,7 +430,7 @@ function computedJson(model: AnyModel, items: readonly ComputedColumn[]): unknow
     return {
       ...rest,
       ...(expr !== undefined ? { expr: irOf(model, expr, `computed '${item.name}'`) } : {}),
-      ...(fn !== undefined ? { function: batchName(model, item.name) } : {}),
+      ...(fn !== undefined ? { function: batchName(model, item.name, tag) } : {}),
     };
   });
 }
@@ -480,7 +485,7 @@ function slotIr(ir: unknown, params: readonly unknown[], slots: string[], where:
   const node = ir as Record<string, unknown>;
   if (node["t"] === "param") {
     const value = params[node["i"] as number];
-    if (!(value instanceof Slot)) return inline(node, params, where);
+    if (!(value instanceof Slot)) return inlineParams(node, params, where);
     if (!SLOTS.includes(value.name)) throw new AdminConfigError(`${where}: takes the param 'user', not '${value.name}'`);
     if (!slots.includes(value.name)) slots.push(value.name);
     return { t: "param", i: slots.indexOf(value.name) };
@@ -488,14 +493,14 @@ function slotIr(ir: unknown, params: readonly unknown[], slots: string[], where:
   return Object.fromEntries(Object.entries(node).map(([k, v]) => [k, slotIr(v, params, slots, where)]));
 }
 
-function querysetName(model: AnyModel): string {
-  return `queryset.${model._meta.name}`;
+function querysetName(model: AnyModel, tag = ""): string {
+  return `queryset.${model._meta.name}${tag}`;
 }
 
 /** The queryset as config JSON, and the order it sets (column names) or `undefined`. */
-function querysetJson(model: AnyModel, queryset: NonNullable<ResourceConfig["queryset"]>): { json: unknown; order: string[] | undefined } {
+function querysetJson(model: AnyModel, queryset: NonNullable<ResourceConfig["queryset"]>, tag = ""): { json: unknown; order: string[] | undefined } {
   const name = model._meta.name;
-  if (typeof queryset === "function") return { json: { function: querysetName(model) }, order: undefined };
+  if (typeof queryset === "function") return { json: { function: querysetName(model, tag) }, order: undefined };
   if (!(queryset instanceof Prepared)) {
     throw new AdminConfigError(`${name}: queryset takes a prepared query set (${name}.objects.filter(...).prepare()) or an async function`);
   }
@@ -548,7 +553,7 @@ function canJson(model: AnyModel, rules: CanRules): Record<string, unknown> {
   return out;
 }
 
-function listJson(model: AnyModel, config: ListConfig): Record<string, unknown> {
+function listJson(model: AnyModel, config: ListConfig, tag = ""): Record<string, unknown> {
   const name = model._meta.name;
   for (const key of Object.keys(config)) {
     if (!LIST_KEYS.has(key)) throw new AdminConfigError(`${name}: unknown list option '${key}'`);
@@ -558,7 +563,7 @@ function listJson(model: AnyModel, config: ListConfig): Record<string, unknown> 
   if (config.filters !== undefined) out["filters"] = config.filters.map((c) => refName(model, c));
   if (config.tabs !== undefined) out["tabs"] = config.tabs.map((c) => refName(model, c));
   if (config.namedFilters !== undefined) out["named_filters"] = namedJson(model, config.namedFilters);
-  if (config.computed !== undefined) out["computed"] = computedJson(model, config.computed);
+  if (config.computed !== undefined) out["computed"] = computedJson(model, config.computed, tag);
   if (config.aggregates !== undefined) out["aggregates"] = aggregatesJson(model, config.aggregates);
   if (config.labels !== undefined) out["labels"] = { ...config.labels };
   if (config.empty !== undefined) out["empty"] = config.empty;
@@ -567,7 +572,7 @@ function listJson(model: AnyModel, config: ListConfig): Record<string, unknown> 
   if (config.pageSize !== undefined) out["page_size"] = config.pageSize;
   if (config.sortable !== undefined) out["sortable"] = config.sortable.map((c) => label(model, c));
   if (config.search !== undefined) out["search"] = config.search.map((c) => label(model, c));
-  if (config.searchWith !== undefined) out["search_with"] = searchName(model);
+  if (config.searchWith !== undefined) out["search_with"] = searchName(model, tag);
   return out;
 }
 
@@ -590,8 +595,8 @@ function cellJson(value: unknown): unknown {
   return value;
 }
 
-function searchName(model: AnyModel): string {
-  return `search.${model._meta.name}`;
+function searchName(model: AnyModel, tag = ""): string {
+  return `search.${model._meta.name}${tag}`;
 }
 
 /** The host function of a `searchWith`: the keys of the matches, at most `limit`. */
@@ -791,6 +796,105 @@ function keyJson(key: RecordKey): unknown {
   return keyValue(key as KeyPart);
 }
 
+export type InlineOptions = {
+  /** The relation of the parent when more than one leads to the model. */
+  readonly via?: string;
+  /** `with_parent` (the default) sends the rows with the parent in one change set and one transaction; `row` saves each row alone through the page of the child. */
+  readonly save?: "with_parent" | "row";
+  /** A name (`"edit_lines"` becomes `<label>.edit_lines`) that replaces the write permission of the parent. */
+  readonly permission?: string;
+  readonly style?: "table" | "stacked";
+  /** The row cap, 1 to 200 (20 by default). */
+  readonly max?: number;
+  readonly label?: string;
+  readonly collapsed?: boolean;
+  readonly delete?: boolean;
+  /** Page keys of the child that this inline overrides (`queryset`, `can`, `list`, `form`, `readonly`, `widgets`, `relations`, `inputs`, `checkMessages`); a model with no page takes this as its page. */
+  readonly page?: ResourceConfig;
+};
+
+const INLINE_SAVE = ["with_parent", "row"];
+const INLINE_STYLE = ["table", "stacked"];
+const INLINE_PAGE_SAVE_REASON = "a service writes one record: an inline row is written by the page of the parent (with_parent) or by the page of the child (row)";
+// A page key that an inline wrapper cannot override, with the reason.
+const INLINE_PAGE_REFUSED: Readonly<Record<string, string>> = {
+  create: INLINE_PAGE_SAVE_REASON,
+  update: INLINE_PAGE_SAVE_REASON,
+  delete: INLINE_PAGE_SAVE_REASON,
+  inlines: "an inline is never nested",
+  files: "a file field needs a multipart body, which a change set does not carry",
+  title: "an inline is not in the navigation",
+  group: "an inline is not in the navigation",
+  perms: "the permission of an inline follows its parent: use permission of the inline",
+  label: "the permission of an inline follows its parent: use permission of the inline",
+  fieldPermissions: "field permissions belong to the registered page of the child",
+  actions: "an inline has no actions",
+  formComponent: "a replaced form cannot be a row of a table",
+  allowProtectedWrites: "the opt-in belongs to the registered page of the child",
+};
+
+/** A to-many relation that the detail page of the parent edits in place; see `inline`. */
+export class InlineDef {
+  readonly via: string | undefined;
+  readonly save: "with_parent" | "row";
+  readonly permission: string | undefined;
+  readonly style: "table" | "stacked";
+  readonly max: number;
+  readonly label: string | undefined;
+  readonly collapsed: boolean;
+  readonly delete: boolean;
+  readonly page: ResourceConfig;
+
+  constructor(
+    readonly model: AnyModel,
+    options: InlineOptions = {},
+  ) {
+    const name = model._meta.name;
+    this.save = options.save ?? "with_parent";
+    this.style = options.style ?? "table";
+    if (!INLINE_SAVE.includes(this.save)) throw new AdminConfigError(`inline ${name}: save is one of ${INLINE_SAVE.join(", ")}`);
+    if (!INLINE_STYLE.includes(this.style)) throw new AdminConfigError(`inline ${name}: style is one of ${INLINE_STYLE.join(", ")}`);
+    this.via = options.via;
+    this.permission = options.permission;
+    this.max = options.max ?? 20;
+    this.label = options.label;
+    this.collapsed = options.collapsed ?? false;
+    this.delete = options.delete ?? true;
+    this.page = { ...(options.page ?? {}) };
+  }
+
+  /** The suffix of the host function names of the page keys that this wrapper overrides. */
+  tag(parent: string): string {
+    return `@${parent}.${this.model._meta.name}${this.via ? `.${this.via}` : ""}`;
+  }
+}
+
+/**
+ * The inline of a to-many relation: the registered page of `model` (or `page`, for a model with no page) as rows of the parent.
+ * Put it in the `inlines` of the page of the parent.
+ */
+export function inline(model: AnyModel, options: InlineOptions = {}): InlineDef {
+  return new InlineDef(model, options);
+}
+
+function inlineDefs(name: string, items: unknown): InlineDef[] {
+  if (!Array.isArray(items)) throw new AdminConfigError(`${name}: inlines is a list of inline(...) wrappers or models`);
+  return items.map((item) => {
+    if (item instanceof InlineDef) return item;
+    if (typeof item === "function" && (item as any)._meta !== undefined) return new InlineDef(item as AnyModel);
+    throw new AdminConfigError(`${name}: inlines is a list of inline(...) wrappers or models`);
+  });
+}
+
+function checkInlinePage(name: string, d: InlineDef): void {
+  const at = `${name}: inline ${d.model._meta.name}`;
+  for (const key of Object.keys(d.page)) {
+    const reason = INLINE_PAGE_REFUSED[key];
+    if (reason !== undefined) throw new AdminConfigError(`${at}: page does not take '${key}': ${reason}`);
+    if (!RESOURCE_KEYS.has(key)) throw new AdminConfigError(`${at}: unknown page option '${key}'`);
+  }
+}
+
 /** The resources of one registry. */
 export class Admin {
   prefix: string = DEFAULT_PREFIX;
@@ -842,34 +946,7 @@ export class Admin {
   }
 
   #configJson(registry: Registry): string {
-    const resources = [...this.#resources].map(([model, { model: cls, config }]) => {
-      const queryset = config.queryset === undefined ? undefined : querysetJson(cls, config.queryset);
-      if (queryset?.order !== undefined && config.list?.order !== undefined) {
-        throw new AdminConfigError(`${model}: the order is set twice: by the queryset and by list.order`);
-      }
-      const list = config.list === undefined && queryset?.order === undefined ? undefined : { ...(config.list === undefined ? {} : listJson(cls, config.list)), ...(queryset?.order === undefined ? {} : { order: queryset.order }) };
-      return {
-        model,
-        ...(queryset === undefined ? {} : { queryset: queryset.json }),
-        ...(config.can === undefined ? {} : { can: canJson(cls, config.can) }),
-        ...(config.checkMessages === undefined ? {} : { check_messages: { ...config.checkMessages } }),
-        ...(config.form === undefined ? {} : { form: formJson(model, config.form) }),
-        ...(config.readonly === undefined ? {} : { readonly: readonlyJson(model, config.readonly) }),
-        ...(config.widgets === undefined ? {} : { widgets: widgetsJson(`${model}: widgets`, config.widgets) }),
-        ...(config.formComponent === undefined ? {} : { form_component: formComponentJson(model, config.formComponent) }),
-        ...(config.relations === undefined ? {} : { relations: relationsJson(model, cls, registry, config.relations) }),
-        ...(config.files === undefined ? {} : { files: this.#filesOf(model, config.files) }),
-        ...(list === undefined ? {} : { list }),
-        ...this.#writesJson(model, cls, config),
-        ...(config.title === undefined ? {} : { title: config.title }),
-        ...(config.group === undefined ? {} : { group: config.group }),
-        ...(config.allow === undefined ? {} : { allow: [...config.allow] }),
-        ...(config.perms === undefined ? {} : { perms: [...config.perms] }),
-        ...(config.label === undefined ? {} : { label: config.label }),
-        ...(config.fieldPermissions === undefined ? {} : { field_permissions: [...config.fieldPermissions] }),
-        ...(config.actions === undefined ? {} : { actions: [...config.actions] }),
-      };
-    });
+    const resources = [...this.#resources].map(([model, { model: cls, config }]) => this.#resourceJson(model, cls, config, "", registry));
     return JSON.stringify({
       prefix: this.prefix,
       permissions: this.#strategy,
@@ -880,6 +957,71 @@ export class Admin {
       ...(this.#groups.length === 0 ? {} : { groups: this.#groups }),
       ...(this.#statementTimeout === 15 ? {} : { statement_timeout_ms: Math.round(this.#statementTimeout * 1000) }),
     });
+  }
+
+  /** The config JSON of one page. `tag` names the host functions of an inline wrapper's overrides. */
+  #resourceJson(model: string, cls: AnyModel, config: ResourceConfig, tag: string, registry: Registry): Record<string, unknown> {
+    const queryset = config.queryset === undefined ? undefined : querysetJson(cls, config.queryset, tag);
+    if (queryset?.order !== undefined && config.list?.order !== undefined) {
+      throw new AdminConfigError(`${model}: the order is set twice: by the queryset and by list.order`);
+    }
+    const list = config.list === undefined && queryset?.order === undefined ? undefined : { ...(config.list === undefined ? {} : listJson(cls, config.list, tag)), ...(queryset?.order === undefined ? {} : { order: queryset.order }) };
+    return {
+      model,
+      ...(queryset === undefined ? {} : { queryset: queryset.json }),
+      ...(config.can === undefined ? {} : { can: canJson(cls, config.can) }),
+      ...(config.checkMessages === undefined ? {} : { check_messages: { ...config.checkMessages } }),
+      ...(config.form === undefined ? {} : { form: formJson(model, config.form) }),
+      ...(config.readonly === undefined ? {} : { readonly: readonlyJson(model, config.readonly) }),
+      ...(config.widgets === undefined ? {} : { widgets: widgetsJson(`${model}: widgets`, config.widgets) }),
+      ...(config.formComponent === undefined ? {} : { form_component: formComponentJson(model, config.formComponent) }),
+      ...(config.relations === undefined ? {} : { relations: relationsJson(model, cls, registry, config.relations) }),
+      ...(config.files === undefined ? {} : { files: this.#filesOf(model, config.files) }),
+      ...(list === undefined ? {} : { list }),
+      ...this.#writesJson(model, cls, config),
+      ...(config.title === undefined ? {} : { title: config.title }),
+      ...(config.group === undefined ? {} : { group: config.group }),
+      ...(config.allow === undefined ? {} : { allow: [...config.allow] }),
+      ...(config.perms === undefined ? {} : { perms: [...config.perms] }),
+      ...(config.label === undefined ? {} : { label: config.label }),
+      ...(config.fieldPermissions === undefined ? {} : { field_permissions: [...config.fieldPermissions] }),
+      ...(config.actions === undefined ? {} : { actions: [...config.actions] }),
+      ...(config.inlines === undefined ? {} : { inlines: inlineDefs(model, config.inlines).map((d) => this.#inlineJson(model, d, registry)) }),
+    };
+  }
+
+  #inlineJson(parent: string, d: InlineDef, registry: Registry): Record<string, unknown> {
+    checkInlinePage(parent, d);
+    const child = d.model._meta.name;
+    const out: Record<string, unknown> = { model: child, save: d.save, style: d.style, max: d.max, collapsed: d.collapsed, delete: d.delete };
+    if (d.via !== undefined) out["via"] = d.via;
+    if (d.permission !== undefined) out["permission"] = d.permission;
+    if (d.label !== undefined) out["label"] = d.label;
+    const page = this.#resourceJson(child, d.model, d.page, d.tag(parent), registry);
+    if (Object.keys(page).length > 1) out["page"] = page;
+    return out;
+  }
+
+  /** Every page the site builds: the registered ones, and the page keys that an inline wrapper overrides. Each with its host function tag. */
+  #pages(): { model: AnyModel; config: ResourceConfig; tag: string }[] {
+    const pages: { model: AnyModel; config: ResourceConfig; tag: string }[] = [];
+    for (const [parent, { model, config }] of this.#resources) {
+      pages.push({ model, config, tag: "" });
+      for (const d of inlineDefs(parent, config.inlines ?? [])) {
+        if (Object.keys(d.page).length === 0) continue;
+        checkInlinePage(parent, d);
+        pages.push({ model: d.model, config: d.page, tag: d.tag(parent) });
+      }
+    }
+    return pages;
+  }
+
+  #inlineModels(): Map<string, AnyModel> {
+    const out = new Map<string, AnyModel>();
+    for (const [parent, { config }] of this.#resources) {
+      for (const d of inlineDefs(parent, config.inlines ?? [])) out.set(d.model._meta.name, d.model);
+    }
+    return out;
   }
 
   #writesJson(name: string, cls: AnyModel, config: ResourceConfig): Record<string, unknown> {
@@ -910,19 +1052,20 @@ export class Admin {
   /** The host functions: login, the `searchWith` function of each resource and the function of each computed column. */
   #host(): Record<string, HostFunction> {
     const host: Record<string, HostFunction> = { ...HOST };
-    for (const [, { model, config }] of this.#resources) {
-      if (typeof config.queryset === "function") host[querysetName(model)] = querysetHost(model, config.queryset);
+    for (const { model, config, tag } of this.#pages()) {
+      if (typeof config.queryset === "function") host[querysetName(model, tag)] = querysetHost(model, config.queryset);
       const search = config.list?.searchWith;
-      if (search !== undefined) host[searchName(model)] = searchHost(model, search);
+      if (search !== undefined) host[searchName(model, tag)] = searchHost(model, search);
       for (const column of config.list?.computed ?? []) {
-        if (column.function !== undefined) host[batchName(model, column.name)] = batchHost(model, column.function);
+        if (column.function !== undefined) host[batchName(model, column.name, tag)] = batchHost(model, column.function);
       }
     }
-    host["admin.write"] = writerHost(this.#resources);
+    const models = this.#inlineModels();
+    host["admin.write"] = writerHost(this.#resources, models);
     for (const [name, { model, config }] of this.#resources) {
       for (const op of ["create", "update", "delete"] as const) {
         const fn = config[op];
-        if (fn !== undefined) host[`service.${name}.${op}`] = serviceFunction(model, config, op, fn);
+        if (fn !== undefined) host[`service.${name}.${op}`] = serviceFunction(model, config, op, fn, models);
       }
     }
     const files = new Map<string, string>();
@@ -1021,6 +1164,8 @@ export const admin = {
   testClient: (database: Database, options?: Parameters<Admin["testClient"]>[1]): AdminTestClient => defaultAdmin.testClient(database, options),
   input,
   log,
+  inline,
 };
 
 export { Context, InputDef, input, log };
+export type { InlineChanges };

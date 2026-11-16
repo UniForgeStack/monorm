@@ -211,11 +211,11 @@ pub(crate) struct Prepared {
 }
 
 /// A map by form label as a map by field name.
-fn by_field(r: &Resource, m: &Map<String, Value>) -> Value {
+pub(crate) fn by_field(r: &Resource, m: &Map<String, Value>) -> Value {
     Value::Object(m.iter().map(|(k, v)| (r.detail.iter().find(|d| &d.label == k).map_or_else(|| k.clone(), |d| d.field.clone()), v.clone())).collect())
 }
 
-fn key_object(r: &Resource, key: &[Value]) -> Value {
+pub(crate) fn key_object(r: &Resource, key: &[Value]) -> Value {
     Value::Object(r.key_columns.iter().zip(key).map(|(c, v)| (c.field.clone(), v.clone())).collect())
 }
 
