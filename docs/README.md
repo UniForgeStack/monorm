@@ -41,6 +41,7 @@ Start with the runnable [quickstart](../examples/quickstart) (Python and TypeScr
 | soft-delete | `extensions/soft-delete` (`monorm/extensions/soft-delete` on npm) | `@@soft_delete.deleted_at(name, mode:)` | [schema-extensions.md](extensions/schema-extensions.md) |
 | locking | `extensions/locking` (`monorm/extensions/locking` on npm) | `@@locking.version(name, upsert:)` | [schema-extensions.md](extensions/schema-extensions.md) |
 | inherit | `extensions/inherit` (`monorm/extensions/inherit` on npm) | `@@inherit.abstract`, `@@inherit.extends`, `@@inherit.override` | [inherit.md](extensions/inherit.md) |
+| scope | `extensions/scope` (`monorm/extensions/scope` on npm) | `@@scope.by(key: column)` | [scope.md](extensions/scope.md) |
 | query-defaults | `extensions/query-defaults/` (`monorm/extensions/query-defaults` on npm) | `@@query.*`, `@query.selectOut` | [selection-and-defaults.md](schema/selection-and-defaults.md) |
 
 [optional-packaging.md](contracts/optional-packaging.md#installable-packages) shows how to install them.

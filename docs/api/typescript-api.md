@@ -1099,16 +1099,16 @@ await scope({ shop: shop.id, user: 7 }, async () => {
 ```
 
 * `@@scope.by(shop: shop_id)` (the built-in `scope` extension) adds the read filter `shop_id = scope.shop`, fills `shop_id` on insert and checks it on update and delete. A write with another `shop_id` raises `ScopeMismatch`. A write with no scope value raises `ScopeMissing`; both are `QueryError`.
-* On PostgreSQL, a key that a database object reads (a policy, in the next part) is also set as the transaction-local setting `scope.<key>`, with `set_config(..., true)`. No database object reads a key in this release, so no `scope.<key>` setting is sent yet. A setting travels with the first statement in the same flight, so a scoped transaction needs no extra round trip when the statement is cached (measured, 40 ms delay proxy: about 1.1 round trips warm, 2.1 cold).
+* On PostgreSQL, `@@scope.by` also guards the table in the database (see [scope.md](../extensions/scope.md)). Each key that a policy reads is set as the transaction-local setting `scope.<key>`, with `set_config(..., true)`, from the `scope()` context. A `scope=` option on one call is not sent to the database: only the context scope is. A setting travels with the first statement in the same flight, so a scoped transaction needs no extra round trip when the statement is cached (measured, 40 ms delay proxy: about 1.1 round trips warm, 2.1 cold).
 * Once a key is sent, a setting that a block no longer sets reads `''`, not `NULL`, in the next transaction of the same connection: a policy should read `NULLIF(current_setting('scope.shop', true), '')`.
 * `await unscoped(["shop"], async () => {...})` turns off the fill, the check and the filter of the named keys, and sets `monorm.bypass` (a list of the open keys). A write that needs a key that is neither set nor open raises `ScopeMissing`.
 * `await skipTriggers(["timestamps"], async () => {...})` sets `monorm.skip`. A trigger that the extension declares skippable skips only for a role in `bypass_roles` of the `datasource` block (empty by default, so nothing skips). SQLite has no such triggers: it raises `QueryError`.
 * `scope()` rejects a key that no open schema reads, `None`, `''` and a list with `TypeError`.
 * The settings and the scope of a statement are in `QueryEvent.settings` (the trace).
-* Raw `db.execute(...)` is not scoped by the ORM. The ORM does not create policies; a superuser and the table owner bypass RLS unless the table has `FORCE ROW LEVEL SECURITY`.
-* A composed model (model composition) stores its rows in a table for each level: each table needs its own policy.
+* Raw `db.execute(...)` is not scoped by the ORM: it sends no `scope.<key>` setting, so a policy refuses it unless the transaction sets the setting. A superuser and a role with `BYPASSRLS` bypass RLS even with `FORCE ROW LEVEL SECURITY`.
+* A composed model (model composition) stores its rows in a table for each level: the root table has the policy on the scope column, and each level table has a policy that looks the row up in the root.
 * Session locks (`session=True`) set no scope setting. SQLite sets no settings: the application filter, the fill and the check still work.
-* To migrate from `db.tenant(x)`: use `scope({ <key>: x }, fn)` with a schema key for the application filter, the fill and the check. Nothing sets `app.tenant` or `scope.<key>` in this release, so a hand-written policy that read `app.tenant` sees no value. Until the generated policies ship, set your own setting with a raw `set_config('app.tenant', value, true)` statement at the start of the transaction, or with `db_settings` of the admin. Do not upgrade a deployment that depends on such a policy before the policies ship.
+* To migrate from `db.tenant(x)`: use `scope({ <key>: x }, fn)` with a schema key. The generated policies read `scope.<key>`, not `app.tenant`: drop a hand-written policy that reads `app.tenant` (the guitars move in [scope.md](../extensions/scope.md#moving-from-guitars)).
 
 SQLite has no row or advisory locks; they throw `QueryError` there.
 

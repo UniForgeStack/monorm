@@ -814,6 +814,7 @@ python -m monorm pull [-o schema.prisma] [--force]   # the schema file from a li
 python -m monorm baseline                       # mark the first migration applied (after pull)
 python -m monorm fmt --native                   # convert supported SQL expressions offline
 python -m monorm drift                          # exit 1 if the database differs from the last snapshot
+python -m monorm audit                          # exit 1 if the row-level security differs from the schema
 ```
 
 There is one command line, written in Rust (`crates/cli/`): `python -m monorm`, `npx monorm` and the
