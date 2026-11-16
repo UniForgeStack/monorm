@@ -28,6 +28,9 @@ pub const COUNT_CAP: usize = 10_000;
 /// A table with more rows allows only the sort columns that lead an index, unless the config names the columns.
 pub const LARGE_TABLE_ROWS: usize = 50_000;
 pub const DEFAULT_STATEMENT_TIMEOUT_MS: u64 = 15_000;
+pub const DEFAULT_EXPORT_IDLE_TIMEOUT_MS: u64 = 30_000;
+/// The rows of one keyset batch of an export.
+pub const EXPORT_BATCH: usize = 1_000;
 /// PostgreSQL stores `statement_timeout` in an `int4` of milliseconds and rejects more.
 pub const MAX_STATEMENT_TIMEOUT_MS: u64 = i32::MAX as u64;
 /// How long a table size stays known.
@@ -70,6 +73,8 @@ struct Config {
     resources: Vec<ResourceConfig>,
     /// The time limit of each statement of a request, in ms (PostgreSQL). 0: none. Default 15000.
     statement_timeout_ms: Option<u64>,
+    /// How long an export waits for the client to take the next chunk, in ms. 0: no limit. Default 30000.
+    export_idle_timeout_ms: Option<u64>,
     /// Widgets for every resource: `Model.field`, `Type.subfield`, or a type name, to a widget name.
     #[serde(default)]
     widgets: BTreeMap<String, String>,
@@ -623,6 +628,8 @@ pub struct Site {
     pub groups: Vec<String>,
     /// The time limit of each statement of a request. None: no limit.
     pub statement_timeout: Option<Duration>,
+    /// How long an export waits for the client to take the next chunk before it stops. None: no limit.
+    pub export_idle_timeout: Option<Duration>,
     /// What an operator should fix, found when the site was built: a search field with no index.
     pub warnings: Vec<String>,
     meta_builds: AtomicUsize,
@@ -722,7 +729,11 @@ impl Site {
             0 => None,
             ms => Some(Duration::from_millis(ms)),
         };
-        Ok(Site { schema, prefix, strategy, resources, brand, groups, statement_timeout, warnings, meta_builds })
+        let export_idle_timeout = match config.export_idle_timeout_ms.unwrap_or(DEFAULT_EXPORT_IDLE_TIMEOUT_MS) {
+            0 => None,
+            ms => Some(Duration::from_millis(ms)),
+        };
+        Ok(Site { schema, prefix, strategy, resources, brand, groups, statement_timeout, export_idle_timeout, warnings, meta_builds })
     }
 
     /// How many times `build` made the metadata of a resource: one per resource, and no request adds to it.

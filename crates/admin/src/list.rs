@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 
 use crate::json;
 use crate::key;
-use crate::site::{Column, Filter, FilterKind, Mode, OrderColumn, Related, Resource, Site, Source, COUNT_CAP, LARGE_TABLE_ROWS, MAX_PAGE_SIZE};
+use crate::site::{Column, Filter, FilterKind, Mode, OrderColumn, Related, Resource, Site, Source, COUNT_CAP, EXPORT_BATCH, LARGE_TABLE_ROWS, MAX_PAGE_SIZE};
 
 /// Why a list failed: the request is wrong (`Bad`) or a value in it does not fit (`Invalid`),
 /// the engine failed, or a statement ran past its time limit.
@@ -117,6 +117,8 @@ pub struct ListRequest {
     pub pins: Vec<(Column, Value)>,
     /// The `queryset` filter and the read defaults that the user switched off.
     pub scope: RowScope,
+    /// An export batch: the limit may be up to `EXPORT_BATCH`, not `MAX_PAGE_SIZE`.
+    pub export: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,7 +157,7 @@ pub struct FilterClause {
 
 impl ListRequest {
     pub fn new(position: Position) -> ListRequest {
-        ListRequest { position, limit: None, sort: None, q: None, found: None, filters: Vec::new(), named: Vec::new(), pins: Vec::new(), scope: RowScope::default() }
+        ListRequest { position, limit: None, sort: None, q: None, found: None, filters: Vec::new(), named: Vec::new(), pins: Vec::new(), scope: RowScope::default(), export: false }
     }
 }
 
@@ -673,8 +675,9 @@ pub fn check_request(site: &Site, resource: &Resource, request: &ListRequest) ->
 
 fn page_limit(resource: &Resource, request: &ListRequest) -> Result<usize, ListError> {
     let limit = request.limit.unwrap_or(resource.page_size);
-    if limit == 0 || limit > MAX_PAGE_SIZE {
-        return Err(ListError::Bad(format!("limit is between 1 and {MAX_PAGE_SIZE}")));
+    let most = if request.export { EXPORT_BATCH } else { MAX_PAGE_SIZE };
+    if limit == 0 || limit > most {
+        return Err(ListError::Bad(format!("limit is between 1 and {most}")));
     }
     Ok(limit)
 }

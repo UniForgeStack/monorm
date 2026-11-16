@@ -49,7 +49,7 @@ pub fn api_with(site: Arc<Site>, conn: Arc<dyn Executor>, auth: Option<AuthConfi
     let prefix = site.prefix.clone();
     let routes = Router::new().route("/resources", get(resources)).route("/resources/{name}", get(rows).post(crate::write::create)).route("/resources/{name}/{key}", get(detail).patch(crate::write::update).delete(crate::write::destroy)).route("/resources/{name}/{key}/{rel}", get(tab_rows))
         .route("/resources/{name}/{key}/inlines/{inline}", post(crate::inlinewrite::row_create))
-        .route("/resources/{name}/{key}/inlines/{inline}/{row}", patch(crate::inlinewrite::row_update).delete(crate::inlinewrite::row_destroy)).route("/forms/{name}", get(form_module)).route("/counts/{name}", get(counts)).route("/counts/{name}/{key}/{rel}", get(tab_counts)).route("/autocomplete/{name}/{rel}", get(crate::relations::autocomplete)).route("/links/{name}/{key}/{rel}", get(crate::relations::links)).route("/files/{name}/{key}/{field}", get(crate::files::download).post(crate::files::upload))
+        .route("/resources/{name}/{key}/inlines/{inline}/{row}", patch(crate::inlinewrite::row_update).delete(crate::inlinewrite::row_destroy)).route("/forms/{name}", get(form_module)).route("/counts/{name}", get(counts)).route("/export/{name}", get(crate::export::export)).route("/counts/{name}/{key}/{rel}", get(tab_counts)).route("/autocomplete/{name}/{rel}", get(crate::relations::autocomplete)).route("/links/{name}/{key}/{rel}", get(crate::relations::links)).route("/files/{name}/{key}/{field}", get(crate::files::download).post(crate::files::upload))
         .route("/actions/{name}/{action}", post(crate::actions::on_list))
         .route("/tab-actions/{name}/{key}/{rel}/{action}", post(crate::actions::on_tab));
     let bridge = auth.clone().map(|a| (a.bridge.clone(), a));
@@ -116,8 +116,11 @@ pub async fn call_full(site: Arc<Site>, conn: Arc<dyn Executor>, method: &str, u
     };
     let status = response.status().as_u16();
     let headers = response.headers().iter().map(|(k, v)| (k.as_str().to_owned(), String::from_utf8_lossy(v.as_bytes()).into_owned())).collect();
-    let bytes = http_body_util::BodyExt::collect(response.into_body()).await.map(|b| b.to_bytes().to_vec()).unwrap_or_default();
-    (status, headers, bytes)
+    // A body that fails while it streams (a cut export) is an error here, not an empty answer.
+    match http_body_util::BodyExt::collect(response.into_body()).await {
+        Ok(b) => (status, headers, b.to_bytes().to_vec()),
+        Err(e) => (500, headers, failure("Internal", &e.to_string()).into_bytes()),
+    }
 }
 
 fn failure(kind: &str, message: &str) -> String {
@@ -151,17 +154,23 @@ pub(crate) async fn deny(site: &Site, scope: Scoped, user: &User, resource: &str
     reject(StatusCode::FORBIDDEN, "Forbidden", "you do not have the permission for this")
 }
 
-/// The preamble of every route: the user (401), a scope, the grants of the user and the site gate (403).
-pub(crate) async fn authorize(s: &State_, user: Option<Extension<User>>) -> Result<(User, Scoped, Grants), Box<Response>> {
-    let user = require_user(user)?;
-    let scope = Scoped::begin(s.conn.as_ref()).await.map_err(|e| Box::new(database_error(&e.message)))?;
+/// A transaction with the statement timeout of the site set.
+pub(crate) async fn begin_scope(s: &State_) -> Result<Scoped, String> {
+    let scope = Scoped::begin(s.conn.as_ref()).await.map_err(|e| e.message)?;
     // SQLite has no statement timeout: the request timeout of the service covers it.
     if let (Some(limit), Dialect::Postgres) = (s.site.statement_timeout, s.conn.dialect()) {
         if let Err(e) = scope.executor().execute(format!("SET LOCAL statement_timeout = {}", limit.as_millis()), vec![]).await {
             scope.rollback().await;
-            return Err(Box::new(database_error(&e.message)));
+            return Err(e.message);
         }
     }
+    Ok(scope)
+}
+
+/// The preamble of every route: the user (401), a scope, the grants of the user and the site gate (403).
+pub(crate) async fn authorize(s: &State_, user: Option<Extension<User>>) -> Result<(User, Scoped, Grants), Box<Response>> {
+    let user = require_user(user)?;
+    let scope = begin_scope(s).await.map_err(|m| Box::new(database_error(&m)))?;
     let grants = match permissions::load(&s.site, scope.executor(), &user.0).await {
         Ok(g) => g,
         Err(m) => {
@@ -301,14 +310,14 @@ fn close_host_forms(meta: &mut Value) {
 }
 
 #[derive(Deserialize)]
-struct ListQuery {
+pub(crate) struct ListQuery {
     cursor: Option<String>,
     before: Option<String>,
     last: Option<String>,
     page: Option<usize>,
     limit: Option<usize>,
-    sort: Option<String>,
-    q: Option<String>,
+    pub(crate) sort: Option<String>,
+    pub(crate) q: Option<String>,
     exact: Option<String>,
 }
 
@@ -409,7 +418,7 @@ fn timeout_error(note: String) -> Response {
 }
 
 /// The query of a list route, once the user may read the resource: a malformed value is 400 in the usual envelope, after the 401, 404 and 403.
-async fn query(scope: Scoped, q: Result<Query<ListQuery>, QueryRejection>) -> Result<(Scoped, ListQuery), Response> {
+pub(crate) async fn query(scope: Scoped, q: Result<Query<ListQuery>, QueryRejection>) -> Result<(Scoped, ListQuery), Response> {
     match q {
         Ok(Query(q)) => Ok((scope, q)),
         Err(e) => {
@@ -480,7 +489,7 @@ fn batch_value(c: &crate::site::Column, v: Value) -> Result<Value, ListError> {
 }
 
 /// One call to each host function of a computed column for the whole page: never one call per row.
-async fn fill_batch(s: &State_, resource: &Resource, scope: &Scoped, page: &mut Page) -> Result<(), ListError> {
+pub(crate) async fn fill_batch(s: &State_, resource: &Resource, scope: &Scoped, page: &mut Page) -> Result<(), ListError> {
     if page.batch.is_empty() || page.rows.is_empty() {
         return Ok(());
     }
