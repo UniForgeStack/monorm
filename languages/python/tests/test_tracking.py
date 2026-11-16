@@ -1076,3 +1076,66 @@ async def test_a_reference_to_a_soft_deleted_row_loads_nothing(dialect):
     finally:
         await db.drop_tables()
         await db.close()
+
+
+def cascade_schema(mode: str, note_attributes: str = "", relation_attributes: str = "", page: bool = False) -> str:
+    pages = (
+        "model Page {\n  id Int @id\n  note_id Int\n"
+        "  note Note @relation(fields: [note_id], references: [id], onDelete: Cascade)\n}\n"
+        if page
+        else ""
+    )
+    return (
+        f'model Author {{\n  id Int @id\n  notes Note[]\n  @@soft_delete.deleted_at(mode: "{mode}")\n}}\n'
+        "model Note {\n  id Int @id\n  author_id Int\n"
+        f"  author Author @relation(fields: [author_id], references: [id], onDelete: Cascade) {relation_attributes}\n"
+        f"  {note_attributes}\n}}\n{pages}"
+    )
+
+
+@requires("monorm.soft-delete")
+def test_a_soft_delete_parent_with_a_cascading_child_without_soft_delete_fails_the_load():
+    for mode in ("database", "application"):
+        with pytest.raises(monorm.SchemaError) as error:
+            monorm.loads(cascade_schema(mode), registry=monorm.Registry())
+        message = str(error.value)
+        assert "Author is soft-deleted, but Note.author cascades deletes (onDelete: Cascade) and Note has no soft delete" in message
+        assert "add @@soft_delete.deleted_at to Note" in message
+        assert "add @soft_delete.keep_child_rows to the relation field Note.author" in message
+
+
+@requires("monorm.soft-delete")
+def test_the_cascade_check_follows_several_levels():
+    source = cascade_schema("database", note_attributes='@@soft_delete.deleted_at(mode: "database")', page=True)
+    with pytest.raises(monorm.SchemaError) as error:
+        monorm.loads(source, registry=monorm.Registry())
+    assert "Note is soft-deleted, but Page.note cascades deletes" in str(error.value)
+
+
+@requires("monorm.soft-delete")
+def test_the_keep_child_rows_attribute_lets_the_schema_load():
+    for mode in ("database", "application"):
+        models = monorm.loads(
+            cascade_schema(mode, relation_attributes="@soft_delete.keep_child_rows"), registry=monorm.Registry()
+        )
+        assert "Note" in models
+
+
+@requires("monorm.soft-delete")
+def test_a_soft_delete_child_and_a_non_cascading_child_load():
+    soft_child = cascade_schema("database", note_attributes='@@soft_delete.deleted_at(mode: "database")')
+    assert "Note" in monorm.loads(soft_child, registry=monorm.Registry())
+    restrict = cascade_schema("database").replace("onDelete: Cascade", "onDelete: Restrict")
+    assert "Note" in monorm.loads(restrict, registry=monorm.Registry())
+
+
+@requires("monorm.soft-delete")
+def test_the_keep_child_rows_attribute_is_checked_for_its_place_and_arguments():
+    on_model = cascade_schema("database", note_attributes="@@soft_delete.keep_child_rows")
+    with pytest.raises(monorm.SchemaError) as error:
+        monorm.loads(on_model, registry=monorm.Registry())
+    assert "invalid declaration target" in str(error.value)
+    with_argument = cascade_schema("database", relation_attributes='@soft_delete.keep_child_rows("x")')
+    with pytest.raises(monorm.SchemaError) as error:
+        monorm.loads(with_argument, registry=monorm.Registry())
+    assert "too many positional arguments" in str(error.value)

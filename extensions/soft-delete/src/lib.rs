@@ -8,6 +8,8 @@ use monorm::{dialect::Dialect, extension::{views_keeping, Declaration, ReadDefau
 const SOURCE: &str = "monorm.soft-delete";
 const DEFAULT: &str = "deleted";
 const TRACKED: Tracked = Tracked { attribute: "soft_delete.deleted_at", field: "deleted_at" };
+/// On a relation field: a soft delete of the parent keeps the child rows. Read by `check`, not by the tracking code.
+const KEEP_ROWS: &str = "soft_delete.keep_child_rows";
 
 /// A soft-delete field: declared on a model, or copied to a proxy of its storage owner.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -19,7 +21,7 @@ struct SoftDelete {
 
 /// Runs before the logical passes, so a proxy of the model copies the field too.
 pub fn add_fields(ir: &mut SchemaIr) -> Result<(), String> {
-    TRACKED.add_fields(ir, FieldIr::plain(TRACKED.field, ColType::DateTime))
+    TRACKED.add_fields_besides(ir, FieldIr::plain(TRACKED.field, ColType::DateTime), &[KEEP_ROWS])
 }
 
 /// The field a delete-time assignment of this model increments, if any: the version bump of a soft delete.
@@ -54,6 +56,47 @@ pub fn check(ir: &mut SchemaIr) -> Result<(), String> {
             return Err(match written_by(ir, &rewrite.model, filter) {
                 Some(declaration) if declaration.model != rewrite.model => error(declaration, format!("{message} (this declaration is on {}, which {} inherits)", declaration.model, rewrite.model)),
                 Some(declaration) => error(declaration, message),
+                None => message,
+            });
+        }
+    }
+    lost_children(ir)
+}
+
+/// The models of the batch, then the physical models of earlier batches that have no logical model.
+fn all_models(ir: &SchemaIr) -> Vec<&ModelIr> {
+    let physical = ir.behavior.storage.iter().flat_map(|s| &s.models).filter(|m| !ir.models.iter().any(|l| l.name == m.name));
+    ir.models.iter().chain(physical).collect()
+}
+
+/// A soft delete reaches a child only through the cascade trigger or the ORM, and both skip a child without soft delete:
+/// its rows stay and point to a parent that is hidden. A cascade from a soft-delete table into a table without soft delete
+/// fails the schema, unless the relation field carries `@soft_delete.keep_child_rows`.
+/// The check works on tables, so it covers every level (each soft-delete child is a parent in its turn),
+/// proxies (same table as their root) and storage owners.
+fn lost_children(ir: &SchemaIr) -> Result<(), String> {
+    let models = all_models(ir);
+    let root = |name: &str| ir.behavior.model_views.iter().find(|v| v.model == name).map_or(name.to_owned(), |v| v.root.clone());
+    let opt_outs: Vec<&Declaration> = ir.behavior.declarations.iter().filter(|d| d.attribute == KEEP_ROWS).collect();
+    for d in &opt_outs {
+        if !d.arguments.is_empty() || !d.positional.is_empty() { return Err(error(d, "takes no argument")); }
+        let Some(field) = &d.field else { return Err(d.error_with("@@", "write it on the relation field that cascades, not on the model")) };
+        let relation = models.iter().find(|m| m.name == d.model).is_some_and(|m| m.relations.iter().any(|r| &r.name == field && r.foreign_key));
+        if !relation { return Err(error(d, format!("{}.{field} is no relation field with a foreign key; write the attribute on the relation field, for example on {}.author", d.model, d.model))); }
+    }
+    let table = |name: &str| models.iter().find(|m| m.name == name).map(|m| m.table.as_str());
+    let soft: Vec<&str> = ir.behavior.delete_rewrites.iter().filter(|d| d.source == SOURCE).filter_map(|d| table(&d.model)).collect();
+    for child in models.iter().filter(|m| !soft.contains(&m.table.as_str())) {
+        let owner = root(&child.name);
+        for r in child.relations.iter().filter(|r| r.foreign_key && r.on_delete == Some(OnDelete::Cascade)) {
+            if !table(&r.target).is_some_and(|t| soft.contains(&t)) { continue; }
+            if opt_outs.iter().any(|d| (d.model == child.name || d.model == owner) && d.field.as_deref() == Some(r.name.as_str())) { continue; }
+            let (parent, child_name, relation) = (&r.target, &child.name, &r.name);
+            let message = format!("{parent} is soft-deleted, but {child_name}.{relation} cascades deletes (onDelete: Cascade) and {child_name} has no soft delete, so a soft delete of {parent} keeps the {child_name} rows; \
+                fix: add @@{} to {child_name}, or add @{KEEP_ROWS} to the relation field {child_name}.{relation} to keep the {child_name} rows on a soft delete", TRACKED.attribute);
+            let parent_root = root(parent);
+            return Err(match ir.behavior.declarations.iter().find(|d| d.attribute == TRACKED.attribute && d.field.is_none() && (&d.model == parent || d.model == parent_root)) {
+                Some(d) => d.error_with("@@", message),
                 None => message,
             });
         }
@@ -116,7 +159,7 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
     let mut roles: Vec<SoftDelete> = ir.behavior.delete_rewrites.iter().filter(|d| d.source == SOURCE)
         .map(|d| SoftDelete { model: d.model.clone(), field: d.field.clone(), mode: Mode::Application }).collect();
     let mut added = vec![];
-    for d in &TRACKED.declarations(ir)? {
+    for d in &TRACKED.declarations_besides(ir, &[KEEP_ROWS])? {
         let name = TRACKED.field_name(d)?;
         let mode = Mode::parse(d.arguments.get("mode")).map_err(|e| error(d, e))?;
         let model = ir.models.iter().find(|m| m.name == d.model).ok_or_else(|| error(d, "unknown model"))?;
@@ -208,6 +251,18 @@ mod tests {
 
     /// The state after `add_fields`: Author and Book declare `@@soft_delete.deleted_at("deleted")` and have the field `deleted`; Note has no soft delete.
     fn schema(dialect: &str, mode: &str) -> SchemaIr {
+        let mut ir = bare(dialect, mode);
+        ir.behavior.declarations.push(keep_rows("Note", "author", 12));
+        ir
+    }
+
+    /// `@soft_delete.keep_child_rows` on the relation field `field` of `model`.
+    fn keep_rows(model: &str, field: &str, line: u32) -> Declaration {
+        serde_json::from_value(serde_json::json!({"attribute": "soft_delete.keep_child_rows", "model": model, "field": field, "positional": [], "arguments": {}, "location": {"file": "schema.prisma", "line": line, "column": 3}})).unwrap()
+    }
+
+    /// `schema` without the opt-out: Note cascades from a soft-delete model and has no soft delete.
+    fn bare(dialect: &str, mode: &str) -> SchemaIr {
         let named = |model: &str, line: u32| at(model, line, serde_json::json!(["deleted"]), serde_json::json!({"mode": mode}), None);
         let mut ir = declared(dialect, vec![named("Author", 3), named("Book", 9)]);
         monorm::extension::capture_storage(&mut ir).unwrap();
@@ -472,6 +527,92 @@ mod tests {
     fn wrong_declarations_fail_with_their_location() {
         let err = prepared(&mut schema("postgres", "later")).unwrap_err();
         assert!(err.ends_with("mode must be \"database\" or \"application\""), "{err}");
+    }
+
+    const LOST: &str = "schema.prisma:3:3: @@soft_delete.deleted_at: Author is soft-deleted, but Note.author cascades deletes (onDelete: Cascade) and Note has no soft delete, so a soft delete of Author keeps the Note rows; fix: add @@soft_delete.deleted_at to Note, or add @soft_delete.keep_child_rows to the relation field Note.author to keep the Note rows on a soft delete";
+
+    fn checked(mut ir: SchemaIr) -> Result<(), String> {
+        prepared(&mut ir)?;
+        check(&mut ir)
+    }
+
+    fn model(ir: &mut SchemaIr, value: serde_json::Value) { ir.models.push(serde_json::from_value(value).unwrap()); }
+
+    #[test]
+    fn a_cascade_to_a_child_without_soft_delete_fails_the_schema_with_both_fixes() {
+        for mode in ["application", "database"] {
+            assert_eq!(checked(bare("postgres", mode)).unwrap_err(), LOST, "{mode}");
+        }
+        assert_eq!(checked(bare("sqlite", "database")).unwrap_err(), LOST);
+        checked(schema("postgres", "database")).unwrap();
+        checked(schema("postgres", "application")).unwrap();
+    }
+
+    #[test]
+    fn the_check_follows_cascades_through_several_levels() {
+        // Author (soft) <- Book (soft) <- Page (no soft delete): the soft delete reaches Book and stops there.
+        let mut ir = schema("postgres", "database");
+        model(&mut ir, serde_json::json!({"name": "Page", "table": "pages", "fields": [
+            {"name": "id", "column": "id", "type": "int", "primary_key": true}, {"name": "book_id", "column": "book_id", "type": "int"}],
+            "relations": [{"name": "book", "kind": "one", "target": "Book", "from": "book_id", "to": "id", "foreign_key": true, "on_delete": "cascade"}]}));
+        let err = checked(ir.clone()).unwrap_err();
+        assert!(err.starts_with("schema.prisma:9:3: @@soft_delete.deleted_at: Book is soft-deleted, but Page.book cascades deletes"), "{err}");
+        ir.behavior.declarations.push(keep_rows("Page", "book", 20));
+        checked(ir.clone()).unwrap();
+        // A child that the opt-out keeps is never deleted by a soft delete, so its own cascades lose nothing.
+        model(&mut ir, serde_json::json!({"name": "Mark", "table": "marks", "fields": [
+            {"name": "id", "column": "id", "type": "int", "primary_key": true}, {"name": "note_id", "column": "note_id", "type": "int"}],
+            "relations": [{"name": "note", "kind": "one", "target": "Note", "from": "note_id", "to": "id", "foreign_key": true, "on_delete": "cascade"}]}));
+        checked(ir).unwrap();
+    }
+
+    #[test]
+    fn a_relation_that_does_not_cascade_is_no_loss() {
+        let mut ir = bare("postgres", "database");
+        for m in ir.models.iter_mut().filter(|m| m.name == "Note") { m.relations[0].on_delete = Some(OnDelete::SetNull); }
+        checked(ir).unwrap();
+    }
+
+    #[test]
+    fn proxies_and_storage_owners_are_checked_through_their_table() {
+        let view = |ir: &mut SchemaIr, source: &str| {
+            let mut view: ModelIr = ir.models.iter().find(|m| m.name == source).unwrap().clone();
+            view.name = format!("{source}View");
+            ir.behavior.lowered_models.push(view.name.clone());
+            ir.behavior.model_views.push(monorm::extension::ModelView { model: view.name.clone(), source: source.into(), root: source.into(), row_filter: None, insert_table: None });
+            ir.models.push(view);
+        };
+        // A relation to the proxy of a soft-delete model reaches the soft-delete table.
+        let mut ir = bare("postgres", "application");
+        view(&mut ir, "Author");
+        ir.models.iter_mut().find(|m| m.name == "Note").unwrap().relations[0].target = "AuthorView".into();
+        assert_eq!(checked(ir).unwrap_err(), LOST.replace("Author is", "AuthorView is").replace("of Author keeps", "of AuthorView keeps"));
+        // A proxy of a child without soft delete is the same table: the opt-out of its root counts, and one error names the root.
+        let mut ir = schema("postgres", "application");
+        view(&mut ir, "Note");
+        checked(ir).unwrap();
+        let mut ir = bare("postgres", "application");
+        view(&mut ir, "Note");
+        assert_eq!(checked(ir).unwrap_err(), LOST);
+        // A proxy of a soft-delete child keeps the field, so it is no lost child.
+        let mut ir = schema("postgres", "database");
+        view(&mut ir, "Book");
+        checked(ir).unwrap();
+    }
+
+    #[test]
+    fn the_opt_out_belongs_on_a_cascading_relation_and_takes_no_argument() {
+        let mut ir = schema("postgres", "application");
+        ir.behavior.declarations.push(keep_rows("Note", "author_id", 13));
+        assert_eq!(checked(ir).unwrap_err(), "schema.prisma:13:3: @soft_delete.keep_child_rows: Note.author_id is no relation field with a foreign key; write the attribute on the relation field, for example on Note.author");
+        let mut ir = schema("postgres", "application");
+        let mut d = keep_rows("Note", "author", 13);
+        d.arguments.insert("x".into(), serde_json::json!(1));
+        ir.behavior.declarations.push(d);
+        assert_eq!(checked(ir).unwrap_err(), "schema.prisma:13:3: @soft_delete.keep_child_rows: takes no argument");
+        let mut ir = schema("postgres", "application");
+        ir.behavior.declarations.push(serde_json::from_value(serde_json::json!({"attribute": "soft_delete.keep_child_rows", "model": "Note", "positional": [], "arguments": {}, "location": {"file": "schema.prisma", "line": 14, "column": 1}})).unwrap());
+        assert_eq!(checked(ir).unwrap_err(), "schema.prisma:14:1: @@soft_delete.keep_child_rows: write it on the relation field that cascades, not on the model");
     }
 
     #[test]

@@ -833,3 +833,58 @@ for (const { extension, attribute, old, field, line, note } of OLD_FIELD_ATTRIBU
     );
   });
 }
+
+function cascadeSchema(mode: string, noteAttributes = "", relationAttributes = "", page = false): string {
+  const pages = page
+    ? "model Page {\n  id Int @id\n  note_id Int\n  note Note @relation(fields: [note_id], references: [id], onDelete: Cascade)\n}\n"
+    : "";
+  return `model Author {\n  id Int @id\n  notes Note[]\n  @@soft_delete.deleted_at(mode: "${mode}")\n}\n`
+    + "model Note {\n  id Int @id\n  author_id Int\n"
+    + `  author Author @relation(fields: [author_id], references: [id], onDelete: Cascade) ${relationAttributes}\n`
+    + `  ${noteAttributes}\n}\n${pages}`;
+}
+
+test("a soft delete parent with a cascading child without soft delete fails the load", { skip: !hasExtension("monorm.soft-delete") }, () => {
+  for (const mode of ["database", "application"]) {
+    assert.throws(
+      () => loads(cascadeSchema(mode), { registry: new Registry() }),
+      (e: Error) =>
+        e.message.includes("Author is soft-deleted, but Note.author cascades deletes (onDelete: Cascade) and Note has no soft delete")
+        && e.message.includes("add @@soft_delete.deleted_at to Note")
+        && e.message.includes("add @soft_delete.keep_child_rows to the relation field Note.author"),
+    );
+  }
+});
+
+test("the cascade check follows several levels", { skip: !hasExtension("monorm.soft-delete") }, () => {
+  const source = cascadeSchema("database", '@@soft_delete.deleted_at(mode: "database")', "", true);
+  assert.throws(
+    () => loads(source, { registry: new Registry() }),
+    (e: Error) => e.message.includes("Note is soft-deleted, but Page.note cascades deletes"),
+  );
+});
+
+test("the keep child rows attribute lets the schema load", { skip: !hasExtension("monorm.soft-delete") }, async () => {
+  for (const mode of ["database", "application"]) {
+    const models = await loads(cascadeSchema(mode, "", "@soft_delete.keep_child_rows"), { registry: new Registry() });
+    assert.ok("Note" in models);
+  }
+});
+
+test("a soft delete child and a non cascading child load", { skip: !hasExtension("monorm.soft-delete") }, async () => {
+  const softChild = cascadeSchema("database", '@@soft_delete.deleted_at(mode: "database")');
+  assert.ok("Note" in (await loads(softChild, { registry: new Registry() })));
+  const restrict = cascadeSchema("database").replace("onDelete: Cascade", "onDelete: Restrict");
+  assert.ok("Note" in (await loads(restrict, { registry: new Registry() })));
+});
+
+test("the keep child rows attribute is checked for its place and arguments", { skip: !hasExtension("monorm.soft-delete") }, () => {
+  assert.throws(
+    () => loads(cascadeSchema("database", "@@soft_delete.keep_child_rows"), { registry: new Registry() }),
+    (e: Error) => e.message.includes("invalid declaration target"),
+  );
+  assert.throws(
+    () => loads(cascadeSchema("database", "", '@soft_delete.keep_child_rows("x")'), { registry: new Registry() }),
+    (e: Error) => e.message.includes("too many positional arguments"),
+  );
+});

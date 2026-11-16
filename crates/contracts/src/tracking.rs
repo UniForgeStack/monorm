@@ -60,8 +60,14 @@ pub struct Tracked {
 impl Tracked {
     /// The declarations of this attribute in the batch. Another attribute of its namespace fails.
     pub fn declarations(&self, ir: &SchemaIr) -> Result<Vec<Declaration>, String> {
+        self.declarations_besides(ir, &[])
+    }
+
+    /// Like `declarations`, but the attributes in `others` belong to the same namespace and are not an error: the extension reads them itself.
+    pub fn declarations_besides(&self, ir: &SchemaIr, others: &[&str]) -> Result<Vec<Declaration>, String> {
         let own = attribute_namespace(self.attribute);
-        let declarations: Vec<_> = ir.behavior.declarations.iter().filter(|d| !d.lowered && attribute_namespace(&d.attribute) == own).cloned().collect();
+        let declarations: Vec<_> = ir.behavior.declarations.iter()
+            .filter(|d| !d.lowered && attribute_namespace(&d.attribute) == own && !others.contains(&d.attribute.as_str())).cloned().collect();
         match declarations.iter().find(|d| d.attribute != self.attribute) {
             Some(d) => Err(error(d, format!("unknown {own} attribute"))),
             None => Ok(declarations),
@@ -88,7 +94,12 @@ impl Tracked {
 
     /// Add the field of each declaration to its model. `template` holds the field with the default name; the declared name and column replace its own.
     pub fn add_fields(&self, ir: &mut SchemaIr, template: FieldIr) -> Result<(), String> {
-        for d in &self.declarations(ir)? {
+        self.add_fields_besides(ir, template, &[])
+    }
+
+    /// `add_fields`, with other attributes of the namespace that the extension reads itself (see `declarations_besides`).
+    pub fn add_fields_besides(&self, ir: &mut SchemaIr, template: FieldIr, others: &[&str]) -> Result<(), String> {
+        for d in &self.declarations_besides(ir, others)? {
             self.reject_field_form(ir, d, &template)?;
             let name = self.field_name(d)?;
             let column = self.column(d, &name)?;

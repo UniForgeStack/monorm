@@ -2,7 +2,7 @@ id = "monorm.soft-delete"
 version = "0.1.2"
 abi = "0.2"
 library = "monorm_soft_delete"
-schema_contract = "5.0"
+schema_contract = "5.3"
 language_contract = 1
 languages = ["python", "typescript"]
 databases = ["postgres", "sqlite"]
@@ -44,6 +44,12 @@ name = "soft_delete.deleted_at"
 target = "field"
 [attributes.arguments.mode]
 kind = "string"
+
+# `@soft_delete.keep_child_rows` on a relation field with `onDelete: Cascade`: a soft delete of the parent keeps the child rows.
+# Without it, a cascade from a soft-delete model into a model without soft delete fails the schema load.
+[[attributes]]
+name = "soft_delete.keep_child_rows"
+target = "field"
 
 [python]
 source = "python/monorm_soft_delete"

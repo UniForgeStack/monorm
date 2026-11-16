@@ -109,13 +109,20 @@ model Book {
 * Cascade, database mode: a cancelled delete does not fire `ON DELETE CASCADE`.
   For each soft-delete child with `onDelete: Cascade`, the parent gets an `AFTER UPDATE OF deleted_at` trigger.
   When the parent row becomes soft-deleted, the trigger sets the same time on the live child rows.
-  A child without soft delete keeps its rows.
+  A child without soft delete would keep its rows, so schema definition refuses it (see the next item).
+* A lost cascade is a schema error.
+  If a soft-delete model has a foreign-key relation with `onDelete: Cascade` from a child that has no soft delete, the schema does not load.
+  The check runs in database and application mode.
+  It follows the cascades through every level, and through proxy and storage owner tables.
+  The error names the parent, the child, the relation and the two fixes: add `@@soft_delete.deleted_at` to the child, or add `@soft_delete.keep_child_rows` to the relation field.
+  `@soft_delete.keep_child_rows` takes no argument.
+  With it, a soft delete of the parent keeps the child rows (the old behavior); a hard delete of the parent still deletes them through the database cascade.
   The Postgres delete trigger runs only at trigger depth 0 (`pg_trigger_depth() = 0`), so a hard delete of a soft-deleted parent leaves no orphan: the database cascade hard-deletes its children.
   The cost: a `DELETE` that runs inside another trigger is always a hard delete, and each row that the trigger tests calls `pg_trigger_depth()`.
 * SQLite: a hard delete of a soft-deleted parent whose live child rows exist fails with `FOREIGN KEY constraint failed`, and no row is deleted.
   Delete or hard-delete the children first.
 * Migration: a changed trigger body (the depth guard, the version bump) shows in the next migration diff; apply that migration to an existing database.
-* Application mode has no cascade.
+* Application mode has no cascade; the schema check above is the same in both modes.
 * A composed model (`model-composition`) keeps its own hard delete plan and takes no role.
   Schema definition rejects `updated_at`, soft-delete and version fields anywhere in its ownership chain, including the composed model and every ancestor through the root.
   The error names the composed model, the owner, the field and the extension id that wrote the record (`monorm.timestamps`, `monorm.soft-delete` or `monorm.locking`), because composed writes cannot maintain those records.
