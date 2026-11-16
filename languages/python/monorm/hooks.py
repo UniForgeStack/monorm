@@ -1,6 +1,6 @@
 """Public hooks for packages that change model writes and reads from outside the ORM.
 
-A package such as ``monorm-file-storage`` must check a write before it does I/O, run
+A package that stores files outside the database must check a write before it does I/O, run
 the write later with some values replaced, and decode loaded values. These hooks
 do that through the same conversion and planning as ``insert()`` and ``update()``.
 """

@@ -15,8 +15,8 @@ export function splitPerm(perm: string): [label: string, codename: string] {
 }
 
 /**
- * The model class for `name`: the model that overrides it (`@@inherit.override`), else `name` itself.
- * The app does not depend on the `monorm/extensions/inherit` package, so it reads `model_overrides` itself.
+ * The model class for `name`: the model that overrides it, else `name` itself.
+ * The app does not depend on the package of the extension that overrides models, so it reads `model_overrides` itself.
  *
  * @internal
  */

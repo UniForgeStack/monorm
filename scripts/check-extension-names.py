@@ -17,10 +17,24 @@ SCANNED = [
     "crates/admin",
     "languages/python/native",
     "languages/js/native",
+    "languages/python/monorm",
+    "languages/js/src",
 ]
 MANIFESTS = ["extensions/*/monorm-extension.toml", "tests/outside-extension/monorm-extension.toml"]
 # The one host line that tells a user which extension supplies a bare `Generic` type.
-ALLOWED = [("crates/core/src/dsl/lower.rs", "Generic belongs to the built-in generic extension")]
+ALLOWED = [
+    ("crates/core/src/dsl/lower.rs", "Generic belongs to the built-in generic extension"),
+    # The Python admin names the package that holds the files of a `files` field; the message tells the user what to install.
+    ("languages/python/monorm/admin.py", "monorm_file_storage"),
+    # `monorm.scope(...)` and `scope.<name>` are the runtime call and the filter variable of the host, not the extension.
+    ("languages/python/monorm/db.py", "monorm_scope"),
+    ("languages/python/monorm/db.py", "monorm.scope("),
+    ("languages/python/monorm/prepared_write.py", "monorm.scope()"),
+    ("languages/python/monorm/query.py", "monorm.scope()"),
+    ("languages/python/monorm/select.py", "monorm.scope()"),
+    # `query.filter(...)` is a method call on a variable named `query`.
+    ("languages/js/src/auth/methods.ts", "query.filter("),
+]
 # `monorm init` offers the built-in extensions by name, so its catalog is the one host file that lists them.
 CATALOGS = {"crates/cli/src/init.rs"}
 EDGE = "A-Za-z0-9_-"
@@ -81,7 +95,7 @@ def scan(root: Path, names: set[str], features: set[str]) -> list[str]:
             relative = path.relative_to(root)
             if not path.is_file() or "tests" in relative.parts or path.name == "tests.rs" or str(relative) in CATALOGS:
                 continue
-            if "target" in relative.parts or path.suffix not in {".rs", ".toml", ".py", ".json"}:
+            if "target" in relative.parts or path.suffix not in {".rs", ".toml", ".py", ".pyi", ".ts", ".json"} or {"node_modules", "__pycache__", "dist"} & set(relative.parts):
                 continue
             text = path.read_text(errors="replace")
             if path.suffix == ".rs":

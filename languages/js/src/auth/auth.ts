@@ -11,7 +11,7 @@ const dummy = makePassword("monorm/auth dummy password");
 /**
  * The active user with this username and password, else `null`. An old hash is replaced by an argon2id hash.
  *
- * `model` is the user model. The default is the model that overrides `User`, else `User`; an `@@inherit.extends` child needs it.
+ * `model` is the user model. The default is the model that overrides `User`, else `User`; a child model that extends `User` needs it.
  */
 export async function authenticate(
   username: string,

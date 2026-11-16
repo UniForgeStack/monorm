@@ -659,7 +659,7 @@ export function getDatabase(): Database {
 
 /**
  * Runs `fn` with the values that `scope.<name>` reads in default filters
- * (`@@query.filter("tenant", shop_id == scope.shop)`). A query on a model whose default filter
+ * (a filter such as `shop_id == scope.shop`). A query on a model whose default filter
  * reads a value that no enclosing `scope()` sets throws `QueryError`. Inner values
  * replace outer ones. Gives what `fn` gives. Rejects with `TypeError` for a key that no open
  * database's schema declares, for `null`, `undefined`, an empty string and an array: a scope value

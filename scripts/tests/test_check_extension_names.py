@@ -43,6 +43,24 @@ class CheckExtensionNamesTest(unittest.TestCase):
         result = run(root)
         self.assertEqual(result.returncode, 0, result.stdout)
 
+    def test_python_and_typescript_binding_sources_are_scanned(self) -> None:
+        for path, text in (
+            ("languages/python/monorm/db.py", 'NAME = "acme.x"\n'),
+            ("languages/js/src/db.ts", 'const name = "acme.x";\n'),
+            ("languages/python/monorm/_native.pyi", "# acme_x\n"),
+        ):
+            result = run(self.tree({path: text}))
+            self.assertEqual(result.returncode, 1, path)
+            self.assertIn(f"{path}:1:", result.stdout)
+
+    def test_binding_test_folders_and_dependencies_are_not_scanned(self) -> None:
+        root = self.tree({
+            "languages/js/src/tests/a.ts": 'const a = "acme.x";\n',
+            "languages/js/src/node_modules/p/index.ts": 'const a = "acme.x";\n',
+            "languages/python/monorm/__pycache__/a.py": 'A = "acme.x"\n',
+        })
+        self.assertEqual(run(root).returncode, 0, run(root).stdout)
+
     def test_feature_name_in_cargo_features_fails(self) -> None:
         root = self.tree({"crates/core/Cargo.toml": '[features]\nx-more = []\n'})
         self.assertEqual(run(root).returncode, 0)

@@ -692,7 +692,7 @@ async def connect(
 
 def scope(**values: Any) -> AbstractContextManager[None]:
     """``with monorm.scope(shop=shop.id):`` — the values that ``scope.<name>`` reads in
-    default filters (``@@query.filter("tenant", shop_id == scope.shop)``). A query on a model
+    default filters (a filter such as ``shop_id == scope.shop``). A query on a model
     whose default filter reads a value that no enclosing ``scope()`` sets raises
     ``QueryError``. Inner values replace outer ones; tasks started in the block get them.
 

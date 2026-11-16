@@ -197,7 +197,7 @@ export class MigrationError extends ORMError {
   override name = "MigrationError";
 }
 
-/** An instance `update()` or `delete()` found a newer `@@locking.version` of its row:
+/** An instance `update()` or `delete()` found a newer version of its row:
  * another writer changed the row after it was loaded. */
 export class VersionConflict extends ORMError {
   override name = "VersionConflict";
