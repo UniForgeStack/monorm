@@ -157,7 +157,7 @@ pub(crate) async fn deny(site: &Site, scope: Scoped, user: &User, resource: &str
 /// A transaction with the statement timeout of the site set.
 pub(crate) async fn begin_scope(s: &State_) -> Result<Scoped, String> {
     let scope = Scoped::begin(s.conn.as_ref()).await.map_err(|e| e.message)?;
-    // SQLite has no statement timeout: the request timeout of the service covers it.
+    // SQLite has no statement timeout: the request timeout of the service covers the head of a request, and an export bounds each later batch itself.
     if let (Some(limit), Dialect::Postgres) = (s.site.statement_timeout, s.conn.dialect()) {
         if let Err(e) = scope.executor().execute(format!("SET LOCAL statement_timeout = {}", limit.as_millis()), vec![]).await {
             scope.rollback().await;

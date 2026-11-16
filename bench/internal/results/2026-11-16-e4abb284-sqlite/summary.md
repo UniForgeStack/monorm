@@ -37,7 +37,7 @@ Admin cases in µs per call (the route runs auth, the list or the export, and on
 | admin_list | 916.3 | – | 187.9 | 4.9× |
 | admin_export | 4,899.4 | 16,711.8 | 2,423.1 | 2.0× |
 
-`host encode` reads the same rows with the query set (the to-one author loaded) and writes the CSV in the host language; it is only in the export case.
+`host encode` is the host path: it reads the same rows as model instances with the query set (the to-one author loaded) and writes the CSV in the host language, so it holds the hydration and the encoding; it is only in the export case.
 
 Biggest monorm layer per case (the driver is the floor, not counted): pk_get: builder; filter_order_50: builder; read_1000: hop + instances; filtered_count: hop + instances; insert_one: hop + instances; prefetch_posts: hop + instances.
 
@@ -74,7 +74,7 @@ Admin cases in µs per call (the route runs auth, the list or the export, and on
 | admin_list | 771.5 | – | 251.9 | 3.1× |
 | admin_export | 4,965.2 | 9,485.2 | 3,753.1 | 1.3× |
 
-`host encode` reads the same rows with the query set (the to-one author loaded) and writes the CSV in the host language; it is only in the export case.
+`host encode` is the host path: it reads the same rows as model instances with the query set (the to-one author loaded) and writes the CSV in the host language, so it holds the hydration and the encoding; it is only in the export case.
 
 Biggest monorm layer per case (the driver is the floor, not counted): pk_get: hop + instances; filter_order_50: hop + instances; read_1000: hop + instances; filtered_count: hop + instances; insert_one: hop + instances; prefetch_posts: hop + instances.
 

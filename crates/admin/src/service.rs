@@ -155,6 +155,8 @@ pub fn with_request_log(app: Router, log: Logger) -> Router {
             .map(str::to_string)
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         req.extensions_mut().insert(RequestId(id.clone()));
+        // A streamed body outlives this layer: the export route logs a cut file through this handle.
+        req.extensions_mut().insert(log.clone());
         let method = req.method().to_string();
         let path = req.uri().path().to_string();
         let started = Instant::now();

@@ -123,7 +123,7 @@ def main(out: Path) -> None:
                 lines.append(f"| {case} | {cell(a)} | {cell(h)} | {cell(d)} | {ratio} |")
             lines += [
                 "",
-                "`host encode` reads the same rows with the query set (the to-one author loaded) and writes the CSV in the host language; it is only in the export case.",
+                "`host encode` is the host path: it reads the same rows as model instances with the query set (the to-one author loaded) and writes the CSV in the host language, so it holds the hydration and the encoding; it is only in the export case.",
                 "",
             ]
         if biggest:

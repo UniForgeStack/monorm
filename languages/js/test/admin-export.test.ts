@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 
 import { Admin } from "../src/admin.js";
 import { connect, func, load, param, Registry, type Database } from "../src/index.js";
@@ -48,7 +48,7 @@ interface World {
   readonly Item: Loose;
 }
 
-async function world(provider: (typeof PROVIDERS)[number], run: (w: World) => Promise<void>): Promise<void> {
+async function world(t: TestContext, provider: (typeof PROVIDERS)[number], run: (w: World) => Promise<void>): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), "monorm-admin-export-"));
   writeFileSync(join(dir, "package.json"), "{}");
   writeFileSync(join(dir, "schema.prisma"), SCHEMA(provider));
@@ -60,7 +60,7 @@ async function world(provider: (typeof PROVIDERS)[number], run: (w: World) => Pr
   } catch (error) {
     rmSync(dir, { recursive: true, force: true });
     if (process.env["ORM_TEST_DATABASE_URL"] !== undefined) throw error;
-    return;
+    return t.skip("no reachable database");
   }
   try {
     await db.dropTables();
@@ -136,7 +136,7 @@ const exportsOf = async (w: World): Promise<[string, string, string, Loose][]> =
 };
 
 for (const provider of PROVIDERS) {
-  test(`the export is the list as csv with a to one and a computed column (${provider})`, () => world(provider, async (w) => {
+  test(`the export is the list as csv with a to one and a computed column (${provider})`, (t) => world(t, provider, async (w) => {
     const r = await clientOf(w).get(ITEMS);
     assert.equal(r.status, 200, r.text);
     assert.equal(r.header("content-type"), "text/csv; charset=utf-8");
@@ -151,11 +151,11 @@ for (const provider of PROVIDERS) {
     ]);
   }));
 
-  test(`an aggregate column is in the export (${provider})`, () => world(provider, async (w) => {
+  test(`an aggregate column is in the export (${provider})`, (t) => world(t, provider, async (w) => {
     assert.deepEqual(table(await clientOf(w).get(OWNERS)), [["Name", "Items", "Id"], ["Ada", "3", "1"], ["Bo", "1", "2"]]);
   }));
 
-  test(`the search the filters and the sort of the list apply (${provider})`, () => world(provider, async (w) => {
+  test(`the search the filters and the sort of the list apply (${provider})`, (t) => world(t, provider, async (w) => {
     const client = clientOf(w);
     assert.deepEqual(titles(await client.get(`${ITEMS}?q=t`)), ["two", "three"]);
     assert.deepEqual(titles(await client.get(`${ITEMS}?f.rank=3`)), ["three", "four"]);
@@ -165,14 +165,14 @@ for (const provider of PROVIDERS) {
     assert.deepEqual(titles(await client.get(`${ITEMS}?cursor=zz&page=9&limit=1`)), ["one", "two", "three", "four"]);
   }));
 
-  test(`the queryset filter limits the export (${provider})`, () => world(provider, async (w) => {
+  test(`the queryset filter limits the export (${provider})`, (t) => world(t, provider, async (w) => {
     const mine = w.Item.objects.filter(w.Item.ownerId.eq(param("user"))).prepare();
     assert.deepEqual(titles(await clientOf(w, {}, {}, mine).get(ITEMS)), ["one", "two", "four"]);
     const other = siteOf(w, {}, {}, mine).testClient(w.db, { user: { key: 2, is_superuser: true } });
     assert.deepEqual(titles(await other.get(ITEMS)), ["three"]);
   }));
 
-  test(`a cell that starts like a formula is escaped and a special cell is quoted (${provider})`, () => world(provider, async (w) => {
+  test(`a cell that starts like a formula is escaped and a special cell is quoted (${provider})`, (t) => world(t, provider, async (w) => {
     await w.Item.objects.using(w.db).insertMany([
       { id: 5, ownerId: 1, title: "=SUM(A1)", rank: 5, big: 5n },
       { id: 6, ownerId: 1, title: "+1 @x", rank: 5, big: 6n },
@@ -186,7 +186,7 @@ for (const provider of PROVIDERS) {
     assert.deepEqual(table(r).slice(1).map((row) => row[2]), ["5", "6", "7", "8", "9"], "a number is never escaped");
   }));
 
-  test(`a big export is read in keyset batches of a thousand rows and a batch function runs once per batch (${provider})`, () => world(provider, async (w) => {
+  test(`a big export is read in keyset batches of a thousand rows and a batch function runs once per batch (${provider})`, (t) => world(t, provider, async (w) => {
     const batches: number[] = [];
     const doubled = async (keys: number[]) => {
       batches.push(keys.length);
@@ -209,7 +209,7 @@ for (const provider of PROVIDERS) {
     assert.deepEqual(got.slice(1).map((row) => row[2]), rows.map((row) => String(row.id)), "every row once, in keyset order");
   }));
 
-  test(`each export writes one audit row with the query and a refused export writes none (${provider})`, () => world(provider, async (w) => {
+  test(`each export writes one audit row with the query and a refused export writes none (${provider})`, (t) => world(t, provider, async (w) => {
     const client = clientOf(w);
     assert.equal((await client.get(`${ITEMS}?q=t&sort=-id`)).status, 200);
     assert.deepEqual(await exportsOf(w), [["export", "ExpItem", "", { query: "q=t&sort=-id" }]]);
@@ -219,7 +219,7 @@ for (const provider of PROVIDERS) {
     assert.equal((await exportsOf(w)).length, 1);
   }));
 
-  test(`a bad request is a plain json error before the file starts (${provider})`, () => world(provider, async (w) => {
+  test(`a bad request is a plain json error before the file starts (${provider})`, (t) => world(t, provider, async (w) => {
     const client = clientOf(w);
     const bad = await client.get(`${ITEMS}?sort=nothing`);
     assert.equal(bad.status, 400);

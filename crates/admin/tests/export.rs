@@ -6,8 +6,9 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::Request;
 use http_body_util::BodyExt;
+use monorm_admin::server::api_with;
 use monorm_admin::service::with_timeout;
-use monorm_admin::{call_full, router, Site, User};
+use monorm_admin::{call_full, router, AuthConfig, BoxFuture, BridgeError, CallContext, HostBridge, Security, SecurityOptions, Site, User};
 use monorm_core::{dsl, migrate, schema::Schema};
 use monorm_engine::db::{self, Executor};
 use serde_json::{json, Value};
@@ -262,4 +263,72 @@ async fn a_reader_that_stops_hits_the_idle_timeout_and_the_body_fails() {
     let error = error.expect("the cut export fails instead of ending like a whole file");
     assert!(error.contains("no data for 100 ms"), "{error}");
     assert!(lines(&csv).len() < 5_001, "the file is not whole");
+}
+
+/// The function `price` of a Decimal computed column: the text for each key comes from `texts` by the order of the keys, and a call that holds a key above `stall_after` never answers.
+struct Price {
+    texts: Vec<&'static str>,
+    stall_after: i64,
+}
+
+impl HostBridge for Price {
+    fn call(&self, _: &str, payload: Value, _: CallContext) -> BoxFuture<Result<Value, BridgeError>> {
+        let keys = payload["keys"].as_array().unwrap();
+        let stalled = keys.iter().any(|k| k[0].as_i64().unwrap() > self.stall_after);
+        let answer: Vec<Value> = keys.iter().map(|k| json!(self.texts[(k[0].as_i64().unwrap() as usize - 1) % self.texts.len()])).collect();
+        Box::pin(async move {
+            if stalled {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+            }
+            Ok(Value::Array(answer))
+        })
+    }
+}
+
+fn price_site(idle_ms: Option<u64>) -> Arc<Site> {
+    let mut config = config(json!({}));
+    if let Some(ms) = idle_ms {
+        config["export_idle_timeout_ms"] = json!(ms);
+    }
+    config["resources"][0]["list"]["columns"] = json!(["title", "price"]);
+    config["resources"][0]["list"]["computed"] = json!([{"name": "price", "label": "Price", "type": "decimal", "nullable": false, "function": "price"}]);
+    site(config)
+}
+
+fn auth(host: Price) -> AuthConfig {
+    AuthConfig { security: Security::new(&[7u8; 32], SecurityOptions::default()).unwrap(), bridge: Arc::new(host) }
+}
+
+#[tokio::test]
+async fn a_decimal_column_from_a_host_function_cannot_carry_a_formula() {
+    let conn = database().await;
+    fill(&conn, 1, 6).await;
+    let host = Price { texts: vec!["-5.50", "=HYPERLINK(\"http://x\")", "+1", "@SUM(A1)", "1e3", "12.5"], stall_after: i64::MAX };
+    let uri = "/admin/api/export/Item";
+    let (status, _, body) = call_full(price_site(None), conn, "GET", uri, Some(json!({"key": 1, "is_superuser": true})), Some(auth(host)), None).await;
+    let csv = String::from_utf8(body).unwrap();
+    assert_eq!(status, 200, "{csv}");
+    let prices: Vec<&str> = csv.split("\r\n").skip(1).filter(|l| !l.is_empty()).map(|l| l.split_once(',').unwrap().1.rsplit_once(',').unwrap().0).collect();
+    assert_eq!(prices[0], "-5.50", "a plain number keeps its minus sign");
+    assert_eq!(prices[1], "\"'=HYPERLINK(\"\"http://x\"\")\"", "a formula is quoted: {csv}");
+    assert_eq!(prices[2], "'+1");
+    assert_eq!(prices[3], "'@SUM(A1)");
+    assert_eq!(prices[4], "1e3");
+    assert_eq!(prices[5], "12.5");
+}
+
+#[tokio::test]
+async fn a_later_batch_that_never_answers_hits_the_idle_timeout_and_the_body_fails() {
+    let conn = database().await;
+    fill(&conn, 1, 2_500).await;
+    let host = Price { texts: vec!["1.00"], stall_after: 1_000 };
+    let app = api_with(price_site(Some(100)), conn.clone(), Some(auth(host)));
+    let response = app.oneshot(request("/admin/api/export/Item")).await.unwrap();
+    assert_eq!(response.status(), 200, "the first batch is read before the head");
+    let started = std::time::Instant::now();
+    let (csv, error) = read(response.into_body(), Duration::ZERO).await;
+    let error = error.expect("the cut export fails instead of ending like a whole file");
+    assert!(error.contains("more than 100 ms"), "{error}");
+    assert!(started.elapsed() < Duration::from_secs(5), "the stalled call does not hold the body");
+    assert_eq!(lines(&csv).len(), 1_001, "the header and the first batch");
 }

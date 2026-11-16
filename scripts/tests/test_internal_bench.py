@@ -1,4 +1,4 @@
-"""Smoke test of bench/internal: run.sh --quick on SQLite. It asserts that each case and path has a number (only the driver row may be skipped, only the insert has no prepared path), never a timing assertion."""
+"""Smoke test of bench/internal: run.sh --quick on SQLite, and on PostgreSQL when MONORM_BENCH_SMOKE_PG_URL names a disposable database. It asserts that each case and path has a number (only the driver row may be skipped, only the insert has no prepared path), never a timing assertion."""
 
 import json
 import os
@@ -13,14 +13,20 @@ PATHS = ["unprepared", "prepared", "direct", "driver"]
 ADMIN_CASES = {"admin_list": ["admin", "driver"], "admin_export": ["admin", "host", "driver"]}
 
 
-# It builds release artifacts for minutes, so pytest skips it unless asked (the CLAUDE.md check line sets the variable).
-@unittest.skipUnless(os.environ.get("MONORM_BENCH_SMOKE") == "1", "set MONORM_BENCH_SMOKE=1 to run bench/internal/run.sh --quick")
-class InternalBenchQuick(unittest.TestCase):
+class _Quick:
+    """The checks of one backend. A subclass sets `backend` and `database_url`, and `skipUnless` decides whether it runs."""
+
+    backend = ""
+
+    @classmethod
+    def database_url(cls, tmp: str) -> str:
+        raise NotImplementedError
+
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
         cls.out = Path(cls.tmp.name) / "out"
-        env = {"ORM_BENCH_URL": f"sqlite://{cls.tmp.name}/bench.db"}
+        env = {"ORM_BENCH_URL": cls.database_url(cls.tmp.name)}
         run = subprocess.run(
             [str(ROOT / "bench/internal/run.sh"), "--quick", "--out", str(cls.out)],
             capture_output=True,
@@ -42,7 +48,7 @@ class InternalBenchQuick(unittest.TestCase):
 
     def test_every_case_and_path_has_a_number(self):
         for language in ("python", "js"):
-            run = json.loads((self.out / f"{language}-sqlite.json").read_text())
+            run = json.loads((self.out / f"{language}-{self.backend}.json").read_text())
             self.assertEqual(list(run["cases"]), [*CASES, *ADMIN_CASES])
             for case in CASES:
                 entry = run["cases"][case]
@@ -60,7 +66,7 @@ class InternalBenchQuick(unittest.TestCase):
 
     def test_the_admin_cases_have_a_number_on_each_path(self):
         for language in ("python", "js"):
-            run = json.loads((self.out / f"{language}-sqlite.json").read_text())
+            run = json.loads((self.out / f"{language}-{self.backend}.json").read_text())
             for case, paths in ADMIN_CASES.items():
                 entry = run["cases"][case]
                 self.assertIs(entry["checked"], True, f"{language} {case}: the equality check did not run")
@@ -79,10 +85,30 @@ class InternalBenchQuick(unittest.TestCase):
 
     def test_only_the_insert_has_no_prepared_path(self):
         for language in ("python", "js"):
-            run = json.loads((self.out / f"{language}-sqlite.json").read_text())
+            run = json.loads((self.out / f"{language}-{self.backend}.json").read_text())
             for case in CASES:
                 prepared = run["cases"][case]["paths"]["prepared"]
                 self.assertEqual("na" in prepared, case == "insert_one", f"{language} {case}")
+
+
+# It builds release artifacts for minutes, so pytest skips it unless asked (the CLAUDE.md check line sets the variable).
+@unittest.skipUnless(os.environ.get("MONORM_BENCH_SMOKE") == "1", "set MONORM_BENCH_SMOKE=1 to run bench/internal/run.sh --quick")
+class InternalBenchQuickSqlite(_Quick, unittest.TestCase):
+    backend = "sqlite"
+
+    @classmethod
+    def database_url(cls, tmp: str) -> str:
+        return f"sqlite://{tmp}/bench.db"
+
+
+# The database must be disposable: the bench drops and creates its tables.
+@unittest.skipUnless(os.environ.get("MONORM_BENCH_SMOKE_PG_URL"), "set MONORM_BENCH_SMOKE_PG_URL to a disposable PostgreSQL database to run bench/internal/run.sh --quick on it")
+class InternalBenchQuickPostgresql(_Quick, unittest.TestCase):
+    backend = "postgresql"
+
+    @classmethod
+    def database_url(cls, tmp: str) -> str:
+        return os.environ["MONORM_BENCH_SMOKE_PG_URL"]
 
 
 if __name__ == "__main__":

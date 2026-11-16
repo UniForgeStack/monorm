@@ -259,19 +259,22 @@ The `queryset` filter of the resource applies, so a user exports only the rows t
 The first row holds the column titles of the list. The last column is the key (`Id`). Computed and aggregate columns are in the file.
 
 The server reads the rows with the keyset pages of the list, 1,000 rows each, and sends each page as soon as Rust has encoded it.
-Memory stays flat, so a large table needs no more memory than a small one. Each page after the first runs in its own short transaction.
+The Rust allocator holds a flat peak: a test measures about the same peak at 10,000 and at 100,000 rows (SQLite, plain columns). The test clients buffer the whole body, so the memory of the host process is not measured.
+Each page after the first runs in its own short transaction, so the pages are not one snapshot: a row that changes its sort value during the export can be missing or appear twice.
+With a search (`q`), the export holds at most 1,000 rows: the search finds 1,000 keys, as the list does, and the file has no warning.
 The server reads the first page before it sends the head. A bad request (`400`, `422`, `404`, `403`, `401`) is therefore a normal JSON error, not a cut file.
 
 Cells follow these rules:
 
 - A cell with a comma, a quote, a CR or an LF is in quotes, and a quote inside is doubled. A line ends with CRLF. The file has no BOM.
-- A text cell that starts with `=`, `+`, `-`, `@`, a tab or a CR gets a `'` in front, so a spreadsheet does not run it as a formula. A number, a BigInt and a Decimal are never changed.
+- A text cell that starts with `=`, `+`, `-`, `@`, a tab or a CR gets a `'` in front, so a spreadsheet does not run it as a formula. A BigInt or Decimal cell that is a plain number (an optional `-`, digits, an optional fraction) is never changed. Any other text in such a column, for example from a host function, gets the `'` like a text cell.
 - A null is an empty cell. A date and a time are ISO 8601, as in the list.
 
 The `timeout` setting limits the head of the answer only, so it does not cut a long export.
-An export has its own idle timeout: the stream ends with an error when the client takes no data for `export_idle_timeout_ms` (default 30,000; `0` turns it off). This is a site setting of the Rust crate.
+An export has its own idle timeout (default 30,000 ms; `0` turns it off). The stream ends with an error when the client takes no data for that time, or when the read of one page takes longer. It is a site setting of the Rust crate (`export_idle_timeout`); Python and TypeScript cannot change it.
+When a page fails after the head, the body ends with an error, so the file never looks complete, and the server writes one `error` log line `export cut` with the request id.
 
-Each export writes one `AdminLogEntry` with `action` `export`, the `resource`, and `changes` `{"query": "<the query string>"}`. The row count is not known at that point. A refused export (`403`) writes a `permission_denied` row, as for a write.
+Each export writes one `AdminLogEntry` with `action` `export`, the `resource`, and `changes` `{"query": "<the raw query string>"}`, so search text is in the log. The row commits before the first byte, so it has no row count and no outcome: a cut export keeps its row. A refused export (`403`) writes a `permission_denied` row, as for a write.
 The test client reads `/export/` paths like any other path: `client.get("/admin/api/export/Order?f.status=new")` gives `status`, `header(...)` (`headers` in Python) and `text`.
 
 ## Test client

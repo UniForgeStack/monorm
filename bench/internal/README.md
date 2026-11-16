@@ -36,7 +36,7 @@ The Post resource has a to-one column (`Post.author.name`) and a computed column
 | Case | What it reads | Paths |
 |---|---|---|
 | `admin_list` | `GET /admin/api/resources/Post?limit=50`, one page of 50 rows | Admin route, driver only |
-| `admin_export` | `GET /admin/api/export/Post`, all 1,000 rows as a CSV file (Rust encodes the rows) | Admin route, host encode, driver only |
+| `admin_export` | `GET /admin/api/export/Post`, all 1,000 rows as a CSV file (Rust encodes the rows) | Admin route, host path (model instances and CSV text in the host language), driver only |
 
 - **Admin route:** the request through the test client: auth, the list or the export, and (for the export) one audit row.
 - **Host encode:** the same rows read with the query set (author loaded) and written as CSV with the host language (`csv.writer` in Python, a small writer in TypeScript).

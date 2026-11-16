@@ -61,7 +61,7 @@ MonOrm leads every ORM on every query, except Python `get_user`, where it ties S
 - Building model instances (hop + instances) is the largest MonOrm layer for 1,000 rows: 1,397 µs of 3,460 µs in Python on PostgreSQL.
 - The Python query builder is 42% of a primary-key get there.
 - Value binding is small; the engine layer is negative on PostgreSQL (the Rust driver is faster than `psycopg` and `pg`).
-- Admin list route: 1,072 µs against 240 µs for the driver query alone (Python, PostgreSQL). Admin CSV export: 4,868 µs through the route, 14,045 µs when the host language encodes the rows.
+- Admin list route: 1,072 µs against 240 µs for the driver query alone (Python, PostgreSQL). Admin CSV export: 4,868 µs through the route, 14,045 µs when the host language reads the rows as model instances and encodes them.
 
 ## Rust engine only
 
