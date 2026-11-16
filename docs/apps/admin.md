@@ -435,6 +435,7 @@ A pattern such as `orders.*` selects a name only when the label of that resource
 The resource name is the lowercase model name.
 With `perms=["read", "manage", "delete"]` on a resource, `page` adds `<label>.delete_<resource>`, and delete needs it.
 A resource can also list `field_permissions` and `actions`. These add names such as `admin.see_name` and `admin.export_role` in `page` and `model`.
+An action that is a plain string is a permission name only. An [action](#actions) with a function has a button and a route, and it names its permission as `<label>.<action>_<resource>`.
 
 ```python
 site = Admin(permissions="model", label="staff")
@@ -877,6 +878,71 @@ The UI shows a table or stacked blocks, with "Add row" (off at the cap), "Remove
 A problem in a collapsed inline opens it.
 An `admin.input` of the child page has no control in the inline, and a `with_parent` change set carries no inputs: only a `row` save runs the inputs of the child page, through the API.
 
+## Actions
+
+An action is a function that runs on a set of records. It has a button in the list, in the row, on the detail page or next to the save button.
+
+```python
+from monorm import admin
+
+@admin.action(placement="bulk", confirm="Refund these orders?", permission="refund")
+async def refund(ctx, qs):
+    await qs.update(status="refunded")
+    return admin.message(f"Refunded {ctx.count} orders", "success")
+
+site.register(Order, {"actions": [refund]})
+```
+
+In TypeScript, `action(async (ctx, qs) => {...}, { name: "refund", placement: "bulk", confirm: "Refund these orders?", permission: "refund" })` marks the function, and `appliesTo` and `bulkDelete` use camel case.
+`qs` is a query set of the target records. `ctx` has `count` (at most 10,001), `capped`, `selection` (`keys`, `all` or `filter`), `inputs`, `database`, `user` and `audit()`.
+The function is a plain function: a unit test calls it with a fake `ctx` and a query set, with no admin.
+
+### Placements
+
+| `placement` | Where | Target |
+|---|---|---|
+| `bulk` (default) | The bar over the list, after a selection | The selected rows, or all rows that match the filters |
+| `row` | A button in each row | The one row |
+| `detail` | The detail page | The one record |
+| `submit` | Next to the save button of the form | The record, saved first |
+| `list` | The toolbar of the list | All rows that match the filters |
+
+Row and bulk actions also show on the [to-many tabs](#to-many-tabs) of the child resource.
+A selection holds the rows of the page. "Select all N matching" selects every row that the filters match, and the request carries the filters of the URL, not a list of keys.
+The query set gets the `queryset` filter of the resource and the `can=` rule (`change`) of the resource, so a row that the user may not change never reaches the function.
+There is no `can` key for one action: every custom action passes the `change` rule of the resource, and bulk delete passes the `delete` rule.
+`qs.batches(n)` reads the rows in batches of `n`.
+A selection of more than 10,000 rows needs a second confirmation: the request answers `409` with `error.kind` `ConfirmLarge`, and the UI asks again. The request that follows carries `confirm_large: true`, and the function then runs on all rows that match, with no upper bound.
+The count and the function do not share a transaction: a row that changes between them can make `ctx.count` differ from the rows in `qs`.
+
+### Confirmation, inputs and files
+
+`confirm="text"` makes the UI ask first. `inputs=[admin.input(...)]` adds the controls of an [input](#inputs) to the dialog, and `type="file"` adds a file control.
+A file input arrives in `ctx.inputs` as a mapping with `filename`, `content_type` and `path`. The path names a temporary file that exists for the time of the call. The audit row stores the name, the type and the size, not the bytes.
+An action with no confirmation and no inputs runs at once.
+
+### Results
+
+A function returns one of these. `None` is `refresh`, and a string is a message.
+
+| Result | The UI |
+|---|---|
+| `admin.message(text, level)` | A message that fades after eight seconds. `level` is `info`, `success`, `warning` or `error`. |
+| `admin.redirect(to)` | Goes to `to`, a path that starts with `/`. A path under the admin stays in the app. |
+| `admin.download(filename, content, content_type)` | Saves the file. |
+| `admin.refresh()` | Loads the list again. |
+
+### `applies_to` and bulk delete
+
+`applies_to=` takes a filter such as `Order.status == "new"`. The row buttons are off for the rows that it does not cover, and the query set leaves those rows out.
+Every list has a bulk delete for a user who may delete. It passes the filtered query set to the delete service, or deletes it in one statement. `bulk_delete=False` on the resource removes it (`bulkDelete: false` in TypeScript). The resource [inputs](#inputs) show in its dialog.
+
+### Permissions and the audit group
+
+An action with `permission="refund"` needs `<label>.refund_<resource>` and read access. The check does not read `allow` or the read-only reason of the resource, so the function must guard what it writes.
+An action with no permission needs update access: `manage` with the `page` strategy and `change_<resource>` with the `model` strategy. The `access` strategy has no such name, so it rejects an action with no permission when the site starts.
+One request writes one summary row with `action` `action:<name>` (`bulk_delete` for bulk delete), the count and the selection kind. The rows that the function writes with `ctx.audit()` carry the same `request_id` in `changes`, so one user action is one group.
+
 ## Routes and answers
 
 The path prefix is a config value, and the default is `/admin/api`.
@@ -888,6 +954,7 @@ The path prefix is a config value, and the default is `/admin/api`.
 | `GET {prefix}/counts/{name}?q=&f.*=&n.*=&exact=` | `{"count", "capped"}`. See [Count](#count). |
 | `GET {prefix}/resources/{name}/{key}/{relation}`, `GET {prefix}/counts/{name}/{key}/{relation}` | The list and the count of a to-many tab. See [To-many tabs](#to-many-tabs). |
 | `GET {prefix}/resources/{name}/{key}` | One record: `fields`, `values` and `links` to the to-one targets that the user may read. A key is encoded as in [The UI](#the-ui). |
+| `POST {prefix}/actions/{name}/{action}`, `POST {prefix}/tab-actions/{name}/{key}/{relation}/{action}` | Run an action. The body is `{"keys", "all", "inputs", "confirm_large"}`. The answer is `{"ok", "count", "capped", "result"}`. See [Actions](#actions). |
 | `POST`, `PATCH`, `DELETE` on `{prefix}/resources/{name}[/{key}]` | Create, change and delete one record. See [Writes and forms](#writes-and-forms). |
 | `GET {prefix}/autocomplete/{name}/{relation}?q=&cursor=&limit=` | One page of the picker: `items` and `next`. See [Relation fields and files](#relation-fields-and-files). |
 | `GET {prefix}/links/{name}/{key}/{relation}` | The records that a many-to-many relation links: `items` and `truncated`. |
