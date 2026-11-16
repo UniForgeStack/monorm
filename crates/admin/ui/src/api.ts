@@ -78,6 +78,8 @@ export interface Section {
 
 export interface Resource {
   name: string;
+  /** Package detail tabs of the detail page: the name `<package>.<tab>`, the title and the module path. */
+  package_tabs?: { name: string; title: string; module: string }[];
   title: string;
   group: string | null;
   columns: Column[];
@@ -106,6 +108,8 @@ export interface Resource {
   sections?: { create: Section[]; edit: Section[] };
   /** A module of the resource replaces the whole form: see `formModuleUrl`. */
   form_component?: boolean;
+  /** The package module that replaces the form (a path under the API prefix), when a package gives it. */
+  form_module?: string | null;
   /** The writes that this user may do: `create`, `update`, `delete`. */
   ops?: string[];
   /** The controls that only the service of the resource reads: they go along with a write as `inputs`. */
@@ -202,10 +206,23 @@ export interface Nav {
   resources: string[];
 }
 
+/** An extension package: its widgets, form modules and styles, as paths under the API prefix (`packages/<package>/<file>`). */
+export interface PackageInfo {
+  name: string;
+  admin_major: number;
+  widgets: Record<string, string>;
+  forms: Record<string, string>;
+  tabs: Record<string, string>;
+  styles: string[];
+}
+
 export interface Site {
   brand: Brand;
   nav: Nav[];
   resources: Resource[];
+  /** The major version of the widget contract of this admin. */
+  admin_major: number;
+  packages: PackageInfo[];
 }
 
 /** One flag for each `can` rule of the resource: whether the rule holds for the row. */
@@ -325,6 +342,25 @@ export async function session(): Promise<Session> {
 export const login = (username: string, password: string) => call<{ user: User }>("POST", "/login", { username, password });
 export const logout = () => call<object>("POST", "/logout", {});
 export const changePassword = (old_password: string, new_password: string) => call<object>("POST", "/password", { old_password, new_password });
+/** The URL of a package file: the path that `/resources` gives, under the API prefix. */
+export const packageUrl = (path: string) => `${base}/${path}`;
+
+/** A custom route (`<prefix>/routes/<path>`) with the session and the CSRF token. The answer is the raw response: a route is not an admin call. */
+export async function routeFetch(method: string, path: string, body?: unknown): Promise<Response> {
+  const headers: Record<string, string> = {};
+  if (body !== undefined) headers["content-type"] = "application/json";
+  if (method !== "GET") headers["x-csrf-token"] = csrf;
+  return fetch(`${base}/routes/${path.replace(/^\/+/, "")}`, { method, headers, credentials: "same-origin", body: body === undefined ? undefined : JSON.stringify(body) });
+}
+
+/** The JSON answer of a custom route. A status of 400 or more throws with the status and the text of the answer. */
+export async function routeJson(method: string, path: string, body?: unknown): Promise<unknown> {
+  const response = await routeFetch(method, path, body);
+  const text = await response.text();
+  if (!response.ok) throw new Error(`${method} ${path}: ${response.status} ${text}`);
+  return text === "" ? null : JSON.parse(text);
+}
+
 /** Where the module of a custom form comes from: the same origin, so the CSP allows it. */
 export const formModuleUrl = (resource: string) => `${base}/forms/${encodeURIComponent(resource)}`;
 export const site = () => call<Site>("GET", "/resources");

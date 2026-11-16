@@ -328,3 +328,133 @@ fn site_url_takes_a_scalar_a_list_or_an_object_and_rejects_a_wrong_key() {
     assert!(site.url("Author", &json!(null)).is_err());
     assert!(site.url("Nope", &json!(1)).unwrap_err().contains("not an admin resource"));
 }
+
+/// A package directory with a widget, a form module and a style, in a fresh temp directory.
+fn package_dir(tag: &str) -> String {
+    let dir = std::env::temp_dir().join(format!("monorm-admin-pkg-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("lib")).unwrap();
+    std::fs::write(dir.join("stars.js"), "import React from \"react\";\nexport const adminMajor = 1;\nexport default () => null;\n").unwrap();
+    std::fs::write(dir.join("lib/form.mjs"), "export const adminMajor = 1;\nexport default () => null;\n").unwrap();
+    std::fs::write(dir.join("lib/reviews.js"), "export const adminMajor = 1;\nexport default () => null;\n").unwrap();
+    std::fs::write(dir.join("stars.css"), ".stars { color: gold }\n").unwrap();
+    std::fs::write(dir.join("notes.txt"), "not served").unwrap();
+    dir.to_string_lossy().into_owned()
+}
+
+fn with_package(dir: &str, major: u64) -> Value {
+    json!({"packages": [{"name": "rating", "admin_major": major, "dir": dir, "widgets": {"stars": "stars.js"}, "forms": {"edit": "lib/form.mjs"}, "tabs": {"reviews": "lib/reviews.js"}, "styles": ["stars.css"]}],
+           "widgets": {"Comment.body": "rating.stars"}, "resources": [{"model": "Comment", "form_component": "rating.edit", "detail_tabs": ["rating.reviews"]}, {"model": "Author"}]})
+}
+
+#[tokio::test]
+async fn a_package_site_lists_its_package_and_serves_only_the_loaded_files() {
+    let dir = package_dir("serve");
+    let site = site(with_package(&dir, 1));
+    let conn = database().await;
+    let (status, body, _) = get(&site, conn.clone(), "/admin/api/resources").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["admin_major"], 1);
+    assert_eq!(body["packages"][0]["name"], "rating");
+    assert_eq!(body["packages"][0]["widgets"], json!({"stars": "packages/rating/stars.js"}));
+    assert_eq!(body["packages"][0]["styles"], json!(["packages/rating/stars.css"]));
+    let comment = body["resources"].as_array().unwrap().iter().find(|r| r["name"] == "Comment").unwrap();
+    assert_eq!(comment["form_module"], "packages/rating/lib/form.mjs");
+    assert_eq!(comment["package_tabs"], json!([{"name": "rating.reviews", "title": "Reviews", "module": "packages/rating/lib/reviews.js"}]));
+    assert_eq!(body["packages"][0]["tabs"], json!({"reviews": "packages/rating/lib/reviews.js"}));
+    let user = || Some(json!({"is_superuser": true}));
+    for (path, kind, text) in [("stars.js", "text/javascript", "import React"), ("lib/form.mjs", "text/javascript", "adminMajor"), ("stars.css", "text/css", ".stars")] {
+        let (status, headers, bytes) = monorm_admin::server::call_full(site.clone(), conn.clone(), "GET", &format!("/admin/api/packages/rating/{path}"), user(), None, None).await;
+        assert_eq!(status, 200, "{path}");
+        assert!(headers.iter().any(|(k, v)| k == "content-type" && v.starts_with(kind)), "{path}: {headers:?}");
+        assert!(String::from_utf8_lossy(&bytes).contains(text), "{path}");
+    }
+    // A file that the build did not load is not served, and a path cannot leave the package.
+    for path in ["notes.txt", "../notes.txt", "nothing.js", "%2e%2e/notes.txt", "lib"] {
+        let (status, _, _) = monorm_admin::server::call_full(site.clone(), conn.clone(), "GET", &format!("/admin/api/packages/rating/{path}"), user(), None, None).await;
+        assert_eq!(status, 404, "{path}");
+    }
+    let (status, _, _) = monorm_admin::server::call_full(site.clone(), conn.clone(), "GET", "/admin/api/packages/other/stars.js", user(), None, None).await;
+    assert_eq!(status, 404);
+    // No user, no file.
+    let (status, _, _) = monorm_admin::server::call_full(site, conn, "GET", "/admin/api/packages/rating/stars.js", None, None, None).await;
+    assert_eq!(status, 401);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_package_for_another_major_or_with_a_bad_name_or_file_is_a_build_error() {
+    let dir = package_dir("errors");
+    assert!(build_error(with_package(&dir, 2)).contains("built for admin major 2; this admin is major 1"));
+    let mut config = with_package(&dir, 1);
+    config["packages"][0]["widgets"] = json!({"stars": "missing.js"});
+    assert!(build_error(config).contains("missing.js"));
+    let mut config = with_package(&dir, 1);
+    config["packages"][0]["widgets"] = json!({"stars": "../stars.js"});
+    assert!(build_error(config).contains("not a .js, .mjs or .css file"));
+    let mut config = with_package(&dir, 1);
+    config["packages"][0]["styles"] = json!(["stars.js"]);
+    assert!(build_error(config).contains("not a .css file"));
+    let mut config = with_package(&dir, 1);
+    let first = config["packages"][0].clone();
+    config["packages"].as_array_mut().unwrap().push(first);
+    assert!(build_error(config).contains("registered twice"));
+    let mut config = with_package(&dir, 1);
+    config["widgets"] = json!({"Comment.body": "rating.nothing"});
+    assert!(build_error(config).contains("rating.nothing"));
+    let mut config = with_package(&dir, 1);
+    config["resources"][0]["detail_tabs"] = json!(["rating.nothing"]);
+    assert!(build_error(config).contains("detail_tabs names \"rating.nothing\""));
+    let mut config = with_package(&dir, 1);
+    config["packages"][0].as_object_mut().unwrap().remove("admin_major");
+    assert!(build_error(config).contains("admin_major"));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_package_over_the_file_limits_is_a_build_error_and_the_limit_itself_passes() {
+    let dir = package_dir("limits");
+    // stars.js, lib/form.mjs, lib/reviews.js and stars.css are 4 files; 252 more make 256, the limit.
+    for i in 0..252 {
+        std::fs::write(std::path::Path::new(&dir).join(format!("extra{i}.js")), "export {};\n").unwrap();
+    }
+    Site::build(schema(), &with_package(&dir, 1).to_string()).expect("256 files pass");
+    std::fs::write(std::path::Path::new(&dir).join("extra252.js"), "export {};\n").unwrap();
+    assert!(build_error(with_package(&dir, 1)).contains("too large: at most 256 files"));
+    std::fs::remove_dir_all(&dir).unwrap();
+    // A sparse file reports its size without bytes on disk; the build refuses it before the read.
+    let dir = package_dir("big");
+    let big = std::fs::File::create(std::path::Path::new(&dir).join("big.js")).unwrap();
+    big.set_len(1024 * 1024 + 1).unwrap();
+    assert!(build_error(with_package(&dir, 1)).contains("1048576 bytes each"));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn the_import_map_and_its_csp_hash_appear_only_on_a_site_with_packages() {
+    let dir = package_dir("index");
+    let conn = database().await;
+    let with = served(site(with_package(&dir, 1)), conn.clone());
+    let (status, headers, body) = fetch(&with, "GET", "/admin").await;
+    assert_eq!(status, 200);
+    let map = body.split("<script type=\"importmap\">").nth(1).and_then(|s| s.split("</script>").next()).expect("an import map");
+    assert!(map.contains("\"react\"") && map.contains("/admin/shared/react.js"), "{map}");
+    assert!(body.find("importmap").unwrap() < body.find("type=\"module\"").unwrap(), "the map comes before the module script");
+    let csp = headers["content-security-policy"].to_str().unwrap();
+    let hash = {
+        use base64::Engine;
+        use sha2::Digest;
+        base64::engine::general_purpose::STANDARD.encode(sha2::Sha256::digest(map.as_bytes()))
+    };
+    assert!(csp.contains(&format!("script-src 'self' 'sha256-{hash}'")), "{csp}");
+    assert!(csp.contains("style-src 'self'") && !csp.contains("unsafe-inline"), "{csp}");
+    let (status, headers, js) = fetch(&with, "GET", "/admin/shared/react.js").await;
+    assert_eq!(status, 200);
+    assert_eq!(headers["cache-control"], "no-cache");
+    assert!(js.contains("__monormAdmin"));
+    let without = served(everything(), conn);
+    let (_, headers, body) = fetch(&without, "GET", "/admin").await;
+    assert!(!body.contains("importmap"));
+    assert!(!headers["content-security-policy"].to_str().unwrap().contains("sha256-"));
+    std::fs::remove_dir_all(dir).unwrap();
+}

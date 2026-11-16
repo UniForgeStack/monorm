@@ -5,7 +5,7 @@
   "type": "module",
   "description": "The browser UI of the admin service. `npm run build` writes `dist/`, which `monorm-admin` embeds.",
   "scripts": {
-    "build": "tsc --noEmit && vite build",
+    "build": "node scripts/shared.mjs && tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
     "size": "node scripts/size.mjs"
   },

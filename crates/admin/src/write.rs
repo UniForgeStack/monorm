@@ -94,7 +94,7 @@ pub fn form_meta(schema: &Schema, r: &Resource) -> Value {
     let chips: Vec<Value> = r.relations.iter().filter(|x| x.through.is_some()).map(Relation::meta).collect();
     let inputs: Vec<Value> = r.inputs.iter().map(hostwrite::InputConfig::meta).collect();
     let host_write = [Op::Create, Op::Update, Op::Delete].iter().any(|&op| hostwrite::route(schema, r, op).is_some());
-    json!({"writable": reason.is_none(), "read_only_reason": reason, "form": fields, "chips": chips, "sections": sections, "form_component": r.form.component.is_some(), "inputs": inputs, "host_write": host_write})
+    json!({"writable": reason.is_none(), "read_only_reason": reason, "form": fields, "chips": chips, "sections": sections, "form_component": r.form.component.is_some() || r.form.module.is_some(), "form_module": r.form.module, "inputs": inputs, "host_write": host_write})
 }
 
 pub(crate) fn has_default(f: &FieldIr) -> bool {

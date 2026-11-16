@@ -8,6 +8,7 @@ use monorm_core::schema::Schema;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::packages::Packages;
 use crate::permissions::Op;
 use crate::site::{err, Column, ConfigError};
 use crate::write::{has_default, writable};
@@ -60,6 +61,15 @@ pub struct FormSpec {
     pub widgets: BTreeMap<String, String>,
     /// The source of the module that replaces the form.
     pub component: Option<String>,
+    /// The path of the package module that replaces the form (`packages/<package>/<file>`).
+    pub module: Option<String>,
+}
+
+/// The site-wide widget settings and the packages that name more widgets.
+#[derive(Debug, Default)]
+pub struct Global {
+    pub keys: Vec<(Key, String)>,
+    pub packages: Packages,
 }
 
 /// What a widget key names.
@@ -185,17 +195,20 @@ fn classify(schema: &Schema, own: Option<(&str, &[&Column])>, key: &str) -> Resu
 }
 
 /// The keys of a widget config, checked: each names something, and its widget exists and fits it.
-fn keys(schema: &Schema, own: Option<(&str, &[&Column])>, widgets: &BTreeMap<String, String>, who: &str) -> Result<Vec<(Key, String)>, ConfigError> {
+fn keys(schema: &Schema, packages: &Packages, own: Option<(&str, &[&Column])>, widgets: &BTreeMap<String, String>, who: &str) -> Result<Vec<(Key, String)>, ConfigError> {
     let mut out: Vec<(Key, String)> = Vec::new();
     for (key, widget) in widgets {
-        if !WIDGETS.contains(&widget.as_str()) {
-            return err(format!("{who}: widgets has {widget:?} for {key:?}, not one of {}", WIDGETS.join(", ")));
+        let custom = packages.has_widget(widget);
+        if !custom && !WIDGETS.contains(&widget.as_str()) {
+            return err(format!("{who}: widgets has {widget:?} for {key:?}, not one of {} and not a widget of a package", WIDGETS.join(", ")));
         }
         let (k, ty) = classify(schema, own, key).map_err(|m| ConfigError(format!("{who}: widgets key {key:?} {m}")))?;
-        let ok = match ty {
-            Some(ty) => fits(widget, ty),
-            None => widget == "json",
-        };
+        // A package widget edits any value: the package decides what it shows and sends.
+        let ok = custom
+            || match ty {
+                Some(ty) => fits(widget, ty),
+                None => widget == "json",
+            };
         if !ok {
             return err(format!("{who}: the {widget:?} widget does not fit {key:?}"));
         }
@@ -208,8 +221,9 @@ fn keys(schema: &Schema, own: Option<(&str, &[&Column])>, widgets: &BTreeMap<Str
 }
 
 /// The global `widgets` of the site, checked against the schema.
-pub fn global(schema: &Schema, widgets: &BTreeMap<String, String>) -> Result<Vec<(Key, String)>, ConfigError> {
-    keys(schema, None, widgets, "widgets")
+pub fn global(schema: &Schema, packages: Packages, widgets: &BTreeMap<String, String>) -> Result<Global, ConfigError> {
+    let keys = keys(schema, &packages, None, widgets, "widgets")?;
+    Ok(Global { keys, packages })
 }
 
 fn sections(name: &str, which: &str, layout: Option<&Value>, fields: &[&Column]) -> Result<Vec<Section>, ConfigError> {
@@ -244,7 +258,7 @@ fn sections(name: &str, which: &str, layout: Option<&Value>, fields: &[&Column])
 }
 
 /// The form of one resource, checked. `detail` is the detail columns of the resource.
-pub fn build(schema: &Schema, idx: usize, name: &str, detail: &[Column], allow: &[Op], config: &FormConfig, global: &[(Key, String)]) -> Result<FormSpec, ConfigError> {
+pub fn build(schema: &Schema, idx: usize, name: &str, detail: &[Column], allow: &[Op], config: &FormConfig, global: &Global) -> Result<FormSpec, ConfigError> {
     let model = schema.model(idx);
     let fields: Vec<&Column> = detail.iter().filter(|c| writable(c)).collect();
 
@@ -278,7 +292,7 @@ pub fn build(schema: &Schema, idx: usize, name: &str, detail: &[Column], allow: 
     let create = sections(name, "create", create, &fields)?;
     let edit = sections(name, "edit", edit, &fields)?;
 
-    let own = keys(schema, Some((name, &fields)), &config.widgets, name)?;
+    let own = keys(schema, &global.packages, Some((name, &fields)), &config.widgets, name)?;
     let mut widgets = BTreeMap::new();
     for c in &fields {
         let Ok(f) = model.field(&c.field) else { continue };
@@ -290,7 +304,7 @@ pub fn build(schema: &Schema, idx: usize, name: &str, detail: &[Column], allow: 
             _ => false,
         };
         // The field beats the path, the path beats the type; the resource beats the site.
-        let pick = |pred: &dyn Fn(&Key) -> bool| own.iter().chain(global).find(|(k, _)| pred(k)).map(|(_, w)| w.clone());
+        let pick = |pred: &dyn Fn(&Key) -> bool| own.iter().chain(&global.keys).find(|(k, _)| pred(k)).map(|(_, w)| w.clone());
         // A path key names the subfield from any type on the way; the outer type wins.
         let paths = f.nested.as_ref().map(|n| path_keys(schema, &n.ty, &n.path)).unwrap_or_default();
         let by_path = || paths.iter().find_map(|(t, p)| pick(&|k: &Key| matches!(k, Key::Path(kt, kp) if kt == t && kp == p)));
@@ -299,15 +313,16 @@ pub fn build(schema: &Schema, idx: usize, name: &str, detail: &[Column], allow: 
         }
     }
 
+    let module = config.component.as_deref().and_then(|c| global.packages.form(c)).map(str::to_owned);
     let component = match &config.component {
-        None => None,
-        Some(path) => {
+        Some(path) if module.is_none() => {
             let text = std::fs::read_to_string(path).map_err(|e| ConfigError(format!("{name}: form_component {path:?}: {e}")))?;
             if text.trim().is_empty() || text.len() > COMPONENT_MAX {
                 return err(format!("{name}: form_component {path:?} must hold 1 byte to {COMPONENT_MAX} bytes of JavaScript"));
             }
             Some(text)
         }
+        _ => None,
     };
-    Ok(FormSpec { create, edit, readonly, widgets, component })
+    Ok(FormSpec { create, edit, readonly, widgets, component, module })
 }

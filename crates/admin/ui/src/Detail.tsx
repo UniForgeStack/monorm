@@ -7,6 +7,7 @@ import { Link, detailUrl, editUrl, listBack, navigate, newUrl } from "./router";
 import { InlineRowsView } from "./Inlines";
 import { InputFields, inputBody, startInputs, type InputValues } from "./Inputs";
 import { ActionDialog, needsDialog, useQuick, type Target } from "./Actions";
+import { PackageTab, widgetCall, widgetStream } from "./Packages";
 import { Alert, Bypass, Button, message } from "./ui";
 
 /** A record: its fields and links, and one tab per to-many relation whose target the user can read. */
@@ -22,17 +23,21 @@ export function DetailPage({ resource, id, zone, site }: { resource: string; id:
   const d = q.data;
   const tabs = (meta?.tabs ?? []).filter((t) => site?.resources.some((r) => r.name === t.target));
   const tab = tabs.find((t) => t.name === chosen);
+  const packageTabs = meta?.package_tabs ?? [];
+  const packageTab = tab ? undefined : packageTabs.find((t) => t.name === chosen);
   const target = tab && site?.resources.find((r) => r.name === tab.target);
   return (
     <section>
       <p><Link href={listBack(resource)}>← {meta?.title ?? resource}</Link></p>
       <h1>{meta?.title ?? resource} <span className="muted">{decodeURIComponent(d.key)}</span></h1>
       {meta?.writable === false && <p className="muted" role="note">Read-only here: {meta.read_only_reason}</p>}
-      {!tab && meta && <RowActions meta={meta} id={id} flags={d.flags ?? {}} detail={d} />}
-      {!tab && meta?.bypass && meta.bypass.length > 0 && <div className="toolbar"><Bypass names={meta.bypass} params={params} change={change} /></div>}
-      {tabs.length > 0 && <Tabs tabs={tabs} current={tab?.name ?? null} base={detailUrl(resource, id)} />}
+      {!tab && !packageTab && meta && <RowActions meta={meta} id={id} flags={d.flags ?? {}} detail={d} />}
+      {!tab && !packageTab && meta?.bypass && meta.bypass.length > 0 && <div className="toolbar"><Bypass names={meta.bypass} params={params} change={change} /></div>}
+      {tabs.length + packageTabs.length > 0 && <Tabs tabs={[...tabs, ...packageTabs]} current={tab?.name ?? packageTab?.name ?? null} base={detailUrl(resource, id)} />}
       {tab && target && api.may(target, "create") && <AddOnTab tab={tab} detail={d} />}
-      {tab && target ? (
+      {packageTab && site ? (
+        <PackageTab key={packageTab.name} site={site} name={packageTab.name} resource={resource} id={id} record={Object.fromEntries(d.fields.map((f, i) => [f.label, d.values[i]]))} call={widgetCall} stream={widgetStream} />
+      ) : tab && target ? (
         // One list per tab: the key resets the state of the list when the tab changes.
         <ListView key={tab.name} resource={tab.target} zone={zone} meta={target} params={params} change={change} scope={{ resource, key: id, rel: tab.name }} />
       ) : (
@@ -51,7 +56,7 @@ export function DetailPage({ resource, id, zone, site }: { resource: string; id:
           ))}
         </dl>
       )}
-      {!tab && meta && <InlineRowsView meta={meta} rows={d.inlines} zone={zone} />}
+      {!tab && !packageTab && meta && <InlineRowsView meta={meta} rows={d.inlines} zone={zone} />}
     </section>
   );
 }
@@ -144,7 +149,7 @@ function RowActions({ meta, id, flags, detail }: { meta: api.Resource; id: strin
 }
 
 /** "Details" and one tab per to-many relation. The tab is `?tab=<relation>` on the detail URL. */
-function Tabs({ tabs, current, base }: { tabs: api.Tab[]; current: string | null; base: string }) {
+function Tabs({ tabs, current, base }: { tabs: { name: string; title: string }[]; current: string | null; base: string }) {
   const items = [{ name: null as string | null, title: "Details" }, ...tabs];
   return (
     <div role="tablist" className="tabs">

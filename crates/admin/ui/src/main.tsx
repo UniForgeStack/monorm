@@ -1,10 +1,17 @@
+import * as React from "react";
 import { StrictMode } from "react";
+import * as ReactDOM from "react-dom";
+import * as ReactDOMClient from "react-dom/client";
+import * as jsxRuntime from "react/jsx-runtime";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { App } from "./App";
 import { ApiError } from "./api";
 import { LOGIN_URL, navigate } from "./router";
 import "./styles.css";
+
+// The one React of the page: the import map of a site with packages points `import "react"` at the modules of /admin/shared, which read this.
+(globalThis as Record<string, unknown>).__monormAdmin = { React, ReactDOM, ReactDOMClient, jsxRuntime };
 
 const client = new QueryClient({
   defaultOptions: {

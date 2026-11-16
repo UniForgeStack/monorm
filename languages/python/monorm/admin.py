@@ -179,6 +179,8 @@ class ResourceConfig(TypedDict, total=False):
     widgets: Mapping[str, str]
     """The widget of a field (``"blurb": "textarea"``), of a nested path (``"Geo.lat"``) or of a type (``"Text"``, an enum name).
     A field beats a path, a path beats a type; the site ``widgets`` come last."""
+    detail_tabs: Sequence[str]
+    """Package detail tabs, each ``"<package>.<tab>"``: the detail page shows them after the relation tabs. See :meth:`Admin.package`."""
     form_component: str | os.PathLike[str]
     """The path of a JavaScript module that replaces the whole form: ``export default (React) => function Form(props) {...}``.
     The admin reads the file when the site starts and serves it to signed-in staff."""
@@ -222,6 +224,7 @@ _INLINE_PAGE_REFUSED = {
     "actions": "an inline has no actions",
     "bulk_delete": "an inline has no bulk delete",
     "form_component": "a replaced form cannot be a row of a table",
+    "detail_tabs": "a detail tab belongs to the registered page of the child",
     "allow_protected_writes": "the opt-in belongs to the registered page of the child",
 }
 
@@ -315,7 +318,7 @@ def _form(name: str, form: Any) -> Any:
 
 
 _LIST_KEYS = {"columns", "order", "page_size", "sortable", "search", "search_with", "filters", "named_filters", "computed", "aggregates", "labels", "empty", "empty_fields", "tabs"}
-_RESOURCE_KEYS = {"list", "title", "group", "allow", "perms", "label", "field_permissions", "actions", "queryset", "can", "check_messages", "form", "readonly", "widgets", "form_component", "relations", "files", "create", "update", "delete", "inputs", "allow_protected_writes", "inlines", "bulk_delete"}
+_RESOURCE_KEYS = {"list", "title", "group", "allow", "perms", "label", "field_permissions", "actions", "queryset", "can", "check_messages", "form", "readonly", "widgets", "form_component", "detail_tabs", "relations", "files", "create", "update", "delete", "inputs", "allow_protected_writes", "inlines", "bulk_delete"}
 _BRAND_KEYS = {"name", "logo", "colors", "links", "environment"}
 Strategy = Literal["page", "model", "access"]
 
@@ -762,7 +765,7 @@ class AdminTestClient:
             if headers or csrf is not _AUTO or origin is not _AUTO:
                 raise TypeError("the `user=` client takes only a method, a path, `json` and `file`")
             trace = _native.Trace()
-            if file is not None or "/files/" in path or "/export/" in path or "/routes/" in path:
+            if file is not None or self._site.is_raw(path):
                 kind, data = _multipart(file) if file is not None else (None, None)
                 if json is not None:
                     kind, data = "application/json", _dumps(json).encode()
@@ -936,9 +939,42 @@ class Admin:
                 raise AdminConfigError(f"roles[{name!r}] must be a list of patterns")
         self._resources: dict[str, tuple[type[Model], ResourceConfig]] = {}
         self._routes: dict[tuple[str, str], tuple[RouteFunction, str | None]] = {}
+        self._packages: dict[str, dict[str, Any]] = {}
+
+    def package(
+        self,
+        name: str,
+        directory: str | os.PathLike[str],
+        *,
+        widgets: Mapping[str, str] | None = None,
+        forms: Mapping[str, str] | None = None,
+        tabs: Mapping[str, str] | None = None,
+        styles: Sequence[str] = (),
+        admin_major: int = 1,
+    ) -> None:
+        """Adds an extension package: a directory of static ``.js``, ``.mjs`` and ``.css`` files that the admin serves to the browser.
+
+        ``widgets`` maps a widget name to a module file of the directory. A field uses it as ``"<name>.<widget>"`` in ``widgets``.
+        ``forms`` does the same for a form module (a resource ``form_component`` of ``"<name>.<form>"``). ``tabs`` maps a tab name to a module: a resource shows it on its detail page with ``detail_tabs=["<name>.<tab>"]``. ``styles`` lists the
+        CSS files that load with the first widget. ``admin_major`` is the widget contract version that the files were built for.
+        The admin reads the files once and refuses a package for another major version. A package adds its routes and actions
+        with ``route`` and ``action`` itself: it is a function ``install(admin)`` that calls this method too.
+        """
+        if name in self._packages:
+            raise AdminConfigError(f"the package {name!r} is added twice")
+        self._packages[name] = {
+            "name": name,
+            "admin_major": admin_major,
+            "dir": os.path.abspath(os.fspath(directory)),
+            "widgets": dict(widgets or {}),
+            "forms": dict(forms or {}),
+            "tabs": dict(tabs or {}),
+            "styles": list(styles),
+        }
+        self._planned = None
 
     def route(self, method: str, path: str, fn: RouteFunction, *, permission: str | None = None) -> None:
-        """Adds a JSON or stream endpoint under ``<prefix>/api/routes/<path>``, behind the admin session.
+        """Adds a JSON or stream endpoint under ``<prefix>/routes/<path>``, behind the admin session.
 
         ``path`` may hold ``{name}`` parts. ``fn(ctx, request)`` gets a ``Context`` and a ``RouteRequest`` (``method``, ``path``,
         ``params``, ``query``, ``body``). It returns a JSON value, ``Reply(json, status=)`` or ``Stream(chunks, content_type, filename)``.
@@ -996,6 +1032,11 @@ class Admin:
             if not isinstance(path, (str, os.PathLike)):
                 raise AdminConfigError(f"{name}: form_component is the path of a JavaScript file")
             resource["form_component"] = os.fspath(path)
+        if "detail_tabs" in config:
+            names = config["detail_tabs"]
+            if isinstance(names, str) or not all(isinstance(n, str) for n in names):
+                raise AdminConfigError(f"{name}: detail_tabs is a list of package tab names")
+            resource["detail_tabs"] = list(names)
         if "relations" in config:
             resource["relations"] = _relations(name, model, config["relations"])
         if "files" in config:
@@ -1069,6 +1110,8 @@ class Admin:
             out["groups"] = self._groups
         if self._statement_timeout != 15.0:
             out["statement_timeout_ms"] = round(self._statement_timeout * 1000)
+        if self._packages:
+            out["packages"] = list(self._packages.values())
         if self._routes:
             out["routes"] = [{"method": m, "path": p, **({"permission": perm} if perm else {})} for (m, p), (_, perm) in self._routes.items()]
         return json.dumps(out)

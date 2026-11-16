@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Label from "@radix-ui/react-label";
 import * as api from "./api";
+import { PackageWidget, packageWidget, versionProblem, widgetCall, widgetStream } from "./Packages";
 import { cell, fromInput, inputType, toInput, type Input, type Zone } from "./format";
 import { Link, detailUrl, editUrl, listBack, navigate, newUrl, useSearch } from "./router";
 import { Chips, FileField, Picker } from "./relations";
@@ -59,16 +60,26 @@ export interface FormProps {
   reload: () => void;
 }
 
-/** The component of a resource that replaces the form: the module default-exports `(React) => Component`. */
-function useCustom(meta: api.Resource) {
+/**
+ * The component of a resource that replaces the form.
+ * A module that exports `adminMajor` is a component (the contract of Packages.tsx).
+ * One that does not is the older `(React) => Component` factory.
+ */
+function useCustom(meta: api.Resource, site: api.Site | undefined) {
   return useQuery({
-    queryKey: ["form-module", meta.name],
+    queryKey: ["form-module", meta.name, meta.form_module ?? null],
     enabled: meta.form_component === true,
     retry: false,
     staleTime: Infinity,
     gcTime: Infinity,
     queryFn: async () => {
-      const module = await import(/* @vite-ignore */ api.formModuleUrl(meta.name));
+      const url = meta.form_module ? api.packageUrl(meta.form_module) : api.formModuleUrl(meta.name);
+      const module = await import(/* @vite-ignore */ url);
+      if (module.adminMajor !== undefined || meta.form_module) {
+        const problem = versionProblem(`The form of ${meta.name}`, module, site?.admin_major ?? 0);
+        if (problem) throw new Error(problem);
+        return { Component: module.default as React.ComponentType<FormProps> };
+      }
       return { Component: (module.default as (r: typeof React) => React.ComponentType<FormProps>)(React) };
     },
   });
@@ -154,10 +165,16 @@ function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }:
   const search = useSearch();
   // The modal is a create form that no URL fills.
   const params = new URLSearchParams(modal ? "" : search);
+  // A package widget holds a raw JSON value, not a text input.
+  const own = (w: string) => packageWidget(site, w) !== undefined;
+  const rawStart = (label: string): unknown => (creating ? null : (cells[label] ?? null));
   const blank = (c: api.Column, w: string): Input => toInput(creating ? null : cells[c.label], w, zone);
   const start = () =>
     Object.fromEntries(fields.map(({ column: c, w }) => [c.label, creating && params.has(c.label) ? (w === "checkbox" ? params.get(c.label) === "true" : (params.get(c.label) as string)) : blank(c, w)]));
   const [vals, setVals] = useState<Record<string, Input>>(start);
+  const [raws, setRaws] = useState<Record<string, unknown>>(() => Object.fromEntries(fields.filter(({ w }) => own(w)).map(({ column: c }) => [c.label, rawStart(c.label)])));
+  // The message that a widget reports with `onError`. A field with a message does not save.
+  const [widgetErrors, setWidgetErrors] = useState<Record<string, string>>({});
   const [problems, setProblems] = useState<Problems>({ fields: {}, form: [] });
   const [conflicts, setConflicts] = useState<NonNullable<api.ErrorBody["conflicts"]>>({});
   const [busy, setBusy] = useState(false);
@@ -165,7 +182,7 @@ function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }:
   const [afterSave, setAfterSave] = useState<{ action: api.ActionInfo; key: string } | null>(null);
   const submitActions = (meta.actions ?? []).filter((a) => a.placement === "submit");
   const [ins, setIns] = useState<InputValues>(() => startInputs(meta.inputs));
-  const custom = useCustom(meta);
+  const custom = useCustom(meta, site);
   // The inline rows: a modal has none, and a custom form does not show them.
   const inlined = !modal && !meta.form_component;
   const [inl, setInl] = useState<InlineState>(() => (inlined ? startInlines(meta, rows, zone) : {}));
@@ -214,7 +231,7 @@ function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }:
     }
     return Object.keys(out).length > 0 ? out : undefined;
   };
-  const dirty = (c: api.Column, w: string) => vals[c.label] !== blank(c, w);
+  const dirty = (c: api.Column, w: string) => (own(w) ? JSON.stringify(raws[c.label] ?? null) !== JSON.stringify(rawStart(c.label)) : vals[c.label] !== blank(c, w));
 
   /** The one write of both paths. The guard values go along even for a field that the form cannot change. */
   const send = async (set: api.Values, action: Action, changes?: api.Links, inlines?: api.InlineChanges, then?: Then): Promise<boolean> => {
@@ -246,6 +263,8 @@ function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }:
         // Another record of the same kind: the form is empty again, and the prefill of the URL stays.
         if (creating) {
           setVals(start());
+          setRaws(Object.fromEntries(fields.filter(({ w }) => own(w)).map(({ column: c }) => [c.label, null])));
+          setWidgetErrors({});
           setSaved(empty());
           setChips(empty());
           setIns(startInputs(meta.inputs));
@@ -277,6 +296,11 @@ function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }:
       // A checkbox that nothing fills and no default covers goes along even when it is off.
       const needed = creating && w === "checkbox" && f.required && !f.default;
       if (!dirty(c, w) && !needed) continue;
+      if (own(w)) {
+        if (widgetErrors[c.label]) local[c.label] = [widgetErrors[c.label] as string];
+        else set[c.label] = raws[c.label] ?? null;
+        continue;
+      }
       const out = fromInput(vals[c.label] ?? "", w, c.nullable, zone);
       if ("error" in out) local[c.label] = [out.error];
       else set[c.label] = out.value;
@@ -335,7 +359,24 @@ function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }:
           {f.default && creating && <span className="muted"> (default)</span>}
           {f.readonly && <span className="muted"> (read-only)</span>}
         </Label.Root>
-        {f.relation ? (
+        {own(w) && site ? (
+          <PackageWidget
+            site={site}
+            w={w}
+            id={id_}
+            name={name}
+            value={raws[name] ?? null}
+            onChange={(v) => setRaws((r) => ({ ...r, [name]: v }))}
+            onError={(m) => setWidgetErrors((e) => (m ? { ...e, [name]: m } : Object.fromEntries(Object.entries(e).filter(([k]) => k !== name))))}
+            field={{ name, title: c.title, type: c.type, array: c.array ?? false, required: f.required ?? false, nullable: c.nullable, choices: c.choices ?? [], max_length: f.max_length ?? null }}
+            record={Object.fromEntries(fields.map(({ column }) => [column.label, rawStart(column.label)]))}
+            readOnly={locked ?? false}
+            disabled={busy}
+            errors={errors}
+            call={widgetCall}
+            stream={widgetStream}
+          />
+        ) : f.relation ? (
           <Picker
             id={id_}
             resource={meta.name}

@@ -51,6 +51,7 @@ pub fn api_with(site: Arc<Site>, conn: Arc<dyn Executor>, auth: Option<AuthConfi
         .route("/resources/{name}/{key}/inlines/{inline}", post(crate::inlinewrite::row_create))
         .route("/resources/{name}/{key}/inlines/{inline}/{row}", patch(crate::inlinewrite::row_update).delete(crate::inlinewrite::row_destroy)).route("/forms/{name}", get(form_module)).route("/counts/{name}", get(counts)).route("/export/{name}", get(crate::export::export)).route("/counts/{name}/{key}/{rel}", get(tab_counts)).route("/autocomplete/{name}/{rel}", get(crate::relations::autocomplete)).route("/links/{name}/{key}/{rel}", get(crate::relations::links)).route("/files/{name}/{key}/{field}", get(crate::files::download).post(crate::files::upload))
         .route("/routes/{*path}", axum::routing::any(crate::routes::handle))
+        .route("/packages/{pkg}/{*file}", get(crate::packages::serve))
         .route("/actions/{name}/{action}", post(crate::actions::on_list))
         .route("/tab-actions/{name}/{key}/{rel}/{action}", post(crate::actions::on_tab));
     let bridge = auth.clone().map(|a| (a.bridge.clone(), a));
@@ -299,7 +300,7 @@ async fn resources(State(s): Shared, user: Option<Extension<User>>) -> Response 
         close_host_forms(&mut meta);
     }
     let visible: Vec<&str> = meta["resources"].as_array().map(|a| a.iter().filter_map(|r| r["name"].as_str()).collect()).unwrap_or_default();
-    Json(json!({"ok": true, "brand": s.site.brand, "nav": s.site.nav(&visible), "resources": meta["resources"], "permissions": meta["permissions"]})).into_response()
+    Json(json!({"ok": true, "brand": s.site.brand, "nav": s.site.nav(&visible), "resources": meta["resources"], "permissions": meta["permissions"], "admin_major": crate::packages::ADMIN_MAJOR, "packages": s.site.packages.meta()})).into_response()
 }
 
 /// With no host, a resource whose write needs host code cannot save: say so in its form metadata.

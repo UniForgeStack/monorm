@@ -81,6 +81,9 @@ struct Config {
     /// Custom routes under `<prefix>/routes/`.
     #[serde(default)]
     routes: Vec<crate::routes::RouteConfig>,
+    /// Extension packages: static widgets, form modules and styles under `<prefix>/packages/`.
+    #[serde(default)]
+    packages: Vec<crate::packages::PackageConfig>,
 }
 
 /// The rows a resource shows to staff.
@@ -151,6 +154,9 @@ struct ResourceConfig {
     widgets: BTreeMap<String, String>,
     /// The path of a JavaScript module that replaces the form.
     form_component: Option<String>,
+    /// Package detail tabs (`<package>.<tab>`) that the detail page shows after the relation tabs.
+    #[serde(default)]
+    detail_tabs: Vec<String>,
     /// Relation fields with a picker (to-one) or chips (many-to-many), by relation name.
     #[serde(default)]
     relations: BTreeMap<String, crate::relations::RelationConfig>,
@@ -367,6 +373,14 @@ pub struct Sortable {
     pub indexed: bool,
 }
 
+/// A detail tab that a package gives: `name` is `<package>.<tab>`, `module` the path of its file under the prefix.
+#[derive(Debug, Clone)]
+pub struct PackageTab {
+    pub name: String,
+    pub title: String,
+    pub module: String,
+}
+
 #[derive(Debug)]
 pub struct Resource {
     pub model: usize,
@@ -440,6 +454,8 @@ pub struct Resource {
     pub files: Vec<String>,
     /// The to-many relations that the detail page edits in place.
     pub inlines: Vec<Inline>,
+    /// The package tabs of the detail page.
+    pub package_tabs: Vec<PackageTab>,
     tabs_config: Option<Vec<String>>,
     /// Whether the table is large, and when it was read.
     large: Mutex<Option<(Instant, bool)>>,
@@ -637,6 +653,8 @@ pub struct Site {
     pub warnings: Vec<String>,
     /// The custom routes, checked.
     pub routes: Vec<crate::routes::Route>,
+    /// The loaded extension packages.
+    pub packages: crate::packages::Packages,
     meta_builds: AtomicUsize,
 }
 
@@ -656,7 +674,8 @@ impl Site {
         };
         let label = config.label.as_deref().unwrap_or("admin");
         check_name("label", label)?;
-        let global = crate::form::global(&schema, &config.widgets)?;
+        let packages = crate::packages::Packages::build(&config.packages)?;
+        let global = crate::form::global(&schema, packages.clone(), &config.widgets)?;
         let mut resources = Vec::new();
         let mut warnings = Vec::new();
         if config.resources.is_empty() {
@@ -738,7 +757,7 @@ impl Site {
             0 => None,
             ms => Some(Duration::from_millis(ms)),
         };
-        let mut site = Site { schema, prefix, strategy, resources, brand, groups, statement_timeout, export_idle_timeout, warnings, routes: Vec::new(), meta_builds };
+        let mut site = Site { schema, prefix, strategy, resources, brand, groups, statement_timeout, export_idle_timeout, warnings, routes: Vec::new(), packages, meta_builds };
         site.routes = crate::routes::build(&config.routes, &site)?;
         Ok(site)
     }
@@ -771,6 +790,14 @@ impl Site {
     pub fn url(&self, resource: &str, key: &Value) -> Result<String, String> {
         let resource = self.resource(resource).ok_or_else(|| format!("{resource} is not an admin resource"))?;
         crate::key::url_of(resource, key)
+    }
+
+    /// Whether a request path (with the site prefix) leads to a route that takes or gives bytes: a file, an export or a custom route.
+    /// The test clients ask this, so the list of such routes lives here only.
+    pub fn is_raw(&self, path: &str) -> bool {
+        let path = path.split('?').next().unwrap_or(path);
+        let rest = path.strip_prefix(self.prefix.as_str()).unwrap_or(path);
+        ["/files/", "/export/", "/routes/"].iter().any(|p| rest.starts_with(p))
     }
 
     pub fn resource(&self, name: &str) -> Option<&Resource> {
@@ -872,7 +899,7 @@ fn inline_relation<'a>(schema: &'a Schema, parent: &Resource, child: usize, via:
 
 /// The inlines of resource `i`: the page of each child with its wrapper, checked.
 #[allow(clippy::too_many_arguments)]
-fn inlines_of(schema: &Schema, resources: &[Resource], i: usize, config: &ResourceConfig, strategy: Strategy, site_label: &str, global: &[(crate::form::Key, String)], warnings: &mut Vec<String>) -> Result<Vec<Inline>, ConfigError> {
+fn inlines_of(schema: &Schema, resources: &[Resource], i: usize, config: &ResourceConfig, strategy: Strategy, site_label: &str, global: &crate::form::Global, warnings: &mut Vec<String>) -> Result<Vec<Inline>, ConfigError> {
     let parent = &resources[i];
     let mut out: Vec<Inline> = Vec::new();
     for c in &config.inlines {
@@ -1006,7 +1033,7 @@ fn concrete(m: &monorm_core::schema::Model) -> bool {
 
 impl ResourceConfig {
     fn of(model: &str) -> ResourceConfig {
-        ResourceConfig { model: model.to_owned(), list: ListConfig::default(), allow: None, perms: None, label: None, title: None, group: None, field_permissions: Vec::new(), actions: Vec::new(), bulk_delete: true, queryset: None, can: BTreeMap::new(), check_messages: BTreeMap::new(), service: Default::default(), inputs: Vec::new(), allow_protected_writes: false, host_behavior: false, form: None, readonly: Vec::new(), widgets: BTreeMap::new(), form_component: None, relations: BTreeMap::new(), files: Vec::new(), inlines: Vec::new() }
+        ResourceConfig { model: model.to_owned(), list: ListConfig::default(), allow: None, perms: None, label: None, title: None, group: None, field_permissions: Vec::new(), actions: Vec::new(), bulk_delete: true, queryset: None, can: BTreeMap::new(), check_messages: BTreeMap::new(), service: Default::default(), inputs: Vec::new(), allow_protected_writes: false, host_behavior: false, form: None, readonly: Vec::new(), widgets: BTreeMap::new(), form_component: None, detail_tabs: Vec::new(), relations: BTreeMap::new(), files: Vec::new(), inlines: Vec::new() }
     }
 }
 
@@ -1083,7 +1110,7 @@ fn permission_options(name: &str, config: &ResourceConfig, strategy: Strategy, s
     Ok(PermissionOptions { label, allow, split_delete })
 }
 
-fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Strategy, site_label: &str, global: &[(crate::form::Key, String)], warnings: &mut Vec<String>) -> Result<Resource, ConfigError> {
+fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Strategy, site_label: &str, global: &crate::form::Global, warnings: &mut Vec<String>) -> Result<Resource, ConfigError> {
     let list = &config.list;
     let model = schema.model(idx);
     let name = model.ir.name.clone();
@@ -1176,6 +1203,11 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
     }
     crate::hostwrite::check_config(&name, &detail, &config.service, &config.inputs)?;
     let form = crate::form::build(schema, idx, &name, &detail, &allow, &FormConfig { form: config.form.clone(), readonly: config.readonly.clone(), widgets: config.widgets.clone(), component: config.form_component.clone() }, global)?;
+    let mut package_tabs = Vec::new();
+    for full in &config.detail_tabs {
+        let Some(module) = global.packages.tab(full) else { return err(format!("{name}: detail_tabs names {full:?}, which is not a tab of a package")) };
+        package_tabs.push(PackageTab { name: full.clone(), title: crate::meta::humanize(full.split_once('.').map_or(full, |(_, t)| t)), module: module.to_owned() });
+    }
     let scope_defaults = scope_default_names(model);
     let files = files_of(schema, idx, &name, &config.files)?;
     Ok(Resource {
@@ -1222,6 +1254,7 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
         relations: Vec::new(),
         files,
         inlines: Vec::new(),
+        package_tabs,
         tabs_config: list.tabs.clone(),
         large: Mutex::new(None),
     })

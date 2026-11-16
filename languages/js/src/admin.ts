@@ -16,6 +16,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
+import { resolve as resolvePath } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { HOST, hostDispatch, type HostFunction } from "./admin-host.js";
@@ -177,6 +178,8 @@ export interface ResourceConfig {
    * The admin reads the file when the site starts and serves it to signed-in staff.
    */
   readonly formComponent?: string;
+  /** Package detail tabs, each `"<package>.<tab>"`: the detail page shows them after the relation tabs. See `Admin.package`. */
+  readonly detailTabs?: readonly string[];
   /**
    * The relation fields that the form edits, by relation name. A to-one relation becomes a picker with keyset autocomplete;
    * a many-to-many relation (through a join model) becomes chips. The target of each needs a text column that names a row.
@@ -277,7 +280,7 @@ export interface AdminUser {
 
 const LIST_KEYS = new Set(["columns", "order", "pageSize", "sortable", "search", "searchWith", "filters", "namedFilters", "computed", "aggregates", "labels", "empty", "emptyFields", "tabs"]);
 const BRAND_KEYS = new Set(["name", "logo", "colors", "links", "environment"]);
-const RESOURCE_KEYS = new Set(["queryset", "can", "list", "title", "group", "allow", "perms", "label", "fieldPermissions", "actions", "checkMessages", "form", "readonly", "widgets", "formComponent", "relations", "files", "create", "update", "delete", "inputs", "allowProtectedWrites", "inlines", "bulkDelete"]);
+const RESOURCE_KEYS = new Set(["queryset", "can", "list", "title", "group", "allow", "perms", "label", "fieldPermissions", "actions", "checkMessages", "form", "readonly", "widgets", "formComponent", "detailTabs", "relations", "files", "create", "update", "delete", "inputs", "allowProtectedWrites", "inlines", "bulkDelete"]);
 
 function widgetsJson(who: string, value: unknown): Record<string, string> {
   if (typeof value !== "object" || value === null || Array.isArray(value) || !Object.values(value).every((v) => typeof v === "string")) {
@@ -753,7 +756,7 @@ export class AdminTestClient {
       if (Object.keys(options).some((k) => k !== "json" && k !== "file")) throw new TypeError("the `user` client takes only a method, a path, `json` and `file`");
       if (options.file !== undefined && options.json !== undefined) throw new TypeError("a request takes `json` or `file`, not both");
       const trace = new (native().Trace)();
-      if (options.file !== undefined || path.includes("/files/") || path.includes("/export/") || path.includes("/routes/")) {
+      if (options.file !== undefined || this.site.isRaw(path)) {
         const part = options.file !== undefined ? multipartBody(options.file) : options.json !== undefined ? { type: "application/json", data: Buffer.from(JSON.stringify(options.json)) } : null;
         const raw = await wait(() => this.site.requestRaw(this.database.engine, method, path, this.#user, trace, hostDispatch(this.database, this.host), part?.type ?? null, part?.data ?? null));
         const events = trace.take();
@@ -873,6 +876,7 @@ const INLINE_PAGE_REFUSED: Readonly<Record<string, string>> = {
   actions: "an inline has no actions",
   bulkDelete: "an inline has no bulk delete",
   formComponent: "a replaced form cannot be a row of a table",
+  detailTabs: "a detail tab belongs to the registered page of the child",
   allowProtectedWrites: "the opt-in belongs to the registered page of the child",
 };
 
@@ -951,6 +955,7 @@ export class Admin {
   readonly #statementTimeout: number;
   readonly #storage: FileStorage | undefined;
   readonly #routes = new Map<string, { method: string; path: string; fn: RouteFunction; permission: string | undefined }>();
+  readonly #packages = new Map<string, Record<string, unknown>>();
   #planned: { schema: unknown; site: NativeAdminSite } | null = null;
 
   constructor(
@@ -990,6 +995,20 @@ export class Admin {
   }
 
   /**
+   * Adds an extension package: a directory of static `.js`, `.mjs` and `.css` files that the admin serves to the browser.
+   * `widgets` maps a widget name to a module file of the directory; a field uses it as `"<name>.<widget>"` in `widgets`.
+   * `forms` does the same for a form module (a resource `formComponent` of `"<name>.<form>"`). `tabs` maps a tab name to a module: a resource shows it on its detail page with `detailTabs: ["<name>.<tab>"]`. `styles` lists the CSS files that
+   * load with the first widget. `adminMajor` is the widget contract version that the files were built for (default 1).
+   * The admin reads the files once and refuses a package for another major version. A package adds its routes and actions
+   * with `route` and `action` itself: it is a function `install(admin)` that calls this method too.
+   */
+  package(name: string, directory: string, options: { readonly widgets?: Readonly<Record<string, string>>; readonly forms?: Readonly<Record<string, string>>; readonly tabs?: Readonly<Record<string, string>>; readonly styles?: readonly string[]; readonly adminMajor?: number } = {}): void {
+    if (this.#packages.has(name)) throw new AdminConfigError(`the package '${name}' is added twice`);
+    this.#packages.set(name, { name, admin_major: options.adminMajor ?? 1, dir: resolvePath(directory), widgets: { ...options.widgets }, forms: { ...options.forms }, tabs: { ...options.tabs }, styles: [...(options.styles ?? [])] });
+    this.#planned = null;
+  }
+
+  /**
    * Adds a custom route at `<prefix>/routes/<path>`. Rust runs the session, the CSRF check and the permission check, then calls
    * `fn(ctx, request)`. `path` may hold `{name}` parts (`request.params`). `permission` is a full `<label>.<name>`; without it the
    * route needs only the admin gate. `fn` returns a JSON value, `new Reply(json, { status })` or `new Stream(chunks, { contentType, filename })`.
@@ -1014,6 +1033,7 @@ export class Admin {
       ...(this.#brand === undefined ? {} : { brand: this.#brand }),
       ...(this.#widgets === undefined || Object.keys(this.#widgets).length === 0 ? {} : { widgets: this.#widgets }),
       ...(this.#groups.length === 0 ? {} : { groups: this.#groups }),
+      ...(this.#packages.size === 0 ? {} : { packages: [...this.#packages.values()] }),
       ...(this.#routes.size === 0 ? {} : { routes: [...this.#routes.values()].map((r) => ({ method: r.method, path: r.path, ...(r.permission === undefined ? {} : { permission: r.permission }) })) }),
       ...(this.#statementTimeout === 15 ? {} : { statement_timeout_ms: Math.round(this.#statementTimeout * 1000) }),
     });
@@ -1035,6 +1055,7 @@ export class Admin {
       ...(config.readonly === undefined ? {} : { readonly: readonlyJson(model, config.readonly) }),
       ...(config.widgets === undefined ? {} : { widgets: widgetsJson(`${model}: widgets`, config.widgets) }),
       ...(config.formComponent === undefined ? {} : { form_component: formComponentJson(model, config.formComponent) }),
+      ...(config.detailTabs === undefined ? {} : { detail_tabs: [...config.detailTabs] }),
       ...(config.relations === undefined ? {} : { relations: relationsJson(model, cls, registry, config.relations) }),
       ...(config.files === undefined ? {} : { files: this.#filesOf(model, config.files) }),
       ...(list === undefined ? {} : { list }),
