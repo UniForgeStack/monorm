@@ -47,7 +47,7 @@ export class InputDef {
 }
 
 export interface InputOptions {
-  readonly type?: "text" | "textarea" | "number" | "checkbox" | "select";
+  readonly type?: "text" | "textarea" | "number" | "checkbox" | "select" | "file";
   readonly label?: string;
   readonly required?: boolean;
   readonly help?: string;
@@ -79,6 +79,10 @@ export interface ContextOptions {
   readonly ip?: string | null;
   readonly userAgent?: string | null;
   readonly inlines?: Readonly<Record<string, InlineChanges>> | null;
+  /** An action: the number of rows in the query set (at most 10,000), whether the count hit that cap, and how the rows were chosen (`keys`, `all` or `filter`). */
+  readonly count?: number;
+  readonly capped?: boolean;
+  readonly selection?: string;
 }
 
 /**
@@ -120,6 +124,12 @@ export class Context {
   readonly userAgent: string | null;
   /** The checked rows of the inlines that the form sent with the record. The service writes them in its own transaction: deletes, then updates, then creates. A service that ignores them drops the rows. */
   readonly inlines: Readonly<Record<string, InlineChanges>>;
+  /** An action: the number of rows in its query set, at most 10,000. */
+  readonly count: number;
+  /** An action: true when the rows were more than the cap of 10,000. */
+  readonly capped: boolean;
+  /** An action: `keys` (a selection), `all` (every row that matches) or `filter` (a list action). */
+  readonly selection: string;
   readonly audits: AuditEntry[] = [];
   /** @internal */
   readonly auditInputs: Record<string, unknown>;
@@ -141,6 +151,9 @@ export class Context {
     this.ip = options.ip ?? null;
     this.userAgent = options.userAgent ?? null;
     this.inlines = { ...(options.inlines ?? {}) };
+    this.count = options.count ?? 0;
+    this.capped = options.capped ?? false;
+    this.selection = options.selection ?? "keys";
   }
 
   /**
@@ -401,6 +414,9 @@ function contextOf(database: Database, args: Loose, meta: ModelMeta, models: Rea
     ip: args.ip,
     userAgent: args.user_agent,
     inlines: decodeInlines(args.inlines, models),
+    count: args.count ?? 0,
+    capped: args.capped === true,
+    selection: args.selection ?? "keys",
   });
   ctx.meta = meta;
   return ctx;
@@ -442,12 +458,14 @@ export function serviceFunction(model: AnyModel, config: Loose, op: string, fn: 
   const meta = model._meta;
   return async (database, args) => {
     const ctx = contextOf(database, args, meta, models);
-    const values = decodeValues(meta, args.values ?? {});
+    // A bulk delete sends the filters of its query set and a list of binds in `values`.
+    const bulk = Array.isArray(args.filters);
+    const values = bulk ? {} : decodeValues(meta, args.values ?? {});
     let result: unknown;
     try {
       result = await guarded(model, args, async () => {
         if (op === "create") return await fn(ctx, values);
-        const qs = oneRow(model, database, args.key, await resourceFilters(config, args.user, op));
+        const qs = bulk ? querySet(model, database, args) : oneRow(model, database, args.key, await resourceFilters(config, args.user, op));
         return await (op === "update" ? fn(ctx, qs, values) : fn(ctx, qs));
       });
     } catch (e) {
@@ -475,5 +493,161 @@ export function writerHost(resources: ReadonlyMap<string, { readonly model: AnyM
     const writer = writers.get(args.model);
     if (writer === undefined) throw new Error(`no admin resource ${String(args.model)}`);
     return await writer(database, args);
+  };
+}
+
+// -- actions -------------------------------------------------------------------------------------------------------
+
+export const PLACEMENTS = ["bulk", "row", "detail", "list", "submit"] as const;
+export type Placement = (typeof PLACEMENTS)[number];
+const LEVELS = ["info", "success", "warning", "error"] as const;
+export type MessageLevel = (typeof LEVELS)[number];
+
+/** The result of an action that shows a message. */
+export function message(text: string, level: MessageLevel = "info"): ActionResult {
+  if (!LEVELS.includes(level)) throw new RangeError(`the level of a message is one of ${LEVELS.join(", ")}`);
+  return { kind: "message", message: text, level };
+}
+
+/** The result of an action that sends the browser to a path of the admin site (it starts with `/`). */
+export function redirect(to: string): ActionResult {
+  return { kind: "redirect", to };
+}
+
+/** The result of an action that sends a file to the browser. */
+export function download(filename: string, content: Uint8Array | string, contentType = "application/octet-stream"): ActionResult {
+  const data = typeof content === "string" ? Buffer.from(content, "utf8") : Buffer.from(content);
+  return { kind: "download", filename, content_type: contentType, base64: data.toString("base64") };
+}
+
+/** The result of an action that only reloads the page. A function that returns nothing has this result. */
+export function refresh(): ActionResult {
+  return { kind: "refresh" };
+}
+
+export type ActionResult = { readonly kind: "message" | "redirect" | "download" | "refresh"; readonly [key: string]: unknown };
+
+export interface ActionOptions {
+  /** The name of the action in the URL and the audit row; the name of the function by default. */
+  readonly name?: string;
+  readonly label?: string;
+  /** `bulk` (default): a selection or all rows that match. `row`, `detail`, `list` (all rows that match the filters) and `submit` (next to the save button). */
+  readonly placement?: Placement;
+  /** The name part of `<label>.<permission>_<resource>`. An action with no `permission` needs the manage permission of the resource. */
+  readonly permission?: string;
+  readonly confirm?: string;
+  readonly inputs?: readonly InputDef[];
+  /** A condition: the action is off on the rows where it is false, and the query set leaves them out. */
+  readonly appliesTo?: unknown;
+}
+
+export type ActionFunction = (ctx: Context, qs: Loose) => Promise<ActionResult | string | void | undefined | null> | ActionResult | string | void | undefined | null;
+
+const ACTION = Symbol.for("monorm.admin.action");
+
+/** The definition that {@link action} put on a function. */
+export interface ActionDef extends ActionOptions {
+  readonly name: string;
+  readonly fn: ActionFunction;
+}
+
+/**
+ * Marks a function as an admin action: `action(async (ctx, qs) => {...}, { name: "refund", placement: "bulk", confirm: "Refund these?" })`.
+ *
+ * `qs` is the query set of the rows (with the `queryset` filter, the `can` rule and `appliesTo`), `ctx.inputs` holds the values of
+ * `inputs` and `ctx.count` the number of rows. Loop with `for await (const batch of qs.batches(500))`. The function returns nothing (a refresh),
+ * a string (a message) or `message`, `redirect`, `download` or `refresh`. It returns the same function: a unit test calls it with a `Context`
+ * and a query set and needs no admin.
+ */
+export function action<F extends ActionFunction>(fn: F, options: ActionOptions = {}): F {
+  const def: ActionDef = { ...options, name: options.name ?? fn.name, fn };
+  Object.defineProperty(fn, ACTION, { value: def, configurable: true });
+  return fn;
+}
+
+/** The definition of a function that {@link action} marked, or `undefined`. */
+export function actionDef(item: unknown): ActionDef | undefined {
+  return typeof item === "function" ? ((item as Loose)[ACTION] as ActionDef | undefined) : undefined;
+}
+
+/** A bind of the engine (`{ $: tag, v }` for the types that JSON cannot tell apart) as a JavaScript value. */
+function untag(value: unknown): unknown {
+  if (value === null || typeof value !== "object" || Array.isArray(value) || !("$" in value)) return value;
+  const { $: tag, v: raw } = value as { $: string; v: any };
+  switch (tag) {
+    case "bigint": return BigInt(raw);
+    case "datetime": return parseDateTime(raw) ?? new Date(raw);
+    case "date": {
+      const m = /^(\d{4})-(\d\d)-(\d\d)$/.exec(raw);
+      return m === null ? raw : new Date(Date.UTC(+m[1]!, +m[2]! - 1, +m[3]!));
+    }
+    case "time": return parseTime(raw) ?? raw;
+    case "decimal": return new Decimal(raw);
+    case "array": return (raw as unknown[]).map(untag);
+    default: return raw;
+  }
+}
+
+/** A filter that Rust built (engine IR) with the values of its parameters. */
+class IrFilter extends Condition<any, any> {
+  constructor(
+    private readonly node: Loose,
+    private readonly values: readonly unknown[],
+  ) {
+    super();
+  }
+
+  ir(ctx: IRContext): Loose {
+    return this.remap(this.node, ctx.params);
+  }
+
+  private remap(ir: Loose, params: unknown[]): Loose {
+    if (Array.isArray(ir)) return ir.map((i) => this.remap(i, params));
+    if (ir === null || typeof ir !== "object") return ir;
+    if (ir["t"] === "param" || ir["t"] === "in_param") {
+      params.push(this.values[ir["i"]]);
+      return { ...ir, i: params.length - 1 };
+    }
+    return Object.fromEntries(Object.entries(ir).map(([k, v]) => [k, this.remap(v, params)]));
+  }
+}
+
+/** The query set of an action call: the filters of the payload, on the database of the request. */
+function querySet(model: Loose, database: Database, args: Loose): Loose {
+  const values = ((args.values ?? []) as unknown[]).map(untag);
+  let qs = model.objects.using(database);
+  const filters = ((args.filters ?? []) as unknown[]).map((f) => new IrFilter(f, values));
+  if (filters.length > 0) qs = qs.filter(...filters);
+  if (Array.isArray(args.without) && args.without.length > 0) qs = qs.withoutDefaults(...args.without);
+  return qs;
+}
+
+function resultJson(result: unknown): Record<string, unknown> {
+  if (result === undefined || result === null) return refresh();
+  if (typeof result === "string") return message(result);
+  if (typeof result === "object" && "kind" in (result as object)) return { ...(result as Record<string, unknown>) };
+  throw new TypeError("an action returns nothing, a message string or one of message, redirect, download and refresh");
+}
+
+/** The host function of one action (`action.<Resource>.<name>`). */
+export function actionFunction(model: AnyModel, config: Loose, def: ActionDef, models: ReadonlyMap<string, AnyModel> = new Map()): HostFunction {
+  const meta = model._meta;
+  return async (database, args) => {
+    const ctx = contextOf(database, { ...args, op: `action:${def.name}` }, meta, models);
+    let result: unknown;
+    try {
+      result = await guarded(model, args, async () => await def.fn(ctx, querySet(model, database, args)));
+    } catch (e) {
+      const envelope = failure(meta, e);
+      if (envelope === undefined) throw e;
+      return envelope;
+    }
+    let shown: Record<string, unknown>;
+    try {
+      shown = resultJson(result);
+    } catch (e) {
+      return { ok: false, kind: "error", message: `the action ${def.name} of ${meta.name}: ${e instanceof Error ? e.message : String(e)}` };
+    }
+    return { ok: true, audited: ctx.audited, result: shown };
   };
 }

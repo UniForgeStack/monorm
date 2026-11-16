@@ -8,10 +8,13 @@ The Rust service calls these functions with no transaction. A function owns its 
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import contextvars
 import datetime
+import decimal
 import inspect
+import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, TypeVar
 
@@ -98,6 +101,9 @@ class Context:
     ``update`` a list of ``{"key", "set", "loaded", "before"}``, ``delete`` a list of ``{"key", "before"}``. ``pin`` pairs each
     child field with the parent field it holds. The admin has checked every row; the service writes them in its own transaction,
     deletes first, then updates, then creates. A service that ignores ``ctx.inlines`` drops the inline rows.
+
+    An action also reads ``count`` (the rows of its query set, at most 10,001), ``capped`` (``True`` when the count hit the cap) and
+    ``selection`` (``"keys"`` for the rows that staff picked, ``"all"`` for every row that matches, ``"filter"`` for a list action).
     """
 
     def __init__(
@@ -115,7 +121,13 @@ class Context:
         ip: str | None = None,
         user_agent: str | None = None,
         inlines: Mapping[str, Any] | None = None,
+        count: int = 0,
+        capped: bool = False,
+        selection: str = "keys",
     ) -> None:
+        self.count = count
+        self.capped = capped
+        self.selection = selection
         self.inlines: dict[str, Any] = dict(inlines or {})
         self.user: dict[str, Any] = {k: v for k, v in (user or {}).items() if k not in _PLAIN_USER_DROP}
         self.request_id = request_id
@@ -393,6 +405,9 @@ def _context(database: Any, args: Mapping[str, Any], model: Any, models: Mapping
         ip=args.get("ip"),
         user_agent=args.get("user_agent"),
         inlines=_decode_inlines(args.get("inlines"), models or {}),
+        count=int(args.get("count") or 0),
+        capped=bool(args.get("capped")),
+        selection=args.get("selection") or "keys",
     )
     ctx._model = model
     return ctx
@@ -437,7 +452,8 @@ def service_function(model: Any, config: Mapping[str, Any], op: str, fn: Callabl
     async def call(database: Any, args: dict[str, Any]) -> Any:
         ctx = _context(database, args, model, models)
         ctx._loop = asyncio.get_running_loop()
-        values = decode_values(model, args.get("values") or {})
+        # A bulk delete sends a query set: `values` are the binds of its filters, not field values.
+        values = {} if "filters" in args else decode_values(model, args.get("values") or {})
         user = args.get("user") or {}
         protect = allow_writes(model) if args.get("allow_protected") else contextlib.nullcontext()
         try:
@@ -445,7 +461,10 @@ def service_function(model: Any, config: Mapping[str, Any], op: str, fn: Callabl
                 if op == "create":
                     arguments: tuple[Any, ...] = (ctx, values)
                 else:
-                    qs = _one_row(model, database, args["key"], await _resource_filters(config, user, op))
+                    if "filters" in args:
+                        qs = _query_set(model, database, args)
+                    else:
+                        qs = _one_row(model, database, args["key"], await _resource_filters(config, user, op))
                     arguments = (ctx, qs, values) if op == "update" else (ctx, qs)
                 if sync:
                     # The worker thread needs the context variables (the protected-write opt-in) of this task.
@@ -488,3 +507,207 @@ def writer_host(resources: Mapping[str, tuple[Any, Mapping[str, Any]]], models: 
         return await writers[args["model"]](database, args)
 
     return write
+
+
+# -- actions ---------------------------------------------------------------------------------------------------------
+
+_PLACEMENTS = ("bulk", "row", "detail", "list", "submit")
+_ACTION = "_monorm_admin_action"
+_LEVELS = ("info", "success", "warning", "error")
+
+
+def message(text: str, level: str = "info") -> dict[str, Any]:
+    """The result of an action that shows a message: ``level`` is ``info``, ``success``, ``warning`` or ``error``."""
+    if level not in _LEVELS:
+        raise ValueError(f"the level of a message is one of {', '.join(_LEVELS)}")
+    return {"kind": "message", "message": text, "level": level}
+
+
+def redirect(to: str) -> dict[str, Any]:
+    """The result of an action that sends the browser to a path of the admin site (it starts with ``/``)."""
+    return {"kind": "redirect", "to": to}
+
+
+def download(filename: str, content: bytes | str, content_type: str = "application/octet-stream") -> dict[str, Any]:
+    """The result of an action that sends a file to the browser."""
+    data = content.encode() if isinstance(content, str) else bytes(content)
+    return {"kind": "download", "filename": filename, "content_type": content_type, "base64": base64.b64encode(data).decode("ascii")}
+
+
+def refresh() -> dict[str, Any]:
+    """The result of an action that only reloads the page. A function that returns ``None`` has this result."""
+    return {"kind": "refresh"}
+
+
+def _result_json(result: Any) -> dict[str, Any]:
+    if result is None:
+        return refresh()
+    if isinstance(result, str):
+        return message(result)
+    if isinstance(result, Mapping) and "kind" in result:
+        return dict(result)
+    raise TypeError("an action returns None, a message string or one of admin.message, admin.redirect, admin.download and admin.refresh")
+
+
+class ActionDef:
+    """The definition of one action; see :func:`action`."""
+
+    def __init__(
+        self,
+        fn: Callable[..., Any] | None,
+        name: str,
+        *,
+        label: str | None,
+        placement: str | None,
+        permission: str | None,
+        confirm: str | None,
+        inputs: tuple[InputDef, ...],
+        applies_to: Any,
+    ) -> None:
+        self.fn = fn
+        self.name = name
+        self.label = label
+        self.placement = placement
+        self.permission = permission
+        self.confirm = confirm
+        self.inputs = inputs
+        self.applies_to = applies_to
+
+
+def action(
+    fn: Callable[..., Any] | None = None,
+    *,
+    name: str | None = None,
+    label: str | None = None,
+    placement: str = "bulk",
+    permission: str | None = None,
+    confirm: str | None = None,
+    inputs: tuple[InputDef, ...] | list[InputDef] = (),
+    applies_to: Any = None,
+) -> Any:
+    """Marks a function as an admin action. Use it as a decorator: ``@admin.action(placement="bulk", confirm="Refund these orders?")``.
+
+    The function is ``async def refund(ctx, qs)``: ``qs`` is the query set of the rows (with the ``queryset`` filter, the ``can`` rule
+    and ``applies_to``), ``ctx.inputs`` holds the values of ``inputs`` and ``ctx.count`` the number of rows. Loop with
+    ``async for batch in qs.batches(500)``. The function returns ``None`` (a refresh), a string (a message) or ``admin.message``,
+    ``admin.redirect``, ``admin.download`` or ``admin.refresh``. The decorator returns the function itself: a unit test calls it with a
+    ``Context`` and a query set, and needs no admin.
+
+    ``placement`` is ``bulk`` (a selection or all rows that match), ``row``, ``detail``, ``list`` (all rows that match the filters of
+    the list) or ``submit`` (next to the save button of the form). ``permission`` is the name part of ``<label>.<permission>_<resource>``
+    (``permission="refund"``); an action with no ``permission`` needs the manage permission of the resource. ``applies_to`` is a condition: the action is off on the rows where it is false, and the query set leaves them out.
+    ``name`` is the name of the function by default.
+    """
+
+    def mark(f: Callable[..., Any]) -> Callable[..., Any]:
+        n = name or f.__name__
+        setattr(f, _ACTION, ActionDef(f, n, label=label, placement=placement, permission=permission, confirm=confirm, inputs=tuple(inputs), applies_to=applies_to))
+        return f
+
+    return mark(fn) if fn is not None else mark
+
+
+def action_def(item: Any) -> ActionDef | None:
+    """The definition that ``@admin.action`` put on a function, or the definition itself."""
+    if isinstance(item, ActionDef):
+        return item
+    found = getattr(item, _ACTION, None)
+    return found if isinstance(found, ActionDef) else None
+
+
+def _untag(value: Any) -> Any:
+    """A bind of the engine (``{"$": tag, "v": ...}`` for the types that JSON cannot tell apart) as a Python value."""
+    if not (isinstance(value, dict) and "$" in value):
+        return value
+    tag, raw = value["$"], value["v"]
+    if tag == "bigint":
+        return int(raw)
+    if tag == "datetime":
+        return _decode("date_time", raw)
+    if tag == "date":
+        return _decode("date", raw)
+    if tag == "time":
+        return _decode("time", raw)
+    if tag == "uuid":
+        return uuid.UUID(raw)
+    if tag == "decimal":
+        return decimal.Decimal(raw)
+    if tag == "array":
+        return [_untag(v) for v in raw]
+    return raw
+
+
+class _IrFilter(Condition):
+    """A filter that Rust built (engine IR) with the values of its parameters."""
+
+    __slots__ = ("ir", "values")
+
+    def __init__(self, ir: Any, values: list[Any]) -> None:
+        self.ir = ir
+        self.values = values
+
+    def _ir(self, ctx: IRContext) -> Any:
+        return self._remap(self.ir, ctx.params)
+
+    def _remap(self, ir: Any, params: list[Any]) -> Any:
+        if isinstance(ir, list):
+            return [self._remap(i, params) for i in ir]
+        if not isinstance(ir, dict):
+            return ir
+        if ir.get("t") in ("param", "in_param"):
+            params.append(self.values[ir["i"]])
+            return {**ir, "i": len(params) - 1}
+        return {k: self._remap(v, params) for k, v in ir.items()}
+
+    def __repr__(self) -> str:
+        return f"filter({self.ir!r})"
+
+
+def _query_set(model: Any, db: Any, args: Mapping[str, Any]) -> Any:
+    """The query set of an action call: the filters of the payload, on the database of the request."""
+    values = [_untag(v) for v in args.get("values") or []]
+    qs = model.objects.using(db)
+    filters = [_IrFilter(f, values) for f in args.get("filters") or []]
+    if filters:
+        qs = qs.filter(*filters)
+    if args.get("without"):
+        qs = qs.without_defaults(*args["without"])
+    return qs
+
+
+def action_function(model: Any, config: Mapping[str, Any], d: ActionDef, models: Mapping[str, Any] | None = None) -> Callable[[Any, dict[str, Any]], Awaitable[Any]]:
+    """The host function of one action (``action.<Resource>.<name>``)."""
+    fn = d.fn
+    assert fn is not None
+    sync = is_sync(fn)
+
+    async def call(database: Any, args: dict[str, Any]) -> Any:
+        ctx = _context(database, args, model, models)
+        ctx._loop = asyncio.get_running_loop()
+        ctx.op = f"action:{d.name}"  # the default action of ctx.audit
+        protect = allow_writes(model) if args.get("allow_protected") else contextlib.nullcontext()
+        try:
+            with protect:
+                qs = _query_set(model, database, args)
+                if sync:
+                    scope = contextvars.copy_context()
+                    result = await asyncio.get_running_loop().run_in_executor(None, lambda: scope.run(fn, ctx, qs))
+                else:
+                    result = await fn(ctx, qs)
+        except ValidationError as e:
+            return _invalid(e)
+        except VersionConflict:
+            return {"ok": False, "kind": "conflict"}
+        except DoesNotExist:
+            return {"ok": False, "kind": "not_found"}
+        if inspect.isawaitable(result):
+            if inspect.iscoroutine(result):
+                result.close()
+            return {"ok": False, "kind": "sync_service", "message": f"the action {d.name} of {model.__name__} is a threaded sync function that returned an awaitable: run the async database calls with ctx.run(...)"}
+        try:
+            shown = _result_json(result)
+        except TypeError as e:
+            return {"ok": False, "kind": "error", "message": f"the action {d.name} of {model.__name__}: {e}"}
+        return {"ok": True, "audited": ctx._audited, "result": shown}
+
+    return call

@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any, Literal, Mapping, Sequence, TypedDict, ca
 from . import _native
 from . import _admin_permissions
 from ._admin_host import HOST as _HOST
-from ._admin_write import Context, InputDef, input, is_sync, is_threaded, log, service_function, threaded, writer_host
+from ._admin_write import _PLACEMENTS, ActionDef, Context, InputDef, action, action_def, action_function, download, input, is_sync, is_threaded, log, message, redirect, refresh, service_function, threaded, writer_host
 from ._admin_permissions import RoleSeedReport, SyncReport
 from .adapters import _ADAPTERS as _adapters
 from .errors import QueryError
@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from .db import Database
     from .model import Registry
 
-__all__ = ["Admin", "AdminConfigError", "AdminResponse", "AdminTestClient", "AggregateColumn", "BrandConfig", "BrandLink", "ComputedColumn", "Context", "InlineDef", "ListConfig", "NamedChoice", "NamedFilter", "ResourceConfig", "RoleSeedReport", "SyncReport", "check", "inline", "input", "log", "register", "test_client", "threaded", "url"]
+__all__ = ["Admin", "AdminConfigError", "AdminResponse", "AdminTestClient", "AggregateColumn", "BrandConfig", "BrandLink", "ActionDef", "ComputedColumn", "Context", "InlineDef", "ListConfig", "NamedChoice", "NamedFilter", "ResourceConfig", "RoleSeedReport", "SyncReport", "action", "check", "download", "inline", "input", "log", "message", "redirect", "refresh", "register", "test_client", "threaded", "url"]
 
 DEFAULT_PREFIX = "/admin/api"
 
@@ -156,8 +156,11 @@ class ResourceConfig(TypedDict, total=False):
     """The label of the permission names of this resource, instead of the site label."""
     field_permissions: Sequence[str]
     """Names such as ``"see_credential"`` that become ``<label>.<name>``."""
-    actions: Sequence[str]
-    """Names such as ``"refund"`` that become ``<label>.<action>_<resource>``."""
+    actions: Sequence[Any]
+    """Functions that ``@admin.action(...)`` marked (a button where staff need it), or names such as ``"refund"`` that only declare
+    the permission ``<label>.<action>_<resource>``."""
+    bulk_delete: bool
+    """``False`` removes the bulk delete of the list. It is on by default; it needs the delete permission, and a ``delete`` service gets the query set."""
     queryset: Any
     """The rows that staff see: a prepared query set (``Model.objects.filter(Model.owner == param("user")).prepare()``) whose
     ``user`` param the admin fills, or an async function ``(user)`` that returns a condition (one host call
@@ -215,6 +218,7 @@ _INLINE_PAGE_REFUSED = {
     "label": "the permission of an inline follows its parent: use permission= of the inline",
     "field_permissions": "field permissions belong to the registered page of the child",
     "actions": "an inline has no actions",
+    "bulk_delete": "an inline has no bulk delete",
     "form_component": "a replaced form cannot be a row of a table",
     "allow_protected_writes": "the opt-in belongs to the registered page of the child",
 }
@@ -309,7 +313,7 @@ def _form(name: str, form: Any) -> Any:
 
 
 _LIST_KEYS = {"columns", "order", "page_size", "sortable", "search", "search_with", "filters", "named_filters", "computed", "aggregates", "labels", "empty", "empty_fields", "tabs"}
-_RESOURCE_KEYS = {"list", "title", "group", "allow", "perms", "label", "field_permissions", "actions", "queryset", "can", "check_messages", "form", "readonly", "widgets", "form_component", "relations", "files", "create", "update", "delete", "inputs", "allow_protected_writes", "inlines"}
+_RESOURCE_KEYS = {"list", "title", "group", "allow", "perms", "label", "field_permissions", "actions", "queryset", "can", "check_messages", "form", "readonly", "widgets", "form_component", "relations", "files", "create", "update", "delete", "inputs", "allow_protected_writes", "inlines", "bulk_delete"}
 _BRAND_KEYS = {"name", "logo", "colors", "links", "environment"}
 Strategy = Literal["page", "model", "access"]
 
@@ -834,6 +838,42 @@ def _inline_defs(name: str, items: Any) -> list[InlineDef]:
     return out
 
 
+def _actions_json(name: str, model: type[Model], items: Any) -> list[dict[str, Any]]:
+    """The action entries of a resource: a name declares a permission, a marked function is a button."""
+    if isinstance(items, str):
+        raise AdminConfigError(f"{name}: actions is a list")
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in items:
+        d = action_def(item)
+        if d is None:
+            if not isinstance(item, str):
+                raise AdminConfigError(f"{name}: an action is a name or a function that @admin.action marked, not {item!r}")
+            entry: dict[str, Any] = {"name": item, "permission": item}
+        else:
+            if d.fn is None or not callable(d.fn):
+                raise AdminConfigError(f"{name}: action {d.name!r} needs a function")
+            if d.placement not in _PLACEMENTS:
+                raise AdminConfigError(f"{name}: action {d.name!r}: placement is one of {', '.join(_PLACEMENTS)}")
+            if not all(isinstance(i, InputDef) for i in d.inputs):
+                raise AdminConfigError(f"{name}: action {d.name!r}: inputs is a list of admin.input(...) controls")
+            entry = {"name": d.name, "placement": d.placement, "sync": is_sync(d.fn), "threaded": is_threaded(d.fn)}
+            if d.permission is not None:
+                entry["permission"] = d.permission
+            for key in ("label", "confirm"):
+                if (value := getattr(d, key)) is not None:
+                    entry[key] = value
+            if d.inputs:
+                entry["inputs"] = [i.json() for i in d.inputs]
+            if d.applies_to is not None:
+                entry["applies_to"] = _ir(model, d.applies_to, f"action {d.name!r} applies_to")
+        if entry["name"] in seen:
+            raise AdminConfigError(f"{name}: action {entry['name']!r} is listed twice")
+        seen.add(entry["name"])
+        out.append(entry)
+    return out
+
+
 def _check_inline_page(name: str, d: InlineDef) -> None:
     at = f"{name}: inline {d.model.__name__}"
     for key in d.page:
@@ -956,8 +996,14 @@ class Admin:
             resource["allow_protected_writes"] = True
         if _adapters.get(model):
             resource["host_behavior"] = True
+        if "actions" in config:
+            resource["actions"] = _actions_json(name, model, config["actions"])
+        if "bulk_delete" in config:
+            if not isinstance(config["bulk_delete"], bool):
+                raise AdminConfigError(f"{name}: bulk_delete is True or False")
+            resource["bulk_delete"] = config["bulk_delete"]
         raw: dict[str, Any] = dict(config)
-        for key in ("title", "group", "allow", "perms", "label", "field_permissions", "actions"):
+        for key in ("title", "group", "allow", "perms", "label", "field_permissions"):
             if key in raw:
                 value = raw[key]
                 resource[key] = value if isinstance(value, str) else list(value)
@@ -1025,6 +1071,10 @@ class Admin:
             for op in ("create", "update", "delete"):
                 if (fn := cast("Mapping[str, Any]", config).get(op)) is not None:
                     host[f"service.{model.__name__}.{op}"] = service_function(model, config, op, fn, models)
+        for model, config in self._resources.values():
+            for item in config.get("actions", ()):
+                if (d := action_def(item)) is not None and d.fn is not None:
+                    host[f"action.{model.__name__}.{d.name}"] = action_function(model, config, d, models)
         files = {(model.__name__, field): storage for model, config in self._resources.values() for field, storage in _files(model.__name__, config.get("files", {})).items()}
         if files:
             host.update(_file_host(self._storage, files))

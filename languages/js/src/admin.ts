@@ -20,7 +20,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { HOST, hostDispatch, type HostFunction } from "./admin-host.js";
 import * as grants from "./admin-permissions.js";
-import { Context, InputDef, input, log, serviceFunction, writerHost, type InlineChanges } from "./admin-write.js";
+import { action, actionDef, actionFunction, Context, download, InputDef, input, log, message, PLACEMENTS, redirect, refresh, serviceFunction, writerHost, type ActionDef, type ActionFunction, type ActionOptions, type ActionResult, type InlineChanges } from "./admin-write.js";
 import { hasFieldAdapters } from "./adapters.js";
 import type { RoleSeedReport, SyncReport } from "./admin-permissions.js";
 import type { Database } from "./db.js";
@@ -211,8 +211,13 @@ export interface ResourceConfig {
   readonly label?: string;
   /** Names such as `"see_credential"` that become `<label>.<name>`. */
   readonly fieldPermissions?: readonly string[];
-  /** Names such as `"refund"` that become `<label>.<action>_<resource>`. */
-  readonly actions?: readonly string[];
+  /**
+   * The actions of the resource. A function that `action(fn, options)` marked is a button (see `ActionOptions`).
+   * A plain name such as `"refund"` only declares the permission `<label>.<action>_<resource>`.
+   */
+  readonly actions?: readonly (string | ActionFunction)[];
+  /** `false` removes the bulk delete of the list. It is on by default; it uses the `delete` service and the `can.delete` rule. */
+  readonly bulkDelete?: boolean;
 }
 
 export interface RelationConfig {
@@ -271,7 +276,7 @@ export interface AdminUser {
 
 const LIST_KEYS = new Set(["columns", "order", "pageSize", "sortable", "search", "searchWith", "filters", "namedFilters", "computed", "aggregates", "labels", "empty", "emptyFields", "tabs"]);
 const BRAND_KEYS = new Set(["name", "logo", "colors", "links", "environment"]);
-const RESOURCE_KEYS = new Set(["queryset", "can", "list", "title", "group", "allow", "perms", "label", "fieldPermissions", "actions", "checkMessages", "form", "readonly", "widgets", "formComponent", "relations", "files", "create", "update", "delete", "inputs", "allowProtectedWrites", "inlines"]);
+const RESOURCE_KEYS = new Set(["queryset", "can", "list", "title", "group", "allow", "perms", "label", "fieldPermissions", "actions", "checkMessages", "form", "readonly", "widgets", "formComponent", "relations", "files", "create", "update", "delete", "inputs", "allowProtectedWrites", "inlines", "bulkDelete"]);
 
 function widgetsJson(who: string, value: unknown): Record<string, string> {
   if (typeof value !== "object" || value === null || Array.isArray(value) || !Object.values(value).every((v) => typeof v === "string")) {
@@ -542,6 +547,42 @@ function querysetHost(model: AnyModel, fn: QuerysetFunction): HostFunction {
     const irs = conditions.map((c) => irOf(model, c, "queryset"));
     return { filter: irs.length === 1 ? irs[0] : { t: "and", items: irs } };
   };
+}
+
+function bulkDeleteJson(model: string, value: unknown): boolean {
+  if (typeof value !== "boolean") throw new AdminConfigError(`${model}: bulkDelete is true or false`);
+  return value;
+}
+
+/** The action entries of a resource: a name declares a permission, a marked function is a button. */
+function actionsJson(name: string, model: AnyModel, items: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(items)) throw new AdminConfigError(`${name}: actions is a list`);
+  const out: Record<string, unknown>[] = [];
+  const seen = new Set<string>();
+  for (const item of items) {
+    const d = actionDef(item);
+    let entry: Record<string, unknown>;
+    if (d === undefined) {
+      if (typeof item !== "string") throw new AdminConfigError(`${name}: an action is a name or a function that action() marked, not ${String(item)}`);
+      entry = { name: item, permission: item };
+    } else {
+      const placement = d.placement ?? "bulk";
+      if (d.name === "") throw new AdminConfigError(`${name}: an action needs a name: pass { name } to action()`);
+      if (!(PLACEMENTS as readonly string[]).includes(placement)) throw new AdminConfigError(`${name}: action '${d.name}': placement is one of ${PLACEMENTS.join(", ")}`);
+      if (d.inputs !== undefined && !d.inputs.every((i) => i instanceof InputDef)) throw new AdminConfigError(`${name}: action '${d.name}': inputs is a list of input(...) controls`);
+      entry = { name: d.name, placement, sync: false, threaded: false };
+      if (d.permission !== undefined) entry["permission"] = d.permission;
+      if (d.label !== undefined) entry["label"] = d.label;
+      if (d.confirm !== undefined) entry["confirm"] = d.confirm;
+      if (d.inputs !== undefined && d.inputs.length > 0) entry["inputs"] = d.inputs.map((i) => i.json());
+      if (d.appliesTo !== undefined) entry["applies_to"] = irOf(model, d.appliesTo, `action '${d.name}' appliesTo`);
+    }
+    const key = entry["name"] as string;
+    if (seen.has(key)) throw new AdminConfigError(`${name}: action '${key}' is listed twice`);
+    seen.add(key);
+    out.push(entry);
+  }
+  return out;
 }
 
 function canJson(model: AnyModel, rules: CanRules): Record<string, unknown> {
@@ -829,6 +870,7 @@ const INLINE_PAGE_REFUSED: Readonly<Record<string, string>> = {
   label: "the permission of an inline follows its parent: use permission of the inline",
   fieldPermissions: "field permissions belong to the registered page of the child",
   actions: "an inline has no actions",
+  bulkDelete: "an inline has no bulk delete",
   formComponent: "a replaced form cannot be a row of a table",
   allowProtectedWrites: "the opt-in belongs to the registered page of the child",
 };
@@ -985,7 +1027,8 @@ export class Admin {
       ...(config.perms === undefined ? {} : { perms: [...config.perms] }),
       ...(config.label === undefined ? {} : { label: config.label }),
       ...(config.fieldPermissions === undefined ? {} : { field_permissions: [...config.fieldPermissions] }),
-      ...(config.actions === undefined ? {} : { actions: [...config.actions] }),
+      ...(config.actions === undefined ? {} : { actions: actionsJson(model, cls, config.actions) }),
+      ...(config.bulkDelete === undefined ? {} : { bulk_delete: bulkDeleteJson(model, config.bulkDelete) }),
       ...(config.inlines === undefined ? {} : { inlines: inlineDefs(model, config.inlines).map((d) => this.#inlineJson(model, d, registry)) }),
     };
   }
@@ -1063,6 +1106,10 @@ export class Admin {
     const models = this.#inlineModels();
     host["admin.write"] = writerHost(this.#resources, models);
     for (const [name, { model, config }] of this.#resources) {
+      for (const item of config.actions ?? []) {
+        const d = actionDef(item);
+        if (d !== undefined) host[`action.${name}.${d.name}`] = actionFunction(model, config, d, models);
+      }
       for (const op of ["create", "update", "delete"] as const) {
         const fn = config[op];
         if (fn !== undefined) host[`service.${name}.${op}`] = serviceFunction(model, config, op, fn, models);
@@ -1165,7 +1212,12 @@ export const admin = {
   input,
   log,
   inline,
+  action,
+  message,
+  redirect,
+  download,
+  refresh,
 };
 
-export { Context, InputDef, input, log };
-export type { InlineChanges };
+export { action, Context, download, InputDef, input, log, message, redirect, refresh };
+export type { ActionDef, ActionFunction, ActionOptions, ActionResult, InlineChanges };
