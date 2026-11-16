@@ -6,6 +6,7 @@ import { ListView, useListState } from "./List";
 import { Link, detailUrl, editUrl, listBack, navigate, newUrl } from "./router";
 import { InlineRowsView } from "./Inlines";
 import { InputFields, inputBody, startInputs, type InputValues } from "./Inputs";
+import { ActionDialog, needsDialog, useQuick, type Target } from "./Actions";
 import { Alert, Bypass, Button, message } from "./ui";
 
 /** A record: its fields and links, and one tab per to-many relation whose target the user can read. */
@@ -79,7 +80,11 @@ function RowActions({ meta, id, flags, detail }: { meta: api.Resource; id: strin
   const [problem, setProblem] = useState<string[]>([]);
   const [ins, setIns] = useState<InputValues>(() => startInputs(meta.inputs));
   const [bad, setBad] = useState<Record<string, string[]>>({});
+  const [pending, setPending] = useState<api.ActionInfo | null>(null);
+  const quick = useQuick(meta.name, (action) => setPending(action));
   if (meta.writable === false) return null;
+  const target: Target = { keys: [id], what: "this record" };
+  const detailActions = (meta.actions ?? []).filter((a) => a.placement === "detail");
   const allows = (rule: string) => !(meta.can ?? []).includes(rule) || flags[rule] === true;
   const remove = async () => {
     const loaded: api.Values = {};
@@ -113,8 +118,18 @@ function RowActions({ meta, id, flags, detail }: { meta: api.Resource; id: strin
           ) : (
             <Button variant="plain" disabled title="This record does not allow change">Edit</Button>
           ))}
+        {detailActions.map((a) => {
+          const fits = !a.applies || flags[`applies:${a.name}`] === true;
+          const may = allows("change");
+          return (
+            <Button key={a.name} variant="plain" disabled={!may || !fits} title={!may ? "This record does not allow change" : !fits ? "This action does not apply to this record" : undefined} onClick={() => (needsDialog(a) ? setPending(a) : void quick(a, target))}>
+              {a.label}
+            </Button>
+          );
+        })}
         {api.may(meta, "delete") && <Button variant="plain" disabled={!allows("delete") || asking} title={allows("delete") ? undefined : "This record does not allow delete"} onClick={() => setAsking(true)}>Delete</Button>}
       </div>
+      {pending && <ActionDialog key={pending.name} resource={meta.name} action={pending} target={target} onClose={() => setPending(null)} />}
       {asking && (
         <div className="confirm" role="alertdialog" aria-label="Confirm delete">
           <p>Delete this {meta.title} for good? This cannot be undone.</p>

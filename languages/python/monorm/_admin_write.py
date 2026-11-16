@@ -668,8 +668,8 @@ def _query_set(model: Any, db: Any, args: Mapping[str, Any]) -> Any:
     values = [_untag(v) for v in args.get("values") or []]
     qs = model.objects.using(db)
     filters = [_IrFilter(f, values) for f in args.get("filters") or []]
-    if filters:
-        qs = qs.filter(*filters)
+    # An action on every row, with no filter, is a write the staff asked for: `.all()` lets `qs.update(...)` run.
+    qs = qs.filter(*filters) if filters else qs.all()
     if args.get("without"):
         qs = qs.without_defaults(*args["without"])
     return qs

@@ -40,6 +40,13 @@ model ABig {
   tag String @db.VarChar(10)
   @@map("a_bigs")
 }
+
+model AVault {
+  id   Int    @id @default(autoincrement())
+  note String @db.VarChar(10)
+  @@protected_write
+  @@map("a_vaults")
+}
 """
 
 ITEMS = "/admin/api/actions/AItem"
@@ -154,6 +161,20 @@ async def test_all_rows_that_match_the_list_filters_run_in_batches_with_a_date_f
     assert seen == [(1203, "all", 3)]
     assert (await item.objects.using(db).filter(item.qty == 1).count()) == 1203
     assert await item.objects.using(db).filter(item.status != "new").count() == 2
+
+
+async def test_an_action_on_all_rows_with_no_filter_may_update_them_with_qs_update(world):
+    registry, db, models = world
+    item = models["AItem"]
+
+    @admin.action(placement="bulk")
+    async def zero(ctx, qs):
+        await qs.update(qty=0)
+
+    client = site_of(registry, models, zero).test_client(db, user=SU)
+    r = await client.post(f"{ITEMS}/zero", json={"all": True, "inputs": {}})
+    assert r.status == 200, r.text
+    assert await item.objects.using(db).filter(item.qty == 0).count() == 5
 
 
 async def test_row_detail_submit_and_list_placements_each_run_on_the_rows_they_name(world):
@@ -443,3 +464,27 @@ def test_a_wrong_action_config_is_an_admin_config_error(world):
         site.register(models["AItem"], config)
         with pytest.raises(admin.AdminConfigError, match=text):
             site.check()
+
+
+async def test_an_action_writes_a_protected_model_only_when_the_resource_opts_in(world):
+    registry, db, models = world
+    vault = models["AVault"]
+    with monorm.allow_writes(vault):
+        await vault.objects.using(db).insert_many([{"note": "open"}])
+
+    @admin.action(placement="bulk")
+    async def seal(ctx, qs):
+        await qs.update(note="sealed")
+        return admin.message("Sealed")
+
+    async def run(opt_in):
+        site = admin.Admin(registry)
+        site.register(vault, {"allow_protected_writes": opt_in, "actions": [seal]})
+        return await post(site.test_client(db, user=SU), "seal", {"keys": ["1"]}, "/admin/api/actions/AVault")
+
+    refused = await run(False)
+    assert refused.status != 200, refused.text
+    assert [r.note for r in await vault.objects.using(db).all()] == ["open"]
+    done = await run(True)
+    assert done.status == 200, done.text
+    assert [r.note for r in await vault.objects.using(db).all()] == ["sealed"]

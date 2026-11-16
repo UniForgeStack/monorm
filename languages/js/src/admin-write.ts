@@ -617,7 +617,8 @@ function querySet(model: Loose, database: Database, args: Loose): Loose {
   const values = ((args.values ?? []) as unknown[]).map(untag);
   let qs = model.objects.using(database);
   const filters = ((args.filters ?? []) as unknown[]).map((f) => new IrFilter(f, values));
-  if (filters.length > 0) qs = qs.filter(...filters);
+  // An action on every row, with no filter, is a write the staff asked for: `.all()` lets `qs.update(...)` run.
+  qs = filters.length > 0 ? qs.filter(...filters) : qs.all();
   if (Array.isArray(args.without) && args.without.length > 0) qs = qs.withoutDefaults(...args.without);
   return qs;
 }

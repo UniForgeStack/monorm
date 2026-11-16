@@ -5,6 +5,7 @@ import { FilterBar, POSITION } from "./filters";
 import { type Zone } from "./format";
 import { Link, navigate, newUrl, rememberList, useSearch } from "./router";
 import { Table } from "./Table";
+import { ActionDialog, deleteAction, needsDialog, useQuick, type Target } from "./Actions";
 import { Alert, Bypass, Button, message } from "./ui";
 
 const SIZES = [10, 25, 50, 100, 200];
@@ -68,6 +69,24 @@ export function ListView({ resource, zone, meta, params, change, scope }: { reso
   });
   const total: { data?: api.Count; isError: boolean; error: unknown } =
     inline !== undefined ? { data: { count: inline, capped: rows.data?.capped ?? false }, isError: false, error: null } : counted;
+  // Actions: the selection lives in the state of the list and ends with the page, the search or the filters.
+  const [chosen, setChosen] = useState<Set<string>>(new Set());
+  const [allMatching, setAllMatching] = useState(false);
+  const [pending, setPending] = useState<{ action: api.ActionInfo; target: Target } | null>(null);
+  const [pageSeen, setPageSeen] = useState(search);
+  if (pageSeen !== search) {
+    setPageSeen(search);
+    setChosen(new Set());
+    setAllMatching(false);
+    setPending(null);
+  }
+  // Only a run on the selection ends it: a row action leaves the selection alone.
+  const clearSelection = (target: Target) => {
+    if (!target.ofSelection) return;
+    setChosen(new Set());
+    setAllMatching(false);
+  };
+  const quick = useQuick(resource, (action, target) => setPending({ action, target }), clearSelection);
   const sort = params.get("sort") ?? "";
   const set = (name: string, value: string | null) => change((p) => (value ? p.set(name, value) : p.delete(name)));
   const search_ = (e: FormEvent) => {
@@ -86,6 +105,39 @@ export function ListView({ resource, zone, meta, params, change, scope }: { reso
   const sizes = [...new Set([...SIZES, pageSize, limit])].filter((n) => n <= (meta?.max_page_size ?? 200) || n === limit).sort((a, b) => a - b);
   const pages = total.data && !total.data.capped ? Math.max(1, Math.ceil(total.data.count / limit)) : null;
   const position = (name: string, value: string) => change((p) => p.set(name, value));
+  const actions = meta?.actions ?? [];
+  const bulkActions = [...actions.filter((a) => a.placement === "bulk"), ...(meta && meta.writable !== false && meta.bulk_delete ? [deleteAction(meta)] : [])];
+  const rowActions = actions.filter((a) => a.placement === "row");
+  // A list action runs on the whole list: a tab has no such action.
+  const listActions = scope ? [] : actions.filter((a) => a.placement === "list");
+  const filters = new URLSearchParams([...params].filter(([k]) => k === "q" || k === "without" || k.startsWith("f.") || k.startsWith("n.")));
+  const filterSearch = filters.toString() ? `?${filters}` : "";
+  const countText_ = total.data ? `${total.data.count.toLocaleString("en-US")}${total.data.capped ? "+" : ""}` : "";
+  const go = (action: api.ActionInfo, target: Target) => (needsDialog(action) ? setPending({ action, target }) : void quick(action, target));
+  const selected: Target = allMatching
+    ? { all: true, ofSelection: true, search: filterSearch, scope, what: `all ${countText_} matching records`.replace("all  ", "all ") }
+    : { keys: [...chosen], ofSelection: true, scope, what: `${chosen.size} ${chosen.size === 1 ? "record" : "records"}` };
+  const onPage = page?.keys ?? [];
+  const pageChosen = onPage.length > 0 && onPage.every((k) => chosen.has(k));
+  const moreMatching = !!total.data && total.data.count > onPage.length;
+  const select =
+    bulkActions.length > 0
+      ? {
+          chosen: allMatching ? new Set(onPage) : chosen,
+          toggle: (k: string) => {
+            setAllMatching(false);
+            setChosen((s) => {
+              const next = new Set(s);
+              if (!next.delete(k)) next.add(k);
+              return next;
+            });
+          },
+          toggleAll: () => {
+            setAllMatching(false);
+            setChosen(pageChosen ? new Set() : new Set(onPage));
+          },
+        }
+      : undefined;
   const jump = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const n = Number(new FormData(e.currentTarget).get("page"));
@@ -101,6 +153,9 @@ export function ListView({ resource, zone, meta, params, change, scope }: { reso
           </form>
         )}
         {!scope && api.may(meta, "create") && <Link className="btn btn-primary" href={newUrl(resource)}>Add</Link>}
+        {listActions.map((a) => (
+          <Button key={a.name} variant="plain" onClick={() => go(a, { search: filterSearch, what: "all the records that match the filters" })}>{a.label}</Button>
+        ))}
         {meta?.bypass && meta.bypass.length > 0 && <Bypass names={meta.bypass} params={params} change={change} />}
         <label className="size">
           Rows per page
@@ -120,7 +175,35 @@ export function ListView({ resource, zone, meta, params, change, scope }: { reso
         </>
       ) : (
         <>
+          {select && (chosen.size > 0 || allMatching) && (
+            <div className="bulkbar" role="group" aria-label="Bulk actions">
+              <span role="status">{allMatching ? `All ${countText_} matching records selected` : `${chosen.size} selected`}</span>
+              {!allMatching && pageChosen && moreMatching && <Button variant="plain" onClick={() => setAllMatching(true)}>Select all {countText_} matching records</Button>}
+              {allMatching && <Button variant="plain" onClick={() => { setAllMatching(false); setChosen(new Set()); }}>Clear the selection</Button>}
+              {bulkActions.map((a) => (
+                <Button key={a.name} variant="plain" onClick={() => go(a, selected)}>{a.name === "bulk_delete" ? "Delete selected" : a.label}</Button>
+              ))}
+            </div>
+          )}
+          {pending && <ActionDialog key={pending.action.name} resource={resource} action={pending.action} target={pending.target} onClose={() => setPending(null)} onDone={clearSelection} />}
           <Table
+            select={select}
+            rowActions={
+              rowActions.length > 0
+                ? (i, key) => {
+                    const flags = page.flags?.[i] ?? {};
+                    const may = !(meta?.can ?? []).includes("change") || flags.change === true;
+                    return rowActions.map((a) => {
+                      const fits = !a.applies || flags[`applies:${a.name}`] === true;
+                      return (
+                        <Button key={a.name} variant="plain" disabled={!may || !fits} title={!may ? "This record does not allow change" : !fits ? "This action does not apply to this record" : undefined} onClick={() => go(a, { keys: [key], scope, what: "this record" })}>
+                          {a.label}
+                        </Button>
+                      );
+                    });
+                  }
+                : undefined
+            }
             resource={resource}
             columns={page.columns}
             rows={page.rows}

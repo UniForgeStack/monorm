@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import { action, Admin, AdminConfigError, Context, download, input, message, redirect, type ResourceConfig } from "../src/admin.js";
-import { connect, load, Registry, type Database } from "../src/index.js";
+import { allowWrites, connect, load, Registry, type Database } from "../src/index.js";
 import { DoesNotExist, ValidationError, VersionConflict } from "../src/errors.js";
 
 const PG_URL = process.env["ORM_TEST_DATABASE_URL"] ?? "postgres://postgres:postgres@localhost/orm_test";
@@ -40,6 +40,13 @@ model ABig {
   id  BigInt @id
   tag String @db.VarChar(10)
   @@map("a_bigs")
+}
+
+model AVault {
+  id   Int    @id @default(autoincrement())
+  note String @db.VarChar(10)
+  @@protected_write
+  @@map("a_vaults")
 }
 `;
 
@@ -165,6 +172,20 @@ for (const provider of PROVIDERS) {
     assert.deepEqual(seen, [[1203, "all", 3]]);
     assert.equal(await item.objects.using(w.db).filter(item.qty.eq(1)).count(), 1203);
     assert.equal(await item.objects.using(w.db).filter(item.status.ne("new")).count(), 2);
+  }));
+
+  test(`an action on all rows with no filter may update them with qs update (${provider})`, () => world(provider, async (w) => {
+    const item = w.models["AItem"];
+    const zero = action(
+      async function zero(_ctx, qs) {
+        await qs.update({ qty: 0 });
+      },
+      { placement: "bulk" },
+    );
+    const client = siteOf(w, [zero]).testClient(w.db, { user: SU });
+    const r = await client.post(`${ITEMS}/zero`, { json: { all: true, inputs: {} } });
+    assert.equal(r.status, 200, r.text);
+    assert.equal(await item.objects.using(w.db).filter(item.qty.eq(0)).count(), 5);
   }));
 
   test(`row detail submit and list placements each run on the rows they name (${provider})`, () => world(provider, async (w) => {
@@ -430,5 +451,31 @@ for (const provider of PROVIDERS) {
       site.register(w.models["AItem"], config);
       assert.throws(() => site.check(), (e) => e instanceof AdminConfigError && text.test(e.message), String(text));
     }
+  }));
+
+  test(`an action writes a protected model only when the resource opts in (${provider})`, () => world(provider, async (w) => {
+    const vault = w.models["AVault"];
+    await allowWrites([vault], async () => {
+      await vault.objects.using(w.db).insertMany([{ note: "open" }]);
+    });
+    const seal = action(
+      async function seal(_ctx, qs) {
+        await qs.update({ note: "sealed" });
+        return "Sealed";
+      },
+      { placement: "bulk" },
+    );
+    const run = (optIn: boolean) => {
+      const site = new Admin(w.registry);
+      site.register(vault, { allowProtectedWrites: optIn, actions: [seal] } as ResourceConfig);
+      return post(site.testClient(w.db, { user: SU }), "seal", { keys: ["1"] }, "/admin/api/actions/AVault");
+    };
+    const notes = async () => (await vault.objects.using(w.db).all()).map((r: Loose) => r.note);
+    const refused = await run(false);
+    assert.notEqual(refused.status, 200, refused.text);
+    assert.deepEqual(await notes(), ["open"]);
+    const done = await run(true);
+    assert.equal(done.status, 200, done.text);
+    assert.deepEqual(await notes(), ["sealed"]);
   }));
 }

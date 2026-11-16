@@ -9,10 +9,13 @@ import { Link, detailUrl, editUrl, listBack, navigate, newUrl, useSearch } from 
 import { Chips, FileField, Picker } from "./relations";
 import { InlineSections, planInlines, startInlines, type InlineState } from "./Inlines";
 import { InputFields, inputBody, startInputs, type InputValues } from "./Inputs";
+import { ActionDialog, needsDialog, request, toast, useFinish } from "./Actions";
 import { Alert, Button, message } from "./ui";
 
 type Problems = { fields: Record<string, string[]>; form: string[] };
 type Action = "save" | "continue" | "add";
+/** A `submit` action runs on the saved record, after the save. */
+type Then = api.ActionInfo | undefined;
 
 /** The form of a record: the create form, or the edit form with the values that the server sent. */
 export function FormPage({ resource, id, zone, site }: { resource: string; id?: string; zone: Zone; site: api.Site | undefined }) {
@@ -158,6 +161,9 @@ function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }:
   const [problems, setProblems] = useState<Problems>({ fields: {}, form: [] });
   const [conflicts, setConflicts] = useState<NonNullable<api.ErrorBody["conflicts"]>>({});
   const [busy, setBusy] = useState(false);
+  const finish = useFinish();
+  const [afterSave, setAfterSave] = useState<{ action: api.ActionInfo; key: string } | null>(null);
+  const submitActions = (meta.actions ?? []).filter((a) => a.placement === "submit");
   const [ins, setIns] = useState<InputValues>(() => startInputs(meta.inputs));
   const custom = useCustom(meta);
   // The inline rows: a modal has none, and a custom form does not show them.
@@ -211,7 +217,7 @@ function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }:
   const dirty = (c: api.Column, w: string) => vals[c.label] !== blank(c, w);
 
   /** The one write of both paths. The guard values go along even for a field that the form cannot change. */
-  const send = async (set: api.Values, action: Action, changes?: api.Links, inlines?: api.InlineChanges): Promise<boolean> => {
+  const send = async (set: api.Values, action: Action, changes?: api.Links, inlines?: api.InlineChanges, then?: Then): Promise<boolean> => {
     const loaded: api.Values = {};
     if (!creating) for (const { column: c } of fields) loaded[c.label] = c.label in uploaded ? uploaded[c.label] : cells[c.label];
     setConflicts({});
@@ -225,6 +231,17 @@ function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }:
       await client.invalidateQueries({ queryKey: ["autocomplete"] });
       if (modal) {
         modal.done(done.key);
+      } else if (then && needsDialog(then)) {
+        // The action asks first: the dialog opens on the saved record and the page goes on from there.
+        setAfterSave({ action: then, key: done.key });
+      } else if (then) {
+        navigate(detailUrl(meta.name, done.key));
+        try {
+          await finish((await request(meta.name, then, { keys: [done.key], what: "this record" }, {}, false)).result);
+        } catch (e) {
+          // The record is saved: only the action failed.
+          toast(`The record is saved, but ${then.label} failed: ${message(e)}`, "error");
+        }
       } else if (action === "add") {
         // Another record of the same kind: the form is empty again, and the prefill of the URL stays.
         if (creating) {
@@ -251,7 +268,7 @@ function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }:
     }
   };
 
-  const submit = async (action: Action) => {
+  const submit = async (action: Action, then?: Then) => {
     const set: api.Values = {};
     const local: Record<string, string[]> = {};
     for (const { f, column: c, w } of fields) {
@@ -268,7 +285,7 @@ function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }:
     Object.assign(local, plan.local);
     setConflicts({});
     if (Object.keys(local).length > 0) return setProblems({ fields: local, form: [] });
-    await send(set, action, links(), plan.body);
+    await send(set, action, links(), plan.body, then);
   };
   const on = (action: Action) => (e: FormEvent) => {
     e.preventDefault();
@@ -418,10 +435,14 @@ function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }:
           <>
             <Button type="button" variant="plain" disabled={busy} onClick={on("continue")}>Save and continue</Button>
             <Button type="button" variant="plain" disabled={busy} onClick={on("add")}>Save and add another</Button>
+            {submitActions.map((a) => (
+              <Button key={a.name} type="button" variant="plain" disabled={busy} onClick={(e) => { e.preventDefault(); void submit("save", a); }}>Save and {a.label.toLowerCase()}</Button>
+            ))}
             <Link href={creating ? listBack(meta.name) : detailUrl(meta.name, id)} className="cancel">Cancel</Link>
           </>
         )}
       </div>
+      {afterSave && <ActionDialog key={afterSave.action.name} resource={meta.name} action={afterSave.action} target={{ keys: [afterSave.key], what: "this record" }} onClose={() => { const key = afterSave.key; setAfterSave(null); navigate(detailUrl(meta.name, key)); }} />}
       {creator && (() => {
         const target = site?.resources.find((r) => r.name === creator.relation.target);
         return target ? <CreateDialog target={target} relation={creator.relation} zone={zone} site={site} done={creator.done} /> : null;

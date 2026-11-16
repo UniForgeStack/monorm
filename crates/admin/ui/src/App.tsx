@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Menu from "@radix-ui/react-dropdown-menu";
+import { Toasts } from "./Actions";
 import { DetailPage } from "./Detail";
 import { FormPage } from "./Form";
 import { ListPage } from "./List";
@@ -138,6 +139,7 @@ function Shell({ user, route }: { user: api.User | null; route: ReturnType<typeo
           {route.page === "detail" && <DetailPage resource={route.resource} id={route.key} zone={zone} site={site.data} />}
         </main>
       </div>
+      <Toasts />
     </div>
   );
 }

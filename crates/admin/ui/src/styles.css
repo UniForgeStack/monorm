@@ -130,3 +130,15 @@ details.section[open] summary { margin-bottom: .75rem; }
 .inline-view { margin-top: 1.5rem; }
 fieldset.section.inline-removed { opacity: .5; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+.bulkbar { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; padding: .5rem .75rem; margin-bottom: .75rem; background: #eef3fb; border: 1px solid var(--line); border-radius: 6px; }
+.pick { width: 2rem; text-align: center; }
+.row-actions { white-space: nowrap; text-align: right; }
+.row-actions .btn { margin-left: .25rem; }
+tr[aria-selected="true"] { background: #eef3fb; }
+.toasts { position: fixed; right: 1rem; bottom: 1rem; display: flex; flex-direction: column; gap: .5rem; z-index: 50; max-width: 24rem; }
+.toast { display: flex; gap: .75rem; align-items: flex-start; justify-content: space-between; padding: .6rem .85rem; border-radius: 6px; background: #fff; border: 1px solid var(--line); box-shadow: 0 2px 8px rgba(0, 0, 0, .15); }
+.toast-success { background: #e6f4ec; color: #14532d; }
+.toast-warning { background: #fff7e0; color: #7a5200; }
+.toast-error { background: #fdecea; color: #8a1c13; }
+.toast-close { background: none; border: 0; cursor: pointer; font-size: 1.1rem; line-height: 1; color: inherit; }

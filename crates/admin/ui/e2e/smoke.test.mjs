@@ -60,6 +60,13 @@ model Paper {
   @@map("papers")
 }
 
+model Ticket {
+  id     BigInt @id @default(autoincrement())
+  title  String
+  status String @default("open")
+  @@map("tickets")
+}
+
 model Album {
   id     BigInt  @id @default(autoincrement())
   title  String
@@ -89,6 +96,15 @@ const NOTE_FORM = `export default (React) => function NoteForm({ values, errors,
 };
 `;
 
+// A bulk action on the selected rows, with a confirmation and a message.
+const TICKET = `@action(name="close_tickets", label="Close", placement="bulk", confirm="Close the chosen tickets?")
+async def close_tickets(ctx, qs):
+    await qs.update(status="closed")
+    return message(f"Closed {ctx.count} tickets", "success")
+
+
+admin.register(Ticket, {"actions": [close_tickets]})`;
+
 const SEED = `
 import asyncio, datetime, os
 import monorm
@@ -105,6 +121,7 @@ async def main():
         {"title": "Second", "created_at": at, "author_id": None},
     ])
     await models.Reviewer.objects.insert_many([{"name": f"Rev {n:02d}"} for n in range(1, 26)])
+    await models.Ticket.objects.insert_many([{"title": f"Ticket {n}"} for n in range(1, 4)])
     (debut,) = await models.Album.objects.insert_many([{"title": "Debut"}]).returning()
     await models.Track.objects.insert_many([{"title": "Intro", "plays": 1, "album_id": debut.id}])
     await db.close()
@@ -136,12 +153,15 @@ before(async () => {
   writeFileSync(join(dir, "note-form.js"), NOTE_FORM);
   // Paper: a picker over Reviewer (with a create modal) and a file field in a memory store.
   assert.ok(module.includes("admin.register(Reviewer)") && module.includes("admin.register(Paper)"), "the generated admin.py registers Reviewer and Paper");
+  assert.ok(module.includes("admin.register(Ticket)"), "the generated admin.py registers Ticket");
   assert.ok(module.includes("admin.register(Album)") && module.includes("admin.register(Track)"), "the generated admin.py registers Album and Track");
   const withStorage = module
     .replace("from monorm.admin import Admin\n", "from monorm.admin import Admin, inline\nfrom monorm_file_storage import Registry\nfrom opendal import AsyncOperator\n")
     // Album: its Track rows as an inline that saves with the album.
     .replace("admin.register(Album)", 'admin.register(Album, {"inlines": [inline(Track)]})')
     .replace("admin = Admin()", 'admin = Admin(storage=Registry({"media": AsyncOperator("memory")}))')
+    .replace("from monorm.admin import Admin, inline\n", "from monorm.admin import Admin, inline, action, message\n")
+    .replace("admin.register(Ticket)", TICKET)
     .replace("admin.register(Reviewer)", 'admin.register(Reviewer, {"list": {"search": [Reviewer.name]}})')
     .replace("admin.register(Paper)", 'admin.register(Paper, {"relations": {"reviewer": {"create": True}}, "files": {"cover": "media"}})');
   writeFileSync(join(dir, "admin.py"), withStorage.replace("admin.register(Book)", book).replace("admin.register(Note)", 'admin.register(Note, {"form_component": "note-form.js"})'));
@@ -227,7 +247,7 @@ test("sort a column and search a list", async () => {
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.getByRole("navigation", { name: "Resources" }).getByRole("link", { name: "Book", exact: true }).click();
   await page.waitForURL(`${base}/admin/Book`);
-  const titles = async () => (await page.locator("tbody tr td:nth-child(2)").allTextContents()).map((t) => t.trim());
+  const titles = async () => (await page.locator("tbody tr td:nth-child(3)").allTextContents()).map((t) => t.trim());
   await page.getByText("2 records").waitFor();
   // The old rows stay on screen until the new ones arrive, so each step polls for its rows.
   const rowsAre = async (expected) => {
@@ -262,6 +282,7 @@ test("filter a list, keep the view in the URL, and open a tab", async () => {
   const context = await browser.newContext({ timezoneId: ZONE, locale: "en-US" });
   const page = await context.newPage();
   const problems = [];
+  const idle = trackRequests(page);
   page.on("console", (m) => m.type() === "error" && !m.text().includes("status of 401") && problems.push(`console: ${m.text()}`));
   page.on("pageerror", (e) => problems.push(`page error: ${e.message}`));
   page.on("requestfailed", (r) => problems.push(`request failed: ${r.url()} ${r.failure()?.errorText}`));
@@ -273,7 +294,7 @@ test("filter a list, keep the view in the URL, and open a tab", async () => {
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.getByRole("navigation", { name: "Resources" }).getByRole("link", { name: "Book", exact: true }).click();
   await page.waitForURL(`${base}/admin/Book`);
-  const titles = async () => (await page.locator("tbody tr td:nth-child(2)").allTextContents()).map((t) => t.trim());
+  const titles = async () => (await page.locator("tbody tr td:nth-child(3)").allTextContents()).map((t) => t.trim());
   const rowsAre = async (expected) => {
     for (let i = 0; i < 100; i++) {
       if (JSON.stringify(await titles()) === JSON.stringify(expected)) return;
@@ -298,10 +319,14 @@ test("filter a list, keep the view in the URL, and open a tab", async () => {
   await page.waitForURL(`${base}/admin/Book?f.author%3Aempty=1`);
   await rowsAre(["Second"]);
   await page.getByText("1 record", { exact: true }).waitFor();
+  // The filter counts load after the rows, and a reload aborts a request still in flight.
+  await idle();
   await page.reload();
   await rowsAre(["Second"]);
   await page.getByText("1 record", { exact: true }).waitFor();
   assert.equal(await page.getByLabel("Author: empty").inputValue(), "empty");
+  // Leaving the list cancels a request still in flight, which the failed-request check would report.
+  await idle();
 
   // The detail page links back to the list as the user left it, and the back button does too.
   await page.getByRole("link", { name: "2", exact: true }).click();
@@ -314,7 +339,7 @@ test("filter a list, keep the view in the URL, and open a tab", async () => {
   await page.getByText("1 record", { exact: true }).waitFor();
 
   // One tab: the books of the author. A full load aborts a request still in flight, so the list settles first.
-  await page.waitForLoadState("networkidle");
+  await idle();
   await page.goto(`${base}/admin/Author/1`);
   await page.getByRole("heading", { name: /Author/ }).waitFor();
   await page.getByRole("tab", { name: "Books" }).click();
@@ -325,10 +350,26 @@ test("filter a list, keep the view in the URL, and open a tab", async () => {
   await context.close();
 });
 
+// `networkidle` fires once per document load, so a client-side navigation never waits on it. This counts the requests in flight.
+function trackRequests(page) {
+  const open = new Set();
+  page.on("request", (r) => open.add(r));
+  page.on("requestfinished", (r) => open.delete(r));
+  page.on("requestfailed", (r) => open.delete(r));
+  return async () => {
+    let quiet = 0;
+    while (quiet < 3) {
+      quiet = open.size === 0 ? quiet + 1 : 0;
+      await page.waitForTimeout(100);
+    }
+  };
+}
+
 async function signedIn() {
   const context = await browser.newContext({ timezoneId: ZONE, locale: "en-US" });
   const page = await context.newPage();
   const problems = [];
+  const idle = trackRequests(page);
   page.on("console", (m) => m.type() === "error" && !m.text().includes("status of 401") && problems.push(`console: ${m.text()}`));
   page.on("pageerror", (e) => problems.push(`page error: ${e.message}`));
   page.on("requestfailed", (r) => problems.push(`request failed: ${r.url()} ${r.failure()?.errorText}`));
@@ -338,11 +379,12 @@ async function signedIn() {
   await page.getByLabel("Password").fill("pw-of-ann");
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.getByRole("navigation", { name: "Resources" }).waitFor();
-  return { context, page, problems };
+  await idle();
+  return { context, page, problems, idle };
 }
 
 test("add a book from the Books tab of an author, then change it, then delete it", async () => {
-  const { context, page, problems } = await signedIn();
+  const { context, page, problems, idle } = await signedIn();
   await page.goto(`${base}/admin/Author/1?tab=books`);
   await page.getByRole("link", { name: "Add", exact: true }).click();
   // The author comes from the tab: the form opens with it filled in.
@@ -368,13 +410,13 @@ test("add a book from the Books tab of an author, then change it, then delete it
   await page.getByRole("alertdialog").getByRole("button", { name: "Delete it" }).click();
   await page.waitForURL(`${base}/admin/Book`);
   await page.getByText("2 records").waitFor();
-  await page.waitForLoadState("networkidle");
+  await idle();
   assert.deepEqual(problems, []);
   await context.close();
 });
 
 test("a form shows the field error of the server, and the edit of an author is saved", async () => {
-  const { context, page, problems } = await signedIn();
+  const { context, page, problems, idle } = await signedIn();
   await page.goto(`${base}/admin/Author/-/new`);
   await page.getByRole("heading", { name: "Add Author" }).waitFor();
   await page.getByRole("button", { name: "Save", exact: true }).click();
@@ -390,14 +432,14 @@ test("a form shows the field error of the server, and the edit of an author is s
   await page.getByRole("alertdialog").getByRole("button", { name: "Delete it" }).click();
   await page.waitForURL(`${base}/admin/Author`);
   await page.getByText("1 record", { exact: true }).waitFor();
-  await page.waitForLoadState("networkidle");
+  await idle();
   // The 422 of the first save is the one error that the test expects: the response and the console line of the browser.
   assert.deepEqual(problems, [`HTTP 422: ${base}/admin/api/resources/Author`, "console: Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)"]);
   await context.close();
 });
 
 test("a section layout with a collapsed section, and a custom form", async () => {
-  const { context, page, problems } = await signedIn();
+  const { context, page, problems, idle } = await signedIn();
   await page.goto(`${base}/admin/Book/-/new`);
   await page.getByRole("heading", { name: "Add Book" }).waitFor();
   await page.getByText("Basics", { exact: true }).waitFor();
@@ -408,6 +450,7 @@ test("a section layout with a collapsed section, and a custom form", async () =>
   await page.getByLabel("Author id").waitFor();
   assert.equal(await page.locator("fieldset.section").count(), 1);
 
+  await idle();
   // The module of the resource replaces the form. The first save has no title, and the 422 comes back as `errors`.
   await page.goto(`${base}/admin/Note/-/new`);
   await page.getByLabel("Note text").waitFor();
@@ -417,13 +460,13 @@ test("a section layout with a collapsed section, and a custom form", async () =>
   await page.getByRole("button", { name: "Save note" }).click();
   await page.waitForURL(`${base}/admin/Note/1`);
   await page.getByText("Hello").first().waitFor();
-  await page.waitForLoadState("networkidle");
+  await idle();
   assert.deepEqual(problems, [`HTTP 422: ${base}/admin/api/resources/Note`, "console: Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)"]);
   await context.close();
 });
 
 test("pick a record with the autocomplete, create one in a modal, and upload a file", async () => {
-  const { context, page, problems } = await signedIn();
+  const { context, page, problems, idle } = await signedIn();
   await page.goto(`${base}/admin/Paper/-/new`);
   await page.getByRole("heading", { name: "Add Paper" }).waitFor();
   await page.getByLabel("Title").fill("Pick");
@@ -446,6 +489,7 @@ test("pick a record with the autocomplete, create one in a modal, and upload a f
   await page.getByText("23").first().waitFor();
 
   // The modal creates a Reviewer, fills the field and leaves the other fields of the form as they were.
+  await idle();
   await page.goto(`${base}/admin/Paper/-/new`);
   await page.getByLabel("Title").fill("Modal");
   await page.getByRole("combobox", { name: "Reviewer id" }).click();
@@ -461,6 +505,7 @@ test("pick a record with the autocomplete, create one in a modal, and upload a f
   await page.getByText("26").first().waitFor();
 
   // One upload through the multipart route, then the download as an attachment.
+  await idle();
   await page.goto(`${base}/admin/Paper/2/edit`);
   await page.getByRole("heading", { name: "Change Paper" }).waitFor();
   await page.getByLabel("Cover").setInputFiles({ name: "cover.txt", mimeType: "text/plain", buffer: Buffer.from("cover bytes") });
@@ -471,13 +516,13 @@ test("pick a record with the autocomplete, create one in a modal, and upload a f
   assert.match(got.headers()["content-disposition"], /^attachment/);
   assert.equal(got.headers()["content-type"], "text/plain");
   assert.equal(await got.text(), "cover bytes");
-  await page.waitForLoadState("networkidle");
+  await idle();
   assert.deepEqual(problems, []);
   await context.close();
 });
 
 test("change an inline row and add another with the album, in one save", async () => {
-  const { context, page, problems } = await signedIn();
+  const { context, page, problems, idle } = await signedIn();
   await page.goto(`${base}/admin/Album/1/edit`);
   await page.getByRole("heading", { name: "Change Album" }).waitFor();
   const tracks = page.locator("details.inline");
@@ -497,7 +542,36 @@ test("change an inline row and add another with the album, in one save", async (
   const rows = stored.inlines.tracks.rows.map((r) => JSON.stringify(r.values));
   assert.equal(rows.length, 2);
   assert.ok(rows[0].includes("Intro, revised") && rows[1].includes("Outro") && rows[1].includes("7"), rows.join(" | "));
-  await page.waitForLoadState("networkidle");
+  await idle();
+  assert.deepEqual(problems, []);
+  await context.close();
+});
+
+test("run a bulk action on the selected rows, and on all rows that match", async () => {
+  const { context, page, problems, idle } = await signedIn();
+  await page.goto(`${base}/admin/Ticket?limit=2`);
+  await page.getByRole("cell", { name: "Ticket 1" }).waitFor();
+  assert.equal(await page.getByRole("group", { name: "Bulk actions" }).count(), 0, "no bar before a selection");
+  await page.getByLabel("Select row 1").check();
+  await page.getByLabel("Select row 2").check();
+  await page.getByText("2 selected").waitFor();
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  const dialog = page.getByRole("alertdialog", { name: "Confirm Close" });
+  await dialog.getByText("Close the chosen tickets?").waitFor();
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  // The message shows, the selection ends and the rows reload.
+  await page.getByRole("status").filter({ hasText: "Closed 2 tickets" }).waitFor();
+  await page.getByRole("group", { name: "Bulk actions" }).waitFor({ state: "detached" });
+  const rows = (await (await context.request.get(`${base}/admin/api/resources/Ticket`)).json()).rows.map((r) => JSON.stringify(r));
+  assert.equal(rows.filter((r) => r.includes("closed")).length, 2, rows.join(" | "));
+  // The whole page, then all rows that match: the count comes from the server.
+  await page.getByLabel("Select all rows of this page").check();
+  await page.getByRole("button", { name: /^Select all 3 matching/ }).click();
+  await page.getByText("All 3 matching records selected").waitFor();
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await page.getByRole("alertdialog", { name: "Confirm Close" }).getByRole("button", { name: "Close", exact: true }).click();
+  await page.getByRole("status").filter({ hasText: "Closed 3 tickets" }).waitFor();
+  await idle();
   assert.deepEqual(problems, []);
   await context.close();
 });

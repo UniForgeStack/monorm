@@ -114,6 +114,43 @@ export interface Resource {
   host_write?: boolean;
   /** The to-many relations that the page edits in place, for the writes that this user may do. */
   inlines?: InlineInfo[];
+  /** The actions that this user may run, by placement. */
+  actions?: ActionInfo[];
+  /** True when this user may delete the selected rows of a list in one request. */
+  bulk_delete?: boolean;
+}
+
+/** One action of a resource. `applies`: a row carries the flag `applies:<name>` that says whether the action runs on it. */
+export interface ActionInfo {
+  name: string;
+  label: string;
+  placement: "bulk" | "row" | "detail" | "list" | "submit";
+  confirm: string | null;
+  inputs: InputInfo[];
+  applies: boolean;
+}
+
+/** What an action answers: the SPA shows the message, follows the redirect, saves the download or reloads the data. */
+export type ActionResult =
+  | { kind: "message"; message: string; level: "info" | "success" | "warning" | "error" }
+  | { kind: "redirect"; to: string }
+  | { kind: "download"; filename: string; content_type: string; base64: string }
+  | { kind: "refresh" };
+
+/** The rows of an action: the keys of a selection, or all the rows that the URL filters match. An input is a text, a flag or a file as `{name, content_type, base64}`. */
+export interface ActionBody {
+  keys?: string[];
+  all?: boolean;
+  inputs?: Values;
+  confirm_large?: boolean;
+}
+
+/** `search` carries the filters of the list: an action on "all rows" takes them from the URL. `scope` runs it on a to-many tab. */
+export function runAction(resource: string, action: string, body: ActionBody, search = "", scope?: Scope) {
+  const path = scope
+    ? `/tab-actions/${encodeURIComponent(scope.resource)}/${scope.key}/${encodeURIComponent(scope.rel)}/${encodeURIComponent(action)}`
+    : `/actions/${encodeURIComponent(resource)}/${encodeURIComponent(action)}`;
+  return call<{ count: number; capped: boolean; affected?: number; result: ActionResult }>("POST", `${path}${search}`, body);
 }
 
 /** An inline: the rows of a to-many relation on the page of the parent. `form`, `sections` and `inputs` are those of the inline page. */
@@ -142,7 +179,7 @@ export interface InlineInfo {
 
 export interface InputInfo {
   name: string;
-  type: "text" | "textarea" | "number" | "checkbox" | "select";
+  type: "text" | "textarea" | "number" | "checkbox" | "select" | "file";
   label: string;
   required: boolean;
   help: string | null;

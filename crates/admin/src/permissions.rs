@@ -233,6 +233,7 @@ impl Site {
                 let mut meta = r.meta.clone();
                 meta["actions"] = json!(r.actions.iter().filter(|a| a.placement.is_some() && self.action_allowed(grants, r, a)).map(action_meta).collect::<Vec<_>>());
                 meta["ops"] = json!([Op::Create, Op::Update, Op::Delete].iter().filter(|o| r.allow.contains(o) && self.allows(grants, r, **o)).map(|o| o.name()).collect::<Vec<_>>());
+                meta["bulk_delete"] = json!(r.bulk_delete && r.allow.contains(&Op::Delete) && self.allows(grants, r, Op::Delete));
                 meta["bypass"] = json!(self.bypassable(grants, r));
                 meta["field_permissions"] = json!(r.field_permissions.iter().filter(|f| self.allowed_extra(grants, r, &format!("{}.{f}", r.label))).collect::<Vec<_>>());
                 let shown: Vec<Json> = r

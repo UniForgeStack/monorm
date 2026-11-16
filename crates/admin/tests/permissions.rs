@@ -127,6 +127,7 @@ fn a_wrong_permission_config_is_rejected_with_the_model_name() {
     assert!(build(json!({"permissions": "model", "resources": [{"model": "Note", "perms": ["read", "manage"]}]})).contains("page strategy only"));
     assert!(build(json!({"permissions": "access", "resources": [{"model": "Note", "actions": [{"name": "x", "permission": "x"}]}]})).contains("page or model strategy"));
     assert!(build(json!({"resources": [{"model": "Note", "actions": [{"name": "a.b", "permission": "a.b"}]}]})).contains("lowercase letters"));
+    assert!(build(json!({"permissions": "access", "resources": [{"model": "Note", "actions": [{"name": "x"}]}]})).contains("has no permission"));
 }
 
 #[tokio::test]
@@ -203,6 +204,17 @@ async fn metadata_lists_only_what_the_user_can_use_with_the_filtered_names() {
     grants.names.remove("admin.access");
     assert_eq!(site.metadata(&grants), json!({"resources": [], "permissions": []}));
     assert!(!site.allows(&grants, &site.resources[0], Op::Read));
+}
+
+#[tokio::test]
+async fn metadata_offers_bulk_delete_only_to_a_user_who_may_delete() {
+    let schema = schema();
+    let site = site(&schema, json!({"resources": [{"model": "Note"}, {"model": "Order"}]}));
+    let mut grants = Grants::default();
+    grants.names.extend(["admin.access", "admin.read_note", "admin.manage_order"].map(String::from));
+    let meta = site.metadata(&grants);
+    let flag = |name: &str| meta["resources"].as_array().unwrap().iter().find(|r| r["name"] == name).map(|r| r["bulk_delete"].clone());
+    assert_eq!((flag("Note"), flag("Order")), (Some(json!(false)), Some(json!(true))));
 }
 
 #[tokio::test]
