@@ -104,6 +104,12 @@ impl AdminSite {
         self.site.url(&resource, &key).map_err(napi::Error::from_reason)
     }
 
+    /// Whether the path leads to a route with a byte body or answer (a file, an export, a custom route): the client then calls `request_raw`.
+    #[napi]
+    pub fn is_raw(&self, path: String) -> bool {
+        self.site.is_raw(&path)
+    }
+
     /// One in-memory request. `user_json` is the JSON of the user, or null.
     /// `dispatch` runs the host calls of a `search_with` function. `body` is the JSON text of a write.
     #[napi]

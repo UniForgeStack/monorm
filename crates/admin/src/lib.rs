@@ -26,6 +26,7 @@ pub mod meta;
 pub mod permissions;
 pub mod relations;
 pub mod revoke;
+pub mod routes;
 pub mod scope;
 pub mod security;
 pub mod serve;

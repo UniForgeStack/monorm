@@ -78,6 +78,9 @@ struct Config {
     /// Widgets for every resource: `Model.field`, `Type.subfield`, or a type name, to a widget name.
     #[serde(default)]
     widgets: BTreeMap<String, String>,
+    /// Custom routes under `<prefix>/routes/`.
+    #[serde(default)]
+    routes: Vec<crate::routes::RouteConfig>,
 }
 
 /// The rows a resource shows to staff.
@@ -632,6 +635,8 @@ pub struct Site {
     pub export_idle_timeout: Option<Duration>,
     /// What an operator should fix, found when the site was built: a search field with no index.
     pub warnings: Vec<String>,
+    /// The custom routes, checked.
+    pub routes: Vec<crate::routes::Route>,
     meta_builds: AtomicUsize,
 }
 
@@ -733,7 +738,9 @@ impl Site {
             0 => None,
             ms => Some(Duration::from_millis(ms)),
         };
-        Ok(Site { schema, prefix, strategy, resources, brand, groups, statement_timeout, export_idle_timeout, warnings, meta_builds })
+        let mut site = Site { schema, prefix, strategy, resources, brand, groups, statement_timeout, export_idle_timeout, warnings, routes: Vec::new(), meta_builds };
+        site.routes = crate::routes::build(&config.routes, &site)?;
+        Ok(site)
     }
 
     /// How many times `build` made the metadata of a resource: one per resource, and no request adds to it.
@@ -1004,7 +1011,7 @@ impl ResourceConfig {
 }
 
 /// A part of a permission name: lowercase letters, digits and `_`, so `.` stays the label separator.
-fn check_name(what: &str, text: &str) -> Result<(), ConfigError> {
+pub(crate) fn check_name(what: &str, text: &str) -> Result<(), ConfigError> {
     let ok = !text.is_empty() && text.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
     if ok { Ok(()) } else { err(format!("{what} {text:?} must be lowercase letters, digits and _")) }
 }

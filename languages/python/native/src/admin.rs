@@ -142,6 +142,11 @@ impl AdminSite {
         self.site.url(resource, &key).map_err(PyValueError::new_err)
     }
 
+    /// Whether the path leads to a route with a byte body or answer (a file, an export, a custom route): the client then calls `request_raw`.
+    fn is_raw(&self, path: &str) -> bool {
+        self.site.is_raw(path)
+    }
+
     /// The `(status, body)` of one in-memory request. `user_json` is the JSON of the user, or None.
     /// `database` and `host` give the host bridge that a `search_with` function runs through.
     /// `body` is the JSON text of a write.

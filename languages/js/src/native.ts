@@ -165,6 +165,8 @@ export interface NativeAdminSite {
   readonly labels: string[];
   /** The detail URL of a record; `keyJson` is a scalar, a list in key order or an object of key fields. Throws when the key does not fit. */
   url(resource: string, keyJson: string): string;
+  /** Whether the path leads to a route with a byte body or answer (a file, an export, a custom route): the client then calls `requestRaw`. */
+  isRaw(path: string): boolean;
   /** The startup warnings, for example a search field that no index serves. */
   readonly warnings: string[];
   /** One in-memory request; `userJson` is the JSON of the user, or null. `dispatch` runs the host calls of a `searchWith` function. */

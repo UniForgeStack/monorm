@@ -28,6 +28,8 @@ from typing import TYPE_CHECKING, Any, Literal, Mapping, Sequence, TypedDict, ca
 from . import _native
 from . import _admin_permissions
 from ._admin_host import HOST as _HOST
+from . import _admin_routes
+from ._admin_routes import Reply, RouteFunction, RouteRequest, Stream
 from ._admin_write import _PLACEMENTS, ActionDef, Context, InputDef, action, action_def, action_function, download, input, is_sync, is_threaded, log, message, redirect, refresh, service_function, threaded, writer_host
 from ._admin_permissions import RoleSeedReport, SyncReport
 from .adapters import _ADAPTERS as _adapters
@@ -39,7 +41,7 @@ if TYPE_CHECKING:
     from .db import Database
     from .model import Registry
 
-__all__ = ["Admin", "AdminConfigError", "AdminResponse", "AdminTestClient", "AggregateColumn", "BrandConfig", "BrandLink", "ActionDef", "ComputedColumn", "Context", "InlineDef", "ListConfig", "NamedChoice", "NamedFilter", "ResourceConfig", "RoleSeedReport", "SyncReport", "action", "check", "download", "inline", "input", "log", "message", "redirect", "refresh", "register", "test_client", "threaded", "url"]
+__all__ = ["Admin", "AdminConfigError", "AdminResponse", "AdminTestClient", "AggregateColumn", "BrandConfig", "BrandLink", "ActionDef", "ComputedColumn", "Context", "InlineDef", "ListConfig", "NamedChoice", "NamedFilter", "Reply", "ResourceConfig", "RoleSeedReport", "RouteRequest", "Stream", "SyncReport", "action", "check", "download", "inline", "input", "log", "message", "redirect", "refresh", "register", "test_client", "threaded", "url"]
 
 DEFAULT_PREFIX = "/admin/api"
 
@@ -760,8 +762,10 @@ class AdminTestClient:
             if headers or csrf is not _AUTO or origin is not _AUTO:
                 raise TypeError("the `user=` client takes only a method, a path, `json` and `file`")
             trace = _native.Trace()
-            if file is not None or "/files/" in path or "/export/" in path:
+            if file is not None or "/files/" in path or "/export/" in path or "/routes/" in path:
                 kind, data = _multipart(file) if file is not None else (None, None)
+                if json is not None:
+                    kind, data = "application/json", _dumps(json).encode()
                 code, reply, raw = await self._site.request_raw(self._database._engine, method, path, self._user, trace, self._database, self._host, kind, data)
                 events = trace.take()
                 return AdminResponse(code, raw.decode("utf-8", "replace"), len(events), tuple(reply), tuple(e[0] for e in events), raw)
@@ -931,6 +935,23 @@ class Admin:
             if isinstance(patterns, str) or not all(isinstance(p, str) for p in patterns):
                 raise AdminConfigError(f"roles[{name!r}] must be a list of patterns")
         self._resources: dict[str, tuple[type[Model], ResourceConfig]] = {}
+        self._routes: dict[tuple[str, str], tuple[RouteFunction, str | None]] = {}
+
+    def route(self, method: str, path: str, fn: RouteFunction, *, permission: str | None = None) -> None:
+        """Adds a JSON or stream endpoint under ``<prefix>/api/routes/<path>``, behind the admin session.
+
+        ``path`` may hold ``{name}`` parts. ``fn(ctx, request)`` gets a ``Context`` and a ``RouteRequest`` (``method``, ``path``,
+        ``params``, ``query``, ``body``). It returns a JSON value, ``Reply(json, status=)`` or ``Stream(chunks, content_type, filename)``.
+        ``permission`` is a full name (``<label>.<name>``) that a user needs besides ``admin.access``; it shows in ``permissions``.
+        Rust runs the session, CSRF and the permission check first: no session is a 401 and a missing permission a 403.
+        """
+        if not callable(fn):
+            raise AdminConfigError("a route needs a function: route(method, path, fn)")
+        key = (method.upper(), path.removeprefix("/"))
+        if key in self._routes:
+            raise AdminConfigError(f"the route {key[0]} {key[1]} is registered twice")
+        self._routes[key] = (fn, permission)
+        self._planned = None
 
     def register(self, model: type[Model], config: ResourceConfig | None = None) -> None:
         """Makes ``model`` a resource. Once any model is registered, only registered models are resources."""
@@ -1048,6 +1069,8 @@ class Admin:
             out["groups"] = self._groups
         if self._statement_timeout != 15.0:
             out["statement_timeout_ms"] = round(self._statement_timeout * 1000)
+        if self._routes:
+            out["routes"] = [{"method": m, "path": p, **({"permission": perm} if perm else {})} for (m, p), (_, perm) in self._routes.items()]
         return json.dumps(out)
 
     def _host(self) -> dict[str, Any]:
@@ -1078,6 +1101,8 @@ class Admin:
         files = {(model.__name__, field): storage for model, config in self._resources.values() for field, storage in _files(model.__name__, config.get("files", {})).items()}
         if files:
             host.update(_file_host(self._storage, files))
+        if self._routes:
+            host.update(_admin_routes.host({key: fn for key, (fn, _) in self._routes.items()}))
         return host
 
     def _site(self, registry: Registry) -> _native.AdminSite:

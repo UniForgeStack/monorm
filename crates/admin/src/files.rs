@@ -215,7 +215,7 @@ fn parse_multipart(body: &[u8], boundary: &str) -> Result<Part, String> {
 }
 
 /// The `Content-Disposition` of a download: `attachment`, with the name in plain ASCII and in UTF-8.
-fn disposition(filename: &str) -> String {
+pub(crate) fn disposition(filename: &str) -> String {
     let plain: String = filename.chars().map(|c| if c.is_ascii_graphic() && !matches!(c, '"' | '\\' | '%') || c == ' ' { c } else { '_' }).collect();
     let mut encoded = String::new();
     for b in filename.bytes() {

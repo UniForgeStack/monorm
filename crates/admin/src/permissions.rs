@@ -148,6 +148,9 @@ impl Site {
                 }
             }
         }
+        for name in self.routes.iter().filter_map(|r| r.permission.as_deref()) {
+            push(name.to_owned());
+        }
         out
     }
 

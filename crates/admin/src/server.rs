@@ -50,6 +50,7 @@ pub fn api_with(site: Arc<Site>, conn: Arc<dyn Executor>, auth: Option<AuthConfi
     let routes = Router::new().route("/resources", get(resources)).route("/resources/{name}", get(rows).post(crate::write::create)).route("/resources/{name}/{key}", get(detail).patch(crate::write::update).delete(crate::write::destroy)).route("/resources/{name}/{key}/{rel}", get(tab_rows))
         .route("/resources/{name}/{key}/inlines/{inline}", post(crate::inlinewrite::row_create))
         .route("/resources/{name}/{key}/inlines/{inline}/{row}", patch(crate::inlinewrite::row_update).delete(crate::inlinewrite::row_destroy)).route("/forms/{name}", get(form_module)).route("/counts/{name}", get(counts)).route("/export/{name}", get(crate::export::export)).route("/counts/{name}/{key}/{rel}", get(tab_counts)).route("/autocomplete/{name}/{rel}", get(crate::relations::autocomplete)).route("/links/{name}/{key}/{rel}", get(crate::relations::links)).route("/files/{name}/{key}/{field}", get(crate::files::download).post(crate::files::upload))
+        .route("/routes/{*path}", axum::routing::any(crate::routes::handle))
         .route("/actions/{name}/{action}", post(crate::actions::on_list))
         .route("/tab-actions/{name}/{key}/{rel}/{action}", post(crate::actions::on_tab));
     let bridge = auth.clone().map(|a| (a.bridge.clone(), a));

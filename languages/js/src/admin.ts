@@ -20,6 +20,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { HOST, hostDispatch, type HostFunction } from "./admin-host.js";
 import * as grants from "./admin-permissions.js";
+import { Reply, routeHost, Stream, type RouteFunction, type RouteRequest } from "./admin-routes.js";
 import { action, actionDef, actionFunction, Context, download, InputDef, input, log, message, PLACEMENTS, redirect, refresh, serviceFunction, writerHost, type ActionDef, type ActionFunction, type ActionOptions, type ActionResult, type InlineChanges } from "./admin-write.js";
 import { hasFieldAdapters } from "./adapters.js";
 import type { RoleSeedReport, SyncReport } from "./admin-permissions.js";
@@ -752,8 +753,8 @@ export class AdminTestClient {
       if (Object.keys(options).some((k) => k !== "json" && k !== "file")) throw new TypeError("the `user` client takes only a method, a path, `json` and `file`");
       if (options.file !== undefined && options.json !== undefined) throw new TypeError("a request takes `json` or `file`, not both");
       const trace = new (native().Trace)();
-      if (options.file !== undefined || path.includes("/files/") || path.includes("/export/")) {
-        const part = options.file === undefined ? null : multipartBody(options.file);
+      if (options.file !== undefined || path.includes("/files/") || path.includes("/export/") || path.includes("/routes/")) {
+        const part = options.file !== undefined ? multipartBody(options.file) : options.json !== undefined ? { type: "application/json", data: Buffer.from(JSON.stringify(options.json)) } : null;
         const raw = await wait(() => this.site.requestRaw(this.database.engine, method, path, this.#user, trace, hostDispatch(this.database, this.host), part?.type ?? null, part?.data ?? null));
         const events = trace.take();
         const body = new Uint8Array(raw.body);
@@ -949,6 +950,7 @@ export class Admin {
   readonly #groups: string[];
   readonly #statementTimeout: number;
   readonly #storage: FileStorage | undefined;
+  readonly #routes = new Map<string, { method: string; path: string; fn: RouteFunction; permission: string | undefined }>();
   #planned: { schema: unknown; site: NativeAdminSite } | null = null;
 
   constructor(
@@ -987,6 +989,21 @@ export class Admin {
     this.#planned = null;
   }
 
+  /**
+   * Adds a custom route at `<prefix>/routes/<path>`. Rust runs the session, the CSRF check and the permission check, then calls
+   * `fn(ctx, request)`. `path` may hold `{name}` parts (`request.params`). `permission` is a full `<label>.<name>`; without it the
+   * route needs only the admin gate. `fn` returns a JSON value, `new Reply(json, { status })` or `new Stream(chunks, { contentType, filename })`.
+   */
+  route(method: string, path: string, fn: RouteFunction, options: { readonly permission?: string } = {}): void {
+    if (typeof fn !== "function") throw new AdminConfigError("route: the function must be callable");
+    const verb = method.toUpperCase();
+    const clean = path.replace(/^\//, "");
+    const id = `${verb} ${clean}`;
+    if (this.#routes.has(id)) throw new AdminConfigError(`route ${verb} /${clean} is already added`);
+    this.#routes.set(id, { method: verb, path: clean, fn, permission: options.permission });
+    this.#planned = null;
+  }
+
   #configJson(registry: Registry): string {
     const resources = [...this.#resources].map(([model, { model: cls, config }]) => this.#resourceJson(model, cls, config, "", registry));
     return JSON.stringify({
@@ -997,6 +1014,7 @@ export class Admin {
       ...(this.#brand === undefined ? {} : { brand: this.#brand }),
       ...(this.#widgets === undefined || Object.keys(this.#widgets).length === 0 ? {} : { widgets: this.#widgets }),
       ...(this.#groups.length === 0 ? {} : { groups: this.#groups }),
+      ...(this.#routes.size === 0 ? {} : { routes: [...this.#routes.values()].map((r) => ({ method: r.method, path: r.path, ...(r.permission === undefined ? {} : { permission: r.permission }) })) }),
       ...(this.#statementTimeout === 15 ? {} : { statement_timeout_ms: Math.round(this.#statementTimeout * 1000) }),
     });
   }
@@ -1120,6 +1138,7 @@ export class Admin {
       for (const [field, storage] of Object.entries(filesJson(name, config.files ?? {}))) files.set(`${name}.${field}`, storage);
     }
     if (files.size > 0 && this.#storage !== undefined) Object.assign(host, fileHost(this.#storage, files));
+    if (this.#routes.size > 0) Object.assign(host, routeHost([...this.#routes.values()].map((r) => [r.method, r.path, r.fn] as const)));
     return host;
   }
 
@@ -1219,5 +1238,6 @@ export const admin = {
   refresh,
 };
 
-export { action, Context, download, InputDef, input, log, message, redirect, refresh };
+export { action, Context, download, InputDef, input, log, message, redirect, refresh, Reply, Stream };
+export type { RouteFunction, RouteRequest };
 export type { ActionDef, ActionFunction, ActionOptions, ActionResult, InlineChanges };
