@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { getDatabase, QueryError, scope, TransactionRequired } from '../src/index.js';
-import { currentScope } from '../src/db.js';
+import { currentScope, declareScopeKeys } from '../src/db.js';
 import { User } from './blog/models.js';
 import { useDatabase } from './helpers.js';
 
@@ -39,6 +39,7 @@ test('the binding ends with the block and follows tasks started in it', async ()
 
 test('scope values are set in the block', async () => {
   const db = getDatabase();
+  declareScopeKeys(db, ['keep', 'shop']);
   const tx = await begin();
   await scope({ keep: 1 }, () => db.bindRequest(tx, { scope: { shop: 7 } }, async () => {
     assert.deepEqual(currentScope(), { keep: 1, shop: 7 });

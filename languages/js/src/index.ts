@@ -77,6 +77,8 @@ export {
   UnfilteredWriteError,
   ValidationError,
   VersionConflict,
+  ScopeMismatch,
+  ScopeMissing,
   WriteProtected,
 } from "./errors.js";
 export { AdapterWriteError, FieldAdapterError, Pending, PreparedWrite, registerFieldAdapter } from "./adapters.js";

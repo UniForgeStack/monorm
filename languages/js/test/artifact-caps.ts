@@ -11,11 +11,11 @@ export function artifactCapabilities(): string[] {
 
 /**
  * True when an installed package contains every named extension, such as `monorm.file-storage`.
- * A missing `monorm.timestamps`, `monorm.soft-delete`, `monorm.locking`, `monorm.inherit`, `monorm.query-defaults`, `monorm.generic`, `monorm.proxy`, `monorm.composition` or `monorm.file-storage` package fails with an assert.
+ * A missing `monorm.timestamps`, `monorm.soft-delete`, `monorm.locking`, `monorm.inherit`, `monorm.query-defaults`, `monorm.scope`, `monorm.generic`, `monorm.proxy`, `monorm.composition` or `monorm.file-storage` package fails with an assert.
  */
 export function hasExtension(...ids: string[]): boolean {
   const installed = resolveExtensions();
-  for (const id of ids) if (["monorm.timestamps", "monorm.soft-delete", "monorm.locking", "monorm.inherit", "monorm.query-defaults", "monorm.generic", "monorm.proxy", "monorm.composition", "monorm.file-storage"].includes(id))
+  for (const id of ids) if (["monorm.timestamps", "monorm.soft-delete", "monorm.locking", "monorm.inherit", "monorm.query-defaults", "monorm.scope", "monorm.generic", "monorm.proxy", "monorm.composition", "monorm.file-storage"].includes(id))
     assert.ok(id in installed, `install ${id} with npm run assemble`);
   return ids.every((id) => id in installed);
 }

@@ -52,6 +52,22 @@ export class QueryError extends ORMError {
   override name = "QueryError";
 }
 
+/** A statement needs `scope.<key>` of `model` and the scope has no value for it. */
+export class ScopeMissing extends QueryError {
+  override name = "ScopeMissing";
+  model = "";
+  key = "";
+}
+
+/** A write sets the scope column of `model` to a value other than the scope value. */
+export class ScopeMismatch extends QueryError {
+  override name = "ScopeMismatch";
+  model = "";
+  key = "";
+  expected = "";
+  actual = "";
+}
+
 /** The schema file or IR is invalid. */
 export class SchemaError extends ORMError {
   override name = "SchemaError";
@@ -226,6 +242,8 @@ const KINDS: Record<string, new (message: string) => Error> = {
   ValidationError,
   ReadOnlyModel,
   WriteProtected,
+  ScopeMissing,
+  ScopeMismatch,
 };
 
 /** The JSON line of a `[monorm:DatabaseError+]` error. */
@@ -235,6 +253,10 @@ interface NativeFields {
   detail?: string | null;
   outcome?: "rolled_back" | "unknown";
   cause?: NativeFields & { kind: string; message: string };
+  model?: string;
+  key?: string;
+  expected?: string;
+  actual?: string;
 }
 
 /** The JSON line of a `[monorm:ValidationError+]` error: the fields are pairs, in the order of first use. */
@@ -260,6 +282,14 @@ function build(cls: new (message: string) => Error, message: string, fields: Nat
   }
   if (out instanceof TransactionTimeoutError) {
     out.outcome = fields.outcome ?? null;
+  }
+  if (out instanceof ScopeMissing || out instanceof ScopeMismatch) {
+    out.model = fields.model ?? "";
+    out.key = fields.key ?? "";
+  }
+  if (out instanceof ScopeMismatch) {
+    out.expected = fields.expected ?? "";
+    out.actual = fields.actual ?? "";
   }
   const cause = fields.cause;
   if (cause !== undefined) {

@@ -6,7 +6,7 @@ import inspect
 import json
 import math
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterable, Iterator, Mapping, Sequence
-from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager
+from contextlib import AbstractAsyncContextManager, AbstractContextManager, asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Literal, TypeVar, overload
@@ -42,6 +42,8 @@ _tenant_ids: ContextVar[dict[Database, str]] = ContextVar("monorm_tenant_ids", d
 _tx_tenants: ContextVar[dict[Database, str | None]] = ContextVar("monorm_tx_tenants", default={})
 # The `scope.<name>` values of default filters.
 _scope: ContextVar[dict[str, Any]] = ContextVar("monorm_scope", default={})
+# For each open database: the scope keys its schema reads or writes. `scope()` accepts these only.
+_declared: dict[Database, frozenset[str] | None] = {}  # None: a hook reads the scope, so any key is valid
 # For each database with an open transaction: the on_commit callbacks of the innermost one.
 _callbacks: ContextVar[dict[Database, _Callbacks]] = ContextVar("monorm_on_commit", default={})
 # True while a query hook runs: the statements it sends give no event.
@@ -208,6 +210,7 @@ class Database:
         tx_token = _current_tx.set({**_current_tx.get(), root: tx})
         tx_tenant_token = _tx_tenants.set({**_tx_tenants.get(), root: tenant_id})
         id_token = _tenant_ids.set(tenant_ids)
+        check_scope(scope or {})
         scope_token = _scope.set({**_scope.get(), **(scope or {})})
         cb_token = _callbacks.set({**_callbacks.get(), root: _BoundCallbacks()})
         try:
@@ -649,6 +652,7 @@ class Database:
         global _default
         if self._root is not self:
             return await self._root.close()
+        _declared.pop(self, None)
         await self._base.close()
         for replica in self._replicas:
             await replica.close()
@@ -690,22 +694,46 @@ async def connect(
     engine = await _native.connect(url, schema, max_connections, list(_disable))
     readers = [await _native.connect(r, schema, max_connections, list(_disable)) for r in replicas]
     db = Database(engine, url, registry, readers, allow_unfiltered_writes)
+    _declared[db] = None if engine.scope_keys_open() else frozenset(engine.scope_keys())
     if default:
         _default = db
     return db
 
 
-@contextmanager
-def scope(**values: Any) -> Iterator[None]:
+def scope(**values: Any) -> AbstractContextManager[None]:
     """``with monorm.scope(shop=shop.id):`` — the values that ``scope.<name>`` reads in
     default filters (``@@query.filter("tenant", shop_id == scope.shop)``). A query on a model
     whose default filter reads a value that no enclosing ``scope()`` sets raises
-    ``QueryError``. Inner values replace outer ones; tasks started in the block get them."""
+    ``QueryError``. Inner values replace outer ones; tasks started in the block get them.
+
+    Raises ``ValueError`` for a key that no open database's schema declares, for ``None``, for an empty
+    string and for a list: a scope value is one value per key."""
+    check_scope(values)
+    return _scope_block(values)
+
+
+@contextmanager
+def _scope_block(values: dict[str, Any]) -> Iterator[None]:
     token = _scope.set({**_scope.get(), **values})
     try:
         yield
     finally:
         _scope.reset(token)
+
+
+def check_scope(values: Mapping[str, Any]) -> None:
+    """Refuses a scope value that no statement could use: see :func:`scope`."""
+    for key, value in values.items():
+        if value is None:
+            raise ValueError(f"scope({key}=None): a scope value is never None; leave the key out to set no value")
+        if isinstance(value, (list, tuple, set, frozenset)):
+            raise ValueError(f"scope({key}=...): a list of values is not available yet; a scope key takes one value")
+        if isinstance(value, str) and not value:
+            raise ValueError(f"scope({key}=''): a scope value is never empty; a pooled connection reads '' for no value")
+    if _declared and None not in _declared.values():
+        valid = frozenset().union(*(k for k in _declared.values() if k is not None))
+        if unknown := sorted(values.keys() - valid):
+            raise ValueError(f"scope() has no key {', '.join(unknown)}: the schema declares {', '.join(sorted(valid)) or 'no scope key'}")
 
 
 def _with_scope(op: str, params: list[Any], key: str | None = None) -> tuple[str, list[Any]]:

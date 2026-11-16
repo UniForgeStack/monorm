@@ -258,6 +258,11 @@ impl SchemaIr {
             self.behavior.schema_contract = SCHEMA_CONTRACT;
             self.behavior.schema_contract_minor = self.behavior.schema_contract_minor.max(2);
         }
+        // Contract 5.3 holds `scoped_fields`. An engine of 5.2 would skip the fill and the check and write unscoped rows.
+        if !self.behavior.scoped_fields.is_empty() {
+            self.behavior.schema_contract = SCHEMA_CONTRACT;
+            self.behavior.schema_contract_minor = self.behavior.schema_contract_minor.max(3);
+        }
     }
 
     /// Parse the IR that generated models embed; an older ORM can write fields this one rejects.

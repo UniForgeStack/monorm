@@ -80,6 +80,8 @@ class Field(Generic[T]):
         self.server_default = server_default
         # The schema's ``@client_default`` IR, which native insert preparation fills.
         self.client_default = client_default
+        # The scope extension fills an omitted value from the scope.
+        self.scope_filled = False
 
     def __set_name__(self, owner: type[Model], name: str) -> None:
         self.name = name
@@ -110,7 +112,7 @@ class Field(Generic[T]):
     @property
     def has_insert_default(self) -> bool:
         """True if native insert preparation or the database fills an omitted value."""
-        return self.client_default is not None or self.has_server_value
+        return self.client_default is not None or self.has_server_value or self.scope_filled
 
     def ir(self) -> dict[str, Any]:
         out: dict[str, Any] = {"name": self.name, "column": self.column, "type": self.type_name}

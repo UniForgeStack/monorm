@@ -23,6 +23,7 @@ BUILT_IN = {
     "monorm.locking": "monorm_locking",
     "monorm.inherit": "monorm_inherit",
     "monorm.query-defaults": "monorm_query_defaults",
+    "monorm.scope": "monorm_scope",
     "monorm.generic": "monorm_generic",
     "monorm.proxy": "monorm_proxy",
     "monorm.composition": "monorm_composition",

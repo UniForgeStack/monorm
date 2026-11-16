@@ -17,7 +17,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from operator import itemgetter
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
-from .db import _scope, resolve
+from .db import _scope, check_scope, resolve
 from .errors import QueryError
 from .expr import Param, SlotParams, _Slot
 from .inspection import QueryInspection, _native as _inspection_native
@@ -52,6 +52,8 @@ def _known(names: frozenset[str], values: Mapping[str, Any]) -> None:
 def _scope_values(scope: Mapping[str, Any] | None) -> dict[str, Any]:
     """The scope values of a call: ``scope=`` over the ``monorm.scope()`` context."""
     merged = _scope.get()
+    if scope:
+        check_scope(scope)
     return {**merged, **scope} if scope else merged
 
 

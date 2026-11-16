@@ -33,6 +33,8 @@ from .errors import (
     UnfilteredWriteError,
     ValidationError,
     VersionConflict,
+    ScopeMismatch,
+    ScopeMissing,
     WriteProtected,
 )
 from .index import IndexRef
@@ -168,6 +170,8 @@ __all__ = [
     "TransactionTimeoutError",
     "TransactionRequired",
     "ReadOnlyModel",
+    "ScopeMismatch",
+    "ScopeMissing",
     "WriteProtected",
     "allow_writes",
 ]

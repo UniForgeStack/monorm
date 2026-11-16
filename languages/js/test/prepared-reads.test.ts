@@ -265,8 +265,8 @@ for (const provider of ["sqlite", "postgresql"]) {
     try {
       const q = Item.objects.using(db).filter(Item.views.gte(param("lo"))).prepare();
       await assert.rejects(q.all({ lo: 0 }), /reads scope\.shop, which is not set/);
-      await assert.rejects(q.all({ lo: 0, scope: { shop: null } }), /scope\.shop is None\/null/);
-      await assert.rejects(scope({ shop: null }, async () => { await q.all({ lo: 0 }); }), /scope\.shop is None\/null/);
+      await assert.rejects(q.all({ lo: 0, scope: { shop: null } }), /never null/);
+      await assert.rejects(scope({ shop: null }, async () => { await q.all({ lo: 0 }); }), /never null/);
       assert.throws(() => param("scope"), /reserved/);
     } finally {
       await db.dropTables();

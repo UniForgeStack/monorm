@@ -44,13 +44,12 @@ async function run(provider, url) {
     assert.equal((await Policy.objects.using(db).withoutDefaults().get(Policy.id.eq(hidden.pk))).name, 'hidden');
     await assert.rejects(Scoped.objects.using(db).count(), /Scoped default "tenant" from monorm\.query-defaults \(without_defaults\("tenant"\)\) reads scope\.shop/);
     await scope({ shop: 2 }, async () => assert.deepEqual((await Scoped.objects.using(db)).map((r) => r.shopId), [2]));
-    await scope({ shop: null }, async () => {
-      await assert.rejects(Scoped.objects.using(db).count(), /scope\.shop is None\/null/);
-      assert.equal(await Scoped.objects.using(db).withoutDefaults().count(), 2);
-    });
-    await scope({ shop: undefined }, async () => assert.rejects(Scoped.objects.using(db).count(), /undefined is not a value/));
+    for (const refused of [null, undefined, '', [1, 2]]) {
+      await assert.rejects(scope({ shop: refused }, async () => 0), TypeError);
+    }
+    assert.equal(await Scoped.objects.using(db).withoutDefaults().count(), 2);
     await scope({ shop: 0 }, async () => assert.equal(await Scoped.objects.using(db).count(), 0));
-    for (const falsy of ['', false]) {
+    for (const falsy of [false]) {
       await scope({ shop: falsy }, async () => {
         await Scoped.objects.using(db).count().catch((e) => assert.doesNotMatch(String(e), /None\/null/)); // a type error is fine
       });

@@ -34,6 +34,8 @@ pub struct Model {
     pub assignments: Vec<crate::writes::PreparedAssignment>,
     /// The delete rewrite of this model, if an extension asked for one.
     pub delete_rewrite: Option<crate::writes::PreparedDeleteRewrite>,
+    /// Fields that hold a scope value: an insert fills them, a write checks them.
+    pub scoped: Vec<crate::writes::PreparedScoped>,
     /// Field positions an instance write must match against the loaded value.
     pub guards: Vec<usize>,
     /// The row filter and insert table when this model is a view over a shared table.
@@ -84,7 +86,7 @@ impl Model {
             ir, pk: 0, key: vec![0], field_index, relation_index: HashMap::new(), client_defaults: vec![],
             read_defaults: Default::default(),
             read_flags: ReadFlags::default(),
-            assignments: vec![], delete_rewrite: None, guards: vec![], view: None, hooks: None,
+            assignments: vec![], delete_rewrite: None, scoped: vec![], guards: vec![], view: None, hooks: None,
             owner: crate::behavior::OwnerId(0), resolved_fields: vec![], has_foreign_storage: false })
     }
 
@@ -238,6 +240,40 @@ pub(crate) fn validate_sql_views(ir: &SchemaIr) -> Result<()> {
 }
 
 impl Schema {
+    /// The scope keys that this schema reads or writes: `scope.<name>` in a read default, a write assignment, a
+    /// client default or a delete rewrite guard, and the key of every scoped field. `scope()` accepts these only.
+    pub fn scope_keys(&self) -> std::collections::BTreeSet<String> {
+        fn walk(json: &serde_json::Value, out: &mut std::collections::BTreeSet<String>) {
+            match json {
+                serde_json::Value::Object(map) => {
+                    if map.get("t").and_then(|t| t.as_str()) == Some("scope") {
+                        if let Some(name) = map.get("name").and_then(|n| n.as_str()) { out.insert(name.to_owned()); }
+                    }
+                    map.values().for_each(|v| walk(v, out));
+                }
+                serde_json::Value::Array(items) => items.iter().for_each(|v| walk(v, out)),
+                _ => {}
+            }
+        }
+        let mut out = std::collections::BTreeSet::new();
+        for m in &self.models {
+            for part in &m.read_defaults.parts { out.extend(part.scopes.iter().cloned()); }
+            out.extend(m.scoped.iter().map(|s| s.key.clone()));
+            for a in &m.assignments { if let Some(e) = &a.expr { if let Ok(json) = serde_json::to_value(e) { walk(&json, &mut out); } } }
+            if let Some(rewrite) = &m.delete_rewrite { if let Ok(json) = serde_json::to_value(&rewrite.guard) { walk(&json, &mut out); } }
+            for (_, default) in &m.client_defaults {
+                if let crate::client_default::ClientDefault::Expr(e) = default { if let Ok(json) = serde_json::to_value(e) { walk(&json, &mut out); } }
+            }
+        }
+        out
+    }
+
+    /// True when a hook of a model reads the request context. A hook names no key it reads, so `scope()` accepts any
+    /// key for such a schema.
+    pub fn scope_keys_open(&self) -> bool {
+        self.models.iter().any(|m| m.hooks.as_ref().is_some_and(|h| h.reads_context()))
+    }
+
     pub fn from_ir(ir: SchemaIr) -> Result<Self> { Self::from_ir_impl(ir, true, Some(&Default::default())) }
 
     /// Like `from_ir`, and leaves the hook bindings unresolved: code generation, migrations and compile-time checks
@@ -345,7 +381,7 @@ impl Schema {
                 ir: m, pk, key, field_index, relation_index, client_defaults,
                 read_defaults: Default::default(),
                 read_flags: ReadFlags::default(),
-                assignments: vec![], delete_rewrite: None, guards: vec![], view: None,
+                assignments: vec![], delete_rewrite: None, scoped: vec![], guards: vec![], view: None,
                 hooks: None,
                 owner: crate::behavior::OwnerId(0), resolved_fields: vec![], has_foreign_storage: false });
         }

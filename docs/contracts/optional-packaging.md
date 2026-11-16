@@ -298,6 +298,13 @@ An older host fails to read a manifest with the kind `expression`; install an ol
 These shapes are a path, `in`, `like`, a function and arithmetic.
 An older engine then refuses the IR with "newer than this engine".
 A filter of plain `==`, `<`, `&`, `|`, `~` and null tests keeps the old stamp.
+Schema contract 5.3 adds `Attribute.open_arguments` to the manifest.
+An attribute with it takes named arguments that its manifest does not list; each value is a schema expression.
+It also holds `behavior.scoped_fields`, a `ScopedField` (`source`, `model`, `field`, `key`) for each column that an extension fills and checks from the scope value of `key`.
+The engine fills an unset column with the scope value, accepts an equal value, and raises `ScopeMismatch` for another value.
+`stamp_expression_records` sets `schema_contract_minor = 3` when `scoped_fields` is not empty.
+An older engine then refuses the IR with "newer than this engine", because it would write rows with no scope.
+`scope` declares 5.3.
 A `ModelView` (`model`, `source`, `root`, `row_filter`, `insert_table`) makes `model` read and write the table of `root`; `source` is the nearest parent. `row_filter` is a `field` and a list of `values`. Each value must be an enum member of `field`, or `define()` fails. The core builds the literal SQL; an extension never gives SQL text. The filter applies to root reads, joins, and update and delete targets, and `without_defaults()` does not remove it.
 A `ResultCheck` (`model`, `field`, `non_null`, `allowed`, `code`) makes the engine warn when a result row breaks the check. The warning carries `code`.
 An attribute with `view_source = true` declares the source model of a view. The DSL lowering finds views through this key, not through an attribute name.

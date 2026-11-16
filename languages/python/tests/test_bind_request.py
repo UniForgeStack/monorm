@@ -40,8 +40,9 @@ async def test_the_binding_ends_with_the_block_and_follows_tasks_started_in_it(c
     assert await User.objects.count() == 0
 
 
-async def test_scope_values_are_set_in_the_block(clean):
+async def test_scope_values_are_set_in_the_block(clean, monkeypatch):
     db = clean
+    monkeypatch.setitem(monorm.db._declared, db, frozenset({"shop"}))  # the blog schema declares no scope key
     tx = await db._engine.begin(None, None, None)
     with db.bind_request(tx, scope={"shop": 7}):
         assert monorm.db._scope.get() == {"shop": 7}

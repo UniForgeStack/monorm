@@ -530,10 +530,7 @@ for (const dialect of ['postgres', 'sqlite']) {
           assert.deepEqual(totals(), [[], [30]]);
         });
       });
-      await scope({ shop: null }, async () => {
-        await assert.rejects(async () => { await of(shops).using(sdb).load(Shop.orders); }, /scope\.shop is None/);
-        await assert.rejects(async () => { await Shop.objects.using(sdb).load(Shop.orders).all(); }, /scope\.shop is None/);
-      });
+      await assert.rejects(scope({ shop: null }, async () => 0), /never null/);
     } finally {
       await sdb.dropTables();
       await sdb.close();

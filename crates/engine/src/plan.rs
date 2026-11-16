@@ -1703,10 +1703,14 @@ impl<'s> Planner<'s> {
                 model.ir.name, part.identity.name, part.identity.source, part.identity.name))
             .collect();
         let owner = if defaults.is_empty() { model.ir.name.clone() } else { defaults.join(", ") };
-        Err(Error::query(format!(
-            "{owner} reads scope.{name}, which is not set: set it with scope(), or bypass the default; \
-             without_defaults() bypasses all defaults"
-        )))
+        Err(Error::ScopeMissing {
+            model: model.ir.name.clone(),
+            key: name.to_owned(),
+            message: format!(
+                "{owner} reads scope.{name}, which is not set: set it with scope(), or bypass the default; \
+                 without_defaults() bypasses all defaults"
+            ),
+        })
     }
 
     /// `i`, checked against the parameter list.
@@ -3273,6 +3277,9 @@ impl<'s> Planner<'s> {
         if q.set.is_empty() {
             return Err(Error::query("update() needs at least one field"));
         }
+        for a in &q.set {
+            crate::scoped::check_set(root, &a.field, assigned(&a.value), self.params)?;
+        }
         let (set, nested) = self.nested_sets(&q.set)?;
         let values = self.set_values(&set)?;
         self.update_assignments(&mut stmt, &set, values)?;
@@ -3903,12 +3910,27 @@ pub(crate) struct InsertInput {
     pub forced: Vec<Vec<bool>>,
 }
 
+/// An update assignment's value, as far as the scope check needs it.
+fn assigned(e: &Expr) -> crate::scoped::Assigned {
+    match e {
+        Expr::Param { i } => crate::scoped::Assigned::Param(*i),
+        Expr::Null => crate::scoped::Assigned::Null,
+        _ => crate::scoped::Assigned::Other,
+    }
+}
+
 /// The first stage of [`plan_insert`]: everything that depends on the values of this call.
 pub(crate) fn insert_input(schema: &Schema, model: &str, fields: &[String], rows: Vec<Vec<Option<sea_query::Value>>>, upsert: bool, params: &dyn Params) -> Result<InsertInput> {
     let idx = schema.model_idx(model).map_err(query_err)?;
     let m = schema.model(idx);
     let (fields, mut rows) = crate::client_default::fill(m, fields, rows)?;
-    let (fields, forced) = nested::null_nested(m, fields.as_ref(), &mut rows);
+    let (fields, forced) = if m.scoped.is_empty() {
+        nested::null_nested(m, fields.as_ref(), &mut rows)
+    } else {
+        let mut fields = fields.into_owned();
+        crate::scoped::fill(m, &mut fields, &mut rows, params)?;
+        nested::null_nested(m, &fields, &mut rows)
+    };
     crate::ownership::require_local_write(m)?;
     let positions = field_positions(m, &fields)?;
     if positions.iter().any(|p| m.computed(*p)) { return Err(Error::query(COMPUTED_READ_ONLY)); }
@@ -4024,6 +4046,10 @@ pub(crate) fn insert_statement(
                     return Err(Error::query("on_conflict(..., update=True) has no columns to update"));
                 }
                 refuse_generated(m, update.iter().chain(set.iter().map(|a| &a.field)))?;
+                for a in &set {
+                    crate::scoped::check_set(m, &a.field, assigned(&a.value), params)?;
+                }
+                let update = crate::scoped::keep_scope(m, &update, params);
                 let mut clause = sea_query::OnConflict::columns(columns(&conflict)?);
                 clause.target_and_where_option(conflict_predicate(m, target.dialect, &conflict, &index)?.map(SExpr::cust));
                 clause.update_columns(columns(&update)?);
@@ -4106,6 +4132,7 @@ pub fn plan_update_many(
         planner.require(planner.caps.returning, "update_many().returning()")?;
     }
     validate_bypass(m, without_defaults)?;
+    crate::scoped::check_rows(m, &fields[width..], rows.iter().map(|r| &r[width..]), params)?;
     let selection = if returning { Some(planner.return_shape(model_fields, without_defaults)?) } else { None };
     let positions = selection.as_ref().map(|shape| shape_positions(m, shape.as_ref()));
     let where_ = planner.apply_filters(filters, without_defaults, false)?;

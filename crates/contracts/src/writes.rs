@@ -79,3 +79,15 @@ pub struct InstanceGuard {
     pub model: String,
     pub field: String,
 }
+
+/// A field that holds a value of the request scope: an insert fills it from `scope.<key>`, and a write that sets another value fails.
+/// The key names the scope value, not the field. A statement that opens the key (`unscoped`) skips both.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ScopedField {
+    pub source: String,
+    pub model: String,
+    /// The schema (snake_case) field name.
+    pub field: String,
+    pub key: String,
+}

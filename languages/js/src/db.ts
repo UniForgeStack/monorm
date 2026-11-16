@@ -36,6 +36,8 @@ const tenants = new AsyncLocalStorage<ReadonlyMap<Database, { readonly primary: 
 const txTenants = new AsyncLocalStorage<ReadonlyMap<Database, string | undefined>>();
 /** The `scope.<name>` values of default filters. */
 const scopeValues = new AsyncLocalStorage<Readonly<Record<string, unknown>>>();
+/** For each open database: the scope keys its schema reads or writes. `scope()` accepts these only. */
+const declared = new Map<Database, ReadonlySet<string> | null>(); // null: a hook reads the scope, so any key is valid
 /** For each database with an open transaction: the onCommit callbacks of the innermost one. */
 const callbacks = new AsyncLocalStorage<ReadonlyMap<Database, (() => unknown)[]>>();
 /** The callback lists of transactions that committed or rolled back: a call started in the
@@ -311,6 +313,7 @@ export class Database {
     fn: () => Promise<T>,
   ): Promise<T> {
     const root = this.root;
+    checkScope(options.scope ?? {});
     const engines = options.tenant === undefined ? undefined : this.tenantEngines(options.tenant);
     const tenantMap = new Map(tenants.getStore() ?? []);
     if (engines === undefined) tenantMap.delete(root);
@@ -571,6 +574,7 @@ export class Database {
     if (this.root !== this) {
       return this.root.close();
     }
+    declared.delete(this);
     await wait(() => this.base.close());
     for (const replica of this.replicas) {
       await wait(() => replica.close());
@@ -624,6 +628,7 @@ export async function connect(url: string, options: ConnectOptions = {}): Promis
     throw e;
   }
   const db = new Database(engine, url, reg, readers, options.allowUnfilteredWrites ?? false);
+  declared.set(db, engine.scopeKeysOpen() ? null : new Set(engine.scopeKeys()));
   if (options.default ?? true) {
     defaultDb = db;
   }
@@ -642,11 +647,41 @@ export function getDatabase(): Database {
  * Runs `fn` with the values that `scope.<name>` reads in default filters
  * (`@@query.filter("tenant", shop_id == scope.shop)`). A query on a model whose default filter
  * reads a value that no enclosing `scope()` sets throws `QueryError`. Inner values
- * replace outer ones. Gives what `fn` gives.
+ * replace outer ones. Gives what `fn` gives. Rejects with `TypeError` for a key that no open
+ * database's schema declares, for `null`, `undefined`, an empty string and an array: a scope value
+ * is one value per key.
  */
-export function scope<T>(values: Readonly<Record<string, unknown>>, fn: () => Promise<T>): Promise<T> {
+export async function scope<T>(values: Readonly<Record<string, unknown>>, fn: () => Promise<T>): Promise<T> {
+  checkScope(values);
   // `await` inside: a returned thenable (a query set) must run while the values are set.
   return scopeValues.run({ ...scopeValues.getStore(), ...values }, async () => await fn());
+}
+
+/** @internal Refuses a scope value that no statement could use: see {@link scope}. */
+export function checkScope(values: Readonly<Record<string, unknown>>): void {
+  for (const [key, value] of Object.entries(values)) {
+    if (value === null || value === undefined) {
+      throw new TypeError(`scope({ ${key}: ${value} }): a scope value is never ${value}; leave the key out to set no value`);
+    }
+    if (Array.isArray(value) || value instanceof Set) {
+      throw new TypeError(`scope({ ${key}: [...] }): a list of values is not available yet; a scope key takes one value`);
+    }
+    if (value === "") {
+      throw new TypeError(`scope({ ${key}: "" }): a scope value is never empty; a pooled connection reads '' for no value`);
+    }
+  }
+  if (declared.size > 0 && ![...declared.values()].includes(null)) {
+    const valid = new Set([...declared.values()].flatMap((s) => [...(s ?? [])]));
+    const unknown = Object.keys(values).filter((k) => !valid.has(k)).sort();
+    if (unknown.length > 0) {
+      throw new TypeError(`scope() has no key ${unknown.join(", ")}: the schema declares ${[...valid].sort().join(", ") || "no scope key"}`);
+    }
+  }
+}
+
+/** @internal Sets the keys that `scope()` accepts for `db`; a test uses it for a schema that declares none. */
+export function declareScopeKeys(db: Database, keys: readonly string[]): void {
+  declared.set(db, new Set(keys));
 }
 
 /** @internal The values `scope.<name>` reads in this async context. */

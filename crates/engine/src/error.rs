@@ -18,6 +18,10 @@ pub enum Error {
     Value(String),
     /// A write to a `@@protected_write` model (named here) outside a scope that allows it.
     WriteProtected(String),
+    /// A statement needs `scope.<key>` of `model` and the scope has no value for it. `message` says what the statement was.
+    ScopeMissing { model: String, key: String, message: String },
+    /// A write sets the scope column of `model` to a value other than the scope value.
+    ScopeMismatch { model: String, key: String, expected: String, actual: String },
     /// A write to a model that is a SQL view (named here); a view is read-only.
     ReadOnlyModel(String),
     /// App code rejected a value: messages per field path, and messages with no field.
@@ -41,6 +45,8 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::Query(m) | Error::Schema(m) | Error::Migration(m) | Error::Value(m) => f.write_str(m),
+            Error::ScopeMissing { message, .. } => f.write_str(message),
+            Error::ScopeMismatch { model, key, expected, actual } => write!(f, "{model} is scoped by {key}: the scope is {expected}, the write sets {actual}; write inside the scope, or use unscoped({key:?}) to write another scope"),
             Error::ReadOnlyModel(m) => write!(f, "{m} is a view; it can't be written"),
             Error::WriteProtected(m) => write!(f, "{m} is write-protected (@@protected_write); write it inside a scope that allows writes to {m}"),
             Error::Validation(e) => write!(f, "{e}"),

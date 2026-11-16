@@ -188,6 +188,7 @@ export class ModelMeta implements Source {
     readonly registry: Registry,
   ) {
     const leaves = new Map<string, FieldMeta[]>();
+    const scoped = new Set(registry.behaviorRecords("scoped_fields", ir.name).map((r) => r["field"]));
     for (const f of ir.fields) {
       const physicalDefault = !!(f.auto_increment || f.default !== undefined || f.default_now || f.default_sql || (f.primary_key && registry.multiTable(ir.name)?.keyDefault));
       const n = f.nested;
@@ -200,7 +201,7 @@ export class ModelMeta implements Source {
         enumName: f.enum,
         primaryKey: f.primary_key ?? false,
         unique: f.unique ?? false,
-        hasInsertDefault: physicalDefault || f.client_default !== undefined,
+        hasInsertDefault: physicalDefault || f.client_default !== undefined || scoped.has(f.name),
         hasServerValue: physicalDefault,
       };
       if (n?.storage === "columns") {

@@ -1,0 +1,20 @@
+id = "monorm.scope"
+version = "0.1.0"
+abi = "0.2"
+library = "monorm_scope"
+schema_contract = "5.3"
+language_contract = 1
+languages = ["python", "typescript"]
+databases = ["postgres", "sqlite"]
+
+[[passes]]
+id = "monorm.scope.prepare"
+phase = "behavior"
+effects = ["behavior.read_defaults", "behavior.scoped_fields"]
+
+# `@@scope.by(shop: shop_id, mode: livemode)`: each name is a scope key, each value the field that holds it.
+[[attributes]]
+name = "scope.by"
+target = "model"
+[attributes.open_arguments]
+kind = "value"

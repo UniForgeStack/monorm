@@ -709,11 +709,8 @@ async def test_prefetch_applies_scope_values(db, dialect):
             with monorm.scope(shop=s2.id):
                 await monorm.of(shops).using(sdb).load(Shop.orders)
                 assert [sorted(o.total for o in await s.orders) for s in shops] == [[], [30]]
-        with monorm.scope(shop=None):
-            with pytest.raises(monorm.QueryError, match=r"scope\.shop is None"):
-                await monorm.of(shops).using(sdb).load(Shop.orders)
-            with pytest.raises(monorm.QueryError, match=r"scope\.shop is None"):
-                await Shop.objects.using(sdb).load(Shop.orders).all()
+        with pytest.raises(ValueError, match="never None"):
+            monorm.scope(shop=None)
     finally:
         await sdb.drop_tables()
         await sdb.close()

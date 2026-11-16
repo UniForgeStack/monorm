@@ -46,6 +46,11 @@ pub trait Params {
         None
     }
 
+    /// Whether the statement runs inside `unscoped(key)`: its fill and write check of `key` are off.
+    fn unscoped(&self, _key: &str) -> bool {
+        false
+    }
+
     /// Every `scope.<name>` of the statement with its parameter index: the request context of the hooks.
     fn scope_values(&self) -> Vec<(String, usize)> {
         vec![]
@@ -79,6 +84,9 @@ impl Params for Scoped<'_> {
     }
     fn scope(&self, name: &str) -> Option<usize> {
         self.scope.get(name).copied()
+    }
+    fn unscoped(&self, key: &str) -> bool {
+        self.params.unscoped(key)
     }
     fn scope_values(&self) -> Vec<(String, usize)> {
         self.scope.iter().map(|(k, v)| (k.clone(), *v)).collect()

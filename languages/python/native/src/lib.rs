@@ -980,6 +980,16 @@ impl Engine {
         Engine { driver, target: self.target, schema: self.schema.clone(), classes: self.classes.clone(), settings: Some(settings) }
     }
 
+    /// True when a hook reads the scope: `scope()` then accepts any key.
+    fn scope_keys_open(&self) -> bool {
+        self.schema.scope_keys_open()
+    }
+
+    /// The scope keys that this schema reads or writes: the keys `scope()` accepts.
+    fn scope_keys(&self) -> Vec<String> {
+        self.schema.scope_keys().into_iter().collect()
+    }
+
     /// Session advisory lock on a pinned connection; `None` when it is not taken.
     #[pyo3(signature = (key, name, exclusive, nowait, timeout_ms = None, trace = None))]
     #[allow(clippy::too_many_arguments)]
@@ -1503,6 +1513,8 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("QueryError", py.get_type::<errors::QueryError>())?;
     m.add("ReadOnlyModel", py.get_type::<errors::ReadOnlyModel>())?;
     m.add("WriteProtected", py.get_type::<errors::WriteProtected>())?;
+    m.add("ScopeMissing", py.get_type::<errors::ScopeMissing>())?;
+    m.add("ScopeMismatch", py.get_type::<errors::ScopeMismatch>())?;
     m.add("SchemaError", py.get_type::<errors::SchemaError>())?;
     m.add("SchemaWarning", py.get_type::<errors::SchemaWarning>())?;
     m.add("MigrationError", py.get_type::<errors::MigrationError>())?;

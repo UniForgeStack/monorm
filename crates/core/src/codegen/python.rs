@@ -225,6 +225,12 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     let type_names: Vec<&str> = ir.types.iter().map(|t| t.name.as_str()).collect();
     exported.extend(type_names.iter().flat_map(|n| [n.to_string(), format!("{n}Input"), format!("{n}Patch")]));
     exported.extend(names.iter().map(|n| n.to_string()));
+    // The keys `scope()` accepts, for editors: a prepared schema names each key an expression reads.
+    let scope_keys: Vec<String> = schema.scope_keys().into_iter().map(|k| format!("{k:?}")).collect();
+    let scope_key_alias = if scope_keys.is_empty() { String::new() } else { format!("ScopeKey = Literal[{}]\n\n", scope_keys.join(", ")) };
+    if !scope_keys.is_empty() {
+        exported.push("ScopeKey".into());
+    }
     exported.extend(writable.iter().flat_map(|n| [format!("{n}Insert"), format!("{n}Update"), format!("{n}UpdateRow")]));
     exported.extend(names.iter().map(|n| format!("{n}QuerySet")));
     exported.extend(ir.behavior.type_models.iter().map(|t| format!("{}Fields", t.name)));
@@ -242,6 +248,9 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
          # inserts / updates and query sets) for editors and type checkers.\n\n",
     );
     let type_models = &ir.behavior.type_models;
+    if !scope_keys.is_empty() {
+        py.push_str("from typing import Literal\n");
+    }
     writeln!(py, "from monorm import {}QuerySet, define{}\n", if type_models.is_empty() { "" } else { "Model, " }, if query_sets.is_empty() { "" } else { ", use_query_set" }).unwrap();
     for (model, (module, class)) in &model_methods {
         writeln!(py, "from {module} import {class} as _{model}Methods").unwrap();
@@ -315,6 +324,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         writable.iter().flat_map(|n| [format!("{n}Insert"), format!("{n}Update"), format!("{n}UpdateRow")]).collect();
     dicts.extend(attach_names.iter().map(|n| format!("{n}Attach")));
     if !dicts.is_empty() { writeln!(py, "{} = dict\n", dicts.join(" = ")).unwrap(); }
+    py.push_str(&scope_key_alias);
     writeln!(py, "__all__ = [\n{all}]").unwrap();
 
     // -- models.pyi ------------------------------------------------------------------
@@ -697,6 +707,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         for function in &u.runtime.module_functions { writeln!(pyi, "\ndef {}{}: ...", function.name, function.stub).unwrap(); }
     }
     if !adapters.uses.is_empty() { pyi.push('\n'); }
+    pyi.push_str(&scope_key_alias);
     pyi.push_str(&body);
     writeln!(pyi, "__all__ = [\n{all}]").unwrap();
     Ok(Generated { module: py, stub: pyi })

@@ -43,6 +43,20 @@ create_exception!(
 
 create_exception!(
     _native,
+    ScopeMissing,
+    QueryError,
+    "A statement needs a scope value the scope has not set. `model` and `key` say which."
+);
+
+create_exception!(
+    _native,
+    ScopeMismatch,
+    QueryError,
+    "A write sets a scope column to a value other than the scope value. `model`, `key`, `expected` and `actual` say what."
+);
+
+create_exception!(
+    _native,
     ReadOnlyModel,
     PyException,
     "An ORM write to a SQL view model; a view is read-only."
@@ -111,12 +125,28 @@ pub fn engine_err(e: Error) -> PyErr {
         Error::Value(m) => PyTypeError::new_err(m),
         Error::ReadOnlyModel(m) => ReadOnlyModel::new_err(format!("{m} is a view; it can't be written")),
         Error::WriteProtected(m) => WriteProtected::new_err(format!("{m} is write-protected (@@protected_write); write it inside monorm.allow_writes({m})")),
+        Error::ScopeMissing { model, key, message } => with_attrs(ScopeMissing::new_err(message), &[("model", model), ("key", key)]),
+        Error::ScopeMismatch { model, key, expected, actual } => {
+            let message = format!("{model} is scoped by {key}: the scope is {expected}, the write sets {actual}; write inside the scope, or use unscoped({key:?}) to write another scope");
+            with_attrs(ScopeMismatch::new_err(message), &[("model", model), ("key", key), ("expected", expected), ("actual", actual)])
+        }
         Error::Validation(v) => validation_to_py(&v),
         Error::Binding(e) => match e.downcast::<PyErr>() {
             Ok(e) => *e,
             Err(e) => PyTypeError::new_err(e.to_string()),
         },
     }
+}
+
+/// `err` with string attributes on its value.
+fn with_attrs(err: PyErr, attrs: &[(&str, String)]) -> PyErr {
+    Python::attach(|py| {
+        let value = err.value(py);
+        for (name, text) in attrs {
+            let _ = value.setattr(*name, text.as_str());
+        }
+    });
+    err
 }
 
 /// A Python error raised while converting a value, carried through the engine unchanged.

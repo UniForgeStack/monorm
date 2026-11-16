@@ -95,6 +95,11 @@ fn engine_err(e: Error) -> napi::Error {
         Error::Value(m) => tagged("TypeError", m),
         Error::ReadOnlyModel(m) => tagged("ReadOnlyModel", format!("{m} is a view; it can't be written")),
         Error::WriteProtected(m) => tagged("WriteProtected", format!("{m} is write-protected (@@protected_write); write it inside allowWrites([{m}], ...)")),
+        Error::ScopeMissing { model, key, message } => scope_tagged("ScopeMissing", serde_json::json!({ "model": model, "key": key }), message),
+        Error::ScopeMismatch { model, key, expected, actual } => {
+            let message = format!("{model} is scoped by {key}: the scope is {expected}, the write sets {actual}; write inside the scope, or use unscoped({key:?}) to write another scope");
+            scope_tagged("ScopeMismatch", serde_json::json!({ "model": model, "key": key, "expected": expected, "actual": actual }), message)
+        }
         Error::Validation(v) => validation_tagged(&v),
         Error::Binding(e) => tagged("TypeError", e),
     }
@@ -102,6 +107,11 @@ fn engine_err(e: Error) -> napi::Error {
 
 /// `[monorm:ValidationError+] <json>\n<message>`, with `{"fields": [[path, [message, ...]], ...], "nonFieldMessages": [...]}`
 /// as the JSON: the fields are pairs, because a JS object moves integer-like paths to the front.
+/// A scope error: `[monorm:<Kind>+] <json of model, key, ...>\n<message>`.
+fn scope_tagged(kind: &str, fields: serde_json::Value, message: String) -> napi::Error {
+    napi::Error::from_reason(format!("[monorm:{kind}+] {fields}\n{message}"))
+}
+
 fn validation_tagged(v: &ValidationError) -> napi::Error {
     let json = serde_json::json!({ "fields": v.fields(), "nonFieldMessages": v.non_field_messages() });
     napi::Error::from_reason(format!("[monorm:ValidationError+] {json}\n{v}"))
@@ -1260,6 +1270,18 @@ impl Engine {
         let settings: Vec<(String, String)> = names.into_iter().zip(values).collect();
         let driver: Arc<dyn Driver> = Arc::new(db::WithSettings::new(self.driver.clone(), settings.clone()));
         Engine { driver, target: self.target, schema: self.schema.clone(), settings: Some(settings) }
+    }
+
+    /// True when a hook reads the scope: `scope()` then accepts any key.
+    #[napi]
+    pub fn scope_keys_open(&self) -> bool {
+        self.schema.scope_keys_open()
+    }
+
+    /// The scope keys that this schema reads or writes: the keys `scope()` accepts.
+    #[napi]
+    pub fn scope_keys(&self) -> Vec<String> {
+        self.schema.scope_keys().into_iter().collect()
     }
 
     /// Session advisory lock on a pinned connection; `null` when it is not taken.

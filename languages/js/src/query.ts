@@ -6,7 +6,7 @@
 import { inspection, inspector, emptyInspection, type QueryInspection } from "./inspection.js";
 import { Builder } from "./build.js";
 import type { BoundQuerySet, BoundQuerySetOf } from "./bound.js";
-import { currentScope, resolve, withScope, type Database } from "./db.js";
+import { checkScope, currentScope, resolve, withScope, type Database } from "./db.js";
 import {
   asCondition,
   Column,
@@ -2515,7 +2515,10 @@ export function splitScope(values: Record<string, unknown> | undefined): [Record
   let scope: Readonly<Record<string, unknown>> = currentScope();
   if (values !== undefined && "scope" in values) {
     const { scope: given, ...rest } = values;
-    if (given !== undefined && given !== null) scope = { ...scope, ...(given as Record<string, unknown>) };
+    if (given !== undefined && given !== null) {
+      checkScope(given as Record<string, unknown>);
+      scope = { ...scope, ...(given as Record<string, unknown>) };
+    }
     return [rest, scope];
   }
   return [values ?? {}, scope];

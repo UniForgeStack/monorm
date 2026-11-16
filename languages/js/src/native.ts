@@ -248,6 +248,9 @@ export interface NativeEngine extends NativeInspector {
   begin(tx: NativeTransaction | null, isolation?: string | null, timeout?: number | null): Promise<NativeTransaction>;
   advisoryLock(key: string, name: Buffer | null, exclusive: boolean, nowait: boolean, tx: NativeTransaction, trace?: NativeTrace | null): Promise<boolean>;
   withSettings(names: string[], values: string[]): NativeEngine;
+  scopeKeys(): string[];
+  /** True when a hook reads the scope, so any key is valid. */
+  scopeKeysOpen(): boolean;
   sessionLock(key: string, name: Buffer | null, exclusive: boolean, nowait: boolean, timeoutMs: number | null, trace?: NativeTrace | null): Promise<NativeSessionLock | null>;
   execute(sql: string, tx: NativeTransaction | null, trace?: NativeTrace | null): Promise<number>;
   explain(opJson: string, params: unknown[], analyze: boolean, tx: NativeTransaction | null, trace?: NativeTrace | null): Promise<string>;

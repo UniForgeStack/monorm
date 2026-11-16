@@ -18,6 +18,7 @@ pub mod plan;
 pub mod prepared;
 pub mod prepared_write;
 pub mod protect;
+pub(crate) mod scoped;
 pub mod trace;
 pub mod validation;
 

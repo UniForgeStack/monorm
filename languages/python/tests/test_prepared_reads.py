@@ -290,11 +290,10 @@ async def test_scope_errors(provider):
         q = Item.objects.using(db).filter(Item.views >= param("lo")).prepare()
         with pytest.raises(QueryError, match=r"reads scope\.shop, which is not set"):
             await q(lo=0)
-        with pytest.raises(QueryError, match=r"scope\.shop is None"):
+        with pytest.raises(ValueError, match="never None"):
             await q(lo=0, scope={"shop": None})
-        with pytest.raises(QueryError, match=r"scope\.shop is None"):
-            with monorm.scope(shop=None):
-                await q(lo=0)
+        with pytest.raises(ValueError, match="never None"):
+            monorm.scope(shop=None)
         with pytest.raises(ValueError, match="scope"):
             param("scope")
     finally:

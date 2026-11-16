@@ -282,6 +282,7 @@ class Registry:
             tuple[type[Model], dict[str, Any], dict[str, Field[Any]], dict[str, Relation[Any, Any]]]
         ] = []
         multi_table = _multi_table(prepared["models"], prepared.get("behavior", {}))
+        scoped = {(s["model"], s["field"]) for s in prepared.get("behavior", {}).get("scoped_fields", ())}
         for ir in prepared["models"]:
             if ir["name"] not in snapshot._models:
                 raise TypeError(
@@ -306,6 +307,7 @@ class Registry:
                     if original is not None and callable(original.default):
                         field.default = original.default
                     field.__set_name__(model, name)
+                field.scope_filled = (ir["name"], name) in scoped
                 fields[name] = field
             for old in model._meta.fields.keys() - fields.keys():
                 if old not in vars(model):

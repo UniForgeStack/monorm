@@ -91,17 +91,17 @@ async def run(provider: str, url: str) -> None:
             raise AssertionError("a read with no scope ran")
         with monorm.scope(shop=2):
             assert [r.shop_id for r in await Scoped.objects.using(db)] == [2]
-        with monorm.scope(shop=None):
+        for refused in (None, "", [1, 2]):
             try:
-                await Scoped.objects.using(db).count()
-            except monorm.QueryError as e:
-                assert "scope.shop is None" in str(e), e
+                monorm.scope(shop=refused)
+            except ValueError as e:
+                assert "scope" in str(e), e
             else:
-                raise AssertionError("a read with a None scope ran")
-            assert await Scoped.objects.using(db).without_defaults().count() == 2
+                raise AssertionError(f"scope(shop={refused!r}) was accepted")
+        assert await Scoped.objects.using(db).without_defaults().count() == 2
         with monorm.scope(shop=0):
             assert await Scoped.objects.using(db).count() == 0
-        for falsy in ("", False):
+        for falsy in (False,):
             with monorm.scope(shop=falsy):
                 try:
                     await Scoped.objects.using(db).count()

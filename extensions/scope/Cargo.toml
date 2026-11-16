@@ -1,0 +1,13 @@
+[package]
+name = "monorm-scope"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Optional @@scope.by compiler for ORM: a read default, an insert fill and a write check per scope key"
+
+[dependencies]
+monorm = { path = "../../crates/contracts" }
+serde_json = "1"
+
+[lib]
+crate-type = ["cdylib", "rlib"]

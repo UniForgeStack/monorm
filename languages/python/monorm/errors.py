@@ -15,6 +15,8 @@ from ._native import (
     SchemaWarning,
     TransactionAborted,
     TransactionTimeoutError,
+    ScopeMismatch,
+    ScopeMissing,
     WriteProtected,
 )
 
@@ -34,6 +36,8 @@ __all__ = [
     "TransactionTimeoutError",
     "TransactionRequired",
     "ReadOnlyModel",
+    "ScopeMismatch",
+    "ScopeMissing",
     "WriteProtected",
     "VersionConflict",
     "ValidationError",

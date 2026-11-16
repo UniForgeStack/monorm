@@ -70,6 +70,10 @@
       "types": "./extensions/query-defaults/index.d.ts",
       "default": "./extensions/query-defaults/index.js"
     },
+    "./extensions/scope": {
+      "types": "./extensions/scope/index.d.ts",
+      "default": "./extensions/scope/index.js"
+    },
     "./extensions/generic": {
       "types": "./extensions/generic/index.d.ts",
       "default": "./extensions/generic/index.js"
@@ -123,6 +127,7 @@
         "monorm.locking": "extensions/locking",
         "monorm.inherit": "extensions/inherit",
         "monorm.query-defaults": "extensions/query-defaults",
+        "monorm.scope": "extensions/scope",
         "monorm.generic": "extensions/generic",
         "monorm.proxy": "extensions/proxy",
         "monorm.composition": "extensions/model-composition",

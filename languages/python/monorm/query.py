@@ -1580,10 +1580,11 @@ class _Compiled:
     def call_values(self, values: Mapping[str, Any], known: frozenset[str], scope: Mapping[str, Any] | None) -> tuple[list[Any], dict[str, Any]]:
         """The parameter list of a call, the scope values after it, and the scope itself:
         ``scope=`` over the ``monorm.scope()`` context."""
-        from .db import _scope
+        from .db import _scope, check_scope
 
         merged = _scope.get()
         if scope:
+            check_scope(scope)
             merged = {**merged, **scope}
         params = self.bind(values, known)
         params.extend(merged.values())

@@ -3,7 +3,7 @@
 //! (the field exists and has a fitting type); the role rules stay in the extensions.
 use std::collections::HashMap;
 
-pub use monorm::writes::{AssignValue, UpsertDefault, WriteKind};
+pub use monorm::writes::{AssignValue, ScopedField, UpsertDefault, WriteKind};
 
 use crate::behavior::Requirements;
 use crate::ir::{ColType, Expr, FieldIr};
@@ -23,6 +23,14 @@ pub struct PreparedAssignment {
 
 impl PreparedAssignment {
     pub fn applies_to(&self, kind: WriteKind) -> bool { self.on.contains(&kind) }
+}
+
+/// A field that holds the value of `scope.<key>`.
+#[derive(Clone, Debug)]
+pub struct PreparedScoped {
+    pub source: String,
+    pub field: usize,
+    pub key: String,
 }
 
 /// A delete that becomes an update of `field` to the current time for the rows `guard` selects.
@@ -98,6 +106,14 @@ pub fn prepare(models: &mut [Model], index: &HashMap<String, usize>, r: &Require
         }
         models[m].delete_rewrite = Some(PreparedDeleteRewrite { source: d.source.clone(), field: p, guard });
     }
+    for s in &r.scoped_fields {
+        let (m, p) = position(models, index, &s.model, &s.field, "a scoped field", |f| f.ty != ColType::Json)?;
+        if s.key.is_empty() { return Err(format!("{}.{}: the scope key of {} is empty", s.model, s.field, s.source)); }
+        if let Some(first) = models[m].scoped.iter().find(|x| x.field == p || x.key == s.key) {
+            return Err(format!("{}: {} and {} scope the field {} or the key {} twice", s.model, first.source, s.source, s.field, s.key));
+        }
+        models[m].scoped.push(PreparedScoped { source: s.source.clone(), field: p, key: s.key.clone() });
+    }
     for g in &r.instance_guards {
         let (m, p) = position(models, index, &g.model, &g.field, "an instance guard", |_| true)?;
         if !models[m].guards.contains(&p) { models[m].guards.push(p); }
@@ -110,6 +126,7 @@ pub fn reject_multi_table(models: &[Model], owners: &[Model], owner_links: &[cra
     let mut records = r.write_assignments.iter().map(|x| (&x.model, &x.field, &x.source))
         .chain(r.delete_rewrites.iter().map(|x| (&x.model, &x.field, &x.source)))
         .chain(r.instance_guards.iter().map(|x| (&x.model, &x.field, &x.source)))
+        .chain(r.scoped_fields.iter().map(|x| (&x.model, &x.field, &x.source)))
         .peekable();
     if records.peek().is_none() { return Ok(()); }
     let records: Vec<_> = records.collect();

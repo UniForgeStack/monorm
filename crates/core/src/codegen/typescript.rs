@@ -241,6 +241,12 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
     let mut used_index = false;
     let mut body = String::new();
 
+    // The keys `scope()` accepts, for editors: a prepared schema names each key an expression reads.
+    let scope_keys: Vec<String> = schema.scope_keys().into_iter().map(|k| quote(&k)).collect();
+    if !scope_keys.is_empty() {
+        writeln!(body, "/** The keys that `scope()` accepts for this schema. */\nexport type ScopeKey = {};\n", scope_keys.join(" | ")).unwrap();
+    }
+
     for e in &schema.enums {
         writeln!(body, "{}\n", section(&e.name)).unwrap();
         writeln!(body, "export const {} = {{", e.name).unwrap();

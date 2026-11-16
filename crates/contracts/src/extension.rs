@@ -5,7 +5,7 @@ use crate::ir::{ColType, SchemaIr, ValueType};
 pub use crate::version::ContractVersion;
 
 /// The IR records. A library of the same major and a lower or equal minor fits.
-pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(5, 2);
+pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(5, 3);
 /// The C ABI that `monorm::extension!` writes.
 pub const ABI_VERSION: ContractVersion = ContractVersion::new(0, 2);
 /// The stamps of an IR and an artifact keep the major only.
@@ -91,6 +91,9 @@ pub struct Requirements {
     pub delete_rewrites: Vec<crate::writes::DeleteRewrite>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub instance_guards: Vec<crate::writes::InstanceGuard>,
+    /// Fields that hold a scope value: the insert fills them and a write checks them (contract 5.3).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scoped_fields: Vec<crate::writes::ScopedField>,
     /// Models that have no table: the fields of each, for the generated types.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub type_models: Vec<crate::ir::TypeModel>,
@@ -171,12 +174,13 @@ impl Requirements {
             .chain(self.delete_rewrites.iter().filter(move |r| r.model == model).map(|r| r.source.as_str()))
             .chain(self.write_assignments.iter().filter(move |r| r.model == model).map(|r| r.source.as_str()))
             .chain(self.instance_guards.iter().filter(move |r| r.model == model).map(|r| r.source.as_str()))
+            .chain(self.scoped_fields.iter().filter(move |r| r.model == model).map(|r| r.source.as_str()))
     }
 
     pub fn is_empty(&self) -> bool {
         self.read_defaults.is_empty() && self.model_views.is_empty() && self.result_checks.is_empty() && self.declarations.is_empty() && self.packages.is_empty()
             && self.lowered_models.is_empty() && self.result_fields.is_empty() && self.storage.is_none() && self.field_storage.is_empty() && self.owner_links.is_empty() && self.field_adapters.is_empty()
-            && self.write_assignments.is_empty() && self.delete_rewrites.is_empty() && self.instance_guards.is_empty() && self.type_models.is_empty() && self.model_overrides.is_empty() && self.schema_contract == 0
+            && self.write_assignments.is_empty() && self.delete_rewrites.is_empty() && self.instance_guards.is_empty() && self.scoped_fields.is_empty() && self.type_models.is_empty() && self.model_overrides.is_empty() && self.schema_contract == 0
             && self.schema_contract_minor == 0 && self.hooks.is_empty() && self.extension_data.is_empty()
     }
 }
@@ -555,6 +559,10 @@ pub struct Attribute {
     pub arguments: BTreeMap<String, Argument>,
     #[serde(default)]
     pub positional: Vec<Argument>,
+    /// Contract 5.3: the attribute takes named arguments of any name, each of this kind (`@@attr(shop: shop_id)`).
+    /// A name in `arguments` keeps its own kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_arguments: Option<Argument>,
     /// A field attribute only: the DSL type that this attribute owns. A field of that type lowers to a placeholder column that the extension pass replaces.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub field_type: Option<String>,
@@ -718,7 +726,7 @@ pub fn validate_declarations(ir: &SchemaIr, manifests: &[Manifest], language: Op
             ArgumentKind::Value | ArgumentKind::Expression => true,
         };
         for (name, value) in &d.arguments {
-            let arg = a.arguments.get(name).ok_or_else(|| fail(d, format!("unknown argument {name}")))?;
+            let arg = a.arguments.get(name).or(a.open_arguments.as_ref()).ok_or_else(|| fail(d, format!("unknown argument {name}")))?;
             if !matches(value, arg) { return Err(fail(d, format!("wrong type for {name}"))); }
         }
         for (name, arg) in &a.arguments {
@@ -1016,6 +1024,7 @@ pub fn merge_definition(mut context: SchemaIr, mut incoming: SchemaIr) -> Result
     c.write_assignments.extend(n.write_assignments);
     c.delete_rewrites.extend(n.delete_rewrites);
     c.instance_guards.extend(n.instance_guards);
+    c.scoped_fields.extend(n.scoped_fields);
     c.hooks.extend(n.hooks);
     for (id, data) in n.extension_data {
         if c.extension_data.insert(id.clone(), data).is_some() {
