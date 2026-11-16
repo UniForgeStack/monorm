@@ -319,6 +319,73 @@ fn trigger_body_change_replaces_the_function_only() {
     assert!(p2.down[0].sql.contains("BEGIN RETURN NEW; END;"));
 }
 
+fn secured(policies: Value, rls: Value) -> Value {
+    blog(vec![], json!({"rls": rls, "policies": policies}))
+}
+
+fn tenant_policy(using: &str) -> Value {
+    json!({"name": "tenant", "command": "all", "using": using, "with_check": using})
+}
+
+#[test]
+fn row_level_security_is_created_after_the_table_and_dropped_with_it() {
+    let s = schema(secured(json!([
+        tenant_policy("author_id = 1"),
+        {"name": "exempt_reader", "command": "select", "roles": ["reader"], "using": "true", "if_roles_exist": true},
+    ]), json!({"enabled": true, "forced": true})));
+    let plan = super::plan(&s, &DbSchema::default()).unwrap();
+    let up = sql(&plan.up);
+    let table = up.iter().position(|s| s.starts_with("CREATE TABLE \"posts\"")).unwrap();
+    let policy = up.iter().position(|s| s.starts_with("CREATE POLICY \"tenant\"")).unwrap();
+    let flags = up.iter().position(|s| s.starts_with("ALTER TABLE \"posts\" ENABLE ROW LEVEL SECURITY")).unwrap();
+    assert!(table < policy && policy < flags, "{up:?}");
+    assert_eq!(up[policy], "CREATE POLICY \"tenant\" ON \"posts\" AS PERMISSIVE FOR ALL USING (author_id = 1) WITH CHECK (author_id = 1)");
+    assert_eq!(up[flags], "ALTER TABLE \"posts\" ENABLE ROW LEVEL SECURITY, FORCE ROW LEVEL SECURITY");
+    let exempt = up.iter().find(|s| s.contains("exempt_reader")).unwrap();
+    assert!(exempt.starts_with("DO $") && exempt.contains("pg_roles") && exempt.contains("FOR SELECT TO \"reader\" USING (true)"), "{exempt}");
+    settled(&s, &plan);
+}
+
+#[test]
+fn a_changed_policy_is_dropped_and_created_and_a_removed_one_is_dropped() {
+    let on = json!({"enabled": true, "forced": true});
+    let v1 = schema(secured(json!([tenant_policy("author_id = 1")]), on.clone()));
+    let p1 = super::plan(&v1, &DbSchema::default()).unwrap();
+    let v2 = schema(secured(json!([tenant_policy("author_id = 2")]), on.clone()));
+    let p2 = super::plan(&v2, &p1.snapshot).unwrap();
+    assert_eq!(sql(&p2.up), vec![
+        "DROP POLICY \"tenant\" ON \"posts\"",
+        "CREATE POLICY \"tenant\" ON \"posts\" AS PERMISSIVE FOR ALL USING (author_id = 2) WITH CHECK (author_id = 2)",
+    ]);
+    let v3 = schema(secured(json!([]), json!({"enabled": true, "forced": false})));
+    let p3 = super::plan(&v3, &p2.snapshot).unwrap();
+    assert_eq!(sql(&p3.up), vec!["DROP POLICY \"tenant\" ON \"posts\"", "ALTER TABLE \"posts\" ENABLE ROW LEVEL SECURITY, NO FORCE ROW LEVEL SECURITY"]);
+    assert_eq!(sql(&p3.down).last().unwrap(), &"ALTER TABLE \"posts\" ENABLE ROW LEVEL SECURITY, FORCE ROW LEVEL SECURITY");
+    let same = super::plan(&v3, &p3.snapshot).unwrap();
+    assert!(same.up.is_empty());
+}
+
+#[test]
+fn a_policy_names_a_command_and_needs_a_test() {
+    let bad = |policy: Value| {
+        let ir: SchemaIr = serde_json::from_value(secured(json!([policy]), json!({"enabled": true}))).unwrap();
+        super::plan(&Schema::from_ir(ir).unwrap(), &DbSchema::default()).unwrap_err()
+    };
+    assert!(bad(json!({"name": "p", "command": "all"})).contains("give USING, WITH CHECK or both"));
+    let twice = json!({"name": "p", "command": "all", "using": "true"});
+    let ir: SchemaIr = serde_json::from_value(secured(json!([twice, twice]), json!({}))).unwrap_or_else(|e| panic!("{e}"));
+    assert!(super::plan(&Schema::from_ir(ir).unwrap(), &DbSchema::default()).is_err());
+}
+
+#[test]
+fn sqlite_has_no_row_level_security() {
+    let mut ir: Value = secured(json!([tenant_policy("true")]), json!({"enabled": true}));
+    ir["dialect"] = json!("sqlite");
+    let ir: SchemaIr = serde_json::from_value(ir).unwrap();
+    let err = Schema::from_ir(ir).and_then(|s| super::plan(&s, &DbSchema::default())).unwrap_err();
+    assert!(err.contains("row-level security needs PostgreSQL"), "{err}");
+}
+
 #[test]
 fn invalid_references_are_reported() {
     let ir: SchemaIr = serde_json::from_value(blog(vec![], json!({"indexes": [{"columns": [{"field": "nope"}]}]}))).unwrap();

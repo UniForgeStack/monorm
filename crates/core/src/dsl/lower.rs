@@ -617,6 +617,15 @@ fn datasource_block(ir: &mut SchemaIr, pos: Pos, props: &Props) -> Result<()> {
             }
         }
     }
+    if let Some((p, v)) = n.get("exempt_roles") {
+        let Value::List(list) = v else { return err(p, r#"datasource: exempt_roles takes a list of role names, e.g. ["reporting"]"#) };
+        for (p, v) in list {
+            match v {
+                Value::Str(role) if !role.is_empty() => if !ir.exempt_roles.contains(role) { ir.exempt_roles.push(role.clone()) },
+                _ => return err(*p, "datasource: an exempt role is a non-empty string, e.g. \"reporting\""),
+            }
+        }
+    }
     if let Some((p, v)) = n.get("extensions") {
         let Value::List(list) = v else { return err(p, "datasource: extensions takes a list, e.g. [postgis, citext]") };
         for (p, v) in list {
@@ -695,6 +704,8 @@ fn model_fields(m: &ModelDecl, models: &HashMap<&str, &ModelDecl>, ctx: &Ctx<'_>
         indexes: vec![],
         constraints: vec![],
         triggers: vec![],
+        rls: Default::default(),
+        policies: vec![],
         renamed_from: None,
         comment: None,
         protected_write: false,

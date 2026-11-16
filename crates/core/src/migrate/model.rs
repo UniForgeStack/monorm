@@ -140,6 +140,10 @@ pub struct Table {
     pub indexes: Vec<Index>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub triggers: Vec<Trigger>,
+    #[serde(default, skip_serializing_if = "crate::ir::RlsIr::is_off")]
+    pub rls: crate::ir::RlsIr,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub policies: Vec<Policy>,
     /// Fills for the columns a nullable group holds. The snapshot stores them, so a downgrade
     /// that re-adds such a column can fill it; they do not take part in a snapshot comparison.
     #[serde(default, skip_serializing_if = "Backfills::is_empty")]
@@ -415,6 +419,24 @@ pub struct Trigger {
     pub body: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
+}
+
+/// A row-level security policy as the database holds it; the expressions are SQL text.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct Policy {
+    pub name: String,
+    pub command: crate::ir::PolicyCommand,
+    /// Sorted; empty means `PUBLIC`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roles: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub using: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub with_check: Option<String>,
+    pub permissive: bool,
+    /// Created only when every role exists; the database cannot show this, so the diff ignores it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub if_roles_exist: bool,
 }
 
 /// Rename hints from the ORM schema (`renamed_from`), keyed by the new names.
@@ -952,6 +974,30 @@ impl Builder<'_> {
                 function,
                 body: if schema.dialect == crate::dialect::Dialect::Sqlite { tr.body.clone() } else { None },
                 args: tr.args.clone(),
+            });
+        }
+        if schema.dialect == crate::dialect::Dialect::Sqlite && (!m.ir.rls.is_off() || !m.ir.policies.is_empty()) {
+            return Err(format!("table {t}: row-level security needs PostgreSQL"));
+        }
+        table.rls = m.ir.rls;
+        for p in &m.ir.policies {
+            if table.policies.iter().any(|x| x.name == p.name) {
+                return Err(format!("table {t}: duplicate policy {:?}", p.name));
+            }
+            if p.using.is_none() && p.with_check.is_none() {
+                return Err(format!("table {t}: policy {}: give USING, WITH CHECK or both", p.name));
+            }
+            let mut roles = p.roles.clone();
+            roles.sort();
+            roles.dedup();
+            table.policies.push(Policy {
+                name: p.name.clone(),
+                command: p.command,
+                roles,
+                using: p.using.as_deref().map(normalize_ws),
+                with_check: p.with_check.as_deref().map(normalize_ws),
+                permissive: p.permissive,
+                if_roles_exist: p.if_roles_exist,
             });
         }
         Ok(table)

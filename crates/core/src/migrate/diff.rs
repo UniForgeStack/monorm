@@ -14,7 +14,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use super::model::{
     Check, Column, DbSchema, EnumType, Exclusion, Extension, ForeignKey, Function, Index, PrimaryKey, Renames, SqlView, Table,
-    Trigger, Unique, ShapeEntry,
+    Policy, Trigger, Unique, ShapeEntry,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -110,6 +110,10 @@ pub enum Op {
     RenameIndex { from: String, to: String },
     CreateTrigger { table: String, trigger: Trigger },
     DropTrigger { table: String, name: String },
+    /// `ENABLE`/`DISABLE` and `FORCE`/`NO FORCE ROW LEVEL SECURITY`.
+    SetRowSecurity { table: String, rls: crate::ir::RlsIr },
+    CreatePolicy { table: String, policy: Policy },
+    DropPolicy { table: String, name: String },
     CommentOnTable { table: String, comment: Option<String> },
     CommentOnColumn { table: String, column: String, comment: Option<String> },
     /// `CREATE [MATERIALIZED] VIEW`, never `OR REPLACE`: that cannot change a column type.
@@ -639,6 +643,18 @@ pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<Vec<Op>
     Ok(with_views(old, new, ops))
 }
 
+impl Op {
+    /// Whether the operation changes row-level security.
+    pub fn is_security(&self) -> bool {
+        matches!(self, Op::SetRowSecurity { .. } | Op::CreatePolicy { .. } | Op::DropPolicy { .. })
+    }
+}
+
+/// Two policies are the same when the database could tell them apart; `if_roles_exist` is a creation hint only.
+fn same_policy(a: &Policy, b: &Policy) -> bool {
+    a.name == b.name && a.command == b.command && a.roles == b.roles && a.using == b.using && a.with_check == b.with_check && a.permissive == b.permissive
+}
+
 /// Whether the operation can block a `DROP`/`ALTER` under a view, or change what a view reads.
 /// An operation not named here counts, so a new kind of operation errs on the side of recreating views.
 fn affects_views(op: &Op) -> bool {
@@ -649,6 +665,7 @@ fn affects_views(op: &Op) -> bool {
             | Op::AddIdentity { .. } | Op::DropIdentity { .. } | Op::BackfillColumn { .. } | Op::BackfillJson { .. } | Op::CopyColumns { .. }
             | Op::AddConstraint { .. } | Op::DropConstraint { .. } | Op::RenameConstraint { .. }
             | Op::CreateIndex { .. } | Op::DropIndex { .. } | Op::RenameIndex { .. } | Op::CreateTrigger { .. } | Op::DropTrigger { .. }
+            | Op::SetRowSecurity { .. } | Op::CreatePolicy { .. } | Op::DropPolicy { .. }
             | Op::CommentOnTable { .. } | Op::CommentOnColumn { .. } | Op::CreateView(_) | Op::DropView { .. }
     )
 }
@@ -906,6 +923,9 @@ fn diff_tables(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<Vec<
     let mut add_fks = vec![];
     let mut create_indexes = vec![];
     let mut create_triggers = vec![];
+    let mut drop_policies = vec![];
+    let mut create_policies = vec![];
+    let mut set_security = vec![];
     let mut comments = vec![];
     // Keys dropped and created again: (table, columns before the change).
     let mut rebuilt_keys: Vec<(String, Vec<String>)> = vec![];
@@ -925,6 +945,22 @@ fn diff_tables(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<Vec<
             if ro.triggers.iter().find(|x| x.name == t.name) != Some(t) {
                 create_triggers.push(Op::CreateTrigger { table: table.clone(), trigger: t.clone() });
             }
+        }
+
+        // policies: dropped before any column or table change, so an expression never blocks them
+        for p in &o.policies {
+            let keep = ro.policies.iter().find(|x| x.name == p.name).filter(|x| n.policies.iter().any(|y| y.name == p.name && same_policy(x, y)));
+            if keep.is_none() {
+                drop_policies.push(Op::DropPolicy { table: o.name.clone(), name: p.name.clone() });
+            }
+        }
+        for p in &n.policies {
+            if !ro.policies.iter().any(|x| x.name == p.name && same_policy(x, p)) {
+                create_policies.push(Op::CreatePolicy { table: table.clone(), policy: p.clone() });
+            }
+        }
+        if ro.rls != n.rls {
+            set_security.push(Op::SetRowSecurity { table: table.clone(), rls: n.rls });
         }
 
         let (fk_new, fk_drop, fk_ren) =
@@ -1024,6 +1060,7 @@ fn diff_tables(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<Vec<
         }
     }
 
+    ops.extend(drop_policies);
     ops.extend(drop_triggers);
     ops.extend(drop_fks);
     ops.extend(drop_other);
@@ -1079,10 +1116,16 @@ fn diff_tables(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<Vec<
         bare.foreign_keys.clear();
         bare.indexes.clear();
         bare.triggers.clear();
+        bare.policies.clear();
+        bare.rls = Default::default();
         ops.push(Op::CreateTable { table: bare, foreign_keys: inline });
         create_indexes.extend(t.indexes.iter().map(|i| Op::CreateIndex { table: t.name.clone(), index: i.clone() }));
         create_triggers
             .extend(t.triggers.iter().map(|tr| Op::CreateTrigger { table: t.name.clone(), trigger: tr.clone() }));
+        create_policies.extend(t.policies.iter().map(|p| Op::CreatePolicy { table: t.name.clone(), policy: p.clone() }));
+        if !t.rls.is_off() {
+            set_security.push(Op::SetRowSecurity { table: t.name.clone(), rls: t.rls });
+        }
         if t.comment.is_some() {
             comments.push(Op::CommentOnTable { table: t.name.clone(), comment: t.comment.clone() });
         }
@@ -1196,6 +1239,8 @@ fn diff_tables(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<Vec<
     ops.extend(add_fks);
     ops.extend(create_indexes);
     ops.extend(create_triggers);
+    ops.extend(create_policies);
+    ops.extend(set_security);
     ops.extend(comments);
 
     ops.extend(drop_enums);

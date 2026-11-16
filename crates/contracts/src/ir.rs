@@ -227,6 +227,9 @@ pub struct SchemaIr {
     /// Behavioral requirements are separate from the database extension catalog.
     #[serde(default, skip_serializing_if = "crate::extension::Requirements::is_empty")]
     pub behavior: crate::extension::Requirements,
+    /// Roles of the datasource's `exempt_roles` list: a role that reads every row of a scoped table.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub exempt_roles: Vec<String>,
     /// Roles of the datasource's `bypass_roles` list. A trigger that is skippable runs no skip in the database
     /// for any other role, so an empty list means no skip.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
@@ -262,8 +265,10 @@ impl SchemaIr {
             self.behavior.schema_contract = SCHEMA_CONTRACT;
             self.behavior.schema_contract_minor = self.behavior.schema_contract_minor.max(2);
         }
-        // Contract 5.3 holds `scoped_fields`. An engine of 5.2 would skip the fill and the check and write unscoped rows.
-        if !self.behavior.scoped_fields.is_empty() {
+        // Contract 5.3 holds `scoped_fields`, `ModelIr.rls` and `ModelIr.policies`. An engine of 5.2 would skip the fill, the check and the policies.
+        let physical = self.behavior.storage.iter().flat_map(|s| &s.models);
+        let secured = self.models.iter().chain(physical).any(|m| !m.rls.is_off() || !m.policies.is_empty());
+        if !self.behavior.scoped_fields.is_empty() || secured || !self.exempt_roles.is_empty() {
             self.behavior.schema_contract = SCHEMA_CONTRACT;
             self.behavior.schema_contract_minor = self.behavior.schema_contract_minor.max(3);
         }
@@ -364,6 +369,11 @@ pub struct ModelIr {
     pub constraints: Vec<ConstraintIr>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub triggers: Vec<TriggerIr>,
+    /// Row-level security of the table (PostgreSQL only).
+    #[serde(skip_serializing_if = "RlsIr::is_off", default)]
+    pub rls: RlsIr,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub policies: Vec<PolicyIr>,
     /// Previous table name, so the migration generator emits a rename instead of a
     /// drop + create.
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -409,6 +419,13 @@ pub enum NewMemberError {
 }
 
 impl ModelIr {
+    /// Add `policy`; a policy of the same name is an error.
+    pub fn push_policy(&mut self, policy: PolicyIr) -> Result<(), String> {
+        if self.policies.iter().any(|p| p.name == policy.name) { return Err(format!("{} already has a policy {}", self.name, policy.name)); }
+        self.policies.push(policy);
+        Ok(())
+    }
+
     /// Add `trigger`; a trigger of the same name is an error.
     pub fn push_trigger(&mut self, trigger: TriggerIr) -> Result<(), String> {
         if self.triggers.iter().any(|t| t.name == trigger.name) { return Err(format!("{} already has a trigger {}", self.name, trigger.name)); }
@@ -901,6 +918,53 @@ pub struct TriggerIr {
     /// generates the trigger adds the test of `monorm.skip` to its `WHEN` clause (see `sql::skip_guard`).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub skippable: Option<String>,
+}
+
+/// Row-level security of a table. `forced` makes the table owner obey the policies as well.
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RlsIr {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub forced: bool,
+}
+
+impl RlsIr {
+    pub fn is_off(&self) -> bool { !self.enabled && !self.forced }
+}
+
+/// The statements that a policy covers.
+#[derive(Deserialize, Serialize, Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyCommand {
+    #[default]
+    All,
+    Select,
+    Insert,
+    Update,
+    Delete,
+}
+
+fn is_true(b: &bool) -> bool { *b }
+
+/// A row-level security policy. `using` filters the rows that a statement sees; `with_check` tests the rows that it writes.
+#[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]
+pub struct PolicyIr {
+    pub name: String,
+    #[serde(default)]
+    pub command: PolicyCommand,
+    /// Empty means every role (`PUBLIC`).
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub roles: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub using: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub with_check: Option<String>,
+    #[serde(skip_serializing_if = "is_true", default = "yes")]
+    pub permissive: bool,
+    /// The migration creates the policy only when every role of `roles` exists in the database.
+    #[serde(skip_serializing_if = "is_false", default)]
+    pub if_roles_exist: bool,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]

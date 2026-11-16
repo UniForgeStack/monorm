@@ -19,7 +19,7 @@ use monorm_core::dialect::Dialect;
 use monorm_core::ir::{Deferrable, ForEach, GeneratedIr, Nulls, OnDelete, TriggerEvent, TriggerTiming};
 use monorm_core::migrate::model::{
     Check, Column, DbSchema, EnumType, Exclusion, ExclusionElement, Extension, ForeignKey, Function, Index, IndexKey,
-    PrimaryKey, SqlView, Table, Trigger, Unique,
+    PrimaryKey, Policy, SqlView, Table, Trigger, Unique,
 };
 use monorm_core::migrate::{diff, Op, Step};
 
@@ -271,6 +271,22 @@ const INDEXES_SQL: &str = "SELECT coalesce(json_agg(json_build_object('table', i
      JOIN pg_namespace n ON n.oid = c.relnamespace JOIN pg_am am ON am.oid = ic.relam \
      WHERE n.nspname = current_schema() AND c.relkind IN ('r', 'p', 'm') AND NOT EXISTS (SELECT 1 FROM pg_inherits h WHERE h.inhrelid = i.indexrelid)";
 
+#[derive(Deserialize)]
+struct PgPolicy {
+    table: i64,
+    name: String,
+    cmd: String,
+    permissive: bool,
+    roles: Option<Vec<String>>,
+    using: Option<String>,
+    check: Option<String>,
+}
+
+const POLICIES_SQL: &str = "SELECT coalesce(json_agg(json_build_object('table', p.polrelid::int8, 'name', p.polname, 'cmd', p.polcmd::text, \
+     'permissive', p.polpermissive, 'roles', (SELECT json_agg(r.rolname ORDER BY r.rolname) FROM pg_roles r WHERE r.oid = ANY(p.polroles)), \
+     'using', pg_get_expr(p.polqual, p.polrelid), 'check', pg_get_expr(p.polwithcheck, p.polrelid)) ORDER BY p.polname), '[]') \
+     FROM pg_policy p JOIN pg_class c ON c.oid = p.polrelid JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = current_schema()";
+
 const TRIGGERS_SQL: &str = "SELECT coalesce(json_agg(json_build_object('table', t.tgrelid::int8, 'name', t.tgname, \
      'type', t.tgtype::int, \
      'columns', (SELECT json_agg(a.attname ORDER BY k.i) FROM unnest(t.tgattr::int2[]) WITH ORDINALITY k(n, i) \
@@ -308,7 +324,6 @@ fn others_sql() -> String {
     format!(
         "SELECT coalesce(json_agg(x), '[]') FROM ( \
          SELECT 'rule' AS kind, rulename AS name, tablename AS \"table\", definition AS def FROM pg_rules WHERE schemaname = current_schema() \
-         UNION ALL SELECT 'policy', policyname, tablename, NULL FROM pg_policies WHERE schemaname = current_schema() \
          UNION ALL SELECT 'sequence', c.relname, NULL, NULL FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
              WHERE {IN_SCHEMA} AND c.relkind = 'S' AND {} \
              AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = c.oid AND d.deptype IN ('a', 'i')) \
@@ -406,6 +421,7 @@ async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
     let constraints: Vec<PgConstraint> = json(conn, CONSTRAINTS_SQL).await?;
     let indexes: Vec<PgIndex> = json(conn, INDEXES_SQL).await?;
     let triggers: Vec<PgTrigger> = json(conn, TRIGGERS_SQL).await?;
+    let policies: Vec<PgPolicy> = json(conn, POLICIES_SQL).await?;
     let functions: Vec<PgFunction> = json(conn, &functions_sql()).await?;
     let enums: Vec<PgEnum> = json(conn, &enums_sql()).await?;
     let others: Vec<PgOther> = json(conn, &others_sql()).await?;
@@ -432,10 +448,6 @@ async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
         names.insert(t.oid, t.name.clone());
         match t.kind.as_str() {
             "r" | "p" => {
-                if t.rls || t.force_rls {
-                    let force = if t.force_rls { " (forced)" } else { "" };
-                    gaps.push(format!("table {} has row-level security{force}; it is not reproduced", t.name));
-                }
                 if t.unlogged {
                     gaps.push(format!("table {} is UNLOGGED; it is read as logged", t.name));
                 }
@@ -448,7 +460,7 @@ async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
                         _ => { gaps.push(format!("{}: missing partition parent or bound", t.name)); None }
                     }
                 } else { None };
-                by_oid.insert(t.oid, Table { name: t.name, comment: t.comment, partition_by: t.partition_by, partition_of, ..Default::default() });
+                by_oid.insert(t.oid, Table { name: t.name, comment: t.comment, partition_by: t.partition_by, partition_of, rls: monorm_core::ir::RlsIr { enabled: t.rls, forced: t.force_rls }, ..Default::default() });
             }
             "v" | "m" => {
                 if let Some(options) = t.options.filter(|o| !o.is_empty()) {
@@ -627,6 +639,20 @@ async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
             args: trigger_args(&tr.args),
         });
     }
+    for p in policies {
+        let Some(t) = by_oid.get_mut(&p.table) else { continue };
+        use monorm_core::ir::PolicyCommand as C;
+        let command = match p.cmd.as_str() { "r" => C::Select, "a" => C::Insert, "w" => C::Update, "d" => C::Delete, _ => C::All };
+        t.policies.push(Policy {
+            name: p.name,
+            command,
+            roles: p.roles.unwrap_or_default(),
+            using: p.using.as_deref().map(monorm_core::migrate::model::normalize_ws),
+            with_check: p.check.as_deref().map(monorm_core::migrate::model::normalize_ws),
+            permissive: p.permissive,
+            if_roles_exist: false,
+        });
+    }
     for f in functions {
         if f.kind != "f" {
             let what = match f.kind.as_str() { "p" => "procedure", "a" => "aggregate", _ => "window function" };
@@ -654,7 +680,6 @@ async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
         let n = o.named;
         gaps.push(match o.kind.as_str() {
             "rule" => format!("rule {} on {}: rules are not supported, so a database made from this schema behaves differently (a rule can rewrite a statement, e.g. keep rows that a DELETE would remove): {}", n.name, n.table.unwrap_or_default(), monorm_core::migrate::model::normalize_ws(&n.def.unwrap_or_default())),
-            "policy" => format!("row-level security policy {} on {}: policies are not supported", n.name, n.table.unwrap_or_default()),
             "sequence" => format!("sequence {}: a sequence not owned by a column is not supported", n.name),
             kind => format!("{kind} {}: domains, composite and range types are not supported", n.name),
         });
@@ -1219,12 +1244,27 @@ pub async fn materialize(conn: &dyn Executor, db: &DbSchema) -> Result<Introspec
 /// The steps that turn the live database `live` into `target`, ignoring extensions
 /// that only one of them lists.
 pub fn differences(live: &DbSchema, target: &DbSchema) -> Vec<Step> {
+    differences_of(live, target, Kind::All)
+}
+
+/// Which differences a comparison reports: row-level security is the one kind that a schema file cannot hold back.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Kind {
+    All,
+    /// Everything but row-level security flags and policies.
+    Schema,
+    /// Only row-level security flags and policies.
+    Security,
+}
+
+pub fn differences_of(live: &DbSchema, target: &DbSchema, kind: Kind) -> Vec<Step> {
     let mut a = live.clone();
     let mut b = target.clone();
     a.extensions.clear();
     b.extensions.clear();
     // introspected schemas carry no nested links, so no storage change copies a column
-    let ops = diff::diff(&a, &b, &Default::default()).expect("a diff of introspected schemas copies no column");
+    let mut ops = diff::diff(&a, &b, &Default::default()).expect("a diff of introspected schemas copies no column");
+    ops.retain(|op| match kind { Kind::All => true, Kind::Schema => !op.is_security(), Kind::Security => op.is_security() });
     let mut steps: Vec<Step> = if live.dialect == Dialect::Sqlite && !ops.is_empty() {
         // SQLite rebuilds tables: one step with SQLite's SQL that names every change
         let sql = monorm_core::migrate::sqlite::steps(&a, &b, &Default::default()).unwrap_or_default();
@@ -1283,6 +1323,11 @@ fn adopt(live: &DbSchema, live_again: &DbSchema, target: &DbSchema) -> DbSchema 
                 *c = y.clone();
             }
         }
+        for c in &mut t.policies {
+            if let Some(y) = same(&a.policies, &b.policies, |c| c.name.as_str(), &c.name) {
+                *c = y.clone();
+            }
+        }
         for c in &mut t.triggers {
             if let Some(y) = same(&a.triggers, &b.triggers, |c| c.name.as_str(), &c.name) {
                 *c = y.clone();
@@ -1317,7 +1362,17 @@ pub struct Pull {
 
 /// The live database as a schema file, checked by creating it again in a shadow.
 pub async fn pull(conn: &dyn Executor) -> Result<Pull> {
-    let live = introspect(conn).await?;
+    let mut live = introspect(conn).await?;
+    for t in &mut live.schema.tables {
+        if !t.rls.is_off() {
+            let force = if t.rls.forced { " (forced)" } else { "" };
+            live.gaps.push(format!("table {} has row-level security{force}; it is not reproduced", t.name));
+            t.rls = Default::default();
+        }
+        for p in t.policies.drain(..) {
+            live.gaps.push(format!("row-level security policy {} on {}: policies are not supported", p.name, t.name));
+        }
+    }
     let pulled = monorm_core::migrate::pull::pull(&live.schema, &live.gaps);
     let (_, compiled) = monorm_core::dsl::compile_with_overrides(&pulled.schema, None, &pulled.views)
         .and_then(monorm_core::dsl::check)
@@ -1325,7 +1380,7 @@ pub async fn pull(conn: &dyn Executor) -> Result<Pull> {
     let snapshot = monorm_core::migrate::snapshot(&compiled).map_err(Error::Migration)?;
     let (mut gaps, schema, views) = (pulled.gaps, pulled.schema, pulled.views);
     // the check needs CREATE and enough locks; the schema file does not
-    let steps = match compare(conn, &snapshot).await {
+    let steps = match compare_with(conn, &snapshot, Kind::Schema).await {
         Ok((steps, _)) => steps,
         Err(e) => {
             gaps.push(format!("the schema was not checked against the database: {e}"));
@@ -1358,6 +1413,11 @@ pub async fn drift(conn: &dyn Executor, dir: &Path) -> Result<Drift> {
 
 /// The live database against `target`: the steps between them and the live gaps.
 pub async fn compare(conn: &dyn Executor, target: &DbSchema) -> Result<(Vec<Step>, Vec<String>)> {
+    compare_with(conn, target, Kind::All).await
+}
+
+/// [`compare`], reporting only the differences of `kind`.
+pub async fn compare_with(conn: &dyn Executor, target: &DbSchema, kind: Kind) -> Result<(Vec<Step>, Vec<String>)> {
     let live = introspect(conn).await?;
     let mut target = target.clone();
     target.dialect = conn.dialect();
@@ -1370,7 +1430,7 @@ pub async fn compare(conn: &dyn Executor, target: &DbSchema) -> Result<(Vec<Step
         Err(_) => live.schema,
     };
     monorm_core::migrate::reconcile_introspection(&shadow, &mut live_schema);
-    Ok((differences(&live_schema, &shadow), live.gaps))
+    Ok((differences_of(&live_schema, &shadow, kind), live.gaps))
 }
 
 #[cfg(test)]

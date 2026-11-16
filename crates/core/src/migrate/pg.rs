@@ -2,7 +2,7 @@
 
 use super::diff::{Constraint, Op};
 use super::model::{
-    quote_literal, Column, Exclusion, ForeignKey, Function, Index, IndexKey, PrimaryKey, Trigger, Unique,
+    quote_literal, Column, Exclusion, ForeignKey, Function, Index, IndexKey, PrimaryKey, Policy, Trigger, Unique,
 };
 use crate::ir::{Deferrable, ForEach, Nulls, OnDelete, TriggerEvent, TriggerTiming};
 
@@ -178,6 +178,22 @@ fn function_def(f: &Function) -> String {
         s.push_str(" SECURITY DEFINER");
     }
     s.push_str(&format!(" AS {}", dollar_quote(&f.body)));
+    s
+}
+
+fn policy_def(table: &str, p: &Policy) -> String {
+    use crate::ir::PolicyCommand as C;
+    let mut s = format!("CREATE POLICY {} ON {} AS {} FOR {}", ident(&p.name), ident(table), if p.permissive { "PERMISSIVE" } else { "RESTRICTIVE" }, match p.command {
+        C::All => "ALL", C::Select => "SELECT", C::Insert => "INSERT", C::Update => "UPDATE", C::Delete => "DELETE",
+    });
+    if !p.roles.is_empty() { s.push_str(&format!(" TO {}", idents(&p.roles))); }
+    if let Some(u) = &p.using { s.push_str(&format!(" USING ({u})")); }
+    if let Some(w) = &p.with_check { s.push_str(&format!(" WITH CHECK ({w})")); }
+    if p.if_roles_exist && !p.roles.is_empty() {
+        let names = p.roles.iter().map(|r| quote_literal(r)).collect::<Vec<_>>().join(", ");
+        let body = format!("BEGIN IF (SELECT count(*) FROM pg_roles WHERE rolname = ANY(ARRAY[{names}])) = {} THEN EXECUTE {}; END IF; END", p.roles.len(), quote_literal(&s));
+        return format!("DO {}", dollar_quote(&body));
+    }
     s
 }
 
@@ -389,6 +405,12 @@ pub fn render_with(op: &Op, idempotent: bool, online: Online) -> String {
         Op::RenameIndex { from, to } => format!("ALTER INDEX {} RENAME TO {}", ident(from), ident(to)),
         Op::CreateTrigger { table, trigger } => trigger_def(table, trigger, idempotent),
         Op::DropTrigger { table, name } => format!("DROP TRIGGER {} ON {}", ident(name), ident(table)),
+        Op::SetRowSecurity { table, rls } => format!(
+            "ALTER TABLE {} {} ROW LEVEL SECURITY, {} ROW LEVEL SECURITY",
+            ident(table), if rls.enabled { "ENABLE" } else { "DISABLE" }, if rls.forced { "FORCE" } else { "NO FORCE" },
+        ),
+        Op::CreatePolicy { table, policy } => policy_def(table, policy),
+        Op::DropPolicy { table, name } => format!("DROP POLICY {}{} ON {}", if idempotent { "IF EXISTS " } else { "" }, ident(name), ident(table)),
         Op::CommentOnTable { table, comment: c } => format!("COMMENT ON TABLE {} IS {}", ident(table), comment(c)),
         Op::CommentOnColumn { table, column, comment: c } => {
             format!("COMMENT ON COLUMN {}.{} IS {}", ident(table), ident(column), comment(c))
@@ -441,6 +463,9 @@ pub fn summary(op: &Op) -> String {
         Op::RenameIndex { from, to } => format!("rename index {from} to {to}"),
         Op::CreateTrigger { table, trigger } => format!("create trigger {} on {table}", trigger.name),
         Op::DropTrigger { table, name } => format!("drop trigger {name} on {table}"),
+        Op::SetRowSecurity { table, rls } => format!("{} row level security on {table}{}", if rls.enabled { "enable" } else { "disable" }, if rls.forced { ", forced" } else { "" }),
+        Op::CreatePolicy { table, policy } => format!("create policy {} on {table}", policy.name),
+        Op::DropPolicy { table, name } => format!("drop policy {name} on {table}"),
         Op::CommentOnTable { table, .. } => format!("comment on table {table}"),
         Op::CommentOnColumn { table, column, .. } => format!("comment on column {table}.{column}"),
         Op::CreateView(v) => format!("create {}view {}", if v.materialized { "materialized " } else { "" }, v.name),

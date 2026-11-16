@@ -73,6 +73,8 @@ impl Model {
             indexes: vec![],
             constraints: vec![],
             triggers: vec![],
+        rls: Default::default(),
+        policies: vec![],
             renamed_from: None,
             comment: None,
             protected_write: false,

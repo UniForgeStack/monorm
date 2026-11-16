@@ -23,6 +23,15 @@ fn bypass_roles_name_the_database_roles_that_skip_triggers() {
 }
 
 #[test]
+fn exempt_roles_name_the_database_roles_that_read_every_row() {
+    let src = |roles: &str| format!("datasource db {{\n  provider = \"postgresql\"\n  {roles}\n}}\nmodel A {{\n  id BigInt @id\n}}\n");
+    assert!(ok(&src("")).exempt_roles.is_empty());
+    assert_eq!(ok(&src(r#"exempt_roles = ["reporting", "etl", "etl"]"#)).exempt_roles, ["reporting", "etl"]);
+    assert!(fails(&src(r#"exempt_roles = "reporting""#)).contains("exempt_roles takes a list of role names"));
+    assert!(fails(&src(r#"exempt_roles = [""]"#)).contains("an exempt role is a non-empty string"));
+}
+
+#[test]
 fn sqlite_targets_and_feature_checks() {
     let prefix = "datasource db {\n  provider = \"sqlite\"\n}\n";
     let source = format!("{prefix}model Item {{\n  id BigInt @id @default(autoincrement())\n  title String\n}}\n");
