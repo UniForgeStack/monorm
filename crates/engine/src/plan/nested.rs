@@ -56,7 +56,8 @@ fn json_param(d: Dialect, ty: ColType, sql: &str, expr: bool) -> String {
     }
     let value = match ty {
         ColType::Json => return format!("COALESCE({sql}::jsonb, 'null'::jsonb)"),
-        ColType::DateTime if expr => return leaf_json(d, ty, &format!("({sql})::timestamptz")),
+        // A `timestamp` expression is UTC wall clock: `::timestamptz` would read it in the session zone.
+        ColType::DateTime if expr => return leaf_json(d, ty, &format!("(CASE WHEN pg_typeof({sql}) = 'timestamp'::regtype THEN ({sql})::timestamp AT TIME ZONE 'UTC' ELSE ({sql})::timestamptz END)")),
         ColType::Time if expr => return leaf_json(d, ty, &format!("({sql})::time")),
         ColType::Date if expr => return leaf_json(d, ty, &format!("({sql})::date")),
         ColType::Int => format!("{sql}::integer"),

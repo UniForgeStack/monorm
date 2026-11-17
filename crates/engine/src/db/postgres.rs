@@ -108,6 +108,7 @@ fn pg_type(v: &Value) -> DbResult<Type> {
             ArrayType::ChronoTime => Type::TIME_ARRAY,
             ArrayType::ChronoDate => Type::DATE_ARRAY,
             ArrayType::ChronoDateTimeWithTimeZone => Type::TIMESTAMPTZ_ARRAY,
+            ArrayType::ChronoDateTime => Type::TIMESTAMP_ARRAY,
             ArrayType::Uuid => Type::UUID_ARRAY,
             ArrayType::BigDecimal => Type::NUMERIC_ARRAY,
             other => return Err(DbError::other(format!("unsupported array of {other:?}"))),

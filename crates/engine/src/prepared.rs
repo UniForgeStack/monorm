@@ -31,6 +31,8 @@ pub(crate) enum Conv {
     Value(Option<ValueType>),
     /// A list parameter as the JSON text of a database without arrays.
     JsonList(ValueType),
+    /// A `timestamp` column value: `Params::value` as the UTC wall clock.
+    NaiveUtc(ValueType),
     Text,
     /// Text in lower case (a `LIKE` on a database without `ILIKE`).
     TextLower,
@@ -75,6 +77,7 @@ impl Slot {
         }
         let value = match &self.conv {
             Conv::Value(ty) => params.value(self.param, *ty)?,
+            Conv::NaiveUtc(ty) => crate::plan::naive_utc(params.value(self.param, Some(*ty))?),
             Conv::JsonList(ty) => json_list(params.value(self.param, Some(*ty))?)?,
             Conv::Text => Value::String(Some(params.text(self.param)?)),
             Conv::TextLower => Value::String(Some(params.text(self.param)?.to_lowercase())),
@@ -132,6 +135,7 @@ impl PrefetchRun {
     pub(crate) fn any_statement(&self, values: &[Value], keys: Vec<Vec<Value>>) -> (String, Vec<Value>) {
         let ty = self.plan.key_type[0].ty;
         let list = Value::Array(array_type(ty), Some(Box::new(keys.into_iter().flatten().collect())));
+        let list = if crate::plan::is_naive_timestamp(&self.plan.key_field[0]) { crate::plan::naive_utc(list) } else { list };
         self.any.as_ref().expect("an ANY statement").bind(values, Some(list))
     }
 
@@ -321,6 +325,9 @@ fn candidates(read: &Read, k: usize, any_array: bool) -> Vec<(Value, Conv)> {
     match &read.conv {
         Conv::Value(ty) => {
             let mut out = vec![(sentinel(*ty, k, false), read.conv.clone())];
+            if let Some(t) = ty.filter(|t| t.ty == ColType::DateTime) {
+                out.push((crate::plan::naive_utc(sentinel(Some(t), k, false)), Conv::NaiveUtc(t)));
+            }
             if let Some(t) = ty.filter(|t| t.array && !any_array) {
                 if let Ok(json) = json_list(sentinel(Some(t), k, false)) {
                     out.push((json, Conv::JsonList(t)));
@@ -512,6 +519,7 @@ fn scalar_of(v: &Value, k: usize) -> Value {
             sea_query::ArrayType::ChronoTime => scalar(ColType::Time, k, false),
             sea_query::ArrayType::ChronoDate => scalar(ColType::Date, k, false),
             sea_query::ArrayType::ChronoDateTimeWithTimeZone => scalar(ColType::DateTime, k, false),
+            sea_query::ArrayType::ChronoDateTime => crate::plan::naive_utc(scalar(ColType::DateTime, k, false)),
             _ => Value::Bool(None),
         },
         _ => Value::Bool(None),

@@ -484,8 +484,9 @@ impl PreparedRows {
             return Ok(Work::Empty);
         }
         let upsert = matches!(conflict, Some(Conflict::Update { .. }));
-        let InsertInput { fields, rows, forced } = plan::insert_input(&self.schema, &spec.model, &spec.fields, rows, upsert, params)?;
+        let InsertInput { fields, mut rows, forced } = plan::insert_input(&self.schema, &spec.model, &spec.fields, rows, upsert, params)?;
         let m = self.model();
+        naive_cells(m, &fields, &mut rows)?;
         // A `write_sql` template binds its value once for each `{}`.
         let width = fields.iter().map(|f| Ok(plan::param_template(m.field(f).map_err(query_err)?).map_or(1, |t| t.matches("{}").count().max(1)))).sum::<Result<usize>>()?;
         let total = rows.len();
@@ -699,7 +700,8 @@ impl PreparedRows {
             let map = crate::hooks::input_map(m.fields().len(), &positions)?;
             crate::hooks::update_rows(m, &map, &mut rows, params)?;
         }
-        let cells: Vec<Vec<Option<Value>>> = rows.into_iter().map(|r| r.into_iter().map(Some).collect()).collect();
+        let mut cells: Vec<Vec<Option<Value>>> = rows.into_iter().map(|r| r.into_iter().map(Some).collect()).collect();
+        naive_cells(m, &spec.fields, &mut cells)?;
         let total = cells.len();
         let unnest = if total >= UNNEST_ROWS { self.unnest(&spec.fields, &cells)? } else { None };
         let per_row = if self.target.caps.update_from_values { ncols } else { 2 * ncols - 1 };
@@ -725,4 +727,17 @@ impl PreparedRows {
         }
         Ok(Work::Statements { statements, context })
     }
+}
+
+/// A `timestamp` column binds the UTC wall clock, not an instant that the session zone shifts.
+fn naive_cells(m: &Model, fields: &[String], rows: &mut [Vec<Option<Value>>]) -> Result<()> {
+    let naive = fields.iter().map(|f| Ok(plan::is_naive_timestamp(m.field(f).map_err(query_err)?))).collect::<Result<Vec<_>>>()?;
+    if naive.contains(&true) {
+        for row in rows {
+            for (cell, _) in row.iter_mut().zip(&naive).filter(|(_, n)| **n) {
+                *cell = cell.take().map(plan::naive_utc);
+            }
+        }
+    }
+    Ok(())
 }

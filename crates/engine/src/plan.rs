@@ -112,7 +112,7 @@ pub struct PrefetchPlan {
     stmt: SelectStatement,
     dialect: Dialect,
     key: Vec<SExpr>,
-    key_field: Vec<FieldIr>,
+    pub(crate) key_field: Vec<FieldIr>,
     /// A slice per parent: (offset, limit) over the `_rn` column `stmt` computes.
     slice: Option<(u64, Option<u64>)>,
     pub types: Vec<ValueType>,
@@ -242,6 +242,7 @@ pub(crate) fn returning_col(f: &FieldIr) -> SExpr {
 
 /// A bound value for a field: through the field's `write_sql` template, if any.
 pub(crate) fn bind(v: sea_query::Value, f: Option<&FieldIr>) -> SExpr {
+    let v = if f.is_some_and(is_naive_timestamp) { naive_utc(v) } else { v };
     match f.and_then(param_template) {
         Some(t) => SExpr::cust_with_expr(t.replace("{}", "$1"), SExpr::val(v)),
         None => SExpr::val(v),
@@ -255,6 +256,25 @@ pub(crate) fn param_template(f: &FieldIr) -> Option<&str> {
         return Some(t);
     }
     is_char_n(f).then_some("CAST({} AS bpchar)")
+}
+
+/// A `timestamp` (without time zone) column.
+pub(crate) fn is_naive_timestamp(f: &FieldIr) -> bool {
+    f.ty == ColType::DateTime && f.db_type.as_deref().is_some_and(|t| t == "timestamp" || t.starts_with("timestamp("))
+}
+
+/// A date-time value as the naive UTC wall clock, which PostgreSQL types `timestamp`: a
+/// `timestamptz` parameter would reach a `timestamp` column through the session `TimeZone`.
+pub(crate) fn naive_utc(v: sea_query::Value) -> sea_query::Value {
+    use sea_query::{ArrayType, Value as V};
+    match v {
+        V::ChronoDateTimeWithTimeZone(t) => V::ChronoDateTime(t.map(|t| t.naive_utc())),
+        V::Array(ArrayType::ChronoDateTimeWithTimeZone, items) => V::Array(
+            ArrayType::ChronoDateTime,
+            items.map(|items| Box::new(items.into_iter().map(naive_utc).collect())),
+        ),
+        v => v,
+    }
 }
 
 /// A scalar `char(n)` column, whose values Postgres pads with spaces.
@@ -1632,6 +1652,7 @@ impl<'s> Planner<'s> {
                 };
                 let item = self.value(item, hint)?;
                 let list = self.params.value(self.param(*i)?, Some(ValueType { array: true, ..elem }))?;
+                let list = if hint.field.is_some_and(is_naive_timestamp) { naive_utc(list) } else { list };
                 if self.caps.any_array {
                     let op = if *neg { "$1 <> ALL($2)" } else { "$1 = ANY($2)" };
                     template(self.target.dialect, op, vec![item, SExpr::val(list)])
