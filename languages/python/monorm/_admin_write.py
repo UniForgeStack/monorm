@@ -18,6 +18,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, TypeVar
 
+from .adapters import FieldAdapterError
 from .errors import DoesNotExist, ValidationError, VersionConflict
 from .expr import Condition, IRContext, SlotParams, _Slot, resolve_null_rule
 from .protection import allow_writes
@@ -439,6 +440,9 @@ def default_writer(model: Any, config: Mapping[str, Any]) -> Callable[[Any, dict
                     return {"ok": True, "key": args["key"], "audited": False}
         except ValidationError as e:
             return _invalid(e)
+        except FieldAdapterError as e:
+            # A field adapter refuses a value the form cannot build (for example base64 bytes for a message field).
+            return {"ok": False, "kind": "invalid", "fields": {}, "form": [str(e)]}
         except VersionConflict:
             return {"ok": False, "kind": "conflict"}
         except DoesNotExist:

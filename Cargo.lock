@@ -1036,6 +1036,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "monorm-proto"
+version = "0.1.0"
+dependencies = [
+ "monorm",
+ "serde_json",
+]
+
+[[package]]
 name = "monorm-proxy"
 version = "0.1.0"
 dependencies = [

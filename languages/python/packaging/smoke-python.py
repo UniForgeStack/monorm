@@ -29,6 +29,7 @@ BUILT_IN = {
     "monorm.proxy": "monorm_proxy",
     "monorm.composition": "monorm_composition",
     "monorm.file-storage": "monorm_file_storage",
+    "monorm.proto": "monorm_proto",
 }
 
 SCHEMA = """datasource db { provider = "PROVIDER" }

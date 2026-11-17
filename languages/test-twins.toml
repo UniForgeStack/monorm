@@ -505,6 +505,10 @@
 "writes::on_conflict_index_picks_a_partial_index" = "change: The TS twin asserts the same on SQLite and Postgres: Python must run on both providers, and needs explicit ID"
 "writes::on_conflict_index_with_a_boolean_column" = "change: TS asserts the same on both providers: Python must run on SQLite too, and needs explicit ID"
 "writes::on_conflict_infers_the_partial_unique_index" = "keep: move that line into the kept test in both languages, then remove this one."
+# languages/python/tests/test_proto_field.py
+"proto_field::the_generated_stub_types_the_field_as_the_message_class" = "one-language: reads the generated Python stub; the TypeScript types are checked by `npm run typecheck`"
+"proto_field::a_class_without_a_codec_names_proto_codec" = "one-language: the TypeScript twin asserts the same error inside `a registered codec serves a class without a protobuf api`"
+"proto_field::the_admin_lists_reads_and_edits_a_row_but_refuses_bytes_for_a_message_field" = "one-language: the TypeScript host writer maps the same error (admin-write.ts, failure); no TypeScript fixture imports the admin tables"
 
 [typescript-only.files]
 "languages/js/test/sync-require.test.ts" = "TypeScript-only: a synchronous require() of the ESM package"
@@ -806,3 +810,8 @@
 "writes::insert_many_gives_a_count_returning_gives_the_rows" = "change: Must add the check that every returned row has an id;"
 "writes::related_lazy_inserts_join_the_transaction_at_await" = "add-py: test_related_lazy_inserts_join_the_transaction_at_await"
 "writes::replica_database_names_are_relative_to_the_current_worker_database" = "one-language: checks the TypeScript test helper replicaUrl, not the API"
+# languages/js/test/proto-field.test.ts
+"proto_field::a_ts_proto_class_round_trips_and_refuses_nothing_it_cannot_check" = "one-language: ts-proto emits an interface and a const object; Python has no such class shape"
+"proto_field::the_generated_proto_models_are_current" = "one-language: checks the generated TypeScript fixtures; the Python fixtures come from protoc through extensions/proto/fixtures/generate.sh"
+# languages/js/test/proto-field-sqlite.test.ts
+"proto_field_sqlite::the_proto_field_cases_pass_on_sqlite" = "one-language: one Node process takes one dialect, so the SQLite run is a child process; pytest runs both dialects in one process"

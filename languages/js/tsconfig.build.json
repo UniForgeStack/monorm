@@ -1,0 +1,12 @@
+{
+  // The `paths` let the generated test fixtures type-check before `dist` exists and share the types of `src`.
+  // Bun reads `tsconfig.json` at run time and would load a second copy of `src`, so the map stays out of that file.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "monorm": ["./src/index.ts"],
+      "monorm/extensions/proto": ["./extensions/proto/index.ts"],
+      "monorm/extensions/proto/model": ["./extensions/proto/model.ts"]
+    }
+  }
+}

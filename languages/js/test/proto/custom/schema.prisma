@@ -1,0 +1,6 @@
+model CustomEvent {
+  id     Int    @id
+  plain  Bytes? @proto.message("fake.Plain")
+  served Bytes? @proto.message("fake.Served")
+  @@map("proto_custom_event")
+}

@@ -7,6 +7,7 @@
  */
 import type { HostFunction } from "./admin-host.js";
 import type { Database } from "./db.js";
+import { FieldAdapterError } from "./adapters.js";
 import { Decimal } from "./decimal.js";
 import { DoesNotExist, ValidationError, VersionConflict } from "./errors.js";
 import { asCondition, Condition, Expression, IRContext, resolveNullRule, Slot, SlotParams } from "./expr.js";
@@ -379,6 +380,8 @@ function invalid(meta: ModelMeta, e: ValidationError): Record<string, unknown> {
 /** The envelope of an error that a write answers by status, or `undefined` for any other error. */
 function failure(meta: ModelMeta, e: unknown): Record<string, unknown> | undefined {
   if (e instanceof ValidationError) return invalid(meta, e);
+  // A field adapter refuses a value the form cannot build (for example base64 bytes for a message field).
+  if (e instanceof FieldAdapterError) return { ok: false, kind: "invalid", fields: {}, form: [e.message] };
   if (e instanceof VersionConflict) return { ok: false, kind: "conflict" };
   if (e instanceof DoesNotExist) return { ok: false, kind: "not_found" };
   return undefined;

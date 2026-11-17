@@ -204,7 +204,7 @@ fn monorm_identities_keeps_the_project_valid_and_the_manifest_the_same() {
 
 #[test]
 fn the_extension_list_takes_all_none_names_and_the_old_composition_name() {
-    assert_eq!(parse_ext("all").unwrap().len(), 9);
+    assert_eq!(parse_ext("all").unwrap().len(), 10);
     assert!(parse_ext("none").unwrap().is_empty());
     let names: Vec<_> = parse_ext("proxy, model-composition,locking,locking").unwrap().iter().map(|e| e.name).collect();
     assert_eq!(names, ["locking", "proxy", "composition"]);

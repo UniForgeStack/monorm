@@ -2646,7 +2646,10 @@ impl<'s> Planner<'s> {
                     self.allow_window = true;
                     self.allow_unnest = true;
                     self.lateral_open = true;
+                    // Reading the whole field of an opaque column is allowed; any other use of it is refused.
+                    self.null_ok = matches!(expr, Expr::Col { sub, .. } if sub.is_empty());
                     let e = self.value(expr, Hint::default());
+                    self.null_ok = false;
                     self.allow_window = false;
                     self.allow_unnest = false;
                     self.lateral_open = false;

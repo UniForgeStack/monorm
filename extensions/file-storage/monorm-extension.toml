@@ -17,7 +17,7 @@ required = true
 [[passes]]
 id = "monorm.file-storage.fields"
 phase = "behavior"
-effects = ["behavior.field_adapters"]
+effects = ["behavior.field_adapters.file-storage"]
 
 [python]
 source = "integration/python/src/monorm_file_storage"

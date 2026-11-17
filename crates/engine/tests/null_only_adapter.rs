@@ -29,6 +29,8 @@ fn a_null_test_and_a_plain_read_pass() {
     assert!(plan(filter(json!({"t":"is_null","item":col("msg")}))).unwrap().contains("IS NULL"));
     assert!(plan(filter(json!({"t":"is_null","item":col("msg"),"neg":true}))).unwrap().contains("IS NOT NULL"));
     assert!(plan(json!({"op":"select","model":"Doc"})).is_ok());
+    let whole = json!({"op":"select","model":"Doc","columns":[{"t":"expr","expr":col("msg")}]});
+    assert!(plan(whole).is_ok());
 }
 
 #[test]

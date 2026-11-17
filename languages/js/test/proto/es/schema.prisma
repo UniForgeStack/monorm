@@ -1,0 +1,8 @@
+model ProtoEvent {
+  id      Int    @id
+  payload Bytes? @proto.message("acme.Note")
+  inner   Bytes? @proto.message("acme.Outer.Inner")
+  bill    Bytes? @proto.message("acme.billing.Invoice")
+  raw     Bytes?
+  @@map("proto_event")
+}

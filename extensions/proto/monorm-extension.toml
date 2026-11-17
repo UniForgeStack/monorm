@@ -1,0 +1,39 @@
+id = "monorm.proto"
+version = "0.1.2"
+abi = "0.2"
+library = "monorm_proto"
+schema_contract = "5.3"
+language_contract = 1
+languages = ["python", "typescript"]
+databases = ["postgres", "sqlite"]
+
+[[attributes]]
+name = "proto.message"
+target = "field"
+positional = [{ kind = "string", required = true }]
+
+[[passes]]
+id = "monorm.proto.fields"
+phase = "behavior"
+effects = ["behavior.field_adapters.proto"]
+
+[python]
+source = "integration/python/src/monorm_proto"
+[[python.field_adapters]]
+adapter = "proto.message.v1"
+module = "monorm_proto.model"
+install = "install"
+resolve = { option = "message", setting = "proto" }
+value = "{class}"
+input = "{class}"
+
+[typescript]
+source = "integration/typescript/src"
+exports = { "./model" = "model.js" }
+[[typescript.field_adapters]]
+adapter = "proto.message.v1"
+module = "monorm/extensions/proto/model"
+install = "install"
+resolve = { option = "message", setting = "proto" }
+value = "{class}"
+input = "{class}"

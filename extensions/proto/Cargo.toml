@@ -1,0 +1,13 @@
+[package]
+name = "monorm-proto"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Protobuf message field adapter for ORM: the installable package monorm.proto"
+
+[dependencies]
+monorm = { path = "../../crates/contracts" }
+serde_json = "1"
+
+[lib]
+crate-type = ["cdylib", "rlib"]

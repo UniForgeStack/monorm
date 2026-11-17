@@ -83,7 +83,7 @@ pub struct Ext {
     needs_identities: bool,
 }
 
-pub const EXTENSIONS: [Ext; 9] = [
+pub const EXTENSIONS: [Ext; 10] = [
     Ext { name: "timestamps", label: "timestamps: an updated_at column", user_attrs: "", post_attrs: "  @@timestamps.updated_at(\"updated_at\")\n", model: None, needs_identities: false },
     Ext { name: "soft-delete", label: "soft-delete: delete rows with a deleted_at column", user_attrs: "", post_attrs: "  @@soft_delete.deleted_at(\"deleted_at\")\n", model: None, needs_identities: false },
     Ext { name: "locking", label: "locking: a version column for optimistic locking", user_attrs: "", post_attrs: "  @@locking.version\n", model: None, needs_identities: false },
@@ -126,6 +126,14 @@ pub const EXTENSIONS: [Ext; 9] = [
         user_attrs: "",
         post_attrs: "",
         model: Some(Model { name: "Attachment", text: "model Attachment {\n  id   Int   @id @default(autoincrement())\n  file Json? @storage.file(storage: \"attachments\")\n}\n", stored: true }),
+        needs_identities: false,
+    },
+    Ext {
+        name: "proto",
+        label: "proto: a Bytes field that holds a protobuf message",
+        user_attrs: "",
+        post_attrs: "",
+        model: Some(Model { name: "Event", text: "model Event {\n  id      Int    @id @default(autoincrement())\n  payload Bytes? @proto.message(\"acme.Payload\")\n}\n", stored: true }),
         needs_identities: false,
     },
 ];

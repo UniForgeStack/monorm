@@ -111,7 +111,15 @@ class _DecodedField:
             value = obj.__dict__[self.name]
         except KeyError:
             return self.column.__get__(obj, owner)
-        return self.decode(value)
+        # One decode for each loaded value: a change in place stays on the row, as in TypeScript.
+        # The stored object is the key, so a reload that replaces it decodes again.
+        cache = obj.__dict__.setdefault("_orm_decoded", {})
+        hit = cache.get(self.name)
+        if hit is not None and hit[0] is value:
+            return hit[1]
+        decoded = self.decode(value)
+        cache[self.name] = (value, decoded)
+        return decoded
 
     # A data descriptor, so that it reads before the native row values in the instance __dict__.
     def __set__(self, obj: Any, value: Any) -> None:
@@ -119,7 +127,7 @@ class _DecodedField:
 
 
 def decode_field(model: type[Model], name: str, decode: Callable[[Any], Any]) -> None:
-    """Read the loaded value of field ``name`` as ``decode(value)``, when it is read.
+    """Read the loaded value of field ``name`` as ``decode(value)``, decoded on the first read of each loaded value.
 
     Instances keep the stored value, so writes and ``load(reload=True)`` see it unchanged."""
     if name not in model._meta.fields:

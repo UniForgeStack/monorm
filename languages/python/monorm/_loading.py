@@ -79,6 +79,7 @@ def merge(owner: Any, fresh: Any, reload: bool, seen: set[tuple[int, int]] | Non
         if name in (
             "_db",
             "_orm_internal",
+            "_orm_decoded",
             "_reference_keys",
             "_reference_pending",
             "_reference_tokens",

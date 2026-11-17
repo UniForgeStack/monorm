@@ -1,0 +1,3 @@
+[proto.typescript]
+"acme" = "../gen/acme/note_pb.js"
+"acme.billing" = "../gen/acme/billing/invoice_pb.js"

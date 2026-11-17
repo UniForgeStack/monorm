@@ -16,6 +16,9 @@ extensions/file-storage/artifacts/
 extensions/file-storage/integration/typescript/dist/
 extensions/file-storage/integration/python/build/
 extensions/file-storage/integration/python/src/*.egg-info/
+extensions/proto/integration/typescript/dist/
+extensions/proto/integration/python/build/
+extensions/proto/integration/python/src/*.egg-info/
 .verification/
 # Local distribution build artifacts.
 build/

@@ -24,7 +24,7 @@ Run these from the repository root. Keep them green before you open a pull reque
 ```bash
 # Start PostgreSQL first (Linux: `service postgresql start`; macOS: your own server) with the test database above.
 psql -U postgres -h localhost -c 'CREATE DATABASE orm_docs' && export ORM_DOCS_DATABASE_URL=postgres://postgres:postgres@localhost/orm_docs   # a disposable database for the PostgreSQL guide example; without it that example is skipped
-uv venv .venv && . .venv/bin/activate && uv pip install maturin pytest 'pytest-asyncio>=1.1' pydantic mypy pyright   # the wheel builder and the test tools
+uv venv .venv && . .venv/bin/activate && uv pip install maturin pytest 'pytest-asyncio>=1.1' pydantic 'protobuf>=7.36.2' mypy pyright   # the wheel builder and the test tools
 python languages/python/packaging/stage.py   # the extension libraries of this platform, for the one wheel
 maturin develop                   # the one `monorm` package: engine, built-in extensions and auth
 python -m pytest -q               # Python end-to-end, SQL shape and typing tests

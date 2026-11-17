@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+package acme;
+
+// The message of the tests.
+message Note {
+  string title = 1;
+  int32 priority = 2;
+  repeated string tags = 3;
+  Outer.Inner inner = 4;
+}
+
+message Outer {
+  message Inner {
+    string label = 1;
+  }
+}
+
+message Other {
+  string name = 1;
+}
+
+// `Note` after a later release: field 5 is unknown to `Note`.
+message NoteV2 {
+  string title = 1;
+  int32 priority = 2;
+  repeated string tags = 3;
+  string added_later = 5;
+}

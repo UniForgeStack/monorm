@@ -1,0 +1,5 @@
+model TsProtoEvent {
+  id   Int    @id
+  body Bytes? @proto.message("acme.Note")
+  @@map("ts_proto_event")
+}

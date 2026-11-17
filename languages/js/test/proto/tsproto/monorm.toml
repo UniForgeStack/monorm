@@ -1,0 +1,2 @@
+[proto.typescript]
+"acme" = "../gen-ts-proto/acme/note.js"

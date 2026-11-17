@@ -10,7 +10,7 @@ from zipfile import ZipFile
 
 MODULES = (
     "monorm_timestamps monorm_soft_delete monorm_locking monorm_inherit monorm_query_defaults monorm_scope monorm_history "
-    "monorm_generic monorm_proxy monorm_composition monorm_file_storage"
+    "monorm_generic monorm_proxy monorm_composition monorm_file_storage monorm_proto"
 ).split()
 LIBRARY = re.compile(r"[^/]*\.(so|pyd|dylib|dll)$")
 

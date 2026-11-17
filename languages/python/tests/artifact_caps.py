@@ -13,10 +13,10 @@ def artifact_capabilities() -> list[str]:
 def has_extension(*ids: str) -> bool:
     """True when an installed package contains every named extension, such as `monorm.file-storage`.
 
-    A missing `monorm.timestamps`, `monorm.soft-delete`, `monorm.locking`, `monorm.inherit`, `monorm.query-defaults`, `monorm.scope`, `monorm.generic`, `monorm.proxy`, `monorm.composition`, `monorm.history` or `monorm.file-storage` package fails with an assert.
+    A missing `monorm.timestamps`, `monorm.soft-delete`, `monorm.locking`, `monorm.inherit`, `monorm.query-defaults`, `monorm.scope`, `monorm.generic`, `monorm.proxy`, `monorm.composition`, `monorm.history`, `monorm.proto` or `monorm.file-storage` package fails with an assert.
     """
     extensions = resolve_extensions()
     for ident in ids:
-        if ident in {"monorm.timestamps", "monorm.soft-delete", "monorm.locking", "monorm.inherit", "monorm.query-defaults", "monorm.scope", "monorm.generic", "monorm.proxy", "monorm.composition", "monorm.history", "monorm.file-storage"}:
+        if ident in {"monorm.timestamps", "monorm.soft-delete", "monorm.locking", "monorm.inherit", "monorm.query-defaults", "monorm.scope", "monorm.generic", "monorm.proxy", "monorm.composition", "monorm.history", "monorm.proto", "monorm.file-storage"}:
             assert ident in extensions, f"install the {ident} package with `python languages/python/packaging/stage.py` and `maturin develop`"
     return all(i in extensions for i in ids)
