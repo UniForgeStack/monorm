@@ -267,6 +267,7 @@ impl AdminSite {
         secret: Option<String>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let config: Config = serde_json::from_str(&settings_json).map_err(|e| PyValueError::new_err(format!("settings are not JSON: {e}")))?;
+        let config = config.with_env_secret(|name| std::env::var(name).ok());
         let mut serve_config = config.serve_config();
         serve_config.auth = Some(auth_config(py, database, host, config.security(secret.as_deref()))?);
         let driver = engine.get().driver.clone();

@@ -211,6 +211,7 @@ impl AdminSite {
         secret: Option<String>,
     ) -> napi::Result<PromiseRaw<'env, AdminServer>> {
         let config: Config = serde_json::from_str(&settings_json).map_err(|e| napi::Error::from_reason(format!("settings are not JSON: {e}")))?;
+        let config = config.with_env_secret(|name| std::env::var(name).ok());
         let mut serve_config = config.serve_config();
         serve_config.auth = Some(auth_config(dispatch, config.security(secret.as_deref()))?);
         let driver = engine.driver.clone();

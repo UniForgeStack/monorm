@@ -3,6 +3,7 @@
 //! The keys: `app` (`module:attr`, the admin object), `setup` (`module:function`, the hook that connects the database,
 //! the extensions and the file storage), `host`, `port`, `timeout` (seconds), `db_settings` (a table of strings),
 //! `idle_timeout` and `session_timeout` (seconds, for the login session), `origins` (extra origins a write may come from) and `trusted_proxies` (peers whose X-Forwarded-For the login limits believe).
+//! `oidc` is the table of the single sign-on settings (`issuer`, `client_id`, `roles_claim`, `scopes`, `hd`, ...); its client secret is the environment variable `MONORM_ADMIN_OIDC_CLIENT_SECRET`.
 //! The secret that signs sessions is the environment variable `MONORM_ADMIN_SECRET`, never a setting.
 //! The environment variables `MONORM_ADMIN_HOST` and `MONORM_ADMIN_PORT` override `host` and `port`.
 
@@ -16,6 +17,7 @@ use monorm_core::settings::Settings;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::oidc::OidcSettings;
 use crate::security::{Security, SecurityOptions};
 use crate::serve::ServeConfig;
 
@@ -42,9 +44,12 @@ pub struct Config {
     /// The base path of the UI, normalized; `None` keeps the one that the admin object names (`/admin` by default).
     #[serde(default)]
     pub base_path: Option<String>,
+    /// The OIDC single sign-on (`[admin.oidc]`); the client secret comes from `MONORM_ADMIN_OIDC_CLIENT_SECRET`.
+    #[serde(default)]
+    pub oidc: Option<OidcSettings>,
 }
 
-const KEYS: [&str; 11] = ["app", "setup", "host", "port", "timeout", "db_settings", "idle_timeout", "session_timeout", "origins", "trusted_proxies", "base_path"];
+const KEYS: [&str; 12] = ["app", "setup", "host", "port", "timeout", "db_settings", "idle_timeout", "session_timeout", "origins", "trusted_proxies", "base_path", "oidc"];
 
 impl Config {
     /// Reads the settings of the project in `dir`. `env` reads one environment variable.
@@ -141,14 +146,34 @@ impl Config {
         let idle_timeout_secs = seconds("idle_timeout", DEFAULT_IDLE_SECS)?;
         let session_timeout_secs = seconds("session_timeout", DEFAULT_SESSION_SECS)?;
         let base_path = text("base_path")?.map(|b| crate::site::normalize_base(&b).map_err(|e| format!("{place}`admin.base_path`: {e}"))).transpose()?;
-        Ok(Config { app, setup: text("setup")?, host, port, timeout_ms, db_settings, idle_timeout_secs, session_timeout_secs, origins, trusted_proxies, base_path })
+        let oidc = match table.get("oidc") {
+            None => None,
+            Some(value @ Value::Object(map)) => {
+                if map.contains_key("client_secret") {
+                    return Err(format!("{place}`admin.oidc.client_secret` is not a setting: set the environment variable MONORM_ADMIN_OIDC_CLIENT_SECRET"));
+                }
+                let mut settings = OidcSettings::from_value(value).map_err(|e| format!("{place}`admin.{e}"))?;
+                settings.client_secret = env("MONORM_ADMIN_OIDC_CLIENT_SECRET").filter(|v| !v.is_empty());
+                Some(settings)
+            }
+            Some(_) => return Err(format!("{place}`admin.oidc` must be a table")),
+        };
+        Ok(Config { app, setup: text("setup")?, host, port, timeout_ms, db_settings, idle_timeout_secs, session_timeout_secs, origins, trusted_proxies, base_path, oidc })
+    }
+
+    /// The settings come back from JSON, which never holds the OIDC client secret: read it again from the environment.
+    pub fn with_env_secret(mut self, env: impl Fn(&str) -> Option<String>) -> Config {
+        if let Some(oidc) = self.oidc.as_mut() {
+            oidc.client_secret = env("MONORM_ADMIN_OIDC_CLIENT_SECRET").filter(|v| !v.is_empty());
+        }
+        self
     }
 
     /// The session signing and limits. `secret` is the value of `MONORM_ADMIN_SECRET`.
     pub fn security(&self, secret: Option<&str>) -> Result<Arc<Security>, String> {
         let secs = |n: u64| i64::try_from(n).unwrap_or(i64::MAX);
         let trusted_proxies = self.trusted_proxies.iter().map(|a| a.parse::<IpAddr>().map_err(|_| format!("`admin.trusted_proxies` holds {a:?}, which is not an IP address"))).collect::<Result<_, _>>()?;
-        let options = SecurityOptions { idle_secs: secs(self.idle_timeout_secs), absolute_secs: secs(self.session_timeout_secs), origins: self.origins.clone(), trusted_proxies };
+        let options = SecurityOptions { idle_secs: secs(self.idle_timeout_secs), absolute_secs: secs(self.session_timeout_secs), origins: self.origins.clone(), trusted_proxies, oidc: self.oidc.clone() };
         security_with(secret, options)
     }
 
@@ -178,8 +203,8 @@ pub fn security_options(json: &str) -> Result<SecurityOptions, String> {
     let Value::Object(map) = value else {
         return Err("session options must be an object".into());
     };
-    if let Some(key) = map.keys().find(|k| !["idle_timeout", "session_timeout", "origins", "trusted_proxies"].contains(&k.as_str())) {
-        return Err(format!("`{key}` is not a session option; the keys are idle_timeout, session_timeout, origins, trusted_proxies"));
+    if let Some(key) = map.keys().find(|k| !["idle_timeout", "session_timeout", "origins", "trusted_proxies", "oidc"].contains(&k.as_str())) {
+        return Err(format!("`{key}` is not a session option; the keys are idle_timeout, session_timeout, origins, trusted_proxies, oidc"));
     }
     let seconds = |key: &str, default: u64| match map.get(key) {
         None => Ok(default as i64),
@@ -207,7 +232,8 @@ pub fn security_options(json: &str) -> Result<SecurityOptions, String> {
             .collect::<Result<_, _>>()?,
         Some(_) => return Err("`trusted_proxies` must be a list of IP addresses".into()),
     };
-    Ok(SecurityOptions { idle_secs: seconds("idle_timeout", DEFAULT_IDLE_SECS)?, absolute_secs: seconds("session_timeout", DEFAULT_SESSION_SECS)?, origins, trusted_proxies })
+    let oidc = map.get("oidc").filter(|v| !v.is_null()).map(OidcSettings::from_value).transpose()?;
+    Ok(SecurityOptions { idle_secs: seconds("idle_timeout", DEFAULT_IDLE_SECS)?, absolute_secs: seconds("session_timeout", DEFAULT_SESSION_SECS)?, origins, trusted_proxies, oidc })
 }
 
 fn is_origin(text: &str) -> bool {
@@ -252,6 +278,19 @@ mod tests {
         };
         let c = Config::load(&d, env).unwrap();
         assert_eq!((c.host.as_str(), c.port), ("10.0.0.1", 0));
+    }
+
+    #[test]
+    fn the_oidc_client_secret_comes_from_the_environment_and_is_read_again_after_json() {
+        let d = dir("oidc-secret", "monorm.toml", "[admin]\napp = \"a:b\"\n[admin.oidc]\nissuer = \"https://idp.example.com\"\nclient_id = \"admin\"\n");
+        let env = |k: &str| (k == "MONORM_ADMIN_OIDC_CLIENT_SECRET").then(|| "s3".to_string());
+        let c = Config::load(&d, env).unwrap();
+        assert_eq!(c.oidc.as_ref().unwrap().client_secret.as_deref(), Some("s3"));
+        let json = serde_json::to_string(&c).unwrap();
+        assert!(!json.contains("s3"));
+        let back: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.oidc.as_ref().unwrap().client_secret, None);
+        assert_eq!(back.with_env_secret(env).oidc.unwrap().client_secret.as_deref(), Some("s3"));
     }
 
     #[test]

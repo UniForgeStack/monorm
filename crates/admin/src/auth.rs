@@ -146,7 +146,7 @@ pub(crate) fn password_hash(value: &Value) -> Option<&str> {
     value.get("password_hash").and_then(Value::as_str)
 }
 
-fn user_key(user: &Value) -> String {
+pub(crate) fn user_key(user: &Value) -> String {
     match &user["key"] {
         Value::String(s) => s.clone(),
         other => other.to_string(),
@@ -267,7 +267,10 @@ async fn login_page(State(ctx): State<Arc<Ctx>>, session: Option<Extension<Sessi
     let sid = session.as_ref().map(|s| s.0 .0.sid.as_str()).unwrap_or("");
     let csrf = sec.csrf_token(sid);
     let max_age = session.as_ref().map(|s| sec.remaining(&s.0 .0)).unwrap_or(sec.options.idle_secs);
-    let body = json!({"ok": true, "csrf": csrf, "authenticated": session.is_some()});
+    let mut body = json!({"ok": true, "csrf": csrf, "authenticated": session.is_some()});
+    if sec.options.oidc.is_some() {
+        body["sso"] = json!(format!("{}/auth/start", ctx.site.base_path));
+    }
     with_cookies(Json(body).into_response(), &[security::csrf_cookie(&ctx.site.base_path, &csrf, max_age)])
 }
 

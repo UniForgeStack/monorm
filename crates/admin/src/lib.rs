@@ -23,6 +23,7 @@ pub mod json;
 pub mod key;
 pub mod list;
 pub mod meta;
+pub mod oidc;
 pub mod packages;
 pub mod permissions;
 pub mod relations;

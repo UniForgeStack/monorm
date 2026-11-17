@@ -21,6 +21,8 @@ use subtle::ConstantTimeEq;
 pub const SESSION_COOKIE: &str = "__Secure-monorm-session";
 pub const CSRF_COOKIE: &str = "__Secure-monorm-csrf";
 pub const CSRF_HEADER: &str = "x-csrf-token";
+/// The cookie that holds the state of one OIDC login between the redirect to the provider and its callback.
+pub const FLOW_COOKIE: &str = "__Secure-monorm-oidc";
 /// A shorter secret is refused.
 pub const MIN_SECRET: usize = 32;
 
@@ -45,11 +47,13 @@ pub struct SecurityOptions {
     pub origins: Vec<String>,
     /// Peers (exact addresses) whose `X-Forwarded-For` header the login limits believe. Empty: the socket address is the client.
     pub trusted_proxies: Vec<IpAddr>,
+    /// OIDC single sign-on. None: no SSO routes.
+    pub oidc: Option<crate::oidc::OidcSettings>,
 }
 
 impl Default for SecurityOptions {
     fn default() -> Self {
-        SecurityOptions { idle_secs: 30 * 60, absolute_secs: 12 * 60 * 60, origins: Vec::new(), trusted_proxies: Vec::new() }
+        SecurityOptions { idle_secs: 30 * 60, absolute_secs: 12 * 60 * 60, origins: Vec::new(), trusted_proxies: Vec::new(), oidc: None }
     }
 }
 
@@ -204,6 +208,22 @@ impl Security {
         (session.iat + self.options.absolute_secs - self.now()).max(0)
     }
 
+    /// The signed form of the state of one OIDC login. The caller puts its own expiry inside `flow`.
+    pub fn sign_flow(&self, flow: &Value) -> String {
+        let payload = B64.encode(serde_json::to_vec(flow).expect("a flow is JSON"));
+        let tag = B64.encode(self.mac("oidc", &payload).finalize().into_bytes());
+        format!("f1.{payload}.{tag}")
+    }
+
+    /// The state of a flow cookie when the signature is right and its `exp` (seconds since the epoch) has not passed.
+    pub fn read_flow(&self, token: &str) -> Option<Value> {
+        let rest = token.strip_prefix("f1.")?;
+        let (payload, tag) = rest.split_once('.')?;
+        self.mac("oidc", payload).verify_slice(&B64.decode(tag).ok()?).ok()?;
+        let flow: Value = serde_json::from_slice(&B64.decode(payload).ok()?).ok()?;
+        (flow["exp"].as_i64()? > self.now()).then_some(flow)
+    }
+
     /// A CSRF token for `sid` (empty for a visitor with no session).
     pub fn csrf_token(&self, sid: &str) -> String {
         let nonce = random();
@@ -247,7 +267,7 @@ fn origin_of(url: &str) -> Option<String> {
     Some(format!("{scheme}://{authority}"))
 }
 
-fn random() -> String {
+pub(crate) fn random() -> String {
     format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple())
 }
 
@@ -264,6 +284,11 @@ pub fn session_cookie(base: &str, value: &str, max_age: i64) -> String {
 /// The CSRF cookie is readable by script: the client copies it into the header.
 pub fn csrf_cookie(base: &str, value: &str, max_age: i64) -> String {
     format!("{CSRF_COOKIE}={value}; Path={base}/; Max-Age={max_age}; Secure; SameSite=Lax")
+}
+
+/// The flow cookie goes to `<base>/auth` only: the browser sends it to the SSO routes and nowhere else.
+pub fn flow_cookie(base: &str, value: &str, max_age: i64) -> String {
+    format!("{FLOW_COOKIE}={value}; Path={base}/auth; Max-Age={max_age}; HttpOnly; Secure; SameSite=Lax")
 }
 
 pub fn ended_cookies(base: &str) -> [String; 2] {

@@ -88,7 +88,12 @@ pub fn service(site: Arc<Site>, conn: Arc<dyn Executor>, options: Options) -> Ro
         let (base, prefix) = (base.clone(), prefix.clone());
         async move { ui::respond(req.method(), req.uri().path(), &base, &prefix, packages) }
     };
-    let app = health.merge(server::api_with(site, conn, options.auth.clone())).fallback(page);
+    let sso = options.auth.as_ref().and_then(|auth| crate::oidc::routes(auth, site.clone(), conn.clone()));
+    let mut app = health.merge(server::api_with(site, conn, options.auth.clone()));
+    if let Some(sso) = sso {
+        app = app.merge(sso);
+    }
+    let app = app.fallback(page);
     let app = match options.auth {
         Some(auth) => app.layer(middleware::from_fn_with_state(Arc::new(Guard { auth, login_path, site: guard_site, conn: guard_conn }), guard::guard)),
         None => app,

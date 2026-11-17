@@ -21,16 +21,20 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = "0.4"
 uuid = { version = "1", features = ["v4"] }
-tokio = { version = "1", features = ["rt", "net", "time", "sync"] }
+tokio = { version = "1", features = ["rt", "net", "time", "sync", "io-util"] }
 bigdecimal = "0.4"
 hmac = "0.13"
 sha2 = "0.11"
 subtle = "2"
 base64 = "0.22"
+ring = "0.17"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "1"
 
 [dev-dependencies]
 monorm-engine = { path = "../engine", default-features = true }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "io-util"] }
 
 [features]
 default = ["postgres", "sqlite"]
