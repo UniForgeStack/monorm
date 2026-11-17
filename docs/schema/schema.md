@@ -287,6 +287,7 @@ The first app is [`monorm-auth`](../apps/auth.md): users, roles, permissions and
 | `String @db.Text` | `text` | `str` |
 | `String @db.Uuid` | `uuid` | `uuid.UUID` (strings accepted) |
 | `DateTime`, `DateTime @db.Date` | `timestamp with time zone`, `date` | `datetime` (aware), `date` |
+| `DateTime @db.Timestamp(p)` | `timestamp(p)` (UTC wall clock) | `datetime` (aware, UTC) |
 | `DateTime @db.Time`, `DateTime @db.Timetz` | `time`, `timetz` | naive `datetime.time` |
 | `Json` | `jsonb` | dicts, lists, scalars |
 | `Decimal`, `Decimal @db.Decimal(p, s)` | `numeric`, `numeric(p, s)` | `decimal.Decimal` (exact; `int`, `float`, `"12.50"` accepted) |
@@ -303,7 +304,9 @@ zero offset, independent of the session timezone. PostgreSQL `24:00:00` raises a
 range error because the native values cannot represent it. SQLite stores time text
 (`HH:MM:SS[.ffffff]`); nested JSON uses the same time-only text.
 
-Prisma's other `@db.*` types (`@db.SmallInt`, `@db.Timestamp(3)`, `@db.Char(2)`,
+A `@db.Timestamp` column stores the UTC wall clock. Every write and filter binds the value typed `timestamp`, so the session `TimeZone` has no effect. Reads return the same UTC instant. Raw `db.fetch` parameters have no column type and stay `timestamptz`.
+
+Prisma's other `@db.*` types (`@db.SmallInt`, `@db.VarChar(n)`, `@db.Char(2)`,
 `@db.Inet`, ...) set the column's SQL type; values convert as the field type's.
 
 On Postgres, `char(n)` pads its values with spaces. Equality compares as `bpchar`, which ignores the padding.
