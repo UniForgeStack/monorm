@@ -103,7 +103,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: uv venv --python "$PYTHON" .venv && uv pip install --python .venv/bin/python pytest 'pytest-asyncio>=0.24' pydantic mypy pyright maturin
+      - run: uv venv --python "$PYTHON" .venv && uv pip install --python .venv/bin/python pytest 'pytest-asyncio>=1.1' pydantic mypy pyright maturin
       - run: echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       - run: python languages/python/packaging/stage.py
       - run: maturin develop
