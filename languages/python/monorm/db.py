@@ -48,6 +48,13 @@ _declared: dict[Database, frozenset[str] | None] = {}  # None: a hook reads the 
 _callbacks: ContextVar[dict[Database, _Callbacks]] = ContextVar("monorm_on_commit", default={})
 # True while a query hook runs: the statements it sends give no event.
 _in_hook: ContextVar[bool] = ContextVar("monorm_in_hook", default=False)
+# Set by `monorm.testing.isolated()` in rollback mode: the outer transaction holds every statement of the test.
+_isolated: ContextVar[bool] = ContextVar("monorm_isolated", default=False)
+_SIBLING_SAVEPOINTS = "concurrent nested transactions share one connection"
+_ISOLATED_HINT = (
+    "; the test runs inside isolated() (mode=\"rollback\"), which holds one transaction: "
+    "use isolated(mode=\"truncate\") for a test that runs transactions in parallel"
+)
 
 
 class _Callbacks(list[Callable[[], Any]]):
@@ -454,7 +461,12 @@ class Database:
                 raise
             return
         outer = enclosing is None
-        tx = await self._restore_cause(self._engine.begin(enclosing, isolation, timeout), enclosing)
+        try:
+            tx = await self._restore_cause(self._engine.begin(enclosing, isolation, timeout), enclosing)
+        except QueryError as e:
+            if _isolated.get() and _SIBLING_SAVEPOINTS in str(e):
+                raise QueryError(str(e) + _ISOLATED_HINT) from e
+            raise
         token = _current_tx.set({**_current_tx.get(), self._root: tx})
         callbacks = _Callbacks()
         cb_token = _callbacks.set({**_callbacks.get(), self._root: callbacks})
