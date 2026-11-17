@@ -287,13 +287,14 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     writeln!(py, "_models = define(_SCHEMA, module=__name__, required_capabilities=(\"reference-loading\",){ext_kwargs})").unwrap();
     #[cfg(not(feature = "reference-loading"))]
     writeln!(py, "_models = define(_SCHEMA, module=__name__{ext_kwargs})").unwrap();
+    for (k, module) in adapters.modules.iter().enumerate() { writeln!(py, "import {module} as _pm{k}").unwrap(); }
     for (i, u) in adapters.uses.iter().enumerate() {
         writeln!(py, "from {} import {} as _fa{i}", u.module("python"), u.runtime.install).unwrap();
         writeln!(py, "_FA{i} = []").unwrap();
         for m in &schema.models {
             let fields: Vec<String> = m.field_adapters.iter().filter(|a| a.adapter == u.id).map(|a| {
                 let name = &m.fields()[a.position].name;
-                format!("{name:?}: ({}, {})", py_literal(&a.options), if a.nullable { "True" } else { "False" })
+                format!("{name:?}: ({}, {})", adapters.with_class(py_literal(&a.options), &m.ir.name, name, true), if a.nullable { "True" } else { "False" })
             }).collect();
             if fields.is_empty() { continue; }
             writeln!(py, "_FA{i}.append(_fa{i}(_models[{:?}], {{{}}}))", m.ir.name, fields.join(", ")).unwrap();
@@ -703,6 +704,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     if !query_sets.is_empty() || !used_exts.is_empty() || !model_methods.is_empty() {
         pyi.push('\n');
     }
+    for (k, module) in adapters.modules.iter().enumerate() { writeln!(pyi, "import {module} as _pm{k}").unwrap(); }
     for u in &adapters.uses {
         for line in &u.runtime.imports { writeln!(pyi, "{line}").unwrap(); }
     }

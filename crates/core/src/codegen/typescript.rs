@@ -625,12 +625,13 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
     if !ir.types.is_empty() {
         out.push_str("const nested = (models as unknown as { readonly $types: Record<string, unknown> }).$types;\n\n");
     }
+    for (k, module) in adapters.modules.iter().enumerate() { writeln!(out, "import * as _pm{k} from {};", quote(module)).unwrap(); }
     for (i, u) in adapters.uses.iter().enumerate() {
         for line in &u.runtime.imports { writeln!(out, "{line}").unwrap(); }
         writeln!(out, "import {{ {} as _fa{i} }} from {};", u.runtime.install, quote(&u.module("typescript"))).unwrap();
         let installs: Vec<String> = schema.models.iter().filter_map(|m| {
             let fields: Vec<String> = m.field_adapters.iter().filter(|a| a.adapter == u.id).map(|a| {
-                format!("[{}, {{ options: {}, nullable: {} }}]", quote(&camel(&m.fields()[a.position].name)), a.options, a.nullable)
+                format!("[{}, {{ options: {}, nullable: {} }}]", quote(&camel(&m.fields()[a.position].name)), adapters.with_class(a.options.to_string(), &m.ir.name, &m.fields()[a.position].name, false), a.nullable)
             }).collect();
             (!fields.is_empty()).then(|| format!("_fa{i}(models[{}]!, new Map([{}]))", quote(&m.ir.name), fields.join(", ")))
         }).collect();

@@ -42,6 +42,7 @@ mod nested;
 mod update;
 use update::RowUpdate;
 
+const NULL_ONLY_USE: &str = "a field that holds opaque bytes (such as a proto field) can only be tested with IS NULL or IS NOT NULL";
 const COMPUTED_READ_ONLY_USE: &str = "computed fields cannot be filtered, ordered, aggregated, or used in expressions";
 const COMPUTED_READ_ONLY: &str = "computed fields are read-only";
 
@@ -915,6 +916,8 @@ pub struct Planner<'s> {
     allow_unnest: bool,
     /// `alias()` tags only mean something in a filter condition.
     alias_ok: bool,
+    /// Set while the operand of `IS NULL` is built: a null-only field may appear there.
+    null_ok: bool,
     target: Target,
     caps: Capabilities,
     policy_bypass: Bypass,
@@ -961,6 +964,7 @@ impl<'s> Planner<'s> {
             allow_window: false,
             allow_unnest: false,
             alias_ok: false,
+            null_ok: false,
             target,
             caps: target.caps,
             policy_bypass: Bypass::default(),
@@ -1680,7 +1684,10 @@ impl<'s> Planner<'s> {
                 }
             }
             Expr::IsNull { item, neg } => {
-                let item = self.value(item, Hint::default())?;
+                self.null_ok = matches!(item.as_ref(), Expr::Col { .. });
+                let item = self.value(item, Hint::default());
+                self.null_ok = false;
+                let item = item?;
                 if *neg {
                     item.is_not_null()
                 } else {
@@ -1860,6 +1867,7 @@ impl<'s> Planner<'s> {
                 {
                     let m = self.model(self.walk(self.root, path)?);
                     if m.field_pos(name).is_ok_and(|p| m.computed(p)) { return Err(Error::query(COMPUTED_READ_ONLY_USE)); }
+                    if !std::mem::take(&mut self.null_ok) && m.field_pos(name).is_ok_and(|p| m.null_only(p)) { return Err(Error::query(NULL_ONLY_USE)); }
                 }
                 match self.sub_ref(self.walk(self.root, path)?, name, sub)? {
                     SubRef::Column(f) => {

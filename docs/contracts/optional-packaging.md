@@ -317,6 +317,13 @@ An `AddedTrigger` (`model`, `trigger`) adds a trigger to a model of an earlier s
 `stamp_expression_records` sets `schema_contract_minor = 3` when `extension_records` is not empty, because an older engine refuses the unknown `extension_records` field of the IR as a parse error, and the stamp turns that into the version error.
 `added_triggers` needs no stamp: the IR holds the trigger in the model after the merge.
 `history` uses both.
+Schema contract 5.3 also lets a field adapter sit on a `Bytes` field, and adds `FieldAdapter.null_only` and `AdapterRuntime.resolve`.
+A `null_only` adapter marks a column that the database cannot compare or sort. The planner refuses every expression on it except `IS NULL` and `IS NOT NULL`, at build time.
+`stamp_expression_records` sets `schema_contract_minor = 3` when an adapter has `null_only`.
+`AdapterRuntime.resolve` (`option`, `setting`) makes the generator find a class: `option` names a key of `FieldAdapter.options` that holds a dotted name, and `setting` names the settings section whose `python` and `typescript` tables map a package to a module.
+The longest package that is a dotted prefix of the name gives the module. A name with no entry is an error.
+`value` and `input` write the class as `{class}`; the options that the generated code passes to the runtime gain `module` and `symbol`.
+`proto` declares 5.3.
 A `ModelView` (`model`, `source`, `root`, `row_filter`, `insert_table`) makes `model` read and write the table of `root`; `source` is the nearest parent. `row_filter` is a `field` and a list of `values`. Each value must be an enum member of `field`, or `define()` fails. The core builds the literal SQL; an extension never gives SQL text. The filter applies to root reads, joins, and update and delete targets, and `without_defaults()` does not remove it.
 A `ResultCheck` (`model`, `field`, `non_null`, `allowed`, `code`) makes the engine warn when a result row breaks the check. The warning carries `code`.
 An attribute with `view_source = true` declares the source model of a view. The DSL lowering finds views through this key, not through an attribute name.

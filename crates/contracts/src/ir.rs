@@ -267,10 +267,10 @@ impl SchemaIr {
             self.behavior.schema_contract = SCHEMA_CONTRACT;
             self.behavior.schema_contract_minor = self.behavior.schema_contract_minor.max(2);
         }
-        // Contract 5.3 holds `scoped_fields`, `ModelIr.rls`, `ModelIr.policies` and `extension_records`. An engine of 5.2 would skip the fill, the check and the policies, and refuse the records as an unknown field.
+        // Contract 5.3 holds `scoped_fields`, `ModelIr.rls`, `ModelIr.policies`, `extension_records` and `FieldAdapter.null_only`. An engine of 5.2 would skip the fill, the check and the policies, and refuse the records as an unknown field.
         let physical = self.behavior.storage.iter().flat_map(|s| &s.models);
         let secured = self.models.iter().chain(physical).any(|m| !m.rls.is_off() || !m.policies.is_empty());
-        if !self.behavior.scoped_fields.is_empty() || !self.behavior.extension_records.is_empty() || secured || !self.exempt_roles.is_empty() {
+        if !self.behavior.scoped_fields.is_empty() || !self.behavior.extension_records.is_empty() || secured || !self.exempt_roles.is_empty() || self.behavior.field_adapters.iter().any(|a| a.null_only) {
             self.behavior.schema_contract = SCHEMA_CONTRACT;
             self.behavior.schema_contract_minor = self.behavior.schema_contract_minor.max(3);
         }

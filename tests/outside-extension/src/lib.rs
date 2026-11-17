@@ -121,7 +121,7 @@ fn wrapped(ir: &mut SchemaIr) -> Result<(), String> {
     for d in declarations {
         let field = d.field.clone().ok_or_else(|| format!("@{WRAPPED} on {}: it needs a field", d.model))?;
         let prefix = d.positional.first().and_then(|v| v.as_str()).ok_or_else(|| format!("{}.{field}: the prefix must be a string", d.model))?;
-        ir.behavior.field_adapters.push(FieldAdapter { model: d.model, field, adapter: WRAPPED_ADAPTER.into(), options: serde_json::json!({"prefix": prefix}) });
+        ir.behavior.field_adapters.push(FieldAdapter { model: d.model, field, adapter: WRAPPED_ADAPTER.into(), options: serde_json::json!({"prefix": prefix}), null_only: false });
     }
     monorm::extension::validate_field_adapters(ir)
 }

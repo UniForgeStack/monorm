@@ -86,6 +86,7 @@ pub fn lower(ir: &mut SchemaIr) -> Result<(), String> {
             field: name.clone(),
             adapter: ADAPTER.into(),
             options: serde_json::json!({"storage": storage}),
+            null_only: false,
         });
     }
     ir.behavior.field_adapters.extend(contributions);

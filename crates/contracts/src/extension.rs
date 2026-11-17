@@ -243,6 +243,9 @@ pub struct FieldAdapter {
     /// Configuration for the language runtime of the adapter; the core never reads it, and the code generator writes it into the generated code unchanged.
     #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
     pub options: serde_json::Value,
+    /// The stored bytes mean nothing to the database: a query may test the field for null and select it, and no more. Schema contract 5.3.
+    #[serde(default, skip_serializing_if = "crate::ir::is_false")]
+    pub null_only: bool,
 }
 
 /// Names the host runtimes give meaning to on models and instances.
@@ -302,8 +305,11 @@ pub fn validate_field_adapters(ir: &SchemaIr) -> Result<(), String> {
             .ok_or_else(|| format!("unknown field adapter model {}", adapter.model))?;
         let field = model.fields.iter().find(|f| f.name == adapter.field)
             .ok_or_else(|| format!("{}.{}: unknown adapter field", adapter.model, adapter.field))?;
-        if field.ty != ColType::Json || field.array || field.enum_name.is_some() {
-            return Err(format!("{}.{}: field adapters require scalar Json", adapter.model, adapter.field));
+        if !matches!(field.ty, ColType::Json | ColType::Bytes) || field.array || field.enum_name.is_some() {
+            return Err(format!("{}.{}: field adapters require a scalar Json or Bytes field", adapter.model, adapter.field));
+        }
+        if adapter.null_only && field.ty != ColType::Bytes {
+            return Err(format!("{}.{}: null_only needs a Bytes field", adapter.model, adapter.field));
         }
         if !seen.insert((&adapter.model, &adapter.field)) || adapter.adapter.is_empty() {
             return Err(format!("{}.{}: duplicate/empty field adapter", adapter.model, adapter.field));
@@ -554,6 +560,20 @@ pub struct AdapterRuntime {
     /// Functions that the generated module defines as a call of `method` on each install result.
     #[serde(default)]
     pub module_functions: Vec<ModuleFunction>,
+    /// The generator finds the user's class for a field from a name in the options. `value` and `input` write it as `{class}`,
+    /// and the options that the generated code passes to the runtime gain `module` (the imported module) and `symbol` (the class name in it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolve: Option<AdapterResolve>,
+}
+
+/// Where the class of an adapter field comes from: the option that names it, and the project setting that maps its package to a module.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct AdapterResolve {
+    /// The key of `FieldAdapter.options` that holds the dotted name, for example `pkg.sub.Message`.
+    pub option: String,
+    /// The settings section of the extension. Its `<language>` table maps a package (the dotted prefix of the name) to a module.
+    pub setting: String,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -1395,10 +1415,31 @@ mod tests {
         assert!(section.query_set.is_empty() && section.source.is_empty() && section.field_adapters[0].module_functions.len() == 1);
         assert!(serde_json::from_value::<LanguageSection>(serde_json::json!({"field_adapters": [{"adapter": "a", "install": "i", "value": "X", "extra": 1}]})).is_err());
         let mut ir = adapter_ir();
-        ir.behavior.field_adapters.push(FieldAdapter { model: "Note".into(), field: "note".into(), adapter: "a.b.v1".into(), options: serde_json::Value::Null });
+        ir.behavior.field_adapters.push(FieldAdapter { model: "Note".into(), field: "note".into(), adapter: "a.b.v1".into(), options: serde_json::Value::Null, null_only: false });
         assert!(!serde_json::to_string(&ir.behavior.field_adapters).unwrap().contains("options"));
         ir.behavior.field_adapters[0].options = serde_json::json!({"prefix": "x"});
         assert!(serde_json::to_string(&ir.behavior.field_adapters).unwrap().contains("options"));
+    }
+
+    #[test]
+    fn a_null_only_adapter_needs_a_bytes_field_and_contract_5_3() {
+        let mut ir: SchemaIr = serde_json::from_value(serde_json::json!({
+            "models": [{"name": "Doc", "table": "docs", "fields": [
+                {"name": "id", "column": "id", "type": "int", "primary_key": true},
+                {"name": "msg", "column": "msg", "type": "bytes", "nullable": true},
+                {"name": "doc", "column": "doc", "type": "json"}], "relations": []}],
+            "behavior": {"field_adapters": [{"model": "Doc", "field": "msg", "adapter": "a.b.v1", "null_only": true}]},
+        })).unwrap();
+        assert!(validate_field_adapters(&ir).is_ok());
+        ir.stamp_expression_records();
+        assert_eq!((ir.behavior.schema_contract, ir.behavior.schema_contract_minor), (SCHEMA_CONTRACT, 3));
+        assert!(serde_json::to_string(&ir.behavior.field_adapters).unwrap().contains("null_only"));
+        ir.behavior.field_adapters[0].field = "doc".into();
+        assert!(validate_field_adapters(&ir).unwrap_err().contains("null_only needs a Bytes field"));
+        ir.behavior.field_adapters[0].null_only = false;
+        assert!(!serde_json::to_string(&ir.behavior.field_adapters).unwrap().contains("null_only"));
+        ir.behavior.field_adapters[0].field = "id".into();
+        assert!(validate_field_adapters(&ir).unwrap_err().contains("Json or Bytes"));
     }
 
     fn hook_ir(binding: serde_json::Value) -> SchemaIr {

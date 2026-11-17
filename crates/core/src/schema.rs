@@ -112,6 +112,11 @@ impl Model {
         self.field_adapters.iter().find(|a| self.fields()[a.position].name == name)
     }
 
+    /// True when an adapter marks the field at `position` as opaque to the database: a query may only test it for null.
+    pub fn null_only(&self, position: usize) -> bool {
+        self.field_adapters.iter().any(|a| a.position == position && a.null_only)
+    }
+
     pub fn field_pos(&self, name: &str) -> Result<usize> {
         self.field_index
             .get(name)

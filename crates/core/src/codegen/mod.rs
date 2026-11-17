@@ -93,6 +93,8 @@ pub struct Options {
     /// the extension directory in Python (`monorm_ext`), the relative specifier in TypeScript
     /// (`./monorm-ext`).
     pub ext_import: Option<String>,
+    /// The project settings: an adapter that resolves a class (`AdapterRuntime.resolve`) reads its package map here.
+    pub settings: crate::settings::Settings,
 }
 
 /// The language code of one extension: what the artifact records and the files it embeds.
@@ -282,6 +284,10 @@ pub fn reference_target_filtered(schema: &crate::schema::Schema, target: &str) -
 /// The field adapter runtimes that the schema needs, one for each adapter id, in first-use order.
 pub(super) struct Adapters<'a> {
     pub(super) uses: Vec<AdapterUse<'a>>,
+    /// The modules of the resolved classes, in first-use order; the generated code imports module `k` as `_pm{k}`.
+    pub(super) modules: Vec<String>,
+    /// Model, field and the resolved class: the index in `modules` and the class name in that module.
+    classes: Vec<(String, String, usize, String)>,
 }
 
 #[cfg(any(feature = "generate-python", feature = "generate-typescript"))]
@@ -309,6 +315,8 @@ impl<'a> Adapters<'a> {
     /// Finds the runtime entry of each adapter id in the manifests of `options`, and checks the methods of each record against its model.
     pub(super) fn resolve(options: &'a Options, ir: &'a SchemaIr, language: &str) -> Result<Self, String> {
         let mut uses: Vec<AdapterUse<'a>> = vec![];
+        let mut modules: Vec<String> = vec![];
+        let mut classes = vec![];
         for record in &ir.behavior.field_adapters {
             let found = || options.extensions.iter().filter(|e| e.members.language == language || e.members.language.is_empty())
                 .flat_map(|e| e.members.field_adapters.iter().map(move |r| (e, r))).filter(|(_, r)| r.adapter == record.adapter);
@@ -321,11 +329,39 @@ impl<'a> Adapters<'a> {
             if let Some(model) = ir.models.iter().find(|m| m.name == record.model) {
                 monorm::extension::check_adapter_methods(model, &runtime.method_names(language, &record.field))?;
             }
+            if let Some(resolve) = &runtime.resolve {
+                let (module, symbol) = options.resolve_class(record, resolve, language)?;
+                let k = modules.iter().position(|m| *m == module).unwrap_or_else(|| { modules.push(module); modules.len() - 1 });
+                classes.push((record.model.clone(), record.field.clone(), k, symbol));
+            }
             if !uses.iter().any(|u| u.id == record.adapter) {
                 uses.push(AdapterUse { id: &record.adapter, extension, runtime });
             }
         }
-        Ok(Adapters { uses })
+        Ok(Adapters { uses, modules, classes })
+    }
+
+    /// The module alias and the class name of the field, when its adapter resolves a class.
+    pub(super) fn class_of(&self, model: &str, field: &str) -> Option<(String, &str)> {
+        let (_, _, k, symbol) = self.classes.iter().find(|(m, f, _, _)| m == model && f == field)?;
+        Some((format!("_pm{k}"), symbol))
+    }
+
+    /// `literal` (an object literal of the options) with `module` and `symbol` added when the field resolves a class.
+    /// `quote_key` writes a key (Python needs `"module"`, TypeScript `module`).
+    pub(super) fn with_class(&self, literal: String, model: &str, field: &str, quote_keys: bool) -> String {
+        let Some((alias, symbol)) = self.class_of(model, field) else { return literal };
+        let (module_key, symbol_key) = if quote_keys { ("\"module\"", "\"symbol\"") } else { ("module", "symbol") };
+        let body = literal.trim_end_matches('}').trim_end();
+        let comma = if body.ends_with('{') { "" } else { "," };
+        format!("{body}{comma} {module_key}: {alias}, {symbol_key}: {symbol:?}}}")
+    }
+
+    fn expand_class(&self, template: &str, m: &Model, f: &FieldIr) -> String {
+        match self.class_of(&m.ir.name, &f.name) {
+            Some((alias, symbol)) => template.replace("{class}", &format!("{alias}.{symbol}")),
+            None => template.to_owned(),
+        }
     }
 
     pub(super) fn of(&self, id: &str) -> Option<(usize, &AdapterUse<'a>)> {
@@ -335,14 +371,43 @@ impl<'a> Adapters<'a> {
     /// The type of the field when an adapter owns it: the runtime `value`, with `none` for a nullable field.
     pub(super) fn value(&self, m: &Model, f: &FieldIr, none: &str) -> Option<String> {
         let (_, u) = self.of(&m.adapter_for(&f.name)?.adapter)?;
-        Some(nullable(&u.runtime.value, f.nullable, none))
+        Some(nullable(&self.expand_class(&u.runtime.value, m, f), f.nullable, none))
     }
 
     /// The type that create and update take for the field when an adapter owns it.
     pub(super) fn input(&self, m: &Model, f: &FieldIr, none: &str) -> Option<String> {
         let (_, u) = self.of(&m.adapter_for(&f.name)?.adapter)?;
         let t = if u.runtime.input.is_empty() { &u.runtime.value } else { &u.runtime.input };
-        Some(nullable(t, f.nullable, none))
+        Some(nullable(&self.expand_class(t, m, f), f.nullable, none))
+    }
+}
+
+#[cfg(any(feature = "generate-python", feature = "generate-typescript"))]
+impl Options {
+    /// The module and the class name of the field that an adapter record names (`AdapterRuntime.resolve`): the longest package of the setting
+    /// that is a dotted prefix of the name gives the module; the rest of the name is the class path (TypeScript joins a nested path with `_`).
+    fn resolve_class(&self, record: &monorm::extension::FieldAdapter, resolve: &monorm::extension::AdapterResolve, language: &str) -> Result<(String, String), String> {
+        let at = format!("{}.{}", record.model, record.field);
+        let name = record.options.get(&resolve.option).and_then(|v| v.as_str())
+            .ok_or_else(|| format!("{at}: the adapter option {:?} must be a string", resolve.option))?;
+        let key = format!("{}.{language}", resolve.setting);
+        let table = match self.settings.section(&resolve.setting).and_then(|s| s.get(language)) {
+            Some(serde_json::Value::Object(table)) => table,
+            Some(_) => return Err(self.settings.wrong(&key, "must be a table of strings")),
+            None => return Err(format!("{at}: {name} needs a {language} module: set `{key}`, a table that maps its package to a module")),
+        };
+        let mut best: Option<(&String, &str)> = None;
+        for (package, module) in table {
+            let Some(rest) = name.strip_prefix(package.as_str()).and_then(|r| r.strip_prefix('.')).filter(|r| !r.is_empty()) else { continue };
+            if !module.is_string() { return Err(self.settings.wrong(&format!("{key}.{package}"), "must be a string")); }
+            if best.is_none_or(|(p, _)| package.len() > p.len()) { best = Some((package, rest)); }
+        }
+        let Some((package, rest)) = best else {
+            return Err(format!("{at}: {name} has no entry in `{key}`; add the module of its package"));
+        };
+        let module = table[package].as_str().unwrap_or_default().to_owned();
+        let symbol = if language == "typescript" { rest.replace('.', "_") } else { rest.to_owned() };
+        Ok((module, symbol))
     }
 }
 
@@ -787,7 +852,7 @@ mod reference_tests {
         use crate::behavior::{FieldAdapter, SCHEMA_CONTRACT};
         let mut ir = crate::dsl::compile("model Report {\n id Int @id\n file Json?\n}\nmodel Plain {\n id Int @id\n}", None).unwrap();
         ir.behavior.schema_contract = SCHEMA_CONTRACT;
-        ir.behavior.field_adapters.push(FieldAdapter { model: "Report".into(), field: "file".into(), adapter: TEST_ADAPTER.into(), options: serde_json::json!({"storage": "reports"}) });
+        ir.behavior.field_adapters.push(FieldAdapter { model: "Report".into(), field: "file".into(), adapter: TEST_ADAPTER.into(), options: serde_json::json!({"storage": "reports"}), null_only: false });
         let schema = crate::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
         (ir, schema)
     }
@@ -805,6 +870,7 @@ mod reference_tests {
             members: vec![if python { "def {field}_url(self) -> str: ...".into() } else { "{field}Url(): string;".into() }],
             methods: vec![if python { "{field}_url".into() } else { "{field}Url".into() }],
             module_functions: vec![ModuleFunction { name: "configure_acme".into(), method: "configure".into(), stub: if python { "(registry: Reg) -> None".into() } else { "(registry: Reg) => void".into() } }],
+            resolve: None,
         };
         ExtensionCode {
             runtime_module: None,
@@ -833,13 +899,74 @@ mod reference_tests {
         assert!(ts.contains("fileUrl(): string;") && ts.contains("readonly file: Ref | null;") && ts.contains("file?: Ref | Up | null"), "{ts}");
     }
 
+    fn resolving_extension(language: &str) -> ExtensionCode {
+        let mut ext = adapter_extension(language);
+        let runtime = &mut ext.members.field_adapters[0];
+        runtime.value = "{class}".into();
+        runtime.input = "{class} | bytes".into();
+        runtime.resolve = Some(monorm::extension::AdapterResolve { option: "message".into(), setting: "acme".into() });
+        ext
+    }
+
+    fn resolving_ir(message: &str) -> (crate::ir::SchemaIr, crate::schema::Schema) {
+        let (mut ir, _) = adapter_ir();
+        ir.behavior.field_adapters[0].options = serde_json::json!({"message": message});
+        let schema = crate::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
+        (ir, schema)
+    }
+
+    fn settings_of(text: &str) -> crate::settings::Settings {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!("monorm-codegen-settings-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("monorm.toml"), text).unwrap();
+        let settings = crate::settings::Settings::load(&dir).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        settings
+    }
+
+    #[test]
+    fn an_adapter_that_resolves_a_class_imports_its_module_and_passes_module_and_symbol() {
+        let settings = settings_of("[acme.python]\n\"shop\" = \"shop_pb2\"\n\"shop.inner\" = \"inner_pb2\"\n[acme.typescript]\n\"shop\" = \"./gen/shop_pb.js\"\n");
+        let (ir, schema) = resolving_ir("shop.Order");
+        let options = Options { extensions: vec![resolving_extension("python")], settings: settings.clone(), ..Options::default() };
+        let py = python::generate_with(&ir, &schema, "report.prisma", &options).unwrap();
+        assert!(py.module.contains("import shop_pb2 as _pm0"), "{}", py.module);
+        assert!(py.module.contains("{\"file\": ({\"message\": \"shop.Order\", \"module\": _pm0, \"symbol\": \"Order\"}, True)}"), "{}", py.module);
+        assert!(py.stub.contains("import shop_pb2 as _pm0") && py.stub.contains("file: f.Json[_pm0.Order | None]"), "{}", py.stub);
+        assert!(py.stub.contains("file: NotRequired[_pm0.Order | bytes | None]"), "{}", py.stub);
+        let options = Options { extensions: vec![resolving_extension("typescript")], settings: settings.clone(), ..Options::default() };
+        let ts = typescript::generate_with(&ir, &schema, "report.prisma", "@ufstack/monorm", &options).unwrap();
+        assert!(ts.contains("import * as _pm0 from \"./gen/shop_pb.js\";"), "{ts}");
+        assert!(ts.contains("options: {\"message\":\"shop.Order\", module: _pm0, symbol: \"Order\"}"), "{ts}");
+        assert!(ts.contains("readonly file: _pm0.Order | null;"), "{ts}");
+        // The longest package wins; a nested message joins its path with `_` in TypeScript only.
+        let (ir, schema) = resolving_ir("shop.inner.Line.Part");
+        let options = Options { extensions: vec![resolving_extension("python")], settings: settings.clone(), ..Options::default() };
+        let py = python::generate_with(&ir, &schema, "report.prisma", &options).unwrap();
+        assert!(py.module.contains("import inner_pb2 as _pm0") && py.module.contains("\"symbol\": \"Line.Part\""), "{}", py.module);
+    }
+
+    #[test]
+    fn a_class_without_a_package_entry_is_an_error_that_names_the_setting() {
+        let (ir, schema) = resolving_ir("shop.Order");
+        for (language, settings) in [("python", settings_of("[acme.typescript]\n\"shop\" = \"x\"\n")), ("typescript", settings_of("[acme.python]\n\"other\" = \"x\"\n")), ("python", crate::settings::Settings::default())] {
+            let options = Options { extensions: vec![resolving_extension(language)], settings, ..Options::default() };
+            let error = if language == "python" { python::generate_with(&ir, &schema, "r", &options).err() } else { typescript::generate_with(&ir, &schema, "r", "@ufstack/monorm", &options).err() }.unwrap();
+            assert!(error.contains("Report.file") && error.contains("shop.Order") && error.contains(&format!("acme.{language}")), "{error}");
+        }
+        let options = Options { extensions: vec![resolving_extension("python")], settings: settings_of("[acme.python]\n\"shop\" = 3\n"), ..Options::default() };
+        assert!(python::generate_with(&ir, &schema, "r", &options).err().unwrap().contains("must be a string"));
+    }
+
     #[test]
     fn a_proxy_with_a_copied_adapter_record_gets_the_members_and_the_install() {
         use crate::behavior::{FieldAdapter, SCHEMA_CONTRACT};
         let mut ir = crate::dsl::compile("model Report {\n id Int @id\n file Json?\n}\nmodel ReportView {\n id Int @id\n file Json?\n}", None).unwrap();
         ir.behavior.schema_contract = SCHEMA_CONTRACT;
         for model in ["Report", "ReportView"] {
-            ir.behavior.field_adapters.push(FieldAdapter { model: model.into(), field: "file".into(), adapter: TEST_ADAPTER.into(), options: serde_json::json!({"storage": "reports"}) });
+            ir.behavior.field_adapters.push(FieldAdapter { model: model.into(), field: "file".into(), adapter: TEST_ADAPTER.into(), options: serde_json::json!({"storage": "reports"}), null_only: false });
         }
         let schema = crate::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
         let options = Options { extensions: vec![adapter_extension("python")], ..Options::default() };
@@ -878,7 +1005,7 @@ mod reference_tests {
         for (language, field) in [("python", "file_url"), ("typescript", "fileUrl")] {
             let mut ir = crate::dsl::compile(&format!("model Report {{\n id Int @id\n file Json?\n {field} Int?\n}}"), None).unwrap();
             ir.behavior.schema_contract = crate::behavior::SCHEMA_CONTRACT;
-            ir.behavior.field_adapters.push(monorm::extension::FieldAdapter { model: "Report".into(), field: "file".into(), adapter: TEST_ADAPTER.into(), options: serde_json::json!({"storage": "reports"}) });
+            ir.behavior.field_adapters.push(monorm::extension::FieldAdapter { model: "Report".into(), field: "file".into(), adapter: TEST_ADAPTER.into(), options: serde_json::json!({"storage": "reports"}), null_only: false });
             let schema = crate::schema::Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
             let options = Options { extensions: vec![adapter_extension(language)], ..Options::default() };
             let error = if language == "python" {
