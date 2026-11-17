@@ -59,7 +59,7 @@ Run these commands from the repository root.
 You need Rust, [uv](https://docs.astral.sh/uv/) and PostgreSQL for the test database.
 
 ```bash
-uv venv .venv && . .venv/bin/activate && uv pip install maturin pytest 'pytest-asyncio>=0.24' mypy pyright
+uv venv .venv && . .venv/bin/activate && uv pip install maturin pytest 'pytest-asyncio>=0.24' mypy pyright 'protobuf>=7.36.2'
 python languages/python/packaging/stage.py   # the extension libraries of this platform
 maturin develop                              # the native library and the package, in the venv
 ```

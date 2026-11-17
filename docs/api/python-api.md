@@ -38,7 +38,7 @@ Python 3.11 or newer (`select()` rows are typed with `TypeVarTuple`).
 
 ```bash
 uv venv .venv && . .venv/bin/activate
-uv pip install maturin pytest pytest-asyncio mypy pyright
+uv pip install maturin pytest pytest-asyncio mypy pyright "protobuf>=7.36.2"
 python languages/python/packaging/stage.py   # the extension libraries of this platform
 maturin develop            # the one monorm package: engine, built-in extensions, auth; --release for benchmarks
 python -m pytest           # needs Postgres; ORM_TEST_DATABASE_URL overrides the default URL
