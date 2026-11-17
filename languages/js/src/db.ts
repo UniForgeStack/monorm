@@ -50,6 +50,12 @@ const callbacks = new AsyncLocalStorage<ReadonlyMap<Database, (() => unknown)[]>
 const ended = new WeakSet<(() => unknown)[]>();
 /** Set while a query hook runs: the statements it sends give no event. */
 const inHook = new AsyncLocalStorage<true>();
+/** @internal Set by `isolated()` in rollback mode (`monorm/testing`): one outer transaction holds the test. */
+export const isolatedBlock = new AsyncLocalStorage<true>();
+const SIBLING_SAVEPOINTS = "concurrent nested transactions share one connection";
+const ISOLATED_HINT =
+  '; the test runs inside isolated() (mode "rollback"), which holds one transaction: ' +
+  'use isolated(fn, { mode: "truncate" }) for a test that runs transactions in parallel';
 
 /** The isolation levels of {@link TransactionOptions.isolation}. */
 export type Isolation = "read_committed" | "repeatable_read" | "serializable";
@@ -414,7 +420,15 @@ export class Database {
       }
     }
     const outer = enclosing === null;
-    const tx = await restoreCause(wait(() => this.engine.begin(enclosing, options.isolation ?? null, options.timeout ?? null)), enclosing);
+    let tx: NativeTransaction;
+    try {
+      tx = await restoreCause(wait(() => this.engine.begin(enclosing, options.isolation ?? null, options.timeout ?? null)), enclosing);
+    } catch (e) {
+      if (e instanceof QueryError && isolatedBlock.getStore() === true && e.message.includes(SIBLING_SAVEPOINTS)) {
+        throw Object.assign(new QueryError(e.message + ISOLATED_HINT), { cause: e });
+      }
+      throw e;
+    }
     const mine: (() => unknown)[] = [];
     const scoped = new Map(callbacks.getStore() ?? []).set(this.root, mine);
     let result: T;
@@ -578,6 +592,17 @@ export class Database {
    * extensions stay. */
   dropTables(): Promise<void> {
     return wait(() => this.engine.dropTables());
+  }
+
+  /** @internal Empties every model table and restarts identities (`isolated()` in truncate mode). */
+  truncateTables(): Promise<void> {
+    return wait(() => this.engine.truncateTables());
+  }
+
+  /** @internal The onCommit callbacks of the innermost transaction of this database, if one is open. */
+  pendingCallbacks(): { list: (() => unknown)[]; ended: boolean } | undefined {
+    const list = callbacks.getStore()?.get(this.root);
+    return list === undefined ? undefined : { list, ended: ended.has(list) };
   }
 
   /** Closes the pools of the primary and of each replica. */

@@ -42,6 +42,10 @@
       "types": "./dist/src/admin.d.ts",
       "default": "./dist/src/admin.js"
     },
+    "./testing": {
+      "types": "./dist/src/testing.d.ts",
+      "default": "./dist/src/testing.js"
+    },
     "./otel": {
       "types": "./dist/src/otel.d.ts",
       "default": "./dist/src/otel.js"
