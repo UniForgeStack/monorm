@@ -1830,6 +1830,39 @@ A custom query-set class (`--query-set`) can override `update()`, and `post.upda
 This is not a full hook: `update()` gives a lazy `Update` that runs only when awaited, so an "after" step must wrap that object.
 `update_many()`, upserts (`on_conflict`) and raw SQL do not call the override.
 
+### Isolated tests: `monorm.testing.isolated`
+
+`isolated()` gives each test its own database state.
+
+```python
+from monorm.testing import isolated, run_on_commit
+
+@isolated()                      # a decorator for an async test
+async def test_signup():
+    await User.objects.insert(name="ann")
+
+async def test_part():
+    async with isolated() as db:  # a context manager; gives the database
+        ...
+```
+
+* `isolated(db=None, mode="rollback")`. With no `db` it uses the default database; with none connected it raises `NotConnected`. Another `mode` value raises `ValueError`.
+* `rollback` (the default): the test runs in one transaction, bound to the current context, and the transaction rolls back at the end, also after an exception. A `db.transaction()` in the code under test is a savepoint, so its commit and rollback paths run. `on_commit` callbacks are dropped; `await run_on_commit()` runs the pending ones and returns their count.
+* `truncate`: no outer transaction. After the test, one statement empties every model table (`TRUNCATE ... RESTART IDENTITY CASCADE` on PostgreSQL; `DELETE` and a sequence reset on SQLite). Use it for code that needs a real commit.
+* Sibling savepoints that run in parallel (for example `asyncio.gather` over two `db.transaction()` calls) raise `QueryError` under `rollback`, and the message names `mode="truncate"`. Django has the same limit.
+* Set a scope in the test with `monorm.scope(...)`, as in app code.
+
+The plugin `monorm.testing` needs `pytest-asyncio>=1.1` (checked at import) and adds:
+
+* the fixture `monorm_db`: a test that asks for it runs isolated and gets the database;
+* the mark `@pytest.mark.monorm(mode="truncate")` (the default mode is `rollback`);
+* the ini option `monorm_autouse = true`: every async test runs isolated.
+
+```python
+# conftest.py
+pytest_plugins = ["monorm.testing"]
+```
+
 ## Model metadata and test factories
 
 The ORM has no factory library. It gives the two things a factory library needs:

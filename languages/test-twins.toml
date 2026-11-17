@@ -205,6 +205,8 @@
 "model_classes::load_and_loads_take_the_model_methods" = "add-ts: model_classes::load_and_loads_take_the_model_methods"
 "model_classes::module_lookup_goes_up_through_the_package" = "keep: The Python lookup ignores out_dir, and the kept no-import-root test proves generate_python runs the lookup."
 "model_classes::schema_outside_a_package_gives_the_top_level_module" = "keep: The Python lookup ignores out_dir, and the kept no-import-root test proves generate_python runs the lookup."
+# languages/python/tests/test_isolated.py
+"isolated::the_fixture_the_mark_and_the_ini_option" = "one-language: Python-only: the monorm_db fixture, the monorm mark and the monorm_autouse option of the monorm.testing pytest plugin"
 # languages/python/tests/test_n_plus_one.py
 "n_plus_one::a_block_that_raises_keeps_its_own_error" = "add-ts: a block that raises keeps its own error"
 "n_plus_one::a_related_query_in_a_loop_names_load" = "change: TS asserts exactly one warning but no count (a TS warn-mode scope gives no report): TS can match '8 queries' in the message, Python must assert one warning;"

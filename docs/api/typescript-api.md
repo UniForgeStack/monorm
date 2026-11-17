@@ -1228,6 +1228,30 @@ A package that changes writes and reads from outside the ORM (for example
 * `Model._meta.addRowDecoder(decode)` runs `decode(row)` on each instance that a query
   or write returns. A partial instance has only its loaded fields as own properties.
 
+### Isolated tests: `monorm/testing`
+
+`isolated()` gives each test its own database state. It works under `node --test` and `bun test`.
+
+```ts
+import { isolated, runOnCommit } from "monorm/testing";
+
+test("signup", isolated(async (t) => {   // the function form: a test function
+  await User.objects.insert({ name: "ann" });
+}));
+
+test("part", async () => {
+  await isolated(async () => {            // the awaited wrapper
+    await User.objects.insert({ name: "ann" });
+  });
+});
+```
+
+* `isolated(fn, { db?, mode? })`. Given a function, it returns a function that runs `fn` isolated, with the same arguments (so the test context `t` reaches `fn`) and the same result. The returned function is also thenable: `await isolated(fn)` runs it with no arguments. Do not `await` it where you pass it to `test()`.
+* With no `db` it uses the default database; with none connected it throws `NotConnected`. A `mode` other than the two below throws `TypeError`.
+* `"rollback"` (the default): `fn` runs in one transaction that rolls back at the end, also after an exception. A `db.transaction()` in the code under test is a savepoint. `onCommit` callbacks are dropped; `await runOnCommit()` runs the pending ones and returns their count.
+* `"truncate"`: no outer transaction; afterwards one statement empties every model table and restarts identities (`DELETE` and a sequence reset on SQLite).
+* Sibling savepoints that run in parallel (`Promise.all` over two `db.transaction()` calls) throw `QueryError` under `"rollback"`, and the message names `mode: "truncate"`.
+
 ## Model metadata and test factories
 
 The ORM has no factory library. It gives the two things a factory library needs:
