@@ -17,12 +17,15 @@ import { native } from "./native.js";
 interface Settings {
   readonly app: string;
   readonly setup: string | null;
+  readonly base_path?: string | null;
 }
 
 async function open(settings: Settings): Promise<{ admin: Admin; database: Database }> {
   const admin = (await load(settings.app, "admin.app")) as Admin;
   if (typeof admin?.serve !== "function") throw new Error(`admin.app \`${settings.app}\` is not a monorm/admin Admin`);
   if (settings.setup !== null) await (await load(settings.setup, "admin.setup") as () => unknown)();
+  // the deploy knows the gateway path: the setting wins over the option of the object
+  if (settings.base_path) admin.basePath = settings.base_path;
   let database;
   try {
     database = getDatabase();

@@ -169,6 +169,10 @@ export interface NativeAdminSite {
   isRaw(path: string): boolean;
   /** The startup warnings, for example a search field that no index serves. */
   readonly warnings: string[];
+  /** The normalized base path of the UI: the cookies are scoped to it. */
+  readonly basePath: string;
+  /** The normalized API prefix: `<basePath>/api` unless the config names one. */
+  readonly prefix: string;
   /** One in-memory request; `userJson` is the JSON of the user, or null. `dispatch` runs the host calls of a `searchWith` function. */
   request(engine: NativeEngine, method: string, path: string, userJson: string | null, trace: NativeTrace | null, dispatch: NativeHostDispatch | null, body: string | null): Promise<{ status: number; body: string }>;
   /** Like `request`, with a byte body of a content type (a multipart upload) and a byte answer (a file download). */

@@ -48,6 +48,8 @@ async def _open(config: dict[str, Any]) -> tuple[Any, Any]:
         result = _load(config["setup"], "admin.setup")()
         if inspect.isawaitable(result):
             await result
+    if config.get("base_path"):  # the deploy knows the gateway path: the setting wins over the option of the object
+        admin.base_path = config["base_path"]
     try:
         db = get_database()
     except NotConnected:

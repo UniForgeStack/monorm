@@ -111,9 +111,9 @@ for (const provider of PROVIDERS) {
   }));
 
   test(`the prefix is a config value (${provider})`, () => world(provider, async ({ site, db }) => {
-    site.prefix = "/back/office";
+    site.prefix = "/admin/back/office";
     const client = site.testClient(db, { user: SU });
-    assert.equal((await client.get("/back/office/resources/AdmAuthor")).status, 200);
+    assert.equal((await client.get("/admin/back/office/resources/AdmAuthor")).status, 200);
     assert.equal((await client.get("/admin/api/resources/AdmAuthor")).status, 404);
   }));
 

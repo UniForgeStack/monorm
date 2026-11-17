@@ -112,6 +112,23 @@ def test_the_setup_hook_connects_the_database_instead_of_the_environment(tmp_pat
     assert run_to_end(proc)[0] == 0
 
 
+def test_the_base_path_of_the_settings_file_wins_over_the_option_of_the_object(tmp_path, monkeypatch):
+    url = project(tmp_path, monkeypatch)
+    source = (tmp_path / "admin.py").read_text()
+    assert "admin = Admin()" in source
+    (tmp_path / "admin.py").write_text(source.replace("admin = Admin()", 'admin = Admin(base_path="/object")'))
+    (tmp_path / "monorm.toml").write_text('[admin]\napp = "admin:admin"\nbase_path = "/bundler/admin"\n')
+    proc = start(tmp_path, url)
+    try:
+        base = listening(proc)
+        assert get(f"{base}/bundler/admin/api/resources")[0] == 401
+        assert get(f"{base}/bundler/admin/")[0] == 200
+        assert get(f"{base}/object/")[0] != 200
+    finally:
+        proc.send_signal(signal.SIGTERM)
+    assert run_to_end(proc)[0] == 0
+
+
 def test_two_processes_run_side_by_side_on_one_database(tmp_path, monkeypatch):
     url = project(tmp_path, monkeypatch)
     first, second = start(tmp_path, url), start(tmp_path, url)

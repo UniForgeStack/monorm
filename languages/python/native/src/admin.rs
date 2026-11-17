@@ -129,6 +129,18 @@ impl AdminSite {
         self.site.warnings.clone()
     }
 
+    /// The base path of the UI, normalized: the cookies are scoped to it.
+    #[getter]
+    fn base_path(&self) -> String {
+        self.site.base_path.clone()
+    }
+
+    /// The API prefix, normalized: `<base_path>/api` unless the config names one.
+    #[getter]
+    fn prefix(&self) -> String {
+        self.site.prefix.clone()
+    }
+
     /// The labels that the permission names use: the site label and the label of each resource.
     #[getter]
     fn labels(&self) -> Vec<String> {

@@ -43,7 +43,7 @@ if TYPE_CHECKING:
 
 __all__ = ["Admin", "AdminConfigError", "AdminResponse", "AdminTestClient", "AggregateColumn", "BrandConfig", "BrandLink", "ActionDef", "ComputedColumn", "Context", "InlineDef", "ListConfig", "NamedChoice", "NamedFilter", "Reply", "ResourceConfig", "RoleSeedReport", "RouteRequest", "Stream", "SyncReport", "action", "check", "download", "inline", "input", "log", "message", "redirect", "refresh", "register", "test_client", "threaded", "url"]
 
-DEFAULT_PREFIX = "/admin/api"
+DEFAULT_BASE_PATH = "/admin"
 
 
 class AdminConfigError(ValueError):
@@ -700,8 +700,8 @@ class AdminResponse:
         return json.loads(self.text)
 
 
-_SESSION_COOKIE = "__Host-monorm-session"
-_CSRF_COOKIE = "__Host-monorm-csrf"
+_SESSION_COOKIE = "__Secure-monorm-session"
+_CSRF_COOKIE = "__Secure-monorm-csrf"
 _AUTO: Any = object()
 
 
@@ -727,7 +727,7 @@ class AdminTestClient:
         *,
         secret: str | None = None,
         settings: Mapping[str, Any] | None = None,
-        prefix: str = DEFAULT_PREFIX,
+        prefix: str | None = None,
         ip: str = "127.0.0.1",
         host: Mapping[str, Any] | None = None,
     ) -> None:
@@ -741,7 +741,7 @@ class AdminTestClient:
         self._user = None if user is None else json.dumps(user)
         self._secret = secret
         self._options = json.dumps(dict(settings or {}))
-        self._prefix = prefix
+        self._prefix = site.prefix if prefix is None else prefix
         self._router: _native.AdminRouter | None = None
         self.ip = ip
         self.cookies: dict[str, str] = {}
@@ -903,13 +903,16 @@ class Admin:
     ``statement_timeout`` is the time limit in seconds of each request's database statements (15 by default, 0 for none).
     The admin ignores tenancy: a read default that reads a ``scope`` value is off in every admin read, so staff see the rows of all tenants.
     ``storage`` is the ``monorm_file_storage.Registry`` that holds the files of the ``files`` fields of the resources.
+    ``base_path`` is the URL path of the whole admin (``/admin`` by default), for a gateway that passes the full path.
+    The API prefix is ``<base_path>/api`` unless ``prefix`` sets another one under the base path.
     """
 
     def __init__(
         self,
         registry: Registry = default_registry,
-        prefix: str = DEFAULT_PREFIX,
+        prefix: str | None = None,
         *,
+        base_path: str = DEFAULT_BASE_PATH,
         permissions: Strategy = "page",
         label: str = "admin",
         roles: Mapping[str, Sequence[str]] | None = None,
@@ -925,6 +928,7 @@ class Admin:
         self._statement_timeout = statement_timeout
         self._registry = registry
         self.prefix = prefix
+        self.base_path = base_path
         if unknown := sorted(set(brand or {}) - _BRAND_KEYS):
             raise AdminConfigError(f"unknown brand option {unknown[0]!r}")
         self._brand = dict(brand) if brand else None
@@ -1101,7 +1105,9 @@ class Admin:
 
     def _config_json(self) -> str:
         resources = [self._resource_json(name, model, config) for name, (model, config) in self._resources.items()]
-        out: dict[str, Any] = {"prefix": self.prefix, "permissions": self._strategy, "label": self._label, "resources": resources}
+        out: dict[str, Any] = {"base_path": self.base_path, "permissions": self._strategy, "label": self._label, "resources": resources}
+        if self.prefix is not None:
+            out["prefix"] = self.prefix
         if self._brand is not None:
             out["brand"] = self._brand
         if self._widgets:
@@ -1162,7 +1168,7 @@ class Admin:
         return list(self._site(self._registry).warnings)
 
     def url(self, model: type[Model], key: Any) -> str:
-        """The path of the page of one record: ``/admin/<Model>/<key>``.
+        """The path of the page of one record: ``<base_path>/<Model>/<key>``.
 
         ``key`` is the value of a single key field, a sequence of the key values in key order, or a mapping of key fields.
         Raises :class:`AdminConfigError` when ``model`` is no resource and ``ValueError`` when the key does not fit.
@@ -1222,7 +1228,7 @@ class Admin:
         from .db import resolve
 
         db = resolve(database)
-        return AdminTestClient(self._site(db._registry), db, user, secret=secret, settings=settings, prefix=self.prefix, ip=ip, host=self._host())
+        return AdminTestClient(self._site(db._registry), db, user, secret=secret, settings=settings, ip=ip, host=self._host())
 
 
 _default = Admin()

@@ -120,9 +120,9 @@ async def test_with_no_config_every_concrete_model_is_a_read_only_resource(world
 
 async def test_the_prefix_is_a_config_value(world):
     site, db, Author, Post = world
-    site.prefix = "/back/office"
+    site.prefix = "/admin/back/office"
     client = site.test_client(db, user=SU)
-    assert (await client.get("/back/office/resources/AdmAuthor")).status == 200
+    assert (await client.get("/admin/back/office/resources/AdmAuthor")).status == 200
     assert (await client.get("/admin/api/resources/AdmAuthor")).status == 404
 
 

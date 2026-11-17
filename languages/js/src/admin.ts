@@ -33,7 +33,7 @@ import { registry as defaultRegistry, type ModelClass, type Registry } from "./m
 import { Prepared } from "./query.js";
 import { call, native, wait, type NativeAdminRouter, type NativeAdminServer, type NativeAdminSite } from "./native.js";
 
-export const DEFAULT_PREFIX = "/admin/api";
+export const DEFAULT_BASE_PATH = "/admin";
 
 /** The config names an unknown field, a list column through a to-many relation, or a bad value. */
 export class AdminConfigError extends ORMError {
@@ -250,6 +250,10 @@ export interface FormSection {
 }
 
 export interface AdminOptions {
+  /** The URL path of the whole admin (`/admin` by default), for a gateway that passes the full path. The API prefix is `<basePath>/api` unless `prefix` sets another one under it. */
+  readonly basePath?: string;
+  /** The API prefix; it must sit under the base path. */
+  readonly prefix?: string;
   readonly permissions?: PermissionStrategy;
   /** The label of the permission names (`admin` by default). */
   readonly label?: string;
@@ -688,7 +692,7 @@ export class AdminResponse {
 }
 
 const AUTO = Symbol("auto");
-const CSRF_COOKIE = "__Host-monorm-csrf";
+const CSRF_COOKIE = "__Secure-monorm-csrf";
 
 export interface RequestOptions {
   /** The JSON body. */
@@ -741,13 +745,17 @@ export class AdminTestClient {
     private readonly database: Database,
     user: AdminUser | null,
     login: LoginOptions | null = null,
-    private readonly prefix: string = DEFAULT_PREFIX,
     private readonly host: Readonly<Record<string, HostFunction>> = HOST,
   ) {
     if (login !== null && user !== null) throw new TypeError("testClient takes `user` (no login) or `secret` (login), not both");
     this.#user = user === null ? null : JSON.stringify(user);
     this.#login = login;
     this.ip = login?.ip ?? "127.0.0.1";
+  }
+
+  /** The API prefix of the site: the paths of a request start with it. */
+  private get prefix(): string {
+    return this.site.prefix;
   }
 
   async request(method: string, path: string, options: RequestOptions = {}): Promise<AdminResponse> {
@@ -944,7 +952,8 @@ function checkInlinePage(name: string, d: InlineDef): void {
 
 /** The resources of one registry. */
 export class Admin {
-  prefix: string = DEFAULT_PREFIX;
+  prefix: string | undefined;
+  basePath: string;
   readonly #resources = new Map<string, { model: AnyModel; config: ResourceConfig }>();
   readonly #strategy: PermissionStrategy;
   readonly #label: string;
@@ -963,6 +972,8 @@ export class Admin {
     options: AdminOptions = {},
   ) {
     this.#storage = options.storage;
+    this.basePath = options.basePath ?? DEFAULT_BASE_PATH;
+    this.prefix = options.prefix;
     this.#strategy = options.permissions ?? "page";
     this.#label = options.label ?? "admin";
     for (const key of Object.keys(options.brand ?? {})) {
@@ -1026,7 +1037,8 @@ export class Admin {
   #configJson(registry: Registry): string {
     const resources = [...this.#resources].map(([model, { model: cls, config }]) => this.#resourceJson(model, cls, config, "", registry));
     return JSON.stringify({
-      prefix: this.prefix,
+      base_path: this.basePath,
+      ...(this.prefix === undefined ? {} : { prefix: this.prefix }),
       permissions: this.#strategy,
       label: this.#label,
       resources,
@@ -1182,7 +1194,7 @@ export class Admin {
   }
 
   /**
-   * The path of the page of one record: `/admin/<Model>/<key>`. `key` is the value of a single key field, the key values in
+   * The path of the page of one record: `<basePath>/<Model>/<key>`. `key` is the value of a single key field, the key values in
    * key order, or an object of key fields. Throws `AdminConfigError` when `model` is no resource and `Error` when the key does not fit.
    */
   url(model: AnyModel, key: RecordKey): string {
@@ -1226,7 +1238,7 @@ export class Admin {
     const { secret, settings, ip } = options;
     if (secret === undefined && (settings !== undefined || ip !== undefined)) throw new TypeError("testClient takes `settings` and `ip` only with `secret`");
     const login = secret === undefined ? null : { secret, ...(settings === undefined ? {} : { settings }), ...(ip === undefined ? {} : { ip }) };
-    return new AdminTestClient(this.#site(database.registry), database, options.user ?? null, login, this.prefix, this.#host());
+    return new AdminTestClient(this.#site(database.registry), database, options.user ?? null, login, this.#host());
   }
 
   /** @internal What `monorm admin` runs: serves this admin on the socket of `settingsJson`; `secret` is `MONORM_ADMIN_SECRET`. */

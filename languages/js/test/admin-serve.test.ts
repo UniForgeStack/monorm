@@ -95,6 +95,21 @@ test("monorm admin exits 2 without a long enough secret", async () => {
   }
 });
 
+test("the base path of the settings file wins over the option of the object", async () => {
+  const { dir, url } = project();
+  const source = readFileSync(join(dir, "admin.ts"), "utf8");
+  assert.ok(source.includes("new Admin()"));
+  writeFileSync(join(dir, "admin.ts"), source.replace("new Admin()", 'new Admin({ basePath: "/object" })'));
+  writeFileSync(join(dir, "monorm.toml"), '[admin]\napp = "./admin.ts:admin"\nbase_path = "/bundler/admin"\n');
+  const run = start(dir, url);
+  const base = await run.listening();
+  assert.equal((await get(`${base}/bundler/admin/api/resources`)).status, 401);
+  assert.equal((await get(`${base}/bundler/admin/`)).status, 200);
+  assert.notEqual((await get(`${base}/object/`)).status, 200);
+  run.child.kill("SIGTERM");
+  assert.equal(await run.ended, 0);
+});
+
 test("monorm admin names the wrong setting and the missing database", async () => {
   const { dir, url } = project();
   let run = start(dir, "");

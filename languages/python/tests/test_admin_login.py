@@ -65,9 +65,9 @@ async def test_a_login_sets_a_signed_http_only_cookie_and_writes_an_audit_row(wo
     client = site.test_client(db, secret=SECRET)
     reply = await client.login("ann", "pw")
     assert reply.status == 200, reply.text
-    session = cookie(reply, "__Host-monorm-session")
+    session = cookie(reply, "__Secure-monorm-session")
     assert session
-    for flag in ("HttpOnly", "Secure", "SameSite=Lax", "Path=/"):
+    for flag in ("HttpOnly", "Secure", "SameSite=Lax", "Path=/admin/"):
         assert flag in session
     assert "Domain" not in session
     assert reply.json()["user"]["username"] == "ann"
@@ -192,7 +192,7 @@ async def test_a_write_needs_the_csrf_token_the_origin_and_json(world):
     assert (form.status, form.json()["error"]["kind"]) == (415, "UnsupportedMediaType")
     other = site.test_client(db, secret=SECRET, ip="10.0.3.3")
     await other.login("ann", "pw")
-    swapped = await client.post(PASSWORD_URL, json=body, csrf=other.cookies["__Host-monorm-csrf"])
+    swapped = await client.post(PASSWORD_URL, json=body, csrf=other.cookies["__Secure-monorm-csrf"])
     assert swapped.status == 403, "a token is bound to its session"
 
 
@@ -230,7 +230,7 @@ async def test_two_clients_with_the_same_secret_share_a_session_and_another_secr
     assert (await foreign.get(ME)).status == 401
     tampered = site.test_client(db, secret=SECRET, ip="10.0.4.6")
     tampered.cookies.update(first.cookies)
-    tampered.cookies["__Host-monorm-session"] += "x"
+    tampered.cookies["__Secure-monorm-session"] += "x"
     assert (await tampered.get(ME)).status == 401
 
 
@@ -325,8 +325,8 @@ async def test_a_password_change_ends_the_other_sessions_and_keeps_the_changed_o
     await elsewhere.login("ann", "pw")
     done = await client.post(PASSWORD_URL, json={"old_password": "pw", "new_password": "new-password"})
     assert done.status == 200
-    assert cookie(done, "__Host-monorm-session") and done.json()["csrf"]
-    assert client.cookies["__Host-monorm-session"] != old["__Host-monorm-session"]
+    assert cookie(done, "__Secure-monorm-session") and done.json()["csrf"]
+    assert client.cookies["__Secure-monorm-session"] != old["__Secure-monorm-session"]
     client.cookies.update(old)
     assert (await client.get(ME)).status == 401, "the old cookie is dead at once"
     await client.login("ann", "new-password")

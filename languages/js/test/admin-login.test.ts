@@ -77,9 +77,9 @@ for (const provider of PROVIDERS) {
     const client = site.testClient(db, { secret: SECRET });
     const reply = await client.login("ann", "pw");
     assert.equal(reply.status, 200, reply.text);
-    const session = reply.cookie("__Host-monorm-session");
+    const session = reply.cookie("__Secure-monorm-session");
     assert.ok(session);
-    for (const flag of ["HttpOnly", "Secure", "SameSite=Lax", "Path=/"]) assert.ok(session.includes(flag), flag);
+    for (const flag of ["HttpOnly", "Secure", "SameSite=Lax", "Path=/admin/"]) assert.ok(session.includes(flag), flag);
     assert.ok(!session.includes("Domain"));
     assert.equal(reply.json().user.username, "ann");
     assert.ok(!("password" in reply.json().user));
@@ -183,7 +183,7 @@ for (const provider of PROVIDERS) {
     assert.deepEqual([form.status, kind(form)], [415, "UnsupportedMediaType"]);
     const other = site.testClient(db, { secret: SECRET, ip: "10.0.3.3" });
     await other.login("ann", "pw");
-    const swapped = await client.post(PASSWORD_URL, { json: body, csrf: other.cookies.get("__Host-monorm-csrf")! });
+    const swapped = await client.post(PASSWORD_URL, { json: body, csrf: other.cookies.get("__Secure-monorm-csrf")! });
     assert.equal(swapped.status, 403, "a token is bound to its session");
   }));
 
@@ -218,7 +218,7 @@ for (const provider of PROVIDERS) {
     assert.equal((await share(site.testClient(db, { secret: SECRET, ip: "10.0.4.4" })).get(ME)).status, 200);
     assert.equal((await share(site.testClient(db, { secret: OTHER_SECRET, ip: "10.0.4.5" })).get(ME)).status, 401);
     const tampered = share(site.testClient(db, { secret: SECRET, ip: "10.0.4.6" }));
-    tampered.cookies.set("__Host-monorm-session", `${first.cookies.get("__Host-monorm-session")}x`);
+    tampered.cookies.set("__Secure-monorm-session", `${first.cookies.get("__Secure-monorm-session")}x`);
     assert.equal((await tampered.get(ME)).status, 401);
   }));
 
@@ -305,8 +305,8 @@ for (const provider of PROVIDERS) {
     await elsewhere.login("ann", "pw");
     const done = await client.post(PASSWORD_URL, { json: { old_password: "pw", new_password: "new-password" } });
     assert.equal(done.status, 200);
-    assert.ok(done.cookie("__Host-monorm-session") && done.json().csrf);
-    assert.notEqual(client.cookies.get("__Host-monorm-session"), old.get("__Host-monorm-session"));
+    assert.ok(done.cookie("__Secure-monorm-session") && done.json().csrf);
+    assert.notEqual(client.cookies.get("__Secure-monorm-session"), old.get("__Secure-monorm-session"));
     for (const [k, v] of old) client.cookies.set(k, v);
     assert.equal((await client.get(ME)).status, 401, "the old cookie is dead at once");
     await client.login("ann", "new-password");
