@@ -43,6 +43,11 @@ pub(crate) struct RelationConfig {
     label: Option<String>,
 }
 
+/// A picker or chips named by the text column `label`, with the `choices` filter when there is one.
+pub(crate) fn picker(label: &str, choices: Option<Value>) -> RelationConfig {
+    RelationConfig { choices: choices.map(|filter| QuerysetConfig { filter: Some(filter), slots: Vec::new(), function: None }), create: false, label: Some(label.to_owned()) }
+}
+
 /// The join model of a many-to-many relation.
 #[derive(Debug, Clone)]
 pub struct Through {

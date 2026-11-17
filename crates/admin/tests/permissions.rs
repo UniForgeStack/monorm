@@ -101,7 +101,10 @@ async fn audit_rows(conn: &Arc<dyn Driver>) -> Vec<Vec<Option<String>>> {
 async fn page_names_are_read_and_manage_and_a_split_delete_adds_one() {
     let schema = schema();
     let site = site(&schema, json!({"resources": [{"model": "Note"}, {"model": "Order", "perms": ["read", "manage", "delete"]}]}));
-    assert_eq!(site.permission_names(), ["admin.access", "admin.read_note", "admin.manage_note", "admin.read_order", "admin.manage_order", "admin.delete_order"]);
+    let built_in = ["admin.read_adminlogentry", "admin.manage_adminlogentry", "admin.read_permission", "admin.manage_permission", "admin.read_role", "admin.manage_role", "admin.read_userrole", "admin.manage_userrole"];
+    let mut expected = vec!["admin.access", "admin.read_note", "admin.manage_note", "admin.read_order", "admin.manage_order", "admin.delete_order"];
+    expected.extend(built_in);
+    assert_eq!(site.permission_names(), expected, "the built-in resources of the auth and admin tables follow the strategy");
 }
 
 #[tokio::test]
@@ -111,7 +114,13 @@ async fn model_names_are_the_four_codenames_and_access_is_the_gate_only() {
     let model = site(&schema, json!({"permissions": "model", "label": "shop", "resources": resources}));
     assert_eq!(
         model.permission_names(),
-        ["admin.access", "shop.add_note", "shop.change_note", "shop.delete_note", "shop.view_note", "shop.see_cost", "shop.publish_note"]
+        [
+            "admin.access", "shop.add_note", "shop.change_note", "shop.delete_note", "shop.view_note", "shop.see_cost", "shop.publish_note",
+            "shop.add_adminlogentry", "shop.change_adminlogentry", "shop.delete_adminlogentry", "shop.view_adminlogentry",
+            "shop.add_permission", "shop.change_permission", "shop.delete_permission", "shop.view_permission",
+            "shop.add_role", "shop.change_role", "shop.delete_role", "shop.view_role",
+            "shop.add_userrole", "shop.change_userrole", "shop.delete_userrole", "shop.view_userrole",
+        ]
     );
     let access = site(&schema, json!({"permissions": "access", "resources": [{"model": "Note"}]}));
     assert_eq!(access.permission_names(), ["admin.access"]);
@@ -175,7 +184,7 @@ async fn allow_limits_a_resource_for_a_superuser_too() {
     assert_eq!(changes, json!({"reason": "allow"}));
     let (_, body) = get(&site, conn, "/admin/api/resources", json!({"is_superuser": true})).await;
     let names: Vec<&str> = body["resources"].as_array().unwrap().iter().map(|r| r["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["Order"]);
+    assert_eq!(names, ["Order", "AdminLogEntry", "Permission", "Role", "UserRole"], "Note allows create only, so a superuser sees no page of it; the built-in pages follow");
 }
 
 #[tokio::test]

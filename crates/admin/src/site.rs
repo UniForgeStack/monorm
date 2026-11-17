@@ -15,6 +15,8 @@ use monorm_engine::{Params, Result as EngineResult};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
+mod builtin;
+
 use crate::form::FormConfig;
 use crate::key;
 use crate::meta::{self, BrandConfig};
@@ -92,12 +94,12 @@ struct Config {
 #[serde(deny_unknown_fields)]
 pub(crate) struct QuerysetConfig {
     /// A prepared filter. A `param` with index `i` reads `slots[i]`.
-    filter: Option<Value>,
+    pub(crate) filter: Option<Value>,
     /// What each parameter holds at a request: `user` (the key of the staff user).
     #[serde(default)]
-    slots: Vec<String>,
+    pub(crate) slots: Vec<String>,
     /// A host function that returns `{"filter": expr}` at each request, instead of `filter`.
-    function: Option<String>,
+    pub(crate) function: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -664,7 +666,7 @@ pub struct Site {
 
 impl Site {
     pub fn build(schema: Arc<Schema>, config_json: &str) -> Result<Site, ConfigError> {
-        let config: Config = if config_json.trim().is_empty() {
+        let mut config: Config = if config_json.trim().is_empty() {
             Config::default()
         } else {
             let mut value: Value = serde_json::from_str(config_json).map_err(|e| ConfigError(format!("invalid admin config: {e}")))?;
@@ -678,7 +680,7 @@ impl Site {
         };
         // `normalize_prefix` put the prefix under the base path: its first segment below the base must be free of pages and files.
         let first = prefix.strip_prefix(base_path.as_str()).and_then(|p| p.strip_prefix('/')).and_then(|p| p.split('/').next()).unwrap_or_default();
-        if first == "-" || crate::ui::is_file_segment(first) {
+        if first == "-" || first == "auth" || crate::ui::is_file_segment(first) {
             return err(format!("prefix {prefix:?} starts with {:?} below the base path: the UI uses that path for its pages and files", format!("{base_path}/{first}")));
         }
         let strategy = match config.permissions.as_deref() {
@@ -689,17 +691,15 @@ impl Site {
         check_name("label", label)?;
         let packages = crate::packages::Packages::build(&config.packages)?;
         let global = crate::form::global(&schema, packages.clone(), &config.widgets)?;
-        let mut resources = Vec::new();
-        let mut warnings = Vec::new();
-        if config.resources.is_empty() {
-            for (idx, m) in schema.models.iter().enumerate() {
-                if concrete(m) {
-                    resources.push(resource(&schema, idx, &ResourceConfig::of(&schema.model(idx).ir.name), strategy, label, &global, &mut warnings)?);
-                }
-            }
+        let explicit = !config.resources.is_empty();
+        let mut configs: Vec<ResourceConfig> = if explicit {
+            std::mem::take(&mut config.resources)
         } else {
+            schema.models.iter().filter(|m| concrete(m)).map(|m| ResourceConfig::of(&m.ir.name)).collect()
+        };
+        if explicit {
             let mut seen = BTreeSet::new();
-            for r in &config.resources {
+            for r in &configs {
                 let idx = schema.model_idx(&r.model).map_err(|_| ConfigError(format!("unknown model {:?}", r.model)))?;
                 if !concrete(schema.model(idx)) {
                     return err(format!("{}: not a concrete model, so not a resource", r.model));
@@ -707,8 +707,14 @@ impl Site {
                 if !seen.insert(idx) {
                     return err(format!("{}: registered twice", r.model));
                 }
-                resources.push(resource(&schema, idx, r, strategy, label, &global, &mut warnings)?);
             }
+        }
+        let added = builtin::apply(&schema, &mut configs);
+        let mut resources = Vec::new();
+        let mut warnings = Vec::new();
+        for c in &configs {
+            let idx = schema.model_idx(&c.model).expect("checked above, or a model of the schema");
+            resources.push(resource(&schema, idx, c, strategy, label, &global, &mut warnings)?);
         }
         let mut groups = config.groups.clone();
         for g in &groups {
@@ -722,6 +728,9 @@ impl Site {
                 (Some(g), true) if !seen_group(&resources, g, &r.name) => groups.push(g.clone()),
                 _ => {}
             }
+            if r.name == "auth" {
+                return err(format!("{}: its page {} is the path of the single sign-on routes", r.name, key::url(&base_path, &r.name, "").trim_end_matches('/')));
+            }
             if r.name == first {
                 return err(format!("{}: its page {} is, or holds, the API prefix", r.name, key::url(&base_path, &r.name, "").trim_end_matches('/')));
             }
@@ -734,15 +743,13 @@ impl Site {
         for (r, t) in resources.iter_mut().zip(tabs) {
             r.tabs = t;
         }
-        for (r, c) in config.resources.iter().enumerate() {
+        for (r, c) in configs.iter().enumerate() {
             let built = crate::relations::build(&schema, &resources, &resources[r], &c.relations)?;
             resources[r].relations = built;
         }
-        if !config.resources.is_empty() {
-            for (i, c) in config.resources.iter().enumerate() {
-                let built = inlines_of(&schema, &resources, i, c, strategy, label, &global, &mut warnings)?;
-                resources[i].inlines = built;
-            }
+        for (i, c) in configs.iter().enumerate() {
+            let built = inlines_of(&schema, &resources, i, c, strategy, label, &global, &mut warnings)?;
+            resources[i].inlines = built;
         }
         for r in &resources {
             for f in &r.filters {
@@ -769,6 +776,13 @@ impl Site {
         };
         let mut site = Site { schema, base_path, prefix, strategy, resources, brand, groups, statement_timeout, export_idle_timeout, warnings, routes: Vec::new(), packages, meta_builds };
         site.routes = crate::routes::build(&config.routes, &site)?;
+        if let Some(role) = added.role {
+            // The picker lists the names of the site, the names of the routes included, so it waits for the routes.
+            let names = site.permission_names();
+            if let Some(relation) = site.resources[role].relations.iter_mut().find(|r| r.name == "permissions") {
+                relation.choices = Some(builtin::names_filter(&names));
+            }
+        }
         Ok(site)
     }
 
