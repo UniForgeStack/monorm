@@ -20,7 +20,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 TARGET = ROOT / "languages" / "python"
-EXTENSIONS = ("timestamps", "soft-delete", "locking", "inherit", "query-defaults", "scope", "generic", "proxy", "model-composition", "file-storage")
+EXTENSIONS = ("timestamps", "soft-delete", "locking", "inherit", "query-defaults", "scope", "history", "generic", "proxy", "model-composition", "file-storage")
 AUTH = ROOT / "apps" / "auth" / "python" / "monorm_auth"
 ADMIN = ROOT / "apps" / "admin" / "python" / "monorm_admin"
 # Platform key, library file prefix and suffix; the keys match `monorm-extension-package`.

@@ -981,6 +981,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "monorm-history"
+version = "0.1.0"
+dependencies = [
+ "monorm",
+ "monorm-core",
+ "rusqlite",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "monorm-inherit"
 version = "0.1.0"
 dependencies = [

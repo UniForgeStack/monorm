@@ -244,7 +244,7 @@ pub(crate) fn validate_sql_views(ir: &SchemaIr) -> Result<()> {
 
 impl Schema {
     /// The scope keys that this schema reads or writes: `scope.<name>` in a read default, a write assignment, a
-    /// client default or a delete rewrite guard, and the key of every scoped field. `scope()` accepts these only.
+    /// client default or a delete rewrite guard, the key of every scoped field and every published key. `scope()` accepts these only.
     pub fn scope_keys(&self) -> std::collections::BTreeSet<String> {
         fn walk(json: &serde_json::Value, out: &mut std::collections::BTreeSet<String>) {
             match json {
@@ -268,6 +268,7 @@ impl Schema {
                 if let crate::client_default::ClientDefault::Expr(e) = default { if let Ok(json) = serde_json::to_value(e) { walk(&json, &mut out); } }
             }
         }
+        out.extend(self.published_scope_keys.iter().cloned());
         out
     }
 

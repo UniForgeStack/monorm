@@ -62,6 +62,10 @@
       "types": "./extensions/soft-delete/index.d.ts",
       "default": "./extensions/soft-delete/index.js"
     },
+    "./extensions/history": {
+      "types": "./extensions/history/index.d.ts",
+      "default": "./extensions/history/index.js"
+    },
     "./extensions/locking": {
       "types": "./extensions/locking/index.d.ts",
       "default": "./extensions/locking/index.js"
@@ -132,6 +136,7 @@
         "monorm.inherit": "extensions/inherit",
         "monorm.query-defaults": "extensions/query-defaults",
         "monorm.scope": "extensions/scope",
+        "monorm.history": "extensions/history",
         "monorm.generic": "extensions/generic",
         "monorm.proxy": "extensions/proxy",
         "monorm.composition": "extensions/model-composition",

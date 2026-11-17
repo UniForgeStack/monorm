@@ -124,7 +124,7 @@ for (const provider of ["sqlite", "postgresql"]) {
 }
 
 // The runtime modules of the bundled extensions resolve by self-reference.
-for (const short of ["timestamps", "soft-delete", "locking", "inherit", "query-defaults", "scope", "generic", "proxy", "model-composition", "file-storage"]) {
+for (const short of ["timestamps", "soft-delete", "locking", "inherit", "query-defaults", "scope", "history", "generic", "proxy", "model-composition", "file-storage"]) {
   await import(`monorm/extensions/${short}`);
 }
 await import("monorm/extensions/file-storage/decoder");

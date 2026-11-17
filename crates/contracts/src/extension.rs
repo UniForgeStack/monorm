@@ -97,6 +97,12 @@ pub struct Requirements {
     /// Scope keys that an object of the database reads: the engine sends each as the setting `scope.<key>` (contract 5.3).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub published_scope_keys: Vec<crate::writes::PublishedScopeKey>,
+    /// Records that an extension pass keeps for its language code and for `pull`; the host reads none of them (contract 5.3).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extension_records: Vec<ExtensionRecord>,
+    /// Triggers for a model of an earlier schema batch, which a later batch cannot change: `merge_definition` adds each to that model and drops the list (contract 5.3).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub added_triggers: Vec<AddedTrigger>,
     /// Models that have no table: the fields of each, for the generated types.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub type_models: Vec<crate::ir::TypeModel>,
@@ -105,6 +111,25 @@ pub struct Requirements {
     pub model_overrides: BTreeMap<String, String>,
 }
 fn is_zero(n: &u32) -> bool { *n == 0 }
+
+/// One record of an extension about a model: `kind` names the record type and `data` holds it.
+/// Each batch keeps its own records, so schemas that declare the same extension merge.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ExtensionRecord {
+    pub source: String,
+    pub model: String,
+    pub kind: String,
+    pub data: serde_json::Value,
+}
+
+/// A trigger that a later batch adds to the model `model` of an earlier batch.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AddedTrigger {
+    pub model: String,
+    pub trigger: crate::ir::TriggerIr,
+}
 
 /// One hook of an extension library, bound to a model and a field.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -183,7 +208,7 @@ impl Requirements {
     pub fn is_empty(&self) -> bool {
         self.read_defaults.is_empty() && self.model_views.is_empty() && self.result_checks.is_empty() && self.declarations.is_empty() && self.packages.is_empty()
             && self.lowered_models.is_empty() && self.result_fields.is_empty() && self.storage.is_none() && self.field_storage.is_empty() && self.owner_links.is_empty() && self.field_adapters.is_empty()
-            && self.write_assignments.is_empty() && self.delete_rewrites.is_empty() && self.instance_guards.is_empty() && self.scoped_fields.is_empty() && self.published_scope_keys.is_empty() && self.type_models.is_empty() && self.model_overrides.is_empty() && self.schema_contract == 0
+            && self.write_assignments.is_empty() && self.delete_rewrites.is_empty() && self.instance_guards.is_empty() && self.scoped_fields.is_empty() && self.published_scope_keys.is_empty() && self.extension_records.is_empty() && self.added_triggers.is_empty() && self.type_models.is_empty() && self.model_overrides.is_empty() && self.schema_contract == 0
             && self.schema_contract_minor == 0 && self.hooks.is_empty() && self.extension_data.is_empty()
     }
 }
@@ -1027,7 +1052,16 @@ pub fn merge_definition(mut context: SchemaIr, mut incoming: SchemaIr) -> Result
     }
     context.models.extend(incoming.models);
     let c = &mut context.behavior;
-    let n = incoming.behavior;
+    let mut n = incoming.behavior;
+    for added in std::mem::take(&mut n.added_triggers) {
+        let mut found = false;
+        let storage = c.storage.iter_mut().flat_map(|p| p.models.iter_mut());
+        for model in context.models.iter_mut().chain(storage).filter(|m| m.name == added.model) {
+            found = true;
+            if !model.triggers.iter().any(|t| t.name == added.trigger.name) { model.push_trigger(added.trigger.clone())?; }
+        }
+        if !found { return Err(format!("a trigger is added to the unknown model {}", added.model)); }
+    }
     if c.schema_contract != 0 && n.schema_contract != 0 && c.schema_contract != n.schema_contract {
         return Err("incompatible schema contracts; rebuild dependent schemas together".into());
     }
@@ -1048,6 +1082,7 @@ pub fn merge_definition(mut context: SchemaIr, mut incoming: SchemaIr) -> Result
     c.instance_guards.extend(n.instance_guards);
     c.scoped_fields.extend(n.scoped_fields);
     c.published_scope_keys.extend(n.published_scope_keys);
+    c.extension_records.extend(n.extension_records);
     c.hooks.extend(n.hooks);
     for (id, data) in n.extension_data {
         if c.extension_data.insert(id.clone(), data).is_some() {
@@ -1467,6 +1502,32 @@ mod tests {
     }
 
     #[test]
+    fn extension_records_of_two_batches_merge() {
+        let records = |model: &str| { let mut ir = SchemaIr::default(); ir.behavior.extension_records.push(ExtensionRecord { source: "acme.lib".into(), model: model.into(), kind: "k".into(), data: serde_json::json!({"n": 1}) }); ir };
+        assert!(!records("A").behavior.is_empty());
+        let merged = merge_definition(records("A"), records("B")).unwrap();
+        assert_eq!(merged.behavior.extension_records.iter().map(|r| r.model.as_str()).collect::<Vec<_>>(), ["A", "B"]);
+        let json = serde_json::to_string(&SchemaIr::default()).unwrap();
+        assert!(!json.contains("extension_records"), "{json}");
+    }
+
+    #[test]
+    fn a_later_batch_adds_a_trigger_to_an_earlier_model() {
+        let mut first = SchemaIr::default();
+        first.models.push(serde_json::from_value(serde_json::json!({"name": "User", "table": "user", "fields": [{"name": "id", "column": "id", "type": "int", "primary_key": true}]})).unwrap());
+        let mut second = SchemaIr::default();
+        let trigger = crate::ir::TriggerIr { name: "h_events_ins".into(), ..Default::default() };
+        second.behavior.added_triggers.push(AddedTrigger { model: "User".into(), trigger });
+        assert!(!second.behavior.is_empty());
+        let merged = merge_definition(first, second).unwrap();
+        assert_eq!(merged.models[0].triggers.len(), 1);
+        assert!(merged.behavior.added_triggers.is_empty());
+        let mut third = SchemaIr::default();
+        third.behavior.added_triggers.push(AddedTrigger { model: "Nope".into(), trigger: Default::default() });
+        assert!(merge_definition(merged, third).unwrap_err().contains("unknown model Nope"));
+    }
+
+    #[test]
     fn expression_records_set_the_major_that_an_older_engine_refuses() {
         let stamped = |behavior: serde_json::Value, client_default: serde_json::Value| {
             let mut name = serde_json::json!({"name": "name", "column": "name", "type": "string"});
@@ -1484,6 +1545,8 @@ mod tests {
         let minor = |ir: &SchemaIr| ir.behavior.schema_contract_minor;
         let none = serde_json::Value::Null;
         assert_eq!(minor(&stamped(serde_json::json!({}), none.clone())), 0);
+        let records = stamped(serde_json::json!({"extension_records": [{"source": "acme.lib", "model": "User", "kind": "k", "data": {}}]}), none.clone());
+        assert_eq!((records.behavior.schema_contract, minor(&records)), (SCHEMA_CONTRACT, 3), "extension records need 5.3");
         assert_eq!(minor(&stamped(assign(serde_json::json!("now")), none.clone())), 0);
         assert_eq!(stamped(hooked(2), none.clone()).behavior.schema_contract, 0);
         // a generated field needs contract 5.1: the minor is set, and the major with it

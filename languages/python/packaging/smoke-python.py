@@ -24,6 +24,7 @@ BUILT_IN = {
     "monorm.inherit": "monorm_inherit",
     "monorm.query-defaults": "monorm_query_defaults",
     "monorm.scope": "monorm_scope",
+    "monorm.history": "monorm_history",
     "monorm.generic": "monorm_generic",
     "monorm.proxy": "monorm_proxy",
     "monorm.composition": "monorm_composition",

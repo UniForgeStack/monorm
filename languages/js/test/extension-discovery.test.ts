@@ -114,7 +114,7 @@ test("the extensions bundled with monorm need no dependency", (t) => {
   project(root, {});
   const found = resolveExtensions(join(root, "schema.prisma"));
   assert.deepEqual(Object.keys(found).sort(), [
-    "monorm.composition", "monorm.file-storage", "monorm.generic", "monorm.inherit", "monorm.locking",
+    "monorm.composition", "monorm.file-storage", "monorm.generic", "monorm.history", "monorm.inherit", "monorm.locking",
     "monorm.proxy", "monorm.query-defaults", "monorm.scope", "monorm.soft-delete", "monorm.timestamps",
   ]);
   for (const manifest of Object.values(found)) assert.ok(existsSync(manifest), manifest);

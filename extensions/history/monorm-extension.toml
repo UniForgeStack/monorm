@@ -1,0 +1,44 @@
+id = "monorm.history"
+version = "0.1.0"
+abi = "0.2"
+library = "monorm_history"
+schema_contract = "5.3"
+language_contract = 1
+languages = ["python", "typescript"]
+databases = ["postgres", "sqlite"]
+capabilities = ["schema-transformations", "physical-schema"]
+
+# Builds the event model of each tracker. Runs after the passes that lower proxies and composed models, so it sees their roots.
+[[passes]]
+id = "monorm.history.events"
+phase = "logical"
+after = ["monorm.proxy.lower", "monorm.composition.lower"]
+effects = ["models.history_events", "storage.history_events", "behavior.extension_records", "behavior.published_scope_keys"]
+
+# Adds the row triggers of each tracker to the table that it tracks.
+[[passes]]
+id = "monorm.history.triggers"
+phase = "behavior"
+after = ["monorm.timestamps.prepare"]
+effects = ["models.history_triggers", "storage.history_triggers", "behavior.added_triggers"]
+
+# `@@history.track(model: "EmailEvent", events: [update], row: old, label: "email_changed", when: "NEW.email <> OLD.email", fields: [email], exclude: [password], scope: [user])`; repeatable.
+[[attributes]]
+name = "history.track"
+target = "model"
+[attributes.arguments.model]
+kind = "string"
+[attributes.arguments.label]
+kind = "string"
+[attributes.arguments.when]
+kind = "string"
+[attributes.arguments.events]
+kind = "value"
+[attributes.arguments.row]
+kind = "value"
+[attributes.arguments.fields]
+kind = "value"
+[attributes.arguments.exclude]
+kind = "value"
+[attributes.arguments.scope]
+kind = "value"

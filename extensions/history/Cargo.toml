@@ -1,0 +1,18 @@
+[package]
+name = "monorm-history"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Built-in @@history.track compiler for ORM: row events from database triggers"
+
+[dependencies]
+monorm = { path = "../../crates/contracts" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+monorm-core = { path = "../../crates/core" }
+rusqlite = { version = "0.37", features = ["bundled"] }
+
+[lib]
+crate-type = ["cdylib", "rlib"]
