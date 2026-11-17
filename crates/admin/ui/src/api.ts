@@ -1,4 +1,5 @@
 // The admin protocol, and nothing else: the SPA reads no other server path.
+import { BASE } from "./router";
 
 export interface Column {
   label: string;
@@ -297,7 +298,7 @@ export class ApiError extends Error {
   }
 }
 
-const base = document.querySelector<HTMLMetaElement>('meta[name="monorm-admin-api"]')?.content ?? "/admin/api";
+const base = document.querySelector<HTMLMetaElement>('meta[name="monorm-admin-api"]')?.content ?? `${BASE}/api`;
 let csrf = "";
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {

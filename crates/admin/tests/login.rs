@@ -100,16 +100,22 @@ async fn rig_with(options: SecurityOptions) -> Rig {
     rig_on(driver, "sqlite", options).await
 }
 
+/// A SQLite rig whose site lives at `base`.
+async fn rig_at(base: &str) -> Rig {
+    let driver = db::connect("sqlite://:memory:", 1).await.unwrap();
+    build(driver, "sqlite", SecurityOptions::default(), true, json!({"base_path": base})).await
+}
+
 async fn rig_on(driver: Arc<dyn Driver>, provider: &str, options: SecurityOptions) -> Rig {
-    build(driver, provider, options, true).await
+    build(driver, provider, options, true, json!({})).await
 }
 
 /// A second server process over the database of `first`: same secret, own memory and clock.
 async fn sibling(first: &Rig, provider: &str) -> Rig {
-    build(first.driver.clone(), provider, SecurityOptions::default(), false).await
+    build(first.driver.clone(), provider, SecurityOptions::default(), false, json!({})).await
 }
 
-async fn build(driver: Arc<dyn Driver>, provider: &str, options: SecurityOptions, fresh: bool) -> Rig {
+async fn build(driver: Arc<dyn Driver>, provider: &str, options: SecurityOptions, fresh: bool, mut config: Value) -> Rig {
     let source = format!("datasource db {{\n  provider = \"{provider}\"\n}}\n\nmodel Note {{\n  id Int @id\n}}\n{APP}");
     let schema: Arc<Schema> = Arc::new(dsl::check(dsl::compile(&source, None).unwrap()).unwrap().1);
     if fresh {
@@ -117,7 +123,8 @@ async fn build(driver: Arc<dyn Driver>, provider: &str, options: SecurityOptions
             driver.batch(step.sql).await.unwrap();
         }
     }
-    let site = Arc::new(Site::build(schema, &json!({"resources": [{"model": "Note"}]}).to_string()).unwrap());
+    config["resources"] = json!([{"model": "Note"}]);
+    let site = Arc::new(Site::build(schema, &config.to_string()).unwrap());
     let security = Security::new(SECRET, options).unwrap();
     let host = Arc::new(Host::new());
     let mut opts = Options::new(None);
@@ -150,11 +157,13 @@ struct Client {
     router: Router,
     ip: &'static str,
     jar: BTreeMap<String, String>,
+    /// The `Path` of each cookie that a reply set: a browser sends the cookie only to this path and below. A cookie put in `jar` by hand has none.
+    paths: BTreeMap<String, String>,
 }
 
 impl Client {
     fn new(router: &Router, ip: &'static str) -> Client {
-        Client { router: router.clone(), ip, jar: BTreeMap::new() }
+        Client { router: router.clone(), ip, jar: BTreeMap::new(), paths: BTreeMap::new() }
     }
 
     async fn raw(&mut self, method: &str, uri: &str, headers: &[(&str, &str)], body: Option<Value>) -> Reply {
@@ -163,7 +172,9 @@ impl Client {
 
     async fn bytes(&mut self, method: &str, uri: &str, headers: &[(&str, &str)], body: Option<Vec<u8>>) -> Reply {
         let mut req = Request::builder().method(method).uri(uri).header("host", "localhost");
-        let cookie = self.jar.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("; ");
+        let path = uri.split('?').next().unwrap_or(uri);
+        let sent = |k: &String| self.paths.get(k).is_none_or(|scope| path.starts_with(scope.as_str()));
+        let cookie = self.jar.iter().filter(|(k, _)| sent(k)).map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("; ");
         if !cookie.is_empty() {
             req = req.header("cookie", cookie);
         }
@@ -185,8 +196,12 @@ impl Client {
             let (k, v) = pair.split_once('=').unwrap();
             if cookie.contains("Max-Age=0") || v.is_empty() {
                 self.jar.remove(k);
+                self.paths.remove(k);
             } else {
                 self.jar.insert(k.to_string(), v.to_string());
+                if let Some(scope) = cookie.split(';').find_map(|a| a.trim().strip_prefix("Path=")) {
+                    self.paths.insert(k.to_string(), scope.to_string());
+                }
             }
         }
         reply
@@ -198,7 +213,7 @@ impl Client {
 
     /// A write with the CSRF token of the jar, the Origin of this host and a JSON body.
     async fn post(&mut self, uri: &str, body: Value) -> Reply {
-        let token = self.jar.get("__Host-monorm-csrf").cloned().unwrap_or_default();
+        let token = self.jar.get("__Secure-monorm-csrf").cloned().unwrap_or_default();
         self.raw("POST", uri, &[("x-csrf-token", &token), ("origin", "http://localhost"), ("content-type", "application/json")], Some(body)).await
     }
 
@@ -208,11 +223,20 @@ impl Client {
 
     /// A login with extra request headers, for example `x-forwarded-for`.
     async fn login_with(&mut self, username: &str, password: &str, extra: &[(&str, &str)]) -> Reply {
-        self.raw("GET", LOGIN, extra, None).await;
-        let token = self.jar.get("__Host-monorm-csrf").cloned().unwrap_or_default();
+        self.login_to(LOGIN, username, password, extra).await
+    }
+
+    /// A login to the site at `base`.
+    async fn login_at(&mut self, base: &str, username: &str, password: &str) -> Reply {
+        self.login_to(&format!("{base}/api/login"), username, password, &[]).await
+    }
+
+    async fn login_to(&mut self, url: &str, username: &str, password: &str, extra: &[(&str, &str)]) -> Reply {
+        self.raw("GET", url, extra, None).await;
+        let token = self.jar.get("__Secure-monorm-csrf").cloned().unwrap_or_default();
         let mut headers = vec![("x-csrf-token", token.as_str()), ("origin", "http://localhost"), ("content-type", "application/json")];
         headers.extend_from_slice(extra);
-        self.raw("POST", LOGIN, &headers, Some(json!({"username": username, "password": password}))).await
+        self.raw("POST", url, &headers, Some(json!({"username": username, "password": password}))).await
     }
 }
 
@@ -227,12 +251,12 @@ async fn a_login_sets_a_signed_http_only_cookie_and_the_user_is_filtered() {
     let mut c = Client::new(&rig.router, "10.0.0.1");
     let reply = c.login("ann", "pw").await;
     assert_eq!(reply.status, 200, "{:?}", reply.body);
-    let session = reply.cookie("__Host-monorm-session").expect("a session cookie");
-    for flag in ["HttpOnly", "Secure", "SameSite=Lax", "Path=/"] {
+    let session = reply.cookie("__Secure-monorm-session").expect("a session cookie");
+    for flag in ["HttpOnly", "Secure", "SameSite=Lax", "Path=/admin/;"] {
         assert!(session.contains(flag), "{flag} in {session}");
     }
-    assert!(!session.contains("Domain"), "a __Host- cookie has no Domain: {session}");
-    assert!(reply.cookie("__Host-monorm-csrf").is_some());
+    assert!(!session.contains("Domain"), "a __Secure- cookie has no Domain: {session}");
+    assert!(reply.cookie("__Secure-monorm-csrf").is_some());
     assert_eq!(reply.body["user"]["username"], "ann");
     assert!(reply.body["user"].get("password").is_none(), "only the allow-listed fields are kept");
     let me = c.get("/admin/api/me").await;
@@ -249,7 +273,7 @@ async fn a_wrong_password_and_an_unknown_user_give_the_same_401_and_a_failed_log
     let unknown = c.login("zed", "nope").await;
     assert_eq!((wrong.status, unknown.status), (401, 401));
     assert_eq!(wrong.body, unknown.body);
-    assert!(wrong.cookie("__Host-monorm-session").is_none());
+    assert!(wrong.cookie("__Secure-monorm-session").is_none());
     let rows = audit(&rig).await;
     assert_eq!(rows.iter().map(|r| r[1].as_str()).collect::<Vec<_>>(), ["login_failed", "login_failed"]);
     assert_eq!(rows[1][0], "", "a failed login names no user key: the typed text is not an account");
@@ -384,7 +408,7 @@ async fn a_write_needs_the_csrf_token_the_origin_and_json() {
     let rig = rig().await;
     let mut c = Client::new(&rig.router, "10.0.0.1");
     c.login("ann", "pw").await;
-    let token = c.jar["__Host-monorm-csrf"].clone();
+    let token = c.jar["__Secure-monorm-csrf"].clone();
     let body = || Some(json!({"old_password": "pw", "new_password": "pw"}));
     let url = "/admin/api/password";
     let json_type = ("content-type", "application/json");
@@ -400,13 +424,13 @@ async fn a_write_needs_the_csrf_token_the_origin_and_json() {
     assert_eq!(foreign.status, 403);
     let referer = c.raw("POST", url, &[("x-csrf-token", &token), ("referer", "http://localhost/admin/x?y=1"), json_type], body()).await;
     assert_eq!(referer.status, 200, "a matching Referer replaces the Origin");
-    let token = c.jar["__Host-monorm-csrf"].clone(); // the password change issued a new session, so a new token
+    let token = c.jar["__Secure-monorm-csrf"].clone(); // the password change issued a new session, so a new token
     let form = c.raw("POST", url, &[("x-csrf-token", &token), ok_origin, ("content-type", "application/x-www-form-urlencoded")], body()).await;
     assert_eq!((form.status, form.body["error"]["kind"].as_str()), (415, Some("UnsupportedMediaType")));
     let other_session = {
         let mut d = Client::new(&rig.router, "10.0.0.2");
         d.login("ann", "pw").await;
-        d.jar["__Host-monorm-csrf"].clone()
+        d.jar["__Secure-monorm-csrf"].clone()
     };
     let swapped = c.raw("POST", url, &[("x-csrf-token", &other_session), ok_origin, json_type], body()).await;
     assert_eq!(swapped.status, 403, "a token is bound to its session (the cookie differs from the header)");
@@ -421,7 +445,7 @@ async fn a_multipart_upload_needs_the_session_the_csrf_token_and_the_origin() {
     let mut c = Client::new(&rig.router, "10.0.0.1");
     assert_eq!(c.bytes("POST", url, &[kind], body()).await.status, 401, "no session");
     assert_eq!(c.login("ann", "pw").await.status, 200);
-    let token = c.jar["__Host-monorm-csrf"].clone();
+    let token = c.jar["__Secure-monorm-csrf"].clone();
     let origin = ("origin", "http://localhost");
     let no_token = c.bytes("POST", url, &[origin, kind], body()).await;
     assert_eq!((no_token.status, no_token.body["error"]["kind"].as_str()), (403, Some("BadCsrfToken")));
@@ -443,7 +467,7 @@ async fn a_configured_origin_is_accepted_and_the_login_post_needs_csrf_too() {
     let rig = rig_with(SecurityOptions { origins: vec!["https://admin.example.com".into()], ..Default::default() }).await;
     let mut c = Client::new(&rig.router, "10.0.0.1");
     c.get(LOGIN).await;
-    let token = c.jar["__Host-monorm-csrf"].clone();
+    let token = c.jar["__Secure-monorm-csrf"].clone();
     let body = Some(json!({"username": "ann", "password": "pw"}));
     let bare = c.raw("POST", LOGIN, &[("origin", "http://localhost"), ("content-type", "application/json")], body.clone()).await;
     assert_eq!(bare.status, 403, "no CSRF header on the login");
@@ -484,14 +508,14 @@ async fn two_servers_with_the_same_secret_accept_one_session_and_a_tampered_cook
     let other = Security::new(b"another-secret-another-secret-123", SecurityOptions::default()).unwrap();
     let session = other.new_session(json!({"key": 1}), String::new());
     let mut forged = Client::new(&a.router, "10.0.0.1");
-    forged.jar.insert("__Host-monorm-session".into(), other.sign_session(&session));
+    forged.jar.insert("__Secure-monorm-session".into(), other.sign_session(&session));
     assert_eq!(forged.get("/admin/api/me").await.status, 401, "a cookie signed with another secret");
 
-    let token = c.jar["__Host-monorm-session"].clone();
+    let token = c.jar["__Secure-monorm-session"].clone();
     let mut parts: Vec<String> = token.split('.').map(str::to_string).collect();
     parts[1].insert(0, 'A');
     let mut tampered = Client::new(&a.router, "10.0.0.1");
-    tampered.jar.insert("__Host-monorm-session".into(), parts.join("."));
+    tampered.jar.insert("__Secure-monorm-session".into(), parts.join("."));
     assert_eq!(tampered.get("/admin/api/me").await.status, 401);
 }
 
@@ -537,7 +561,7 @@ async fn a_renewal_reads_the_user_again_and_a_live_session_goes_on() {
     rig.security.advance(61);
     let renewed = c.get("/admin/api/me").await;
     assert_eq!(renewed.status, 200);
-    assert!(renewed.cookie("__Host-monorm-session").is_some(), "a renewal sets the new cookie");
+    assert!(renewed.cookie("__Secure-monorm-session").is_some(), "a renewal sets the new cookie");
     assert_eq!(rig.host.user_calls.load(Ordering::SeqCst), 1);
     assert_eq!(c.get("/admin/api/me").await.status, 200);
     assert_eq!(rig.host.user_calls.load(Ordering::SeqCst), 1, "one check per renewal, not per request");
@@ -695,9 +719,9 @@ async fn a_password_change_ends_the_old_cookie_and_keeps_the_changed_session() {
     elsewhere.login("ann", "pw").await;
     let done = c.post("/admin/api/password", json!({"old_password": "pw", "new_password": "new-password"})).await;
     assert_eq!(done.status, 200);
-    assert!(done.cookie("__Host-monorm-session").is_some() && done.cookie("__Host-monorm-csrf").is_some(), "the session is issued again");
+    assert!(done.cookie("__Secure-monorm-session").is_some() && done.cookie("__Secure-monorm-csrf").is_some(), "the session is issued again");
     assert!(done.body["csrf"].is_string());
-    assert_ne!(old["__Host-monorm-session"], c.jar["__Host-monorm-session"]);
+    assert_ne!(old["__Secure-monorm-session"], c.jar["__Secure-monorm-session"]);
     assert_eq!(count_revocations(&rig).await, 1, "the old session id is revoked");
     let mut copy = Client::new(&rig.router, "10.0.0.1");
     copy.jar = old;
@@ -757,4 +781,47 @@ async fn login_and_failed_login_rows_are_written_on_postgres() {
     let revoked = rig.driver.query_text("SELECT COUNT(*) FROM adminsessionrevocation".into()).await.unwrap();
     assert_eq!(revoked[0][0].as_deref(), Some("1"));
     rig.driver.batch("DROP TABLE adminlogentry; DROP TABLE adminsessionrevocation; DROP TABLE userpreference; DROP TABLE note".into()).await.unwrap();
+}
+
+/// Two admins on one host: the cookie of one never authenticates or ends the other. Each site has its own jar here because both use the same cookie names; a browser keeps them apart by `Path`.
+#[tokio::test]
+async fn two_sites_on_one_host_keep_their_own_cookies_by_path() {
+    let (a, b) = (rig_at("/a/admin").await, rig_at("/b/admin").await);
+    let (mut in_a, mut in_b) = (Client::new(&a.router, "10.0.0.1"), Client::new(&b.router, "10.0.0.1"));
+    let reply = in_a.raw("GET", "/a/admin/api/login", &[], None).await;
+    assert_eq!(reply.cookies().len(), 1, "the login page sets the CSRF cookie only");
+    let csrf = reply.cookie("__Secure-monorm-csrf").unwrap();
+    assert_eq!(csrf, format!("__Secure-monorm-csrf={}; Path=/a/admin/; Max-Age=1800; Secure; SameSite=Lax", in_a.jar["__Secure-monorm-csrf"]));
+    let login = in_a.login_at("/a/admin", "ann", "pw").await;
+    assert_eq!(login.status, 200, "{:?}", login.body);
+    let session = login.cookie("__Secure-monorm-session").unwrap();
+    assert!(session.contains("; Path=/a/admin/; ") && session.contains("; HttpOnly; Secure; SameSite=Lax"), "{session}");
+    assert_eq!(in_a.get("/a/admin/api/me").await.status, 200);
+    assert_eq!(in_b.get("/b/admin/api/me").await.status, 401, "a login to A does not sign in B");
+    // The browser sends the cookies of A to paths under /a/admin/ only.
+    let mut moved = Client::new(&b.router, "10.0.0.1");
+    (moved.jar, moved.paths) = (in_a.jar.clone(), in_a.paths.clone());
+    assert_eq!(moved.get("/b/admin/api/me").await.status, 401, "the cookie of A is not sent to /b/admin");
+    assert_eq!(in_b.login_at("/b/admin", "ann", "pw").await.status, 200);
+    let out = in_b.post("/b/admin/api/logout", json!({})).await;
+    assert_eq!(out.status, 200);
+    assert_eq!(out.cookies().len(), 2);
+    assert!(out.cookies().iter().all(|k| k.contains("; Path=/b/admin/;") && k.contains("Max-Age=0")), "{:?}", out.cookies());
+    assert_eq!((in_a.get("/a/admin/api/me").await.status, in_b.get("/b/admin/api/me").await.status), (200, 401), "a logout of B leaves A signed in");
+}
+
+#[tokio::test]
+async fn a_site_at_its_own_base_serves_only_there_and_ignores_the_old_host_cookies() {
+    let rig = rig_at("/bundler/admin").await;
+    let mut c = Client::new(&rig.router, "10.0.0.1");
+    assert_eq!(c.login_at("/bundler/admin", "ann", "pw").await.status, 200);
+    assert_eq!(c.get("/bundler/admin/api/me").await.status, 200);
+    for outside in ["/admin/api/me", "/bundler/adminx/api/me", "/bundler/api/me"] {
+        assert_ne!(c.get(outside).await.status, 200, "{outside}");
+    }
+    assert_eq!(c.get("/healthz").await.status, 200, "the probes stay at the root");
+    assert_eq!(c.get("/readyz").await.status, 200);
+    let mut stale = Client::new(&rig.router, "10.0.0.1");
+    stale.jar.insert("__Host-monorm-session".into(), c.jar["__Secure-monorm-session"].clone());
+    assert_eq!(stale.get("/bundler/admin/api/me").await.status, 401, "a __Host- cookie of an older release is not a session");
 }

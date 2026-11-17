@@ -20,7 +20,6 @@ use crate::key;
 use crate::meta::{self, BrandConfig};
 use crate::permissions::{Op, Strategy};
 
-pub const DEFAULT_PREFIX: &str = "/admin/api";
 pub const DEFAULT_PAGE_SIZE: usize = 25;
 pub const MAX_PAGE_SIZE: usize = 200;
 /// A count stops here: the list shows `10,000+`.
@@ -57,7 +56,9 @@ pub(crate) fn err<T>(message: String) -> Result<T, ConfigError> {
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct Config {
-    /// The path prefix of every route.
+    /// The path under which the UI and the API live, `/admin` by default.
+    base_path: Option<String>,
+    /// The path prefix of every API route: `<base_path>/api` by default, and always under `base_path`.
     prefix: Option<String>,
     /// `page` (default), `model` or `access`.
     permissions: Option<String>,
@@ -638,6 +639,9 @@ pub struct Link {
 
 pub struct Site {
     pub schema: Arc<Schema>,
+    /// The path of the UI, without a trailing `/`. The cookies are scoped to `<base_path>/`.
+    pub base_path: String,
+    /// The path of the API, under `base_path`.
     pub prefix: String,
     pub strategy: Strategy,
     pub resources: Vec<Resource>,
@@ -667,7 +671,16 @@ impl Site {
             merge_inline_pages(&mut value)?;
             serde_json::from_value(value).map_err(|e| ConfigError(format!("invalid admin config: {e}")))?
         };
-        let prefix = normalize_prefix(config.prefix.as_deref().unwrap_or(DEFAULT_PREFIX))?;
+        let base_path = normalize_base(config.base_path.as_deref().unwrap_or(key::DEFAULT_BASE))?;
+        let prefix = match config.prefix.as_deref() {
+            None => format!("{base_path}/api"),
+            Some(text) => normalize_prefix(text, &base_path)?,
+        };
+        // `normalize_prefix` put the prefix under the base path: its first segment below the base must be free of pages and files.
+        let first = prefix.strip_prefix(base_path.as_str()).and_then(|p| p.strip_prefix('/')).and_then(|p| p.split('/').next()).unwrap_or_default();
+        if first == "-" || crate::ui::is_file_segment(first) {
+            return err(format!("prefix {prefix:?} starts with {:?} below the base path: the UI uses that path for its pages and files", format!("{base_path}/{first}")));
+        }
         let strategy = match config.permissions.as_deref() {
             None => Strategy::Page,
             Some(text) => Strategy::parse(text).ok_or_else(|| ConfigError(format!("permissions {text:?} is not \"page\", \"model\" or \"access\"")))?,
@@ -697,9 +710,6 @@ impl Site {
                 resources.push(resource(&schema, idx, r, strategy, label, &global, &mut warnings)?);
             }
         }
-        if prefix == key::UI_BASE && !crate::ui::FILES.is_empty() {
-            return err(format!("prefix {prefix:?} is the path of the UI: every {prefix}/... path would be an API path and the pages would not load"));
-        }
         let mut groups = config.groups.clone();
         for g in &groups {
             if g.trim().is_empty() || groups.iter().filter(|o| *o == g).count() > 1 {
@@ -712,8 +722,8 @@ impl Site {
                 (Some(g), true) if !seen_group(&resources, g, &r.name) => groups.push(g.clone()),
                 _ => {}
             }
-            if Some(r.name.as_str()) == prefix.strip_prefix(key::UI_BASE).and_then(|p| p.strip_prefix('/')) {
-                return err(format!("{}: its page {} is the API prefix", r.name, key::url(&r.name, "").trim_end_matches('/')));
+            if r.name == first {
+                return err(format!("{}: its page {} is, or holds, the API prefix", r.name, key::url(&base_path, &r.name, "").trim_end_matches('/')));
             }
         }
         let links: Vec<Vec<Link>> = resources.iter().map(|r| links_of(&schema, &resources, r)).collect();
@@ -757,7 +767,7 @@ impl Site {
             0 => None,
             ms => Some(Duration::from_millis(ms)),
         };
-        let mut site = Site { schema, prefix, strategy, resources, brand, groups, statement_timeout, export_idle_timeout, warnings, routes: Vec::new(), packages, meta_builds };
+        let mut site = Site { schema, base_path, prefix, strategy, resources, brand, groups, statement_timeout, export_idle_timeout, warnings, routes: Vec::new(), packages, meta_builds };
         site.routes = crate::routes::build(&config.routes, &site)?;
         Ok(site)
     }
@@ -789,7 +799,7 @@ impl Site {
     /// The detail URL of a record (see `key::url_of`). The error text names the resource or the key.
     pub fn url(&self, resource: &str, key: &Value) -> Result<String, String> {
         let resource = self.resource(resource).ok_or_else(|| format!("{resource} is not an admin resource"))?;
-        crate::key::url_of(resource, key)
+        crate::key::url_of(&self.base_path, resource, key)
     }
 
     /// Whether a request path (with the site prefix) leads to a route that takes or gives bytes: a file, an export or a custom route.
@@ -1018,10 +1028,35 @@ fn tabs_of(schema: &Schema, resources: &[Resource], i: usize) -> Result<Vec<Tab>
     Ok(out)
 }
 
-fn normalize_prefix(prefix: &str) -> Result<String, ConfigError> {
+fn normalize_prefix(prefix: &str, base: &str) -> Result<String, ConfigError> {
     let trimmed = prefix.trim_end_matches('/');
     if !trimmed.is_empty() && !trimmed.starts_with('/') {
         return err(format!("prefix {prefix:?} must start with /"));
+    }
+    if trimmed == base {
+        return err(format!("prefix {prefix:?} is the path of the UI: every {base}/... path would be an API path and the pages would not load"));
+    }
+    // The session cookie has `Path=<base>/`: a browser sends it to no route outside the base path.
+    if !trimmed.strip_prefix(base).is_some_and(|rest| rest.starts_with('/')) {
+        return err(format!("prefix {prefix:?} must sit under the base path {base:?}: the session cookie goes only to paths under it"));
+    }
+    Ok(trimmed.to_owned())
+}
+
+/// The base path: one leading `/`, no trailing `/`, plain segments. The text goes into a `Set-Cookie` header, a JSON import map and HTML.
+pub fn normalize_base(base: &str) -> Result<String, ConfigError> {
+    let trimmed = base.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return err(format!("base_path {base:?} is empty: name a path such as \"/admin\" (the health routes keep the root)"));
+    }
+    if !trimmed.starts_with('/') {
+        return err(format!("base_path {base:?} must start with /"));
+    }
+    if let Some(bad) = trimmed.chars().find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '.' | '_' | '~'))) {
+        return err(format!("base_path {base:?} holds {bad:?}: use letters, digits and - . _ ~ between slashes"));
+    }
+    if trimmed[1..].split('/').any(|s| s.is_empty() || s == "." || s == "..") {
+        return err(format!("base_path {base:?} has an empty or dot segment"));
     }
     Ok(trimmed.to_owned())
 }

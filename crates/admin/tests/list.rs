@@ -130,8 +130,8 @@ async fn with_no_config_every_concrete_model_is_a_resource() {
 #[tokio::test]
 async fn the_prefix_is_a_config_value() {
     let conn = database().await;
-    let site = site(json!({"prefix": "/staff/", "resources": [{"model": "Author"}]}));
-    assert_eq!(get(&site, conn.clone(), "/staff/resources/Author").await.0, 200);
+    let site = site(json!({"prefix": "/admin/staff/", "resources": [{"model": "Author"}]}));
+    assert_eq!(get(&site, conn.clone(), "/admin/staff/resources/Author").await.0, 200);
     assert_eq!(get(&site, conn, "/admin/api/resources/Author").await.0, 404);
 }
 

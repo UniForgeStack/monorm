@@ -91,7 +91,7 @@ pub async fn guard(State(g): State<Arc<Guard>>, mut req: Request, next: Next) ->
         return next.run(req).await;
     }
     // The page and its files hold no data: the API calls of the page need the session.
-    if matches!(*req.method(), Method::GET | Method::HEAD) && crate::ui::is_ui(path, &g.site.prefix) {
+    if matches!(*req.method(), Method::GET | Method::HEAD) && crate::ui::is_ui(path, &g.site.base_path, &g.site.prefix) {
         return next.run(req).await;
     }
     let sec = &g.auth.security;
@@ -124,7 +124,7 @@ pub async fn guard(State(g): State<Arc<Guard>>, mut req: Request, next: Next) ->
                     renewed = true;
                 }
                 Ok(Renewal::Ended) if path == g.login_path => session = None,
-                Ok(Renewal::Ended) => return with_cookies(reject(StatusCode::UNAUTHORIZED, "Unauthorized", "sign in").into_response(), &security::ended_cookies()),
+                Ok(Renewal::Ended) => return with_cookies(reject(StatusCode::UNAUTHORIZED, "Unauthorized", "sign in").into_response(), &security::ended_cookies(&g.site.base_path)),
                 Err(response) => return response,
             }
         }
@@ -136,7 +136,7 @@ pub async fn guard(State(g): State<Arc<Guard>>, mut req: Request, next: Next) ->
     let mut response = next.run(req).await;
     if let (true, Some(s)) = (renewed, &session) {
         if !sets_session(&response) {
-            let cookie = security::session_cookie(&sec.sign_session(s), sec.remaining(s));
+            let cookie = security::session_cookie(&g.site.base_path, &sec.sign_session(s), sec.remaining(s));
             if let Ok(v) = header::HeaderValue::from_str(&cookie) {
                 response.headers_mut().append(header::SET_COOKIE, v);
             }

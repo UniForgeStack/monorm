@@ -167,7 +167,7 @@ fn session_response(ctx: &Ctx, session: Session) -> Response {
     let sec = &ctx.auth.security;
     let csrf = sec.csrf_token(&session.sid);
     let max_age = sec.remaining(&session);
-    let cookies = [security::session_cookie(&sec.sign_session(&session), max_age), security::csrf_cookie(&csrf, max_age)];
+    let cookies = [security::session_cookie(&ctx.site.base_path, &sec.sign_session(&session), max_age), security::csrf_cookie(&ctx.site.base_path, &csrf, max_age)];
     with_cookies(Json(json!({"ok": true, "user": session.user, "csrf": csrf})).into_response(), &cookies)
 }
 
@@ -268,7 +268,7 @@ async fn login_page(State(ctx): State<Arc<Ctx>>, session: Option<Extension<Sessi
     let csrf = sec.csrf_token(sid);
     let max_age = session.as_ref().map(|s| sec.remaining(&s.0 .0)).unwrap_or(sec.options.idle_secs);
     let body = json!({"ok": true, "csrf": csrf, "authenticated": session.is_some()});
-    with_cookies(Json(body).into_response(), &[security::csrf_cookie(&csrf, max_age)])
+    with_cookies(Json(body).into_response(), &[security::csrf_cookie(&ctx.site.base_path, &csrf, max_age)])
 }
 
 async fn login(State(ctx): State<Arc<Ctx>>, req: Request) -> Response {
@@ -344,13 +344,13 @@ async fn logout(State(ctx): State<Arc<Ctx>>, Extension(session): Extension<Sessi
     if let Err(r) = end_session(&ctx, &session.0).await {
         return r;
     }
-    with_cookies(Json(json!({"ok": true})).into_response(), &security::ended_cookies())
+    with_cookies(Json(json!({"ok": true})).into_response(), &security::ended_cookies(&ctx.site.base_path))
 }
 
 async fn me(State(ctx): State<Arc<Ctx>>, Extension(session): Extension<SessionInfo>, Extension(user): Extension<User>) -> Response {
     let sec = &ctx.auth.security;
     let csrf = sec.csrf_token(&session.0.sid);
-    let cookie = security::csrf_cookie(&csrf, sec.remaining(&session.0));
+    let cookie = security::csrf_cookie(&ctx.site.base_path, &csrf, sec.remaining(&session.0));
     with_cookies(Json(json!({"ok": true, "user": user.0, "csrf": csrf})).into_response(), &[cookie])
 }
 

@@ -1,9 +1,9 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
-// The page lives under /admin: asset URLs start with it.
+// Asset URLs are relative: the server writes the base path of the site before each one when it serves the index.
 export default defineConfig({
-  base: "/admin/",
+  base: "./",
   plugins: [react()],
   build: { outDir: "dist", emptyOutDir: true, target: "es2022", cssCodeSplit: false, assetsInlineLimit: 0 },
 });

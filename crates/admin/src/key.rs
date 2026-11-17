@@ -1,4 +1,4 @@
-//! The key of a record in a URL: `/admin/<resource>/<key>`.
+//! The key of a record in a URL: `<base>/<resource>/<key>`, `<base>` being the base path of the site (`/admin` by default).
 //!
 //! A composite key is its percent-encoded fields in key order, joined with `,` (a `,` in a value is `%2C`).
 //! The list, the detail route and `admin.url` share this rule, and only this file knows it.
@@ -6,8 +6,8 @@
 use monorm_core::ir::ColType;
 use serde_json::{json, Value};
 
-/// The path of the SPA under which the pages live. The API prefix is a separate setting.
-pub const UI_BASE: &str = "/admin";
+/// The default base path: the path of the SPA under which the pages live. The API prefix is a separate setting.
+pub const DEFAULT_BASE: &str = "/admin";
 
 fn text(v: &Value) -> String {
     match v {
@@ -71,14 +71,14 @@ pub fn decode(types: &[ColType], raw: &str) -> Result<Vec<Value>, String> {
     Ok(out)
 }
 
-/// The page of a record: `/admin/<resource>/<key>`.
-pub fn url(resource: &str, key: &str) -> String {
-    format!("{UI_BASE}/{resource}/{key}")
+/// The page of a record: `<base>/<resource>/<key>`.
+pub fn url(base: &str, resource: &str, key: &str) -> String {
+    format!("{base}/{resource}/{key}")
 }
 
 /// The detail URL of one record from app code. `key` is a scalar (one key field), a list in key order,
 /// or an object of `{field: value}`. A wrong shape or a value of the wrong type is an error.
-pub fn url_of(resource: &crate::site::Resource, key: &Value) -> Result<String, String> {
+pub fn url_of(base: &str, resource: &crate::site::Resource, key: &Value) -> Result<String, String> {
     let fields: Vec<&str> = resource.key_columns.iter().map(|c| c.field.as_str()).collect();
     let wrong = |why: &str| format!("{}: the key takes {} ({why})", resource.name, fields.join(", "));
     let values: Vec<Value> = match key {
@@ -108,5 +108,5 @@ pub fn url_of(resource: &crate::site::Resource, key: &Value) -> Result<String, S
     for (v, ty) in decoded.iter().zip(&types) {
         crate::json::bind(*ty, v).map_err(|_| wrong(&format!("{v} is not a {ty:?} that a page URL can name")))?;
     }
-    Ok(url(&resource.name, &segment))
+    Ok(url(base, &resource.name, &segment))
 }

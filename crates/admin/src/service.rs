@@ -82,11 +82,11 @@ pub fn service(site: Arc<Site>, conn: Arc<dyn Executor>, options: Options) -> Ro
         .with_state((conn.clone(), options.draining.clone()));
     let login_path = format!("{}/login", site.prefix);
     let (guard_site, guard_conn) = (site.clone(), conn.clone());
-    let prefix = site.prefix.clone();
+    let (base, prefix) = (site.base_path.clone(), site.prefix.clone());
     let packages = !site.packages.is_empty();
     let page = move |req: Request| {
-        let prefix = prefix.clone();
-        async move { ui::respond(req.method(), req.uri().path(), &prefix, packages) }
+        let (base, prefix) = (base.clone(), prefix.clone());
+        async move { ui::respond(req.method(), req.uri().path(), &base, &prefix, packages) }
     };
     let app = health.merge(server::api_with(site, conn, options.auth.clone())).fallback(page);
     let app = match options.auth {

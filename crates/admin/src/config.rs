@@ -39,9 +39,12 @@ pub struct Config {
     pub origins: Vec<String>,
     #[serde(default)]
     pub trusted_proxies: Vec<String>,
+    /// The base path of the UI, normalized; `None` keeps the one that the admin object names (`/admin` by default).
+    #[serde(default)]
+    pub base_path: Option<String>,
 }
 
-const KEYS: [&str; 10] = ["app", "setup", "host", "port", "timeout", "db_settings", "idle_timeout", "session_timeout", "origins", "trusted_proxies"];
+const KEYS: [&str; 11] = ["app", "setup", "host", "port", "timeout", "db_settings", "idle_timeout", "session_timeout", "origins", "trusted_proxies", "base_path"];
 
 impl Config {
     /// Reads the settings of the project in `dir`. `env` reads one environment variable.
@@ -137,7 +140,8 @@ impl Config {
         };
         let idle_timeout_secs = seconds("idle_timeout", DEFAULT_IDLE_SECS)?;
         let session_timeout_secs = seconds("session_timeout", DEFAULT_SESSION_SECS)?;
-        Ok(Config { app, setup: text("setup")?, host, port, timeout_ms, db_settings, idle_timeout_secs, session_timeout_secs, origins, trusted_proxies })
+        let base_path = text("base_path")?.map(|b| crate::site::normalize_base(&b).map_err(|e| format!("{place}`admin.base_path`: {e}"))).transpose()?;
+        Ok(Config { app, setup: text("setup")?, host, port, timeout_ms, db_settings, idle_timeout_secs, session_timeout_secs, origins, trusted_proxies, base_path })
     }
 
     /// The session signing and limits. `secret` is the value of `MONORM_ADMIN_SECRET`.
@@ -300,6 +304,18 @@ mod tests {
         let c = Config::load(&dir("session-all", "monorm.toml", text), no_env).unwrap();
         assert_eq!((c.idle_timeout_secs, c.session_timeout_secs), (60, 3600));
         assert_eq!(c.origins, ["https://admin.example.com"]);
+    }
+
+    #[test]
+    fn base_path_is_read_normalized_and_checked() {
+        let c = Config::load(&dir("base-none", "monorm.toml", "[admin]\napp = \"a:b\"\n"), no_env).unwrap();
+        assert_eq!(c.base_path, None);
+        let c = Config::load(&dir("base-set", "monorm.toml", "[admin]\napp = \"a:b\"\nbase_path = \"/bundler/admin/\"\n"), no_env).unwrap();
+        assert_eq!(c.base_path.as_deref(), Some("/bundler/admin"));
+        for (text, needle) in [("base_path = \"admin\"", "must start with /"), ("base_path = \"/\"", "is empty"), ("base_path = \"/a b\"", "use letters, digits"), ("base_path = 3", "must be a string")] {
+            let e = Config::load(&dir("base-bad", "monorm.toml", &format!("[admin]\napp = \"a:b\"\n{text}\n")), no_env).unwrap_err();
+            assert!(e.contains("`admin.base_path`") && e.contains(needle), "{e}");
+        }
     }
 
     #[test]

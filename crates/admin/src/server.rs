@@ -61,7 +61,7 @@ pub fn api_with(site: Arc<Site>, conn: Arc<dyn Executor>, auth: Option<AuthConfi
     if let Some(extra) = extra {
         routes = routes.merge(extra);
     }
-    if prefix.is_empty() { routes } else { Router::new().nest(&prefix, routes) }
+    Router::new().nest(&prefix, routes)
 }
 
 pub fn router(site: Arc<Site>, conn: Arc<dyn Executor>) -> Router {

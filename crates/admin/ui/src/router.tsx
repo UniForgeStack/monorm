@@ -1,6 +1,7 @@
 import { useSyncExternalStore, type AnchorHTMLAttributes, type MouseEvent } from "react";
 
-export const BASE = "/admin";
+/** The base path of this admin: the server writes it into the index page, so no path is fixed in the build. */
+export const BASE = document.querySelector<HTMLMetaElement>('meta[name="monorm-admin-base"]')?.content ?? "/admin";
 
 const listeners = new Set<() => void>();
 const subscribe = (fn: () => void) => {
@@ -12,7 +13,7 @@ const subscribe = (fn: () => void) => {
   };
 };
 
-/** The path below /admin, as the browser holds it (still percent-encoded). */
+/** The path of the page, as the browser holds it (still percent-encoded). */
 export function usePath(): string {
   return useSyncExternalStore(subscribe, () => window.location.pathname);
 }
@@ -37,7 +38,7 @@ export type Route =
   | { page: "new"; resource: string }
   | { page: "edit"; resource: string; key: string };
 
-/** `/admin/-/login`, `/admin/-/password`, `/admin/<resource>`, `/admin/<resource>/<key>`, `/admin/<resource>/<key>/edit` and `/admin/<resource>/-/new`: `-` is no resource name and no key. */
+/** `<base>/-/login`, `<base>/-/password`, `<base>/<resource>`, `<base>/<resource>/<key>`, `<base>/<resource>/<key>/edit` and `<base>/<resource>/-/new`: `-` is no resource name and no key. */
 export function parse(pathname: string): Route {
   const rest = pathname.startsWith(BASE) ? pathname.slice(BASE.length) : pathname;
   const parts = rest.split("/").filter((p) => p !== "");

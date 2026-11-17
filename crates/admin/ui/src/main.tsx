@@ -10,7 +10,7 @@ import { ApiError } from "./api";
 import { LOGIN_URL, navigate } from "./router";
 import "./styles.css";
 
-// The one React of the page: the import map of a site with packages points `import "react"` at the modules of /admin/shared, which read this.
+// The one React of the page: the import map of a site with packages points `import "react"` at the modules of <base>/shared, which read this.
 (globalThis as Record<string, unknown>).__monormAdmin = { React, ReactDOM, ReactDOMClient, jsxRuntime };
 
 const client = new QueryClient({

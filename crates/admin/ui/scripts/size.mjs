@@ -6,7 +6,7 @@ import { join } from "node:path";
 const dist = new URL("../dist/", import.meta.url).pathname;
 const html = readFileSync(join(dist, "index.html"), "utf8");
 const files = ["index.html"];
-for (const m of html.matchAll(/(?:src|href)="\/admin\/(assets\/[^"]+)"/g)) files.push(m[1]);
+for (const m of html.matchAll(/(?:src|href)="\.\/(assets\/[^"]+)"/g)) files.push(m[1]);
 let raw = 0;
 let gz = 0;
 for (const f of files) {

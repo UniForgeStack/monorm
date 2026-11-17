@@ -161,7 +161,7 @@ fn key_encode_and_decode_round_trip() {
     assert_eq!(key::decode(&types, &raw).unwrap(), [json!(7), json!("a,b%c/ü")]);
     assert!(key::decode(&types, "7").is_err());
     assert!(key::decode(&types, "x,y").is_err());
-    assert_eq!(key::url("user", "7"), "/admin/user/7");
+    assert_eq!(key::url("/admin", "user", "7"), "/admin/user/7");
 }
 
 #[tokio::test]
@@ -457,4 +457,73 @@ async fn the_import_map_and_its_csp_hash_appear_only_on_a_site_with_packages() {
     assert!(!body.contains("importmap"));
     assert!(!headers["content-security-policy"].to_str().unwrap().contains("sha256-"));
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn a_site_at_its_own_base_path_serves_the_page_assets_and_import_map_there() {
+    let dir = package_dir("base");
+    let mut config = with_package(&dir, 1);
+    config["base_path"] = json!("/bundler/admin/");
+    let site = site(config);
+    assert_eq!((site.base_path.as_str(), site.prefix.as_str()), ("/bundler/admin", "/bundler/admin/api"));
+    assert_eq!(site.url("Author", &json!(7)).unwrap(), "/bundler/admin/Author/7");
+    let router = served(site, database().await);
+    for path in ["/bundler/admin", "/bundler/admin/", "/bundler/admin/Comment/1", "/bundler/admin/-/login"] {
+        let (status, headers, body) = fetch(&router, "GET", path).await;
+        assert_eq!(status, 200, "{path}");
+        assert!(body.contains("content=\"/bundler/admin\""), "the base in the page: {body}");
+        assert!(body.contains("content=\"/bundler/admin/api\""), "{body}");
+        assert!(body.contains("src=\"/bundler/admin/assets/") && !body.contains("=\"./") && !body.contains("=\"/admin"), "absolute assets, so a deep link loads them: {body}");
+        let map = body.split("<script type=\"importmap\">").nth(1).and_then(|s| s.split("</script>").next()).expect("an import map");
+        assert!(map.contains("/bundler/admin/shared/react.js") && !map.contains("\"/admin/"), "{map}");
+        let hash = {
+            use base64::Engine;
+            use sha2::Digest;
+            base64::engine::general_purpose::STANDARD.encode(sha2::Sha256::digest(map.as_bytes()))
+        };
+        assert!(headers["content-security-policy"].to_str().unwrap().contains(&format!("'sha256-{hash}'")), "the hash follows the map of this base");
+    }
+    let (_, _, body) = fetch(&router, "GET", "/bundler/admin").await;
+    let script = body.split("src=\"").nth(1).and_then(|s| s.split('"').next()).unwrap();
+    assert_eq!(fetch(&router, "GET", script).await.0, 200, "{script}");
+    assert_eq!(fetch(&router, "GET", "/bundler/admin/shared/react.js").await.0, 200);
+    for outside in ["/admin", "/admin/Comment", "/admin/shared/react.js", "/bundler/adminx", "/bundler/api/resources", "/bundler"] {
+        assert_eq!(fetch(&router, "GET", outside).await.0, 404, "{outside}");
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_bad_base_path_or_a_prefix_outside_it_is_a_build_error() {
+    let r = json!([{"model": "Author"}]);
+    let with = |extra: Value| {
+        let mut config = json!({"resources": r});
+        config.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        build_error(config)
+    };
+    assert!(with(json!({"base_path": ""})).contains("base_path"));
+    assert!(with(json!({"base_path": "/"})).contains("base_path"));
+    assert!(with(json!({"base_path": "admin"})).contains("must start with /"));
+    assert!(with(json!({"base_path": "/a b"})).contains("use letters, digits"));
+    assert!(with(json!({"base_path": "/a\"b"})).contains("use letters, digits"));
+    assert!(with(json!({"base_path": "/a//b"})).contains("empty or dot segment"));
+    assert!(with(json!({"base_path": "/a/../b"})).contains("empty or dot segment"));
+    assert!(with(json!({"base_path": "/bundler/admin", "prefix": "/bundler/admin"})).contains("path of the UI"));
+    assert!(with(json!({"base_path": "/bundler/admin", "prefix": "/api"})).contains("must sit under the base path"));
+    assert!(with(json!({"base_path": "/bundler/admin", "prefix": "/bundler/administrator"})).contains("must sit under the base path"));
+    assert!(with(json!({"base_path": "/bundler/admin", "prefix": "/bundler/admin/Author"})).contains("API prefix"));
+    assert!(with(json!({"base_path": "/bundler/admin", "prefix": "/bundler/admin/Author/v1"})).contains("API prefix"));
+    for taken in ["assets", "shared", "index.html", "-", "-/login"] {
+        let error = with(json!({"base_path": "/bundler/admin", "prefix": format!("/bundler/admin/{taken}")}));
+        assert!(error.contains("for its pages and files"), "{taken}: {error}");
+    }
+}
+
+#[test]
+fn a_base_path_is_normalized_and_a_deeper_prefix_is_kept() {
+    for (given, base) in [("/bundler/admin/", "/bundler/admin"), ("/a-b_c.d~e", "/a-b_c.d~e"), ("/x", "/x")] {
+        assert_eq!(site(json!({"base_path": given, "resources": [{"model": "Author"}]})).base_path, base);
+    }
+    let kept = site(json!({"base_path": "/bundler/admin", "prefix": "/bundler/admin/v1/", "resources": [{"model": "Author"}]}));
+    assert_eq!(kept.prefix, "/bundler/admin/v1");
 }

@@ -17,8 +17,9 @@ use serde_json::Value;
 use sha2::Sha256;
 use subtle::ConstantTimeEq;
 
-pub const SESSION_COOKIE: &str = "__Host-monorm-session";
-pub const CSRF_COOKIE: &str = "__Host-monorm-csrf";
+// `__Secure-`, not `__Host-`: a `__Host-` cookie must have `Path=/`, and then every admin on the host would share it.
+pub const SESSION_COOKIE: &str = "__Secure-monorm-session";
+pub const CSRF_COOKIE: &str = "__Secure-monorm-csrf";
 pub const CSRF_HEADER: &str = "x-csrf-token";
 /// A shorter secret is refused.
 pub const MIN_SECRET: usize = 32;
@@ -255,17 +256,18 @@ pub fn cookie_value<'a>(header: &'a str, name: &str) -> Option<&'a str> {
     header.split(';').filter_map(|p| p.trim().split_once('=')).find(|(k, _)| *k == name).map(|(_, v)| v)
 }
 
-pub fn session_cookie(value: &str, max_age: i64) -> String {
-    format!("{SESSION_COOKIE}={value}; Path=/; Max-Age={max_age}; HttpOnly; Secure; SameSite=Lax")
+/// `base` is the base path of the site: the cookie goes to `<base>/` and below, so two admins on one host keep their own.
+pub fn session_cookie(base: &str, value: &str, max_age: i64) -> String {
+    format!("{SESSION_COOKIE}={value}; Path={base}/; Max-Age={max_age}; HttpOnly; Secure; SameSite=Lax")
 }
 
 /// The CSRF cookie is readable by script: the client copies it into the header.
-pub fn csrf_cookie(value: &str, max_age: i64) -> String {
-    format!("{CSRF_COOKIE}={value}; Path=/; Max-Age={max_age}; Secure; SameSite=Lax")
+pub fn csrf_cookie(base: &str, value: &str, max_age: i64) -> String {
+    format!("{CSRF_COOKIE}={value}; Path={base}/; Max-Age={max_age}; Secure; SameSite=Lax")
 }
 
-pub fn ended_cookies() -> [String; 2] {
-    [session_cookie("", 0), csrf_cookie("", 0)]
+pub fn ended_cookies(base: &str) -> [String; 2] {
+    [session_cookie(base, "", 0), csrf_cookie(base, "", 0)]
 }
 
 /// Attempts per key in a time window, in memory (one process).
@@ -461,10 +463,13 @@ mod tests {
 
     #[test]
     fn cookies_are_read_by_name() {
-        assert_eq!(cookie_value("a=1; __Host-monorm-csrf=x.y; b=2", CSRF_COOKIE), Some("x.y"));
+        assert_eq!(cookie_value("a=1; __Secure-monorm-csrf=x.y; b=2", CSRF_COOKIE), Some("x.y"));
+        assert_eq!(cookie_value("a=1; __Host-monorm-csrf=x.y", CSRF_COOKIE), None, "an old cookie is ignored");
         assert_eq!(cookie_value("a=1", CSRF_COOKIE), None);
-        let c = session_cookie("v", 5);
+        let c = session_cookie("/a/admin", "v", 5);
+        assert!(c.starts_with("__Secure-monorm-session=v; Path=/a/admin/;"), "{c}");
         assert!(c.contains("HttpOnly") && c.contains("Secure") && c.contains("SameSite=Lax"));
-        assert!(!csrf_cookie("v", 5).contains("HttpOnly"));
+        assert_eq!(csrf_cookie("/a/admin", "v", 5), "__Secure-monorm-csrf=v; Path=/a/admin/; Max-Age=5; Secure; SameSite=Lax");
+        assert!(ended_cookies("/b/admin").iter().all(|c| c.contains("Path=/b/admin/;") && c.contains("Max-Age=0")));
     }
 }
