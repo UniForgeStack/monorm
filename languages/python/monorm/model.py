@@ -873,6 +873,7 @@ _PYTHON_TYPES: dict[str, type] = {
     "uuid": uuid.UUID,
     "json": object,
     "decimal": decimal.Decimal,
+    "bytes": bytes,
 }
 _RELATION_KINDS: tuple[tuple[type, str], ...] = (
     (ManyToMany, "many_to_many"),

@@ -120,7 +120,7 @@ pub(crate) fn widget(c: &Column) -> &'static str {
         ColType::Date => "date",
         ColType::Text => "textarea",
         ColType::Json => "json",
-        ColType::String | ColType::Uuid => "text",
+        ColType::String | ColType::Uuid | ColType::Bytes => "text",
     }
 }
 

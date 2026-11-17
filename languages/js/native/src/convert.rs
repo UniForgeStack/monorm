@@ -55,6 +55,7 @@ enum Kind {
     Array,
     Date,
     Decimal,
+    Bytes,
     Object,
     Other,
 }
@@ -71,6 +72,7 @@ impl Kind {
             Kind::Array => "an array",
             Kind::Date => "a Date",
             Kind::Decimal => "a Decimal",
+            Kind::Bytes => "a Uint8Array",
             Kind::Object => "an object",
             Kind::Other => "a function or symbol",
         }
@@ -100,6 +102,8 @@ impl Conv {
                     Kind::Array
                 } else if self.js.is_date(v)? {
                     Kind::Date
+                } else if self.js.uint8array(v)?.is_some() {
+                    Kind::Bytes
                 } else if matches!(self.decimal, Some(d) if self.js.instance_of(v, d)?) {
                     Kind::Decimal
                 } else {
@@ -243,6 +247,10 @@ impl Conv {
                 }
                 _ => return Err(self.expected("a UUID string", v)),
             },
+            ColType::Bytes => match kind {
+                Kind::Bytes => Value::Bytes(Some(self.js.uint8array(v).map_err(raw)?.unwrap_or_default())),
+                _ => return Err(self.expected("a Uint8Array", v)),
+            },
             ColType::Json => Value::Json(Some(Box::new(self.json(v)?))),
             ColType::Decimal => Value::BigDecimal(Some(Box::new(self.decimal(v, kind)?))),
         })
@@ -264,6 +272,7 @@ impl Conv {
             Kind::String => Value::String(Some(self.js.string(v).map_err(raw)?)),
             Kind::Date => Value::ChronoDateTimeWithTimeZone(Some(self.datetime_micros(v)?.fixed_offset())),
             Kind::Decimal => Value::BigDecimal(Some(Box::new(self.decimal(v, kind)?))),
+            Kind::Bytes => Value::Bytes(Some(self.js.uint8array(v).map_err(raw)?.unwrap_or_default())),
             Kind::Array | Kind::Object => Value::Json(Some(Box::new(self.json(v)?))),
             Kind::Null | Kind::Undefined | Kind::Other => {
                 return Err(Error::value(format!("unsupported parameter: {}", kind.name())))
@@ -304,6 +313,7 @@ impl Conv {
                     None => Ok(text),
                 }
             }
+            Cell::Bytes(b) => js.uint8array_from(&b),
             Cell::Array(items) => {
                 let arr = js.array(items.len())?;
                 for (i, item) in items.into_iter().enumerate() {

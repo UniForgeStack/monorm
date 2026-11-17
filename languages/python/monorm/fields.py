@@ -193,6 +193,12 @@ class Json(Field[T]):
     type_name = "json"
 
 
+class Bytes(Field[T]):
+    """``bytea`` (SQLite ``BLOB``). Values are ``bytes``; ``bytearray`` and ``memoryview`` are accepted as input."""
+
+    type_name = "bytes"
+
+
 R = TypeVar("R")
 
 
@@ -259,7 +265,7 @@ class Enum(Field[T]):
 
 # IR column type -> descriptor class, for models built from a compiled schema.
 BY_TYPE: dict[str, type[Field[Any]]] = {
-    c.type_name: c for c in (BigInt, Integer, Float, Boolean, String, Text, DateTime, Date, Time, Uuid, Json, Decimal)
+    c.type_name: c for c in (BigInt, Integer, Float, Boolean, String, Text, DateTime, Date, Time, Uuid, Json, Decimal, Bytes)
 }
 
 

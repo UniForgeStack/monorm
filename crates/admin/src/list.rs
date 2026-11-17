@@ -445,7 +445,7 @@ fn filter_bind(schema: &Schema, ty: ValueType, text: &str) -> Result<Bind, Strin
         ColType::Time => Bind::ChronoTime(Some(chrono::NaiveTime::parse_from_str(t, "%H:%M:%S%.f").map_err(|_| parse_error(text, "a time (07:08:09)"))?)),
         ColType::Date => Bind::ChronoDate(Some(chrono::NaiveDate::parse_from_str(t, "%Y-%m-%d").map_err(|_| parse_error(text, "a date (2026-01-31)"))?)),
         ColType::Uuid => Bind::Uuid(Some(t.parse().map_err(|_| parse_error(text, "a UUID"))?)),
-        ColType::Json | ColType::Decimal => return Err(format!("a filter does not take a {:?} field", ty.ty)),
+        ColType::Json | ColType::Decimal | ColType::Bytes => return Err(format!("a filter does not take a {:?} field", ty.ty)),
     })
 }
 

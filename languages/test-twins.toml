@@ -12,6 +12,9 @@
 "languages/python/tests/test_sql_view_typing.py" = "Python type test: mypy and pyright; the twin is the tsc test in sql-view-typing.test.ts"
 
 [python-only.ids]
+# languages/python/tests/test_bytes.py
+"bytes::a_string_bytea_field_is_still_a_bytea_column_and_warns" = "one-language: checks the deprecation warning of the Python schema loader; the warning comes from the Rust loader and Python reports it through `warnings`; JavaScript has no such channel"
+"bytes::bytearray_and_memoryview_are_accepted_and_read_back_as_bytes" = "one-language: bytearray and memoryview have no JavaScript counterpart; a Uint8Array is the one binary type"
 # languages/python/tests/test_scope_rls.py
 "scope_rls::audit_names_a_missing_role_and_a_leftover_hand_written_policy" = "one-language: Python-only: runs `python -m monorm audit`, the Rust command both hosts share; crates/cli reaches the same code"
 "scope_rls::audit_names_a_dropped_policy_and_a_forced_flag_that_is_off" = "one-language: Python-only: runs `python -m monorm audit`, the Rust command both hosts share; crates/cli reaches the same code"
@@ -299,8 +302,10 @@
 "proxy_members::pyright" = "one-language: Python type test: pyright over the generated proxy models; the TypeScript twin is the tsc test in proxy-members.test.ts"
 # languages/python/tests/test_pull.py
 "pull::a_database_made_by_the_orm_pulls_back_without_differences" = "move-to-engine: crates/engine/tests/pull.rs::a_database_made_by_the_orm_pulls_back_without_differences"
+"pull::a_sqlite_blob_pulls_as_bytes_without_drift" = "one-language: Python-only: runs `python -m monorm pull` on SQLite, the Rust command both hosts share"
 "pull::add_identity_refuses_a_column_that_owns_a_sequence_but_defaults_to_another" = "move-to-engine: crates/engine/tests/pull.rs::add_identity_refuses_a_column_that_owns_a_sequence_but_defaults_to_another"
 "pull::an_older_migrations_table_gets_the_baseline_column" = "move-to-engine: crates/engine/tests/pull.rs::an_older_migrations_table_gets_the_baseline_column"
+"pull::bytea_pulls_as_bytes_without_drift" = "one-language: Python-only: runs `python -m monorm pull` on PostgreSQL, the Rust command both hosts share"
 "pull::comments_cannot_escape_the_shadow" = "move-to-engine: crates/engine/tests/pull.rs::comments_cannot_escape_the_shadow"
 "pull::drift_after_an_enum_value_recreates_the_columns" = "move-to-engine: crates/engine/tests/pull.rs::drift_after_an_enum_value_recreates_the_columns"
 "pull::owned_serials_pull_as_identity_and_shared_sequences_stay_defaults" = "change: TS adds the baseline and pg_attribute checks, Python adds differences == [];"

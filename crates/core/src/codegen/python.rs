@@ -48,6 +48,7 @@ fn field_class(f: &FieldIr) -> &'static str {
         ColType::Uuid => "Uuid",
         ColType::Json => "Json",
         ColType::Decimal => "Decimal",
+        ColType::Bytes => "Bytes",
     }
 }
 
@@ -78,6 +79,7 @@ fn element_type(f: &FieldIr) -> String {
         ColType::Uuid => "UUID",
         ColType::Json => "Any",
         ColType::Decimal => "Decimal",
+        ColType::Bytes => "bytes",
     }
     .to_owned()
 }

@@ -216,7 +216,7 @@ impl RawRows for RawSqliteRows {
             SqlValue::Integer(v) => Cell::BigInt(*v),
             SqlValue::Real(v) => Cell::Float(*v),
             SqlValue::Text(v) => Cell::Text(v),
-            SqlValue::Blob(_) => return Err(DbError::other(format!("column {:?} is a blob, which fetch() does not read", self.columns[col]))),
+            SqlValue::Blob(v) => Cell::Bytes(v.clone()),
         })
     }
 }
@@ -453,6 +453,7 @@ impl RowSet for Rows {
                 let dt = DateTime::parse_from_rfc3339(s).map(|v| v.with_timezone(&Utc)).or_else(|_| NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f").map(|v| v.and_utc())).map_err(|e| DbError::other(e.to_string()))?;
                 Cell::DateTime(dt)
             }
+            ColType::Bytes => match self.get(row, col)? { SqlValue::Blob(v) => Cell::Bytes(v.clone()), _ => return Err(DbError::other("expected SQLite blob value")) },
             ColType::Decimal => return Err(DbError::other("sqlite does not support exact decimal columns")),
         })
     }
@@ -461,7 +462,7 @@ impl RowSet for Rows {
             Cell::Null => crate::params::null_of(Some(ty)), Cell::Bool(v) => v.into(),
             Cell::Int(v) => v.into(), Cell::BigInt(v) => v.into(), Cell::Float(v) => v.into(),
             Cell::Text(v) => v.into(), Cell::Json(v) => v.into(), Cell::Uuid(v) => v.into(),
-            Cell::Time(v) => v.into(),
+            Cell::Time(v) => v.into(), Cell::Bytes(v) => v.into(),
             Cell::Date(v) => v.into(), Cell::DateTime(v) => v.into(),
             _ => return Err(DbError::other("unsupported SQLite value")),
         })

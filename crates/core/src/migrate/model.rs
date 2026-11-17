@@ -716,6 +716,7 @@ impl Builder<'_> {
                 match f.ty {
                     ColType::BigInt | ColType::Int | ColType::Bool => "INTEGER",
                     ColType::Float => "REAL",
+                    ColType::Bytes => "BLOB",
                     _ => "TEXT",
                 }.to_owned()
             } else { sql_type(f) };

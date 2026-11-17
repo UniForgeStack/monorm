@@ -101,6 +101,8 @@ pub enum Cell<'a> {
     Json(serde_json::Value),
     /// A `numeric` as decimal text: `-12.50`, `NaN`.
     Decimal(String),
+    /// A `bytea` or `BLOB`.
+    Bytes(Vec<u8>),
     Array(Vec<Cell<'a>>),
 }
 

@@ -64,6 +64,8 @@ pub enum ColType {
     Json,
     /// `numeric`; exact decimal values (Python `decimal.Decimal`), any precision.
     Decimal,
+    /// `bytea` / `BLOB`; binary values (Python `bytes`, TypeScript `Uint8Array`).
+    Bytes,
 }
 
 /// How a column's values travel: the scalar type, whether the column is an array of
@@ -568,6 +570,7 @@ pub enum ClientDefaultError {
     Bool,
     Text,
     TextOrNumber,
+    BytesUnsupported,
 }
 
 impl std::fmt::Display for ClientDefaultError {
@@ -580,6 +583,7 @@ impl std::fmt::Display for ClientDefaultError {
             Self::Bool => "requires a bool",
             Self::Text => "requires text",
             Self::TextOrNumber => "requires text or a number",
+            Self::BytesUnsupported => "is not supported on a Bytes field",
         })
     }
 }
@@ -615,6 +619,7 @@ impl FieldIr {
             ColType::Bool => value.is_boolean(),
             ColType::Json => true,
             ColType::Decimal => value.is_string() || value.is_number(),
+            ColType::Bytes => false,
             ColType::String | ColType::Text | ColType::DateTime | ColType::Date | ColType::Time | ColType::Uuid => value.is_string(),
         };
         if fits { return Ok(()); }
@@ -624,6 +629,7 @@ impl FieldIr {
             ColType::Float => ClientDefaultError::Number,
             ColType::Bool => ClientDefaultError::Bool,
             ColType::Decimal => ClientDefaultError::TextOrNumber,
+            ColType::Bytes => ClientDefaultError::BytesUnsupported,
             _ => ClientDefaultError::Text,
         })
     }

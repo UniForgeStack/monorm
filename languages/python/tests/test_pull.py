@@ -174,6 +174,33 @@ async def test_generated_columns_pull_back_without_drift(tmp_path):
         await db.close()
 
 
+async def test_bytea_pulls_as_bytes_without_drift(tmp_path):
+    db = await fresh("CREATE TABLE blobs (id bigint PRIMARY KEY, data bytea, tail bytea NOT NULL)")
+    try:
+        pulled = await pull(db)
+        assert "data Bytes?" in pulled.schema and "tail Bytes" in pulled.schema
+        assert "ByteA" not in pulled.schema
+        assert pulled.differences == []
+        schema = tmp_path / "schema.prisma"
+        pulled.write(schema)
+        migrator = Migrator(db, Migrations(tmp_path / "migrations", schema))
+        await migrator.baseline()
+        assert (await migrator.drift()).steps == []
+    finally:
+        await db.close()
+
+
+async def test_a_sqlite_blob_pulls_as_bytes_without_drift(tmp_path):
+    registry = Registry()
+    monorm.loads('datasource db { provider = "sqlite" }\nmodel Keep { id Int @id }', registry=registry)
+    db = await monorm.connect(f"sqlite://{tmp_path / 'live.db'}", default=False, registry=registry)
+    try:
+        await db.execute("CREATE TABLE blobs (id INTEGER PRIMARY KEY, data BLOB)")
+        await _assert_generated_pull_is_clean(db, tmp_path, "data Bytes?")
+    finally:
+        await db.close()
+
+
 async def test_a_virtual_generated_column_pulls_back_without_drift_on_postgres(tmp_path):
     db = await fresh("SELECT 1")
     try:

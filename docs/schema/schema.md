@@ -291,10 +291,15 @@ The first app is [`monorm-auth`](../apps/auth.md): users, roles, permissions and
 | `DateTime @db.Time`, `DateTime @db.Timetz` | `time`, `timetz` | naive `datetime.time` |
 | `Json` | `jsonb` | dicts, lists, scalars |
 | `Decimal`, `Decimal @db.Decimal(p, s)` | `numeric`, `numeric(p, s)` | `decimal.Decimal` (exact; `int`, `float`, `"12.50"` accepted) |
+| `Bytes` | `bytea` (SQLite: `BLOB`) | `bytes` (`bytearray` and `memoryview` accepted) |
 | an enum (below) | a Postgres enum type, `text` or `integer` | members of a generated `StrEnum` / `IntEnum` |
 | `Type[]`, e.g. `String[]`, `Int[]`, `Role[]` | `text[]`, `integer[]`, `"role"[]`, ... | `list` of the element type |
 | `String @db.Citext` | `citext` (the extension type) | `str` |
 | `Unsupported("vector(384)")`, `Unsupported("geography(Point, 4326)")` | an extension type, from its extension file | from the file's `value` |
+
+`Bytes` takes `=`, `!=`, `IN`, `NOT IN` and null checks. An order, a range, `LIKE` and an aggregate other than `count` raise `QueryError`.
+A `Bytes` field has no list form, no `@default` other than null, and is not allowed in a nested `type`. In JSON (admin, nested JSON) it is base64 text.
+`pull` reads `bytea` and `BLOB` as `Bytes`; `String @db.ByteA` still makes a `bytea` column, but is deprecated: use `Bytes`.
 
 Time fields preserve microseconds. TypeScript uses a `Date` anchored to 1970-01-01
 UTC, with hidden microsecond metadata as for DateTime fields; the input's UTC clock

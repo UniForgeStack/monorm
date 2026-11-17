@@ -7,7 +7,7 @@ use bigdecimal::BigDecimal;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
-use pyo3::types::{PyBool, PyDate, PyDateTime, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
+use pyo3::types::{PyByteArray, PyBytes, PyBool, PyDate, PyDateTime, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
 use pyo3::IntoPyObjectExt;
 use sea_query::Value;
 
@@ -128,6 +128,20 @@ fn extract_time(obj: &Bound<'_, PyAny>) -> PyResult<chrono::NaiveTime> {
     Ok(time)
 }
 
+/// The bytes of a `bytes`, `bytearray` or `memoryview`; any other object is a type error.
+fn extract_bytes(obj: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
+    if let Ok(b) = obj.cast::<PyBytes>() {
+        return Ok(b.as_bytes().to_vec());
+    }
+    if let Ok(b) = obj.cast::<PyByteArray>() {
+        return Ok(b.to_vec());
+    }
+    if obj.is_instance_of::<pyo3::types::PyMemoryView>() {
+        return obj.call_method0("tobytes")?.extract();
+    }
+    Err(PyTypeError::new_err(format!("expected bytes, got {}", obj.get_type().name()?)))
+}
+
 /// Converts a Python value into a bind parameter. `ty` is the type of the column the
 /// value is compared with or assigned to, when the planner knows it.
 pub fn py_to_value(obj: &Bound<'_, PyAny>, ty: Option<ValueType>) -> PyResult<Value> {
@@ -156,6 +170,7 @@ pub fn py_to_value(obj: &Bound<'_, PyAny>, ty: Option<ValueType>) -> PyResult<Va
         Some(ColType::Uuid) => Value::Uuid(Some(extract_uuid(obj)?)),
         Some(ColType::Json) => Value::Json(Some(Box::new(py_to_json(obj)?))),
         Some(ColType::Decimal) => Value::BigDecimal(Some(Box::new(extract_decimal(obj)?))),
+        Some(ColType::Bytes) => Value::Bytes(Some(extract_bytes(obj)?)),
         None => {
             if obj.is_instance_of::<PyBool>() {
                 Value::Bool(Some(obj.extract()?))
@@ -165,6 +180,8 @@ pub fn py_to_value(obj: &Bound<'_, PyAny>, ty: Option<ValueType>) -> PyResult<Va
                 Value::Double(Some(obj.extract()?))
             } else if obj.is_instance_of::<PyString>() {
                 Value::String(Some(obj.extract()?))
+            } else if obj.is_instance_of::<PyBytes>() {
+                Value::Bytes(Some(extract_bytes(obj)?))
             } else if obj.is_instance_of::<PyDateTime>() {
                 Value::ChronoDateTimeWithTimeZone(Some(extract_datetime(obj)?))
             } else if obj.is_instance_of::<pyo3::types::PyTime>() {
@@ -226,6 +243,7 @@ pub fn cell_to_py(py: Python<'_>, cell: Cell<'_>) -> PyResult<Py<PyAny>> {
         Cell::Uuid(v) => v.into_py_any(py)?,
         Cell::Json(v) => json_to_py(py, &v)?,
         Cell::Decimal(v) => decimal_to_py(py, &v)?,
+        Cell::Bytes(v) => PyBytes::new(py, &v).into_py_any(py)?,
         Cell::Array(items) => {
             let out = PyList::empty(py);
             for item in items {

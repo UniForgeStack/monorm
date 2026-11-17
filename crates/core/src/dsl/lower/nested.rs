@@ -102,6 +102,9 @@ pub(super) fn declare(items: &[Item], models: &HashMap<&str, &ModelDecl>, ctx: &
             if leaf.primary_key {
                 return err(member.pos, format!("{what}: a type holds no @id"));
             }
+            if leaf.ty == ColType::Bytes {
+                return err(member.pos, format!("{what}: a type holds no Bytes field; put it on the model"));
+            }
             if leaf.auto_increment {
                 return err(member.pos, format!("{what}: a type holds no @default(autoincrement())"));
             }

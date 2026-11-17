@@ -238,6 +238,8 @@ fn field_type(ty: &str, dialect: Dialect, enums: &HashMap<String, String>) -> Op
             "Boolean"
         } else if upper.starts_with("DATE") || upper.starts_with("TIME") {
             "DateTime"
+        } else if upper.contains("BLOB") {
+            "Bytes"
         } else if upper.contains("REAL") || upper.contains("FLOA") || upper.contains("DOUB") || upper.starts_with("DEC") || upper.starts_with("NUMERIC") {
             "Float"
         } else {
@@ -274,7 +276,7 @@ fn field_type(ty: &str, dialect: Dialect, enums: &HashMap<String, String>) -> Op
         ("xml", None) => ("String", db("Xml")),
         ("bit", _) => ("String", db("Bit")),
         ("bit varying", _) => ("String", db("VarBit")),
-        ("bytea", None) => ("String", db("ByteA")),
+        ("bytea", None) => ("Bytes", None),
         ("jsonb", None) => ("Json", None),
         ("json", None) => ("Json", db("Json")),
         ("numeric", None) => ("Decimal", None),
@@ -294,6 +296,10 @@ fn field_type(ty: &str, dialect: Dialect, enums: &HashMap<String, String>) -> Op
             return None;
         }
     };
+    // the schema language has no list of Bytes
+    if array && t == "Bytes" {
+        return None;
+    }
     if array && matches!(attr.as_deref(), Some("@db.Citext")) {
         return None;
     }
@@ -1027,6 +1033,9 @@ mod tests {
         assert_eq!(t("text[]"), Some(("String".into(), Some("@db.Text".into()), true)));
         assert_eq!(t("timestamp(3) with time zone"), Some(("DateTime".into(), Some("@db.Timestamptz(3)".into()), false)));
         assert_eq!(t("interval"), None);
+        assert_eq!(t("bytea"), Some(("Bytes".into(), None, false)));
+        assert_eq!(t("bytea[]"), None);
+        assert_eq!(field_type("BLOB", Dialect::Sqlite, &enums), Some(("Bytes".into(), None, false)));
         let k = |ty| FieldKind { ty, array: false, enum_values: None };
         assert_eq!(default_attr("'x''y'::character varying", &k("String")), "@default(\"x'y\")");
         assert_eq!(default_attr("'-1'::integer", &k("Int")), "@default(-1)");

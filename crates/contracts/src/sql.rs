@@ -30,6 +30,7 @@ pub fn column_type(ty: crate::ir::ColType, max_length: Option<u32>, array: bool)
         Uuid => "uuid".into(),
         Json => "jsonb".into(),
         Decimal => "numeric".into(),
+        Bytes => "bytea".into(),
     }
 }
 

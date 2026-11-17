@@ -175,7 +175,7 @@ impl Dialect {
                     C::Bool => "boolean",
                     C::Decimal => "numeric",
                     C::Uuid => "uuid",
-                    C::String | C::Text | C::DateTime | C::Date | C::Time => return format!("(({sql}) ->> {})", lit(last)),
+                    C::String | C::Text | C::DateTime | C::Date | C::Time | C::Bytes => return format!("(({sql}) ->> {})", lit(last)),
                 };
                 format!("((({sql}) ->> {})::{cast})", lit(last))
             }

@@ -19,6 +19,7 @@
 //! | 12  | json                         | u32 length, JSON text                    |
 //! | 13  | decimal                      | u32 length, ASCII text                   |
 //! | 14  | array                        | u32 count, the cells                     |
+//! | 15  | bytes                        | u32 length, bytes                        |
 
 use crate::convert::midnight_ms;
 use monorm_core::ir::ValueType;
@@ -40,6 +41,7 @@ mod tag {
     pub const JSON: u8 = 12;
     pub const DECIMAL: u8 = 13;
     pub const ARRAY: u8 = 14;
+    pub const BYTES: u8 = 15;
 }
 
 fn len(out: &mut Vec<u8>, n: usize) {
@@ -89,6 +91,11 @@ fn cell(out: &mut Vec<u8>, c: Cell<'_>) {
         }
         Cell::Json(j) => text(out, tag::JSON, &j.to_string()),
         Cell::Decimal(s) => text(out, tag::DECIMAL, &s),
+        Cell::Bytes(b) => {
+            out.push(tag::BYTES);
+            len(out, b.len());
+            out.extend_from_slice(&b);
+        }
         Cell::Array(items) => {
             out.push(tag::ARRAY);
             len(out, items.len());

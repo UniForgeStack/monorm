@@ -51,6 +51,7 @@ fn element_type(f: &FieldIr) -> String {
         ColType::DateTime | ColType::Date | ColType::Time => "Date",
         ColType::Json => "JsonValue",
         ColType::Decimal => "Decimal",
+        ColType::Bytes => "Uint8Array",
     }
     .to_owned()
 }

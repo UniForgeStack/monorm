@@ -527,7 +527,7 @@ def _declared_type(name: str, tp: Any) -> str:
 
     names: dict[Any, str] = {
         int: "big_int", float: "float", str: "text", bool: "bool", datetime.datetime: "date_time",
-        datetime.date: "date", datetime.time: "time", uuid.UUID: "uuid", decimal.Decimal: "decimal", dict: "json",
+        datetime.date: "date", datetime.time: "time", uuid.UUID: "uuid", decimal.Decimal: "decimal", dict: "json", bytes: "bytes",
     }
     if typing.get_origin(tp) is list:
         (item,) = typing.get_args(tp)
@@ -535,7 +535,7 @@ def _declared_type(name: str, tp: Any) -> str:
             raise TypeError(f"param({name!r}, {tp!r}): a list of lists is not a column type")
         return _declared_type(name, item) + "[]"
     if tp not in names:
-        raise TypeError(f"param({name!r}, {tp!r}): the type must be int, float, str, bool, datetime, date, UUID, Decimal, dict or a list of one of them")
+        raise TypeError(f"param({name!r}, {tp!r}): the type must be int, float, str, bool, datetime, date, UUID, Decimal, bytes, dict or a list of one of them")
     return names[tp]
 
 

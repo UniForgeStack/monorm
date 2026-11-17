@@ -230,6 +230,7 @@ fn builtin_type(name: &str) -> Option<ColType> {
         "DateTime" => ColType::DateTime,
         "Json" => ColType::Json,
         "Decimal" => ColType::Decimal,
+        "Bytes" => ColType::Bytes,
         _ => return None,
     })
 }
@@ -274,6 +275,7 @@ fn native_type(name: &str, ty: ColType) -> Option<(&'static str, bool)> {
             | ("Timestamptz", ColType::DateTime)
             | ("JsonB", ColType::Json)
             | ("Decimal", ColType::Decimal)
+            | ("ByteA", ColType::Bytes)
     );
     Some((sql, same))
 }
@@ -962,6 +964,9 @@ fn field(m: &ModelDecl, member: &Member, ctx: &Ctx<'_>, pending: Option<&Pending
         if decimal {
             f.db_type = Some("numeric".into());
         }
+        if ty == ColType::Bytes && *list {
+            return err(*pos, format!("{what}: Bytes[] is not supported; use a Json array of base64 text or a related model"));
+        }
     } else if let Some(attribute) = ctx.owned_types.get(name) {
         return err(*pos, format!("{what}: unknown type {name}; a {name} field needs @{attribute}(...) (namespace {}.*)", crate::behavior::attribute_namespace(attribute)));
     } else {
@@ -974,7 +979,7 @@ fn field(m: &ModelDecl, member: &Member, ctx: &Ctx<'_>, pending: Option<&Pending
             *pos,
             format!(
                 "{what}: unknown type {name}; expected a model or BigInt, Int, Float, Boolean, String, DateTime, \
-                 Json, Decimal, an enum or Unsupported(\"<extension type>\"){hint}"
+                 Json, Decimal, Bytes, an enum or Unsupported(\"<extension type>\"){hint}"
             ),
         );
     }
@@ -1032,6 +1037,11 @@ fn field(m: &ModelDecl, member: &Member, ctx: &Ctx<'_>, pending: Option<&Pending
                     let Some((sql, same)) = native_type(db, ty) else {
                         return err(a.pos, format!("{what}: unknown native type @db.{db}"));
                     };
+                    if ty == ColType::String && db == "ByteA" {
+                        if let Some(pending) = pending {
+                            pending.warn(a.pos, format!("{what}: `String @db.ByteA` is deprecated; declare the field as `Bytes`"));
+                        }
+                    }
                     if !(same && values.is_empty()) {
                         f.db_type = Some(if values.is_empty() { sql.to_owned() } else { format!("{sql}({})", values.join(", ")) });
                     }
@@ -1167,6 +1177,9 @@ fn field(m: &ModelDecl, member: &Member, ctx: &Ctx<'_>, pending: Option<&Pending
             "deprecated" => {} // `model_fields` checks it and removes the field after lowering
             other => return err(a.pos, format!("{what}: unknown attribute @{other}; use {FIELD_ATTRS}")),
         }
+    }
+    if f.ty == ColType::Bytes && (f.default.is_some() || f.client_default.is_some()) {
+        return err(*pos, format!("{what}: a Bytes field takes no literal default; use @default(dbgenerated(\"...\"))"));
     }
     // parameters of other array types are cast to the column's (`varchar(20)[]`, ...)
     if f.array && f.write_sql.is_none() && (f.db_type.is_some() || f.max_length.is_some()) {

@@ -1177,6 +1177,7 @@ impl<'s> Planner<'s> {
         }
         for o in &w.order_by {
             self.join_paths(&o.expr, "a window")?;
+            self.refuse_bytes(&o.expr, "order_by()")?;
             let e = self.value(&o.expr, Hint::default())?;
             order_by(&mut spec, e, o);
         }
@@ -1613,6 +1614,10 @@ impl<'s> Planner<'s> {
                 if self.target.dialect == Dialect::Sqlite && matches!(op, CmpOp::Contains | CmpOp::ContainedBy | CmpOp::Overlaps | CmpOp::HasKey) {
                     return Err(Error::query("sqlite does not support PostgreSQL containment, overlap or JSON key operators"));
                 }
+                if !matches!(op, CmpOp::Eq | CmpOp::Ne) {
+                    self.refuse_bytes(l, "a comparison")?;
+                    self.refuse_bytes(r, "a comparison")?;
+                }
                 let hint = self.hint_of(l).or(self.hint_of(r));
                 let l = self.value(l, hint)?;
                 // The key of `?` is text, whatever the JSON column's type.
@@ -1683,6 +1688,7 @@ impl<'s> Planner<'s> {
                 }
             }
             Expr::Like { item, pattern, ci, neg } => {
+                self.refuse_bytes(item, "LIKE")?;
                 // LIKE on bpchar keeps the padding in the compared value, except for a literal-prefix pattern; compare as text.
                 let padded = self.target.dialect == Dialect::Postgres && self.hint_of(item).field.is_some_and(is_char_n);
                 let item = self.value(item, Hint::default())?;
@@ -2067,6 +2073,16 @@ impl<'s> Planner<'s> {
 
     // -- functions ----------------------------------------------------------------------
 
+    /// A binary value takes `=`, `!=`, `IN` and null checks only: its order and text form mean nothing.
+    fn refuse_bytes(&self, e: &Expr, what: &str) -> Result<()> {
+        match self.expr_type(e) {
+            Ok(t) if t.ty == ColType::Bytes && !t.array => {
+                Err(Error::query(format!("{what} is not defined on a Bytes value: it takes =, !=, IN, NOT IN and null checks")))
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// The column type of an expression's result, which decodes it.
     fn expr_type(&self, e: &Expr) -> Result<ValueType> {
         let scalar = ValueType::scalar;
@@ -2316,6 +2332,11 @@ impl<'s> Planner<'s> {
         }
         if name == "array_agg" && self.target.dialect == Dialect::Sqlite {
             return Err(Error::query("sqlite does not support array_agg()"));
+        }
+        if is_aggregate(name) && name != "count" {
+            for a in args {
+                self.refuse_bytes(a, &format!("{name}()"))?;
+            }
         }
         if filter.is_some() && !is_aggregate(name) {
             return Err(Error::query(format!("{name}() is not an aggregate: only aggregates take a filter")));
@@ -2861,6 +2882,7 @@ impl<'s> Planner<'s> {
             for p in paths.into_iter().filter(|p| !p.is_empty()) {
                 self.ensure_join(p, "order_by")?;
             }
+            self.refuse_bytes(&o.expr, "order_by()")?;
             self.allow_window = true;
             let e = self.value(&o.expr, Hint::default());
             self.allow_window = false;

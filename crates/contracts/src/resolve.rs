@@ -10,7 +10,7 @@ pub struct Resolved {
 }
 
 /// The DSL type names that no attribute can own: the scalar types and `Unsupported`.
-pub const RESERVED_TYPES: [&str; 9] = ["BigInt", "Int", "Float", "Boolean", "String", "DateTime", "Json", "Decimal", "Unsupported"];
+pub const RESERVED_TYPES: [&str; 10] = ["BigInt", "Int", "Float", "Boolean", "String", "DateTime", "Json", "Decimal", "Bytes", "Unsupported"];
 
 /// `check_language` validates one language section; the build owns its sources.
 pub fn resolve(mut manifests: Vec<Manifest>, check_language: &dyn Fn(&Manifest, &str, &LanguageSection) -> Result<(), String>) -> Result<Resolved, String> {

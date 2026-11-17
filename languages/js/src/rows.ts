@@ -24,6 +24,7 @@ const Tag = {
   JSON: 12,
   DECIMAL: 13,
   ARRAY: 14,
+  BYTES: 15,
 } as const;
 
 /** The cells of `rows`, row after row; decoded on first use. */
@@ -89,6 +90,13 @@ function decode(buf: Buffer, count: number): unknown[] {
         return JSON.parse(text(view.getUint32(pos, true), 4, "utf8"));
       case Tag.DECIMAL:
         return new Decimal(text(view.getUint32(pos, true), 4, "latin1"));
+      case Tag.BYTES: {
+        const length = view.getUint32(pos, true);
+        const start = pos + 4;
+        pos = start + length;
+        // A copy: the packed buffer is not the caller's to keep alive, and a plain Uint8Array is the contract.
+        return Uint8Array.from(buf.subarray(start, pos));
+      }
       case Tag.ARRAY: {
         const items: unknown[] = new Array(view.getUint32(pos, true));
         pos += 4;

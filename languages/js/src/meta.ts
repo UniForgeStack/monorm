@@ -19,7 +19,8 @@ export type ColType =
   | "date"
   | "uuid"
   | "json"
-  | "decimal";
+  | "decimal"
+  | "bytes";
 
 /** A JSON value, as `Json` columns hold it. */
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };

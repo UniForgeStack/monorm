@@ -45,6 +45,7 @@ pub(crate) fn cell(value: &BindValue) -> Result<Cell<'_>> {
         V::Uuid(Some(v)) => Cell::Uuid(*v),
         V::Json(Some(v)) => Cell::Json((**v).clone()),
         V::BigDecimal(Some(v)) => Cell::Decimal(v.to_string()),
+        V::Bytes(Some(v)) => Cell::Bytes(v.clone()),
         V::Array(_, Some(v)) => Cell::Array(v.iter().map(cell).collect::<Result<_>>()?),
         _ => return Err(Error::Decode("unsupported stored value".into())),
     })
@@ -66,6 +67,7 @@ fn store(value: Cell<'_>, ty: ValueType) -> Result<BindValue> {
             .parse::<bigdecimal::BigDecimal>()
             .map_err(|e| Error::Decode(format!("invalid decimal: {e}")))?
             .into(),
+        Cell::Bytes(v) => v.into(),
         Cell::Array(values) => BindValue::Array(
             monorm_engine::params::array_type(ty.ty),
             Some(Box::new(
@@ -178,6 +180,10 @@ fn json_cell(c: Cell<'_>) -> serde_json::Value {
         Cell::Uuid(v) => v.to_string().into(),
         Cell::Json(v) => v,
         Cell::Decimal(v) => v.into(),
+        Cell::Bytes(v) => {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD.encode(v).into()
+        }
         Cell::Array(v) => v.into_iter().map(json_cell).collect(),
     }
 }

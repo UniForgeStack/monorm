@@ -114,6 +114,14 @@ fn parse_manifest(id: &str, path: &Path, text: &str, header: &Header) -> Result<
         // A later minor can add a field. The version error tells the user what to do; an unknown field does not.
         header.check_versions().err().unwrap_or_else(|| format!("extension {id}: {}: {e}", path.display()))
     })?;
+    // A hook ABI value has no bytes form: the `Bytes` column type is not an export type.
+    for e in &manifest.exports {
+        for (key, ty) in [("input", e.input), ("output", e.output)] {
+            if ty == Some(crate::ir::ColType::Bytes) {
+                return Err(format!("extension {id}: {}: export {}: {key} = \"bytes\" is not an export type: a hook value has no bytes form", path.display(), e.id));
+            }
+        }
+    }
     let dir = path.parent().map_or_else(PathBuf::new, Path::to_path_buf);
     Ok(Dynamic { manifest, manifest_hash: format!("{:x}", Sha256::digest(text.as_bytes())), dir, path: path.to_path_buf() })
 }
@@ -732,7 +740,7 @@ mod tests {
         let dir = scratch("bytes");
         let (id, path) = install(&dir, "acme.audit", "[[exports]]\nid = \"a.bytes\"\npoint = 1\ninput = \"bytes\"\noutput = \"string\"\n");
         let error = read_manifest(&id, &path).err().unwrap();
-        assert!(error.starts_with("extension acme.audit: ") && error.contains("input = \"bytes\"") && error.contains("unknown variant `bytes`"), "{error}");
+        assert!(error.starts_with("extension acme.audit: ") && error.contains("input = \"bytes\"") && error.contains("not an export type"), "{error}");
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -260,7 +260,7 @@ fn errors_point_at_the_problem() {
         ("model A {\n  id BigInt @id\n  x Strng\n}".to_owned(), "<schema>:3:5: A.x: unknown type Strng"),
         (
             "model A {\n  id BigInt @id\n  target Generic?\n}".into(),
-            "unknown type Generic; expected a model or BigInt, Int, Float, Boolean, String, DateTime, Json, Decimal, an enum or Unsupported(\"<extension type>\"); Generic belongs to the built-in generic extension and needs @generic.relation(...)",
+            "unknown type Generic; expected a model or BigInt, Int, Float, Boolean, String, DateTime, Json, Decimal, Bytes, an enum or Unsupported(\"<extension type>\"); Generic belongs to the built-in generic extension and needs @generic.relation(...)",
         ),
         ("model A {\n  id BigInt @id @prim\n}".into(), "unknown attribute @prim"),
         ("model A {\n  x Int\n}".into(), "model A has no @id field"),
@@ -1817,4 +1817,24 @@ fn a_filter_through_a_to_one_relation_and_the_native_text_functions_resolve() {
     assert_eq!(tree, json!({"t":"like","item":{"t":"col","path":[],"name":"title"},"pattern":{"t":"text","value":"ab\\_%"},"ci":false,"neg":false}));
     let (tree, _) = resolved("\"x\", a.between(1, 3)").unwrap();
     assert_eq!(tree["t"], "and");
+}
+
+#[test]
+fn bytes_is_a_scalar_with_a_narrow_set_of_forms() {
+    let model = |field: &str| format!("model A {{\n  id BigInt @id\n  {field}\n}}");
+    let ir = ok(&model("raw Bytes?"));
+    assert_eq!(ir.models[0].fields[1].ty, crate::ir::ColType::Bytes);
+    assert!(ir.models[0].fields[1].nullable);
+    assert!(fails(&model("raw Bytes[]")).contains("Bytes[] is not supported"));
+    assert!(fails(&model("raw Bytes @default(\"x\")")).contains("takes no literal default"));
+    assert!(fails("type T {\n  raw Bytes\n}\nmodel A {\n  id BigInt @id\n  t T\n}").contains("a type holds no Bytes field"));
+}
+
+#[test]
+fn string_with_byte_a_still_compiles_with_a_deprecation_warning() {
+    let project = compile_project("datasource db {\n provider = \"postgresql\"\n}\nmodel A {\n  id BigInt @id\n  raw String @db.ByteA\n}", None).unwrap();
+    assert_eq!(project.ir.models[0].fields[1].ty, crate::ir::ColType::String);
+    assert!(project.warnings.iter().any(|w| w.message.contains("`String @db.ByteA` is deprecated")), "{:?}", project.warnings);
+    let bytes = compile_project("datasource db {\n provider = \"postgresql\"\n}\nmodel A {\n  id BigInt @id\n  raw Bytes\n}", None).unwrap();
+    assert!(bytes.warnings.is_empty(), "{:?}", bytes.warnings);
 }

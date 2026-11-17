@@ -142,6 +142,7 @@ fn scalar_null(ty: ColType) -> Value {
         ColType::Uuid => Value::Uuid(None),
         ColType::Json => Value::Json(None),
         ColType::Decimal => Value::BigDecimal(None),
+        ColType::Bytes => Value::Bytes(None),
     }
 }
 
@@ -159,6 +160,7 @@ pub fn array_type(ty: ColType) -> ArrayType {
         ColType::Uuid => ArrayType::Uuid,
         ColType::Json => ArrayType::Json,
         ColType::Decimal => ArrayType::BigDecimal,
+        ColType::Bytes => ArrayType::Bytes,
     }
 }
 
@@ -186,6 +188,7 @@ pub fn type_of(v: &Value) -> Option<ValueType> {
         Value::Uuid(Some(_)) => ColType::Uuid,
         Value::Json(Some(_)) => ColType::Json,
         Value::BigDecimal(Some(_)) => ColType::Decimal,
+        Value::Bytes(Some(_)) => ColType::Bytes,
         _ => return None,
     };
     Some(ValueType::scalar(ty))

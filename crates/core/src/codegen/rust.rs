@@ -752,6 +752,7 @@ fn ty(f: &FieldIr) -> String {
                 ColType::Uuid => "monorm_client::uuid::Uuid",
                 ColType::Json => "monorm_client::serde_json::Value",
                 ColType::Decimal => "monorm_client::bigdecimal::BigDecimal",
+                ColType::Bytes => "std::vec::Vec<u8>",
             }
             .into()
         });

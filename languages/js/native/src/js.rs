@@ -50,6 +50,22 @@ impl Js {
         Ok(b)
     }
 
+    /// The bytes of a `Uint8Array` (a `Buffer` too); `None` for any other value.
+    pub fn uint8array(self, v: V) -> napi::Result<Option<Vec<u8>>> {
+        let mut is = false;
+        call!(napi_is_typedarray(self.0, v, &mut is))?;
+        if !is {
+            return Ok(None);
+        }
+        let (mut ty, mut len, mut data, mut buf, mut off) = (0, 0usize, ptr::null_mut(), ptr::null_mut(), 0usize);
+        call!(napi_get_typedarray_info(self.0, v, &mut ty, &mut len, &mut data, &mut buf, &mut off))?;
+        if ty != sys::TypedarrayType::uint8_array || (len > 0 && data.is_null()) {
+            return Ok(None);
+        }
+        // SAFETY: `data` points at `len` bytes that stay alive while `v` does; they are copied at once.
+        Ok(Some(if len == 0 { Vec::new() } else { unsafe { std::slice::from_raw_parts(data as *const u8, len) }.to_vec() }))
+    }
+
     pub fn instance_of(self, v: V, ctor: V) -> napi::Result<bool> {
         let mut b = false;
         call!(napi_instanceof(self.0, v, ctor, &mut b))?;
@@ -206,6 +222,20 @@ impl Js {
         let mut out = ptr::null_mut();
         let mut data = ptr::null_mut();
         call!(napi_create_buffer_copy(self.0, bytes.len(), bytes.as_ptr() as *const _, &mut data, &mut out))?;
+        Ok(out)
+    }
+
+    /// A plain `Uint8Array` holding a copy of `bytes`.
+    pub fn uint8array_from(self, bytes: &[u8]) -> napi::Result<V> {
+        let mut buf = ptr::null_mut();
+        let mut data = ptr::null_mut();
+        call!(napi_create_arraybuffer(self.0, bytes.len(), &mut data, &mut buf))?;
+        if !bytes.is_empty() {
+            // SAFETY: the new array buffer owns `bytes.len()` writable bytes at `data`.
+            unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), data as *mut u8, bytes.len()) };
+        }
+        let mut out = ptr::null_mut();
+        call!(napi_create_typedarray(self.0, sys::TypedarrayType::uint8_array, bytes.len(), buf, 0, &mut out))?;
         Ok(out)
     }
 

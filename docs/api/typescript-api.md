@@ -83,6 +83,7 @@ Scalar types follow Prisma's choices:
 | `Decimal` | `Decimal` from decimal.js, re-exported by `monorm` (filters also take a `number` or a string) |
 | `DateTime` | `Date`, with millisecond precision; the microseconds below it stay in a hidden property (see below) |
 | `Date` | `Date` at 00:00 UTC |
+| `Bytes` | `Uint8Array` (a `Buffer` is accepted, and read back as a `Uint8Array`) |
 | `Json` | `JsonValue` |
 | `Uuid` | `string` |
 | `String[]`, ... | `string[]`, ... |

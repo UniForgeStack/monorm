@@ -205,6 +205,7 @@ function keyText(key: Readonly<Record<string, unknown>> | null): string {
 function scalarJson(field: FieldMeta, value: unknown): unknown {
   if (value instanceof Date) return field.type === "date" ? value.toISOString().slice(0, 10) : value.toISOString();
   if (typeof value === "bigint" || value instanceof Decimal) return value.toString();
+  if (value instanceof Uint8Array) return Buffer.from(value).toString("base64");
   return value;
 }
 
@@ -279,6 +280,7 @@ function decodeOne(field: FieldMeta, value: unknown): unknown {
       }
       case "big_int": return /^-?\d+$/.test(value) ? BigInt(value) : value;
       case "decimal": return new Decimal(value);
+      case "bytes": return new Uint8Array(Buffer.from(value, "base64"));
     }
   }
   return value;
@@ -583,6 +585,7 @@ function untag(value: unknown): unknown {
     }
     case "time": return parseTime(raw) ?? raw;
     case "decimal": return new Decimal(raw);
+    case "bytes": return new Uint8Array(Buffer.from(raw, "base64"));
     case "array": return (raw as unknown[]).map(untag);
     default: return raw;
   }

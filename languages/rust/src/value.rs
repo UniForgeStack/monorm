@@ -71,6 +71,19 @@ impl Codec for bigdecimal::BigDecimal {
         self.into()
     }
 }
+// Does not overlap `Vec<T>` below: `u8` has no `Codec` impl.
+impl Codec for Vec<u8> {
+    fn decode(cell: Cell<'_>) -> Result<Self> {
+        if let Cell::Bytes(v) = cell {
+            Ok(v)
+        } else {
+            Err(Error::Decode("expected bytes".into()))
+        }
+    }
+    fn encode(self) -> Value {
+        self.into()
+    }
+}
 impl<T: Codec> Codec for Option<T> {
     fn decode(cell: Cell<'_>) -> Result<Self> {
         if cell == Cell::Null {

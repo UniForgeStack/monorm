@@ -881,7 +881,7 @@ fn comparable(a: &Ty, b: &Ty) -> bool {
 
 fn orderable(t: &Ty) -> bool {
     match t {
-        Ty::Scalar(t) => !matches!(t, ColType::Bool | ColType::Json),
+        Ty::Scalar(t) => !matches!(t, ColType::Bool | ColType::Json | ColType::Bytes),
         Ty::Unknown => true,
         _ => false,
     }
@@ -921,6 +921,7 @@ fn scalar_name(t: ColType) -> &'static str {
         ColType::Uuid => "Uuid",
         ColType::Json => "Json",
         ColType::Decimal => "Decimal",
+        ColType::Bytes => "Bytes",
     }
 }
 

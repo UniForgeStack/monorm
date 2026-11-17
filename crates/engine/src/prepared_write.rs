@@ -258,6 +258,7 @@ fn unnest_type(ty: ColType) -> &'static str {
         ColType::Uuid => "uuid",
         ColType::Json => "jsonb",
         ColType::Decimal => "numeric",
+        ColType::Bytes => "bytea",
     }
 }
 
@@ -594,6 +595,7 @@ impl PreparedRows {
             ColType::Uuid => matches!(v, Value::Uuid(_)),
             ColType::Json => matches!(v, Value::Json(_)),
             ColType::Decimal => matches!(v, Value::BigDecimal(_)),
+            ColType::Bytes => matches!(v, Value::Bytes(_)),
         };
         let all = rows.iter().all(|row| row.iter().zip(&types).all(|(cell, ty)| cell.as_ref().is_some_and(|v| fits(*ty, v))));
         if !all {

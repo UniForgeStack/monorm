@@ -280,6 +280,8 @@ def _decode(type_name: str, value: Any) -> Any:
         return datetime.date.fromisoformat(value)
     if type_name == "time" and isinstance(value, str):
         return datetime.time.fromisoformat(value)
+    if type_name == "bytes" and isinstance(value, str):
+        return base64.b64decode(value, validate=True)
     return value
 
 
@@ -632,6 +634,8 @@ def _untag(value: Any) -> Any:
         return uuid.UUID(raw)
     if tag == "decimal":
         return decimal.Decimal(raw)
+    if tag == "bytes":
+        return base64.b64decode(raw)
     if tag == "array":
         return [_untag(v) for v in raw]
     return raw

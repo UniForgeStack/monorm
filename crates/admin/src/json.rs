@@ -3,6 +3,7 @@
 //! Big integers and decimals are JSON strings, so a browser keeps every digit. Dates and
 //! times are ISO 8601; a time carries its offset.
 
+use base64::Engine as _;
 use bigdecimal::BigDecimal;
 use chrono::{DateTime, SecondsFormat, Utc};
 use std::str::FromStr;
@@ -26,6 +27,7 @@ pub fn cell(schema: &Schema, ty: ValueType, cell: Cell<'_>) -> Value {
         Cell::Uuid(u) => json!(u.to_string()),
         Cell::Json(v) => v,
         Cell::Decimal(s) => json!(s),
+        Cell::Bytes(b) => json!(base64::engine::general_purpose::STANDARD.encode(b)),
         Cell::Array(items) => Value::Array(items.into_iter().map(|c| self::cell(schema, ty.element(), c)).collect()),
     }
 }
@@ -56,6 +58,7 @@ pub fn bind(ty: ColType, v: &Value) -> Result<Bind, String> {
         ColType::Time => Bind::ChronoTime(Some(chrono::NaiveTime::parse_from_str(v.as_str().ok_or_else(bad)?, "%H:%M:%S%.f").map_err(|_| bad())?)),
         ColType::Date => Bind::ChronoDate(Some(chrono::NaiveDate::parse_from_str(v.as_str().ok_or_else(bad)?, "%Y-%m-%d").map_err(|_| bad())?)),
         ColType::Uuid => Bind::Uuid(Some(v.as_str().ok_or_else(bad)?.parse().map_err(|_| bad())?)),
+        ColType::Bytes => Bind::Bytes(Some(base64::engine::general_purpose::STANDARD.decode(v.as_str().ok_or_else(bad)?).map_err(|_| bad())?)),
         ColType::Json | ColType::Decimal => return Err(bad()),
     })
 }
@@ -81,6 +84,7 @@ pub fn bind_tagged(b: &Bind) -> Value {
         Bind::Uuid(Some(x)) => tag("uuid", json!(x.to_string())),
         Bind::Json(Some(x)) => tag("json", (**x).clone()),
         Bind::BigDecimal(Some(x)) => tag("decimal", json!(x.to_string())),
+        Bind::Bytes(Some(x)) => tag("bytes", json!(base64::engine::general_purpose::STANDARD.encode(x))),
         Bind::Array(_, Some(items)) => tag("array", Value::Array(items.iter().map(bind_tagged).collect())),
         _ => Value::Null,
     }
@@ -99,6 +103,7 @@ fn bind_cell(b: &Bind) -> Cell<'_> {
         Bind::Uuid(Some(x)) => Cell::Uuid(*x),
         Bind::Json(Some(x)) => Cell::Json((**x).clone()),
         Bind::BigDecimal(Some(x)) => Cell::Decimal(x.to_string()),
+        Bind::Bytes(Some(x)) => Cell::Bytes(x.clone()),
         Bind::Array(_, Some(items)) => Cell::Array(items.iter().map(bind_cell).collect()),
         _ => Cell::Null,
     }

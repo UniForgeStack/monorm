@@ -198,6 +198,7 @@ pub(crate) fn scalar(ty: ColType, k: usize, flag: bool) -> Value {
         ColType::Uuid => Value::Uuid(Some(uuid::Uuid::from_u128((0x5EED_u128 << 96) | k as u128))),
         ColType::Json => Value::Json(Some(Box::new(serde_json::json!({ "$s": k })))),
         ColType::Decimal => Value::BigDecimal(Some(Box::new(format!("7777777.{k:06}").parse().expect("a decimal")))),
+        ColType::Bytes => Value::Bytes(Some(format!("\u{1}B{k}\u{1}").into_bytes())),
     }
 }
 

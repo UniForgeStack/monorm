@@ -308,5 +308,6 @@ fn pg_type(t: ValueType) -> &'static str {
         ColType::Uuid => "uuid",
         ColType::Json => "jsonb",
         ColType::Decimal => "numeric",
+        ColType::Bytes => "bytea",
     }
 }

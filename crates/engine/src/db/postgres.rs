@@ -307,6 +307,7 @@ fn raw_type(name: &str, ty: &Type) -> DbResult<RawType> {
         Type::UUID => ColType::Uuid,
         Type::JSON | Type::JSONB => ColType::Json,
         Type::NUMERIC => ColType::Decimal,
+        Type::BYTEA => ColType::Bytes,
         _ if matches!(scalar.kind(), Kind::Enum(_)) => ColType::Text,
         _ => {
             return Err(DbError::other(format!(
@@ -654,6 +655,7 @@ fn cell(row: &Row, idx: usize, ty: ValueType) -> DbResult<Cell<'_>> {
             ColType::Uuid => list(row, idx, Cell::Uuid),
             ColType::Json => list(row, idx, Cell::Json),
             ColType::Decimal => list(row, idx, |n: Numeric| Cell::Decimal(n.0)),
+            ColType::Bytes => list(row, idx, |b: Vec<u8>| Cell::Bytes(b)),
         };
     }
     match ty.ty {
@@ -669,6 +671,7 @@ fn cell(row: &Row, idx: usize, ty: ValueType) -> DbResult<Cell<'_>> {
         ColType::Uuid => opt(row, idx, Cell::Uuid),
         ColType::Json => opt(row, idx, Cell::Json),
         ColType::Decimal => opt(row, idx, |n: Numeric| Cell::Decimal(n.0)),
+        ColType::Bytes => opt(row, idx, |b: Vec<u8>| Cell::Bytes(b)),
     }
 }
 
@@ -719,6 +722,7 @@ impl RowSet for PgRows {
             ColType::Date => Value::ChronoDate(get(r, col)?),
             ColType::Uuid => Value::Uuid(get(r, col)?),
             ColType::Json => Value::Json(get::<serde_json::Value>(r, col)?.map(Box::new)),
+            ColType::Bytes => Value::Bytes(get::<Vec<u8>>(r, col)?),
             ColType::Decimal => Value::BigDecimal(
                 get::<Numeric>(r, col)?
                     .map(|n| n.0.parse().map(Box::new))
