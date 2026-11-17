@@ -38,7 +38,7 @@ The primary key is always the last order column, so a keyset page has a stable o
 ## Default resources
 
 With no `register` call, every concrete model is a read-only resource.
-After the first `register` call, only the registered models are resources.
+After the first `register` call, only the registered models are resources, plus the [built-in resources](#built-in-resources-roles-and-the-audit-log) of the admin and auth apps.
 A resource is named after its model.
 
 ## Lists
@@ -327,6 +327,51 @@ Every login, failed login, password change and failed password change writes an 
 A failed login keeps `user_key` empty and puts the typed name in the label, because the text is not an account.
 A `429` writes a `login_blocked` row, at most one a minute for each key. The attempts themselves are not limited by this.
 
+### Single sign-on (OIDC)
+
+An `[admin.oidc]` section adds a "Sign in with single sign-on" link to the login page.
+The flow is the OpenID Connect authorization-code flow with `state`, `nonce` and PKCE (`S256`).
+The server checks the signature, `iss`, `aud`, `exp` and `nonce` of the ID token against the keys of the provider.
+
+```toml
+[admin.oidc]
+issuer = "https://idp.example.com"
+client_id = "admin"
+roles_claim = "groups"                   # default "roles"; a dotted path such as "realm_access.roles" works
+scopes = ["groups"]                      # added to "openid profile email"
+hd = "example.com"                       # optional: the only allowed Google Workspace domain
+```
+
+```text
+MONORM_ADMIN_OIDC_CLIENT_SECRET=...      # the client secret is never a setting
+```
+
+| Key | Default | Meaning |
+|---|---|---|
+| `issuer`, `client_id` | none | Required. The issuer URL, and the client of this admin at the provider. `http://` is allowed only for a loopback issuer. |
+| `roles_claim` | `roles` | The claim that lists role names. A string or a list of strings. |
+| `scopes` | none | Scopes added to `openid profile email`, such as the scope that carries the roles claim. |
+| `hd` | none | The ID token must hold this `hd` claim. The server checks it, not the provider. |
+| `username_claim` | `email` | The claim that is the `username` of the user. |
+| `discovery_url` | `<issuer>/.well-known/openid-configuration` | Another discovery document. |
+| `public_url` | the `Host` header | The origin that the provider sees, when a proxy changes it. |
+
+The callback URL to register at the provider is `<public origin><base_path>/auth/callback`, for example `https://admin.example.com/admin/auth/callback`.
+`GET <base_path>/auth/start` starts the flow. A short-lived signed cookie holds `state`, `nonce` and the PKCE verifier, and the callback deletes it.
+
+At the callback the admin:
+- Finds the user by `username` (the `username_claim`). A first login creates the user with a random password that nobody can use.
+- Refuses an inactive user.
+- Sets the role membership of the user to the roles that the claim names and that exist in the `Role` table: it adds the missing rows and removes the others. A claim with no matching role gives no grant.
+- Writes a `login` row with `changes` `{"method": "sso", "ip", "request_id", "roles", "created"}`, or a `login_failed` row with `changes.reason`.
+
+A failed login sends the browser to `<base_path>/?sso_error=<word>`, and the login page shows the message.
+The words are `inactive`, `domain`, `unavailable`, `denied`, `too_many` and `failed`.
+The password login stays; `GET /login` has `"sso": "<base_path>/auth/start"` when OIDC is on.
+The callback counts each attempt on the limit of 20 for one IP address (see above), and a success gives the count back.
+
+An organization that moved from allauth fits as an `idp` provider: set `issuer` to it, add the scope of its roles claim to `scopes`, and set `hd` for a Google Workspace domain.
+
 ### `MONORM_ADMIN_SECRET`
 
 The session cookie is `s1.<payload>.<tag>`: the payload is signed with HMAC-SHA256 and the key is the environment variable `MONORM_ADMIN_SECRET`.
@@ -396,7 +441,7 @@ A body over 16 KiB answers `413`.
 ### Test client with a login
 
 `test_client(db, user=...)` and `testClient(db, { user })` need no login: they use the in-memory path.
-Give a `secret` (and optional `settings` with `idle_timeout`, `session_timeout`, `origins` and `trusted_proxies`, and an `ip`) for a client that runs the full login:
+Give a `secret` (and optional `settings` with `idle_timeout`, `session_timeout`, `origins`, `trusted_proxies` and `oidc`, and an `ip`) for a client that runs the full login:
 
 ```python
 client = admin.test_client(db, secret="x" * 32)
@@ -410,6 +455,7 @@ await client.login("ann", "pw");
 ```
 
 The client keeps the cookies and sends the CSRF token and `Origin` for you.
+For `oidc` the `client_secret` is a key of the settings object (not of `monorm.toml`), and the issuer may be a fake provider on a loopback port.
 A `user` client and a `secret` client do not mix.
 A wrong secret raises at the first request.
 
@@ -476,6 +522,17 @@ A request without a grant gets `403` and one audit row (action `permission_denie
 The resources and actions that the user cannot use are absent from `GET {prefix}/resources`.
 The columns of a resource that the user can read are all listed: only the names in `field_permissions` follow the grants.
 The audit row says why in `changes`: `{"needs": [...]}` (one of these names is enough) or `{"reason": "allow"}` (`allow=` excludes read).
+
+### Built-in resources: roles and the audit log
+
+A schema that imports the auth and admin apps gets four more resources on every site, after the registered ones: `AdminLogEntry`, `Permission`, `Role` and `UserRole`.
+A site without a `register` call lists every model anyway.
+A `register` call for one of them keeps its settings.
+They follow the permission strategy of the site, so each has its own names (`admin.read_role` and `admin.manage_role` in `page`).
+- `Role` holds the role name and a `permissions` picker. It offers only the names that `admin.permissions` lists, labeled with the text of the `Permission`, and not any other row of the table.
+- `UserRole` is the role membership of a user.
+- `Permission` searches on `label`. `sync-permissions` creates its rows.
+- `AdminLogEntry` is the audit log. It is read-only for everyone, superusers too: a write gives `403`.
 
 ### `admin.permissions` and `sync-permissions`
 
@@ -1270,6 +1327,7 @@ npm test
 ```
 
 One more case starts a second admin with `base_path = "/bundler/admin"` and signs in and opens a list there.
+A last case starts a fake OpenID provider (`fake-idp.mjs`, on a loopback port) and an admin with `[admin.oidc]`: a login with no `hd` claim shows the domain message, and a login with the claim signs in the user with the role of the claim.
 `MONORM_PYTHON` names another Python than `python`.
 In a source checkout the built-in apps import from the repository, so the test sets `PYTHONPATH` to the repository root.
 
@@ -1328,6 +1386,7 @@ db_settings = { "app.tenant" = "acme" }
 | `base_path` | `/admin` | The path of the whole admin: the UI, the API and the cookies (see [Base path and cookie scope](#base-path-and-cookie-scope)). |
 | `origins` | none | Extra origins that a write may come from, such as `"https://admin.example.com"`. |
 | `trusted_proxies` | none | Peer IP addresses whose `X-Forwarded-For` the login limits believe, such as `"10.0.0.1"`. |
+| `oidc` | none | A table for [single sign-on](#single-sign-on-oidc). The client secret is the variable `MONORM_ADMIN_OIDC_CLIENT_SECRET`; a `client_secret` key is an error. |
 
 `MONORM_ADMIN_HOST` and `MONORM_ADMIN_PORT` override `host` and `port`.
 An unknown key under `[admin]` is an error that names the key and the settings file.

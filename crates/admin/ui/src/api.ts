@@ -330,14 +330,16 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
 export interface Session {
   authenticated: boolean;
   user: User | null;
+  /** The address that starts the single sign-on, when the site has one. */
+  sso: string | null;
 }
 
 /** The login state: the token for writes, and the user when a session exists. */
 export async function session(): Promise<Session> {
-  const state = await call<{ authenticated: boolean }>("GET", "/login");
-  if (!state.authenticated) return { authenticated: false, user: null };
+  const state = await call<{ authenticated: boolean; sso?: string }>("GET", "/login");
+  if (!state.authenticated) return { authenticated: false, user: null, sso: state.sso ?? null };
   const me = await call<{ user: User }>("GET", "/me");
-  return { authenticated: true, user: me.user };
+  return { authenticated: true, user: me.user, sso: null };
 }
 
 export const login = (username: string, password: string) => call<{ user: User }>("POST", "/login", { username, password });

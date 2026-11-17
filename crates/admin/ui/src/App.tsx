@@ -23,12 +23,25 @@ export function App() {
 
   if (state.isPending) return <p className="center muted">Loading…</p>;
   if (state.isError) return <div className="center"><Alert>{message(state.error)}</Alert></div>;
-  if (!state.data.authenticated) return <Login onDone={() => client.invalidateQueries({ queryKey: ["session"] })} />;
+  if (!state.data.authenticated) return <Login sso={state.data.sso} onDone={() => client.invalidateQueries({ queryKey: ["session"] })} />;
   return <Shell user={state.data.user} route={route} />;
 }
 
-function Login({ onDone }: { onDone: () => void }) {
-  const [error, setError] = useState<string | null>(null);
+// The callback sends the browser to `<base>/?sso_error=<word>`; the redirect to the login page drops the query, so read it once at load.
+const SSO_ERRORS: Record<string, string> = {
+  inactive: "This account is not active.",
+  domain: "This account is not in the allowed domain.",
+  unavailable: "The sign-in provider did not answer. Try again later.",
+  denied: "The sign-in was cancelled.",
+  too_many: "Too many sign-in attempts. Try again later.",
+};
+const SSO_ERROR = (() => {
+  const word = new URLSearchParams(window.location.search).get("sso_error");
+  return word === null ? null : (SSO_ERRORS[word] ?? "The sign-in failed.");
+})();
+
+function Login({ sso, onDone }: { sso: string | null; onDone: () => void }) {
+  const [error, setError] = useState<string | null>(SSO_ERROR);
   const [busy, setBusy] = useState(false);
   const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -54,6 +67,7 @@ function Login({ onDone }: { onDone: () => void }) {
           {error && <Alert>{error}</Alert>}
           <Button type="submit" disabled={busy}>Sign in</Button>
         </form>
+        {sso && <p><a className="btn btn-plain" href={sso}>Sign in with single sign-on</a></p>}
       </Card>
     </main>
   );

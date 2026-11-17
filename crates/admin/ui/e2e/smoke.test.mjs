@@ -11,6 +11,8 @@ import { fileURLToPath } from "node:url";
 
 import { chromium } from "playwright";
 
+import { CLIENT_SECRET, startIdp, CLIENT_ID } from "./fake-idp.mjs";
+
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const PYTHON = process.env.MONORM_PYTHON ?? "python";
 const SECRET = "smoke-secret-of-at-least-32-bytes!";
@@ -112,6 +114,21 @@ async def close_tickets(ctx, qs):
 
 admin.register(Ticket, {"actions": [close_tickets]})`;
 
+const HELD_ROLES = `
+import asyncio, os
+import monorm
+import models
+
+async def main():
+    db = await monorm.connect(os.environ["MONORM_DATABASE_URL"])
+    user = await models.User.objects.using(db).filter(models.User.username == "sso@example.com").first()
+    held = await models.UserRole.objects.using(db).filter(models.UserRole.user_id == user.id)
+    roles = await models.Role.objects.using(db).filter(models.Role.id.in_([j.role_id for j in held]))
+    print(",".join(sorted(r.name for r in roles)))
+
+asyncio.run(main())
+`;
+
 const SEED = `
 import asyncio, datetime, os
 import monorm
@@ -121,6 +138,7 @@ import models
 async def main():
     db = await monorm.connect(os.environ["MONORM_DATABASE_URL"])
     await models.User.objects.insert_many([{"username": "ann", "email": "ann@example.com", "password": make_password("pw-of-ann"), "is_superuser": True}])
+    await models.Role.objects.insert_many([{"name": "support"}])
     (ada,) = await models.Author.objects.insert_many([{"name": "Ada"}]).returning()
     at = datetime.datetime(2026, 1, 2, 3, 4, 5, tzinfo=datetime.timezone.utc)
     await models.Book.objects.insert_many([
@@ -663,6 +681,54 @@ test("a site at a non-default base path signs in, opens a list, a deep link and 
   } finally {
     other.removeAllListeners("exit");
     other.kill("SIGTERM");
+    rmSync(copy, { recursive: true, force: true });
+  }
+});
+
+test("single sign-on: a user signs in at the provider, gets the roles of the claim, and a refused user sees why", async () => {
+  // A copy of the project whose `[admin.oidc]` section names the fake provider; the provider listens first, so its address is known.
+  const idp = await startIdp({ claims: { email: "sso@example.com", roles: ["support"] } });
+  const copy = `${dir}-sso`;
+  cpSync(dir, copy, { recursive: true });
+  const toml = readFileSync(join(copy, "monorm.toml"), "utf8");
+  writeFileSync(join(copy, "monorm.toml"), `${toml.trimEnd()}\n\n[admin.oidc]\nissuer = "${idp.issuer}"\nclient_id = "${CLIENT_ID}"\nhd = "example.com"\n`);
+  const env = { ...process.env, PYTHONPATH: ROOT, MONORM_DATABASE_URL: `sqlite://${copy}/app.db`, MONORM_ADMIN_SECRET: SECRET, MONORM_ADMIN_PORT: "0", MONORM_ADMIN_OIDC_CLIENT_SECRET: CLIENT_SECRET };
+  const other = spawn(PYTHON, ["-m", "monorm", "admin"], { cwd: copy, env, stdio: ["ignore", "ignore", "pipe"] });
+  try {
+    const url = await new Promise((resolveUrl, reject) => {
+      let text = "";
+      other.stderr.on("data", (chunk) => {
+        text += chunk;
+        const found = /"url":"([^"]+)"/.exec(text);
+        if (found && text.includes('"listening"')) resolveUrl(found[1]);
+      });
+      other.on("exit", (code) => reject(new Error(`the admin ended with ${code}\n${text}`)));
+    });
+    const context = await browser.newContext({ timezoneId: ZONE, locale: "en-US" });
+    const page = await context.newPage();
+    // The provider sends no `hd`, so the allowed domain refuses the first login and the login page says why.
+    await page.goto(`${url}/admin/`);
+    await page.waitForURL(`${url}/admin/-/login`);
+    await page.getByRole("link", { name: "Sign in with single sign-on" }).click();
+    await page.getByText("This account is not in the allowed domain.").waitFor();
+    assert.equal((await context.request.get(`${url}/admin/api/me`)).status(), 401, "no session after a refused login");
+    // With the domain in the claim, the same flow signs the user in; the claim made the user and its role.
+    idp.claims.hd = "example.com";
+    await page.getByRole("link", { name: "Sign in with single sign-on" }).click();
+    await page.waitForURL(`${url}/admin/`);
+    const me = await context.request.get(`${url}/admin/api/me`);
+    assert.equal(me.status(), 200);
+    assert.equal((await me.json()).user.username, "sso@example.com");
+    const held = spawnSync(PYTHON, ["-c", HELD_ROLES], { cwd: copy, env, encoding: "utf8" });
+    assert.equal(held.status, 0, held.stderr);
+    assert.equal(held.stdout.trim(), "support", "the user holds the role that the claim names");
+    const cookies = await context.cookies(`${url}/admin/`);
+    assert.ok(!cookies.some((c) => c.name === "__Secure-monorm-oidc"), "the flow cookie ends with the callback");
+    await context.close();
+  } finally {
+    other.removeAllListeners("exit");
+    other.kill("SIGTERM");
+    await idp.close();
     rmSync(copy, { recursive: true, force: true });
   }
 });
