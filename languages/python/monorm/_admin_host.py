@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import functools
 import os
+import secrets
 from typing import Any
 
 from monorm_auth import authenticate, validate_password
+from monorm_auth.hashers import make_password
 from monorm_auth.password import PasswordRule, load_rules
 from monorm_auth.permissions import _active_model
 
@@ -68,4 +70,40 @@ async def change_password(database: Any, args: dict[str, Any]) -> dict[str, Any]
     return {"changed": True, "password_hash": user.password}
 
 
-HOST = {"auth.authenticate": authenticate_user, "auth.user": read_user, "auth.change_password": change_password}
+async def sso_login(database: Any, args: dict[str, Any]) -> dict[str, Any]:
+    """The user of a verified single sign-on login: found by username, else created, and the role membership set to the roles of the claim.
+
+    An inactive user is returned as it is and nothing changes. A name in ``roles`` that no role has grants nothing.
+    A new user gets a random password that nobody knows, so only the single sign-on reaches the account.
+    """
+    registry = database._registry
+    user_model = _active_model("User", registry)
+    role_model = _active_model("Role", registry)
+    join = _active_model(f"{user_model.__name__}Role", registry)
+    users = user_model.objects.using(database)
+    user = await users.filter(user_model.username == args["username"]).first()
+    created = user is None
+    if user is None:
+        row = {"username": args["username"], "email": args.get("email") or "", "password": make_password(secrets.token_urlsafe(32))}
+        await users.insert_many([row]).on_conflict(user_model.username, update=False)
+        user = await users.filter(user_model.username == args["username"]).first()
+        assert user is not None
+    elif not user.is_active:
+        return {"user": _user_json(user), "created": False}
+    names = list(dict.fromkeys(args.get("roles") or []))
+    wanted = {r.id for r in await role_model.objects.using(database).filter(role_model.name.in_(names))} if names else set()
+    held = join.objects.using(database).filter(join.user_id == user.id)
+    current = {j.role_id for j in await held}
+    if current - wanted:
+        await held.filter(join.role_id.in_(sorted(current - wanted))).delete()
+    if wanted - current:
+        await join.objects.using(database).insert_many([{"user_id": user.id, "role_id": r} for r in sorted(wanted - current)])
+    return {"user": _user_json(user), "created": created}
+
+
+HOST = {
+    "auth.authenticate": authenticate_user,
+    "auth.user": read_user,
+    "auth.change_password": change_password,
+    "auth.sso_login": sso_login,
+}

@@ -711,7 +711,7 @@ export type UploadFile = readonly [filename: string, data: string | Uint8Array, 
 export interface LoginOptions {
   /** The signing secret (`MONORM_ADMIN_SECRET`): at least 32 bytes. */
   readonly secret: string;
-  /** `idle_timeout` and `session_timeout` (whole seconds above 0), `origins` and `trusted_proxies`. */
+  /** `idle_timeout` and `session_timeout` (whole seconds above 0), `origins`, `trusted_proxies`, `base_path` and `oidc` (`issuer`, `client_id`, `client_secret`, `roles_claim`, `scopes`, `hd`). */
   readonly settings?: Readonly<Record<string, unknown>>;
   /** The address that the rate limit sees. */
   readonly ip?: string;

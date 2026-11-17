@@ -1223,7 +1223,8 @@ class Admin:
         ip: str = "127.0.0.1",
     ) -> AdminTestClient:
         """``user=`` is the in-memory path with no login. ``secret=`` (at least 32 bytes) runs the router with login;
-        ``settings`` then takes ``idle_timeout`` and ``session_timeout`` (whole seconds), ``origins`` and ``trusted_proxies``.
+        ``settings`` then takes ``idle_timeout`` and ``session_timeout`` (whole seconds), ``origins``, ``trusted_proxies``,
+        ``base_path`` and ``oidc`` (``issuer``, ``client_id``, ``client_secret``, ``roles_claim``, ``scopes``, ``hd``).
         A wrong secret raises ``ValueError`` at the first request."""
         from .db import resolve
 

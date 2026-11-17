@@ -66,7 +66,17 @@ async def audit(db, models):
 
 def test_each_strategy_lists_its_names(world):
     site, db, models = world
-    assert site.permissions == ["admin.access", "admin.read_role", "admin.manage_role", "admin.read_permission", "admin.manage_permission"]
+    assert site.permissions == [
+        "admin.access",
+        "admin.read_role",
+        "admin.manage_role",
+        "admin.read_permission",
+        "admin.manage_permission",
+        "admin.read_adminlogentry",
+        "admin.manage_adminlogentry",
+        "admin.read_userrole",
+        "admin.manage_userrole",
+    ]
     registry = site._registry
     model = admin.Admin(registry, permissions="model", label="staff")
     model.register(models["Role"], {"actions": ["export"], "field_permissions": ["see_name"]})
@@ -78,6 +88,18 @@ def test_each_strategy_lists_its_names(world):
         "staff.view_role",
         "staff.see_name",
         "staff.export_role",
+        "staff.add_adminlogentry",
+        "staff.change_adminlogentry",
+        "staff.delete_adminlogentry",
+        "staff.view_adminlogentry",
+        "staff.add_permission",
+        "staff.change_permission",
+        "staff.delete_permission",
+        "staff.view_permission",
+        "staff.add_userrole",
+        "staff.change_userrole",
+        "staff.delete_userrole",
+        "staff.view_userrole",
     ]
     only = admin.Admin(registry, permissions="access")
     only.register(models["Role"])
@@ -88,7 +110,7 @@ def test_perms_with_delete_adds_a_delete_name(world):
     site, db, models = world
     split = admin.Admin(site._registry)
     split.register(models["Role"], {"perms": ["read", "manage", "delete"]})
-    assert split.permissions[-1] == "admin.delete_role"
+    assert "admin.delete_role" in split.permissions
 
 
 def test_a_wrong_permission_option_is_an_admin_config_error(world):
@@ -111,12 +133,12 @@ def test_a_wrong_permission_option_is_an_admin_config_error(world):
 async def test_sync_creates_the_names_once_and_reports_stale_names_without_deleting_them(world):
     site, db, models = world
     first = await site.sync_permissions(db)
-    assert first.created == 5 and first.stale == ()
+    assert first.created == 9 and first.stale == ()
     perm = models["Permission"]
     await perm.objects.using(db).insert_many([{"label": "admin", "codename": "gone", "name": "Can gone"}, {"label": "other", "codename": "x", "name": "x"}])
     second = await site.sync_permissions(db)
     assert (second.created, second.stale) == (0, ("admin.gone",))
-    assert await perm.objects.using(db).count() == 7
+    assert await perm.objects.using(db).count() == 11
 
 
 async def test_a_role_grant_reads_and_a_missing_grant_is_a_403_with_an_audit_row(world):
@@ -153,7 +175,7 @@ async def test_a_superuser_has_everything_but_allow_limits_it_and_an_inactive_us
     limited.register(models["Permission"])
     assert (await limited.test_client(db, user=su).get(ROLES)).status == 403
     names = [r["name"] for r in (await limited.test_client(db, user=su).get(LIST)).json()["resources"]]
-    assert names == ["Permission"]
+    assert names == ["Permission", "AdminLogEntry", "UserRole"]
 
 
 async def test_the_grants_cost_one_statement_for_a_user_and_none_for_a_superuser(world):
@@ -185,12 +207,12 @@ async def test_pattern_grants_seed_roles_and_a_second_run_changes_nothing(world)
     seeded.register(models["Permission"])
     await seeded.sync_permissions(db)
     first = await seeded.seed_roles(db)
-    assert (len(first.roles_created), first.grants) == (2, 4)
+    assert (len(first.roles_created), first.grants) == (2, 6)
     assert (await seeded.seed_roles(db)).grants == 0 and (await seeded.seed_roles(db)).roles_created == ()
     role = models["Role"]
     support = await role.objects.using(db).filter(role.name == "support").first()
     rows = await models["RolePermission"].objects.using(db).filter(models["RolePermission"].role_id == support.id)
-    assert len(rows) == 3
+    assert len(rows) == 5
     assert await role.objects.using(db).count() == 2
 
 

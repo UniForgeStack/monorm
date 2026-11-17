@@ -83,7 +83,17 @@ async function audit(db: Database, models: Record<string, Loose>): Promise<[stri
 
 for (const provider of PROVIDERS) {
   test(`each strategy lists its names (${provider})`, () => world(provider, async ({ site, registry, models }) => {
-    assert.deepEqual(site.permissions, ["admin.access", "admin.read_role", "admin.manage_role", "admin.read_permission", "admin.manage_permission"]);
+    assert.deepEqual(site.permissions, [
+      "admin.access",
+      "admin.read_role",
+      "admin.manage_role",
+      "admin.read_permission",
+      "admin.manage_permission",
+      "admin.read_adminlogentry",
+      "admin.manage_adminlogentry",
+      "admin.read_userrole",
+      "admin.manage_userrole",
+    ]);
     const model = new Admin(registry, { permissions: "model", label: "staff" });
     model.register(models["Role"], { actions: ["export"], fieldPermissions: ["see_name"] });
     assert.deepEqual(model.permissions, [
@@ -94,6 +104,18 @@ for (const provider of PROVIDERS) {
       "staff.view_role",
       "staff.see_name",
       "staff.export_role",
+      "staff.add_adminlogentry",
+      "staff.change_adminlogentry",
+      "staff.delete_adminlogentry",
+      "staff.view_adminlogentry",
+      "staff.add_permission",
+      "staff.change_permission",
+      "staff.delete_permission",
+      "staff.view_permission",
+      "staff.add_userrole",
+      "staff.change_userrole",
+      "staff.delete_userrole",
+      "staff.view_userrole",
     ]);
     const only = new Admin(registry, { permissions: "access" });
     only.register(models["Role"]);
@@ -103,7 +125,7 @@ for (const provider of PROVIDERS) {
   test(`perms with delete adds a delete name (${provider})`, () => world(provider, async ({ registry, models }) => {
     const split = new Admin(registry);
     split.register(models["Role"], { perms: ["read", "manage", "delete"] });
-    assert.equal(split.permissions.at(-1), "admin.delete_role");
+    assert.ok(split.permissions.includes("admin.delete_role"));
   }));
 
   test(`a wrong permission option is an admin config error (${provider})`, () => world(provider, async ({ site, registry, models }) => {
@@ -123,7 +145,7 @@ for (const provider of PROVIDERS) {
 
   test(`sync creates the names once and reports stale names without deleting them (${provider})`, () => world(provider, async ({ site, db, models }) => {
     const first = await site.syncPermissions(db);
-    assert.deepEqual([first.created, first.stale], [5, []]);
+    assert.deepEqual([first.created, first.stale], [9, []]);
     const perm = models["Permission"];
     await perm.objects.using(db).insertMany([
       { label: "admin", codename: "gone", name: "Can gone" },
@@ -131,7 +153,7 @@ for (const provider of PROVIDERS) {
     ]);
     const second = await site.syncPermissions(db);
     assert.deepEqual([second.created, second.stale], [0, ["admin.gone"]]);
-    assert.equal(await perm.objects.using(db).count(), 7);
+    assert.equal(await perm.objects.using(db).count(), 11);
   }));
 
   test(`a role grant reads and a missing grant is a 403 with an audit row (${provider})`, () => world(provider, async ({ site, db, models }) => {
@@ -168,7 +190,7 @@ for (const provider of PROVIDERS) {
     limited.register(models["Permission"]);
     assert.equal((await limited.testClient(db, { user: su }).get(ROLES)).status, 403);
     const names = (await limited.testClient(db, { user: su }).get(LIST)).json().resources.map((r: Loose) => r.name);
-    assert.deepEqual(names, ["Permission"]);
+    assert.deepEqual(names, ["Permission", "AdminLogEntry", "UserRole"]);
   }));
 
   test(`the grants cost one statement for a user and none for a superuser (${provider})`, () => world(provider, async ({ site, db, models }) => {
@@ -197,13 +219,13 @@ for (const provider of PROVIDERS) {
     seeded.register(models["Permission"]);
     await seeded.syncPermissions(db);
     const first = await seeded.seedRoles(db);
-    assert.deepEqual([first.rolesCreated.length, first.grants], [2, 4]);
+    assert.deepEqual([first.rolesCreated.length, first.grants], [2, 6]);
     const again = await seeded.seedRoles(db);
     assert.deepEqual([again.rolesCreated.length, again.grants], [0, 0]);
     const Role = models["Role"];
     const support = await Role.objects.using(db).filter(Role.name.eq("support")).first();
     const Through = models["RolePermission"];
-    assert.equal((await Through.objects.using(db).filter(Through.roleId.eq(support.id))).length, 3);
+    assert.equal((await Through.objects.using(db).filter(Through.roleId.eq(support.id))).length, 5);
     assert.equal(await Role.objects.using(db).count(), 2);
   }));
 

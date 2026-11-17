@@ -5,7 +5,9 @@
  * the request. The Rust service never hashes or compares a password. A host function must be async and
  * use the `database` it gets: a statement on another handle waits for a connection of its own.
  */
+import { randomBytes } from "node:crypto";
 import { authenticate } from "./auth/auth.js";
+import { makePassword } from "./auth/hashers.js";
 import { loadRules, type PasswordRule, validatePassword } from "./auth/password.js";
 import { activeModel } from "./auth/permissions.js";
 import type { Database } from "./db.js";
@@ -62,6 +64,38 @@ export const HOST: Readonly<Record<string, HostFunction>> = {
     user.setPassword(args.new_password);
     await user.update({ password: user.password });
     return { changed: true, password_hash: user.password };
+  },
+  /**
+   * The user of a verified single sign-on login: found by username, else created, and the role membership set to the roles of the claim.
+   * An inactive user is returned as it is and nothing changes. A name in `roles` that no role has grants nothing.
+   * A new user gets a random password that nobody knows, so only the single sign-on reaches the account.
+   */
+  async "auth.sso_login"(database, args) {
+    const User: Record<string, any> = activeModel("User", database.registry);
+    const Role: Record<string, any> = activeModel("Role", database.registry);
+    const Join: Record<string, any> = activeModel(`${User["_meta"].name}Role`, database.registry);
+    const users = User["objects"].using(database);
+    const find = () => users.filter(User["username"].eq(args.username)).first();
+    let user = await find();
+    const created = user === null || user === undefined;
+    if (created) {
+      const row = { username: args.username, email: args.email ?? "", password: makePassword(randomBytes(32).toString("base64url")) };
+      await users.insertMany([row]).onConflict([User["username"]], { update: false });
+      user = await find();
+    } else if (!user.isActive) {
+      return { user: userJson(user), created: false };
+    }
+    const names = [...new Set<string>(args.roles ?? [])];
+    const wanted = new Set<unknown>(
+      names.length === 0 ? [] : ((await Role["objects"].using(database).filter(Role["name"].in(names))) as { id: unknown }[]).map((r) => r.id),
+    );
+    const held = Join["objects"].using(database).filter(Join["userId"].eq(user.id));
+    const current = new Set<unknown>(((await held) as { roleId: unknown }[]).map((j) => j.roleId));
+    const drop = [...current].filter((r) => !wanted.has(r));
+    const add = [...wanted].filter((r) => !current.has(r));
+    if (drop.length > 0) await held.filter(Join["roleId"].in(drop)).delete();
+    if (add.length > 0) await Join["objects"].using(database).insertMany(add.map((roleId) => ({ userId: user.id, roleId })));
+    return { user: userJson(user), created };
   },
 };
 
