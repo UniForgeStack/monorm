@@ -281,5 +281,23 @@ pub fn drop_all(schema: &Schema) -> Result<Vec<String>> {
     Ok(out)
 }
 
+/// Empties every table of the schema, for test isolation: one `TRUNCATE ... RESTART IDENTITY CASCADE`
+/// on PostgreSQL; `DELETE` and the `AUTOINCREMENT` reset on SQLite. Views stay.
+pub fn truncate_all(schema: &Schema) -> Result<Vec<String>> {
+    let current = snapshot(schema)?;
+    if current.tables.is_empty() {
+        return Ok(Vec::new());
+    }
+    if current.dialect == crate::dialect::Dialect::Sqlite {
+        let mut out: Vec<String> = current.tables.iter().rev().map(|t| format!("DELETE FROM {}", pg::ident(&t.name))).collect();
+        if current.tables.iter().any(|t| t.columns.iter().any(|c| c.identity)) {
+            out.push("DELETE FROM sqlite_sequence".into());
+        }
+        return Ok(out);
+    }
+    let names: Vec<String> = current.tables.iter().map(|t| pg::ident(&t.name)).collect();
+    Ok(vec![format!("TRUNCATE {} RESTART IDENTITY CASCADE", names.join(", "))])
+}
+
 #[cfg(test)]
 mod tests;

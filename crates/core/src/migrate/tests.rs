@@ -2141,3 +2141,11 @@ fn a_schema_made_without_a_baseline_drops_no_rule() {
     assert!(!sql(&plan.up).iter().any(|q| q.starts_with("DROP RULE")));
     assert!(sql(&plan.up).iter().any(|q| q.starts_with("CREATE TRIGGER \"soft_delete\"")));
 }
+
+#[test]
+fn truncate_all_empties_every_table_and_restarts_identities() {
+    let pg = with_views("postgres", "text", vec![view("Titles", BODY, json!({}))]);
+    assert_eq!(truncate_all(&pg).unwrap(), ["TRUNCATE \"posts\" RESTART IDENTITY CASCADE"]);
+    let lite = with_views("sqlite", "text", vec![]);
+    assert_eq!(truncate_all(&lite).unwrap(), ["DELETE FROM \"posts\"", "DELETE FROM sqlite_sequence"]);
+}

@@ -1146,6 +1146,15 @@ impl Engine {
         })
     }
 
+    /// Empties every model table and restarts identities (test isolation).
+    fn truncate_tables<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let stmts = migrate::truncate_all(&self.schema).map_err(schema_err)?;
+        let conn = self.conn(None);
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            exec::run_schema_script(conn, stmts).await.map_err(engine_err)
+        })
+    }
+
     /// `REFRESH MATERIALIZED VIEW [CONCURRENTLY]` for the view model `model`; a `QueryError` for any other model.
     #[pyo3(signature = (model, concurrently = false, tx = None))]
     fn refresh<'py>(

@@ -274,6 +274,7 @@ export interface NativeEngine extends NativeInspector {
   migrationFinish(tx: NativeTransaction, name: string, path: string): Promise<void>;
   createTables(): Promise<void>;
   dropTables(): Promise<void>;
+  truncateTables(): Promise<void>;
   refresh(model: string, concurrently: boolean, tx: NativeTransaction | null): Promise<void>;
   close(): Promise<void>;
 }

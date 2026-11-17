@@ -1406,6 +1406,14 @@ impl Engine {
         env.spawn_future(async move { exec::run_schema_script(conn, stmts).await.map_err(engine_err) })
     }
 
+    /// Empties every model table and restarts identities (test isolation).
+    #[napi]
+    pub fn truncate_tables<'env>(&self, env: &'env Env) -> napi::Result<PromiseRaw<'env, ()>> {
+        let stmts = migrate::truncate_all(&self.schema).map_err(schema_err)?;
+        let conn = self.conn(None);
+        env.spawn_future(async move { exec::run_schema_script(conn, stmts).await.map_err(engine_err) })
+    }
+
     /// `REFRESH MATERIALIZED VIEW [CONCURRENTLY]` for the view model `model`; a `QueryError` for any other model.
     #[napi]
     pub fn refresh<'env>(
