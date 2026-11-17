@@ -1,5 +1,5 @@
 id = "monorm.history"
-version = "0.1.0"
+version = "0.1.2"
 abi = "0.2"
 library = "monorm_history"
 schema_contract = "5.3"
@@ -42,3 +42,13 @@ kind = "value"
 kind = "value"
 [attributes.arguments.scope]
 kind = "value"
+
+[python]
+source = "python/monorm_history"
+query_set = "HistoryQuerySet"
+instance = "HistoryInstance"
+
+[typescript]
+source = "typescript/src"
+query_set = "historyQuerySet"
+instance = "HistoryInstance"

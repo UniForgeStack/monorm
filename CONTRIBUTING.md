@@ -38,9 +38,11 @@ python -m pytest -q apps/auth/python/tests
 python extensions/inherit/tests/public/python.py
 python extensions/query-defaults/tests/public/python.py
 python extensions/scope/tests/public/python.py
+python extensions/history/tests/public/python.py
 (cd languages/js && node ../../extensions/inherit/tests/public/node.mjs)
 (cd languages/js && node ../../extensions/query-defaults/tests/public/node.mjs)
 (cd languages/js && node ../../extensions/scope/tests/public/node.mjs)
+(cd languages/js && node ../../extensions/history/tests/public/node.mjs)
 scripts/check-extension-packages.sh  # needs uv, maturin, node and bun; builds the one wheel and the one tarball and installs them in fresh Python, Node and Bun consumers; PostgreSQL and SQLite
 scripts/check-init.sh  # needs the local `maturin develop` and `npm run assemble` builds, node and bun; `monorm init` on SQLite: a Python project runs, a TypeScript project runs on Node and Bun, `create-monorm` wraps it
 (cd crates/admin/ui && npm ci && npm run build && npm run size && test -z "$(git status --porcelain -- dist)")   # the committed dist equals a fresh build (Node 24, as in CI)

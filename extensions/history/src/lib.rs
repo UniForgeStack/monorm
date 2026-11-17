@@ -134,7 +134,9 @@ fn sqlite_value(field: &TrackedField, value: &str) -> String {
 fn data_expr(dialect: Dialect, fields: &[TrackedField], prefix: &str) -> String {
     let pair = |f: &TrackedField| {
         let value = format!("{prefix}.{}", ident(&f.column));
-        match dialect { Dialect::Postgres => format!("{}, {value}", literal(&f.name)), Dialect::Sqlite => format!("{}, {}", literal(&f.name), sqlite_value(f, &value)) }
+        // A decimal is text in `data`: a JSON number decodes as a float and loses digits.
+        let pg = if f.ty == ColType::Decimal { format!("{value}::{}", if f.array { "text[]" } else { "text" }) } else { value.clone() };
+        match dialect { Dialect::Postgres => format!("{}, {pg}", literal(&f.name)), Dialect::Sqlite => format!("{}, {}", literal(&f.name), sqlite_value(f, &value)) }
     };
     match dialect {
         Dialect::Postgres => fields.chunks(PAIRS).map(|c| format!("jsonb_build_object({})", c.iter().map(pair).collect::<Vec<_>>().join(", "))).collect::<Vec<_>>().join(" || "),

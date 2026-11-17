@@ -154,3 +154,12 @@ fn a_write_record_on_the_root_of_a_deep_chain_reaches_every_level() {
     let err = build(json!({"write_assignments": [on("Parent", assign("changed", "now", json!(["update"])))]})).err().unwrap();
     assert!(err.contains("model Parent:") && err.contains("declare it on Grand"), "{err}");
 }
+
+#[test]
+fn published_scope_keys_are_scope_keys() {
+    let none = prepare(json!({})).unwrap();
+    assert!(none.scope_keys().is_empty());
+    let schema = prepare(json!({"published_scope_keys": [{"source": "ext-a", "key": "user"}]})).unwrap();
+    assert_eq!(schema.scope_keys().into_iter().collect::<Vec<_>>(), ["user"]);
+    assert_eq!(schema.published_scope_keys().collect::<Vec<_>>(), ["user"]);
+}

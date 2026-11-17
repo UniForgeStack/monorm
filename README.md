@@ -191,7 +191,7 @@ You need `uv`, Rust (`cargo`), and Node 20.19+ or 22.12+ (or Bun) for the TypeSc
 | Auth app (in the `monorm` package) | [auth.md](docs/apps/auth.md) |
 
 Build-time extensions are Rust crates. The `monorm` package has these built in:
-proxy models, query defaults, model composition, file storage, generic relations, timestamps, soft delete, locking and inheritance.
+proxy models, query defaults, model composition, file storage, generic relations, timestamps, soft delete, locking, inheritance and history.
 See the [extension index](docs/README.md#feature-extensions).
 
 ## Databases and platforms

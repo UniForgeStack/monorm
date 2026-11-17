@@ -8,6 +8,7 @@ import type { Database } from "./db.js";
 import { native } from "./native.js";
 
 export { hardDeleteStatement } from "./query.js";
+export { parseTime } from "./date-micros.js";
 
 export const LANGUAGE_CONTRACT = 1;
 

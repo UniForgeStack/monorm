@@ -1,0 +1,13 @@
+datasource db {
+  provider = "sqlite"
+}
+
+model Post {
+  id    Int     @id @default(autoincrement())
+  title String
+  body  String?
+  views Int     @default(0)
+
+  @@history.track
+  @@map("hx_pub_posts")
+}

@@ -26,7 +26,7 @@ npm install monorm
 
 ## The built-in extensions
 
-The built-in extensions are `monorm.timestamps`, `monorm.soft-delete`, `monorm.locking`, `monorm.inherit`, `monorm.query-defaults`, `monorm.generic`, `monorm.proxy`, `monorm.composition` and `monorm.file-storage`.
+The built-in extensions are `monorm.timestamps`, `monorm.soft-delete`, `monorm.locking`, `monorm.inherit`, `monorm.query-defaults`, `monorm.generic`, `monorm.proxy`, `monorm.composition`, `monorm.file-storage` and `monorm.history`.
 Each one has a native library, a manifest and a runtime module.
 A library loads only when the schema uses its extension, so a schema with no extension attribute opens no library.
 
@@ -311,6 +311,12 @@ Schema contract 5.3 also adds `Manifest.rule_claims`, a `RuleClaim` (`attribute`
 The core drops a claimed rule (`DROP RULE IF EXISTS`) before it creates the triggers that replace it, and the baseline form leaves out a trigger with `replaces_rule`.
 A new database has no rule, so the drop does nothing there.
 `soft-delete` declares the claim.
+Schema contract 5.3 also adds `Manifest.extension_records` and `Manifest.added_triggers`.
+An `ExtensionRecord` (`source`, `model`, `kind`, `data`) is a record that an extension pass keeps for its language code and for `pull`; the host reads none of them.
+An `AddedTrigger` (`model`, `trigger`) adds a trigger to a model of an earlier schema batch; `merge_definition` adds it to that model and drops the list.
+`stamp_expression_records` sets `schema_contract_minor = 3` when `extension_records` is not empty, because an older engine refuses the unknown `extension_records` field of the IR as a parse error, and the stamp turns that into the version error.
+`added_triggers` needs no stamp: the IR holds the trigger in the model after the merge.
+`history` uses both.
 A `ModelView` (`model`, `source`, `root`, `row_filter`, `insert_table`) makes `model` read and write the table of `root`; `source` is the nearest parent. `row_filter` is a `field` and a list of `values`. Each value must be an enum member of `field`, or `define()` fails. The core builds the literal SQL; an extension never gives SQL text. The filter applies to root reads, joins, and update and delete targets, and `without_defaults()` does not remove it.
 A `ResultCheck` (`model`, `field`, `non_null`, `allowed`, `code`) makes the engine warn when a result row breaks the check. The warning carries `code`.
 An attribute with `view_source = true` declares the source model of a view. The DSL lowering finds views through this key, not through an attribute name.

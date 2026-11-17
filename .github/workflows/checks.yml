@@ -116,6 +116,7 @@ jobs:
       - run: python extensions/inherit/tests/public/python.py
       - run: python extensions/query-defaults/tests/public/python.py
       - run: python extensions/scope/tests/public/python.py
+      - run: python extensions/history/tests/public/python.py
       # The admin UI in a real browser; the browser download stays out of the default npm install.
       - run: npm ci && npx playwright install --with-deps chromium && npm test
         working-directory: crates/admin/ui/e2e
@@ -173,6 +174,7 @@ jobs:
           node ../../extensions/inherit/tests/public/node.mjs
           node ../../extensions/query-defaults/tests/public/node.mjs
           node ../../extensions/scope/tests/public/node.mjs
+          node ../../extensions/history/tests/public/node.mjs
         working-directory: languages/js
 
   release-scripts:
