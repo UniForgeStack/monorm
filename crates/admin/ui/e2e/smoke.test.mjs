@@ -611,3 +611,58 @@ test("a package widget and a package detail tab load under the page policy and c
   assert.deepEqual(problems, []);
   await context.close();
 });
+
+test("a site at a non-default base path signs in, opens a list, a deep link and a reload, and scopes its cookies", async () => {
+  // A copy of the project whose `[admin]` section sets the base path, on its own port and database file.
+  const copy = `${dir}-bundler`;
+  cpSync(dir, copy, { recursive: true });
+  const toml = readFileSync(join(copy, "monorm.toml"), "utf8");
+  assert.ok(toml.includes("[admin]"), "the generated monorm.toml has an [admin] section");
+  writeFileSync(join(copy, "monorm.toml"), toml.replace("[admin]", '[admin]\nbase_path = "/bundler/admin"'));
+  const env = { ...process.env, PYTHONPATH: ROOT, MONORM_DATABASE_URL: `sqlite://${copy}/app.db`, MONORM_ADMIN_SECRET: SECRET, MONORM_ADMIN_PORT: "0" };
+  const other = spawn(PYTHON, ["-m", "monorm", "admin"], { cwd: copy, env, stdio: ["ignore", "ignore", "pipe"] });
+  try {
+    const url = await new Promise((resolveUrl, reject) => {
+      let text = "";
+      other.stderr.on("data", (chunk) => {
+        text += chunk;
+        const found = /"url":"([^"]+)"/.exec(text);
+        if (found && text.includes('"listening"')) resolveUrl(found[1]);
+      });
+      other.on("exit", (code) => reject(new Error(`the admin ended with ${code}\n${text}`)));
+    });
+    const context = await browser.newContext({ timezoneId: ZONE, locale: "en-US" });
+    const page = await context.newPage();
+    const problems = [];
+    page.on("console", (m) => m.type() === "error" && !m.text().includes("status of 401") && problems.push(`console: ${m.text()}`));
+    page.on("pageerror", (e) => problems.push(`page error: ${e.message}`));
+    page.on("requestfailed", (r) => problems.push(`request failed: ${r.url()} ${r.failure()?.errorText}`));
+    page.on("response", (r) => r.status() >= 400 && r.status() !== 401 && problems.push(`HTTP ${r.status()}: ${r.url()}`));
+
+    // The bare base path, with no slash, loads the app, which goes to the login page under the base.
+    await page.goto(`${url}/bundler/admin`);
+    await page.waitForURL(`${url}/bundler/admin/-/login`);
+    await page.getByLabel("Username").fill("ann");
+    await page.getByLabel("Password").fill("pw-of-ann");
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await page.getByRole("navigation", { name: "Resources" }).getByRole("link", { name: "Book", exact: true }).click();
+    await page.waitForURL(`${url}/bundler/admin/Book`);
+    await page.getByText("2 records").waitFor();
+    // A deep link and a reload load the assets from the base path.
+    await page.goto(`${url}/bundler/admin/Book/1`);
+    await page.getByRole("heading", { name: /Book/ }).waitFor();
+    await page.reload();
+    await page.getByText("First").first().waitFor();
+    const cookies = await context.cookies(`${url}/bundler/admin/`);
+    const session = cookies.find((c) => c.name === "__Secure-monorm-session");
+    assert.ok(session && session.path === "/bundler/admin/" && session.httpOnly, JSON.stringify(cookies));
+    assert.equal((await context.request.get(`${url}/admin/api/resources/Book`)).status() === 200, false, "nothing answers under the default base");
+    assert.equal((await context.request.get(`${url}/healthz`)).status(), 200, "the health route stays at the root");
+    assert.deepEqual(problems, []);
+    await context.close();
+  } finally {
+    other.removeAllListeners("exit");
+    other.kill("SIGTERM");
+    rmSync(copy, { recursive: true, force: true });
+  }
+});

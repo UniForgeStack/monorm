@@ -364,14 +364,15 @@ The list takes exact IP addresses, not ranges. It is empty by default: behind a 
 
 ### Cookies, CSRF and headers
 
-The cookies are `__Host-monorm-session` (`HttpOnly`) and `__Host-monorm-csrf`.
-Both are `Secure`, `SameSite=Lax` and `Path=/`.
-A browser accepts a `__Host-` cookie only over HTTPS, or from `localhost`: serve the admin behind TLS.
+The cookies are `__Secure-monorm-session` (`HttpOnly`) and `__Secure-monorm-csrf`.
+Both are `Secure`, `SameSite=Lax` and `Path=<base_path>/`, for example `Path=/admin/`: see [Base path and cookie scope](#base-path-and-cookie-scope).
+A browser accepts a `__Secure-` cookie only over HTTPS, or from `localhost`: serve the admin behind TLS.
+A `__Host-monorm-*` cookie from an older version is ignored: the user signs in once again.
 The session ends after `idle_timeout` without a request (default 30 minutes) or after `session_timeout` (default 12 hours).
 
 The API takes JSON only: a write with another content type answers `415`.
 A script or API client sends every write (`POST`) with:
-1. The CSRF token: the value of the `__Host-monorm-csrf` cookie, in the header `X-CSRF-Token`.
+1. The CSRF token: the value of the `__Secure-monorm-csrf` cookie, in the header `X-CSRF-Token`.
 2. An `Origin` (or `Referer`) header that equals the `Host` of the request, or an entry of `origins`.
 
 Without them the answer is `403` (`BadCsrfToken` or `BadOrigin`).
@@ -382,7 +383,7 @@ The login itself needs them: send `GET /login` first to get the CSRF cookie.
 
 ```sh
 curl -c jar -s http://localhost:8000/admin/api/login > /dev/null
-token=$(awk '$6=="__Host-monorm-csrf"{print $7}' jar)
+token=$(awk '$6=="__Secure-monorm-csrf"{print $7}' jar)
 curl -b jar -c jar -H "X-CSRF-Token: $token" -H "Origin: http://localhost:8000" \
   -H "Content-Type: application/json" -d '{"username":"ann","password":"pw"}' \
   http://localhost:8000/admin/api/login
@@ -971,7 +972,7 @@ One request writes one summary row with `action` `action:<name>` (`bulk_delete` 
 
 ## Routes and answers
 
-The path prefix is a config value, and the default is `/admin/api`.
+The path prefix is a config value, and the default is `<base_path>/api` (`/admin/api`): see [Base path and cookie scope](#base-path-and-cookie-scope).
 
 | Route | Answer |
 |---|---|
@@ -1136,13 +1137,13 @@ The tests run it through the test client on SQLite and PostgreSQL, and the [brow
 
 ## The UI
 
-The server also serves a single-page app at `/admin`.
+The server also serves a single-page app at `<base_path>/` (`/admin` by default).
 It is React and TypeScript with TanStack Query, TanStack Table and Radix primitives, and it speaks only the routes above.
 The build output is committed in `crates/admin/ui/dist`, and the `monorm-admin` crate embeds it.
 So the wheel and the npm addon carry the UI, and no other packaging step exists.
 The files are static: a `GET` of a UI path needs no session, and a reply carries its own `Content-Security-Policy` (`script-src 'self'`).
 A hashed file in `assets/` has `Cache-Control: public, max-age=31536000, immutable`, and `index.html` has `no-store`.
-The UI path `/admin` is a constant; only the API `prefix` is configurable, and `prefix` cannot be `/admin`.
+The UI path is the `base_path` setting, and the page paths below show the default `/admin`.
 
 | Path | Page |
 |---|---|
@@ -1208,6 +1209,51 @@ admin.url(Book, 7n);
 
 Both languages also export `url` at module level for the default admin.
 
+### Base path and cookie scope
+
+The admin serves all its paths under one base path.
+The setting is `base_path` in `[admin]` of `monorm.toml`, the `base_path` option of the Python `Admin`, and the `basePath` option of the TypeScript `Admin`.
+The default is `/admin`.
+In serve mode, a `base_path` in `monorm.toml` replaces the option of the `Admin` object.
+
+The server normalizes the value: it removes a trailing `/`, so `/bundler/admin/` becomes `/bundler/admin`.
+The value must start with one `/`.
+It allows only the characters `A-Z a-z 0-9 - . _ ~` and `/`, and it refuses an empty value, `/`, and an empty, `.` or `..` segment.
+A wrong value is an error when the site is built, and `admin.check()` reports it.
+
+- The UI is under `<base_path>/`, and the default API prefix is `<base_path>/api`.
+- An explicit `prefix` must sit under `<base_path>`, and it cannot be the path of the UI itself.
+  Below `<base_path>`, its first segment cannot be `-`, `assets`, `shared`, `index.html` or the name of a resource: the UI uses these paths.
+- Every URL that the server builds (page links, `admin.url()`, login and logout redirects, file and export routes, custom routes, the widget import map) starts with `<base_path>`.
+- An action redirect is a path that your action gives. Build it with `admin.url()`: the server accepts any path that starts with one `/`.
+- The `base_path` attribute of the Python `Admin` and the `basePath` attribute of the TypeScript `Admin` keep the text that you gave, with a trailing `/` if you wrote one. Build a URL with `admin.url()`, not by joining `base_path` and a path.
+- `/healthz` and `/readyz` stay at the root of the host, for the probes of the pod.
+
+The session and CSRF cookies have `Path=<base_path>/`.
+A browser sends them only to this admin, so two admins on one host (`/a/admin` and `/b/admin`) keep separate sessions: a login or a logout in one has no effect on the other.
+The cookie names are fixed, and the path keeps the admins apart.
+A cookie with `Path=<base_path>/` is not sent to `<base_path>` without the final `/`. The page at `<base_path>` has no session, and the server writes the asset URLs of the page as absolute paths under `<base_path>/`, so it loads and the app calls the API with the cookie.
+The sessions are signed with the secret (see [`MONORM_ADMIN_SECRET`](#monorm_admin_secret)).
+Admins that share one secret accept the cookie of each other where the path matches, so give each admin its own secret if the user lists must stay apart.
+
+A gateway passes the full path to the admin: it does not strip the prefix, and the admin does not read `X-Forwarded-Prefix`.
+This Traefik route sends `/bundler/admin` to an admin with `base_path = "/bundler/admin"`:
+
+```yaml
+http:
+  routers:
+    bundler-admin:
+      rule: "PathPrefix(`/bundler/admin`)"
+      service: bundler-admin
+  services:
+    bundler-admin:
+      loadBalancer:
+        servers:
+          - url: "http://bundler-admin:8000"
+```
+
+Give the probes of the pod the root paths `/healthz` and `/readyz`, not the base path.
+
 ### Browser smoke test
 
 `crates/admin/ui/e2e` holds the first browser suite of the repository.
@@ -1223,6 +1269,7 @@ npm run install-browser     # downloads Chromium, once
 npm test
 ```
 
+One more case starts a second admin with `base_path = "/bundler/admin"` and signs in and opens a list there.
 `MONORM_PYTHON` names another Python than `python`.
 In a source checkout the built-in apps import from the repository, so the test sets `PYTHONPATH` to the repository root.
 
@@ -1278,6 +1325,7 @@ db_settings = { "app.tenant" = "acme" }
 | `db_settings` | none | PostgreSQL settings that every admin transaction sets (see below). |
 | `idle_timeout` | `1800` | Seconds without a request that end a session. |
 | `session_timeout` | `43200` | Seconds after login that end a session in any case. |
+| `base_path` | `/admin` | The path of the whole admin: the UI, the API and the cookies (see [Base path and cookie scope](#base-path-and-cookie-scope)). |
 | `origins` | none | Extra origins that a write may come from, such as `"https://admin.example.com"`. |
 | `trusted_proxies` | none | Peer IP addresses whose `X-Forwarded-For` the login limits believe, such as `"10.0.0.1"`. |
 
