@@ -2,7 +2,8 @@
 
 `@@history.track` writes one event for each insert, update and delete of a row.
 A database trigger writes the event, so raw SQL and other applications are tracked too.
-Each tracker adds an event model, for example `PostEvent` in the table `posts_events`.
+Each tracker adds an event model, for example `PostEvent` in the table `post_events`.
+The table name is the table of the root model plus `_events`.
 This page describes track mode, then [versions mode](#versions-mode-historyversions).
 
 ```prisma
@@ -20,11 +21,11 @@ model Post {
 | --- | --- |
 | `model` | The event model name. Default: `<Model>Event`. A second tracker on the same model needs its own name. |
 | `events` | `[insert, update, delete]` (default: all three). |
-| `row` | `new` (default) or `old`: the row state that an update event holds. |
+| `row` | `new` (default) or `old`: the row state that an update event holds. Another value fails with `row must be old or new`. |
 | `label` | The event label. Default: the event kind. |
 | `when` | A SQL condition on `NEW` and `OLD`. An update writes an event only when it is true. It needs `update` in `events`; without it the schema load fails. |
 | `fields`, `exclude` | The fields that the event holds. Default: every stored field. |
-| `scope` | Scope keys. Each key becomes a column of the event model. |
+| `scope` | Scope keys. Each key becomes a column of the event model. Default: none. |
 
 An update that changes only a tracked-away column (for example `updated_at` from the timestamps extension) writes no event.
 A tracker that lists `fields` writes an update event only when one of them changes.
@@ -37,7 +38,8 @@ Columns: `id`, `row_<key>` (one for each key field of the row), `label`, `data`,
 The event model is write-protected in the application: an insert, update or delete outside `purge` fails with `WriteProtected`.
 
 A composed model has rows in several tables and cannot be tracked. Track each part model.
-The trigger names of a tracker are `h_<suffix>_*`.
+The PostgreSQL trigger names of a tracker are `h_<suffix>_ins`, `h_<suffix>_upd` and `h_<suffix>_del`, with the functions `<table>_h_<suffix>_ins|upd|del`.
+SQLite names them `<table>_h_<suffix>_ins_trigger`, `<table>_h_<suffix>_upd_trigger` and `<table>_h_<suffix>_del_trigger`.
 The suffix is `events` for the default event model, and the snake-case name of a `model:` argument.
 Two trackers of one table with the same suffix fail the schema load; for example `model: "Events"` clashes with the default tracker.
 
@@ -161,5 +163,21 @@ SQLite has no skip: `skip_triggers("history")` raises `QueryError`.
 
 * SQLite has one trigger for each event kind and takes at most 500 tracked fields.
 * A backfill on a large table runs as one statement.
-* `pull` does not read history tables yet.
+* `pull` reads an event table or a version table as a plain model.
+  On PostgreSQL it also writes the triggers as `@@trigger(...)` lines. On SQLite it reports the triggers as a gap.
+  It never writes `@@history.track` or `@@history.versions`, so a schema from `pull` loses the write protection and the API.
+* A schema with `@@history.track(scope: [...])` or `@@history.versions(scope: [...])` and a `@@scope.by` model does not load today.
+  Both extensions declare the effect `behavior.published_scope_keys`, and the loader rejects the second declaration: `conflicting effect behavior.published_scope_keys`.
 * SQLite stamps `effective_at` with whole seconds, so `version_at` cannot tell two versions of one second apart.
+
+## Errors
+
+| Error | Cause and fix |
+| --- | --- |
+| `WriteProtected` | An ORM write to an event model outside `purge`. Use `purge`. Raw SQL is not checked. |
+| `QueryError` from `skip_triggers("history")` | SQLite has no skip. Use PostgreSQL with a role in `bypass_roles`. |
+| `ValueError` from `record` with `"restore"` | Only `restore()` writes that change type. |
+| schema: `when` without `update` in `events` | Add `update` to `events`, or remove `when`. |
+| schema: two trackers with one suffix | Give the second one `model: "Other"`. |
+| schema: a composed model | Track each part model, or use versions mode. |
+| schema: `@@history.versions` on a model with a composite key, a key with no database default, or `of` on the primary key | Use a single-field primary key with a database default, and another field for `of`. |

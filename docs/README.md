@@ -39,13 +39,13 @@ Start with the runnable [quickstart](../examples/quickstart) (Python and TypeScr
 | file-storage | `extensions/file-storage` (`monorm/extensions/file-storage` on npm) | `@storage.file(storage:)` | [file-storage.md](extensions/file-storage.md) |
 | proto | `extensions/proto` (`monorm/extensions/proto` on npm) | `@proto.message("<full name>")` | [proto.md](extensions/proto.md) |
 | generic | `extensions/generic` (`monorm/extensions/generic` on npm) | `@generic.relation(targets:, type:, key:)`, `@@generic.relation`, `@generic.reverse` | [generic-identities.md](schema/generic-identities.md) |
-| timestamps | `extensions/timestamps` (`monorm/extensions/timestamps` on npm) | `@@timestamps.updated_at(name, mode:, upsert:)` | [schema-extensions.md](extensions/schema-extensions.md) |
-| soft-delete | `extensions/soft-delete` (`monorm/extensions/soft-delete` on npm) | `@@soft_delete.deleted_at(name, mode:)` | [schema-extensions.md](extensions/schema-extensions.md) |
-| locking | `extensions/locking` (`monorm/extensions/locking` on npm) | `@@locking.version(name, upsert:)` | [schema-extensions.md](extensions/schema-extensions.md) |
+| timestamps | `extensions/timestamps` (`monorm/extensions/timestamps` on npm) | `@@timestamps.updated_at(name, map:, mode:, upsert:)` | [schema-extensions.md](extensions/schema-extensions.md) |
+| soft-delete | `extensions/soft-delete` (`monorm/extensions/soft-delete` on npm) | `@@soft_delete.deleted_at(name, map:, mode:, rule:)`, `@soft_delete.keep_child_rows` | [schema-extensions.md](extensions/schema-extensions.md) |
+| locking | `extensions/locking` (`monorm/extensions/locking` on npm) | `@@locking.version(name, map:, upsert:)` | [schema-extensions.md](extensions/schema-extensions.md) |
 | inherit | `extensions/inherit` (`monorm/extensions/inherit` on npm) | `@@inherit.abstract`, `@@inherit.extends`, `@@inherit.override` | [inherit.md](extensions/inherit.md) |
-| scope | `extensions/scope` (`monorm/extensions/scope` on npm) | `@@scope.by(key: column)` | [scope.md](extensions/scope.md) |
-| history | `extensions/history` (`monorm/extensions/history` on npm) | `@@history.track(model:, events:, row:, label:, when:, fields:, exclude:, scope:)` | [history.md](extensions/history.md) |
-| query-defaults | `extensions/query-defaults/` (`monorm/extensions/query-defaults` on npm) | `@@query.*`, `@query.selectOut` | [selection-and-defaults.md](schema/selection-and-defaults.md) |
+| scope | `extensions/scope` (`monorm/extensions/scope` on npm) | `@@scope.by(key: field, ...)` | [scope.md](extensions/scope.md) |
+| history | `extensions/history` (`monorm/extensions/history` on npm) | `@@history.track(model:, events:, row:, label:, when:, fields:, exclude:, scope:)`, `@@history.versions(of:, scope:)` | [history.md](extensions/history.md) |
+| query-defaults | `extensions/query-defaults/` (`monorm/extensions/query-defaults` on npm) | `@@query.defaults(filter:, fields:, related:, parent:, order:)`, `@@query.filter(name, expr)`, `@@query.fields`, `@@query.related`, `@@query.order`, `@@query.parent`, `@query.selectOut` | [selection-and-defaults.md](schema/selection-and-defaults.md) |
 
 [optional-packaging.md](contracts/optional-packaging.md#installable-packages) shows how to install them.
 The same doc describes the extension contract: manifests, passes, hooks.

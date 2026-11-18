@@ -43,6 +43,21 @@ model User {
 }
 ```
 
+### Attributes and arguments
+
+| Attribute | Argument | Default |
+| --- | --- | --- |
+| `@@query.defaults(...)` | `filter: <expr>`, `fields: [...]`, `related: [...]`, `parent: "<Model>"`, `order: [...]`. Give any of them. | each option unset |
+| `@@query.filter("<name>", <expr>)` | a name and an expression. Repeat it for more filters. | no filter |
+| `@@query.fields([...])` | one list of field names. `["*"]` resets to all fields. | every public scalar field |
+| `@@query.related([...])` | one list of to-one paths. `[]` clears loading. | no eager loading |
+| `@@query.order("a", "-b nulls last")` | strings, `-` for descending. No argument clears. | no order |
+| `@@query.parent("<Model>")` | one model name | no parent |
+| `@query.selectOut` | none; on a field | the field is in the default read |
+
+An option that is not set inherits the value of the nearest parent.
+The extension adds no column, no index and no trigger.
+
 Each option also has its own attribute.
 One option comes from one place on a model.
 `@@query.filter("<name>", <expr>)` adds a named filter; see "Named filters" below:
@@ -93,6 +108,11 @@ model Post {
 ```python
 Post.objects.without_defaults("published")   # still filtered by "tenant"
 Post.objects.without_defaults()              # no default filter
+```
+
+```ts
+Post.objects.withoutDefaults("published");   // still filtered by "tenant"
+Post.objects.withoutDefaults();              // no default filter
 ```
 
 The name is letters, digits and underscores.
@@ -178,10 +198,10 @@ await scope({ shop: shop.id }, async () => { const orders = await Order.objects.
 ```
 
 * The frontend sends the scope values as parameters of each statement; the value is bound with the type of the column it is compared with.
-* Closed by default: a read, count, exists, update, delete or `update_many` on a model whose default filter reads `scope.shop` raises `QueryError` when no enclosing `scope()` sets `shop`. Relation hops, prefetches and joined targets of that model check it too.
+* Closed by default: a read, count, exists, update, delete or `update_many` on a model whose default filter reads `scope.shop` raises `ScopeMissing` (a `QueryError`) when no enclosing `scope()` sets `shop`. Relation hops, prefetches and joined targets of that model check it too.
   The error names the model, default name and source that read the value, and suggests
   `without_defaults("<name>")`, which bypasses only that default.
-* A NULL scope value (`None`, `null`) raises `QueryError` ("scope.shop is None/null") when a default filter reads it, because `shop_id = NULL` would match no rows.
+* A NULL scope value (`None`, `null`) never reaches a filter: `scope(shop=None)` raises `ValueError` in Python and `scope({ shop: null })` raises `TypeError` in TypeScript. The engine also rejects a NULL value with `QueryError` ("scope.shop is None/null"), because `shop_id = NULL` would match no rows.
   In TypeScript, the binding rejects `undefined` before any filter reads it ("undefined is not a value").
   `0`, `""` and `false` are valid values.
   To read the rows with a NULL `shop_id`, use `without_defaults()` and filter on `shop_id == None`.
@@ -232,3 +252,28 @@ Whole-model shapes, including `load()` without items, retain the original
 materialization fast path. Binding loaders
 use Python `_field_value(name)` or TypeScript `fieldValue(row,name)` to read helper
 keys; neither operation changes public loaded state.
+
+## Errors
+
+| Error | Cause and fix |
+| --- | --- |
+| `@@query.filter takes a name and an expression: @@query.filter("<name>", <expr>)` | The attribute has one argument, or more than two. Give the name first. |
+| `filter name "<name>" must be letters, digits and underscores` | The name has another character. |
+| `the filter name "query" is reserved ...` | Pick another name. |
+| `@@query.filter "<name>" is given twice`, `@@<attr> is given twice` | Keep one declaration. |
+| `<Model>: <option> is set by both <a> and <b>; keep one` | `@@query.defaults(...)` and a single attribute both set one option. Keep one. |
+| `order column "<c>" is not a field of the model`, `... is given twice` | An order column is a field of the model itself, once. |
+| `order column "<c>" can be NULL: write "<c> nulls first" or "<c> nulls last"` | A nullable column needs `nulls first` or `nulls last`. |
+| `query-default inheritance cycle`, `unknown policy parent <X>` | Fix the `parent` chain. |
+| `<Model> already hides soft-deleted rows by default; remove this filter` | Soft delete adds the `deleted` default. Remove the same filter here. |
+| `QueryError`: `<Model>: unknown default "<name>"; available defaults: [...]` | `without_defaults` got a name that the model lacks. |
+| `ScopeMissing` (a `QueryError`) for a missing scope | A default filter reads `scope.<name>` and no `scope()` block sets it. Wrap the call in `scope(...)`, or use `without_defaults("<name>")`. |
+| `NotLoaded` | A field that the defaults or `load()` leave out. Read it with `load(..., reload=True)` or `without_defaults(...)`. |
+
+## Limits
+
+* `pull` does not write `@@query.*` or `@query.selectOut`: these have no database object.
+  Add them to the schema file by hand after a `pull`.
+* A default order sorts all matching rows when no index serves it.
+* A composed child that inherits the order reads the parent's columns through a subquery, which no index serves.
+* A field that the defaults hide is `NotLoaded` after any write.
