@@ -32,6 +32,18 @@ model SLocked {
   @@protected_write
   @@map("s_locked")
 }
+
+model SCode {
+  code String @id
+  note String @default("")
+  @@map("s_codes")
+}
+
+model SBig {
+  id  Int    @id @default(autoincrement())
+  big BigInt @default(0)
+  @@map("s_bigs")
+}
 `;
 
 const NOTES = "/admin/api/resources/SNote";
@@ -295,5 +307,95 @@ for (const provider of PROVIDERS) {
     const rows = await audit(w);
     assert.deepEqual(rows.map((e) => [e.userKey, e.action, e.resource, e.recordKey, e.recordLabel]), [["5", "export", "SNote", "3", "Q3"], ["9", "purge", "", "", ""]]);
     assert.deepEqual(rows[0].changes, { rows: 10 });
+  }));
+
+  test(`a service audit on a key that needs escaping gets the rust key text and the label (${provider})`, () => world(provider, async (w) => {
+    const Code = w.models["SCode"];
+    const config: ResourceConfig = {
+      async create(ctx, values) {
+        const db = ctx.database!;
+        return await db.transaction(async () => {
+          const made = await Code.objects.using(db).insert(values);
+          await ctx.audit(made);
+          return made;
+        });
+      },
+      async update(ctx, qs, changes) {
+        await ctx.database!.transaction(async () => {
+          await qs.update(changes);
+          await ctx.audit();
+        });
+      },
+    };
+    const site = new Admin(w.registry);
+    site.register(Code, config);
+    const client = site.testClient(w.db, { user: SU });
+    for (const key of ["a b", "a,b"]) {
+      const made = await client.post("/admin/api/resources/SCode", { json: { set: { code: key, note: "n" } } });
+      assert.equal(made.status, 201, made.text);
+      const r = await client.patch(`/admin/api/resources/SCode/${made.json().key}`, { json: { set: { note: "m" }, loaded: { note: "n" } } });
+      assert.equal(r.status, 200, r.text);
+    }
+    const rows = await audit(w);
+    assert.deepEqual(rows.map((a) => [a.action, a.recordKey]), [["create", "a%20b"], ["update", "a%20b"], ["create", "a%2Cb"], ["update", "a%2Cb"]]);
+    assert.ok(rows.every((a) => a.recordLabel !== ""));
+  }));
+
+  test(`a bigint value sent as a string reaches the service as an int (${provider})`, () => world(provider, async (w) => {
+    const Big = w.models["SBig"];
+    const seen: Record<string, unknown> = {};
+    const config: ResourceConfig = {
+      async create(ctx, values) {
+        seen["big"] = values["big"];
+        return await Big.objects.using(ctx.database!).insert(values);
+      },
+    };
+    const site = new Admin(w.registry);
+    site.register(Big, config);
+    const r = await site.testClient(w.db, { user: SU }).post("/admin/api/resources/SBig", { json: { set: { big: "9007199254740993" } } });
+    assert.equal(r.status, 201, r.text);
+    assert.equal(seen["big"], 9007199254740993n);
+  }));
+
+  test(`a route audit gets the rust key text of the model of its record (${provider})`, () => world(provider, async (w) => {
+    const Code = w.models["SCode"];
+    const site = new Admin(w.registry);
+    site.register(Code, {});
+    site.route("POST", "stamp", async (ctx, request) => {
+      const made = await Code.objects.using(ctx.database!).insert({ code: (request.body as { code: string }).code });
+      const child = await w.models["SNote"].objects.using(ctx.database!).insert({ title: "child" });
+      await ctx.audit(made);
+      await ctx.audit(child);
+      await ctx.audit();
+      return { ok: true };
+    });
+    const client = site.testClient(w.db, { user: SU });
+    for (const key of ["a b", "a,b"]) {
+      const r = await client.post("/admin/api/routes/stamp", { json: { code: key } });
+      assert.equal(r.status, 200, r.text);
+    }
+    const rows = await audit(w);
+    const children = (await w.models["SNote"].objects.using(w.db).filter(w.models["SNote"].title.eq("child")).orderBy(w.models["SNote"].id)).map((n: { id: unknown }) => String(n.id));
+    assert.deepEqual(rows.map((a) => [a.action, a.resource, a.recordKey]), [
+      ["service", "SCode", "a%20b"], ["service", "SNote", children[0]], ["service", "", ""],
+      ["service", "SCode", "a%2Cb"], ["service", "SNote", children[1]], ["service", "", ""],
+    ]);
+  }));
+
+  test(`a bigint value that is not a number is a 422 that names the field (${provider})`, () => world(provider, async (w) => {
+    const Big = w.models["SBig"];
+    let calls = 0;
+    const config: ResourceConfig = {
+      async create(ctx, values) {
+        calls++;
+        return await Big.objects.using(ctx.database!).insert(values);
+      },
+    };
+    const site = new Admin(w.registry);
+    site.register(Big, config);
+    const r = await site.testClient(w.db, { user: SU }).post("/admin/api/resources/SBig", { json: { set: { big: "abc" } } });
+    assert.equal(r.status, 422, r.text);
+    assert.deepEqual((r.json() as { fields: Record<string, string[]> }).fields["big"], ["Must be a whole number"]);
+    assert.equal(calls, 0);
   }));
 }

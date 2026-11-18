@@ -138,15 +138,16 @@ class Streams {
 function routeFunction(fn: RouteFunction, streams: Streams): HostFunction {
   return async (database, args) => {
     const ctx = new Context({ user: args.user, requestId: args.request_id ?? "", database, ip: args.ip, userAgent: args.user_agent });
+    ctx.byAdmin = true;
     const request: RouteRequest = { method: args.method, path: args.path, params: args.params ?? {}, query: args.query ?? {}, body: args.body ?? null };
     const result = await fn(ctx, request);
     if (result instanceof Stream) {
-      const out: Record<string, unknown> = { stream: streams.open(result.chunks), content_type: result.contentType, status: result.status };
+      const out: Record<string, unknown> = { stream: streams.open(result.chunks), content_type: result.contentType, status: result.status, audit_keys: ctx.auditKeys };
       if (result.filename !== null) out["filename"] = result.filename;
       return out;
     }
-    if (result instanceof Reply) return { json: jsonable(result.json), status: result.status };
-    return { json: jsonable(result) };
+    if (result instanceof Reply) return { json: jsonable(result.json), status: result.status, audit_keys: ctx.auditKeys };
+    return { json: jsonable(result), audit_keys: ctx.auditKeys };
   };
 }
 

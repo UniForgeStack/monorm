@@ -385,6 +385,11 @@ async fn answer_of(s: &State_, c: Call<'_>, p: Prepared, answer: Value) -> Respo
     let cells = after.clone().or(before.clone()).unwrap_or_default();
     let service = resource.service.get(p.op).is_some();
     let audited = answer["audited"] == Value::Bool(true);
+    if let Err(m) = audit::set_keys(&s.site, c.scope.executor(), &answer).await {
+        let response = server_error(&c.meta, &format!("the write ran but its audit key failed: {m}"));
+        c.scope.rollback().await;
+        return response;
+    }
     if audited && service {
         // The service wrote the row and sent no label: the label rule lives here.
         let label = crate::write::record_label(resource, &cells, &key_text);

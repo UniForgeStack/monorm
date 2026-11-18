@@ -30,6 +30,18 @@ model SLocked {
   @@protected_write
   @@map("s_locked")
 }
+
+model SCode {
+  code String @id
+  note String @default("")
+  @@map("s_codes")
+}
+
+model SBig {
+  id  Int    @id @default(autoincrement())
+  big BigInt @default(0)
+  @@map("s_bigs")
+}
 """
 
 NOTES = "/admin/api/resources/SNote"
@@ -361,3 +373,92 @@ def test_a_service_object_with_an_async_call_is_not_sync_and_the_log_reads_one_k
         key = 7
 
     assert [_actor_key(u) for u in ({"key": 1}, {"id": 2}, Obj(), Keyed(), 9, "x", None)] == [1, 2, 5, 7, 9, "x", None]
+
+
+async def test_a_service_audit_on_a_key_that_needs_escaping_gets_the_rust_key_text_and_the_label(world):
+    registry, db, models = world
+    code = models["SCode"]
+
+    async def create(ctx, values):
+        async with ctx.database.transaction():
+            made = await code.objects.using(ctx.database).insert(**values)
+            await ctx.audit(made)
+        return made
+
+    async def update(ctx, qs, changes):
+        async with ctx.database.transaction():
+            await qs.update(**changes)
+            await ctx.audit()
+
+    site = admin.Admin(registry)
+    site.register(code, {"create": create, "update": update})
+    client = site.test_client(db, user=SU)
+    for key in ("a b", "a,b"):
+        r = await client.post("/admin/api/resources/SCode", json={"set": {"code": key, "note": "n"}})
+        assert r.status == 201, r.text
+        r = await client.patch(f"/admin/api/resources/SCode/{r.json()['key']}", json={"set": {"note": "m"}, "loaded": {"note": "n"}})
+        assert r.status == 200, r.text
+    rows = await audit(db, models)
+    assert [(a.action, a.record_key) for a in rows] == [("create", "a%20b"), ("update", "a%20b"), ("create", "a%2Cb"), ("update", "a%2Cb")]
+    assert all(a.record_label for a in rows)
+
+
+async def test_a_bigint_value_sent_as_a_string_reaches_the_service_as_an_int(world):
+    registry, db, models = world
+    big = models["SBig"]
+    seen = {}
+
+    async def create(ctx, values):
+        seen["big"] = values["big"]
+        return await big.objects.using(ctx.database).insert(**values)
+
+    site = admin.Admin(registry)
+    site.register(big, {"create": create})
+    client = site.test_client(db, user=SU)
+    r = await client.post("/admin/api/resources/SBig", json={"set": {"big": "9007199254740993"}})
+    assert r.status == 201, r.text
+    assert seen["big"] == 9007199254740993
+
+
+async def test_a_route_audit_gets_the_rust_key_text_of_the_model_of_its_record(world):
+    registry, db, models = world
+    code = models["SCode"]
+
+    async def stamp(ctx, request):
+        made = await code.objects.using(ctx.database).insert(code=request.body["code"])
+        child = await models["SNote"].objects.using(ctx.database).insert(title="child")
+        await ctx.audit(made)
+        await ctx.audit(child)
+        await ctx.audit()
+        return {"ok": True}
+
+    site = admin.Admin(registry)
+    site.register(code, {})
+    site.route("POST", "stamp", stamp)
+    client = site.test_client(db, user=SU)
+    for key in ("a b", "a,b"):
+        r = await client.post("/admin/api/routes/stamp", json={"code": key})
+        assert r.status == 200, r.text
+    rows = await audit(db, models)
+    children = [str(n.id) for n in await models["SNote"].objects.using(db).filter(models["SNote"].title == "child").order_by(models["SNote"].id)]
+    assert [(a.action, a.resource, a.record_key) for a in rows] == [
+        ("service", "SCode", "a%20b"), ("service", "SNote", children[0]), ("service", "", ""),
+        ("service", "SCode", "a%2Cb"), ("service", "SNote", children[1]), ("service", "", ""),
+    ]
+
+
+async def test_a_bigint_value_that_is_not_a_number_is_a_422_that_names_the_field(world):
+    registry, db, models = world
+    big = models["SBig"]
+    calls = []
+
+    async def create(ctx, values):
+        calls.append(values)
+        return await big.objects.using(ctx.database).insert(**values)
+
+    site = admin.Admin(registry)
+    site.register(big, {"create": create})
+    r = await site.test_client(db, user=SU).post("/admin/api/resources/SBig", json={"set": {"big": "abc"}})
+    assert r.status == 422, r.text
+    assert r.json()["fields"]["big"] == ["Must be a whole number"]
+    assert calls == []

@@ -254,6 +254,12 @@ pub(crate) async fn handle(State(s): Shared, user: Option<Extension<User>>, log:
         Err(e) => return failure(&meta, &format!("{function}: {}: {}", e.kind(), e.message())),
     };
     let stream = answer.get("stream").filter(|v| !v.is_null());
+    if let Err(m) = set_audit_keys(&s, &answer).await {
+        if let Some(stream) = stream {
+            let _ = bridge.call(CLOSE, json!({"stream": stream}), CallContext { request_id: auth.security.call_id(), scope: json!({}), tx: None }).await;
+        }
+        return failure(&meta, &format!("{function}: the route ran but its audit key failed: {m}"));
+    }
     let status = match answer["status"].as_u64() {
         None => StatusCode::OK,
         Some(n) => match u16::try_from(n).ok().and_then(|n| StatusCode::from_u16(n).ok()) {
@@ -286,6 +292,21 @@ pub(crate) async fn handle(State(s): Shared, user: Option<Extension<User>>, log:
     *response.status_mut() = status;
     response.headers_mut().insert(header::CACHE_CONTROL, header::HeaderValue::from_static("no-store"));
     response
+}
+
+/// A route writes its `ctx.audit()` rows on the connection of the host, outside any request transaction: Rust sets their key text in a transaction of its own.
+async fn set_audit_keys(s: &State_, answer: &Value) -> Result<(), String> {
+    if answer.get("audit_keys").and_then(Value::as_array).is_none_or(Vec::is_empty) {
+        return Ok(());
+    }
+    let scope = crate::server::begin_scope(s).await?;
+    match crate::audit::set_keys(&s.site, scope.executor(), answer).await {
+        Ok(()) => scope.commit().await.map_err(|e| e.message),
+        Err(m) => {
+            scope.rollback().await;
+            Err(m)
+        }
+    }
 }
 
 /// Pulls the chunks and sends them, one at a time. An error or an idle timeout aborts the body, so a cut

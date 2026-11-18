@@ -14,6 +14,7 @@ import contextvars
 import datetime
 import decimal
 import inspect
+import re
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, TypeVar
@@ -142,7 +143,9 @@ class Context:
         self.ip = ip
         self.user_agent = user_agent
         self.audits: list[dict[str, Any]] = []
+        self._audit_keys: list[dict[str, Any]] = []
         self._audited = False
+        self._by_admin = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self._model: Any = None
 
@@ -175,12 +178,16 @@ class Context:
             extra.update(changes)
         act = action or self.op or "service"
         resource = self.resource or (model.__name__ if model is not None else "")
-        record_key = _key_text(key)
-        entry: dict[str, Any] = {"action": act, "resource": resource, "record_key": record_key, "changes": extra}
+        parts = None if not key else [_key_scalar(v) for v in key.values()]
+        entry: dict[str, Any] = {"action": act, "resource": resource, "key": parts, "changes": extra}
         self.audits.append(entry)
         self._audited = True
         if self.database is not None:
-            await _write_log(self.database, _user_key(self.user), act, resource, record_key, "", extra)
+            # Under the admin the row keeps a blank key text: Rust writes it from `audit_keys`, the only place that encodes a key.
+            # A context built by hand (a unit test) has no Rust: its row holds the plain key values joined with `,`.
+            text = "" if self._by_admin or not parts else ",".join(parts)
+            row = await _write_log(self.database, _user_key(self.user), act, resource, text, "", extra)
+            self._audit_keys.append({"id": int(row.id), "key": parts})
 
 
 async def _as_coroutine(awaitable: Awaitable[Any]) -> Any:
@@ -190,17 +197,6 @@ async def _as_coroutine(awaitable: Awaitable[Any]) -> Any:
 def _user_key(user: Mapping[str, Any]) -> str:
     key = user.get("key")
     return "" if key is None else str(key)
-
-
-def _escape(part: str) -> str:
-    return part.replace("\\", "\\\\").replace(",", "\\,")
-
-
-def _key_text(key: Mapping[str, Any] | None) -> str:
-    """The key text of the admin: the key values joined with ``,``, each escaped."""
-    if not key:
-        return ""
-    return ",".join(_escape(_key_scalar(v)) for v in key.values())
 
 
 def _key_scalar(value: Any) -> str:
@@ -281,6 +277,8 @@ def _decode(type_name: str, value: Any) -> Any:
         return datetime.date.fromisoformat(value)
     if type_name == "time" and isinstance(value, str):
         return datetime.time.fromisoformat(value)
+    if type_name == "big_int" and isinstance(value, str) and re.fullmatch(r"-?\d+", value):
+        return int(value)
     if type_name == "bytes" and isinstance(value, str):
         return base64.b64decode(value, validate=True)
     return value
@@ -413,6 +411,7 @@ def _context(database: Any, args: Mapping[str, Any], model: Any, models: Mapping
         selection=args.get("selection") or "keys",
     )
     ctx._model = model
+    ctx._by_admin = True
     return ctx
 
 
@@ -543,7 +542,7 @@ def service_function(model: Any, config: Mapping[str, Any], op: str, fn: Callabl
                 "kind": "sync_service",
                 "message": f"the {op} service of {model.__name__} is a threaded sync function that returned an awaitable: run the async database calls with ctx.run(...)",
             }
-        out: dict[str, Any] = {"ok": True, "audited": ctx._audited}
+        out: dict[str, Any] = {"ok": True, "audited": ctx._audited, "audit_keys": ctx._audit_keys}
         if op == "create":
             if result is None:
                 return {"ok": False, "kind": "error", "message": f"the create service of {model.__name__} returns the new record"}
@@ -767,6 +766,6 @@ def action_function(model: Any, config: Mapping[str, Any], d: ActionDef, models:
             shown = _result_json(result)
         except TypeError as e:
             return {"ok": False, "kind": "error", "message": f"the action {d.name} of {model.__name__}: {e}"}
-        return {"ok": True, "audited": ctx._audited, "result": shown}
+        return {"ok": True, "audited": ctx._audited, "audit_keys": ctx._audit_keys, "result": shown}
 
     return call

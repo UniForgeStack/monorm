@@ -787,6 +787,8 @@ Each write adds one `AdminLogEntry`: `action` (`create`, `update`, `delete`), `r
 Its `changes` column holds `{"request_id", "ip", "user_agent", "diff": {field: {"from", "to"}}}`.
 A create has `from: null` for each field, and a delete has `to: null`.
 The row commits with the write, so a failed write leaves none.
+The `record_key` of a row that `ctx.audit()` writes is the key text that Rust builds (`a b` is `a%20b`, `a,b` is `a%2Cb`), in services, actions and custom routes.
+A context that you build by hand has no Rust, so its row holds the plain key values joined with `,`.
 A refused write (`403`) writes a `permission_denied` row instead.
 The test client has no service layer, so its `request_id` is `unknown`.
 A host route adds `inputs`, `service` (whether a service wrote) and `allow_protected_writes` to `changes`.

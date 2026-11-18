@@ -337,6 +337,10 @@ async fn finish(s: &State_, d: Done<'_>, answer: Value, scope: Scoped) -> Respon
             return server_error(d.meta, &m);
         }
     };
+    if let Err(m) = audit::set_keys(&s.site, scope.executor(), &answer).await {
+        scope.rollback().await;
+        return server_error(d.meta, &format!("the action ran but its audit key failed: {m}"));
+    }
     let affected = answer.get("affected").and_then(Value::as_u64);
     let mut changes = json!({
         "request_id": d.meta.request_id,

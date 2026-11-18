@@ -161,6 +161,7 @@ def route_function(fn: RouteFunction, streams: Streams) -> Callable[[Any, dict[s
     async def call(database: Any, args: dict[str, Any]) -> Any:
         ctx = Context(user=args.get("user"), request_id=args.get("request_id", ""), database=database, ip=args.get("ip"), user_agent=args.get("user_agent"))
         ctx._loop = asyncio.get_running_loop()
+        ctx._by_admin = True
         request = RouteRequest(args["method"], args["path"], args.get("params") or {}, args.get("query") or {}, args.get("body"))
         if sync:
             scope = contextvars.copy_context()
@@ -170,13 +171,13 @@ def route_function(fn: RouteFunction, streams: Streams) -> Callable[[Any, dict[s
         if inspect.isawaitable(result):
             result = await result
         if isinstance(result, Stream):
-            out: dict[str, Any] = {"stream": streams.open(result.chunks), "content_type": result.content_type, "status": result.status}
+            out: dict[str, Any] = {"stream": streams.open(result.chunks), "content_type": result.content_type, "status": result.status, "audit_keys": ctx._audit_keys}
             if result.filename is not None:
                 out["filename"] = result.filename
             return out
         if isinstance(result, Reply):
-            return {"json": _jsonable(result.json), "status": result.status}
-        return {"json": _jsonable(result)}
+            return {"json": _jsonable(result.json), "status": result.status, "audit_keys": ctx._audit_keys}
+        return {"json": _jsonable(result), "audit_keys": ctx._audit_keys}
 
     return call
 

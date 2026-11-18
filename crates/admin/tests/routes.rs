@@ -480,3 +480,33 @@ async fn a_client_that_leaves_a_stream_stops_the_pulls_and_closes_it() {
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     assert_eq!(*host.pulls.lock().unwrap(), pulled, "no pull after the close");
 }
+
+const ROUTE_ROW: &str = "INSERT INTO \"AdminLogEntry\" (id, user_key, action, resource, record_key, record_label, changes) VALUES (41, '2', 'service', 'Note', '', '', '{}')";
+
+impl World {
+    async fn route_keys(&self) -> Vec<String> {
+        let rows = self.conn.query_text("SELECT record_key FROM \"AdminLogEntry\" WHERE id = 41".into()).await.unwrap();
+        rows.into_iter().map(|r| r[0].clone().unwrap_or_default()).collect()
+    }
+}
+
+#[tokio::test]
+async fn rust_writes_the_key_text_of_the_audit_rows_that_a_route_wrote() {
+    let w = world().await;
+    w.conn.batch(ROUTE_ROW.into()).await.unwrap();
+    w.answer("route.GET.reports/summary", json!({"json": {"ok": true}, "audit_keys": [{"id": 41, "key": ["a b", "x,y"]}]}));
+    let (status, body) = w.json("GET", "reports/summary", Some(2), None).await;
+    assert_eq!((status, body), (200, json!({"ok": true})));
+    assert_eq!(w.route_keys().await, ["a%20b,x%2Cy"]);
+}
+
+#[tokio::test]
+async fn a_bad_audit_key_entry_of_a_route_is_a_500_and_the_key_text_stays_blank() {
+    let w = world().await;
+    w.conn.batch(ROUTE_ROW.into()).await.unwrap();
+    w.answer("route.GET.reports/summary", json!({"json": {"ok": true}, "audit_keys": [{"id": 41, "key": "a"}]}));
+    let (status, body) = w.json("GET", "reports/summary", Some(2), None).await;
+    assert_eq!(status, 500);
+    assert_eq!(body["error"]["kind"], "ServerError");
+    assert_eq!(w.route_keys().await, [""]);
+}

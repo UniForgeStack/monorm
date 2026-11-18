@@ -48,6 +48,27 @@ pub async fn fill_label(site: &Site, conn: &dyn Executor, resource: &str, record
     conn.execute(sql, args).await.map(|_| ()).map_err(|e| e.message)
 }
 
+/// Writes the key text of the rows that host code wrote with `ctx.audit()` (`audit_keys` of the answer: `[{id, key}]`, `key` the key values as text).
+/// The binding writes no key text: only `key::encode` builds one. A row with `key: null` keeps a blank key text; a bad entry is an error, not a blank.
+pub async fn set_keys(site: &Site, conn: &dyn Executor, answer: &Json) -> Result<(), String> {
+    let Some(rows) = answer.get("audit_keys").and_then(Json::as_array) else { return Ok(()) };
+    let table = Table::of(site, "AdminLogEntry")?;
+    let (key_col, id_col) = (table.column("record_key")?, table.column("id")?);
+    let d = conn.dialect();
+    let sql = format!("UPDATE {} SET {key_col} = {} WHERE {id_col} = {}", table.quoted(), mark(d, 1), mark(d, 2));
+    for row in rows {
+        let Some(id) = row["id"].as_i64() else { return Err(format!("an audit key entry has no integer id: {row}")) };
+        let parts = match &row["key"] {
+            Json::Null => continue,
+            Json::Array(parts) => parts,
+            other => return Err(format!("the audit key of row {id} is {other}: expected an array or null")),
+        };
+        let key = crate::key::encode(parts);
+        conn.execute(sql.clone(), vec![Value::from(key), Value::from(id)]).await.map_err(|e| e.message)?;
+    }
+    Ok(())
+}
+
 /// Completes the row that the default host writer wrote in the write transaction, found by its id: the key text, the label and the full `changes`
 /// (the key of a create and the diff are known only after the write and the read of the stored record).
 pub async fn complete(site: &Site, conn: &dyn Executor, id: i64, record_key: &str, label: &str, changes: Json) -> Result<(), String> {

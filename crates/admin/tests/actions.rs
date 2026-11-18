@@ -58,7 +58,14 @@ impl HostBridge for Host {
         }
         self.seen.lock().unwrap().push((name.to_owned(), payload));
         let answer = self.answer.lock().unwrap().clone();
-        Box::pin(async move { Ok(answer) })
+        // `tx_sql` stands for the `ctx.audit()` row that a service writes in the transaction of the request.
+        let tx = ctx.tx.clone().filter(|_| answer["tx_sql"].is_string());
+        Box::pin(async move {
+            if let Some(tx) = tx {
+                tx.batch(answer["tx_sql"].as_str().unwrap().to_owned()).await.unwrap();
+            }
+            Ok(answer)
+        })
     }
 }
 
@@ -376,4 +383,30 @@ async fn the_host_gets_allow_protected_for_a_protected_model_only_when_the_resou
     let w = world(json!({})).await;
     w.post("/actions/Book/archive", json!({"keys": ["1"]})).await;
     assert_eq!(w.seen()[0].1["allow_protected"], json!(false), "a model that is not protected");
+}
+
+const AUDIT_ROW: &str = "INSERT INTO \"AdminLogEntry\" (id, user_key, action, resource, record_key, record_label, changes) VALUES (41, '7', 'touch', 'Book', '', '', '{}')";
+
+#[tokio::test]
+async fn an_action_that_fails_after_its_audit_row_rolls_the_row_back() {
+    let w = world(json!({})).await;
+    w.answer(json!({"ok": false, "kind": "boom", "audited": true, "tx_sql": AUDIT_ROW}));
+    assert_eq!(w.touch().await.0, 500);
+    assert!(w.audit().await.is_empty(), "the audit row of a failed action stays out of the log");
+    w.answer(json!({"ok": true, "audited": true, "tx_sql": AUDIT_ROW, "audit_keys": [{"id": 41, "key": ["a b", "x,y"]}]}));
+    assert_eq!(w.touch().await.0, 200);
+    let keys: Vec<String> = w.audit().await.into_iter().filter(|a| a.0 == "touch").map(|a| a.2).collect();
+    assert_eq!(keys, ["a%20b,x%2Cy"], "Rust writes the key text of a row that the host wrote");
+}
+
+#[tokio::test]
+async fn an_audit_key_entry_with_no_id_fails_the_action_and_rolls_the_row_back() {
+    let w = world(json!({})).await;
+    w.answer(json!({"ok": true, "audited": true, "tx_sql": AUDIT_ROW, "audit_keys": [{"id": "41", "key": ["a"]}]}));
+    assert_eq!(w.touch().await.0, 500);
+    assert!(w.audit().await.is_empty(), "a bad audit key leaves no row");
+    w.answer(json!({"ok": true, "audited": true, "tx_sql": AUDIT_ROW, "audit_keys": [{"id": 41, "key": null}]}));
+    assert_eq!(w.touch().await.0, 200);
+    let keys: Vec<String> = w.audit().await.into_iter().filter(|a| a.0 == "touch").map(|a| a.2).collect();
+    assert_eq!(keys, [""], "a null key keeps a blank key text");
 }

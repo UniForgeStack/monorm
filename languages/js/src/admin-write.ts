@@ -101,7 +101,7 @@ export interface InlineChanges {
 export interface AuditEntry {
   readonly action: string;
   readonly resource: string;
-  readonly recordKey: string;
+  readonly key: string[] | null;
   readonly changes: Record<string, unknown>;
 }
 
@@ -133,9 +133,13 @@ export class Context {
   readonly selection: string;
   readonly audits: AuditEntry[] = [];
   /** @internal */
+  readonly auditKeys: { id: number; key: string[] | null }[] = [];
+  /** @internal */
   readonly auditInputs: Record<string, unknown>;
   /** @internal */
   audited = false;
+  /** @internal */
+  byAdmin = false;
   /** @internal */
   meta: ModelMeta | null = null;
 
@@ -175,10 +179,16 @@ export class Context {
     Object.assign(extra, options.changes ?? {});
     const action = options.action ?? (this.op || "service");
     const resource = this.resource || meta?.name || "";
-    const recordKey = keyText(meta === null || key === null ? key : keyScalars(meta, key));
-    this.audits.push({ action, resource, recordKey, changes: extra });
+    const scalars = key === null || Object.keys(key).length === 0 ? null : Object.values(meta === null ? key : keyScalars(meta, key)).map((v) => String(v));
+    this.audits.push({ action, resource, key: scalars, changes: extra });
     this.audited = true;
-    if (this.database !== null) await writeLog(this.database, userKey(this.user), action, resource, recordKey, "", extra);
+    if (this.database !== null) {
+      // Under the admin the row keeps a blank key text: Rust writes it from `auditKeys`, the only place that encodes a key.
+      // A context built by hand (a unit test) has no Rust: its row holds the plain key values joined with `,`.
+      const text = this.byAdmin || scalars === null ? "" : scalars.join(",");
+      const row = await writeLog(this.database, userKey(this.user), action, resource, text, "", extra);
+      this.auditKeys.push({ id: Number(row.id), key: scalars });
+    }
   }
 }
 
@@ -190,16 +200,6 @@ function metaOf(record: unknown): ModelMeta | null {
 function userKey(user: Readonly<Record<string, unknown>>): string {
   const key = user["key"];
   return key === undefined || key === null ? "" : String(key);
-}
-
-function escapePart(part: string): string {
-  return part.replaceAll("\\", "\\\\").replaceAll(",", "\\,");
-}
-
-/** The key text of the admin: the key values joined with `,`, each escaped. */
-function keyText(key: Readonly<Record<string, unknown>> | null): string {
-  if (key === null || Object.keys(key).length === 0) return "";
-  return Object.values(key).map((v) => escapePart(String(v))).join(",");
 }
 
 /** One key value as the admin writes it in JSON and in the key text. */
@@ -424,6 +424,7 @@ function contextOf(database: Database, args: Loose, meta: ModelMeta, models: Rea
     selection: args.selection ?? "keys",
   });
   ctx.meta = meta;
+  ctx.byAdmin = true;
   return ctx;
 }
 
@@ -529,7 +530,7 @@ export function serviceFunction(model: AnyModel, config: Loose, op: string, fn: 
       if (envelope === undefined) throw e;
       return envelope;
     }
-    const out: Record<string, unknown> = { ok: true, audited: ctx.audited };
+    const out: Record<string, unknown> = { ok: true, audited: ctx.audited, audit_keys: ctx.auditKeys };
     if (op === "create") {
       if (result === undefined || result === null) return { ok: false, kind: "error", message: `the create service of ${meta.name} returns the new record` };
       out["key"] = keyJson(meta, result);
@@ -706,6 +707,6 @@ export function actionFunction(model: AnyModel, config: Loose, def: ActionDef, m
     } catch (e) {
       return { ok: false, kind: "error", message: `the action ${def.name} of ${meta.name}: ${e instanceof Error ? e.message : String(e)}` };
     }
-    return { ok: true, audited: ctx.audited, result: shown };
+    return { ok: true, audited: ctx.audited, audit_keys: ctx.auditKeys, result: shown };
   };
 }
