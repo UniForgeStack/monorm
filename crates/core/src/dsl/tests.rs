@@ -1531,9 +1531,14 @@ fn filter_manifest() -> crate::behavior::Manifest {
 
 /// Resolves `@@test.filter(<argument>)` on `Item`; returns the resolved argument, the warnings and the declaration.
 fn resolved(argument: &str) -> Result<(serde_json::Value, Vec<expr::Warning>), String> {
-    let mut ir = ok(FILTER_MODELS);
+    resolved_in(FILTER_MODELS, argument)
+}
+
+/// Like `resolved`, on the models in `models`.
+fn resolved_in(models: &str, argument: &str) -> Result<(serde_json::Value, Vec<expr::Warning>), String> {
+    let mut ir = ok(models);
     let manifest = filter_manifest();
-    let source = format!("{FILTER_MODELS}\nmodel Item2 {{\n  @@test.filter({argument})\n}}\n");
+    let source = format!("{models}\nmodel Item2 {{\n  @@test.filter({argument})\n}}\n");
     let mut items = syntax::parse(&source).unwrap();
     let mut declarations = super::lower::behavior_declarations(
         &mut items,
@@ -1837,4 +1842,40 @@ fn string_with_byte_a_still_compiles_with_a_deprecation_warning() {
     assert!(project.warnings.iter().any(|w| w.message.contains("`String @db.ByteA` is deprecated")), "{:?}", project.warnings);
     let bytes = compile_project("datasource db {\n provider = \"postgresql\"\n}\nmodel A {\n  id BigInt @id\n  raw Bytes\n}", None).unwrap();
     assert!(bytes.warnings.is_empty(), "{:?}", bytes.warnings);
+}
+
+const SHAPE_MODELS: &str = "enum Status {\n  ACTIVE\n  ARCHIVED\n}\nmodel Owner {\n  id BigInt @id\n  name String\n  status Status\n}\nmodel Item {\n  id BigInt @id\n  a Int\n  title String\n  status Status\n  owner_id BigInt\n  owner Owner @relation(fields: [owner_id], references: [id])\n}\n";
+
+#[test]
+fn an_enum_member_gives_the_same_tree_as_its_string_form_and_names_the_stored_value() {
+    let (native, none) = resolved_in(SHAPE_MODELS, "\"x\", status == ACTIVE").unwrap();
+    let (string, warned) = resolved_in(SHAPE_MODELS, "\"x\", \"status == ACTIVE\"").unwrap();
+    assert_eq!(native, string);
+    assert!(none.is_empty() && warned.len() == 1, "{none:?} {warned:?}");
+    assert_eq!(native["t"], "cmp");
+    assert_eq!(native["l"], json!({"t":"col","path":[],"name":"status"}));
+    // The other side holds the stored value of the member, not a source name.
+    assert_eq!(native["r"], json!({"t":"text","value":"ACTIVE"}));
+    let (path, _) = resolved_in(SHAPE_MODELS, "\"x\", owner.status != ARCHIVED").unwrap();
+    assert_eq!(path["l"], json!({"t":"col","path":["owner"],"name":"status"}));
+}
+
+#[test]
+fn path_method_and_function_shapes_resolve_to_one_pinned_tree() {
+    let col = |name: &str| json!({"t":"col","path":[],"name":name});
+    let (tree, _) = resolved_in(SHAPE_MODELS, "\"x\", owner.name.in_([\"a\", \"b\"])").unwrap();
+    assert_eq!(tree["t"], "in", "{tree}");
+    assert_eq!(tree["item"], json!({"t":"col","path":["owner"],"name":"name"}));
+    let (tree, _) = resolved_in(SHAPE_MODELS, "\"x\", a.not_in([1, 2])").unwrap();
+    assert_eq!(tree["t"], "in", "{tree}");
+    assert_eq!(tree["neg"], true);
+    let (tree, _) = resolved_in(SHAPE_MODELS, "\"x\", title.like(\"a%\")").unwrap();
+    assert_eq!(tree, json!({"t":"like","item":col("title"),"pattern":{"t":"text","value":"a%"},"ci":false,"neg":false}));
+    let (tree, _) = resolved_in(SHAPE_MODELS, "\"x\", title.ilike(\"a%\")").unwrap();
+    assert_eq!(tree["ci"], true);
+    let (tree, _) = resolved_in(SHAPE_MODELS, "\"x\", lower(title) == \"x\"").unwrap();
+    assert_eq!(tree["l"]["t"], "func", "{tree}");
+    assert_eq!(tree["l"]["args"], json!([col("title")]));
+    let (tree, _) = resolved_in(SHAPE_MODELS, "\"x\", a + 1 > 3").unwrap();
+    assert_eq!(tree["l"]["t"], "arith", "{tree}");
 }
