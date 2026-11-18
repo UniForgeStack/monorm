@@ -53,7 +53,9 @@ def copy_runtime(language, destination):
     entry.write_text(text + f'\n{constant} = "{digest}"\n' if language == "python" else text + f'\nexport const {constant} = "{digest}";\n')
     (destination / "monorm-extension.toml").write_bytes(raw)
     for file in files:
-        shutil.copy2(file["source"], destination / file["name"])
+        target = destination / file["name"]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(file["source"], target)
 
 
 with tempfile.TemporaryDirectory(prefix="monorm-extension-package-") as temporary:
@@ -70,9 +72,9 @@ with tempfile.TemporaryDirectory(prefix="monorm-extension-package-") as temporar
     ) if OWN else ""
     body = f"\n{README}" if OWN else ""
     (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {dist}\nVersion: {py_version}\n{own}Requires-Python: >=3.11\n{requires}{body}")
-    # `platforms`: one wheel holds the libraries of all 3 platforms, and the loader picks its own file.
+    # `platforms`: one wheel holds the libraries of all 4 platforms, and the loader picks its own file.
     tags = {
-        "platforms": "py3-none-macosx_11_0_arm64.manylinux_2_28_x86_64.win_amd64",
+        "platforms": "py3-none-macosx_11_0_arm64.manylinux_2_28_aarch64.manylinux_2_28_x86_64.win_amd64",
         "host": "py3-none-" + sysconfig.get_platform().replace("-", "_").replace(".", "_"),
     }
     tag = tags[config["tag"]]

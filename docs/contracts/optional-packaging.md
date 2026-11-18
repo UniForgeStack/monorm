@@ -109,33 +109,33 @@ Both workflows publish nothing; `release.yml` publishes (see [RELEASING.md](../.
 CI records the size of every wheel and of the tarball in the job summary.
 There is no size limit.
 
-## Extension packages for 3 platforms
+## Extension packages for 4 platforms
 
 An outside extension is one wheel and one npm package.
-Each holds the libraries of `darwin-arm64`, `linux-x64` and `win32-x64` side by side; the loader opens the file of its own platform.
+Each holds the libraries of `darwin-arm64`, `linux-arm64`, `linux-x64` and `win32-x64`, one per `<platform>/` directory; the loader opens the file of its own platform.
 Two commands build them:
 
 ```bash
 # on each platform
 monorm-extension-package library <crate-dir> --out <libraries>/<extension> [--zigbuild <target>]
-# once, with the three results in <libraries>/<extension>/<platform>/
+# once, with the four results in <libraries>/<extension>/<platform>/
 monorm-extension-package assemble <crate-dir> --libraries <libraries>/<extension> --out <dir> [--tsc <exe>]
 ```
 
 `library` builds the cdylib and copies it to `<out>/<platform>/`.
-It fails on a host with no platform key and lists the 3 keys.
-`assemble` writes `<dir>/<module>-<version>-py3-none-macosx_11_0_arm64.manylinux_2_28_x86_64.win_amd64.whl` and the npm package directory `<dir>/npm`.
+It fails on a host with no platform key and lists the keys.
+`assemble` writes `<dir>/<module>-<version>-py3-none-macosx_11_0_arm64.manylinux_2_28_aarch64.manylinux_2_28_x86_64.win_amd64.whl` and the npm package directory `<dir>/npm`.
 It fails with the platform key when a library is missing.
-The npm `package.json` lists the 3 libraries in `files` and has no `os` or `cpu` field.
+The npm `package.json` lists the 4 libraries (`<platform>/<file>`) in `files` and has no `os` or `cpu` field.
 `package` stays for local work: it builds the host library only and writes a wheel with a host platform tag.
 Do not publish that wheel.
 
 The manifest `library` is a name without a file extension, for example `library = "acme_outside"`.
 The file name is `lib<name>.dylib`, `lib<name>.so` or `<name>.dll`.
-`assemble` rejects a name with an extension, because three platforms cannot share it.
+`assemble` rejects a name with an extension, because the platforms cannot share it.
 
-The compressed platform tag lets pip install the wheel on macOS arm64, Linux x86-64 with glibc 2.28 or newer, and Windows x86-64 only.
-The Linux library builds with `cargo zigbuild` for glibc 2.28 (`library --zigbuild x86_64-unknown-linux-gnu.2.28`).
+The compressed platform tag lets pip install the wheel on macOS arm64, Linux x86-64 and arm64 with glibc 2.28 or newer, and Windows x86-64 only.
+The Linux libraries build with `cargo zigbuild` for glibc 2.28 (`library --zigbuild x86_64-unknown-linux-gnu.2.28` and `aarch64-unknown-linux-gnu.2.28`).
 
 ## Extension contracts
 

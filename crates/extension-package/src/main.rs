@@ -1,6 +1,6 @@
 //! Package builder for pass extensions, independent of the static composition builder.
 //!
-//! `library` builds the cdylib on the host, `assemble` joins the libraries of the 3 shipped
+//! `library` builds the cdylib on the host, `assemble` joins the libraries of the 4 shipped
 //! platforms into one wheel and one npm package, and `package` does both for the host only.
 use std::{
     env,
@@ -20,7 +20,7 @@ const USAGE: &str = "usage:
 /// The keys name the platform directories of the prebuilt libraries.
 const PLATFORMS: [(&str, &str, &str, bool); 6] = [
     ("darwin-arm64", "lib", ".dylib", true),
-    ("linux-arm64", "lib", ".so", false),
+    ("linux-arm64", "lib", ".so", true),
     ("linux-arm64-musl", "lib", ".so", false),
     ("linux-x64", "lib", ".so", true),
     ("linux-x64-musl", "lib", ".so", false),
@@ -250,7 +250,8 @@ fn run() -> Result<(), Error> {
                     )
                     .into());
                 }
-                files.push((source, name));
+                // Linux x86-64 and arm64 share a file name, so each library keeps its platform directory; the loader opens `<key>/<name>`.
+                files.push((source, format!("{key}/{name}")));
             }
             write_packages(&dir, &out, &manifest, &files, "platforms", &tsc)
         }

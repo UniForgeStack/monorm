@@ -62,9 +62,9 @@ jobs:
         working-directory: languages/js
       - name: Build the engine and the extension libraries of this platform
         run: node languages/js/scripts/assemble-bundle.mjs --collect target/bundle
-      # `PLATFORMS` in `monorm-extension-package` ships neither Linux arm64 nor a musl platform in an outside package, so those build no library of it.
+      # `PLATFORMS` in `monorm-extension-package` ships no musl platform in an outside package, so those build no library of it.
       - name: Build the library of the outside extension
-        if: matrix.platform != 'linux-arm64' && matrix.libc != 'musl'
+        if: matrix.libc != 'musl'
         shell: bash
         run: |
           extra=()
@@ -230,6 +230,8 @@ jobs:
         include:
           - os: ubuntu-24.04
             dialects: sqlite,postgres
+          - os: ubuntu-24.04-arm
+            dialects: sqlite,postgres
           - os: macos-15
             dialects: sqlite
           - os: windows-latest
@@ -238,14 +240,14 @@ jobs:
     timeout-minutes: 60
     services:
       postgres:
-        image: ${{ matrix.os == 'ubuntu-24.04' && 'postgres:18' || '' }}
+        image: ${{ startsWith(matrix.os, 'ubuntu') && 'postgres:18' || '' }}
         env:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: orm_test
         ports: ['5432:5432']
         options: --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
     env:
-      ORM_TEST_DATABASE_URL: ${{ matrix.os == 'ubuntu-24.04' && 'postgres://postgres:postgres@localhost/orm_test' || '' }}
+      ORM_TEST_DATABASE_URL: ${{ startsWith(matrix.os, 'ubuntu') && 'postgres://postgres:postgres@localhost/orm_test' || '' }}
       UV_PYTHON: '3.14'
     steps:
       - uses: actions/checkout@v4

@@ -6,8 +6,9 @@ use std::{
     process::{Command, Output},
 };
 
-const KEYS: [(&str, &str); 3] = [
+const KEYS: [(&str, &str); 4] = [
     ("darwin-arm64", "libmonorm_demo.dylib"),
+    ("linux-arm64", "libmonorm_demo.so"),
     ("linux-x64", "libmonorm_demo.so"),
     ("win32-x64", "monorm_demo.dll"),
 ];
@@ -95,6 +96,10 @@ fn wheel_names(wheel: &Path) -> (Vec<String>, String, String) {
 /// A minimal reader through the Python standard library; the crate has no zip dependency.
 struct Zip(PathBuf);
 
+fn wheel_member(wheel: &Path, name: &str) -> String {
+    zip_reader(wheel).read(name)
+}
+
 fn zip_reader(path: &Path) -> Zip {
     Zip(path.to_owned())
 }
@@ -135,7 +140,7 @@ fn manifest_hash(npm: &Path) -> String {
 }
 
 #[test]
-fn assemble_writes_one_wheel_and_one_npm_package_with_the_three_libraries() {
+fn assemble_writes_one_wheel_and_one_npm_package_with_the_library_of_each_platform_in_its_own_directory() {
     let root = scratch("assemble");
     let dir = crate_dir(&root, "monorm_demo");
     let output = assemble(&root, &dir, &libraries(&root, None));
@@ -144,15 +149,22 @@ fn assemble_writes_one_wheel_and_one_npm_package_with_the_three_libraries() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let wheel = root.join("out/acme_demo-0.1.0-py3-none-macosx_11_0_arm64.manylinux_2_28_x86_64.win_amd64.whl");
+    let wheel = root.join("out/acme_demo-0.1.0-py3-none-macosx_11_0_arm64.manylinux_2_28_aarch64.manylinux_2_28_x86_64.win_amd64.whl");
     let (names, record, wheel_file) = wheel_names(&wheel);
     let tags: Vec<&str> = wheel_file.lines().filter(|line| line.starts_with("Tag: ")).collect();
-    assert_eq!(tags, ["Tag: py3-none-macosx_11_0_arm64", "Tag: py3-none-manylinux_2_28_x86_64", "Tag: py3-none-win_amd64"]);
+    assert_eq!(tags, [
+            "Tag: py3-none-macosx_11_0_arm64",
+            "Tag: py3-none-manylinux_2_28_aarch64",
+            "Tag: py3-none-manylinux_2_28_x86_64",
+            "Tag: py3-none-win_amd64",
+        ]);
     assert!(wheel_file.contains("Root-Is-Purelib: false"));
-    for (_, name) in KEYS {
-        assert!(names.contains(&format!("acme_demo/{name}")), "{names:?}");
+    for (key, name) in KEYS {
+        assert!(names.contains(&format!("acme_demo/{key}/{name}")), "{names:?}");
+        // Each platform keeps its own bytes: the two Linux libraries share a file name.
+        assert_eq!(wheel_member(&wheel, &format!("acme_demo/{key}/{name}")), key);
         assert!(
-            record.contains(&format!("acme_demo/{name},sha256=")),
+            record.contains(&format!("acme_demo/{key}/{name},sha256=")),
             "{record}"
         );
     }
@@ -165,9 +177,10 @@ fn assemble_writes_one_wheel_and_one_npm_package_with_the_three_libraries() {
         .iter()
         .map(|f| f.as_str().unwrap())
         .collect();
-    for (_, name) in KEYS {
-        assert!(files.contains(&name), "{files:?}");
-        assert!(root.join("out/npm").join(name).is_file());
+    for (key, name) in KEYS {
+        let path = format!("{key}/{name}");
+        assert!(files.contains(&path.as_str()), "{files:?}");
+        assert_eq!(fs::read_to_string(root.join("out/npm").join(&path)).unwrap(), key);
     }
     assert!(package.get("os").is_none() && package.get("cpu").is_none());
     fs::remove_dir_all(root).unwrap();
@@ -186,7 +199,7 @@ fn a_release_candidate_is_semver_in_npm_and_pep_440_in_the_wheel() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let wheel = root.join("out/acme_demo-0.1.0rc1-py3-none-macosx_11_0_arm64.manylinux_2_28_x86_64.win_amd64.whl");
+    let wheel = root.join("out/acme_demo-0.1.0rc1-py3-none-macosx_11_0_arm64.manylinux_2_28_aarch64.manylinux_2_28_x86_64.win_amd64.whl");
     assert!(wheel.is_file());
     let package: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(root.join("out/npm/package.json")).unwrap())
@@ -287,7 +300,7 @@ fn dependencies_and_subpath_exports_reach_the_wheel_and_the_npm_package() {
     let dir = crate_with_runtimes(&root, RUNTIMES);
     let output = assemble(&root, &dir, &libraries(&root, None));
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    let wheel = root.join("out/acme_demo-0.1.0-py3-none-macosx_11_0_arm64.manylinux_2_28_x86_64.win_amd64.whl");
+    let wheel = root.join("out/acme_demo-0.1.0-py3-none-macosx_11_0_arm64.manylinux_2_28_aarch64.manylinux_2_28_x86_64.win_amd64.whl");
     let metadata = zip_reader(&wheel).read("acme_demo-0.1.0.dist-info/METADATA");
     let requires: Vec<_> = metadata.lines().filter(|l| l.starts_with("Requires-Dist: ")).collect();
     assert_eq!(requires, ["Requires-Dist: opendal>=0.47,<0.48", "Requires-Dist: monorm>=0.1,<0.2"]);
@@ -304,7 +317,7 @@ fn a_package_without_the_keys_has_no_requires_dist_and_no_dependencies() {
     let dir = crate_with_runtimes(&root, "[python]\nsource = \"python\"\n[typescript]\nsource = \"typescript\"\n");
     let output = assemble(&root, &dir, &libraries(&root, None));
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    let wheel = root.join("out/acme_demo-0.1.0-py3-none-macosx_11_0_arm64.manylinux_2_28_x86_64.win_amd64.whl");
+    let wheel = root.join("out/acme_demo-0.1.0-py3-none-macosx_11_0_arm64.manylinux_2_28_aarch64.manylinux_2_28_x86_64.win_amd64.whl");
     assert!(!zip_reader(&wheel).read("acme_demo-0.1.0.dist-info/METADATA").contains("Requires-Dist"));
     let package: serde_json::Value = serde_json::from_str(&fs::read_to_string(root.join("out/npm/package.json")).unwrap()).unwrap();
     assert!(package.get("dependencies").is_none());
@@ -360,7 +373,7 @@ fn a_monorm_id_gives_the_unscoped_npm_name_and_a_monorm_dist() {
         fs::write(&manifest, text).unwrap();
         let output = assemble(&root, &dir, &libraries(&root, None));
         assert!(output.status.success(), "{id}: {}", String::from_utf8_lossy(&output.stderr));
-        let mut wheel = zip_reader(&root.join(format!("out/{module}-0.1.0-py3-none-macosx_11_0_arm64.manylinux_2_28_x86_64.win_amd64.whl")));
+        let mut wheel = zip_reader(&root.join(format!("out/{module}-0.1.0-py3-none-macosx_11_0_arm64.manylinux_2_28_aarch64.manylinux_2_28_x86_64.win_amd64.whl")));
         let metadata = wheel.read(&format!("{module}-0.1.0.dist-info/METADATA"));
         assert!(metadata.contains(&format!("Name: {dist}\n")), "{id}: {metadata}");
         assert!(wheel.names().contains(&format!("{module}/py.typed")), "{id}");

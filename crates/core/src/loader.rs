@@ -322,7 +322,7 @@ fn open(d: &Dynamic) -> Result<Arc<Native>, String> {
         return Ok(native.clone());
     }
     // SAFETY: loading a library runs its initializers; the user chose to install this extension.
-    let library = unsafe { libloading::Library::new(&path) }.map_err(|e| format!("extension {id}: cannot load {}: {e}", path.display()))?;
+    let library = unsafe { libloading::Library::new(&path) }.map_err(|e| format!("extension {id}: cannot load {} on platform {}: {e}", path.display(), platform_key().unwrap_or("(unknown)")))?;
     // SAFETY: the symbol types are the ABI of monorm::abi; the ABI version is checked below before any other call.
     let (abi, run, free) = unsafe {
         let abi = *library.get::<AbiVersionFn>(SYMBOL_ABI_VERSION).map_err(|_| no_symbol(id, &path, SYMBOL_ABI_VERSION, ""))?;
@@ -642,6 +642,17 @@ mod tests {
         let error = open(&manifest_with_exports(&dir, &["a.one"])).err().unwrap();
         let key = platform_key().expect("the test platform has a key");
         assert!(error.starts_with("extension acme.audit: no library for platform ") && error.contains(key), "{error}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_library_that_does_not_load_names_the_platform_key() {
+        let dir = scratch("bad-library");
+        let manifest = manifest_with_exports(&dir, &["a.one"]);
+        std::fs::write(library_path(&manifest), "not a library").unwrap();
+        let error = open(&manifest).err().unwrap();
+        let key = platform_key().expect("the test platform has a key");
+        assert!(error.starts_with("extension acme.audit: cannot load ") && error.contains(&format!("on platform {key}: ")), "{error}");
         std::fs::remove_dir_all(&dir).ok();
     }
 
