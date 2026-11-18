@@ -53,6 +53,25 @@ kind = "value"
 [attributes.arguments.scope]
 kind = "value"
 
+# What `pull` writes back for each attribute, and the objects it leaves out of the schema because the attribute makes them. The first form of `history.track` is the default event table; the second is the table of `model:`.
+[[object_claims]]
+attribute = "history.track"
+triggers = ["h_events_ins", "h_events_upd", "h_events_del"]
+tables = ["{table}_events"]
+
+[[object_claims]]
+attribute = "history.track"
+arguments = ['model: "{name:pascal}"']
+triggers = ["h_{name}_ins", "h_{name}_upd", "h_{name}_del"]
+tables = ["{name}"]
+
+[[object_claims]]
+attribute = "history.versions"
+arguments = ["of: {of:field}"]
+indexes = ["{table}_{of}_version_key"]
+columns = ["version_number", "snapshot", "content_hash", "effective_at", "change_type", "restored_from", "xact_id"]
+checks = ["{table}_change_type_check"]
+
 [python]
 source = "python/monorm_history"
 query_set = "HistoryQuerySet"

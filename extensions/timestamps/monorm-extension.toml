@@ -2,7 +2,7 @@ id = "monorm.timestamps"
 version = "0.1.2"
 abi = "0.2"
 library = "monorm_timestamps"
-schema_contract = "5.0"
+schema_contract = "5.3"
 language_contract = 1
 languages = ["python", "typescript"]
 databases = ["postgres", "sqlite"]
@@ -39,3 +39,10 @@ name = "timestamps.updated_at"
 target = "field"
 [attributes.arguments.mode]
 kind = "string"
+
+# The trigger of `mode: "database"`; `pull` writes the attribute back, with the column as the field name.
+[[object_claims]]
+attribute = "timestamps.updated_at"
+arguments = ['"{column:claimed}"', "{column:map}", 'mode: "database"']
+triggers = ["updated_at_{column}"]
+columns = ["{column}"]

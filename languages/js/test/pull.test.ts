@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 
 import { MigrationError, Migrations, Migrator, Registry, connect, loads, pull, type Database } from "../src/index.js";
+import { hasExtension } from "./artifact-caps.js";
 import { DATABASE_URL } from "./helpers.js";
 
 // the repository root: from test/ (Bun) or dist/test/ (Node)
@@ -373,4 +374,131 @@ model Pet {
   assert.deepEqual((await migrator.drift()).steps, []);
   await db.execute("CREATE INDEX extra_idx ON pet (age)");
   assert.deepEqual((await migrator.drift()).steps.map((s) => s.summary), ["drop index extra_idx"]);
+});
+
+const EXTENSION_MODELS = `
+model Post {
+ id Int @id @default(autoincrement())
+ title String
+ @@history.track
+ @@timestamps.updated_at("touched_at", mode: "database")
+ @@map("pe_posts")
+}
+model Comment {
+ id Int @id @default(autoincrement())
+ body String
+ @@history.track(model: "CommentAudit")
+ @@map("pe_comments")
+}
+model BundleVersion {
+ id Int @id @default(autoincrement())
+ bundle_id Int
+ @@history.versions(of: bundle_id)
+ @@map("pe_bundle_versions")
+}
+`;
+
+for (const provider of ["sqlite", "postgresql"] as const) {
+  test(`history and timestamps pull back as attributes without drift (${provider})`, { skip: !hasExtension("monorm.history", "monorm.timestamps") }, async () => {
+    const registry = new Registry();
+    loads(`datasource db { provider = "${provider}" }\n` + EXTENSION_MODELS, { registry });
+    const url = provider === "sqlite" ? `sqlite://${join(mkdtempSync(join(tmpdir(), "monorm-ext-sqlite-")), "live.db")}` : PULL_URL;
+    const db = await connect(url, { maxConnections: 2, default: false, registry });
+    opened.push(db);
+    if (provider === "postgresql") await db.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public");
+    await db.createTables();
+    const pulled = await pull(db);
+    const text = pulled.schema;
+    assert.ok(text.includes("@@history.track"));
+    assert.ok(text.includes('@@history.track(model: "CommentAudit")'), text);
+    assert.ok(text.includes("@@history.versions(of: bundle_id)"), text);
+    assert.ok(text.includes('@@timestamps.updated_at("touched_at", mode: "database")'), text);
+    // what the extensions generate is not a model, a trigger or a function of its own
+    for (const generated of ["pe_posts_events", "comment_audit", "h_events_", "h_comment_audit_", "updated_at_touched_at", "version_number", "@@trigger("]) {
+      assert.ok(!text.includes(generated), generated);
+    }
+    assert.deepEqual(pulled.differences.map((s) => s.summary), []);
+  });
+}
+
+/** Creates the tables of `models` in an empty database and pulls them back. */
+async function pulledFrom(provider: "sqlite" | "postgresql", models: string) {
+  const registry = new Registry();
+  loads(`datasource db { provider = "${provider}" }\n${models}`, { registry });
+  const url = provider === "sqlite" ? `sqlite://${join(mkdtempSync(join(tmpdir(), "monorm-pulled-sqlite-")), "live.db")}` : PULL_URL;
+  const db = await connect(url, { maxConnections: 2, default: false, registry });
+  opened.push(db);
+  if (provider === "postgresql") await db.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public");
+  await db.createTables();
+  return pull(db);
+}
+
+// a tracker argument that the database cannot show, and whether pull writes a gap line for the skipped claim;
+// a partial events list leaves no claim to skip, because the claim needs all three triggers
+const UNSHOWN_TRACKER_ARGUMENTS: [string, boolean][] = [
+  ['fields: [title], label: "t"', true],
+  ["row: old", true],
+  ['when: "NEW.title <> OLD.title"', true],
+  ["exclude: [body]", true],
+  ["events: [insert, update]", false],
+];
+
+for (const provider of ["sqlite", "postgresql"] as const) {
+  for (const [args, gap] of UNSHOWN_TRACKER_ARGUMENTS) {
+    test(`a tracker with arguments the database cannot show pulls back as plain objects (${provider}, ${args})`, { skip: !hasExtension("monorm.history") }, async () => {
+      const pulled = await pulledFrom(provider, `model Post {\n id Int @id @default(autoincrement())\n title String\n body String\n @@history.track(${args})\n @@map("pf_posts")\n}`);
+      assert.ok(!pulled.schema.includes("@@history.track"), pulled.schema);
+      assert.equal(pulled.gaps.some((g) => g.startsWith("object claims skipped, the schema with them differs from the database")), gap);
+      assert.deepEqual(pulled.differences.map((s) => s.summary), []);
+    });
+  }
+
+  test(`two trackers of one table pull back as two attributes (${provider})`, { skip: !hasExtension("monorm.history") }, async () => {
+    const pulled = await pulledFrom(provider, 'model Post {\n id Int @id @default(autoincrement())\n title String\n @@history.track\n @@history.track(model: "PostAudit")\n @@map("p2_posts")\n}');
+    const text = pulled.schema;
+    assert.equal(text.split("@@history.track(").length - 1, 2, text);
+    assert.ok(text.includes("@@history.track()"), text);
+    assert.ok(text.includes('@@history.track(model: "PostAudit")'), text);
+    for (const generated of ["p2_posts_events", "post_audit", "@@trigger("]) assert.ok(!text.includes(generated), generated);
+    assert.deepEqual(pulled.differences.map((s) => s.summary), []);
+  });
+
+  test(`a timestamps column with another field name pulls back with map (${provider})`, { skip: !hasExtension("monorm.timestamps") }, async () => {
+    const pulled = await pulledFrom(provider, 'model Post {\n id Int @id @default(autoincrement())\n title String\n @@timestamps.updated_at("touched_at", map: "_touched_at", mode: "database")\n @@map("pm_posts")\n}');
+    const text = pulled.schema;
+    assert.ok(text.includes('@@timestamps.updated_at("touched_at", map: "_touched_at", mode: "database")'), text);
+    for (const generated of ["updated_at__touched_at", "@@trigger("]) assert.ok(!text.includes(generated), generated);
+    assert.deepEqual(pulled.differences.map((s) => s.summary), []);
+  });
+}
+
+test("a version model with scope pulls back with the scope column as a field", { skip: !hasExtension("monorm.history") }, async () => {
+  const pulled = await pulledFrom("postgresql", 'model BundleVersion {\n id Int @id @default(autoincrement())\n bundle_id Int\n @@history.versions(of: bundle_id, scope: [user])\n @@map("ps_bundle_versions")\n}');
+  // the scope column sits in the version table, so the database shows it as a plain column and no difference is left to see
+  assert.ok(pulled.schema.includes("@@history.versions(of: bundle_id)") && !pulled.schema.includes("scope:"), pulled.schema);
+  assert.ok(pulled.schema.includes("user String?"), pulled.schema);
+  assert.deepEqual(pulled.gaps, []);
+  assert.deepEqual(pulled.differences.map((s) => s.summary), []);
+});
+
+test("a failing rule claim is named when object claims were tried with it", { skip: !hasExtension("monorm.history", "monorm.soft-delete") }, async () => {
+  const registry = new Registry();
+  loads('datasource db { provider = "postgresql" }\nmodel Post {\n id Int @id @default(autoincrement())\n title String\n @@history.track\n @@map("pl_posts")\n}', { registry });
+  const db = await connect(PULL_URL, { maxConnections: 2, default: false, registry });
+  opened.push(db);
+  await db.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public");
+  await db.createTables();
+  // the rule claim fails to compile: its field name `_deleted_at` is taken
+  await db.execute(
+    `CREATE TABLE sdm_x (id serial PRIMARY KEY, deleted_at timestamptz, _deleted_at timestamptz);
+CREATE RULE soft_delete AS ON DELETE TO sdm_x
+  WHERE COALESCE(current_setting('rules.hard_deletion', true), '') <> 'on'
+  DO INSTEAD (UPDATE sdm_x SET _deleted_at = NOW() WHERE "id" = old."id" AND _deleted_at IS NULL);`,
+  );
+  const pulled = await pull(db);
+  // the first attempt holds both kinds of claim; the gap names both, and the rule claims are tried again alone
+  assert.ok(pulled.gaps.some((g) => g.startsWith("object claims skipped, the schema with the rule and object claims does not compile")));
+  assert.ok(pulled.gaps.some((g) => g.startsWith("rule claims skipped, the schema with them does not compile")));
+  assert.ok(!pulled.schema.includes("@@history.track"), pulled.schema);
+  assert.deepEqual(pulled.differences.map((s) => s.summary), []);
 });

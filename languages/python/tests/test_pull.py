@@ -15,6 +15,7 @@ from conftest import DATABASE_URL
 
 import monorm
 from monorm import Registry
+from artifact_caps import has_extension
 from monorm.migrations import Migrations, Migrator, pull
 
 FIXTURE = Path(__file__).resolve().parents[3] / "fixtures" / "pull_live.sql"
@@ -731,5 +732,151 @@ ALTER TABLE sdm_q DISABLE RULE soft_delete;
         pulled = await pull(db)
         assert "@@soft_delete" not in pulled.schema
         assert any(g.startswith("rule soft_delete on sdm_q") and "the rule is disabled" in g for g in pulled.gaps)
+    finally:
+        await db.close()
+
+
+EXTENSION_MODELS = """
+model Post {
+ id Int @id @default(autoincrement())
+ title String
+ @@history.track
+ @@timestamps.updated_at("touched_at", mode: "database")
+ @@map("pe_posts")
+}
+model Comment {
+ id Int @id @default(autoincrement())
+ body String
+ @@history.track(model: "CommentAudit")
+ @@map("pe_comments")
+}
+model BundleVersion {
+ id Int @id @default(autoincrement())
+ bundle_id Int
+ @@history.versions(of: bundle_id)
+ @@map("pe_bundle_versions")
+}
+"""
+
+
+@pytest.mark.skipif(not has_extension("monorm.history", "monorm.timestamps"), reason="requires the history and timestamps packages")
+@pytest.mark.parametrize("provider", ["sqlite", "postgresql"])
+async def test_history_and_timestamps_pull_back_as_attributes_without_drift(provider, tmp_path):
+    registry = Registry()
+    source = f'datasource db {{ provider = "{provider}" }}\n' + EXTENSION_MODELS
+    monorm.loads(source, registry=registry)
+    url = f"sqlite://{tmp_path / 'live.db'}" if provider == "sqlite" else PULL_URL
+    db = await monorm.connect(url, max_connections=2, default=False, registry=registry)
+    try:
+        if provider == "postgresql":
+            await db.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public")
+        await db.create_tables()
+        pulled = await pull(db)
+        text = pulled.schema
+        assert "@@history.track" in text
+        assert '@@history.track(model: "CommentAudit")' in text
+        assert "@@history.versions(of: bundle_id)" in text
+        assert '@@timestamps.updated_at("touched_at", mode: "database")' in text
+        # what the extensions generate is not a model, a trigger or a function of its own
+        for generated in ["pe_posts_events", "comment_audit", "h_events_", "h_comment_audit_", "updated_at_touched_at", "version_number", "@@trigger("]:
+            assert generated not in text, generated
+        assert [s.summary for s in pulled.differences] == []
+    finally:
+        await db.close()
+
+
+async def pulled_from(provider, tmp_path, models):
+    """Create the tables of `models` in an empty database, and pull them back."""
+    registry = Registry()
+    monorm.loads(f'datasource db {{ provider = "{provider}" }}\n' + models, registry=registry)
+    url = f"sqlite://{tmp_path / 'live.db'}" if provider == "sqlite" else PULL_URL
+    db = await monorm.connect(url, max_connections=2, default=False, registry=registry)
+    try:
+        if provider == "postgresql":
+            await db.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public")
+        await db.create_tables()
+        return await pull(db)
+    finally:
+        await db.close()
+
+
+# a tracker argument that the database cannot show, and whether pull writes a gap line for the skipped claim;
+# a partial events list leaves no claim to skip, because the claim needs all three triggers
+UNSHOWN_TRACKER_ARGUMENTS = [
+    ('fields: [title], label: "t"', True),
+    ("row: old", True),
+    ('when: "NEW.title <> OLD.title"', True),
+    ("exclude: [body]", True),
+    ("events: [insert, update]", False),
+]
+
+
+@pytest.mark.skipif(not has_extension("monorm.history"), reason="requires the history package")
+@pytest.mark.parametrize("provider", ["sqlite", "postgresql"])
+@pytest.mark.parametrize(("arguments", "gap"), UNSHOWN_TRACKER_ARGUMENTS)
+async def test_a_tracker_with_arguments_the_database_cannot_show_pulls_back_as_plain_objects(provider, arguments, gap, tmp_path):
+    models = f'model Post {{\n id Int @id @default(autoincrement())\n title String\n body String\n @@history.track({arguments})\n @@map("pf_posts")\n}}'
+    pulled = await pulled_from(provider, tmp_path, models)
+    assert "@@history.track" not in pulled.schema
+    assert any(g.startswith("object claims skipped, the schema with them differs from the database") for g in pulled.gaps) == gap
+    assert [s.summary for s in pulled.differences] == []
+
+
+@pytest.mark.skipif(not has_extension("monorm.history"), reason="requires the history package")
+@pytest.mark.parametrize("provider", ["sqlite", "postgresql"])
+async def test_two_trackers_of_one_table_pull_back_as_two_attributes(provider, tmp_path):
+    models = 'model Post {\n id Int @id @default(autoincrement())\n title String\n @@history.track\n @@history.track(model: "PostAudit")\n @@map("p2_posts")\n}'
+    pulled = await pulled_from(provider, tmp_path, models)
+    assert pulled.schema.count("@@history.track(") == 2
+    assert "@@history.track()" in pulled.schema
+    assert '@@history.track(model: "PostAudit")' in pulled.schema
+    assert "p2_posts_events" not in pulled.schema and "post_audit" not in pulled.schema and "@@trigger(" not in pulled.schema
+    assert [s.summary for s in pulled.differences] == []
+
+
+@pytest.mark.skipif(not has_extension("monorm.timestamps"), reason="requires the timestamps package")
+@pytest.mark.parametrize("provider", ["sqlite", "postgresql"])
+async def test_a_timestamps_column_with_another_field_name_pulls_back_with_map(provider, tmp_path):
+    models = 'model Post {\n id Int @id @default(autoincrement())\n title String\n @@timestamps.updated_at("touched_at", map: "_touched_at", mode: "database")\n @@map("pm_posts")\n}'
+    pulled = await pulled_from(provider, tmp_path, models)
+    assert '@@timestamps.updated_at("touched_at", map: "_touched_at", mode: "database")' in pulled.schema
+    assert "updated_at__touched_at" not in pulled.schema and "@@trigger(" not in pulled.schema
+    assert [s.summary for s in pulled.differences] == []
+
+
+@pytest.mark.skipif(not has_extension("monorm.history"), reason="requires the history package")
+async def test_a_version_model_with_scope_pulls_back_with_the_scope_column_as_a_field(tmp_path):
+    models = 'model BundleVersion {\n id Int @id @default(autoincrement())\n bundle_id Int\n @@history.versions(of: bundle_id, scope: [user])\n @@map("ps_bundle_versions")\n}'
+    pulled = await pulled_from("postgresql", tmp_path, models)
+    # the scope column sits in the version table, so the database shows it as a plain column and no difference is left to see
+    assert "@@history.versions(of: bundle_id)" in pulled.schema and "scope:" not in pulled.schema
+    assert "user String?" in pulled.schema
+    assert pulled.gaps == []
+    assert [s.summary for s in pulled.differences] == []
+
+
+@pytest.mark.skipif(not has_extension("monorm.history", "monorm.soft-delete"), reason="requires the history and soft-delete packages")
+async def test_a_failing_rule_claim_is_named_when_object_claims_were_tried_with_it(tmp_path):
+    registry = Registry()
+    monorm.loads('datasource db { provider = "postgresql" }\nmodel Post {\n id Int @id @default(autoincrement())\n title String\n @@history.track\n @@map("pl_posts")\n}', registry=registry)
+    db = await monorm.connect(PULL_URL, max_connections=2, default=False, registry=registry)
+    try:
+        await db.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public")
+        await db.create_tables()
+        # the rule claim fails to compile: its field name `_deleted_at` is taken
+        await db.execute(
+            """
+CREATE TABLE sdm_x (id serial PRIMARY KEY, deleted_at timestamptz, _deleted_at timestamptz);
+CREATE RULE soft_delete AS ON DELETE TO sdm_x
+  WHERE COALESCE(current_setting('rules.hard_deletion', true), '') <> 'on'
+  DO INSTEAD (UPDATE sdm_x SET _deleted_at = NOW() WHERE "id" = old."id" AND _deleted_at IS NULL);
+"""
+        )
+        pulled = await pull(db)
+        # the first attempt holds both kinds of claim; the gap names both, and the rule claims are tried again alone
+        assert any(g.startswith("object claims skipped, the schema with the rule and object claims does not compile") for g in pulled.gaps)
+        assert any(g.startswith("rule claims skipped, the schema with them does not compile") for g in pulled.gaps)
+        assert "@@history.track" not in pulled.schema
+        assert [s.summary for s in pulled.differences] == []
     finally:
         await db.close()

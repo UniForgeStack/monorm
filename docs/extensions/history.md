@@ -163,9 +163,12 @@ SQLite has no skip: `skip_triggers("history")` raises `QueryError`.
 
 * SQLite has one trigger for each event kind and takes at most 500 tracked fields.
 * A backfill on a large table runs as one statement.
-* `pull` reads an event table or a version table as a plain model.
-  On PostgreSQL it also writes the triggers as `@@trigger(...)` lines. On SQLite it reports the triggers as a gap.
-  It never writes `@@history.track` or `@@history.versions`, so a schema from `pull` loses the write protection and the API.
+* `pull` writes `@@history.track` and `@@history.versions` back with the arguments that the names show (`model`, `of`), and leaves out the event table, the version columns and the triggers.
+  A database cannot show `row`, `label`, `when`, `fields`, `exclude`, `scope` or a partial `events` list.
+  `pull` writes the default for them, compares the schema with the database, and on a difference falls back to the plain tables and triggers with a `// gap:` line.
+  A partial `events` list is the exception: the claim needs all three triggers, so `pull` writes the plain tables and triggers with no gap line.
+  The `scope` keys of a version model come back as plain fields of the model, with no gap line.
+  A name that the database cut to its length limit falls back the same way.
 * SQLite stamps `effective_at` with whole seconds, so `version_at` cannot tell two versions of one second apart.
 
 ## Errors
