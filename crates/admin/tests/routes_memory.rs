@@ -130,7 +130,10 @@ async fn the_peak_memory_does_not_grow_with_the_stream() {
     eprintln!("route stream memory: {small_bytes} bytes, peak {small_peak}; {big_bytes} bytes, peak {big_peak}");
     assert_eq!(small_bytes, 100 * CHUNK);
     assert_eq!(big_bytes, 1000 * CHUNK);
-    // Ten times the bytes: a buffered stream would grow about ten times. A flat peak stays within a small factor.
-    assert!(big_peak < small_peak * 2, "peak grew from {small_peak} to {big_peak}");
-    assert!(big_peak < big_bytes / 5, "the peak {big_peak} is a small part of the {big_bytes} bytes sent");
+    // Measured (5 runs, loaded machine): the small stream peaks at 85,145 bytes (it includes the first-call set-up), the big one at about 36,000.
+    // Ten times the bytes: a buffered stream would grow ten times. A flat peak is not above the small one by more than a chunk,
+    // and stays under four chunks (65,536 bytes, about 1.8 times the measured peak).
+    assert!(big_peak <= small_peak + CHUNK, "peak grew from {small_peak} to {big_peak}");
+    assert!(big_peak < 4 * CHUNK, "the peak {big_peak} is over four chunks");
+    assert!(big_peak < big_bytes / 100, "the peak {big_peak} is a small part of the {big_bytes} bytes sent");
 }

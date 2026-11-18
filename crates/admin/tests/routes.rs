@@ -4,10 +4,17 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use base64::engine::general_purpose::STANDARD as B64;
+use axum::body::Body;
+use axum::http::Request;
 use base64::Engine;
+use http_body_util::BodyExt;
+use monorm_admin::server::api_with;
+use monorm_admin::User;
+use tower::ServiceExt;
 use monorm_admin::{call_full, AuthConfig, BoxFuture, BridgeError, CallContext, HostBridge, Security, SecurityOptions, Site};
 use monorm_core::{dsl, migrate, schema::Schema};
 use monorm_engine::db::{self, Executor};
+use monorm_engine::trace::{wrap, Trace};
 use serde_json::{json, Value};
 
 const ADMIN: &str = include_str!("../../../apps/admin/schema.prisma");
@@ -100,6 +107,9 @@ impl HostBridge for Host {
 struct World {
     site: Arc<Site>,
     conn: Arc<dyn Executor>,
+    /// The same database through a recording executor: the routes under test run on it.
+    traced: Arc<dyn Executor>,
+    trace: Trace,
     host: Arc<Host>,
 }
 
@@ -124,7 +134,9 @@ async fn world_with(config: Value) -> World {
         conn.batch(sql.into()).await.unwrap();
     }
     let site = Arc::new(Site::build(schema, &config.to_string()).unwrap());
-    World { site, conn, host: Arc::new(Host::default()) }
+    let trace = Trace::new();
+    let traced = wrap(conn.clone(), Some(&trace));
+    World { site, conn, traced, trace, host: Arc::new(Host::default()) }
 }
 
 async fn world() -> World {
@@ -139,12 +151,17 @@ impl World {
     async fn send(&self, method: &str, path: &str, user: Option<i64>, body: Option<&str>) -> (u16, Vec<(String, String)>, Vec<u8>) {
         let auth = AuthConfig { security: Security::new(&[7u8; 32], SecurityOptions::default()).unwrap(), bridge: self.host.clone() };
         let body = body.map(|b| ("application/json", b.as_bytes().to_vec()));
-        call_full(self.site.clone(), self.conn.clone(), method, &format!("/admin/api/routes/{path}"), user.map(|k| json!({"key": k})), Some(auth), body).await
+        call_full(self.site.clone(), self.traced.clone(), method, &format!("/admin/api/routes/{path}"), user.map(|k| json!({"key": k})), Some(auth), body).await
     }
 
     async fn json(&self, method: &str, path: &str, user: Option<i64>, body: Option<&str>) -> (u16, Value) {
         let (status, _, out) = self.send(method, path, user, body).await;
         (status, serde_json::from_slice(&out).unwrap_or(Value::Null))
+    }
+
+    /// The statements that the requests since the last call sent to the database.
+    fn statements(&self) -> Vec<String> {
+        self.trace.take().into_iter().map(|e| e.sql).collect()
     }
 
     async fn audit(&self) -> Vec<(String, String, Value)> {
@@ -339,4 +356,106 @@ fn a_route_under_a_second_label_is_allowed_when_a_resource_uses_it() {
     let site = build(json!([{"method": "GET", "path": "a", "permission": "shop.sync"}]), json!({"resources": [{"model": "Note", "label": "shop"}]}));
     let site = site.unwrap_or_else(|e| panic!("{e}"));
     assert!(site.permission_names().contains(&"shop.sync".to_owned()));
+}
+
+// The grants read is the only statement of a served route; a denial adds the audit write.
+const SERVED: usize = 1;
+const DENIED: usize = 2;
+
+#[tokio::test]
+async fn a_route_costs_a_fixed_number_of_statements() {
+    let w = world().await;
+    w.answer("route.GET.reports/summary", json!({"json": 1}));
+    w.answer("route.GET.reports/{id}", json!({"json": 1}));
+    w.trace.take();
+    for (path, user) in [("reports/summary", 2), ("reports/7", 1), ("reports/8", 1)] {
+        assert_eq!(w.json("GET", path, Some(user), None).await.0, 200);
+        let sql = w.statements();
+        assert_eq!(sql.len(), SERVED, "{path}: {sql:?}");
+    }
+}
+
+#[tokio::test]
+async fn the_statements_do_not_grow_with_the_grants_of_the_user() {
+    let w = world().await;
+    w.answer("route.GET.reports/{id}", json!({"json": 1}));
+    w.trace.take();
+    w.json("GET", "reports/1", Some(1), None).await;
+    let before = w.statements().len();
+    let permissions: Vec<String> = (10..60).map(|i| format!("({i}, 'shop', 'p{i}', 'n{i}')")).collect();
+    let grants: Vec<String> = (10..60).map(|i| format!("(1, {i})")).collect();
+    w.conn.batch(format!("INSERT INTO \"Permission\" (id, label, codename, name) VALUES {}", permissions.join(", "))).await.unwrap();
+    w.conn.batch(format!("INSERT INTO \"UserPermission\" (user_id, permission_id) VALUES {}", grants.join(", "))).await.unwrap();
+    assert_eq!(w.json("GET", "reports/1", Some(1), None).await.0, 200);
+    assert_eq!(w.statements().len(), before);
+}
+
+#[tokio::test]
+async fn a_denied_route_costs_the_preamble_and_one_audit_write() {
+    let w = world().await;
+    w.trace.take();
+    assert_eq!(w.json("GET", "reports/7", Some(2), None).await.0, 403);
+    let sql = w.statements();
+    assert_eq!(sql.len(), DENIED, "{sql:?}");
+    assert_eq!(sql.iter().filter(|s| s.contains("adminlogentry")).count(), 1, "{sql:?}");
+}
+
+#[tokio::test]
+async fn a_request_without_a_session_sends_no_statement() {
+    let w = world().await;
+    w.trace.take();
+    assert_eq!(w.json("GET", "reports/summary", None, None).await.0, 401);
+    assert!(w.statements().is_empty());
+}
+
+/// A host that makes endless chunks and counts the pulls and the closes.
+#[derive(Default)]
+struct Endless {
+    pulls: Mutex<usize>,
+    closed: Mutex<usize>,
+}
+
+impl HostBridge for Endless {
+    fn call(&self, name: &str, _payload: Value, _ctx: CallContext) -> BoxFuture<Result<Value, BridgeError>> {
+        let out = match name {
+            "route.GET.download" => json!({"stream": "e", "content_type": "text/plain"}),
+            "route.__next" => {
+                *self.pulls.lock().unwrap() += 1;
+                json!({"chunk": B64.encode(vec![b'x'; 1024])})
+            }
+            "route.__close" => {
+                *self.closed.lock().unwrap() += 1;
+                Value::Null
+            }
+            _ => Value::Null,
+        };
+        Box::pin(async move { Ok(out) })
+    }
+}
+
+#[tokio::test]
+async fn a_client_that_leaves_a_stream_stops_the_pulls_and_closes_it() {
+    let w = world().await;
+    let host = Arc::new(Endless::default());
+    let auth = AuthConfig { security: Security::new(&[7u8; 32], SecurityOptions::default()).unwrap(), bridge: host.clone() };
+    let app = api_with(w.site.clone(), w.conn.clone(), Some(auth));
+    let mut request = Request::builder().method("GET").uri("/admin/api/routes/download").body(Body::empty()).unwrap();
+    request.extensions_mut().insert(User(json!({"key": 1})));
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), 200);
+    let mut body = response.into_body();
+    assert!(body.frame().await.unwrap().unwrap().into_data().is_ok());
+    drop(body);
+    // The producer never ends by itself: only the leave can close the stream.
+    for _ in 0..200 {
+        if *host.closed.lock().unwrap() > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(*host.closed.lock().unwrap(), 1, "the stream is closed once");
+    let pulled = *host.pulls.lock().unwrap();
+    assert!(pulled < 100, "the pulls stop soon after the leave: {pulled}");
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(*host.pulls.lock().unwrap(), pulled, "no pull after the close");
 }
