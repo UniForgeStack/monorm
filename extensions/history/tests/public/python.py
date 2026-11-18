@@ -35,6 +35,21 @@ async def run(provider: str, url: str) -> None:
         assert (again.id, again.title) == (post.id, "a")
         later = datetime.now(timezone.utc) + timedelta(days=1)
         assert await Post.history.using(db).purge(before=later) == 5
+
+        # versions mode: register, record twice, a repeated snapshot writes nothing, restore leaves a restore version
+        BundleVersion = models["BundleVersion"]
+        bundles = {1: {"id": 1, "title": "a"}}
+        applied = []
+        BundleVersion.history.register(generate=lambda id: dict(bundles[id]), restore=applied.append)
+        versions = BundleVersion.history.using(db)
+        first = await versions.record(1, "create")
+        bundles[1]["title"] = "b"
+        assert (await versions.record(1, "update")).version_number == 2
+        assert (await versions.record(1, "update")).version_number == 2
+        restored_version = await versions.restore(first)
+        assert (restored_version.version_number, restored_version.change_type, restored_version.restored_from) == (3, "restore", first.id)
+        assert applied == [{"id": 1, "title": "a"}], applied
+        assert [e.event.version_number for e in await versions.timeline(1)] == [1, 2, 3]
     finally:
         await db.drop_tables()
         await db.close()

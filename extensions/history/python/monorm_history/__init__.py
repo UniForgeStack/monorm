@@ -1,22 +1,36 @@
-"""History language members for models with ``@@history.track``: ``Model.history``."""
+"""History language members for models with ``@@history.track`` or ``@@history.versions``: ``Model.history``."""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 import decimal
+import inspect
 import uuid
+import weakref
 from datetime import date, datetime, time, timezone
 from typing import Any
 
 from monorm import QuerySet, allow_writes
 from monorm.db import Database, resolve
-from monorm.ext import ModelT, behavior_records, database_of, json_diff, key_condition
+from monorm.ext import ModelT, behavior_records, canonical_hash, database_of, json_diff, key_condition
 
 __all__ = ["History", "HistoryEntry", "HistoryInstance", "HistoryQuerySet"]
 
 _SOURCE = "monorm.history"
 RESTORE = "restore"
+# A version that restores or deletes is always written: a restore must leave its trace, and a delete is an event of its own.
+_ALWAYS_WRITTEN = ("delete", RESTORE)
+_RECORD_TYPES = ("create", "update", "delete")
+
+# The functions of `register`, by version model class.
+_REGISTERED: weakref.WeakKeyDictionary[type, tuple[Callable[..., Any], Callable[..., Any]]] = weakref.WeakKeyDictionary()
+
+
+async def _call(fn: Callable[..., Any], *args: Any) -> Any:
+    """The result of ``fn(*args)``; a function may be sync or async."""
+    result = fn(*args)
+    return await result if inspect.isawaitable(result) else result
 
 
 @dataclass(frozen=True)
@@ -143,7 +157,9 @@ class History:
 
     async def timeline(self, row: Any, *, diff: bool = False, tracker: str | None = None) -> list[HistoryEntry]:
         """The events of ``row`` in order. With ``diff=True``, each entry has the changed fields
-        against the previous event of the row."""
+        against the previous event of the row. On a version model it gives the versions of the entity by number."""
+        if self._version_model() is not None:
+            return await self._version_timeline(row, diff)
         t = self._tracker(tracker)
         event_class = self._event_class(t)
         conditions = self._row_conditions(t, event_class, self._key(row))
@@ -157,7 +173,10 @@ class History:
         return entries
 
     async def at(self, row: Any, when: datetime, *, tracker: str | None = None) -> Any:
-        """The last event of ``row`` at or before ``when``, or ``None``. Its ``data`` is the row state then."""
+        """The last event of ``row`` at or before ``when``, or ``None``. Its ``data`` is the row state then.
+        On a version model it is ``version_at``."""
+        if self._version_model() is not None:
+            return await self.version_at(row, when)
         t = self._tracker(tracker)
         event_class = self._event_class(t)
         conditions = self._row_conditions(t, event_class, self._key(row))
@@ -172,7 +191,11 @@ class History:
     async def restore(self, event: Any) -> Any:
         """Write the row back from ``event``, in one transaction, and leave one event with the label
         ``restore``. A row that exists is updated with the fields of the event. A deleted row is inserted
-        again, only when the tracker covers every field. Gives the row."""
+        again, only when the tracker covers every field. Gives the row.
+        On a version model it calls the registered ``restore`` function with the snapshot and gives the
+        new ``restore`` version."""
+        if self._version_model() is not None:
+            return await self._restore_version(event)
         event_class = type(event)
         t = next((t for t in self._trackers() if t["event_model"] == event_class.__name__), None)
         if t is None:
@@ -211,6 +234,115 @@ class History:
             await self._mark_restore(db, t, "")
             await self._label_restore(db, event_class, t, key, after, row)
         return row
+
+    # ---- versions mode ----
+
+    def _version_model(self) -> dict[str, Any] | None:
+        records = behavior_records(self._model, "extension_records")
+        return next((r["data"] for r in records if r["source"] == _SOURCE and r["kind"] == "versions"), None)
+
+    def _versions(self) -> dict[str, Any]:
+        v = self._version_model()
+        if v is None:
+            raise TypeError(f"{self._model.__name__} has no @@history.versions attribute")
+        return v
+
+    def _functions(self) -> tuple[Callable[..., Any], Callable[..., Any]]:
+        found = _REGISTERED.get(self._model)
+        if found is None:
+            name = self._model.__name__
+            raise RuntimeError(f"{name}.history is not registered; call {name}.history.register(generate=..., restore=...) first")
+        return found
+
+    def register(self, *, generate: Callable[..., Any], restore: Callable[..., Any]) -> None:
+        """Set the two functions of this version model. ``generate(entity)`` gives the snapshot, a dict of
+        JSON values; ``restore(snapshot)`` writes it back. Each may be sync or async."""
+        self._versions()
+        if not callable(generate) or not callable(restore):
+            raise TypeError("register needs generate and restore functions")
+        _REGISTERED[self._model] = (generate, restore)
+
+    @staticmethod
+    def _entity_id(entity: Any) -> Any:
+        """The id of the entity: a plain value is the id; an object or a dict gives its ``id``."""
+        if isinstance(entity, (int, str, uuid.UUID)):
+            return entity
+        value = entity.get("id") if isinstance(entity, dict) else getattr(entity, "id", None)
+        if value is None:
+            raise ValueError("the entity has no id: pass an id value, or an object with an id")
+        return value
+
+    def _id_column(self, v: dict[str, Any]) -> Any:
+        return getattr(self._model, v["pk_field"])
+
+    async def _write(
+        self, db: Database, v: dict[str, Any], entity_id: Any, make_snapshot: Callable[[], Any], change_type: str, restored_from: Any
+    ) -> Any:
+        model = self._model
+        async with db.transaction():
+            # The lock comes before the snapshot and the read of the latest version, so a second writer waits for
+            # the first one and never writes an older snapshot after a newer one.
+            if v["lock_sql"] is not None:
+                await db.fetch(v["lock_sql"], entity_id)
+            snapshot = await _call(make_snapshot)
+            if not isinstance(snapshot, dict):
+                raise TypeError(f"generate must give a dict; it gave {type(snapshot).__name__}")
+            digest = canonical_hash(snapshot)
+            if change_type not in _ALWAYS_WRITTEN:
+                latest = await db.fetch(v["latest_sql"], entity_id)
+                # A version after a delete is a new life of the entity, so it never matches the delete version.
+                if latest and latest[0]["change_type"] != "delete" and latest[0]["content_hash"] == digest:
+                    return await model.objects.using(db).get(self._id_column(v) == latest[0]["id"])
+            rows = await db.fetch(v["insert_sql"], entity_id, snapshot, digest, change_type, restored_from)
+            return await model.objects.using(db).get(self._id_column(v) == rows[0]["id"])
+
+    async def record(self, entity: Any, change_type: str) -> Any:
+        """Store the snapshot that ``generate(entity)`` gives as the next version of the entity, with the change
+        type ``create``, ``update`` or ``delete``. A snapshot with the hash of the latest version writes nothing
+        and gives that version, unless that version is a ``delete``. Inside a transaction, the version rolls back with it. Gives the version."""
+        v = self._versions()
+        if change_type not in _RECORD_TYPES:
+            raise ValueError(f"change_type must be one of {', '.join(_RECORD_TYPES)}; restore() writes the restore version")
+        generate, _ = self._functions()
+        db = self._database(entity)
+        return await self._write(db, v, self._entity_id(entity), lambda: generate(entity), change_type, None)
+
+    def _version_conditions(self, v: dict[str, Any], entity: Any) -> list[Any]:
+        return [getattr(self._model, v["of_field"]) == self._entity_id(entity)]
+
+    async def _version_timeline(self, entity: Any, diff: bool) -> list[HistoryEntry]:
+        v = self._versions()
+        cls = self._model
+        versions = await cls.objects.using(self._database(entity)).filter(*self._version_conditions(v, entity)).order_by(cls.version_number)
+        entries: list[HistoryEntry] = []
+        previous: Any = None
+        for version in versions:
+            changes = json_diff(previous.snapshot, version.snapshot) if diff and previous is not None else None
+            entries.append(HistoryEntry(version, changes))
+            previous = version
+        return entries
+
+    async def version_at(self, entity: Any, when: datetime) -> Any:
+        """The last version of the entity with ``effective_at`` at or before ``when``, or ``None``."""
+        v = self._versions()
+        cls = self._model
+        return await (
+            cls.objects.using(self._database(entity))
+            .filter(*self._version_conditions(v, entity), cls.effective_at <= when)
+            .order_by(cls.version_number.desc())
+            .first()
+        )
+
+    async def _restore_version(self, version: Any) -> Any:
+        v = self._versions()
+        if not isinstance(version, self._model):
+            raise TypeError(f"{type(version).__name__} is not a version of {self._model.__name__}")
+        _, restore = self._functions()
+        db = self._database(version)
+        entity_id = getattr(version, v["of_field"])
+        async with db.transaction():
+            await _call(restore, version.snapshot)
+            return await self._write(db, v, entity_id, lambda: version.snapshot, RESTORE, getattr(version, v["pk_field"]))
 
     def _check_required(self, values: dict[str, Any], known: Any, event: Any) -> None:
         missing = [n for n, f in known.items() if n not in values and not f.nullable and not f.has_insert_default]
