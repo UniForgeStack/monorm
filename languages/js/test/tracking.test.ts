@@ -902,3 +902,27 @@ model Doc {
     (e: Error) => e.message.includes("SQLite has no rules to replace"),
   );
 });
+
+for (const dialect of ["sqlite", "postgres"]) {
+  test(`a native check and index filter may name the soft delete field (${dialect})`, { skip: !hasExtension("monorm.soft-delete") }, async () => {
+    const [db, models] = await open(dialect, `
+model Doc {
+  id    Int    @id
+  slug  String
+  views Int    @default(0)
+  @@soft_delete.deleted_at("deleted_at")
+  @@check(deleted_at != null | views >= 0)
+  @@index([slug], name: "tracking_doc_live_slug", unique: true, where: deleted_at == null)
+  @@map("tracking_native_docs")
+}`);
+    const docs = models.Doc!.objects.using(db);
+    try {
+      await docs.insert({ id: 1, slug: "a" });
+      await assert.rejects(Promise.resolve(docs.insert({ id: 2, slug: "a" })));
+      await assert.rejects(Promise.resolve(docs.insert({ id: 3, slug: "b", views: -1 })));
+      assert.equal(await docs.filter(models.Doc!.id.eq(1)).delete(), 1);
+      await docs.insert({ id: 2, slug: "a" });
+      assert.equal(await docs.allWithDeleted().count(), 2);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+}

@@ -1888,3 +1888,65 @@ fn a_deferrable_unique_on_a_json_subfield_is_refused_by_name() {
     let e = fails(&with(", deferrable: deferred"));
     assert!(e.contains("@@unique: a key on a json subfield") && e.contains("cannot be deferrable"), "{e}");
 }
+
+fn lower_deferred(source: &str) -> (crate::ir::SchemaIr, lower::Deferred) {
+    let load = |_: &str| Err("no imports".to_owned());
+    let views = std::collections::HashSet::new();
+    let none = Default::default();
+    let (ir, _, deferred) = lower::Lowering { load: &load, deferred_identity: &none, views: &views, owned_types: &Default::default() }.lower_deferred(syntax::parse(source).unwrap()).unwrap();
+    (ir, deferred)
+}
+
+fn late_field(ir: &mut crate::ir::SchemaIr) {
+    let mut late = ir.models[0].fields[0].clone();
+    late.name = "late".into();
+    late.column = "late".into();
+    late.primary_key = false;
+    ir.models[0].fields.push(late);
+}
+
+const LATE: &str = "model A {\n  id Int @id\n  @@index([id], where: late == null)\n  @@check(late != 3)\n}";
+
+/// A field that a pass adds after lowering is known to the native expressions of the second round.
+#[test]
+fn a_native_expression_waits_for_the_field_that_a_pass_adds() {
+    let (mut ir, mut deferred) = lower_deferred(LATE);
+    assert!(ir.models[0].indexes[0].where_.as_deref().unwrap().starts_with('\u{1}'));
+    late_field(&mut ir);
+    deferred.resolve(&mut ir, true).unwrap();
+    deferred.finish(&mut ir).unwrap();
+    assert!(ir.models[0].indexes[0].where_.as_deref().unwrap().contains("late"));
+}
+
+/// A field that no model declares after the passes is the same error as before, and it names the model that wrote the expression.
+#[test]
+fn a_field_that_no_pass_adds_is_an_error_naming_the_model() {
+    let (mut ir, mut deferred) = lower_deferred(LATE);
+    let e = deferred.resolve(&mut ir, true).unwrap_err();
+    assert!(e.msg.contains("unknown field `late` on model `A`") && e.pos.line == 3, "{} at {}", e.msg, e.pos);
+}
+
+/// The slots of the second round are appended to the ones that exist, not assigned over them.
+#[test]
+fn the_native_slots_append_to_the_existing_slots() {
+    let (mut ir, mut deferred) = lower_deferred(LATE);
+    ir.native_expression_slots.push(("Other".into(), "check:0".into()));
+    late_field(&mut ir);
+    deferred.resolve(&mut ir, true).unwrap();
+    deferred.finish(&mut ir).unwrap();
+    assert_eq!(ir.native_expression_slots, [("Other".to_owned(), "check:0".to_owned()), ("A".into(), "index:0:where".into()), ("A".into(), "check:0".into())]);
+}
+
+/// A pass that puts an index before a native one moves the slot with it: the plain index gets no slot.
+#[test]
+fn a_native_slot_follows_its_index_when_a_pass_inserts_one_before() {
+    let (mut ir, mut deferred) = lower_deferred(LATE);
+    let mut plain = ir.models[0].indexes[0].clone();
+    plain.where_ = None;
+    ir.models[0].indexes.insert(0, plain);
+    late_field(&mut ir);
+    deferred.resolve(&mut ir, true).unwrap();
+    deferred.finish(&mut ir).unwrap();
+    assert!(ir.native_expression_slots.contains(&("A".to_owned(), "index:1:where".to_owned())), "{:?}", ir.native_expression_slots);
+    assert!(!ir.native_expression_slots.iter().any(|(_, p)| p == "index:0:where"), "{:?}", ir.native_expression_slots);
+}

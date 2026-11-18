@@ -346,7 +346,7 @@ fn compile_project_overlay(source: &str, origin: Option<&Path>, update: Option<I
         None => msg,
     };
     let owned_types = lower::owned_types(manifests);
-    let (mut ir, diagnostics) = lower::Lowering { load: &load, deferred_identity: &deferred_identity, views: &views, owned_types: &owned_types }.lower(items).map_err(|e| loader.located(e))?;
+    let (mut ir, diagnostics, mut deferred) = lower::Lowering { load: &load, deferred_identity: &deferred_identity, views: &views, owned_types: &owned_types }.lower_deferred(items).map_err(|e| loader.located(e))?;
     let mut warnings: Vec<expr::Warning> = diagnostics.into_iter().map(|d| {
         let (file, span) = loader.located_span(d.span);
         expr::Warning { file, span, message: d.message }
@@ -358,6 +358,16 @@ fn compile_project_overlay(source: &str, origin: Option<&Path>, update: Option<I
     }
     if update.is_none() {
         crate::behavior::prepare_collecting(&mut ir, None, plan.as_ref(), &mut warnings)?;
+    }
+    // The passes ran, so a native expression may name a field that an extension added.
+    // Update mode runs no pass: with declarations it leaves such an expression open, because the identity manifest does not need it.
+    let last = update.is_none() || ir.behavior.declarations.is_empty();
+    for d in deferred.resolve(&mut ir, last).map_err(|e| loader.located(e))? {
+        let (file, span) = loader.located_span(d.span);
+        warnings.push(expr::Warning { file, span, message: d.message });
+    }
+    if last { deferred.finish(&mut ir).map_err(|e| loader.located(e))?; }
+    if update.is_none() {
         crate::partition::validate(&ir)?;
         for model in &ir.models {
             if !model.fields.iter().any(|field| field.primary_key) {

@@ -208,6 +208,11 @@ pub struct Diagnostic {
 /// A parse or type error.
 pub type Error = Diagnostic;
 
+/// True for the error of a name that the model does not declare. An extension pass may still add the field.
+pub(super) fn is_unknown_field(d: &Diagnostic) -> bool {
+    d.message.starts_with("unknown field `") && d.message.contains("` on model `")
+}
+
 /// A diagnostic that does not stop compilation, placed in a file. `CompiledProject::warnings`
 /// holds them.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -646,6 +651,7 @@ impl Checker<'_> {
                     None => fail(span, format!("enum `{enum_name}` has no member `{step}`")),
                 };
             }
+            // `is_unknown_field` matches this text.
             return fail(span, format!("unknown field `{step}` on model `{}`", model.name));
         }
         unreachable!("a path has at least one name")

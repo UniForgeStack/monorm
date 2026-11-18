@@ -1115,3 +1115,36 @@ model Doc {
     assert "Doc" in monorm.loads(source, registry=monorm.Registry())
     with pytest.raises(monorm.SchemaError, match="SQLite has no rules to replace"):
         monorm.loads('datasource db { provider = "sqlite" }\n' + source, registry=monorm.Registry())
+
+
+@requires("monorm.soft-delete")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_a_native_check_and_index_filter_may_name_the_soft_delete_field(dialect):
+    db, models = await connect(
+        dialect,
+        """
+model Doc {
+  id    Int    @id
+  slug  String
+  views Int    @default(0)
+  @@soft_delete.deleted_at("deleted_at")
+  @@check(deleted_at != null | views >= 0)
+  @@index([slug], name: "tracking_doc_live_slug", unique: true, where: deleted_at == null)
+  @@map("tracking_native_docs")
+}
+""",
+    )
+    Doc = models["Doc"]
+    try:
+        docs = Doc.objects.using(db)
+        await docs.insert_many([{"id": 1, "slug": "a"}])
+        with pytest.raises(Exception):
+            await docs.insert_many([{"id": 2, "slug": "a"}])
+        with pytest.raises(Exception):
+            await docs.insert_many([{"id": 3, "slug": "b", "views": -1}])
+        assert await docs.filter(Doc.id == 1).delete() == 1
+        await docs.insert_many([{"id": 2, "slug": "a"}])
+        assert await docs.all_with_deleted().count() == 2
+    finally:
+        await db.drop_tables()
+        await db.close()

@@ -356,7 +356,9 @@ struct Ctx<'l> {
 }
 
 impl Lowering<'_> {
-    pub fn lower(&self, items: Vec<Item>) -> Result<(SchemaIr, Vec<Diagnostic>)> {
+    /// Lowers the schema. A native expression that names a field no model declares yet stays in the IR as a marker:
+    /// the extension passes may add the field. Call [`Deferred::resolve`] with `last` after `prepare`, then [`Deferred::finish`].
+    pub fn lower_deferred(&self, items: Vec<Item>) -> Result<(SchemaIr, Vec<Diagnostic>, Deferred)> {
         let mut ir = SchemaIr::default();
         let mut ctx = Ctx { types: HashMap::new(), enums: HashMap::new(), nested: HashMap::new(), members: HashMap::new(), views: self.views, owned_types: self.owned_types, pending: Pendings::default() };
         for def in ExtensionDef::builtin() {
@@ -448,8 +450,18 @@ impl Lowering<'_> {
         }
         ir.models = lowered;
         lower_partitions(&items, &mut ir)?;
-        let warnings = resolve_pending(&mut ir, &ctx.pending)?;
+        let mut deferred = Deferred::new(ctx.pending);
+        let warnings = deferred.resolve(&mut ir, false)?;
         hide_deprecated(&mut ir, &all_hidden)?;
+        Ok((ir, warnings, deferred))
+    }
+
+    #[cfg(test)]
+    /// [`Lowering::lower_deferred`] for a schema that no extension pass will change: a field that no model declares is an error here.
+    pub fn lower(&self, items: Vec<Item>) -> Result<(SchemaIr, Vec<Diagnostic>)> {
+        let (mut ir, mut warnings, mut deferred) = self.lower_deferred(items)?;
+        warnings.extend(deferred.resolve(&mut ir, true)?);
+        deferred.finish(&mut ir)?;
         Ok((ir, warnings))
     }
 }
@@ -1696,54 +1708,106 @@ fn fully_checked(node: &super::expr::Node) -> bool {
     }
 }
 
-/// Checks every pending expression against the whole schema, lowers it to SQL text and puts the
-/// text in the IR slot that holds its marker. Returns the warnings, in source order.
-fn resolve_pending(ir: &mut SchemaIr, pending: &Pendings) -> Result<Vec<Diagnostic>> {
-    let list = pending.list.take();
-    let mut warnings = pending.warnings.take();
-    let as_error = |d: Diagnostic| super::syntax::Error { pos: Pos { line: d.span.line, col: d.span.column, len: 0 }, msg: d.message };
-    let mut texts = Vec::with_capacity(list.len());
-    let mut checked_slots = Vec::with_capacity(list.len());
-    for e in &list {
-        let checked = super::expr::check(ir, &e.model, e.context, e.pos, &e.value).map_err(as_error)?;
-        checked_slots.push(fully_checked(&checked.root));
-        warnings.extend(checked.warnings);
-        texts.push(super::render::render(ir, ir.dialect, &checked.root).map_err(as_error)?);
-    }
-    let mut slots = vec![];
-    let mut fill = |model: &str, path: String, slot: &mut String| {
-        if let Some(i) = slot.strip_prefix(MARK).and_then(|n| n.parse::<usize>().ok()) {
-            *slot = texts[i].clone();
-            if checked_slots[i] { slots.push((model.to_owned(), path)); }
-        }
-    };
-    for m in &mut ir.models {
-        for f in &mut m.fields {
-            if let Some(expr) = &mut f.check { fill(&m.name, format!("field:{}", f.name), expr); }
-            if let Some(g) = &mut f.generated { fill(&m.name, format!("generated:{}", f.name), &mut g.sql); }
+/// The native expressions that wait for the extension passes, and the proof that a text was checked.
+pub struct Deferred {
+    list: Vec<PendingExpr>,
+    warnings: Vec<Diagnostic>,
+    /// The indexes in `list` of the expressions that still stand as markers.
+    open: Vec<usize>,
+    /// (model, slot kind, SQL text) of every checked expression that lowering put in a model.
+    checked: BTreeSet<(String, &'static str, String)>,
+}
+
+/// The expression slots of a model: kind, path and text. `path` is a position in this model, so it is valid only for this list of indexes and constraints.
+fn for_each_slot(models: &mut [ModelIr], mut f: impl FnMut(&str, &'static str, String, &mut String)) {
+    for m in models {
+        for fld in &mut m.fields {
+            if let Some(expr) = &mut fld.check { f(&m.name, "field", format!("field:{}", fld.name), expr); }
+            if let Some(g) = &mut fld.generated { f(&m.name, "generated", format!("generated:{}", fld.name), &mut g.sql); }
         }
         for (i, ix) in m.indexes.iter_mut().enumerate() {
             for (k, key) in ix.columns.iter_mut().enumerate() {
-                if let Some(expr) = &mut key.expr { fill(&m.name, format!("index:{i}:key:{k}"), expr); }
+                if let Some(expr) = &mut key.expr { f(&m.name, "index-key", format!("index:{i}:key:{k}"), expr); }
             }
-            if let Some(expr) = &mut ix.where_ { fill(&m.name, format!("index:{i}:where"), expr); }
+            if let Some(expr) = &mut ix.where_ { f(&m.name, "index-where", format!("index:{i}:where"), expr); }
         }
         for (i, c) in m.constraints.iter_mut().enumerate() {
             match c {
-                ConstraintIr::Check { expr, .. } => fill(&m.name, format!("check:{i}"), expr),
+                ConstraintIr::Check { expr, .. } => f(&m.name, "check", format!("check:{i}"), expr),
                 ConstraintIr::Exclude { elements, where_, .. } => {
                     for (k, e) in elements.iter_mut().enumerate() {
-                        if let Some(expr) = &mut e.column.expr { fill(&m.name, format!("exclude:{i}:key:{k}"), expr); }
+                        if let Some(expr) = &mut e.column.expr { f(&m.name, "exclude-key", format!("exclude:{i}:key:{k}"), expr); }
                     }
-                    if let Some(expr) = where_ { fill(&m.name, format!("exclude:{i}:where"), expr); }
+                    if let Some(expr) = where_ { f(&m.name, "exclude-where", format!("exclude:{i}:where"), expr); }
                 }
                 _ => {}
             }
         }
     }
-    ir.native_expression_slots = slots;
-    warnings.sort_by_key(|w| (w.span.line, w.span.column));
-    Ok(warnings)
+}
+
+impl Deferred {
+    fn new(pending: Pendings) -> Self {
+        let list = pending.list.take();
+        Deferred { open: (0..list.len()).collect(), warnings: pending.warnings.take(), list, checked: BTreeSet::new() }
+    }
+
+    /// Checks each open expression against the whole schema, lowers it to SQL text and puts the text in every slot that holds its marker:
+    /// the logical models, the physical copies and the copies that a pass made of a marker.
+    /// Text that an earlier round already resolved stays plain text in a pass copy; only the model that wrote it gets a slot.
+    /// An expression that names an unknown field stays open unless `last`; then the error names the model that wrote the expression.
+    /// Returns the warnings, in source order.
+    pub fn resolve(&mut self, ir: &mut SchemaIr, last: bool) -> Result<Vec<Diagnostic>> {
+        let as_error = |d: Diagnostic| super::syntax::Error { pos: Pos { line: d.span.line, col: d.span.column, len: 0 }, msg: d.message };
+        let mut warnings = std::mem::take(&mut self.warnings);
+        let mut texts: Vec<Option<(String, bool)>> = vec![None; self.list.len()];
+        let mut still_open = vec![];
+        for &i in &self.open {
+            let e = &self.list[i];
+            let done = super::expr::check(ir, &e.model, e.context, e.pos, &e.value).and_then(|checked| {
+                let sql = super::render::render(ir, ir.dialect, &checked.root)?;
+                Ok((sql, fully_checked(&checked.root), checked.warnings))
+            });
+            match done {
+                Ok((sql, proven, found)) => { warnings.extend(found); texts[i] = Some((sql, proven)); }
+                Err(d) if !last && super::expr::is_unknown_field(&d) => still_open.push(i),
+                Err(d) => return Err(as_error(d)),
+            }
+        }
+        self.open = still_open;
+        let checked = &mut self.checked;
+        let mut fill = |models: &mut [ModelIr]| for_each_slot(models, |model, kind, _, slot| {
+            let Some(i) = slot.strip_prefix(MARK).and_then(|n| n.parse::<usize>().ok()) else { return };
+            let Some((sql, proven)) = &texts[i] else { return };
+            *slot = sql.clone();
+            if *proven { checked.insert((model.to_owned(), kind, sql.clone())); }
+        });
+        fill(&mut ir.models);
+        if let Some(storage) = &mut ir.behavior.storage { fill(&mut storage.models); }
+        warnings.sort_by_key(|w| (w.span.line, w.span.column));
+        Ok(warnings)
+    }
+
+    /// Records which slots of the final models hold a checked text, so the migration may adopt equivalent SQL there.
+    /// A pass can add or reorder indexes and constraints of the physical models, so the slots come from the final positions and from the text.
+    /// Appends to the slots that the IR already holds. Fails if a marker is left in the IR.
+    pub fn finish(self, ir: &mut SchemaIr) -> Result<()> {
+        let mut left = false;
+        for_each_slot(&mut ir.models, |_, _, _, slot| left |= slot.starts_with(MARK));
+        if let Some(storage) = &mut ir.behavior.storage { for_each_slot(&mut storage.models, |_, _, _, slot| left |= slot.starts_with(MARK)); }
+        if left {
+            return Err(super::syntax::Error { pos: Pos::default(), msg: "a native expression was not resolved: an extension pass moved it where the compiler does not look".into() });
+        }
+        let mut slots = vec![];
+        let models = match &mut ir.behavior.storage { Some(storage) => &mut storage.models, None => &mut ir.models };
+        for_each_slot(models, |model, kind, path, slot| {
+            if self.checked.contains(&(model.to_owned(), kind, slot.clone())) { slots.push((model.to_owned(), path)); }
+        });
+        for slot in slots {
+            if !ir.native_expression_slots.contains(&slot) { ir.native_expression_slots.push(slot); }
+        }
+        Ok(())
+    }
 }
 
 /// `type: Gin` (Prisma's names) or `type: hnsw` -> the access method.
