@@ -6,7 +6,7 @@
  * same either way: a reference in queries (`Shop.address.city`) and a value on an instance.
  */
 
-import { parseTime, timeText } from "./date-micros.js";
+import { extraMicros, keepMicros, parseTime, timeText } from "./date-micros.js";
 import { Decimal } from "./decimal.js";
 import { DecodeError } from "./errors.js";
 import { Column, Expression, Node, ParamRef, wrap, type IR, type IRContext } from "./expr.js";
@@ -274,7 +274,7 @@ export class NestedType {
       case "time":
         return timeText(v as Date);
       case "date_time":
-        return `${(v as Date).toISOString().slice(0, -1)}000Z`;
+        return `${(v as Date).toISOString().slice(0, -1)}${String(extraMicros(v as Date)).padStart(3, "0")}Z`;
       case "date":
         return (v as Date).toISOString().slice(0, 10);
     }
@@ -424,7 +424,8 @@ export function parseDateTime(text: string): Date | undefined {
   if (!m) return undefined;
   const [y, mo, d, h, mi, s] = [m[1], m[2], m[3], m[4], m[5], m[6]].map(Number) as [number, number, number, number, number, number];
   if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || s > 59) return undefined;
-  const ms = Number((m[7] ?? "").padEnd(3, "0").slice(0, 3));
+  const fraction = (m[7] ?? "").padEnd(6, "0");
+  const ms = Number(fraction.slice(0, 3));
   let offset = 0;
   const zone = m[8];
   if (zone !== undefined && zone !== "Z") {
@@ -433,7 +434,9 @@ export function parseDateTime(text: string): Date | undefined {
   }
   const t = Date.UTC(y, mo - 1, d, h, mi, s, ms) - offset * 60_000;
   const out = new Date(t);
-  return Number.isNaN(out.getTime()) || new Date(Date.UTC(y, mo - 1, d)).getUTCDate() !== d ? undefined : out;
+  if (Number.isNaN(out.getTime()) || new Date(Date.UTC(y, mo - 1, d)).getUTCDate() !== d) return undefined;
+  keepMicros(out, Number(fraction.slice(3, 6)));
+  return out;
 }
 
 /** Base class of the value classes: immutable, compared by value. */

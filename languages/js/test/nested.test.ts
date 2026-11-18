@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { connect, DecodeError, loads, NotLoaded, Registry, type Database } from "../src/index.js";
+import { extraMicros, keepMicros } from "../src/date-micros.js";
 import { DATABASE_URL } from "./helpers.js";
 
 const SCHEMA = `
@@ -98,6 +99,24 @@ for (const kind of ["postgres", "sqlite"] as const) {
       assert.equal(rows.get(2).geo.lng, 2.5);
       assert.equal(rows.get(3).geo, null);
       assert.equal(rows.get(4), null);
+    });
+
+    scenario("a timestamp subfield keeps its microseconds, as a flat field does", async (w, S, q) => {
+      const opened = new Date("2024-01-02T03:04:05.123Z");
+      keepMicros(opened, 456);
+      await q.insert({ id: 1, address: address(w, { opened }) });
+      const read = (await q.get(S.id.eq(1))).address.opened;
+      assert.equal(read.getTime(), opened.getTime());
+      assert.equal(extraMicros(read), 456);
+      // A read value goes back unchanged.
+      await q.insert({ id: 2, address: address(w, { opened: read }) });
+      assert.equal(extraMicros((await q.get(S.id.eq(2))).address.opened), 456);
+      // A time that changed after the microseconds were set drops them.
+      const moved = new Date(opened);
+      keepMicros(moved, 456);
+      moved.setTime(moved.getTime() + 1);
+      await q.insert({ id: 3, address: address(w, { opened: moved }) });
+      assert.equal(extraMicros((await q.get(S.id.eq(3))).address.opened), 0);
     });
 
     scenario("insert takes subfields with defaults and rejects a bad one", async (_w, _S, q) => {

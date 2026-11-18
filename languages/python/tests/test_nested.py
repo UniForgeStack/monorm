@@ -120,6 +120,17 @@ async def test_insert_takes_subfields_with_defaults_and_rejects_a_bad_one(shop):
         await q.insert(id=2, address=address(classes, opened=dt.datetime(2024, 1, 1)))
 
 
+async def test_a_timestamp_subfield_keeps_its_microseconds_as_a_flat_field_does(shop):
+    q, S, classes, _ = shop
+    opened = dt.datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=dt.UTC)
+    await q.insert(id=1, address=address(classes, opened=opened))
+    read = (await q.get(S.id == 1)).address.opened
+    assert read == opened
+    # A read value goes back unchanged.
+    await q.insert(id=2, address=address(classes, opened=read))
+    assert (await q.get(S.id == 2)).address.opened == opened
+
+
 async def test_filter_by_subfield_whole_value_and_null(shop):
     q, S, classes, _ = shop
     await seed(shop)
