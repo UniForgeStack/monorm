@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use base64::Engine;
@@ -71,6 +72,13 @@ pub struct Session {
     pub pwd: String,
 }
 
+/// See `Security::stamp`.
+#[derive(Clone, Copy)]
+pub struct Stamp {
+    at: Instant,
+    skew: i64,
+}
+
 pub struct Security {
     secret: Vec<u8>,
     pub options: SecurityOptions,
@@ -119,6 +127,16 @@ impl Security {
     /// Moves this server's clock forward: a test ends a session without a wait.
     pub fn advance(&self, secs: i64) {
         self.skew.fetch_add(secs, Ordering::SeqCst);
+    }
+
+    /// A point on the monotonic clock, for a cache that must not follow a jump of the wall clock.
+    pub fn stamp(&self) -> Stamp {
+        Stamp { at: Instant::now(), skew: self.skew.load(Ordering::SeqCst) }
+    }
+
+    /// The time since `stamp`, with the `advance` calls since then added.
+    pub fn age(&self, stamp: Stamp) -> Duration {
+        stamp.at.elapsed() + Duration::from_secs((self.skew.load(Ordering::SeqCst) - stamp.skew).max(0) as u64)
     }
 
     /// Failures of a username from all IPs.
@@ -370,6 +388,17 @@ mod tests {
 
     fn sec() -> Arc<Security> {
         Security::new(&[7u8; 32], SecurityOptions::default()).unwrap()
+    }
+
+    #[test]
+    fn an_age_counts_the_real_time_and_the_advance_after_the_stamp_only() {
+        let a = sec();
+        a.advance(100);
+        let stamp = a.stamp();
+        assert!(a.age(stamp) < Duration::from_secs(5));
+        a.advance(31);
+        let age = a.age(stamp);
+        assert!(age >= Duration::from_secs(31) && age < Duration::from_secs(36), "{age:?}");
     }
 
     #[test]

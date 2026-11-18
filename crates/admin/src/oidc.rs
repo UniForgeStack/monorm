@@ -6,11 +6,12 @@
 //! (`auth.sso_login`) to find or create the user and set the role membership from the roles claim.
 //! The audit row, the user and the role membership commit in one transaction.
 //!
-//! The provider is read from its discovery document, over a small HTTP/1.1 client in this file (rustls, system-free
-//! root store). Only RS256 and ES256 tokens are accepted, as the key set of the provider lists them.
+//! The provider is read from its discovery document, over `reqwest` (rustls, system-free root store, no redirect, a time
+//! and a size limit). `jsonwebtoken` checks the signature.
+//! Only RS256 and ES256 tokens are accepted, as the key set of the provider lists them.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use axum::extract::{Request, State};
 use axum::http::{header, HeaderValue, StatusCode};
@@ -19,18 +20,18 @@ use axum::routing::get;
 use axum::Router;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use base64::Engine;
+use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use monorm_engine::db::Executor;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::audit::{self, Entry};
 use crate::auth::{client_ip, database_error, host_error, password_hash, session_user, user_key, with_cookies, AuthConfig};
 use crate::bridge::CallContext;
 use crate::scope::Scoped;
-use crate::security::{self, cookie_value, random, Session};
+use crate::security::{self, cookie_value, random, Session, Stamp};
 use crate::service::{ErrorNote, RequestId};
 use crate::site::Site;
 
@@ -102,7 +103,7 @@ impl OidcSettings {
         }
         if let Some(origin) = &self.public_url {
             let url = parse_url(origin).map_err(|e| format!("oidc.public_url: {e}"))?;
-            if url.path != "/" {
+            if url.path() != "/" || url.query().is_some() {
                 return Err("oidc.public_url must be an origin with no path".into());
             }
         }
@@ -133,158 +134,49 @@ impl OidcSettings {
 
 // ---------------------------------------------------------------- URL and HTTP
 
-#[derive(Debug, PartialEq)]
-struct Url {
-    https: bool,
-    host: String,
-    port: u16,
-    /// The path and the query, at least `/`.
-    path: String,
-}
-
 fn is_loopback(host: &str) -> bool {
     host == "localhost" || host == "127.0.0.1" || host == "::1"
 }
 
 /// `https://host[:port]/path`, or `http://` for a loopback host only (a fake provider in a test).
-fn parse_url(text: &str) -> Result<Url, String> {
-    let (scheme, rest) = text.split_once("://").ok_or_else(|| format!("{text:?} is not a URL (use https://...)"))?;
-    let https = match scheme {
-        "https" => true,
-        "http" => false,
-        _ => return Err(format!("{text:?} must start with https://")),
-    };
-    let (authority, path) = match rest.find(['/', '?']) {
-        Some(i) if rest.as_bytes()[i] == b'/' => (&rest[..i], rest[i..].to_string()),
-        Some(i) => (&rest[..i], format!("/{}", &rest[i..])),
-        None => (rest, "/".to_string()),
-    };
-    if authority.is_empty() || authority.contains('@') || path.contains('#') || text.bytes().any(|b| b <= b' ' || b == 0x7f) {
+fn parse_url(text: &str) -> Result<reqwest::Url, String> {
+    let url = reqwest::Url::parse(text).map_err(|_| format!("{text:?} is not a URL (use https://...)"))?;
+    if text.bytes().any(|b| b <= b' ' || b == 0x7f) || !url.username().is_empty() || url.password().is_some() || url.fragment().is_some() {
         return Err(format!("{text:?} is not a plain URL"));
     }
-    let (host, port) = if let Some(inner) = authority.strip_prefix('[') {
-        let (host, tail) = inner.split_once(']').ok_or_else(|| format!("{text:?} has a bad host"))?;
-        (host, tail.strip_prefix(':'))
-    } else {
-        match authority.rsplit_once(':') {
-            Some((h, p)) => (h, Some(p)),
-            None => (authority, None),
+    let loopback = is_loopback(url.host_str().unwrap_or("").trim_matches(['[', ']']));
+    match url.scheme() {
+        "https" if url.host_str().is_some() => Ok(url),
+        "http" if loopback => Ok(url),
+        "http" => Err(format!("{text:?} must use https (http is allowed for localhost only)")),
+        _ => Err(format!("{text:?} must start with https://")),
+    }
+}
+
+/// One request: no redirect, no proxy from the environment, a time limit and a size limit. Gives the status and the body.
+async fn http(url: &str, form: Option<String>) -> Result<(u16, Vec<u8>), String> {
+    let url = parse_url(url)?;
+    let host = url.host_str().unwrap_or_default().to_string();
+    let client = reqwest::Client::builder().timeout(HTTP_TIMEOUT).redirect(reqwest::redirect::Policy::none()).no_proxy().user_agent("monorm-admin").build().map_err(|e| e.to_string())?;
+    let request = match form {
+        Some(body) => client.post(url).header(header::CONTENT_TYPE, "application/x-www-form-urlencoded").body(body),
+        None => client.get(url),
+    };
+    let fail = |e: reqwest::Error| format!("{host}: {}", e.without_url());
+    let mut response = request.header(header::ACCEPT, "application/json").send().await.map_err(fail)?;
+    let status = response.status().as_u16();
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(fail)? {
+        if body.len() + chunk.len() > MAX_RESPONSE {
+            return Err("the answer is too large".into());
         }
-    };
-    let port = match port {
-        Some(p) => p.parse::<u16>().map_err(|_| format!("{text:?} has a bad port"))?,
-        None if https => 443,
-        None => 80,
-    };
-    if host.is_empty() {
-        return Err(format!("{text:?} has no host"));
+        body.extend_from_slice(&chunk);
     }
-    if !https && !is_loopback(host) {
-        return Err(format!("{text:?} must use https (http is allowed for localhost only)"));
-    }
-    Ok(Url { https, host: host.to_string(), port, path })
-}
-
-fn tls() -> Result<tokio_rustls::TlsConnector, String> {
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let roots = rustls::RootCertStore { roots: webpki_roots::TLS_SERVER_ROOTS.to_vec() };
-    let config = rustls::ClientConfig::builder_with_provider(provider).with_safe_default_protocol_versions().map_err(|e| e.to_string())?.with_root_certificates(roots).with_no_client_auth();
-    Ok(tokio_rustls::TlsConnector::from(Arc::new(config)))
-}
-
-/// One request, no redirect followed, one connection. Gives the status and the body.
-async fn http(method: &str, url: &Url, form: Option<&str>) -> Result<(u16, Vec<u8>), String> {
-    tokio::time::timeout(HTTP_TIMEOUT, http_inner(method, url, form)).await.map_err(|_| format!("{} did not answer in {} s", url.host, HTTP_TIMEOUT.as_secs()))?
-}
-
-async fn http_inner(method: &str, url: &Url, form: Option<&str>) -> Result<(u16, Vec<u8>), String> {
-    let host_header = match (url.https, url.port) {
-        (true, 443) | (false, 80) => url.host.clone(),
-        _ => format!("{}:{}", url.host, url.port),
-    };
-    let host_header = if url.host.contains(':') { format!("[{}]", url.host) } else { host_header };
-    let mut head = format!("{method} {} HTTP/1.1\r\nHost: {host_header}\r\nAccept: application/json\r\nUser-Agent: monorm-admin\r\nConnection: close\r\n", url.path);
-    if let Some(body) = form {
-        head.push_str(&format!("Content-Type: application/x-www-form-urlencoded\r\nContent-Length: {}\r\n", body.len()));
-    }
-    head.push_str("\r\n");
-    head.push_str(form.unwrap_or(""));
-    let tcp = tokio::net::TcpStream::connect((url.host.as_str(), url.port)).await.map_err(|e| format!("cannot connect to {}: {e}", url.host))?;
-    let mut raw = Vec::new();
-    if url.https {
-        let name = rustls::pki_types::ServerName::try_from(url.host.clone()).map_err(|e| format!("bad host {}: {e}", url.host))?;
-        let mut stream = tls()?.connect(name, tcp).await.map_err(|e| format!("TLS to {} failed: {e}", url.host))?;
-        stream.write_all(head.as_bytes()).await.map_err(|e| e.to_string())?;
-        read_capped(&mut stream, &mut raw).await?;
-    } else {
-        let mut stream = tcp;
-        stream.write_all(head.as_bytes()).await.map_err(|e| e.to_string())?;
-        read_capped(&mut stream, &mut raw).await?;
-    }
-    parse_response(&raw)
-}
-
-async fn read_capped<R: tokio::io::AsyncRead + Unpin>(stream: &mut R, out: &mut Vec<u8>) -> Result<(), String> {
-    let mut limited = stream.take(MAX_RESPONSE as u64 + 1);
-    // A server that closes TLS with no close_notify ends the read with UnexpectedEof: the bytes so far are the answer.
-    match limited.read_to_end(out).await {
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {}
-        Err(e) => return Err(format!("read failed: {e}")),
-    }
-    if out.len() > MAX_RESPONSE {
-        return Err("the answer is too large".into());
-    }
-    Ok(())
-}
-
-fn parse_response(raw: &[u8]) -> Result<(u16, Vec<u8>), String> {
-    let split = raw.windows(4).position(|w| w == b"\r\n\r\n").ok_or("the answer has no header end")?;
-    let head = std::str::from_utf8(&raw[..split]).map_err(|_| "the answer header is not text")?;
-    let mut lines = head.split("\r\n");
-    let status = lines.next().and_then(|l| l.split(' ').nth(1)).and_then(|s| s.parse::<u16>().ok()).ok_or("the answer has no status")?;
-    let mut chunked = false;
-    let mut length = None;
-    for line in lines {
-        if let Some((name, value)) = line.split_once(':') {
-            match name.trim().to_ascii_lowercase().as_str() {
-                "transfer-encoding" => chunked = value.to_ascii_lowercase().contains("chunked"),
-                "content-length" => length = value.trim().parse::<usize>().ok(),
-                _ => {}
-            }
-        }
-    }
-    let body = &raw[split + 4..];
-    let body = if chunked {
-        dechunk(body)?
-    } else {
-        match length {
-            Some(n) if n <= body.len() => body[..n].to_vec(),
-            _ => body.to_vec(),
-        }
-    };
     Ok((status, body))
 }
 
-fn dechunk(mut data: &[u8]) -> Result<Vec<u8>, String> {
-    let mut out = Vec::new();
-    loop {
-        let eol = data.windows(2).position(|w| w == b"\r\n").ok_or("a bad chunked body")?;
-        let size = std::str::from_utf8(&data[..eol]).ok().and_then(|s| usize::from_str_radix(s.split(';').next().unwrap_or("").trim(), 16).ok()).ok_or("a bad chunk size")?;
-        data = &data[eol + 2..];
-        if size == 0 {
-            return Ok(out);
-        }
-        if data.len() < size + 2 {
-            return Err("a cut chunked body".into());
-        }
-        out.extend_from_slice(&data[..size]);
-        data = &data[size + 2..];
-    }
-}
-
 async fn get_json(url: &str) -> Result<Value, String> {
-    let (status, body) = http("GET", &parse_url(url)?, None).await?;
+    let (status, body) = http(url, None).await?;
     if status != 200 {
         return Err(format!("{url} answered {status}"));
     }
@@ -300,13 +192,8 @@ fn segment(text: &str) -> Option<Vec<u8>> {
     B64.decode(text).ok()
 }
 
-/// A usable key of the key set for the header of a token, as the bytes ring needs.
-enum Key {
-    Rsa { n: Vec<u8>, e: Vec<u8> },
-    Ec { point: Vec<u8> },
-}
-
-fn keys_for(jwks: &Value, kid: Option<&str>, alg: &str) -> Vec<Key> {
+/// The usable keys of the key set for the header of a token.
+fn keys_for(jwks: &Value, kid: Option<&str>, alg: &str) -> Vec<DecodingKey> {
     let Some(list) = jwks["keys"].as_array() else { return Vec::new() };
     let mut found = Vec::new();
     for key in list {
@@ -316,52 +203,38 @@ fn keys_for(jwks: &Value, kid: Option<&str>, alg: &str) -> Vec<Key> {
         if kid.is_some() && key["kid"].as_str() != kid {
             continue;
         }
+        let parts = |a: &str, b: &str| key[a].as_str().zip(key[b].as_str());
         match (alg, key["kty"].as_str()) {
-            ("RS256", Some("RSA")) => {
-                if let (Some(n), Some(e)) = (key["n"].as_str().and_then(segment), key["e"].as_str().and_then(segment)) {
-                    found.push(Key::Rsa { n, e });
-                }
-            }
-            ("ES256", Some("EC")) if key["crv"].as_str() == Some("P-256") => {
-                if let (Some(x), Some(y)) = (key["x"].as_str().and_then(segment), key["y"].as_str().and_then(segment)) {
-                    if x.len() == 32 && y.len() == 32 {
-                        found.push(Key::Ec { point: [&[4u8][..], &x, &y].concat() });
-                    }
-                }
-            }
+            ("RS256", Some("RSA")) => found.extend(parts("n", "e").and_then(|(n, e)| DecodingKey::from_rsa_components(n, e).ok())),
+            ("ES256", Some("EC")) if key["crv"].as_str() == Some("P-256") => found.extend(parts("x", "y").and_then(|(x, y)| DecodingKey::from_ec_components(x, y).ok())),
             _ => {}
         }
     }
     found
 }
 
-fn signature_ok(key: &Key, message: &[u8], signature: &[u8]) -> bool {
-    match key {
-        Key::Rsa { n, e } => ring::signature::RsaPublicKeyComponents { n: n.as_slice(), e: e.as_slice() }.verify(&ring::signature::RSA_PKCS1_2048_8192_SHA256, message, signature).is_ok(),
-        Key::Ec { point } => ring::signature::UnparsedPublicKey::new(&ring::signature::ECDSA_P256_SHA256_FIXED, point).verify(message, signature).is_ok(),
-    }
-}
-
 /// The claims of `token` when its signature is one of `jwks` and the claims fit `settings` and `nonce`.
 /// `unknown_key` means no key of the set fits the header: the key set may be old.
 pub fn verify_id_token(token: &str, jwks: &Value, settings: &OidcSettings, nonce: &str, now: i64) -> Result<Value, Reason> {
     let mut parts = token.split('.');
-    let (Some(head), Some(body), Some(sig), None) = (parts.next(), parts.next(), parts.next(), parts.next()) else { return Err("bad_token") };
+    let (Some(head), Some(_), Some(_), None) = (parts.next(), parts.next(), parts.next(), parts.next()) else { return Err("bad_token") };
     let header: Value = serde_json::from_slice(&segment(head).ok_or("bad_token")?).map_err(|_| "bad_token")?;
     let alg = header["alg"].as_str().unwrap_or("");
-    if alg != "RS256" && alg != "ES256" {
-        return Err("bad_algorithm");
-    }
-    let signature = segment(sig).ok_or("bad_token")?;
+    let algorithm = match alg {
+        "RS256" => Algorithm::RS256,
+        "ES256" => Algorithm::ES256,
+        _ => return Err("bad_algorithm"),
+    };
     let keys = keys_for(jwks, header["kid"].as_str(), alg);
     if keys.is_empty() {
         return Err("unknown_key");
     }
-    let message = format!("{head}.{body}");
-    if !keys.iter().any(|k| signature_ok(k, message.as_bytes(), &signature)) {
-        return Err("bad_signature");
-    }
-    let claims: Value = serde_json::from_slice(&segment(body).ok_or("bad_token")?).map_err(|_| "bad_token")?;
+    // The library checks the signature only; the claims are checked below, with the reasons of the audit log.
+    let mut validation = Validation::new(algorithm);
+    validation.required_spec_claims.clear();
+    validation.validate_exp = false;
+    validation.validate_aud = false;
+    let claims = keys.iter().find_map(|key| jsonwebtoken::decode::<Value>(token, key, &validation).ok()).ok_or("bad_signature")?.claims;
     check_claims(&claims, settings, nonce, now)?;
     Ok(claims)
 }
@@ -450,7 +323,8 @@ struct Discovery {
 
 struct Cached<T> {
     value: T,
-    at: Instant,
+    /// A monotonic stamp, so a jump of the wall clock cannot extend or shorten the cache; a test ages it with `Security::advance`.
+    at: Stamp,
 }
 
 /// The routes and the state of one site's SSO.
@@ -478,7 +352,7 @@ impl Oidc {
 
     async fn discovery(&self) -> Result<Arc<Discovery>, String> {
         let mut slot = self.discovery.lock().await;
-        if let Some(c) = slot.as_ref().filter(|c| c.at.elapsed() < DISCOVERY_TTL) {
+        if let Some(c) = slot.as_ref().filter(|c| self.auth.security.age(c.at) < DISCOVERY_TTL) {
             return Ok(c.value.clone());
         }
         let url = self.settings.discovery_url.clone().unwrap_or_else(|| format!("{}/.well-known/openid-configuration", self.settings.issuer.trim_end_matches('/')));
@@ -492,7 +366,7 @@ impl Oidc {
             Ok(url.to_string())
         };
         let found = Arc::new(Discovery { authorization_endpoint: endpoint("authorization_endpoint")?, token_endpoint: endpoint("token_endpoint")?, jwks_uri: endpoint("jwks_uri")? });
-        *slot = Some(Cached { value: found.clone(), at: Instant::now() });
+        *slot = Some(Cached { value: found.clone(), at: self.auth.security.stamp() });
         Ok(found)
     }
 
@@ -500,13 +374,13 @@ impl Oidc {
     async fn jwks(&self, d: &Discovery, force: bool) -> Result<Value, String> {
         let mut slot = self.jwks.lock().await;
         if let Some(c) = slot.as_ref() {
-            let age = c.at.elapsed();
+            let age = self.auth.security.age(c.at);
             if (!force && age < JWKS_TTL) || (force && age < JWKS_REFRESH) {
                 return Ok(c.value.clone());
             }
         }
         let keys = get_json(&d.jwks_uri).await?;
-        *slot = Some(Cached { value: keys.clone(), at: Instant::now() });
+        *slot = Some(Cached { value: keys.clone(), at: self.auth.security.stamp() });
         Ok(keys)
     }
 
@@ -544,7 +418,7 @@ impl Oidc {
             }
             form.finish()
         };
-        let (status, body) = http("POST", &parse_url(&d.token_endpoint)?, Some(&body)).await?;
+        let (status, body) = http(&d.token_endpoint, Some(body)).await?;
         let answer: Value = serde_json::from_slice(&body).map_err(|_| format!("the token endpoint answered {status} with no JSON"))?;
         if status != 200 {
             return Err(format!("the token endpoint answered {status}: {}", answer["error"].as_str().unwrap_or("no error code")));
@@ -888,15 +762,12 @@ mod tests {
     }
 
     #[test]
-    fn urls_and_responses_parse() {
+    fn urls_parse() {
         let u = parse_url("https://idp.example.com:8443/a/b?x=1").unwrap();
-        assert_eq!((u.https, u.host.as_str(), u.port, u.path.as_str()), (true, "idp.example.com", 8443, "/a/b?x=1"));
-        assert_eq!(parse_url("http://[::1]:9/").unwrap().host, "::1");
+        assert_eq!((u.scheme(), u.host_str(), u.port(), u.path(), u.query()), ("https", Some("idp.example.com"), Some(8443), "/a/b", Some("x=1")));
+        assert!(parse_url("http://[::1]:9/").is_ok());
         assert!(parse_url("https://u@idp.example.com/").is_err());
-        let raw = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nWiki\r\n5;x=1\r\npedia\r\n0\r\n\r\n";
-        assert_eq!(parse_response(raw).unwrap(), (200, b"Wikipedia".to_vec()));
-        let raw = b"HTTP/1.1 400 Bad\r\nContent-Length: 2\r\n\r\n{}extra";
-        assert_eq!(parse_response(raw).unwrap(), (400, b"{}".to_vec()));
-        assert!(dechunk(b"9\r\nshort\r\n").is_err());
+        assert!(parse_url("https://idp.example.com/#x").is_err());
+        assert!(parse_url("ftp://idp.example.com/").is_err());
     }
 }
