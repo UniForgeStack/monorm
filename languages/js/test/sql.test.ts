@@ -422,6 +422,8 @@ test("JSON path, containment and merge SQL", () => {
   assert.equal(w(Doc.meta.get("tags").get(0).asText().eq("x")), `((("docs"."meta" -> E'tags') ->> 0)) = 'x'`);
   assert.equal(w(Doc.meta.jsonContains({ kind: "post" })), `"docs"."meta" @> '{"kind":"post"}'`);
   assert.equal(w(Doc.meta.hasKey("tags")), `"docs"."meta" ? 'tags'`);
+  assert.equal(w(Doc.meta.hasKeys(["a", "b"])), `("docs"."meta" ? 'a') AND ("docs"."meta" ? 'b')`);
+  assert.equal(w(Doc.meta.hasAnyKeys(["a", "b"])), `("docs"."meta" ? 'a') OR ("docs"."meta" ? 'b')`);
   assert.throws(() => Doc.meta.get("a").asText().get("b"), /ends a JSON path/);
   assert.throws(() => Doc.meta.get(), /at least one/);
 });

@@ -622,6 +622,7 @@ await Doc.objects.filter(Doc.meta["tags"][0].as_text() == "x")      # ->> : text
 await Doc.objects.filter(Doc.meta["name"].as_text().icontains("an"))
 await Doc.objects.filter(Doc.meta.json_contains({"kind": "post"}))  # meta @> '{"kind": "post"}'
 Doc.meta.json_contained_by(value) / Doc.meta.has_key("tags")        # <@ / ?
+Doc.meta.has_keys(["a", "b"]) / Doc.meta.has_any_keys(["a", "b"])   # every key / at least one key: ?& / ?|
 await Doc.objects.filter(...).update(meta=Doc.meta.json_merge({"seen": True}))   # meta || '{...}'
 ```
 
@@ -635,14 +636,22 @@ await Doc.objects.filter(...).update(meta=Doc.meta.json_merge({"seen": True}))  
   So `group_by(Doc.meta["kind"].as_text())` and the same path in `select`, `having` and `order_by` have equal SQL text.
 * On an array column, `col[1]` stays SQL's 1-based element access; a string key on a
   column that is not `Json` is a `TypeError`.
-* `json_contains`, `json_contained_by` and `has_key` work on the column and on a path,
+* `json_contains`, `json_contained_by`, `has_key`, `has_keys` and `has_any_keys` work on the column and on a path,
   and a GIN index on the column (`@@index([meta], type: Gin)`) serves `json_contains`,
   `json_contained_by` and `has_key` on the column only, not on a path. They take a
   `param()` in a prepared query.
 * `json_merge(value)` is `||`: objects merge one level deep (the keys of `value` win);
   arrays join, and a scalar merged with an object or array makes an array. A column that is
   `NULL` stays `NULL` after a merge.
-* PostgreSQL only: on SQLite these are a `QueryError`.
+* `has_keys(keys)` and `has_any_keys(keys)` take a list of strings (a plain string is a `TypeError`).
+  Both are an `AND` or an `OR` of `has_key` tests. An empty list is true for `has_keys` and false for `has_any_keys`.
+* On SQLite, `has_key`, `has_keys`, `has_any_keys`, `json_contains` and `json_contained_by` work on a `Json` column and give the PostgreSQL result.
+  `has_key` follows `?`: an object matches a key; an array or a string matches an equal string element; a number, a boolean and `null` match nothing.
+  A `NULL` column gives `NULL`, so `~has_key(...)` drops it, as on PostgreSQL.
+  `json_contains` follows `@>` exactly, also for nested arrays and objects: SQLite runs it through `monorm_json_contains`, a function that MonOrm registers on each connection.
+  A number matches by value (`1` and `1.0`), but an integer beyond 2^53 compares as a float with a float.
+  No index serves these tests on SQLite.
+* PostgreSQL only, a `QueryError` on SQLite: a JSON path (`meta["a"]`, also as the left side of `json_contains` or `has_key`), `json_merge` and the array overlap operator.
 
 ### Nested types
 

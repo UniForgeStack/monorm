@@ -348,23 +348,33 @@ export abstract class Expression<T, S extends string = never, P = {}> extends No
     return this instanceof JsonPath ? this.extend(path) : new JsonPath(this, path, false);
   }
 
-  /** JSON: the value contains `value` at the top level (`col @> value`). PostgreSQL only. */
+  /** JSON: the value contains `value` at the top level (`col @> value`). On a path: PostgreSQL only. */
   jsonContains(this: Expression<JsonValue | null, S, P>, value: Exclude<JsonValue, null> | ParamRef<string>): Condition<S, P> {
     return new Comparison("contains", this, jsonOperand(value, "jsonContains"));
   }
 
-  /** JSON: `value` contains the value (`col <@ value`). PostgreSQL only. */
+  /** JSON: `value` contains the value (`col <@ value`). On a path: PostgreSQL only. */
   jsonContainedBy(this: Expression<JsonValue | null, S, P>, value: Exclude<JsonValue, null> | ParamRef<string>): Condition<S, P> {
     return new Comparison("contained_by", this, jsonOperand(value, "jsonContainedBy"));
   }
 
   /** JSON: the object has the top-level key `key`, or the array the string element
-   * (`col ? key`). PostgreSQL only. */
+   * (`col ? key`). On a path: PostgreSQL only. */
   hasKey(this: Expression<JsonValue | null, S, P>, key: string): Condition<S, P> {
     if (typeof key !== "string") {
       throw new TypeError(`hasKey() takes a string, got ${typeof key}`);
     }
     return new Comparison("has_key", this, new Literal(key));
+  }
+
+  /** JSON: every one of `keys` passes {@link hasKey} (`col ?& keys`); no keys is true. */
+  hasKeys(this: Expression<JsonValue | null, S, P>, keys: readonly string[]): Condition<S, P> {
+    return and(...jsonKeys(this, keys, "hasKeys")) as never;
+  }
+
+  /** JSON: some one of `keys` passes {@link hasKey} (`col ?| keys`); no keys is false. */
+  hasAnyKeys(this: Expression<JsonValue | null, S, P>, keys: readonly string[]): Condition<S, P> {
+    return or(...jsonKeys(this, keys, "hasAnyKeys")) as never;
   }
 
   /** JSON: `col || value`, the objects merged (the keys of `value` win) or the arrays
@@ -624,6 +634,13 @@ function jsonOperand(value: unknown, method: string): Node {
     throw new TypeError(`${method}() takes a JSON value or a param(), not an expression`);
   }
   return wrap(value);
+}
+
+function jsonKeys(column: Expression<JsonValue | null, string, unknown>, keys: readonly string[], method: string): Condition<string, unknown>[] {
+  if (typeof keys === "string" || !Array.isArray(keys)) {
+    throw new TypeError(`${method}() takes an array of keys`);
+  }
+  return keys.map((k) => column.hasKey(k));
 }
 
 function escapeLike(text: string): string {

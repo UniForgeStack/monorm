@@ -302,19 +302,27 @@ class Expression(Node, Generic[T]):
 
     def json_contains(self, value: Any) -> Condition:
         """JSON: the value contains ``value`` at the top level (``col @> value``):
-        ``Post.meta.json_contains({"tags": ["a"]})``. PostgreSQL only."""
+        ``Post.meta.json_contains({"tags": ["a"]})``. On a path: PostgreSQL only."""
         return Comparison("contains", self, _json_operand(value, "json_contains"))
 
     def json_contained_by(self, value: Any) -> Condition:
-        """JSON: ``value`` contains the value (``col <@ value``). PostgreSQL only."""
+        """JSON: ``value`` contains the value (``col <@ value``). On a path: PostgreSQL only."""
         return Comparison("contained_by", self, _json_operand(value, "json_contained_by"))
 
     def has_key(self, key: str) -> Condition:
         """JSON: the object has the top-level key ``key``, or the array the string element
-        (``col ? key``). PostgreSQL only."""
+        (``col ? key``). On a path: PostgreSQL only."""
         if not isinstance(key, str):
             raise TypeError(f"has_key() takes a string, got {key!r}")
         return Comparison("has_key", self, Literal(key))
+
+    def has_keys(self, keys: Iterable[str]) -> Condition:
+        """JSON: every one of ``keys`` passes :meth:`has_key` (``col ?& keys``); no keys is true."""
+        return and_(*(self.has_key(k) for k in _keys(keys, "has_keys")))
+
+    def has_any_keys(self, keys: Iterable[str]) -> Condition:
+        """JSON: some one of ``keys`` passes :meth:`has_key` (``col ?| keys``); no keys is false."""
+        return or_(*(self.has_key(k) for k in _keys(keys, "has_any_keys")))
 
     def json_merge(self, value: Any) -> Expression[Any]:
         """JSON: ``col || value``: the objects merged (the keys of ``value`` win), or the
@@ -404,6 +412,12 @@ class Expression(Node, Generic[T]):
 def _not_none(value: Any, method: str) -> None:
     if value is None:
         raise TypeError(f"{method}() takes a JSON value, not None")
+
+
+def _keys(keys: Iterable[str], method: str) -> list[str]:
+    if isinstance(keys, str):
+        raise TypeError(f"{method}() takes a list of keys, not the string {keys!r}")
+    return list(keys)
 
 
 def _json_operand(value: Any, method: str) -> Node:

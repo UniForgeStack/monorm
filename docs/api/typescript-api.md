@@ -646,11 +646,17 @@ compared as JSON; `.eq(null)` is `IS NULL`; `> 3` also matches `true`, `{}` and 
 `.asText()` for the last step as text (`->>`, no step can follow),
 a string key is an escaped `E'...'` literal in the SQL (NUL is a `QueryError`), so the same path in `groupBy`, `select`, `having` and `orderBy` has equal text,
 `Doc.meta.jsonContains({ kind: "post" })` (`@>`), `.jsonContainedBy(...)` (`<@`),
-`.hasKey("tags")` (`?`) and `update({ meta: Doc.meta.jsonMerge({ seen: true }) })` (`||`: a
+`.hasKey("tags")` (`?`), `.hasKeys(["a", "b"])` (every key) and `.hasAnyKeys(["a", "b"])` (at least one key), and `update({ meta: Doc.meta.jsonMerge({ seen: true }) })` (`||`: a
 scalar merged with an object or array makes an array; `NULL` stays `NULL`).
-A GIN index serves containment and `hasKey` on the column, not on a path. `jsonContains`,
+A GIN index serves containment and `hasKey` on the column, not on a path.
+`hasKeys` and `hasAnyKeys` take an array of strings (a plain string is a `TypeError`); both are an `AND` or an `OR` of `hasKey` tests, and an empty array is true for `hasKeys` and false for `hasAnyKeys`.
+On SQLite, `hasKey`, `hasKeys`, `hasAnyKeys`, `jsonContains` and `jsonContainedBy` work on a `Json` column and give the PostgreSQL result:
+`hasKey` follows `?` (an object matches a key; an array or a string matches an equal string element; a `NULL` column gives `NULL`),
+and `jsonContains` follows `@>` exactly, also for nested values, through the function `monorm_json_contains` that MonOrm registers on each connection.
+A number matches by value, but an integer beyond 2^53 compares as a float with a float. `jsonContains`,
 `jsonContainedBy` and `matches` take a `param()`.
-Keys are strings, indexes 0-based integers (a `String[]` column indexes from 1). PostgreSQL only.
+Keys are strings, indexes 0-based integers (a `String[]` column indexes from 1).
+A path (also as the left side of `jsonContains` or `hasKey`) and `jsonMerge` are PostgreSQL only: a `QueryError` on SQLite.
 Full-text search (PostgreSQL only): `func.toTsvector("english", Post.body).matches("running dogs")`
 (`@@`, a plain string is `plainto_tsquery` with the vector's configuration),
 `func.toTsquery`, `func.plaintoTsquery`, `func.websearchToTsquery` and `func.tsRank(vector, query)`

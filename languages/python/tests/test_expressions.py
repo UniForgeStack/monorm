@@ -64,6 +64,16 @@ def test_json_path_sql():
         .endswith("""WHERE "expr_docs"."meta" @> '{"kind":"post"}'""")
     )
     assert Doc.objects.filter(Doc.meta.has_key("tags")).sql().endswith("""WHERE "expr_docs"."meta" ? 'tags'""")
+    assert (
+        Doc.objects.filter(Doc.meta.has_keys(["a", "b"]))
+        .sql()
+        .endswith("""WHERE ("expr_docs"."meta" ? 'a') AND ("expr_docs"."meta" ? 'b')""")
+    )
+    assert (
+        Doc.objects.filter(Doc.meta.has_any_keys(["a", "b"]))
+        .sql()
+        .endswith("""WHERE ("expr_docs"."meta" ? 'a') OR ("expr_docs"."meta" ? 'b')""")
+    )
     # On an array column, an int index stays SQL's array element access.
     assert '("expr_docs"."tags")[1]' in Doc.objects.select(Doc.tags[1]).sql()
     with pytest.raises(TypeError, match="not a JSON column"):
@@ -147,6 +157,115 @@ def test_a_json_index_outside_the_32_bit_range_is_an_error(docs):
             objects.select(Doc.meta["arr"][index]).sql()
 
 
+KEYS_SOURCE = """
+model Doc {
+  id    BigInt  @id @default(autoincrement())
+  title String
+  meta  Json?
+  @@map("expr_key_docs")
+}
+"""
+KEYS_DOCS = [
+    ("a", {"kind": "post", "n": 5, "tags": ["x", "y"], "author": {"name": "Ann"}}),
+    ("b", {"kind": "page", "n": 1, "tags": ["y"]}),
+    ("c", ["a", "b"]),
+    ("d", "a"),
+    ("e", 5),
+    ("f", None),
+    ("g", {"a": None}),
+    ("h", [{"a": 1, "b": 2}, {"c": 3}]),
+    ("i", [1, [2, 3]]),
+]
+
+
+@pytest.fixture(params=["postgres", "sqlite"])
+async def keys(request):
+    if request.param == "sqlite":
+        source = 'datasource db { provider = "sqlite" }\n' + KEYS_SOURCE
+        url = "sqlite://:memory:"
+    else:
+        source, url = KEYS_SOURCE, URL
+    registry, Doc = load(source)
+    try:
+        db = await monorm.connect(url, registry=registry, default=False, max_connections=2)
+    except monorm.DatabaseError as e:
+        pytest.skip(f"database not reachable at {url}: {e}")
+    await db.drop_tables()
+    await db.create_tables()
+    objects = Doc.objects.using(db)
+    await objects.insert_many([{"title": title, "meta": meta} for title, meta in KEYS_DOCS])
+    yield Doc, objects
+    await db.drop_tables()
+    await db.close()
+
+
+async def test_json_keys_and_containment_give_the_same_rows_on_both_databases(keys):
+    Doc, objects = keys
+    meta = Doc.meta
+
+    async def titles(cond):
+        return await objects.filter(cond).order_by(Doc.id).select(Doc.title).scalars()
+
+    # `?`: an object matches a key, an array or a string matches an equal string.
+    assert await titles(meta.has_key("kind")) == ["a", "b"]
+    assert await titles(meta.has_key("a")) == ["c", "d", "g"]
+    assert await titles(meta.has_key("1")) == []
+    # A NULL column is neither a match nor a non-match.
+    assert await titles(~meta.has_key("kind").or_null()) == ["c", "d", "e", "g", "h", "i"]
+    assert await titles(~meta.has_key("kind").and_not_null()) == ["c", "d", "e", "f", "g", "h", "i"]
+    assert await titles(meta.has_keys(["kind", "n"])) == ["a", "b"]
+    assert await titles(meta.has_keys(["kind", "author"])) == ["a"]
+    assert await titles(meta.has_keys(["a"])) == ["c", "d", "g"]
+    assert await titles(meta.has_any_keys(["author", "n"])) == ["a", "b"]
+    assert await titles(meta.has_any_keys(["a", "zzz"])) == ["c", "d", "g"]
+    assert await titles(meta.has_any_keys([])) == []
+    assert len(await titles(meta.has_keys([]))) == len(KEYS_DOCS)
+    # `@>`.
+    assert await titles(meta.json_contains({"kind": "post"})) == ["a"]
+    assert await titles(meta.json_contains({"author": {"name": "Ann"}})) == ["a"]
+    assert await titles(meta.json_contains({"tags": ["y"]})) == ["a", "b"]
+    assert await titles(meta.json_contains({"tags": ["y", "y"]})) == ["a", "b"]
+    assert await titles(meta.json_contains({"n": 5.0})) == ["a"]
+    assert await titles(meta.json_contains({"n": "5"})) == []
+    assert await titles(meta.json_contains(["a"])) == ["c"]
+    assert await titles(meta.json_contains("a")) == ["c", "d"]
+    assert await titles(meta.json_contains(["b", "a", "a"])) == ["c"]
+    assert await titles(meta.json_contains(5)) == ["e"]
+    assert await titles(meta.json_contains({"a": None})) == ["g"]
+    assert await titles(meta.json_contains([{"a": 1}, {"c": 3}])) == ["h"]
+    assert await titles(meta.json_contains([{"a": 1, "c": 3}])) == []
+    assert await titles(meta.json_contains([[2]])) == ["i"]
+    assert await titles(meta.json_contains([2])) == []
+    assert await titles(meta.json_contains({})) == ["a", "b", "g"]
+    assert await titles(meta.json_contains([])) == ["c", "h", "i"]
+    # `<@`.
+    assert await titles(meta.json_contained_by({"kind": "page", "n": 1, "tags": ["y", "z"], "x": 0})) == ["b"]
+    assert await titles(meta.json_contained_by(["a", "b", "c"])) == ["c", "d"]
+    assert await titles(meta.json_contained_by({"a": None, "b": 1})) == ["g"]
+    assert await titles(~meta.json_contains({"kind": "post"}).or_null()) == ["b", "c", "d", "e", "g", "h", "i"]
+    assert await titles(~meta.json_contains({"kind": "post"}).and_not_null()) == ["b", "c", "d", "e", "f", "g", "h", "i"]
+
+
+async def test_json_keys_and_containment_take_a_param(keys):
+    Doc, objects = keys
+    has = objects.filter(Doc.meta.has_key("kind")).order_by(Doc.id).prepare()
+    assert [d.title for d in await has()] == ["a", "b"]
+    contains = objects.filter(Doc.meta.json_contains(monorm.param("v"))).order_by(Doc.id).prepare()
+    assert [d.title for d in await contains(v={"kind": "post"})] == ["a"]
+    assert [d.title for d in await contains(v="a")] == ["c", "d"]
+    assert [d.title for d in await contains(v=["a"])] == ["c"]
+    assert [d.title for d in await contains(v=5)] == ["e"]
+    contained = objects.filter(Doc.meta.json_contained_by(monorm.param("v"))).order_by(Doc.id).prepare()
+    assert [d.title for d in await contained(v=["a", "b"])] == ["c", "d"]
+
+
+def test_json_key_lists_take_a_list_of_strings():
+    _, Doc = load()
+    for call in (Doc.meta.has_keys, Doc.meta.has_any_keys):
+        with pytest.raises(TypeError, match="list"):
+            call("kind")
+
+
 async def test_json_operators_on_sqlite_are_an_error():
     registry, Doc = load(
         'datasource db { provider = "sqlite" }\n' + SOURCE.replace("  tags  String[] @default([])\n", "")
@@ -154,9 +273,12 @@ async def test_json_operators_on_sqlite_are_an_error():
     db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     try:
         await db.create_tables()
-        for cond in (Doc.meta["a"] == 1, Doc.meta.json_contains({"a": 1}), Doc.meta.has_key("a")):
+        # A path, a merge and a path as the left side of a containment test stay PostgreSQL only.
+        for cond in (Doc.meta["a"] == 1, Doc.meta["a"].json_contains({"a": 1}), Doc.meta["a"].has_key("a")):
             with pytest.raises(QueryError, match="sqlite does not support"):
                 await Doc.objects.using(db).filter(cond).count()
+        with pytest.raises(QueryError, match="sqlite does not support"):
+            await Doc.objects.using(db).filter(Doc.title == "x").update(meta=Doc.meta.json_merge({"a": 1}))
     finally:
         await db.close()
 

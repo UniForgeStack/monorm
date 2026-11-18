@@ -78,6 +78,113 @@ test("JSON methods refuse null", async () => {
   assert.deepEqual((await objects().get(Doc.title.eq("c"))).meta, { kind: "post", n: 10, seen: true });
 });
 
+const KEYS_SCHEMA = `
+model Doc {
+  id    BigInt @id @default(autoincrement())
+  title String
+  meta  Json?
+  @@map("expr_key_docs_js")
+}
+`;
+const KEYS_DOCS: [string, unknown][] = [
+  ["a", { kind: "post", n: 5, tags: ["x", "y"], author: { name: "Ann" } }],
+  ["b", { kind: "page", n: 1, tags: ["y"] }],
+  ["c", ["a", "b"]],
+  ["d", "a"],
+  ["e", 5],
+  ["f", null],
+  ["g", { a: null }],
+  ["h", [{ a: 1, b: 2 }, { c: 3 }]],
+  ["i", [1, [2, 3]]],
+];
+
+/** The key and containment tests run on PostgreSQL and on SQLite. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function onBothDatabases(body: (Keys: any, objects: any) => Promise<void>) {
+  for (const url of [DATABASE_URL, "sqlite://:memory:"]) {
+    const lite = url.startsWith("sqlite");
+    const reg = new Registry();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const Keys = loads(`${lite ? 'datasource db { provider = "sqlite" }\n' : ""}${KEYS_SCHEMA}`, { registry: reg })["Doc"] as any;
+    const conn = await connect(url, { registry: reg, default: false, maxConnections: 2 });
+    try {
+      await conn.dropTables();
+      await conn.createTables();
+      const rows = Keys.objects.using(conn);
+      await rows.insertMany(KEYS_DOCS.map(([title, meta]) => ({ title, meta })));
+      await body(Keys, rows);
+    } finally {
+      await conn.dropTables();
+      await conn.close();
+    }
+  }
+}
+
+test("JSON keys and containment give the same rows on both databases", async () => {
+  await onBothDatabases(async (Keys, rows) => {
+    const meta = Keys.meta;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const found = async (cond: any) => (await rows.filter(cond).orderBy(Keys.id).all()).map((d: { title: string }) => d.title);
+    // `?`: an object matches a key, an array or a string matches an equal string.
+    assert.deepEqual(await found(meta.hasKey("kind")), ["a", "b"]);
+    assert.deepEqual(await found(meta.hasKey("a")), ["c", "d", "g"]);
+    assert.deepEqual(await found(meta.hasKey("1")), []);
+    // A NULL column is neither a match nor a non-match.
+    assert.deepEqual(await found(meta.hasKey("kind").orNull().not()), ["c", "d", "e", "g", "h", "i"]);
+    assert.deepEqual(await found(meta.hasKey("kind").andNotNull().not()), ["c", "d", "e", "f", "g", "h", "i"]);
+    assert.deepEqual(await found(meta.hasKeys(["kind", "n"])), ["a", "b"]);
+    assert.deepEqual(await found(meta.hasKeys(["kind", "author"])), ["a"]);
+    assert.deepEqual(await found(meta.hasKeys(["a"])), ["c", "d", "g"]);
+    assert.deepEqual(await found(meta.hasAnyKeys(["author", "n"])), ["a", "b"]);
+    assert.deepEqual(await found(meta.hasAnyKeys(["a", "zzz"])), ["c", "d", "g"]);
+    assert.deepEqual(await found(meta.hasAnyKeys([])), []);
+    assert.equal((await found(meta.hasKeys([]))).length, KEYS_DOCS.length);
+    // `@>`.
+    assert.deepEqual(await found(meta.jsonContains({ kind: "post" })), ["a"]);
+    assert.deepEqual(await found(meta.jsonContains({ author: { name: "Ann" } })), ["a"]);
+    assert.deepEqual(await found(meta.jsonContains({ tags: ["y"] })), ["a", "b"]);
+    assert.deepEqual(await found(meta.jsonContains({ tags: ["y", "y"] })), ["a", "b"]);
+    assert.deepEqual(await found(meta.jsonContains({ n: "5" })), []);
+    assert.deepEqual(await found(meta.jsonContains(["a"])), ["c"]);
+    assert.deepEqual(await found(meta.jsonContains("a")), ["c", "d"]);
+    assert.deepEqual(await found(meta.jsonContains(["b", "a", "a"])), ["c"]);
+    assert.deepEqual(await found(meta.jsonContains(5)), ["e"]);
+    assert.deepEqual(await found(meta.jsonContains({ a: null })), ["g"]);
+    assert.deepEqual(await found(meta.jsonContains([{ a: 1 }, { c: 3 }])), ["h"]);
+    assert.deepEqual(await found(meta.jsonContains([{ a: 1, c: 3 }])), []);
+    assert.deepEqual(await found(meta.jsonContains([[2]])), ["i"]);
+    assert.deepEqual(await found(meta.jsonContains([2])), []);
+    assert.deepEqual(await found(meta.jsonContains({})), ["a", "b", "g"]);
+    assert.deepEqual(await found(meta.jsonContains([])), ["c", "h", "i"]);
+    // `<@`.
+    assert.deepEqual(await found(meta.jsonContainedBy({ kind: "page", n: 1, tags: ["y", "z"], x: 0 })), ["b"]);
+    assert.deepEqual(await found(meta.jsonContainedBy(["a", "b", "c"])), ["c", "d"]);
+    assert.deepEqual(await found(meta.jsonContainedBy({ a: null, b: 1 })), ["g"]);
+    assert.deepEqual(await found(meta.jsonContains({ kind: "post" }).orNull().not()), ["b", "c", "d", "e", "g", "h", "i"]);
+    assert.deepEqual(await found(meta.jsonContains({ kind: "post" }).andNotNull().not()), ["b", "c", "d", "e", "f", "g", "h", "i"]);
+  });
+});
+
+test("JSON keys and containment take a param()", async () => {
+  await onBothDatabases(async (Keys, rows) => {
+    const has = rows.filter(Keys.meta.hasKey("kind")).orderBy(Keys.id).prepare();
+    assert.equal(await has.count(), 2);
+    const contains = rows.filter(Keys.meta.jsonContains(param("v"))).prepare();
+    assert.equal(await contains.count({ v: { kind: "post" } }), 1);
+    assert.equal(await contains.count({ v: "a" }), 2);
+    assert.equal(await contains.count({ v: ["a"] }), 1);
+    assert.equal(await contains.count({ v: 5 }), 1);
+    const contained = rows.filter(Keys.meta.jsonContainedBy(param("v"))).prepare();
+    assert.equal(await contained.count({ v: ["a", "b"] }), 2);
+  });
+});
+
+test("JSON key lists take a list of strings", () => {
+  for (const call of ["hasKeys", "hasAnyKeys"]) {
+    assert.throws(() => Doc.meta[call]("kind"), TypeError);
+  }
+});
+
 test("JSON operators on SQLite are an error", async () => {
   const lite = new Registry();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -85,9 +192,11 @@ test("JSON operators on SQLite are an error", async () => {
   const sqlite = await connect("sqlite://:memory:", { registry: lite, default: false });
   try {
     await sqlite.createTables();
-    for (const cond of [Note.meta.get("a").eq(1), Note.meta.jsonContains({ a: 1 }), Note.meta.hasKey("a")]) {
+    // A path, a merge and a path as the left side of a containment test stay PostgreSQL only.
+    for (const cond of [Note.meta.get("a").eq(1), Note.meta.get("a").jsonContains({ a: 1 }), Note.meta.get("a").hasKey("a")]) {
       await assert.rejects(Note.objects.using(sqlite).filter(cond).count(), (e: unknown) => e instanceof QueryError && /sqlite does not support/.test(String(e)));
     }
+    await assert.rejects(Note.objects.using(sqlite).filter(Note.title.eq("x")).update({ meta: Note.meta.jsonMerge({ a: 1 }) }), (e: unknown) => e instanceof QueryError && /sqlite does not support/.test(String(e)));
   } finally {
     await sqlite.close();
   }
