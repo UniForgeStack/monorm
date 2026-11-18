@@ -151,3 +151,29 @@ fn the_cost_of_a_view_is_one_build_and_then_a_lookup() {
     eprintln!("view build (first call, includes the metadata): {build:?}; cache hit: {lookup:?} per call");
     assert_eq!(site.meta_builds(), built + 1);
 }
+
+#[tokio::test]
+async fn the_audit_log_drops_the_values_of_fields_the_reader_cannot_see() {
+    let schema = schema();
+    let driver = database(&schema).await;
+    for sql in [
+        "INSERT INTO \"Permission\" (id, label, codename, name) VALUES (4, 'admin', 'read_adminlogentry', 'd')",
+        "INSERT INTO \"UserPermission\" (user_id, permission_id) VALUES (1, 4), (3, 4)",
+        r#"INSERT INTO "AdminLogEntry" (id, user_key, action, resource, record_key, record_label, changes) VALUES (1, '4', 'update', 'Product', '1', 'bolt', '{"request_id":"r","diff":{"name":{"from":"a","to":"bolt"},"cost":{"from":1,"to":5}}}')"#,
+    ] {
+        driver.batch(sql.to_string()).await.unwrap();
+    }
+    let conn: Arc<dyn Executor> = driver;
+    let site = site(&schema);
+    let changes_of = |body: &Value| -> Value {
+        let at = body["columns"].as_array().unwrap().iter().position(|c| c["field"] == "changes" || c["label"] == "changes").expect("a changes column");
+        body["rows"][0][at].clone()
+    };
+    let (status, ann) = list(&site, &conn, "AdminLogEntry", 1).await;
+    assert_eq!(status, 200, "{ann}");
+    assert_eq!(changes_of(&ann)["diff"], json!({"name": {"from": "a", "to": "bolt"}}), "ann may not see cost");
+    let (_, cy) = list(&site, &conn, "AdminLogEntry", 3).await;
+    assert_eq!(changes_of(&cy)["diff"]["cost"], json!({"from": 1, "to": 5}), "cy holds see_cost");
+    let (_, di) = list(&site, &conn, "AdminLogEntry", 4).await;
+    assert_eq!(changes_of(&di)["diff"]["cost"], json!({"from": 1, "to": 5}), "a superuser sees every field");
+}

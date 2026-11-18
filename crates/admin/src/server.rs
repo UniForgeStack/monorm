@@ -493,6 +493,8 @@ fn batch_value(c: &crate::site::Column, v: Value) -> Result<Value, ListError> {
 
 /// One call to each host function of a computed column for the whole page: never one call per row.
 pub(crate) async fn fill_batch(s: &State_, resource: &Resource, scope: &Scoped, page: &mut Page) -> Result<(), ListError> {
+    // Every page of a list or an export passes here: the audit log drops the fields that the reader may not see.
+    crate::sight::redact_log(resource, &resource.columns, &mut page.rows);
     if page.batch.is_empty() || page.rows.is_empty() {
         return Ok(());
     }
@@ -752,7 +754,8 @@ async fn detail(State(s): Shared, user: Option<Extension<User>>, Path((name, _))
     };
     match list::detail(&s.site, &resource, scope.executor(), s.target, &key, &reach.rows).await {
         Ok(Some(record)) => {
-            let values = record.cells;
+            let mut values = record.cells;
+            crate::sight::redact_row(&resource, &resource.detail, &mut values);
             let (scope, inlines) = match inline_rows(&s, &resource, &user, &grants, &key, &reach, scope).await {
                 Ok(t) => t,
                 Err(r) => return *r,

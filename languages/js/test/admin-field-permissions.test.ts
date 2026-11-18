@@ -403,4 +403,33 @@ for (const provider of PROVIDERS) {
     assert.equal((await c.ann.post(path, { file: ["evil.png", "x", "image/png"] })).status, 404);
     assert.equal(Buffer.from((await c.bob.get(path)).content).toString(), "png-bytes", "the hidden upload changed nothing");
   }));
+
+  test(`the audit log drops the values of a field the reader cannot see (${provider})`, () => world(provider, async (w) => {
+    const site = siteOf(w);
+    await site.syncPermissions(w.db);
+    const readers: Loose = {};
+    for (const [name, extra] of [["ann", []], ["cy", COST]] as const) {
+      readers[name] = site.testClient(w.db, { user: { key: await grant(w, name, [...BASE, ...extra, "admin.read_adminlogentry"]) } });
+    }
+    const bob = site.testClient(w.db, { user: { key: await grant(w, "bob", [...BASE, ...EVERY]) } });
+    const edited = await bob.patch(`${PRODUCTS}/1`, { json: { set: { name: "lamp2", cost: 8 }, loaded: { name: "lamp", cost: 7 } } });
+    assert.equal(edited.status, 200, edited.text);
+    const diff = async (client: Loose): Promise<Loose> => {
+      const reply = await client.get(`${API}/resources/AdminLogEntry`);
+      assert.equal(reply.status, 200, reply.text);
+      const body = reply.json();
+      const cell = body.rows[0][labels(body.columns).indexOf("changes")];
+      return typeof cell === "string" ? JSON.parse(cell) : cell;
+    };
+    assert.deepEqual((await diff(readers.ann)).diff, { name: { from: "lamp", to: "lamp2" } });
+    assert.deepEqual((await diff(readers.cy)).diff.cost, { from: 7, to: 8 });
+    for (const [username, sees] of [["ann", false], ["cy", true]] as const) {
+      const detail = await readers[username].get(`${API}/resources/AdminLogEntry/1`);
+      assert.equal(detail.status, 200, detail.text);
+      assert.equal(JSON.stringify(detail.json()).includes("cost"), sees);
+      const exported = await readers[username].get(`${API}/export/AdminLogEntry`);
+      assert.equal(exported.status, 200, exported.text);
+      assert.equal(exported.text.includes("cost"), sees);
+    }
+  }));
 }

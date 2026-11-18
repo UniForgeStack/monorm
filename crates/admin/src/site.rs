@@ -420,6 +420,8 @@ pub struct Resource {
     pub bound: Vec<String>,
     /// The labels of the fields that the user of this view may not see: empty on the page itself.
     pub hidden: BTreeSet<String>,
+    /// On the view of the audit log: for each audited resource, the fields that the user may not see. The log drops them from `changes`.
+    pub log_hidden: BTreeMap<String, BTreeSet<String>>,
     /// The labels of the fields that the user of this view may see and not change.
     pub locked: BTreeSet<String>,
     pub actions: Vec<Action>,
@@ -790,6 +792,9 @@ impl Site {
         let meta_builds = AtomicUsize::new(0);
         for r in &mut resources {
             r.bound = crate::sight::bound_names(r);
+        }
+        crate::sight::bind_log(&mut resources);
+        for r in &mut resources {
             r.meta = meta::resource(&schema, r, &meta_builds);
         }
         let brand = meta::brand(config.brand.as_ref(), config.theme.as_ref())?;
@@ -1311,6 +1316,7 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
         change: config.change.clone(),
         bound: Vec::new(),
         hidden: BTreeSet::new(),
+        log_hidden: BTreeMap::new(),
         locked: BTreeSet::new(),
         actions,
         bulk_delete: config.bulk_delete,

@@ -4,13 +4,17 @@
 //! so a handler that reads the view cannot show, search, filter, sort, export or write a hidden field.
 //! A view is made once for each set of granted names of a page and kept; a user who holds every name gets the page itself.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Deref;
 use std::sync::Arc;
 
 use crate::meta;
 use crate::permissions::Grants;
-use crate::site::{field_columns, FilterKind, Resource, Site};
+use crate::site::{field_columns, Column, FilterKind, Resource, Site};
+use serde_json::Value;
+
+/// The model of the admin log: its `changes` hold the values of the audited resources.
+const LOG: &str = "AdminLogEntry";
 
 /// The resource as one user may use it.
 #[derive(Debug, Clone)]
@@ -43,6 +47,66 @@ pub fn bound_names(r: &Resource) -> Vec<String> {
         }
     }
     out.into_iter().collect()
+}
+
+/// The log page binds the names of every other page: what a reader may see in `changes` depends on them.
+pub(crate) fn bind_log(resources: &mut [Resource]) {
+    let all: BTreeSet<String> = resources.iter().flat_map(|r| r.bound.iter().cloned()).collect();
+    for r in resources.iter_mut().filter(|r| r.name == LOG) {
+        r.bound = all.iter().cloned().collect();
+    }
+}
+
+/// The fields of `page` and of its inlines that `grants` do not let the user see, by resource name.
+fn hidden_by_resource(page: &Resource, grants: &Grants, out: &mut BTreeMap<String, BTreeSet<String>>) {
+    for p in std::iter::once(page).chain(page.inlines.iter().map(|i| &i.resource)) {
+        let hidden = p.see.iter().filter(|(_, perm)| !grants.has(&format!("{}.{perm}", p.label))).map(|(f, _)| f.clone());
+        out.entry(p.name.clone()).or_default().extend(hidden);
+    }
+}
+
+/// Drops from a `changes` value the fields in `hidden`: the keys of the `diff` and the values of the rows of the `inlines`.
+fn redact_changes(changes: &mut Value, resource: &str, log_hidden: &BTreeMap<String, BTreeSet<String>>) {
+    let Some(map) = changes.as_object_mut() else { return };
+    if let Some(hidden) = log_hidden.get(resource).filter(|h| !h.is_empty()) {
+        if let Some(diff) = map.get_mut("diff").and_then(Value::as_object_mut) {
+            diff.retain(|field, _| !hidden.contains(field));
+        }
+    }
+    let Some(sets) = map.get_mut("inlines").and_then(Value::as_object_mut) else { return };
+    for set in sets.values_mut() {
+        let Some(set) = set.as_object_mut() else { continue };
+        let Some(hidden) = set.get("model").and_then(Value::as_str).and_then(|m| log_hidden.get(m)).filter(|h| !h.is_empty()).cloned() else { continue };
+        for rows in ["create", "update", "delete"] {
+            for row in set.get_mut(rows).and_then(Value::as_array_mut).into_iter().flatten() {
+                for part in ["set", "loaded", "before"] {
+                    if let Some(values) = row.get_mut(part).and_then(Value::as_object_mut) {
+                        values.retain(|field, _| !hidden.contains(field));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Redacts the `changes` of the rows of a page of the log for the reader of `view`. `columns` are the columns of the rows.
+pub(crate) fn redact_log(view: &Resource, columns: &[Column], rows: &mut [Value]) {
+    for row in rows {
+        if let Some(cells) = row.as_array_mut() {
+            redact_row(view, columns, cells);
+        }
+    }
+}
+
+/// `redact_log` for one row: the cells of a record.
+pub(crate) fn redact_row(view: &Resource, columns: &[Column], cells: &mut [Value]) {
+    if view.name != LOG || view.log_hidden.values().all(BTreeSet::is_empty) {
+        return;
+    }
+    let at = |field: &str| columns.iter().position(|c| c.field == field);
+    let (Some(changes), Some(resource)) = (at("changes"), at("resource")) else { return };
+    let name = cells[resource].as_str().unwrap_or_default().to_owned();
+    redact_changes(&mut cells[changes], &name, &view.log_hidden);
 }
 
 impl Site {
@@ -132,6 +196,11 @@ impl Site {
         }
         v.hidden = hidden;
         v.locked = locked;
+        if page.name == LOG {
+            for other in &self.resources {
+                hidden_by_resource(other, grants, &mut v.log_hidden);
+            }
+        }
         v
     }
 }

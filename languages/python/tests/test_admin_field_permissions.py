@@ -2,6 +2,7 @@
 
 import csv
 import io
+import json
 import os
 
 import pytest
@@ -388,3 +389,34 @@ async def test_a_file_field_that_the_user_cannot_see_takes_no_upload_and_gives_n
     assert (await c["ann"].get(path)).status == 404
     assert (await c["ann"].post(path, file=("evil.png", b"x", "image/png"))).status == 404
     assert (await c["bob"].get(path)).content == b"png-bytes", "the hidden upload changed nothing"
+
+
+async def test_the_audit_log_drops_the_values_of_a_field_the_reader_cannot_see(world):
+    site = world.site()
+    await site.sync_permissions(world.db)
+    readers = {}
+    for username, extra in (("ann", []), ("cy", COST)):
+        key = await grant(world.db, world.models, username, BASE + extra + ["admin.read_adminlogentry"])
+        readers[username] = site.test_client(world.db, user={"key": key})
+    bob = site.test_client(world.db, user={"key": await grant(world.db, world.models, "bob", BASE + EVERY)})
+    edited = await bob.patch(f"{PRODUCTS}/1", json={"set": {"name": "lamp2", "cost": 8}, "loaded": {"name": "lamp", "cost": 7}})
+    assert edited.status == 200, edited.text
+
+    async def diff(client):
+        reply = await client.get(f"{API}/resources/AdminLogEntry")
+        assert reply.status == 200, reply.text
+        body = reply.json()
+        column = labels(body["columns"]).index("changes")
+        return json.loads(body["rows"][0][column]) if isinstance(body["rows"][0][column], str) else body["rows"][0][column]
+
+    ann = await diff(readers["ann"])
+    assert ann["diff"] == {"name": {"from": "lamp", "to": "lamp2"}}
+    cy = await diff(readers["cy"])
+    assert cy["diff"]["cost"] == {"from": 7, "to": 8}
+    for username, sees in (("ann", False), ("cy", True)):
+        detail = await readers[username].get(f"{API}/resources/AdminLogEntry/1")
+        assert detail.status == 200, detail.text
+        assert ("cost" in json.dumps(detail.json())) is sees
+        export = await readers[username].get(f"{API}/export/AdminLogEntry")
+        assert export.status == 200, export.text
+        assert ("cost" in export.text) is sees
