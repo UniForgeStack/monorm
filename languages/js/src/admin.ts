@@ -216,6 +216,14 @@ export interface ResourceConfig {
   /** Names such as `"see_credential"` that become `<label>.<name>`. */
   readonly fieldPermissions?: readonly string[];
   /**
+   * Field permissions that show a field: `{ cost: "see_cost" }` shows the column `cost` only to a user who holds `<label>.see_cost`.
+   * Without it the field leaves the list, detail, tabs, search, filters, sort, export, labels, inlines and the response.
+   * A filter, sort or write on it is an error.
+   */
+  readonly see?: Readonly<Record<string, string>>;
+  /** Field permissions that change a field: `{ price: "change_price" }` makes `price` read-only for a user who does not hold `<label>.change_price`. */
+  readonly change?: Readonly<Record<string, string>>;
+  /**
    * The actions of the resource. A function that `action(fn, options)` marked is a button (see `ActionOptions`).
    * A plain name such as `"refund"` only declares the permission `<label>.<action>_<resource>`.
    */
@@ -284,7 +292,7 @@ export interface AdminUser {
 
 const LIST_KEYS = new Set(["columns", "order", "pageSize", "sortable", "search", "searchWith", "filters", "namedFilters", "computed", "aggregates", "labels", "empty", "emptyFields", "tabs"]);
 const BRAND_KEYS = new Set(["name", "logo", "colors", "links", "environment"]);
-const RESOURCE_KEYS = new Set(["queryset", "can", "list", "title", "group", "allow", "perms", "label", "fieldPermissions", "actions", "checkMessages", "form", "readonly", "widgets", "formComponent", "detailTabs", "relations", "files", "create", "update", "delete", "inputs", "allowProtectedWrites", "inlines", "bulkDelete"]);
+const RESOURCE_KEYS = new Set(["queryset", "can", "list", "title", "group", "allow", "perms", "label", "fieldPermissions", "see", "change", "actions", "checkMessages", "form", "readonly", "widgets", "formComponent", "detailTabs", "relations", "files", "create", "update", "delete", "inputs", "allowProtectedWrites", "inlines", "bulkDelete"]);
 
 function widgetsJson(who: string, value: unknown): Record<string, string> {
   if (typeof value !== "object" || value === null || Array.isArray(value) || !Object.values(value).every((v) => typeof v === "string")) {
@@ -307,6 +315,11 @@ function sectionJson(name: string, s: unknown): Record<string, unknown> {
 function readonlyJson(name: string, names: unknown): string[] {
   if (!Array.isArray(names) || !names.every((n) => typeof n === "string")) throw new AdminConfigError(`${name}: readonly is a list of field names`);
   return [...names];
+}
+
+function boundJson(name: string, key: string, value: unknown): Record<string, string> {
+  if (typeof value !== "object" || value === null || Array.isArray(value) || !Object.values(value).every((v) => typeof v === "string")) throw new AdminConfigError(`${name}: ${key} maps a field name to a permission name`);
+  return { ...(value as Record<string, string>) };
 }
 
 function formComponentJson(name: string, path: unknown): string {
@@ -881,6 +894,8 @@ const INLINE_PAGE_REFUSED: Readonly<Record<string, string>> = {
   perms: "the permission of an inline follows its parent: use permission of the inline",
   label: "the permission of an inline follows its parent: use permission of the inline",
   fieldPermissions: "field permissions belong to the registered page of the child",
+  see: "field permissions belong to the registered page of the child",
+  change: "field permissions belong to the registered page of the child",
   actions: "an inline has no actions",
   bulkDelete: "an inline has no bulk delete",
   formComponent: "a replaced form cannot be a row of a table",
@@ -1078,6 +1093,8 @@ export class Admin {
       ...(config.perms === undefined ? {} : { perms: [...config.perms] }),
       ...(config.label === undefined ? {} : { label: config.label }),
       ...(config.fieldPermissions === undefined ? {} : { field_permissions: [...config.fieldPermissions] }),
+      ...(config.see === undefined ? {} : { see: boundJson(model, "see", config.see) }),
+      ...(config.change === undefined ? {} : { change: boundJson(model, "change", config.change) }),
       ...(config.actions === undefined ? {} : { actions: actionsJson(model, cls, config.actions) }),
       ...(config.bulkDelete === undefined ? {} : { bulk_delete: bulkDeleteJson(model, config.bulkDelete) }),
       ...(config.inlines === undefined ? {} : { inlines: inlineDefs(model, config.inlines).map((d) => this.#inlineJson(model, d, registry)) }),

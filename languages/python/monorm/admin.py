@@ -158,6 +158,11 @@ class ResourceConfig(TypedDict, total=False):
     """The label of the permission names of this resource, instead of the site label."""
     field_permissions: Sequence[str]
     """Names such as ``"see_credential"`` that become ``<label>.<name>``."""
+    see: Mapping[str, str]
+    """Field permissions that show a field: ``{"cost": "see_cost"}`` shows the column ``cost`` only to a user who holds ``<label>.see_cost``.
+    Without it the field leaves the list, detail, tabs, search, filters, sort, export, labels, inlines and the response. A filter, sort or write on it is an error."""
+    change: Mapping[str, str]
+    """Field permissions that change a field: ``{"price": "change_price"}`` makes ``price`` read-only for a user who does not hold ``<label>.change_price``."""
     actions: Sequence[Any]
     """Functions that ``@admin.action(...)`` marked (a button where staff need it), or names such as ``"refund"`` that only declare
     the permission ``<label>.<action>_<resource>``."""
@@ -221,6 +226,8 @@ _INLINE_PAGE_REFUSED = {
     "perms": "the permission of an inline follows its parent: use permission= of the inline",
     "label": "the permission of an inline follows its parent: use permission= of the inline",
     "field_permissions": "field permissions belong to the registered page of the child",
+    "see": "field permissions belong to the registered page of the child",
+    "change": "field permissions belong to the registered page of the child",
     "actions": "an inline has no actions",
     "bulk_delete": "an inline has no bulk delete",
     "form_component": "a replaced form cannot be a row of a table",
@@ -318,7 +325,7 @@ def _form(name: str, form: Any) -> Any:
 
 
 _LIST_KEYS = {"columns", "order", "page_size", "sortable", "search", "search_with", "filters", "named_filters", "computed", "aggregates", "labels", "empty", "empty_fields", "tabs"}
-_RESOURCE_KEYS = {"list", "title", "group", "allow", "perms", "label", "field_permissions", "actions", "queryset", "can", "check_messages", "form", "readonly", "widgets", "form_component", "detail_tabs", "relations", "files", "create", "update", "delete", "inputs", "allow_protected_writes", "inlines", "bulk_delete"}
+_RESOURCE_KEYS = {"list", "title", "group", "allow", "perms", "label", "field_permissions", "see", "change", "actions", "queryset", "can", "check_messages", "form", "readonly", "widgets", "form_component", "detail_tabs", "relations", "files", "create", "update", "delete", "inputs", "allow_protected_writes", "inlines", "bulk_delete"}
 _BRAND_KEYS = {"name", "logo", "colors", "links", "environment"}
 Strategy = Literal["page", "model", "access"]
 
@@ -1029,6 +1036,12 @@ class Admin:
             if isinstance(names, str) or not all(isinstance(n, str) for n in names):
                 raise AdminConfigError(f"{name}: readonly is a list of field names")
             resource["readonly"] = list(names)
+        for key in ("see", "change"):
+            if key in config:
+                bound = config[key]
+                if not isinstance(bound, Mapping) or not all(isinstance(k, str) and isinstance(v, str) for k, v in bound.items()):
+                    raise AdminConfigError(f"{name}: {key} maps a field name to a permission name")
+                resource[key] = dict(bound)
         if "widgets" in config:
             resource["widgets"] = _widgets(name, config["widgets"])
         if "form_component" in config:
