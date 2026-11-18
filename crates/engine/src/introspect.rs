@@ -1452,45 +1452,69 @@ pub async fn pull(conn: &dyn Executor, installed: &monorm_core::dsl::Installed) 
             live.gaps.push(format!("row-level security policy {} on {}: policies are not supported", p.name, t.name));
         }
     }
-    let claims: Vec<_> = monorm_core::migrate::pull::installed_rule_claims(installed);
-    let claimed = monorm_core::migrate::pull::claim_rules(&live.schema, &live.rules, &claims);
-    let compile = |pulled: &monorm_core::migrate::pull::Pulled| {
+    use monorm_core::migrate::pull as pulling;
+    let claims = pulling::installed_rule_claims(installed);
+    let claimed = pulling::claim_rules(&live.schema, &live.rules, &claims);
+    let objects = pulling::claim_objects(&live.schema, &pulling::installed_object_claims(installed));
+    let rules: Vec<_> = claimed.iter().map(|(_, c)| c.clone()).collect();
+    let mut rule_gaps = live.gaps.clone();
+    for (i, _) in &claimed {
+        let line = rule_gap(&live.rules[*i]);
+        if let Some(at) = rule_gaps.iter().position(|g| *g == line) { rule_gaps.remove(at); }
+    }
+    let compile = |pulled: &pulling::Pulled| {
         monorm_core::dsl::compile_installed_with_overrides(&pulled.schema, None, installed, &pulled.views).and_then(monorm_core::dsl::check)
     };
-    let mut pulled = monorm_core::migrate::pull::pull(&live.schema, &live.gaps);
-    let mut compiled = None;
-    if !claimed.is_empty() {
-        let mut gaps = live.gaps.clone();
-        for (i, _) in &claimed {
-            let line = rule_gap(&live.rules[*i]);
-            if let Some(at) = gaps.iter().position(|g| *g == line) { gaps.remove(at); }
-        }
-        let rules: Vec<_> = claimed.iter().map(|(_, c)| c.clone()).collect();
-        let with = monorm_core::migrate::pull::pull_with(&live.schema, &gaps, &rules, installed);
-        // a claim that makes the schema fail to compile is not a claim: the rules stay gaps, and a gap line says why
-        match compile(&with) {
-            Ok(c) => {
-                pulled = with;
-                compiled = Some(c);
+    // The attempts, from the most claims to none (rules, objects). A claim that makes the schema fail to compile is not a claim, and
+    // an object claim that leaves a difference with the database is not one either: the objects stay as they were, and a gap line says why.
+    let mut attempts = vec![];
+    if !objects.is_empty() { attempts.push((true, true)); }
+    if !rules.is_empty() { attempts.push((true, false)); }
+    attempts.push((false, false));
+    let mut notes = vec![];
+    for (n, &(use_rules, use_objects)) in attempts.iter().enumerate() {
+        let last = n + 1 == attempts.len();
+        let pulled = if use_rules || use_objects {
+            let (gaps, rules) = if use_rules { (&rule_gaps, &rules[..]) } else { (&live.gaps, &[][..]) };
+            pulling::pull_claims(&live.schema, gaps, rules, if use_objects { &objects } else { &[] }, installed)
+        } else {
+            pulling::pull(&live.schema, &live.gaps)
+        };
+        // what the next attempt drops, and what this attempt used
+        let (dropped, with) = match (use_objects, rules.is_empty()) {
+            (true, false) => ("object", "the rule and object claims"),
+            (true, true) => ("object", "them"),
+            (false, _) => ("rule", "them"),
+        };
+        let compiled = match compile(&pulled) {
+            Ok(c) => c,
+            Err(e) if last => return Err(Error::Migration(format!("the pulled schema doesn't compile (a bug in pull): {e}"))),
+            Err(e) => {
+                notes.push(format!("{dropped} claims skipped, the schema with {with} does not compile: {e}"));
+                continue;
             }
-            Err(e) => pulled.gaps.push(format!("rule claims skipped, the schema with them does not compile: {e}")),
+        };
+        let snapshot = monorm_core::migrate::baseline_snapshot(&compiled.1).map_err(Error::Migration)?;
+        // the check needs CREATE and enough locks; the schema file does not
+        let checked = compare_with(conn, &snapshot, Kind::Schema).await;
+        if let (true, Ok((steps, _))) = (use_objects && !last, &checked) {
+            if !steps.is_empty() {
+                notes.push(format!("object claims skipped, the schema with them differs from the database ({})", steps[0].summary));
+                continue;
+            }
         }
+        let (mut gaps, schema, views) = (pulled.gaps, pulled.schema, pulled.views);
+        gaps.append(&mut notes);
+        let steps = match checked {
+            Ok((steps, _)) => steps,
+            Err(e) => {
+                gaps.push(format!("the schema was not checked against the database: {e}"));
+                vec![]
+            }
+        };
+        return Ok(Pull { schema, gaps, views, steps });
     }
-    let compiled = match compiled {
-        Some(c) => c,
-        None => compile(&pulled).map_err(|e| Error::Migration(format!("the pulled schema doesn't compile (a bug in pull): {e}")))?,
-    };
-    let snapshot = monorm_core::migrate::baseline_snapshot(&compiled.1).map_err(Error::Migration)?;
-    let (mut gaps, schema, views) = (pulled.gaps, pulled.schema, pulled.views);
-    // the check needs CREATE and enough locks; the schema file does not
-    let steps = match compare_with(conn, &snapshot, Kind::Schema).await {
-        Ok((steps, _)) => steps,
-        Err(e) => {
-            gaps.push(format!("the schema was not checked against the database: {e}"));
-            vec![]
-        }
-    };
-    Ok(Pull { schema, gaps, views, steps })
+    unreachable!("the last attempt returns")
 }
 
 /// What [`drift`] found.

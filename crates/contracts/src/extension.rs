@@ -408,6 +408,42 @@ pub struct RuleClaim {
     pub patterns: Vec<String>,
 }
 
+/// Database objects that an attribute of this extension makes, so `pull` writes the attribute and leaves the objects out
+/// (schema contract 5.3). The host matches names only and knows no extension.
+/// A name is a pattern with placeholders such as `{table}`: each matches one or more identifier characters, and the same
+/// placeholder matches the same text everywhere in one claim. `{table}` is the table that gets the attribute. A claim matches
+/// a table when each of its `triggers`, `indexes` and `columns` exists on it and each of its `tables` exists; a claim that
+/// matches only in part is not used, and the objects stay as the database shows them. Every claim that matches applies, in manifest
+/// order, and a claim can match one table more than once (two trackers of one table); an object is in one match only, so claims of
+/// one attribute are alternative forms that do not exclude each other. A placeholder takes the first name that fits and the host does
+/// not try another name when a later pattern fails, so such a claim does not match that table. `pull` then compares the database
+/// with the schema, and falls back to the pull without claims when a difference is left.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ObjectClaim {
+    /// The model attribute that `pull` writes, with `arguments` in this order.
+    pub attribute: String,
+    /// Each argument is text with placeholders. `{x:field}` is the field of the column named by `x`, `{x:pascal}` the name `x` as a type name,
+    /// `{x:claimed}` the field name that the attribute gives the claimed column `x`, and `{x:map}` the argument `map: "<x>"` when that field name differs from the column. An argument that expands to nothing is left out.
+    #[serde(default)]
+    pub arguments: Vec<String>,
+    /// Triggers of the table; each one is left out of the schema, with the function that only it calls.
+    #[serde(default)]
+    pub triggers: Vec<String>,
+    /// Indexes of the table; each one is left out.
+    #[serde(default)]
+    pub indexes: Vec<String>,
+    /// Columns of the table that the attribute adds; each one is left out, with the foreign keys that use only such columns.
+    #[serde(default)]
+    pub columns: Vec<String>,
+    /// Check constraints of the table that the attribute adds; each one is left out when it exists.
+    #[serde(default)]
+    pub checks: Vec<String>,
+    /// Tables, other than the table of the attribute, that the attribute makes; each one is left out.
+    #[serde(default)]
+    pub tables: Vec<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
@@ -431,6 +467,9 @@ pub struct Manifest {
     /// Database rules that `pull` reads as one of the attributes of this extension (schema contract 5.3).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rule_claims: Vec<RuleClaim>,
+    /// Tables, columns, indexes and triggers that `pull` reads as one of the attributes of this extension (schema contract 5.3).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub object_claims: Vec<ObjectClaim>,
     #[serde(default)]
     pub passes: Vec<Pass>,
     #[serde(default)]

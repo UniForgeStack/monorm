@@ -146,6 +146,147 @@ pub fn claim_rules(db: &DbSchema, rules: &[LiveRule], claims: &[crate::behavior:
     found
 }
 
+/// The database objects that one claim of an extension matched (see [`crate::behavior::ObjectClaim`]): `pull` writes the attribute
+/// on the model of `table` and leaves the objects out.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimedObjects {
+    pub attribute: String,
+    pub arguments: Vec<String>,
+    pub table: String,
+    /// The text that each placeholder of the claim matched.
+    pub bound: BTreeMap<String, String>,
+    pub triggers: Vec<String>,
+    pub indexes: Vec<String>,
+    pub columns: Vec<String>,
+    pub checks: Vec<String>,
+    /// Other tables.
+    pub tables: Vec<String>,
+}
+
+/// The object claims of the manifests of `installed`, in manifest order.
+pub fn installed_object_claims(installed: &crate::dsl::Installed) -> Vec<crate::behavior::ObjectClaim> {
+    installed.extensions.iter()
+        .filter_map(|(id, path)| crate::loader::read_manifest(id, path).ok())
+        .flat_map(|d| d.manifest.object_claims)
+        .collect()
+}
+
+/// Whether `pattern` matches the whole `text`, binding each new placeholder to one or more identifier characters.
+fn match_name(pattern: &str, text: &str, bound: &mut BTreeMap<String, String>) -> bool {
+    fn go(pattern: &str, text: &str, bound: &mut BTreeMap<String, String>) -> bool {
+        let Some(c) = pattern.chars().next() else { return text.is_empty() };
+        if c != '{' {
+            return text.strip_prefix(c).is_some_and(|rest| go(&pattern[c.len_utf8()..], rest, bound));
+        }
+        let Some((name, after)) = pattern[1..].split_once('}') else { return false };
+        if let Some(value) = bound.get(name) {
+            return text.strip_prefix(value.as_str()).is_some_and(|rest| go(after, rest, bound));
+        }
+        let end = text.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(text.len());
+        for len in 1..=end {
+            bound.insert(name.to_owned(), text[..len].to_owned());
+            if go(after, &text[len..], bound) { return true; }
+        }
+        bound.remove(name);
+        false
+    }
+    let mut local = bound.clone();
+    let ok = go(pattern, text, &mut local);
+    if ok { *bound = local; }
+    ok
+}
+
+/// The first of `names` that `pattern` matches, not in `taken`.
+fn take_name(pattern: &str, names: impl Iterator<Item = String>, taken: &[String], bound: &mut BTreeMap<String, String>) -> Option<String> {
+    names.filter(|n| !taken.contains(n)).find(|n| match_name(pattern, n, bound))
+}
+
+/// The objects that the claims of `claims` match. A claim matches a table when its triggers, indexes and columns all exist on the
+/// table and its tables exist; an object is in one match only. A claim can match a table more than once (two trackers of one table).
+pub fn claim_objects(db: &DbSchema, claims: &[crate::behavior::ObjectClaim]) -> Vec<ClaimedObjects> {
+    let mut found: Vec<ClaimedObjects> = vec![];
+    for claim in claims.iter().filter(|c| !c.triggers.is_empty() || !c.indexes.is_empty() || !c.columns.is_empty()) {
+        for table in db.tables.iter().filter(|t| t.partition_of.is_none() && t.partition_by.is_none()) {
+            while let Some(hit) = claim_table(db, table, claim, &found) {
+                found.push(hit);
+            }
+        }
+    }
+    found
+}
+
+fn claim_table(db: &DbSchema, table: &Table, claim: &crate::behavior::ObjectClaim, found: &[ClaimedObjects]) -> Option<ClaimedObjects> {
+    let used = |pick: fn(&ClaimedObjects) -> &Vec<String>| -> Vec<String> { found.iter().filter(|o| o.table == table.name).flat_map(|o| pick(o).clone()).collect() };
+    let mut bound = BTreeMap::from([("table".to_owned(), table.name.clone())]);
+    let mut take = |patterns: &[String], names: Vec<String>, taken: Vec<String>, required: bool| -> Option<Vec<String>> {
+        let mut out: Vec<String> = vec![];
+        for pattern in patterns {
+            let mut all = taken.clone();
+            all.extend(out.clone());
+            match take_name(pattern, names.iter().cloned(), &all, &mut bound) {
+                Some(name) => out.push(name),
+                None if required => return None,
+                None => {}
+            }
+        }
+        Some(out)
+    };
+    let triggers = take(&claim.triggers, table.triggers.iter().map(|t| t.name.clone()).collect(), used(|o| &o.triggers), true)?;
+    let indexes = take(&claim.indexes, table.indexes.iter().map(|i| i.name.clone()).collect(), used(|o| &o.indexes), true)?;
+    let columns = take(&claim.columns, table.columns.iter().map(|c| c.name.clone()).collect(), used(|o| &o.columns), true)?;
+    let checks = take(&claim.checks, table.checks.iter().map(|c| c.name.clone()).collect(), used(|o| &o.checks), false)?;
+    let taken_tables: Vec<String> = found.iter().flat_map(|o| o.tables.iter().cloned()).chain(found.iter().map(|o| o.table.clone())).collect();
+    let others: Vec<String> = db.tables.iter().map(|t| t.name.clone()).filter(|n| *n != table.name).collect();
+    let tables = take(&claim.tables, others, taken_tables, true)?;
+    Some(ClaimedObjects { attribute: claim.attribute.clone(), arguments: claim.arguments.clone(), table: table.name.clone(), bound, triggers, indexes, columns, checks, tables })
+}
+
+/// `db` without the objects of `objects`: the tables, the triggers with the function that only they call, the indexes, the columns
+/// with the foreign keys and unique constraints that use only claimed columns, and the checks.
+fn strip_objects(db: &DbSchema, objects: &[ClaimedObjects]) -> DbSchema {
+    let mut out = db.clone();
+    let mut functions: Vec<String> = vec![];
+    for o in objects {
+        out.tables.retain(|t| !o.tables.contains(&t.name));
+        let Some(t) = out.tables.iter_mut().find(|t| t.name == o.table) else { continue };
+        functions.extend(t.triggers.iter().filter(|x| o.triggers.contains(&x.name)).map(|x| x.function.clone()));
+        t.triggers.retain(|x| !o.triggers.contains(&x.name));
+        t.indexes.retain(|x| !o.indexes.contains(&x.name));
+        t.checks.retain(|x| !o.checks.contains(&x.name));
+        t.foreign_keys.retain(|f| f.columns.is_empty() || !f.columns.iter().all(|c| o.columns.contains(c)));
+        t.uniques.retain(|u| u.columns.is_empty() || !u.columns.iter().all(|c| o.columns.contains(c)));
+        t.columns.retain(|c| !o.columns.contains(&c.name));
+    }
+    let called: BTreeSet<&str> = out.tables.iter().flat_map(|t| t.triggers.iter().map(|x| x.function.as_str())).collect();
+    out.functions.retain(|f| !functions.contains(&f.name) || called.contains(f.name.as_str()));
+    out
+}
+
+/// The text of one argument template of a claim: `{x}` is the text that the placeholder matched, `{x:field}` the field of that column,
+/// `{x:pascal}` a type name, `{x:claimed}` the field that the attribute adds for that column and `{x:map}` the `map:` argument of it.
+fn expand_argument(template: &str, bound: &BTreeMap<String, String>, field: &dyn Fn(&str) -> String) -> String {
+    let mut out = String::new();
+    let mut rest = template;
+    while let Some(start) = rest.find('{') {
+        out.push_str(&rest[..start]);
+        let Some((inner, after)) = rest[start + 1..].split_once('}') else { out.push_str(&rest[start..]); return out };
+        let (name, transform) = inner.split_once(':').unwrap_or((inner, ""));
+        let value = bound.get(name).cloned().unwrap_or_default();
+        let claimed = claimed_field_name(&value).unwrap_or_else(|| value.clone());
+        out.push_str(&match transform {
+            "field" => field(&value),
+            "pascal" => pascal(&value),
+            "claimed" => claimed,
+            "map" if claimed == value => String::new(),
+            "map" => format!("map: {}", quoted(&value)),
+            _ => value,
+        });
+        rest = after;
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Type names the schema language reserves.
 const RESERVED: [&str; 14] = [
     "BigInt", "Int", "Float", "Boolean", "String", "DateTime", "Json", "Decimal", "Unsupported", "Generic", "Bytes",
@@ -452,6 +593,14 @@ pub fn pull(db: &DbSchema, gaps: &[String]) -> Pulled {
 /// [`pull`] with rules that extensions claim (see [`claim_rules`]): each becomes an attribute on its model, and `installed` lets the
 /// emitted schema compile.
 pub fn pull_with(db: &DbSchema, gaps: &[String], claimed: &[ClaimedRule], installed: &crate::dsl::Installed) -> Pulled {
+    pull_claims(db, gaps, claimed, &[], installed)
+}
+
+/// [`pull_with`] with the objects that extensions claim (see [`claim_objects`]): each becomes an attribute of its model, and the
+/// tables, triggers, columns, indexes and functions that the attribute makes are left out.
+pub fn pull_claims(db: &DbSchema, gaps: &[String], claimed: &[ClaimedRule], objects: &[ClaimedObjects], installed: &crate::dsl::Installed) -> Pulled {
+    let stripped = strip_objects(db, objects);
+    let db = &stripped;
     let mut gaps = gaps.to_vec();
     let dialect = db.dialect;
     let mut type_names = BTreeSet::new();
@@ -744,6 +893,11 @@ pub fn pull_with(db: &DbSchema, gaps: &[String], claimed: &[ClaimedRule], instal
             m.attrs.push(format!("@@trigger({})", args.join(", ")));
         }
     }
+    for o in objects {
+        let Some(m) = models.iter_mut().find(|m| m.table.name == o.table) else { continue };
+        let args: Vec<String> = o.arguments.iter().map(|a| expand_argument(a, &o.bound, &|c| m.field(c))).filter(|a| !a.is_empty()).collect();
+        m.attrs.push(format!("@@{}({})", o.attribute, args.join(", ")));
+    }
 
     // -- views -----------------------------------------------------------------------------
     let view_names: HashMap<&str, String> = db.views.iter().map(|v| (v.name.as_str(), unique_name(pascal(&v.name), &mut type_names))).collect();
@@ -1025,6 +1179,144 @@ mod tests {
         for bad in [col("_marked_at", "timestamp with time zone"), Column { nullable: true, ..col("_marked_at", "bigint") }, Column { default: Some("now()".into()), ..mark_column() }] {
             assert!(claim_rules(&rule_db(bad), &[live(DEF)], &[claim()]).is_empty());
         }
+    }
+
+    fn trigger(name: &str, function: &str) -> crate::migrate::model::Trigger {
+        crate::migrate::model::Trigger {
+            name: name.into(), timing: TriggerTiming::After, events: vec![TriggerEvent::Update], update_of: vec![], for_each: ForEach::Row,
+            when: None, function: function.into(), body: None, args: vec![],
+        }
+    }
+
+    fn index(name: &str, column: &str) -> crate::migrate::model::Index {
+        let key = crate::migrate::model::IndexKey { column: Some(column.into()), expr: None, collation: None, opclass: None, desc: false, nulls: None };
+        crate::migrate::model::Index { name: name.into(), unique: true, method: None, keys: vec![key], include: vec![], where_: None, with: vec![], nulls_not_distinct: false }
+    }
+
+    fn object_claim(attribute: &str, arguments: &[&str], triggers: &[&str], indexes: &[&str], columns: &[&str], tables: &[&str]) -> crate::behavior::ObjectClaim {
+        let own = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        crate::behavior::ObjectClaim {
+            attribute: attribute.into(), arguments: own(arguments), triggers: own(triggers), indexes: own(indexes), columns: own(columns), checks: vec![], tables: own(tables),
+        }
+    }
+
+    fn bound(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn a_pattern_binds_each_placeholder_once() {
+        let mut b = bound(&[("table", "posts")]);
+        assert!(match_name("{table}_{of}_key", "posts_doc_id_key", &mut b));
+        assert_eq!(b["of"], "doc_id");
+        // a bound placeholder repeats the same text; a failed match binds nothing
+        assert!(!match_name("{table}_{of}_key", "other_doc_id_key", &mut b));
+        let mut b = bound(&[]);
+        assert!(!match_name("a_{x}_b_{x}", "a_1_b_2", &mut b) && b.is_empty());
+        assert!(match_name("a_{x}_b_{x}", "a_1_b_1", &mut b) && b["x"] == "1");
+        // a placeholder takes at least one character, and no more than an identifier
+        assert!(!match_name("a_{x}", "a_", &mut bound(&[])));
+        assert!(!match_name("{x}_ins", "a-b_ins", &mut bound(&[])));
+    }
+
+    #[test]
+    fn expands_the_arguments_of_a_claim() {
+        let b = bound(&[("c", "_touched_at"), ("name", "audit_log")]);
+        let field = |c: &str| c.trim_start_matches('_').to_owned();
+        assert_eq!(expand_argument("{c:claimed}", &b, &field), "touched_at");
+        assert_eq!(expand_argument("{c:map}", &b, &field), "map: \"_touched_at\"");
+        assert_eq!(expand_argument("model: \"{name:pascal}\"", &b, &field), "model: \"AuditLog\"");
+        assert_eq!(expand_argument("of: {c:field}", &b, &field), "of: touched_at");
+        // a column whose field has the same name has no map argument
+        assert_eq!(expand_argument("{x:map}", &bound(&[("x", "title")]), &field), "");
+    }
+
+    fn key(name: &str) -> crate::migrate::model::PrimaryKey {
+        crate::migrate::model::PrimaryKey { name: name.into(), columns: vec!["id".into()] }
+    }
+
+    fn tracked_db() -> DbSchema {
+        let mut posts = Table { name: "posts".into(), columns: vec![col("id", "bigint"), col("title", "text")], primary_key: Some(key("posts_pkey")), ..Default::default() };
+        posts.triggers = vec![trigger("h_events_ins", "posts_h_events_ins"), trigger("h_events_upd", "posts_h_events_upd"), trigger("keep_me", "keep_fn")];
+        let events = Table { name: "posts_events".into(), columns: vec![col("id", "bigint"), col("event", "jsonb")], primary_key: Some(key("posts_events_pkey")), ..Default::default() };
+        let func = |n: &str| crate::migrate::model::Function {
+            name: n.into(), args: String::new(), returns: "trigger".into(), language: "plpgsql".into(), body: "BEGIN RETURN NEW; END".into(), volatility: None, security_definer: false,
+        };
+        let mut db = DbSchema { dialect: Dialect::Postgres, tables: vec![posts, events], ..Default::default() };
+        db.functions = vec![func("posts_h_events_ins"), func("posts_h_events_upd"), func("keep_fn")];
+        db
+    }
+
+    #[test]
+    fn claims_the_tables_and_triggers_of_an_attribute() {
+        let db = tracked_db();
+        let claim = object_claim("ext.track", &[], &["h_events_ins", "h_events_upd"], &[], &[], &["{table}_events"]);
+        let found = claim_objects(&db, &[claim.clone()]);
+        assert_eq!(found.len(), 1);
+        assert_eq!((found[0].table.as_str(), found[0].tables.as_slice()), ("posts", &["posts_events".to_owned()][..]));
+        let pulled = pull_claims(&db, &[], &[], &found, &crate::dsl::Installed::new());
+        assert!(pulled.schema.contains("@@ext.track()"), "{}", pulled.schema);
+        assert!(!pulled.schema.contains("posts_events") && !pulled.schema.contains("h_events_"), "{}", pulled.schema);
+        // a trigger that the claim does not name stays, with its function; the functions of claimed triggers go
+        assert!(pulled.schema.contains("@@trigger(keep_me"), "{}", pulled.schema);
+        assert!(pulled.schema.contains("keep_fn") && !pulled.schema.contains("posts_h_events_ins"), "{}", pulled.schema);
+        // a claim that lacks one of its objects claims nothing
+        let mut missing = db.clone();
+        missing.tables[0].triggers.remove(1);
+        assert!(claim_objects(&missing, &[claim.clone()]).is_empty());
+        let mut no_table = db.clone();
+        no_table.tables.remove(1);
+        assert!(claim_objects(&no_table, &[claim]).is_empty());
+    }
+
+    #[test]
+    fn claims_columns_and_an_index_with_their_names() {
+        let mut t = Table { name: "docs".into(), columns: vec![col("id", "bigint"), col("doc_id", "bigint"), col("version_number", "bigint"), col("note", "text")], primary_key: Some(key("docs_pkey")), ..Default::default() };
+        t.indexes = vec![index("docs_doc_id_version_key", "doc_id"), index("docs_note_idx", "note")];
+        let db = DbSchema { dialect: Dialect::Postgres, tables: vec![t], ..Default::default() };
+        let claim = object_claim("ext.versions", &["of: {of:field}"], &[], &["{table}_{of}_version_key"], &["version_number"], &[]);
+        let found = claim_objects(&db, &[claim]);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].bound["of"], "doc_id");
+        let pulled = pull_claims(&db, &[], &[], &found, &crate::dsl::Installed::new());
+        assert!(pulled.schema.contains("@@ext.versions(of: doc_id)"), "{}", pulled.schema);
+        assert!(!pulled.schema.contains("version_number") && !pulled.schema.contains("docs_doc_id_version_key"), "{}", pulled.schema);
+        assert!(pulled.schema.contains("docs_note_idx") || pulled.schema.contains("@@index"), "{}", pulled.schema);
+    }
+
+    #[test]
+    fn a_claim_matches_one_table_once_for_each_set_of_objects() {
+        let mut db = tracked_db();
+        db.tables[0].triggers = ["events", "audit"].iter().flat_map(|n| [trigger(&format!("h_{n}_ins"), &format!("f_{n}_ins")), trigger(&format!("h_{n}_upd"), &format!("f_{n}_upd"))]).collect();
+        let claim = object_claim("ext.track", &["model: \"{name:pascal}\""], &["h_{name}_ins", "h_{name}_upd"], &[], &[], &[]);
+        let found = claim_objects(&db, &[claim]);
+        // two trackers of one table: each match holds its own triggers
+        let names: Vec<_> = found.iter().map(|o| (o.bound["name"].as_str(), o.triggers.clone())).collect();
+        assert_eq!(names, [("events", vec!["h_events_ins".to_owned(), "h_events_upd".to_owned()]), ("audit", vec!["h_audit_ins".to_owned(), "h_audit_upd".to_owned()])]);
+        let pulled = pull_claims(&db, &[], &[], &found, &crate::dsl::Installed::new());
+        assert_eq!(pulled.schema.matches("@@ext.track(").count(), 2, "{}", pulled.schema);
+        assert!(!pulled.schema.contains("@@trigger("), "{}", pulled.schema);
+    }
+
+    #[test]
+    fn a_placeholder_takes_the_first_name_that_fits_and_the_claim_does_not_backtrack() {
+        let table = |triggers: &[&str]| {
+            let mut t = Table { name: "docs".into(), columns: vec![col("id", "bigint"), col("foo", "text")], primary_key: Some(key("docs_pkey")), ..Default::default() };
+            t.triggers = triggers.iter().map(|n| trigger(n, "f")).collect();
+            DbSchema { dialect: Dialect::Postgres, tables: vec![t], ..Default::default() }
+        };
+        let claim = object_claim("ext.touch", &[], &["upd_{c}"], &[], &["{c}"], &[]);
+        // `upd_foo_root` comes first and binds `c` to `foo_root`, which is no column: the claim does not try `upd_foo`
+        assert!(claim_objects(&table(&["upd_foo_root", "upd_foo"]), &[claim.clone()]).is_empty());
+        let found = claim_objects(&table(&["upd_foo", "upd_foo_root"]), &[claim]);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].bound["c"], "foo");
+    }
+
+    #[test]
+    fn a_claim_with_no_trigger_index_or_column_claims_nothing() {
+        let db = tracked_db();
+        assert!(claim_objects(&db, &[object_claim("ext.none", &[], &[], &[], &[], &["{table}_events"])]).is_empty());
     }
 
     #[test]

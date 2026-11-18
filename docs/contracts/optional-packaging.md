@@ -314,6 +314,16 @@ Schema contract 5.3 also adds `Manifest.rule_claims`, a `RuleClaim` (`attribute`
 The core drops a claimed rule (`DROP RULE IF EXISTS`) before it creates the triggers that replace it, and the baseline form leaves out a trigger with `replaces_rule`.
 A new database has no rule, so the drop does nothing there.
 `soft-delete` declares the claim.
+Schema contract 5.3 also adds `Manifest.object_claims`, an `ObjectClaim` (`attribute`, `arguments`, `triggers`, `indexes`, `columns`, `checks`, `tables`) for each group of database objects that an extension generates and that `pull` reads back as one model attribute.
+A pattern is a name with placeholders: `{table}` is the table of the model, and `{x}` stands for one or more identifier characters, the same text at each use.
+The host finds the table that has a trigger, an index and a column for each of `triggers`, `indexes` and `columns`, with the `checks` it may have and the other `tables` it needs; every claim that matches applies, in manifest order, and a claim can match one table more than once (two trackers of one table).
+An object belongs to one match only, so the claims of one attribute are alternative forms that do not exclude each other.
+The host does not backtrack: a placeholder takes the first name that fits, and when a later pattern of the claim then fails, the claim does not match that table, even if other names would fit.
+It leaves the claimed tables, triggers, indexes, checks, columns and the trigger functions of the claimed triggers out of the pulled schema, and writes `@@<attribute>(<arguments>)` on the model of the table.
+An argument template may use `{x:field}` (the column name), `{x:pascal}`, `{x:claimed}` (the name that the pulled model gives the column) and `{x:map}` (`map: "<column>"` when the model renames the column); an empty result drops the argument.
+`pull` compiles the claimed schema and compares it with the database; when it does not compile or steps remain, it falls back to the pull without the object claims and lists a gap.
+The host names no extension.
+`history` and `timestamps` declare claims.
 Schema contract 5.3 also adds `Manifest.extension_records` and `Manifest.added_triggers`.
 An `ExtensionRecord` (`source`, `model`, `kind`, `data`) is a record that an extension pass keeps for its language code and for `pull`; the host reads none of them.
 An `AddedTrigger` (`model`, `trigger`) adds a trigger to a model of an earlier schema batch; `merge_definition` adds it to that model and drops the list.
