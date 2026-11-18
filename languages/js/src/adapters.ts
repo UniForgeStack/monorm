@@ -54,6 +54,7 @@ interface AdaptedQuerySet {
   insert(values: never): InspectableWrite;
   update(values: never): InspectableWrite;
   checkInsertRows(rows: readonly object[], batchSize: number | null): void;
+  copyRows(rows: readonly object[], options: object): Promise<number>;
   insertRows(rows: readonly object[], conflict: undefined, returning: boolean, batchSize: number | null, names?: readonly string[]): Promise<unknown[] | number>;
   inspectInsert(rows: readonly object[], conflict: undefined, returning: boolean, batchSize: number | null, names?: readonly string[]): QueryInspection;
   checkUpdateRows(rows: readonly object[], options: UpdateManyOptions): void;
@@ -291,6 +292,15 @@ export function adaptedInsertMany<M extends ModelSpec>(Insert: typeof InsertMany
     operation,
     onConflict(): never { throw new FieldAdapterError("a value that needs prepare is unsupported in conflict writes"); },
   });
+}
+
+/** @internal `insertMany(rows, { copy: true })` with a value that needs `prepare`: the calls run, then one `COPY` loads the stored values. */
+export async function adaptedCopyRows(qs: AdaptedQuerySet, rows: readonly object[], pending: PendingFields, options: object): Promise<number> {
+  if ("onConflict" in options || (options as BatchOptions).batchSize !== undefined) {
+    throw new TypeError("insertMany(rows, { copy: true }) can't be combined with onConflict or batchSize");
+  }
+  qs.checkInsertRows(rows, null); // write protection runs before the first `prepare` call
+  return new PreparedWrite(pending, CONCURRENCY).execute(stored => qs.copyRows(fillRows(rows, stored, pending), options));
 }
 
 /** @internal `updateMany(rows)` with a value that needs `prepare`. */

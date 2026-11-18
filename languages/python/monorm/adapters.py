@@ -20,7 +20,7 @@ from weakref import WeakKeyDictionary
 from .expr import Expression
 from .hooks import PreparedInsert, PreparedUpdate, _prepare_update, decode_field, prepare_insert, prepare_update
 from .protection import allow_writes, allowed_writes
-from .write import InsertMany, InsertOne, Returning, Update, UpdateMany, prepare_rows
+from .write import CopyInsert, InsertMany, InsertOne, Returning, Update, UpdateMany, prepare_rows
 
 if TYPE_CHECKING:
     from .model import Model
@@ -61,7 +61,9 @@ class FieldAdapter(Protocol[V_co, S]):
     """The operations of one adapted field. ``S`` is the stored value, ``V_co`` the value the model shows."""
 
     def validate(self, value: Any) -> S | Pending:
-        """Return the stored value, or :class:`Pending` when ``prepare`` must run. Sync, no I/O."""
+        """Return the stored value, or :class:`Pending` when ``prepare`` must run. Sync, no I/O.
+        It must also accept a stored value: ``prepare`` results, and values that ``through_defaults`` writes after a
+        ``prepare`` call, go through ``validate`` once more on their way to the insert."""
         ...
 
     async def prepare(self, value: Any) -> S:
@@ -387,6 +389,28 @@ class PendingInsertMany(InsertMany[Any]):
             insert._names = self._names
             insert._used = True
             return insert._execute(returning)
+
+        return await self.operation.execute(statement)
+
+
+class PendingCopyInsert(CopyInsert[Any]):
+    """``insert_many(rows, copy=True)`` with values that need ``prepare``: the calls run in parallel (up to
+    :data:`CONCURRENCY`), then one ``COPY`` loads the stored values."""
+
+    def __init__(self, qs: QuerySet[Any], rows: list[Mapping[str, Any]], pending: _BatchPending):
+        self.rows = rows
+        self.operation = PreparedWrite(pending, CONCURRENCY)
+        fields, aligned, _ = prepare_rows(qs.model, rows)
+        super().__init__(qs, fields, aligned)
+
+    async def _count(self) -> int:
+        model = self._qs.model
+
+        def statement(stored: Mapping[Any, Any]) -> Awaitable[int]:
+            fields, aligned, _ = prepare_rows(model, _fill_rows(self.rows, stored))
+            copy = CopyInsert(self._qs, fields, aligned)
+            copy._used = True
+            return copy._count()
 
         return await self.operation.execute(statement)
 

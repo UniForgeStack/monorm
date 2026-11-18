@@ -365,11 +365,11 @@ test("batch validation and protection run before any prepare", async () => {
   } finally { await db.close(); }
 });
 
-test("a pending batch value is rejected in a conflict write and in copy", async () => {
+test("a pending batch value is rejected in a conflict write, and a copy takes no batch size", async () => {
   const { db, Doc, body, objects } = await open();
   try {
     assert.throws(() => objects.insertMany([{ id: 1, title: "a", body: "file" }]).onConflict(Doc.id, { update: true }), FieldAdapterError);
-    assert.throws(() => objects.insertMany([{ id: 1, title: "a", body: "file" }], { copy: true }), /copy/);
+    await assert.rejects(async () => objects.insertMany([{ id: 1, title: "a", body: "file" }], { copy: true, batchSize: 1 } as never), /batchSize/);
     assert.deepEqual(body.calls, []);
   } finally { await db.close(); }
 });
@@ -446,6 +446,47 @@ test("through defaults prepare once, before the transaction, for every join row"
     await post.tags.add(4, { throughDefaults: { file: new OneShot("hi") } });
     assert.deepEqual(inside, [false, false]);
   } finally { await db.close(); }
+});
+
+test("add and set with every link present run no prepare", async () => {
+  const registry = new Registry();
+  const models = loads(m2mSource.replace("  tag_id Int\n", "  tag_id Int\n  file Json?\n"), { registry }) as Record<string, any>;
+  const db = await connect("sqlite://:memory:", { registry, default: false });
+  try {
+    await db.createTables();
+    const file = new Streams("file");
+    registerFieldAdapter(models.PostTag._meta, "file", file);
+    await models.Tag.objects.using(db).insertMany([1, 2].map(id => ({ id, name: String(id) })));
+    const post = await models.Post.objects.using(db).insert({ id: 1 });
+    await post.tags.add(1, 2, { throughDefaults: { file: new OneShot("a") } });
+    assert.equal(file.calls.length, 1);
+    await post.tags.add(1, 2, { throughDefaults: { file: new OneShot("b") } });
+    await post.tags.set([1, 2], { throughDefaults: { file: new OneShot("c") } });
+    assert.equal(file.calls.length, 1);
+    await models.Tag.objects.using(db).insert({ id: 3, name: "3" });
+    await post.tags.add(2, 3, { throughDefaults: { file: new OneShot("dd") } });
+    assert.equal(file.calls.length, 2);
+  } finally { await db.close(); }
+});
+
+test("a copy prepares the pending values, then loads the stored ones", async () => {
+  const url = process.env["ORM_TEST_DATABASE_URL"] ?? "postgres://postgres:postgres@localhost/orm_test";
+  const registry = new Registry();
+  const models = loads(source.replace('"sqlite"', '"postgresql"').replaceAll("Doc", "CopyDoc").replaceAll("Locked", "CopyLocked"), { registry }) as Record<string, any>;
+  const db = await connect(url, { registry, default: false });
+  try {
+    await db.dropTables();
+    await db.createTables();
+    const body = new Counting("body");
+    registerFieldAdapter(models.CopyDoc._meta, "body", body);
+    const objects = models.CopyDoc.objects.using(db) as any;
+    assert.equal(await objects.insertMany([{ id: 1, title: "a", body: "one" }, { id: 2, title: "b", body: { x: 1 } }], { copy: true }), 2);
+    assert.deepEqual(body.calls, ["one"]);
+    assert.deepEqual(((await objects.filter(models.CopyDoc.id.eq(1)).get()) as Row)["body"], ["body", { tag: "body", value: "one" }]);
+  } finally {
+    await db.dropTables();
+    await db.close();
+  }
 });
 
 test("a filtered update and an upsert take null or a stored value", async () => {

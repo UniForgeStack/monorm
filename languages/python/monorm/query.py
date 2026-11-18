@@ -1477,7 +1477,9 @@ class QuerySet(Generic[M]):
         checked, pending = adapters.split_rows(self._model, rows)
         if pending:
             if copy:
-                raise adapters.FieldAdapterError("insert_many(copy=True) takes no value that needs prepare")
+                if batch_size is not None:
+                    raise TypeError("insert_many(copy=True) takes no batch_size: COPY is one statement")
+                return adapters.PendingCopyInsert(self, checked, pending)
             return adapters.PendingInsertMany(self, checked, pending, batch_size)
         fields, aligned, provided = prepare_rows(self._model, checked)
         if copy:
@@ -2385,8 +2387,9 @@ class ManyRelatedSet(QuerySet[M]):
         keys = self._target_keys(objs)
         if not keys:
             return
-        # Uploads run before the transaction opens, so none holds it.
-        extra = await adapters.prepare_values(self._relation.through, extra)
+        # Uploads run before the transaction opens, so none holds it; no new link, no upload.
+        if await self._has_new_links(keys, extra):
+            extra = await adapters.prepare_values(self._relation.through, extra)
         if self._hidden_links() is None:
             await self._add(keys, extra)
             return
@@ -2394,6 +2397,18 @@ class ManyRelatedSet(QuerySet[M]):
             savepoint=False
         ):
             await self._add(keys, extra)
+
+    async def _has_new_links(self, keys: list[Any], extra: Mapping[str, Any]) -> bool:
+        """Whether a write of ``keys`` inserts a join row; false lets it skip ``prepare`` of ``extra``.
+        A link that a delete rewrite hid is restored, not inserted."""
+        if not extra:
+            return True
+        links = self._links()
+        hidden = self._hidden_links()
+        if hidden is not None:
+            links = links.without_defaults(*hidden[1])
+        have = set(await links.filter(self._target_col().in_(keys)).select(self._target_col()).scalars())
+        return any(k not in have for k in keys)
 
     def _hidden_links(self) -> tuple[ColumnRef[Any], tuple[str, ...]] | None:
         """The delete-rewrite field of the join model and the names of the read defaults that hide
@@ -2465,7 +2480,7 @@ class ManyRelatedSet(QuerySet[M]):
         keys = self._target_keys(objs)
         col = self._target_col()
         # Uploads run before the transaction opens, so none holds it; one call stores one value in every row.
-        if keys:
+        if keys and await self._has_new_links(keys, extra):
             extra = await adapters.prepare_values(self._relation.through, extra)
         async with resolve(self._db if self._db is not None else self._instance.__dict__.get("_db")).transaction(
             savepoint=False

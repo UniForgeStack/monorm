@@ -1,6 +1,7 @@
 """The async field adapter pipeline (`monorm.adapters`): validate, ``await prepare``, SQL, decode."""
 
 import asyncio
+import os
 
 import pytest
 import monorm
@@ -418,15 +419,19 @@ async def test_batch_validation_and_protection_run_before_any_prepare():
         await db.close()
 
 
-async def test_a_pending_batch_value_is_rejected_in_a_conflict_write_and_in_copy():
+async def test_a_pending_batch_value_is_rejected_in_a_conflict_write_and_a_copy_takes_no_batch_size():
     db, models, body = await setup()
     try:
         Doc = models["Doc"]
         insert = Doc.objects.using(db).insert_many([{"id": 1, "title": "a", "body": "file"}])
         with pytest.raises(FieldAdapterError, match="conflict"):
             insert.on_conflict(Doc.id, update=True)
-        with pytest.raises(FieldAdapterError, match="copy"):
-            Doc.objects.using(db).insert_many([{"id": 1, "title": "a", "body": "file"}], copy=True)
+        with pytest.raises(TypeError, match="batch_size"):
+            Doc.objects.using(db).insert_many([{"id": 1, "title": "a", "body": "file"}], copy=True, batch_size=1)
+        with pytest.raises(TypeError, match="on_conflict"):
+            Doc.objects.using(db).insert_many([{"id": 1, "title": "a", "body": "file"}], copy=True).on_conflict(
+                Doc.id, update=True
+            )
         assert body.calls == []
     finally:
         await db.close()
@@ -572,6 +577,52 @@ async def test_through_defaults_prepare_once_before_the_transaction():
         assert len(file.calls) == 2 and file.inside == [False, False]
         assert (await PostTag.objects.using(db).get(PostTag.tag_id == 4)).file == ("file", {"tag": "file", "size": 2})
     finally:
+        await db.close()
+
+
+async def test_add_and_set_with_every_link_present_run_no_prepare():
+    registry = monorm.Registry()
+    models = monorm.loads(M2M_SCHEMA.replace("  tag_id  Int\n", "  tag_id  Int\n  file    Json?\n"), registry=registry)
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
+    try:
+        await db.create_tables()
+        Post, Tag, PostTag = models["Post"], models["Tag"], models["PostTag"]
+        file = Streams("file")
+        register_field_adapter(PostTag, "file", file)
+        await Tag.objects.using(db).insert_many([{"id": n, "name": str(n)} for n in (1, 2)])
+        post = await Post.objects.using(db).insert(id=1)
+        await post.tags.add(1, 2, through_defaults={"file": OneShot(b"a")})
+        assert len(file.calls) == 1
+        await post.tags.add(1, 2, through_defaults={"file": OneShot(b"b")})
+        await post.tags.set([1, 2], through_defaults={"file": OneShot(b"c")})
+        assert len(file.calls) == 1
+        await post.tags.add(1, 2, through_defaults={"file": OneShot(b"dd")})
+        assert len(file.calls) == 1
+        await Tag.objects.using(db).insert(id=3, name="3")
+        await post.tags.add(2, 3, through_defaults={"file": OneShot(b"ee")})
+        assert len(file.calls) == 2
+    finally:
+        await db.close()
+
+
+async def test_a_copy_prepares_the_pending_values_then_loads_the_stored_ones():
+    url = os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
+    registry = monorm.Registry()
+    models = monorm.loads(SCHEMA.replace('"sqlite"', '"postgresql"').replace("Doc", "CopyDoc").replace("Locked", "CopyLocked"), registry=registry)
+    db = await monorm.connect(url, registry=registry, default=False)
+    try:
+        await db.execute('DROP TABLE IF EXISTS "CopyDoc"')
+        await db.execute('DROP TABLE IF EXISTS "CopyLocked"')
+        await db.create_tables()
+        body = Counting("body")
+        register_field_adapter(models["CopyDoc"], "body", body)
+        objects = models["CopyDoc"].objects.using(db)
+        assert await objects.insert_many([{"id": 1, "title": "a", "body": "one"}, {"id": 2, "title": "b", "body": {"x": 1}}], copy=True) == 2
+        assert body.calls == ["one"]
+        assert (await objects.get(models["CopyDoc"].id == 1)).body == ("body", {"tag": "body", "value": "one"})
+    finally:
+        await db.execute('DROP TABLE IF EXISTS "CopyDoc"')
+        await db.execute('DROP TABLE IF EXISTS "CopyLocked"')
         await db.close()
 
 

@@ -50,7 +50,7 @@ import { NotLoaded, QueryError, TransactionRequired, UnfilteredWriteError } from
 import { irNames, type DefaultNames, type DeleteArgs, type Hop, type HopKind, type In, type ModelSpec, type RelationMeta } from "./meta.js";
 import { DB, IndexRef, columnOf, fieldValue, RELATED, registerQueries, type Instance, type ModelClass, type ModelMeta } from "./model.js";
 import { call, wait, type NativeInspector, type NativePreparedRead, type NativePreparedWrite, type NativeReturned, type NativeSelect, type NativeTrace, type NativeTransaction } from "./native.js";
-import { adaptedInsert, adaptedInsertMany, adaptedUpdate, adaptedUpdateMany, FieldAdapterError, prepareValues, splitAdapted, splitBatch } from "./adapters.js";
+import { adaptedCopyRows, adaptedInsert, adaptedInsertMany, adaptedUpdate, adaptedUpdateMany, FieldAdapterError, prepareValues, splitAdapted, splitBatch } from "./adapters.js";
 import { assignments, lookupValues, prepareRows, prepareUpdateRows, prepareAttach, prepareAttachMany } from "./write.js";
 import { after, checkPaging, decodeCursor, encodeCursor, fingerprint, keyset, type Page, type PageOptions } from "./pagination.js";
 import { allowedWrites } from "./protection.js";
@@ -1809,7 +1809,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     const { checked, pending } = splitBatch(this.meta, rows as readonly M["insert"][]);
     rows = checked;
     if (options && "copy" in options && options.copy) {
-      if (pending.size) throw new FieldAdapterError("insertMany(rows, { copy: true }) takes no value that needs prepare");
+      if (pending.size) return adaptedCopyRows(this as never, rows, pending, options) as unknown as Promise<number>;
       return this.copyRows(rows, options);
     }
     if (pending.size) return adaptedInsertMany<M>(InsertMany, this as never, rows, pending, options as BatchOptions | undefined, this.meta) as unknown as InsertMany<M, P>;
@@ -2819,13 +2819,25 @@ export class ManyRelatedSet<M extends ModelSpec> extends QuerySet<M> {
     if (!keys.length) {
       return;
     }
-    // Uploads run before the transaction opens, so none holds it.
-    const prepared = await prepareValues(this.through, extra);
+    // Uploads run before the transaction opens, so none holds it; no new link, no upload.
+    const prepared = (await this.hasNewLinks(keys, extra)) ? await prepareValues(this.through, extra) : extra;
     if (!this.hiddenLinks()) {
       await this.addLinks(keys, prepared);
       return;
     }
     await resolve(this.state.db ?? (this.instance[DB] as Database | undefined)).transaction(() => this.addLinks(keys, prepared), { savepoint: false });
+  }
+
+  /** Whether a write of `keys` inserts a join row; false lets it skip `prepare` of `extra`. A link that a delete rewrite hid is restored, not inserted. */
+  private async hasNewLinks(keys: readonly unknown[], extra: Record<string, unknown>): Promise<boolean> {
+    if (!Object.keys(extra).length) return true;
+    const col = this.targetColumn();
+    let links = this.links();
+    const hidden = this.hiddenLinks();
+    if (hidden) links = links.withoutDefaults(...(hidden.names as never[]));
+    const have = (await links.filter(col.in(keys as never) as never).all()) as Record<string, unknown>[];
+    const known = new Set(have.map((r) => String(r[col.field.name])));
+    return keys.some((k) => !known.has(String(k)));
   }
 
   /** The delete-rewrite field of the join model and the names of the read defaults that hide its rewritten rows, from the neutral behavior records. */
@@ -2903,7 +2915,7 @@ export class ManyRelatedSet<M extends ModelSpec> extends QuerySet<M> {
     let extra = this.throughDefaults(options?.throughDefaults);
     const keys = this.targetKeys(objs);
     // Uploads run before the transaction opens, so none holds it; one call stores one value in every row.
-    if (keys.length) extra = await prepareValues(this.through, extra);
+    if (keys.length && (await this.hasNewLinks(keys, extra))) extra = await prepareValues(this.through, extra);
     await resolve(this.state.db ?? (this.instance[DB] as Database | undefined)).transaction(async () => {
       const target = this.targetColumn();
       await this.links().filter(differs(target, keys) as never).delete();
