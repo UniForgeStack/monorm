@@ -127,9 +127,6 @@ It lists them as `// gap:` lines.
 
 ## Limits
 
-* A schema with a `@@scope.by` model and a soft-delete model fails to load: `conflicting effect behavior.read_defaults (monorm.scope.prepare and monorm.soft-delete.prepare)`.
-  A schema with `@@scope.by` and `@@history.track(scope: [...])` fails the same way for `behavior.published_scope_keys`.
-  The failure happens even when the attributes sit on different models.
 * `skip_triggers` cannot skip the scope trigger.
 * SQLite has no RLS: the ORM filter, the fill and the check are the only guard.
 

@@ -316,8 +316,6 @@ Application mode adds no trigger, only the column.
 
 ## Limits
 
-* A schema with a `@@soft_delete.deleted_at` model and a `@@scope.by` model does not load today.
-  Both extensions declare the effect `behavior.read_defaults`, and the loader rejects the second declaration: `conflicting effect behavior.read_defaults`.
 * Application mode does not cover a raw writer.
   In database mode on SQLite, the `updated_at` trigger ignores `bypass_roles`.
 * `pull` reads the columns as plain fields.

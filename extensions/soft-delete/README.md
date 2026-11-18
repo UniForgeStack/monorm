@@ -96,7 +96,6 @@ CREATE TRIGGER "soft_delete_cascade" AFTER UPDATE OF "deleted_at" ON "author" FO
 ### Other extensions
 
 * It runs after locking and timestamps, so a soft delete moves `updated_at` and adds 1 to `version`.
-* A model with `@@scope.by` and soft delete does not load today (see Limits).
 * A proxy must keep the field. A level of a composed model follows the soft delete of its root.
 
 ## Layout
@@ -115,8 +114,6 @@ The behavior tests are `languages/python/tests/test_tracking.py`, `test_version_
 
 ## Limits
 
-* A model with `@@soft_delete.deleted_at` and a model with `@@scope.by` in one schema fail to load with `conflicting effect behavior.read_defaults`.
-  Both extensions declare the effect. The check is in `crates/contracts/src/resolve.rs`.
 * A cascade into a child without soft delete fails the schema unless the relation has `@soft_delete.keep_child_rows`.
 * `skip_triggers("soft-delete")` raises `ValueError`: these triggers cannot be skipped.
 * `pull` reads a database rule as `rule:` only if its text equals one of the two patterns.

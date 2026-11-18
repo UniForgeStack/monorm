@@ -166,8 +166,6 @@ SQLite has no skip: `skip_triggers("history")` raises `QueryError`.
 * `pull` reads an event table or a version table as a plain model.
   On PostgreSQL it also writes the triggers as `@@trigger(...)` lines. On SQLite it reports the triggers as a gap.
   It never writes `@@history.track` or `@@history.versions`, so a schema from `pull` loses the write protection and the API.
-* A schema with `@@history.track(scope: [...])` or `@@history.versions(scope: [...])` and a `@@scope.by` model does not load today.
-  Both extensions declare the effect `behavior.published_scope_keys`, and the loader rejects the second declaration: `conflicting effect behavior.published_scope_keys`.
 * SQLite stamps `effective_at` with whole seconds, so `version_at` cannot tell two versions of one second apart.
 
 ## Errors

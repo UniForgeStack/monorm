@@ -77,8 +77,8 @@ The extension has no `python/` or `typescript/` source.
 
 ### Other extensions
 
-* `history` publishes its own scope keys (`behavior.published_scope_keys`), and the scope extension publishes its keys too.
-* The read default of a scope key is `behavior.read_defaults`. Soft delete declares that effect as well (see Limits).
+* `history` publishes its own scope keys (`behavior.published_scope_keys`), and the scope extension publishes its keys too. Both lists are additive.
+* The read default of a scope key is `behavior.read_defaults`. Soft delete adds to that list as well.
 * `query-defaults` can read the scope in a filter: `@@query.filter("tenant", shop_id == scope.shop)`.
 
 ## Layout
@@ -98,10 +98,6 @@ The behavior tests are `languages/python/tests/test_scope.py` and `test_scope_rl
 
 ## Limits
 
-* A schema with a `@@scope.by` model and a soft-delete model fails to load: `conflicting effect behavior.read_defaults (monorm.scope.prepare and monorm.soft-delete.prepare)`.
-  A schema with `@@scope.by` and `@@history.track(scope: [...])` fails the same way for `behavior.published_scope_keys`.
-  The failure happens even when the attributes sit on different models.
-  The check is in `crates/contracts/src/resolve.rs`.
 * RLS guards against mistakes in the application and against other database roles, not against a holder of the application credential.
 * `pull` does not turn policies back into `@@scope.by`: it lists them as `// gap:` lines.
 * `skip_triggers` cannot skip the scope trigger.

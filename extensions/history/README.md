@@ -98,7 +98,7 @@ CREATE TRIGGER "h_events_upd" AFTER UPDATE ON "post" FOR EACH ROW WHEN ((OLD."id
 
 * A tracker ignores an update that changes only a column that the timestamps extension owns.
 * `scope: [key]` publishes the key (`behavior.published_scope_keys`), so `scope()` accepts it without a `@@scope.by` that uses it.
-  This publish clashes with the same effect of the scope extension (see Limits).
+  The scope extension adds to the same list.
 * A proxy and a composed model are tracked through their root table, or through each part model.
 
 ## Layout
@@ -120,8 +120,6 @@ The behavior tests are `languages/python/tests/test_history.py` and `test_histor
 
 ## Limits
 
-* A schema with `@@history.track(scope: [...])` and a `@@scope.by` model fails to load: `conflicting effect behavior.published_scope_keys (monorm.history.models and monorm.scope.prepare)`.
-  The check is in `crates/contracts/src/resolve.rs`.
 * A backfill on a large table runs as one statement.
 * SQLite stamps `effective_at` with whole seconds.
 * A `BigInt` above 2^53 loses precision in `data` in TypeScript, and `restore` refuses such an event.

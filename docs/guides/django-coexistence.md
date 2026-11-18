@@ -85,9 +85,6 @@ On an update, Django writes back the stored `updated_at`. The database trigger s
 | Proto fields | A `bytea` column that holds an encoded message. | Map it with `BinaryField`, and make it read-only in the Django admin. |
 | Generic relations | monorm has no content-type table. The type column is an integer enum from `schema.identities.json`, not a `django_content_type` id. | Do not use `GenericForeignKey` on these tables. Read the two columns as plain fields. |
 
-A schema that has a `@@soft_delete.deleted_at` model and a `@@scope.by` model does not load today.
-So the soft-delete and scope rows above do not apply to one table together.
-
 ### Django tests
 
 Django creates the test database and runs only its own migrations: tables with `managed = False` are not created.
