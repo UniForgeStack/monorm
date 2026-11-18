@@ -145,6 +145,15 @@ fn copy_is_refused_for_a_model_with_a_change_set_hook() {
 }
 
 #[test]
+fn prepared_insert_is_refused_for_a_model_with_a_change_set_hook() {
+    use monorm_engine::{prepared_write::{PreparedRows, RowsKind, RowsSpec}};
+    let spec = RowsSpec { kind: RowsKind::Insert(None), model: "Note".into(), fields: vec!["id".into(), "text".into()], returning: false, model_fields: None,
+        without_defaults: Default::default(), scope: Default::default(), batch_size: None, len: 0, declared: vec![] };
+    let error = PreparedRows::prepare(std::sync::Arc::new(with_change_set()), Target::new(Dialect::Postgres), spec).err().expect("a refusal").to_string();
+    assert!(error.contains("Note has change-set hooks; run the insert without prepare()"), "{error}");
+}
+
+#[test]
 fn copy_is_allowed_for_a_model_with_only_a_hook_4() {
     let rows = vec![vec![Some(Value::Int(Some(1))), Some(string("note"))]];
     let planned = exec::plan_copy(&with_hook_4(), Target::new(Dialect::Postgres), "Note", &fields(&["id", "text"]), rows);

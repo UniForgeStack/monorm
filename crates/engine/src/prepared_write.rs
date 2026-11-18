@@ -62,6 +62,15 @@ fn refuse_plan_time_hooks(m: &Model) -> Result<()> {
     Ok(())
 }
 
+/// A change-set hook (transform, validator, record validator) runs per call on the values of
+/// the write; a held statement cannot run it.
+fn refuse_change_set_hooks(m: &Model, write: &str) -> Result<()> {
+    if m.hooks.as_deref().is_some_and(monorm_core::hooks::HookPlan::changes_set) {
+        return Err(Error::query(format!("prepare(): {} has change-set hooks; run the {write} without prepare()", m.ir.name)));
+    }
+    Ok(())
+}
+
 fn computed_of(returned: &Option<Returned>) -> bool {
     returned.as_ref().is_some_and(|r| r.3.iter().any(|c| c.reads_context()))
 }
@@ -97,10 +106,10 @@ impl PreparedWrite {
             _ => return Err(Error::query("prepare() takes an update or a delete")),
         };
         let m = schema.model(schema.model_idx(model).map_err(query_err)?);
-        refuse_plan_time_hooks(m)?;
-        if matches!(op, Operation::Update(_)) && m.hooks.as_deref().is_some_and(monorm_core::hooks::HookPlan::changes_set) {
-            return Err(Error::query(format!("prepare(): {} has change-set hooks; run the update without prepare()", m.ir.name)));
+        if matches!(op, Operation::Update(_)) {
+            refuse_change_set_hooks(m, "update")?;
         }
+        refuse_plan_time_hooks(m)?;
         let base = pass(schema, target, op, len, declared, vec![])?;
         if let Some(i) = base.untyped.first() {
             return Err(untyped_error(*i));
@@ -315,6 +324,9 @@ impl PreparedRows {
         let mut this = Self { schema: schema.clone(), target, spec, multi_table, returned: None, context: false, types, shapes: Mutex::new(HashMap::new()), unnests: Mutex::new(HashMap::new()) };
         if multi_table {
             return Ok(this);
+        }
+        if matches!(this.spec.kind, RowsKind::Insert(_)) {
+            refuse_change_set_hooks(m, "insert")?;
         }
         refuse_plan_time_hooks(m)?;
         db::require_dialect(target.dialect).map_err(Error::from)?;

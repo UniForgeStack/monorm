@@ -858,7 +858,7 @@ await edit(rows=[{"id": 1, "title": "x"}])               # the primary key comes
 * `fields=` takes plain columns. A relation, `copy=True` and `returning()` of a relation
   are not supported. A multi-table `insert` runs its statements as the unprepared write does.
 * In 0.x, `prepare()` raises for a hook that gives a value at plan time (a hook assignment
-  or a hook client default), for a single `update` on a model with change-set hooks, and for
+  or a hook client default), for a single `insert` or `update` on a model with change-set hooks, and for
   a multi-table `update` or `delete`. A multi-table `insert` plans its statements on each call.
 * An unprepared write with `param()` raises `QueryError`.
 

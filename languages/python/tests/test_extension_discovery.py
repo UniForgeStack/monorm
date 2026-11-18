@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 import monorm
+from monorm import param
 from monorm.__main__ import main as cli
 from monorm import _native
 from monorm._native import SchemaError
@@ -272,6 +273,21 @@ async def test_a_hook_error_names_the_model_and_field_once(site: Path, outside_l
         assert str(empty.value).endswith("Note.text: must not be empty")
         assert str(ordered.value).endswith("Note: start 3 must be before end 1")
         assert "extension" not in f"{empty.value}{ordered.value}"
+    finally:
+        await db.close()
+
+
+async def test_a_prepared_insert_is_refused_for_a_model_with_change_set_hooks(site: Path, outside_library: Path) -> None:
+    install_outside(site, outside_library)
+    registry = monorm.Registry()
+    Note = monorm.loads(GUARDED, registry=registry)["Note"]
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
+    try:
+        await db.create_tables()
+        row = {"id": param("i"), "text": param("t"), "start": 1, "end": 2, "shop_id": 1}
+        with monorm.scope(shop=1, user="ann"):
+            with pytest.raises(monorm.QueryError, match=r"Note has change-set hooks; run the insert without prepare\(\)"):
+                Note.objects.using(db).insert(**row).prepare()
     finally:
         await db.close()
 

@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, type TestContext } from "node:test";
-import { connect, define, IntegrityError, load, loads, QueryError, Registry, SchemaError, scope, type SchemaIR } from "../src/index.js";
+import { connect, define, IntegrityError, load, loads, param, QueryError, Registry, SchemaError, scope, type SchemaIR } from "../src/index.js";
 import { native } from "../src/native.js";
 import { resolveExtensions } from "../src/packages.js";
 
@@ -264,6 +264,23 @@ test("an outside pass writes a two-table model that inserts, reads, updates and 
 });
 
 const GUARDED = 'datasource db { provider = "sqlite" }\nmodel Note {\n id Int @id\n text String\n start Int\n end Int\n shop_id Int\n updated_by String?\n @@outside.guard\n}\n';
+
+test("a prepared insert is refused for a model with change-set hooks", { timeout: 300_000 }, async (t) => {
+  const root = directory(t);
+  const manifest = pkg(root, "acme-outside", "acme.outside", false) + "/monorm-extension.toml";
+  write(manifest, readFileSync(join(OUTSIDE, "monorm-extension.toml"), "utf8"));
+  const library = outsideLibrary(t);
+  copyFileSync(library, join(dirname(manifest), library.slice(library.lastIndexOf("/") + 1)));
+  project(root, { "acme-outside": "1.0.0" });
+  const { Note } = load(write(join(root, "schema.prisma"), GUARDED), { registry: new Registry() }) as Record<string, any>;
+  const db = await connect("sqlite://:memory:", { default: false, registry: Note._meta.registry });
+  try {
+    await db.createTables();
+    await scope({ shop: 1, user: "ann" }, async () => {
+      assert.throws(() => Note.objects.using(db).insert({ id: param("i"), text: param("t"), start: 1, end: 2, shopId: 1 }).prepare(), /Note has change-set hooks; run the insert without prepare\(\)/);
+    });
+  } finally { await db.close(); }
+});
 
 test("hooks of an outside library: one error prefix, a caller value for a hook 4 field, and the unbound native schema", { timeout: 300_000 }, async (t) => {
   const root = directory(t);
