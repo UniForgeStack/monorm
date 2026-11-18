@@ -127,6 +127,16 @@ export interface ListConfig {
 export type SearchFunction = (q: string, limit: number) => Promise<readonly RecordKey[]>;
 export type SearchWith = SearchFunction | Prepared<any, any, any>;
 
+/** The look of the UI in three values. Each one is the same value as a `brand` key; set it in one place only. */
+export interface ThemeConfig {
+  /** The name in the header and the page title (same as `brand.name`). */
+  readonly title?: string;
+  /** The URL of the logo image: a path or an `https` URL. */
+  readonly logo?: string;
+  /** The brand colour, `#rgb` or `#rrggbb` (same as `brand.colors.primary`). The UI picks a readable text colour for it. */
+  readonly color?: string;
+}
+
 export interface BrandConfig {
   /** The name in the header and the page title (`Admin` by default). */
   readonly name?: string;
@@ -269,6 +279,8 @@ export interface AdminOptions {
   readonly roles?: Readonly<Record<string, readonly string[]>>;
   /** The name, logo, colors, header links and environment label of the UI. */
   readonly brand?: BrandConfig;
+  /** The title, logo and brand colour of the UI in one small object (`{ title: "Acme", logo: "/static/acme.svg", color: "#0a7d5a" }`); it must not repeat a `brand` value. */
+  readonly theme?: ThemeConfig;
   /** A field (`Book.title`), a nested subfield (`Geo.lat`) or a type name (`Text`, an enum, a nested type) to a widget for every resource; a resource `widgets` entry wins at one level. */
   readonly widgets?: Readonly<Record<string, string>>;
   /** The order of the navigation groups; a resource names one of them with `group`. */
@@ -292,6 +304,7 @@ export interface AdminUser {
 
 const LIST_KEYS = new Set(["columns", "order", "pageSize", "sortable", "search", "searchWith", "filters", "namedFilters", "computed", "aggregates", "labels", "empty", "emptyFields", "tabs"]);
 const BRAND_KEYS = new Set(["name", "logo", "colors", "links", "environment"]);
+const THEME_KEYS = new Set(["title", "logo", "color"]);
 const RESOURCE_KEYS = new Set(["queryset", "can", "list", "title", "group", "allow", "perms", "label", "fieldPermissions", "see", "change", "actions", "checkMessages", "form", "readonly", "widgets", "formComponent", "detailTabs", "relations", "files", "create", "update", "delete", "inputs", "allowProtectedWrites", "inlines", "bulkDelete"]);
 
 function widgetsJson(who: string, value: unknown): Record<string, string> {
@@ -974,6 +987,7 @@ export class Admin {
   readonly #label: string;
   readonly #roles: Record<string, string[]>;
   readonly #brand: BrandConfig | undefined;
+  readonly #theme: ThemeConfig | undefined;
   readonly #widgets: Record<string, string> | undefined;
   readonly #groups: string[];
   readonly #statementTimeout: number;
@@ -995,6 +1009,10 @@ export class Admin {
       if (!BRAND_KEYS.has(key)) throw new AdminConfigError(`unknown brand option '${key}'`);
     }
     this.#brand = options.brand;
+    for (const key of Object.keys(options.theme ?? {})) {
+      if (!THEME_KEYS.has(key)) throw new AdminConfigError(`unknown theme option '${key}'`);
+    }
+    this.#theme = options.theme;
     this.#widgets = options.widgets === undefined ? undefined : widgetsJson("widgets", options.widgets);
     this.#groups = [...(options.groups ?? [])];
     const timeout = options.statementTimeout ?? 15;
@@ -1058,6 +1076,7 @@ export class Admin {
       label: this.#label,
       resources,
       ...(this.#brand === undefined ? {} : { brand: this.#brand }),
+      ...(this.#theme === undefined ? {} : { theme: this.#theme }),
       ...(this.#widgets === undefined || Object.keys(this.#widgets).length === 0 ? {} : { widgets: this.#widgets }),
       ...(this.#groups.length === 0 ? {} : { groups: this.#groups }),
       ...(this.#packages.size === 0 ? {} : { packages: [...this.#packages.values()] }),

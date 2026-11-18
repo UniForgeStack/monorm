@@ -29,6 +29,16 @@ pub struct BrandConfig {
     environment: Option<String>,
 }
 
+/// The short form of the look of a site: the title, the logo and the brand colour. It sets the same values as `brand`
+/// (`title` is `brand.name`, `color` is `brand.colors.primary`); a value in both is a config error.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct ThemeConfig {
+    title: Option<String>,
+    logo: Option<String>,
+    color: Option<String>,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LinkConfig {
@@ -48,20 +58,41 @@ fn color_ok(c: &str) -> bool {
 }
 
 /// The brand as the UI reads it. A wrong value is a config error that names the setting.
-pub fn brand(config: Option<&BrandConfig>) -> Result<Value, ConfigError> {
+pub fn brand(config: Option<&BrandConfig>, theme: Option<&ThemeConfig>) -> Result<Value, ConfigError> {
     let default = BrandConfig::default();
     let c = config.unwrap_or(&default);
-    let name = c.name.clone().unwrap_or_else(|| "Admin".to_owned());
-    if name.trim().is_empty() || name.chars().count() > 80 {
-        return err("brand.name must have 1 to 80 characters".into());
-    }
-    if let Some(logo) = &c.logo {
-        // The CSP allows images from this origin and from https only.
-        if !url_ok(logo) || logo.starts_with("http://") {
-            return err(format!("brand.logo {logo:?} must be a path that starts with / or an https URL"));
+    let no_theme = ThemeConfig::default();
+    let t = theme.unwrap_or(&no_theme);
+    for (set, key) in [(c.name.is_some() && t.title.is_some(), "title"), (c.logo.is_some() && t.logo.is_some(), "logo"), (c.colors.contains_key("primary") && t.color.is_some(), "color")] {
+        if set {
+            let twin = match key {
+                "title" => "brand.name",
+                "logo" => "brand.logo",
+                _ => "brand.colors.primary",
+            };
+            return err(format!("theme.{key} and {twin} both set the same value: set one of them"));
         }
     }
-    for (key, value) in &c.colors {
+    let mut colors = c.colors.clone();
+    if let Some(color) = &t.color {
+        if !color_ok(color) {
+            return err(format!("theme.color {color:?} must be #rgb or #rrggbb"));
+        }
+        colors.insert("primary".to_owned(), color.clone());
+    }
+    let logo = t.logo.clone().or_else(|| c.logo.clone());
+    let name = t.title.clone().or_else(|| c.name.clone()).unwrap_or_else(|| "Admin".to_owned());
+    if name.trim().is_empty() || name.chars().count() > 80 {
+        return err(format!("{} must have 1 to 80 characters", if t.title.is_some() { "theme.title" } else { "brand.name" }));
+    }
+    if let Some(logo) = &logo {
+        // The CSP allows images from this origin and from https only.
+        if !url_ok(logo) || logo.starts_with("http://") {
+            let setting = if t.logo.is_some() { "theme.logo" } else { "brand.logo" };
+            return err(format!("{setting} {logo:?} must be a path that starts with / or an https URL"));
+        }
+    }
+    for (key, value) in &colors {
         if !matches!(key.as_str(), "primary" | "accent") {
             return err(format!("brand.colors has {key:?}, not one of primary, accent"));
         }
@@ -82,7 +113,7 @@ pub fn brand(config: Option<&BrandConfig>) -> Result<Value, ConfigError> {
     if c.environment.as_ref().is_some_and(|e| e.trim().is_empty() || e.chars().count() > 32) {
         return err("brand.environment must have 1 to 32 characters".into());
     }
-    Ok(json!({"name": name, "logo": c.logo, "colors": c.colors, "links": links, "environment": c.environment}))
+    Ok(json!({"name": name, "logo": logo, "colors": colors, "links": links, "environment": c.environment}))
 }
 
 /// `created_at` and `BlogPost` become `Created at` and `Blog post`; a `.` of a path becomes a space.

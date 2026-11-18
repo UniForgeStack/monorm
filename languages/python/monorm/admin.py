@@ -41,7 +41,7 @@ if TYPE_CHECKING:
     from .db import Database
     from .model import Registry
 
-__all__ = ["Admin", "AdminConfigError", "AdminResponse", "AdminTestClient", "AggregateColumn", "BrandConfig", "BrandLink", "ActionDef", "ComputedColumn", "Context", "InlineDef", "ListConfig", "NamedChoice", "NamedFilter", "Reply", "ResourceConfig", "RoleSeedReport", "RouteRequest", "Stream", "SyncReport", "action", "check", "download", "inline", "input", "log", "message", "redirect", "refresh", "register", "test_client", "threaded", "url"]
+__all__ = ["Admin", "AdminConfigError", "AdminResponse", "AdminTestClient", "AggregateColumn", "BrandConfig", "BrandLink", "ThemeConfig", "ActionDef", "ComputedColumn", "Context", "InlineDef", "ListConfig", "NamedChoice", "NamedFilter", "Reply", "ResourceConfig", "RoleSeedReport", "RouteRequest", "Stream", "SyncReport", "action", "check", "download", "inline", "input", "log", "message", "redirect", "refresh", "register", "test_client", "threaded", "url"]
 
 DEFAULT_BASE_PATH = "/admin"
 
@@ -135,6 +135,17 @@ class BrandConfig(TypedDict, total=False):
     """Links in the header."""
     environment: str
     """A short label such as ``staging``, shown in the header."""
+
+
+class ThemeConfig(TypedDict, total=False):
+    """The look of the UI in three values. Each one is the same value as a ``brand`` key; set it in one place only."""
+
+    title: str
+    """The name in the header and the page title (same as ``brand["name"]``)."""
+    logo: str
+    """The URL of the logo image: a path or an ``https`` URL."""
+    color: str
+    """The brand colour, ``#rgb`` or ``#rrggbb`` (same as ``brand["colors"]["primary"]``). The UI picks a readable text colour for it."""
 
 
 class SectionConfig(TypedDict, total=False):
@@ -327,6 +338,7 @@ def _form(name: str, form: Any) -> Any:
 _LIST_KEYS = {"columns", "order", "page_size", "sortable", "search", "search_with", "filters", "named_filters", "computed", "aggregates", "labels", "empty", "empty_fields", "tabs"}
 _RESOURCE_KEYS = {"list", "title", "group", "allow", "perms", "label", "field_permissions", "see", "change", "actions", "queryset", "can", "check_messages", "form", "readonly", "widgets", "form_component", "detail_tabs", "relations", "files", "create", "update", "delete", "inputs", "allow_protected_writes", "inlines", "bulk_delete"}
 _BRAND_KEYS = {"name", "logo", "colors", "links", "environment"}
+_THEME_KEYS = {"title", "logo", "color"}
 Strategy = Literal["page", "model", "access"]
 
 
@@ -904,7 +916,8 @@ class Admin:
     ``"model"`` (``add_``, ``change_``, ``delete_`` and ``view_``) or ``"access"`` (only ``admin.access``).
     ``label`` is the label of the names (``admin`` by default). ``roles`` maps a role name to pattern grants
     (``{"support": ["orders.*", "-shops.see_credential"]}``) that ``seed_roles`` writes to the auth tables.
-    ``brand`` sets the name, logo, colors, header links and environment label of the UI. ``groups`` is the order of the
+    ``brand`` sets the name, logo, colors, header links and environment label of the UI. ``theme`` sets the title, the logo and the
+    brand colour in one small dict (``{"title": "Acme", "logo": "/static/acme.svg", "color": "#0a7d5a"}``); it must not repeat a ``brand`` value. ``groups`` is the order of the
     navigation groups; a resource names one of them with ``group``. ``widgets`` maps a field (``"Book.title"``), a nested subfield (``"Geo.lat"``)
     or a type name (``"Text"``, ``"Status"``, a nested type) to a widget for every resource; a resource ``widgets`` entry wins at one level.
     ``statement_timeout`` is the time limit in seconds of each request's database statements (15 by default, 0 for none).
@@ -924,6 +937,7 @@ class Admin:
         label: str = "admin",
         roles: Mapping[str, Sequence[str]] | None = None,
         brand: BrandConfig | None = None,
+        theme: ThemeConfig | None = None,
         widgets: Mapping[str, str] | None = None,
         groups: Sequence[str] = (),
         statement_timeout: float = 15.0,
@@ -939,6 +953,9 @@ class Admin:
         if unknown := sorted(set(brand or {}) - _BRAND_KEYS):
             raise AdminConfigError(f"unknown brand option {unknown[0]!r}")
         self._brand = dict(brand) if brand else None
+        if unknown := sorted(set(theme or {}) - _THEME_KEYS):
+            raise AdminConfigError(f"unknown theme option {unknown[0]!r}")
+        self._theme = dict(theme) if theme else None
         self._widgets = _widgets(None, widgets) if widgets else None
         self._groups = list(groups)
         self._planned: tuple[object, _native.AdminSite] | None = None
@@ -1123,6 +1140,8 @@ class Admin:
             out["prefix"] = self.prefix
         if self._brand is not None:
             out["brand"] = self._brand
+        if self._theme is not None:
+            out["theme"] = self._theme
         if self._widgets:
             out["widgets"] = self._widgets
         if self._groups:

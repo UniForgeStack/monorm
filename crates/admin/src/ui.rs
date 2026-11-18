@@ -17,12 +17,12 @@ const BASE_PLACEHOLDER: &str = "__MONORM_BASE__";
 /// Scripts, styles, fonts and requests from this origin only. Images: this origin, `https:` (the brand logo) and `data:`.
 pub const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 
-/// The import map of a site with packages: a bare `import "react"` in a package module gets the React of the admin.
+/// The import map of a site with packages: a bare `import "react"` in a package module gets the React of the admin, and `import "monorm-admin/ui"` gets its kit.
 /// An inline script is blocked under `script-src 'self'`, so the policy of that page adds the hash of this exact text.
 /// `base` is the base path of the site, checked at `Site::build` to hold only characters that are safe in JSON and HTML.
 pub fn import_map(base: &str) -> String {
     format!(
-        r#"{{"imports":{{"react":"{base}/shared/react.js","react/jsx-runtime":"{base}/shared/jsx-runtime.js","react-dom":"{base}/shared/react-dom.js","react-dom/client":"{base}/shared/react-dom-client.js"}}}}"#
+        r#"{{"imports":{{"react":"{base}/shared/react.js","react/jsx-runtime":"{base}/shared/jsx-runtime.js","react-dom":"{base}/shared/react-dom.js","react-dom/client":"{base}/shared/react-dom-client.js","monorm-admin/ui":"{base}/shared/ui.js"}}}}"#
     )
 }
 

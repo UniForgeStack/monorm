@@ -19,7 +19,7 @@ mod builtin;
 
 use crate::form::FormConfig;
 use crate::key;
-use crate::meta::{self, BrandConfig};
+use crate::meta::{self, BrandConfig, ThemeConfig};
 use crate::permissions::{Op, Strategy};
 
 pub const DEFAULT_PAGE_SIZE: usize = 25;
@@ -71,6 +71,8 @@ struct Config {
     label: Option<String>,
     /// The name, logo, colors, header links and environment label of the UI.
     brand: Option<BrandConfig>,
+    /// The title, logo and brand colour of the UI: the short form of `brand`.
+    theme: Option<ThemeConfig>,
     /// The navigation groups in order. A resource with a `group` must name one of them.
     #[serde(default)]
     groups: Vec<String>,
@@ -743,6 +745,10 @@ impl Site {
                 return err(format!("groups: {g:?} is empty or listed twice"));
             }
         }
+        // The built-in pages bring their group: a site that lists its groups need not list this one.
+        if !groups.is_empty() && !groups.iter().any(|g| g == builtin::GROUP) && resources.iter().any(|r| r.group.as_deref() == Some(builtin::GROUP)) {
+            groups.push(builtin::GROUP.to_owned());
+        }
         for r in &resources {
             match (&r.group, groups.is_empty()) {
                 (Some(g), false) if !groups.contains(g) => return err(format!("{}: group {g:?} is not in groups", r.name)),
@@ -786,7 +792,7 @@ impl Site {
             r.bound = crate::sight::bound_names(r);
             r.meta = meta::resource(&schema, r, &meta_builds);
         }
-        let brand = meta::brand(config.brand.as_ref())?;
+        let brand = meta::brand(config.brand.as_ref(), config.theme.as_ref())?;
         let statement_timeout = match config.statement_timeout_ms.unwrap_or(DEFAULT_STATEMENT_TIMEOUT_MS) {
             ms if ms > MAX_STATEMENT_TIMEOUT_MS => return err(format!("statement_timeout_ms is {ms}, at most {MAX_STATEMENT_TIMEOUT_MS}")),
             0 => None,

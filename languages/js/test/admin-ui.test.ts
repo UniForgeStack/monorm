@@ -69,6 +69,19 @@ test("brand, groups, titles and nav reach the resources route", () => world(asyn
   assert.equal(titles["UiAuthor"], "Writers");
 }));
 
+test("a theme is the short form of the brand and a value in both is refused", () => world(async ({ registry, classes, db }) => {
+  const site = new Admin(registry, { theme: { title: "Acme", logo: "/static/acme.svg", color: "#0a7d5a" } });
+  site.register(classes["UiAuthor"]);
+  const brand = (await site.testClient(db, { user: SU }).get("/admin/api/resources")).json().brand;
+  assert.equal(brand.name, "Acme");
+  assert.equal(brand.logo, "/static/acme.svg");
+  assert.equal(brand.colors.primary, "#0a7d5a");
+  const clash = new Admin(registry, { brand: { name: "Other" }, theme: { title: "Acme" } });
+  clash.register(classes["UiAuthor"]);
+  assert.throws(() => clash.check(), (e: Error) => e instanceof AdminConfigError && e.message.includes("theme.title"));
+  assert.throws(() => new Admin(registry, { theme: { shade: "x" } as Loose }), (e: Error) => e instanceof AdminConfigError && e.message.includes("shade"));
+}));
+
 test("an unknown brand key is refused", () => world(async ({ registry }) => {
   assert.throws(() => new Admin(registry, { brand: { nope: "x" } as Loose }), (e: Error) => e instanceof AdminConfigError && e.message.includes("nope"));
 }));

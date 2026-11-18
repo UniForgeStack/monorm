@@ -69,6 +69,22 @@ async def test_brand_groups_titles_and_nav_reach_the_resources_route(world):
     assert titles["UiAuthor"] == "Writers"
 
 
+async def test_a_theme_is_the_short_form_of_the_brand_and_a_value_in_both_is_refused(world):
+    registry, classes, db = world
+    site = admin.Admin(registry, theme={"title": "Acme", "logo": "/static/acme.svg", "color": "#0a7d5a"})
+    site.register(classes["UiAuthor"])
+    brand = (await site.test_client(db, user=SU).get("/admin/api/resources")).json()["brand"]
+    assert brand["name"] == "Acme"
+    assert brand["logo"] == "/static/acme.svg"
+    assert brand["colors"]["primary"] == "#0a7d5a"
+    clash = admin.Admin(registry, brand={"name": "Other"}, theme={"title": "Acme"})
+    clash.register(classes["UiAuthor"])
+    with pytest.raises(admin.AdminConfigError, match="theme.title"):
+        clash.check()
+    with pytest.raises(admin.AdminConfigError, match="shade"):
+        admin.Admin(registry, theme={"shade": "x"})  # type: ignore[typeddict-unknown-key]
+
+
 def test_an_unknown_brand_key_is_refused(world):
     registry, _, _ = world
     with pytest.raises(admin.AdminConfigError, match="nope"):

@@ -1197,6 +1197,8 @@ admin.package("rating", new URL("./rating/", import.meta.url).pathname, { widget
 - **Names.** `widgets`, `forms` and `tabs` map a short name to a file of the directory. Outside the package, the name is `<package>.<name>`. A name of a missing file, of a path with `..`, or of a package that is added twice is a build error.
 - **Styles.** `styles` lists `.css` files. The page loads them with the first widget of the package, as `<link>` elements of the same origin, so `style-src 'self'` stays the same.
 - **One React.** A page with packages carries an import map in `<head>`, so `import "react"`, `"react-dom"`, `"react-dom/client"` and `"react/jsx-runtime"` in a module resolve to the React of the admin. The map is an inline script, and `script-src` allows it by its `sha256` hash. A site without packages has no map and the plain policy. Do not bundle a second React.
+- **The kit.** The same map has `monorm-admin/ui`: `import { Button, Card, Badge, toast, Star } from "monorm-admin/ui"` gives a module the admin's own components. They are `Button`, `Input`, `Textarea`, `Select`, `Label`, `Badge`, `Card` (with `CardHeader`, `CardTitle`, `CardDescription`, `CardContent`, `CardFooter`), `Tabs`, `Table`, `Dialog`, `toast`, `cn` and a set of `lucide` icons. A package needs no CSS build for them, and its own CSS file can use the theme variables (`var(--primary)`, `var(--border)`).
+The admin does not scan the CSS or the code of a package for Tailwind classes, so a class that only the package uses has no style: write a CSS file that uses the variables. The contract version stays 1: a package that does not import the kit works as before. `examples/admin-package` uses it.
 - **The policy.** The rest of the policy does not change: `default-src 'none'`, `script-src 'self'` (and the one hash), `frame-ancestors 'none'` and the `X-Frame-Options` header. A package gets no frame and no inline script.
 - **Trust.** A package module is code that every staff user of the admin runs: add only packages that you wrote or reviewed.
 - **The form module.** A form module that exports `adminMajor` is a plain default component with the props of [Custom form component](#custom-form-component). A module without `adminMajor` is the older form: a default function from React to a component, and it works as before.
@@ -1245,7 +1247,8 @@ The UI path is the `base_path` setting, and the page paths below show the defaul
 
 | Path | Page |
 |---|---|
-| `/admin/-/login`, `/admin/-/password` | Sign in, and change the password. Logout is in the header menu. |
+| `/admin` | The home page: a card for each navigation group with its pages, and the last 10 audit-log rows that the user may see (only when the user may read `AdminLogEntry`). |
+| `/admin/-/login`, `/admin/-/password` | Sign in, and change the password. Sign out, the theme and the time zone are in the user menu of the header. |
 | `/admin/{resource}` | The list. The first column links to the record. Search, filters, sort, page and page size are in the query string, so a reload, a link and the back button return to the same view. |
 | `/admin/{resource}/{key}` | The record: its fields, a link for each to-one relation, and a tab for each to-many relation (`?tab={relation}`). It has Edit and Delete. |
 | `/admin/{resource}/-/new`, `/admin/{resource}/{key}/edit` | The forms: see [Forms in the UI](#forms-in-the-ui). |
@@ -1262,32 +1265,47 @@ To build the app, run `npm install && npm run build` in `crates/admin/ui` and co
 `npm run size` prints the first-load size against the budget of 300 KB gzip.
 CI rebuilds the app and fails when the committed `dist` differs (Node 24).
 
-### Brand, groups and titles
+### Theme, brand, groups and titles
+
+The UI is built on a kit (Tailwind CSS and Radix primitives) with CSS variables for light and dark.
+Dark follows the system. The user menu has a Light, Dark and System switch that the browser keeps in `localStorage`.
+A site changes the look with `theme`, and needs no CSS build.
+
+`theme` sets the title, the logo and the brand colour in one small object.
+`title` is the name in the header and the page title, `logo` is a path that starts with `/` or an `https` URL (the CSP allows no other image source), and `color` is `#rgb` or `#rrggbb`.
+The UI derives a readable text colour for the brand colour, in light and in dark.
+`theme.title`, `theme.logo` and `theme.color` are the short form of `brand.name`, `brand.logo` and `brand.colors.primary`.
+A value that is set in both is a config error that names both settings. An unknown theme key is an error too.
 
 `brand` sets the name, logo, colors, header links and environment label.
-The logo is a path that starts with `/`, or an `https` URL (the CSP allows no other image source).
+`colors.primary` is the brand colour. `colors.accent` tints the surface of a hovered or selected item, in light and in dark, and keeps the text on it readable.
 `groups` is the order of the navigation groups.
 A resource names its group with `group`, and its title with `title`.
 A group that `groups` does not list is an error, and so is an unknown brand key.
+The built-in pages (the audit log, users, roles and permissions) sit in the group "Users and access", which the admin adds at the end of `groups`.
+A page that the config puts in another group keeps that group.
+A resource of yours may name "Users and access" on purpose: it then shares the group with the built-in pages, with no message.
 The metadata is built once per process.
 
 ```python
 admin = Admin(
-    brand={"name": "Acme", "logo": "/static/logo.svg", "colors": {"primary": "#0b5fff"},
-           "links": [{"label": "Site", "url": "https://acme.example"}], "environment": "staging"},
-    groups=["Content", "Access"],
+    theme={"title": "Acme", "logo": "/static/logo.svg", "color": "#0b5fff"},
+    brand={"links": [{"label": "Site", "url": "https://acme.example"}], "environment": "staging"},
+    groups=["Content"],
 )
 admin.register(Post, {"group": "Content", "title": "Articles"})
 ```
 
 ```ts
 const admin = new Admin(registry, {
-  brand: { name: "Acme", environment: "staging" },
-  groups: ["Content", "Access"],
+  theme: { title: "Acme", logo: "/static/logo.svg", color: "#0b5fff" },
+  brand: { environment: "staging" },
+  groups: ["Content"],
 });
 admin.register(Post, { group: "Content", title: "Articles" });
 ```
 
+The sidebar lists the groups as sections that collapse, with a filter box. The header button hides the sidebar, and the UI keeps that choice.
 The sign-in page shows no brand, because the metadata route needs a session.
 
 ### `admin.url`

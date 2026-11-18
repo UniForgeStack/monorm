@@ -227,6 +227,29 @@ fn a_wrong_brand_or_group_is_a_config_error_that_names_the_setting() {
     assert!(build_error(json!({"resources": [{"model": "Author", "title": ""}]})).contains("title"));
 }
 
+#[test]
+fn a_theme_is_the_short_form_of_the_brand_and_a_value_in_both_is_a_config_error() {
+    let r = json!([{"model": "Author"}]);
+    let themed = site(json!({"theme": {"title": "Acme", "logo": "/static/acme.svg", "color": "#123456"}, "resources": r}));
+    assert_eq!(themed.brand["name"], "Acme");
+    assert_eq!(themed.brand["logo"], "/static/acme.svg");
+    assert_eq!(themed.brand["colors"]["primary"], "#123456");
+    let mixed = site(json!({"theme": {"color": "#123456"}, "brand": {"name": "Acme", "colors": {"accent": "#abcdef"}}, "resources": r}));
+    assert_eq!((mixed.brand["name"].as_str(), mixed.brand["colors"]["primary"].as_str(), mixed.brand["colors"]["accent"].as_str()), (Some("Acme"), Some("#123456"), Some("#abcdef")));
+    assert!(build_error(json!({"theme": {"color": "red"}, "resources": r})).contains("theme.color"));
+    assert!(build_error(json!({"theme": {"logo": "http://example.com/a.png"}, "resources": r})).contains("theme.logo"));
+    assert!(build_error(json!({"theme": {"title": " "}, "resources": r})).contains("theme.title"));
+    assert!(build_error(json!({"theme": {"shade": "x"}, "resources": r})).contains("shade"));
+    for (theme, brand, both) in [
+        (json!({"title": "A"}), json!({"name": "B"}), ("theme.title", "brand.name")),
+        (json!({"logo": "/a.svg"}), json!({"logo": "/b.svg"}), ("theme.logo", "brand.logo")),
+        (json!({"color": "#111111"}), json!({"colors": {"primary": "#222222"}}), ("theme.color", "brand.colors.primary")),
+    ] {
+        let e = build_error(json!({"theme": theme, "brand": brand, "resources": r}));
+        assert!(e.contains(both.0) && e.contains(both.1), "{e}");
+    }
+}
+
 fn served(site: Arc<Site>, conn: Arc<dyn Executor>) -> axum::Router {
     let mut options = Options::new(None);
     options.log = Logger::new(|_| {});
@@ -439,6 +462,7 @@ async fn the_import_map_and_its_csp_hash_appear_only_on_a_site_with_packages() {
     assert_eq!(status, 200);
     let map = body.split("<script type=\"importmap\">").nth(1).and_then(|s| s.split("</script>").next()).expect("an import map");
     assert!(map.contains("\"react\"") && map.contains("/admin/shared/react.js"), "{map}");
+    assert!(map.contains("\"monorm-admin/ui\"") && map.contains("/admin/shared/ui.js"), "{map}");
     assert!(body.find("importmap").unwrap() < body.find("type=\"module\"").unwrap(), "the map comes before the module script");
     let csp = headers["content-security-policy"].to_str().unwrap();
     let hash = {
@@ -475,7 +499,7 @@ async fn a_site_at_its_own_base_path_serves_the_page_assets_and_import_map_there
         assert!(body.contains("content=\"/bundler/admin/api\""), "{body}");
         assert!(body.contains("src=\"/bundler/admin/assets/") && !body.contains("=\"./") && !body.contains("=\"/admin"), "absolute assets, so a deep link loads them: {body}");
         let map = body.split("<script type=\"importmap\">").nth(1).and_then(|s| s.split("</script>").next()).expect("an import map");
-        assert!(map.contains("/bundler/admin/shared/react.js") && !map.contains("\"/admin/"), "{map}");
+        assert!(map.contains("/bundler/admin/shared/react.js") && map.contains("/bundler/admin/shared/ui.js") && !map.contains("\"/admin/"), "{map}");
         let hash = {
             use base64::Engine;
             use sha2::Digest;

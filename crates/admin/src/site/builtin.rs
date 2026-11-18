@@ -8,6 +8,9 @@ use serde_json::{json, Value};
 use super::{concrete, ResourceConfig};
 use crate::site::Queryset;
 
+/// The navigation group of the built-in pages (the audit log, the roles, the permissions and the users). A page that the config gives another group keeps it.
+pub(super) const GROUP: &str = "Users and access";
+
 /// What `apply` added that the build finishes after the routes exist.
 #[derive(Default)]
 pub(super) struct Added {
@@ -17,6 +20,10 @@ pub(super) struct Added {
 
 fn has(schema: &Schema, name: &str) -> bool {
     schema.model_idx(name).is_ok_and(|i| concrete(schema.model(i)))
+}
+
+fn grouped(config: &mut ResourceConfig) {
+    config.group.get_or_insert_with(|| GROUP.to_owned());
 }
 
 fn position(configs: &mut Vec<ResourceConfig>, model: &str) -> usize {
@@ -36,16 +43,19 @@ pub(super) fn apply(schema: &Schema, configs: &mut Vec<ResourceConfig>) -> Added
         let i = position(configs, "AdminLogEntry");
         configs[i].allow = Some(vec!["read".to_owned()]);
         configs[i].bulk_delete = false;
+        grouped(&mut configs[i]);
     }
     if !(has(schema, "Role") && has(schema, "Permission") && has(schema, "RolePermission")) {
         return added;
     }
     let p = position(configs, "Permission");
+    grouped(&mut configs[p]);
     if configs[p].list.search.is_none() {
         // `label` leads the unique index of the table, so it is the one search field that an index serves.
         configs[p].list.search = Some(vec!["label".to_owned()]);
     }
     let r = position(configs, "Role");
+    grouped(&mut configs[r]);
     if configs[r].list.search.is_none() {
         configs[r].list.search = Some(vec!["name".to_owned()]);
     }
@@ -77,12 +87,14 @@ fn membership(schema: &Schema, configs: &mut Vec<ResourceConfig>) {
         let picker_of = |field: &str| join.ir.relations.iter().find(|r| r.kind == RelKind::One && r.from == [field]).map(|r| r.name.clone());
         let user_name = m.ir.name.clone();
         let j = position(configs, &through.model);
+        grouped(&mut configs[j]);
         if let Some(name) = picker_of(&through.target) {
             configs[j].relations.entry(name).or_insert_with(|| crate::relations::picker("name", None));
         }
         let user_listed = configs.iter().any(|c| c.model == user_name);
         if let (Some(name), true) = (picker_of(&through.source), user_listed) {
             let u = position(configs, &user_name);
+            grouped(&mut configs[u]);
             if configs[u].list.search.is_none() {
                 configs[u].list.search = Some(vec!["username".to_owned()]);
             }

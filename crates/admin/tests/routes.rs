@@ -358,6 +358,27 @@ fn a_route_under_a_second_label_is_allowed_when_a_resource_uses_it() {
     assert!(site.permission_names().contains(&"shop.sync".to_owned()));
 }
 
+#[test]
+fn the_built_in_pages_sit_in_one_group_that_a_site_with_its_own_groups_need_not_list() {
+    let all = ["Note", "User", "Role", "Permission", "UserRole", "AdminLogEntry"];
+    let group_of = |site: &Site| {
+        let names: Vec<String> = site.resources.iter().filter(|r| r.group.as_deref() == Some("Users and access")).map(|r| r.name.clone()).collect();
+        names
+    };
+    let plain = Site::build(schema(), &json!({"resources": [{"model": "Note"}, {"model": "User"}]}).to_string()).unwrap();
+    let in_group = group_of(&plain);
+    assert!(in_group.contains(&"AdminLogEntry".to_owned()) && in_group.contains(&"Role".to_owned()) && in_group.contains(&"Permission".to_owned()) && in_group.contains(&"User".to_owned()), "{in_group:?}");
+    assert!(!in_group.contains(&"Note".to_owned()));
+    let nav = plain.nav(&all);
+    assert_eq!(nav[0]["group"], Value::Null);
+    assert_eq!(nav[1]["group"], "Users and access");
+    let own = Site::build(schema(), &json!({"groups": ["Content"], "resources": [{"model": "Note", "group": "Content"}, {"model": "User"}]}).to_string()).unwrap();
+    let nav = own.nav(&all);
+    assert_eq!((nav[0]["group"].as_str(), nav[1]["group"].as_str()), (Some("Content"), Some("Users and access")));
+    let moved = Site::build(schema(), &json!({"groups": ["Content"], "resources": [{"model": "Note", "group": "Content"}, {"model": "Role", "group": "Content"}]}).to_string()).unwrap();
+    assert_eq!(moved.resource("Role").unwrap().group.as_deref(), Some("Content"));
+}
+
 // The grants read is the only statement of a served route; a denial adds the audit write.
 const SERVED: usize = 1;
 const DENIED: usize = 2;
