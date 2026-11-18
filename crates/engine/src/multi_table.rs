@@ -467,6 +467,9 @@ pub struct Mutation {
     read: SelectStatement,
     table: String,
     key: FieldIr,
+    /// Where a delete goes: the model's own level, or the chain root for a hard delete (its foreign keys remove every level below it).
+    delete_table: String,
+    delete_key: FieldIr,
     key_position: usize,
     model: usize,
     types: Vec<ValueType>,
@@ -475,6 +478,8 @@ pub struct Mutation {
     assignments: Vec<Assignment>,
     returning: bool,
     delete: bool,
+    /// A hard delete: the root trigger of database mode can soft-delete a live row, so the delete may affect no row.
+    hard: bool,
 }
 
 impl Mutation {
@@ -490,7 +495,7 @@ impl Mutation {
                 statements.push(read());
             }
             let mut delete = Query::delete();
-            delete.from_table(Alias::new(&self.table)).and_where(Expr::col(Alias::new(&self.key.column)).eq(0));
+            delete.from_table(Alias::new(&self.delete_table)).and_where(Expr::col(Alias::new(&self.delete_key.column)).eq(0));
             statements.push(crate::inspect::statement(&delete.into_sub_query_statement(), true));
         } else {
             let mut writes = std::collections::BTreeMap::new();
@@ -575,6 +580,8 @@ fn mutation(
         read: read.stmt,
         table: logical.table().into(),
         key: logical.pk_field().clone(),
+        delete_table: logical.table().into(),
+        delete_key: logical.pk_field().clone(),
         key_position: logical.pk,
         model: model_idx,
         types: read.types,
@@ -583,6 +590,7 @@ fn mutation(
         assignments: vec![],
         returning,
         delete,
+        hard: false,
     })
 }
 
@@ -611,6 +619,13 @@ pub fn prepare_delete(
         query.without_root_filter,
         None,
     )?;
+    if query.hard {
+        plan.hard = true;
+        let owners = &schema.physical().models;
+        let root = owner_chain(schema, logical.owner).last().map_or(logical.owner, |link| link.parent);
+        plan.delete_table = owners[root.0].table().into();
+        plan.delete_key = owners[root.0].pk_field().clone();
+    }
     if let Some(rewrite) = rewrite {
         let owners = &schema.physical().models;
         let storage = logical.resolved_fields[rewrite.field].storage;
@@ -726,16 +741,23 @@ pub async fn run_mutation(conn: &dyn Executor, target: Target, plan: Mutation, o
         }
         // A deleted row is read before it goes.
         let before = if plan.delete && plan.returning { read_rows(exec, target, &plan, &keys, "deleted").await? } else { vec![] };
+        let mut removed = vec![false; keys.len()];
         for (row, key) in keys.iter().enumerate() {
             if plan.delete {
+                // A hard delete goes to the root row, and its foreign keys remove the other levels. In database
+                // mode the root trigger soft-deletes a live row, and the delete affects no row.
                 let mut delete = Query::delete();
-                delete.from_table(Alias::new(&plan.table)).and_where(
-                    Expr::col(Alias::new(&plan.key.column))
-                        .eq(plan::bind(key.clone(), Some(&plan.key))),
+                delete.from_table(Alias::new(&plan.delete_table)).and_where(
+                    Expr::col(Alias::new(&plan.delete_key.column))
+                        .eq(plan::bind(key.clone(), Some(&plan.delete_key))),
                 );
                 let (sql, args) = db::build(target.dialect, &delete);
-                if exec.execute(sql, args).await? != 1 {
-                    return Err(Error::query("captured multi-table identity disappeared"));
+                let count = exec.execute(sql, args).await?;
+                if count > 0 || !plan.hard {
+                    if count != 1 {
+                        return Err(Error::query("captured multi-table identity disappeared"));
+                    }
+                    removed[row] = true;
                 }
             } else {
                 let mut writes = std::collections::BTreeMap::new();
@@ -767,10 +789,15 @@ pub async fn run_mutation(conn: &dyn Executor, target: Target, plan: Mutation, o
                 }
             }
         }
+        let affected = if plan.delete { removed.iter().filter(|gone| **gone).count() } else { keys.len() };
         if !plan.returning {
-            return Ok(Outcome::Affected(keys.len() as u64));
+            return Ok(Outcome::Affected(affected as u64));
         }
-        let returned = if plan.delete { before } else { read_rows(exec, target, &plan, &keys, "updated").await? };
+        let returned = if plan.delete {
+            before.into_iter().zip(&removed).filter_map(|(rows, gone)| gone.then_some(rows)).collect()
+        } else {
+            read_rows(exec, target, &plan, &keys, "updated").await?
+        };
         Ok(Outcome::Rows {
             model: plan.model,
             types: plan.types,

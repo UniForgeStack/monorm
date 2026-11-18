@@ -80,11 +80,13 @@ Signatures: `Model.objects.attach(parent_id, values)` and `attach_many(items)` i
 - Column roles (`updated_at`, soft delete, version) live on the root. A change on any level bumps the root; a soft delete updates only the root. See [schema extensions](schema-extensions.md).
 - `update` takes a filter on local or inherited fields.
 - `delete` removes the child row. Parent rows and sibling children stay.
+  `hard_delete()` on a soft-delete model removes every level row of the matched rows, sibling children too, through any level model.
 - Generated modules have an `<Model>Attach` type for each composed model.
 
 ## Limits
 
 - `update_many` on a composed model is rejected.
+- `hard_delete()` runs one `DELETE` on the root row and relies on the `ON DELETE CASCADE` of each level key to remove the other levels, sibling levels included. A composition over tables made by hand or by Django (whose multi-table keys have no database cascade) needs that cascade added first.
 - `outer()` and `distinct(on=...)` on inherited columns raise `QueryError: ... requires an explicit owner projection`. Project the columns of the owner model.
 - Ordinary (not composed) model writes reject inherited storage.
 - The executor is `monorm_engine::multi_table`; [optional-packaging.md](../contracts/optional-packaging.md#logical-fields-and-physical-storage) describes the storage contract.

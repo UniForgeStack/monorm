@@ -149,7 +149,7 @@ model Book {
 * A composed model (`model-composition`) takes the roles on its root only.
   `@@timestamps.updated_at`, `@@soft_delete.deleted_at` and `@@locking.version` on a level below the root are a schema error that names the root.
   A change on any level bumps the root's `updated_at` and its version.
-  A soft delete updates only the root row and keeps every level row; `undelete()` restores the whole row; `hard_delete()` through the root model removes every level (in database mode a live row needs a second call, because the root trigger soft-deletes it first); through a child model it removes only that level.
+  A soft delete updates only the root row and keeps every level row; `undelete()` restores the whole row; `hard_delete()` through any level model (the root or a child) removes every level row of that row, sibling children too (in database mode a live row needs a second call, because the root trigger soft-deletes it first).
   In database mode the root has the triggers, and each level table below it has an `AFTER UPDATE` trigger `updated_at_<column>_root` that touches the root, so a raw update of a level table bumps `updated_at`; `skip_triggers("timestamps")` skips it.
   The version bump comes from the ORM in both modes; the touch trigger bumps `updated_at` only, so a raw update does not bump the version.
   A composed update or delete with a hook or expression assignment on a role is rejected.

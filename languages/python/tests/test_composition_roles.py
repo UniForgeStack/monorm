@@ -305,6 +305,72 @@ async def test_a_hard_delete_of_a_live_composed_row_removes_every_level(dialect,
 
 @pytest.mark.parametrize("dialect", DATABASES)
 @pytest.mark.parametrize("mode", ["database", "application"])
+async def test_a_query_set_hard_delete_through_a_child_model_removes_the_matched_rows_on_every_level(dialect, mode):
+    db, models = await connect(dialect, ROLES.format(mode=mode))
+    Manager, Employee = models["Manager"], models["Employee"]
+    try:
+        managers = Manager.objects.using(db)
+        await managers.insert_many([{"name": n, "salary": 1, "level": 1} for n in ("Alice", "Bob", "Carol")])
+        # In database mode the root trigger soft-deletes a live row, so the first hard delete counts 0; a second removes it.
+        alice = managers.filter(Manager.name == "Alice")
+        assert [await alice.hard_delete() for _ in range(2 if mode == "database" else 1)] == ([0, 1] if mode == "database" else [1])
+        assert [await rows(db, t) for t in TABLES] == [2, 2, 2]
+        # A middle level removes the levels above and below it too; returning lists only the removed rows.
+        bob = Employee.objects.using(db).filter(Employee.name == "Bob")
+        returned = [[e.name for e in await bob.hard_delete().returning()] for _ in range(2 if mode == "database" else 1)]
+        assert returned == ([[], ["Bob"]] if mode == "database" else [["Bob"]])
+        assert [await rows(db, t) for t in TABLES] == [1, 1, 1]
+        assert [m.name for m in await managers.all_with_deleted()] == ["Carol"]
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@pytest.mark.parametrize("dialect", DATABASES)
+@pytest.mark.parametrize("mode", ["database", "application"])
+async def test_a_hard_delete_through_a_child_model_removes_the_sibling_branch_too(dialect, mode):
+    customer = """
+model Customer {
+ points Int
+ @@composition.model(parent: "Person", parentRef: "person", childRef: "customer")
+ @@map("comproles_customers")
+}
+"""
+    db, models = await connect(dialect, ROLES.format(mode=mode) + customer)
+    Manager, Customer = models["Manager"], models["Customer"]
+    try:
+        managers = Manager.objects.using(db)
+        alice, _ = await managers.insert_many([{"name": "Alice", "salary": 1, "level": 1}, {"name": "Bob", "salary": 2, "level": 2}]).returning()
+        await Customer.objects.using(db).attach(alice.id, {"points": 5})
+        assert [await rows(db, t) for t in (*TABLES, "comproles_customers")] == [2, 2, 2, 1]
+        for _ in range(2 if mode == "database" else 1):
+            await managers.filter(Manager.name == "Alice").hard_delete()
+        assert [await rows(db, t) for t in (*TABLES, "comproles_customers")] == [1, 1, 1, 0]
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@pytest.mark.parametrize("dialect", DATABASES)
+@pytest.mark.parametrize("mode", ["database", "application"])
+async def test_an_instance_hard_delete_through_a_child_model_removes_every_level(dialect, mode):
+    db, models = await connect(dialect, ROLES.format(mode=mode))
+    Manager = models["Manager"]
+    try:
+        managers = Manager.objects.using(db)
+        alice = await managers.insert(name="Alice", salary=1, level=1)
+        await managers.insert(name="Bob", salary=2, level=2)
+        for _ in range(2 if mode == "database" else 1):
+            await alice.hard_delete()
+        assert [await rows(db, t) for t in TABLES] == [1, 1, 1]
+        assert [m.name for m in await managers.all_with_deleted()] == ["Bob"]
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@pytest.mark.parametrize("dialect", DATABASES)
+@pytest.mark.parametrize("mode", ["database", "application"])
 async def test_a_stale_write_through_a_child_model_raises_version_conflict(dialect, mode):
     db, models = await connect(dialect, ROLES.format(mode=mode))
     Manager = models["Manager"]

@@ -34,15 +34,17 @@ type Row = Record<string, any>; // eslint-disable-line @typescript-eslint/no-exp
 type Objects = {
   insert(values: Row): Promise<Row>;
   insertMany(rows: Row[], options?: Row): { returning(): Promise<Row[]> } & Promise<number>;
+  attach(parentId: unknown, values: Row): Promise<Row>;
   attachMany(items: [unknown, Row][]): Promise<Row[]>;
   count(): Promise<number>;
   get(...filters: unknown[]): Promise<Row>;
   filter(...filters: unknown[]): Objects;
   update(values: Row): Promise<number>;
   delete(): Promise<number>;
-  hardDelete(): Promise<number>;
+  hardDelete(): Promise<number> & { returning(): Promise<Row[]> };
   undelete(): Promise<number>;
   deletedOnly(): Objects;
+  allWithDeleted(): Objects;
   then: PromiseLike<Row[]>["then"];
 };
 
@@ -123,6 +125,67 @@ for (const dialect of DATABASES) {
         assert.deepEqual(await Promise.all(TABLES.map((t) => rows(db, t))), mode === "database" ? [2, 2, 2] : [1, 1, 1]);
         await objects("Person").filter(column("Person", "name").eq("Alice")).hardDelete();
         assert.deepEqual(await Promise.all(TABLES.map((t) => rows(db, t))), [1, 1, 1]);
+      } finally {
+        await db.dropTables();
+        await db.close();
+      }
+    });
+
+    test(`a query set hard delete through a child model removes the matched rows on every level (${dialect}, ${mode})`, { skip }, async () => {
+      const { db, objects, column } = await open(dialect, roles(mode));
+      try {
+        const managers = objects("Manager");
+        await managers.insertMany(["Alice", "Bob", "Carol"].map((name) => ({ name, salary: 1, level: 1 })));
+        // In database mode the root trigger soft-deletes a live row, so the first hard delete counts 0; a second removes it.
+        const counts: number[] = [];
+        for (let i = 0; i < (mode === "database" ? 2 : 1); i++) counts.push(await managers.filter(column("Manager", "name").eq("Alice")).hardDelete());
+        assert.deepEqual(counts, mode === "database" ? [0, 1] : [1]);
+        assert.deepEqual(await Promise.all(TABLES.map((t) => rows(db, t))), [2, 2, 2]);
+        // A middle level removes the levels above and below it too; returning lists only the removed rows.
+        const returned: unknown[][] = [];
+        for (let i = 0; i < (mode === "database" ? 2 : 1); i++) returned.push((await objects("Employee").filter(column("Employee", "name").eq("Bob")).hardDelete().returning()).map((e) => e["name"]));
+        assert.deepEqual(returned, mode === "database" ? [[], ["Bob"]] : [["Bob"]]);
+        assert.deepEqual(await Promise.all(TABLES.map((t) => rows(db, t))), [1, 1, 1]);
+        assert.deepEqual((await managers.allWithDeleted() as unknown as Row[]).map((m) => m["name"]), ["Carol"]);
+      } finally {
+        await db.dropTables();
+        await db.close();
+      }
+    });
+
+    test(`a hard delete through a child model removes the sibling branch too (${dialect}, ${mode})`, { skip }, async () => {
+      const customer = `
+model Customer {
+ points Int
+ @@composition.model(parent: "Person", parentRef: "person", childRef: "customer")
+ @@map("comproles_js_customers")
+}
+`;
+      const tables = [...TABLES, "comproles_js_customers"];
+      const { db, objects, column } = await open(dialect, roles(mode) + customer);
+      try {
+        const managers = objects("Manager");
+        const alice = await managers.insert({ name: "Alice", salary: 1, level: 1 });
+        await managers.insert({ name: "Bob", salary: 2, level: 2 });
+        await objects("Customer").attach(alice["id"], { points: 5 });
+        assert.deepEqual(await Promise.all(tables.map((t) => rows(db, t))), [2, 2, 2, 1]);
+        for (let i = 0; i < (mode === "database" ? 2 : 1); i++) await managers.filter(column("Manager", "name").eq("Alice")).hardDelete();
+        assert.deepEqual(await Promise.all(tables.map((t) => rows(db, t))), [1, 1, 1, 0]);
+      } finally {
+        await db.dropTables();
+        await db.close();
+      }
+    });
+
+    test(`an instance hard delete through a child model removes every level (${dialect}, ${mode})`, { skip }, async () => {
+      const { db, objects } = await open(dialect, roles(mode));
+      try {
+        const managers = objects("Manager");
+        const alice = await managers.insert({ name: "Alice", salary: 1, level: 1 });
+        await managers.insert({ name: "Bob", salary: 2, level: 2 });
+        for (let i = 0; i < (mode === "database" ? 2 : 1); i++) await alice["hardDelete"]();
+        assert.deepEqual(await Promise.all(TABLES.map((t) => rows(db, t))), [1, 1, 1]);
+        assert.deepEqual((await managers.allWithDeleted() as unknown as Row[]).map((m) => m["name"]), ["Bob"]);
       } finally {
         await db.dropTables();
         await db.close();
