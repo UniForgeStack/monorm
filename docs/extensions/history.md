@@ -3,7 +3,7 @@
 `@@history.track` writes one event for each insert, update and delete of a row.
 A database trigger writes the event, so raw SQL and other applications are tracked too.
 Each tracker adds an event model, for example `PostEvent` in the table `posts_events`.
-This page describes track mode.
+This page describes track mode, then [versions mode](#versions-mode-historyversions).
 
 ```prisma
 model Post {
@@ -68,7 +68,7 @@ await post.history.restore(timeline[0].event);
 await post.history.purge({ before: cutoff });
 ```
 
-`row.history` is the entry point. A model class has no typed `Model.history` member yet.
+`row.history` is the entry point. A model class has no typed `Model.history` member yet; `history(Model)` from `monorm/extensions/history` is the class-level entry, in track mode and in versions mode.
 A `BigInt` above 2^53 loses precision in `data`, because the event holds JSON that `JSON.parse` reads.
 `restore` refuses such an event with an error and does not write the wrong value.
 
@@ -83,6 +83,59 @@ If the row is gone, `restore` inserts it again, only when the tracker holds ever
 `row: old` trackers store the old row in an update event, so `restore` of such an event writes the old state, as the event says.
 It decodes dates, times, decimals, big integers and UUIDs from JSON by the field type, and ignores event fields that the model no longer has.
 
+## Versions mode: `@@history.versions`
+
+`@@history.versions(of: <field>, scope?: [...])` turns a model into the version table of an aggregate.
+The model is a user model, for example `BundleVersion`.
+`of` names the field that holds the id of the aggregate (it cannot be the primary key).
+The extension adds the columns `version_number`, `snapshot` (JSON), `content_hash`, `effective_at`, `change_type` (`create`, `update`, `delete`, `restore`), `restored_from` (the id of the restored version, a foreign key to the same table with `ON DELETE SET NULL`), `xact_id` and one column for each `scope` key.
+A unique index on (`of`, `version_number`) is the backstop of the numbering.
+A model cannot have both `@@history.versions` and `@@history.track`.
+
+```prisma
+model BundleVersion {
+  id        Int @id @default(autoincrement())
+  bundle_id Int
+  @@history.versions(of: bundle_id, scope: [user])
+}
+```
+
+You register two functions once for each model: `generate(entity)` gives the snapshot (a JSON object) and `restore(snapshot)` writes it back.
+Both can be sync or async.
+`restore` gets only the snapshot.
+The entity id is the entity itself when it is a plain value, and its `id` when it is an object or a dict.
+
+```python
+BundleVersion.history.register(generate=bundle_snapshot, restore=bundle_restore)
+
+await BundleVersion.history.record(bundle, "update")       # the version, or the latest one if nothing changed
+await BundleVersion.history.version_at(bundle, when)       # the last version at or before `when`, or None
+await BundleVersion.history.timeline(bundle, diff=True)    # [HistoryEntry(event, diff)] by version number
+await BundleVersion.history.restore(version)               # calls restore(snapshot), then writes a "restore" version
+```
+
+```ts
+import { history } from "monorm/extensions/history";
+
+history(BundleVersion).register({ generate: bundleSnapshot, restore: bundleRestore });
+await history(BundleVersion).record(bundle, "update");
+await history(BundleVersion).versionAt(bundle, when);
+await history(BundleVersion).timeline(bundle, { diff: true });
+await history(BundleVersion).restore(version);
+```
+
+`record` runs in one transaction.
+On PostgreSQL it takes a transaction lock for the table and the entity, so concurrent writers get distinct numbers.
+It writes the next number only when the content hash of the snapshot differs from the hash of the latest version.
+`delete` and `restore` versions are always written.
+A version after a `delete` is also always written, because the entity lives again.
+A `restore` version stores the restored snapshot and `restored_from`.
+If the `restore` function raises, no version is written.
+`record` rejects the change type `restore`: only `restore()` writes it.
+`at(entity, when)` is `version_at`.
+A version rolls back with the outer transaction.
+Scope values (`scope(user=...)`) and `xact_id` are stored on PostgreSQL and are `NULL` on SQLite.
+
 ## Scope
 
 `@@history.track(scope: [user])` stores the scope value `user` with each event.
@@ -95,6 +148,7 @@ with monorm.scope(user=request.user.id):
 
 On PostgreSQL the trigger reads the transaction setting `scope.user`; a statement without a value stores `NULL`.
 SQLite has no setting, so it stores `NULL`, and `scope(user=...)` is still accepted.
+A version model with `scope: [user]` stores the same value.
 History publishes every key that it names, so `scope()` accepts it without a `@@scope.by` that uses the key.
 
 ## Skip
@@ -107,4 +161,5 @@ SQLite has no skip: `skip_triggers("history")` raises `QueryError`.
 
 * SQLite has one trigger for each event kind and takes at most 500 tracked fields.
 * A backfill on a large table runs as one statement.
-* Versions mode (`@@history.versions`) is not in this release.
+* `pull` does not read history tables yet.
+* SQLite stamps `effective_at` with whole seconds, so `version_at` cannot tell two versions of one second apart.
