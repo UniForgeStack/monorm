@@ -127,6 +127,27 @@ test("sqlite generated columns pull back without drift", async () => {
   }
 });
 
+test("sqlite triggers pull back as trigger attributes without drift", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "monorm-triggers-sqlite-"));
+  const registry = new Registry();
+  loads('datasource db { provider = "sqlite" }\nmodel Keep { id Int @id }', { registry });
+  const db = await connect(`sqlite://${join(dir, "live.db")}`, { default: false, registry });
+  opened.push(db);
+  await db.execute("CREATE TABLE tr_posts (id INTEGER PRIMARY KEY, title TEXT NOT NULL, touched INTEGER NOT NULL DEFAULT 0)");
+  await db.execute(
+    'CREATE TRIGGER "tr_posts_touch_trigger" AFTER UPDATE OF "title" ON "tr_posts" FOR EACH ROW WHEN (old.title <> new.title) BEGIN\n' +
+      'UPDATE "tr_posts" SET "touched" = "touched" + 1 WHERE "id" = NEW."id";\nEND',
+  );
+  // a trigger in another form is a gap, not an attribute
+  await db.execute("CREATE TRIGGER other AFTER INSERT ON tr_posts BEGIN SELECT 1; END");
+  const pulled = await pull(db);
+  assert.ok(pulled.schema.includes('@@trigger(touch, after: [update], update_of: [title], when: "old.title <> new.title", body: '), pulled.schema);
+  assert.ok(!pulled.schema.includes("@@trigger(other"));
+  assert.ok(pulled.gaps.some((g) => g.startsWith("trigger other on tr_posts")));
+  assert.ok(!pulled.gaps.some((g) => g.startsWith("trigger tr_posts_touch_trigger")));
+  assert.deepEqual(pulled.differences, []);
+});
+
 test("sql views pull back without drift", async () => {
   const db = await connect(PULL_URL, { maxConnections: 2, default: false, registry: new Registry() });
   opened.push(db);

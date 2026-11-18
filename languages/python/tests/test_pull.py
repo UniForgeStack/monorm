@@ -233,6 +233,28 @@ async def test_sqlite_generated_columns_pull_back_without_drift(tmp_path):
             await db.close()
 
 
+async def test_sqlite_triggers_pull_back_as_trigger_attributes_without_drift(tmp_path):
+    registry = Registry()
+    monorm.loads('datasource db { provider = "sqlite" }\nmodel Keep { id Int @id }', registry=registry)
+    db = await monorm.connect(f"sqlite://{tmp_path / 'live.db'}", default=False, registry=registry)
+    try:
+        await db.execute("CREATE TABLE tr_posts (id INTEGER PRIMARY KEY, title TEXT NOT NULL, touched INTEGER NOT NULL DEFAULT 0)")
+        await db.execute(
+            'CREATE TRIGGER "tr_posts_touch_trigger" AFTER UPDATE OF "title" ON "tr_posts" FOR EACH ROW WHEN (old.title <> new.title) BEGIN\n'
+            'UPDATE "tr_posts" SET "touched" = "touched" + 1 WHERE "id" = NEW."id";\nEND'
+        )
+        # a trigger in another form is a gap, not an attribute
+        await db.execute("CREATE TRIGGER other AFTER INSERT ON tr_posts BEGIN SELECT 1; END")
+        pulled = await pull(db)
+        assert '@@trigger(touch, after: [update], update_of: [title], when: "old.title <> new.title", body: ' in pulled.schema
+        assert "@@trigger(other" not in pulled.schema
+        assert any(g.startswith("trigger other on tr_posts") for g in pulled.gaps)
+        assert not any(g.startswith("trigger tr_posts_touch_trigger") for g in pulled.gaps)
+        assert pulled.differences == []
+    finally:
+        await db.close()
+
+
 async def test_add_identity_refuses_a_column_that_owns_a_sequence_but_defaults_to_another(tmp_path):
     db = await fresh(
         "CREATE SEQUENCE other_seq; CREATE TABLE t_owns (id serial PRIMARY KEY); "

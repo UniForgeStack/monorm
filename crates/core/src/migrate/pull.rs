@@ -734,7 +734,10 @@ pub fn pull_with(db: &DbSchema, gaps: &[String], claimed: &[ClaimedRule], instal
             if let Some(w) = &tr.when {
                 args.push(format!("when: {}", quoted(w)));
             }
-            args.push(format!("function: {}", tr.function));
+            match (&tr.body, dialect) {
+                (Some(body), Dialect::Sqlite) => args.push(format!("body: {}", quoted(body))),
+                _ => args.push(format!("function: {}", tr.function)),
+            }
             if !tr.args.is_empty() {
                 args.push(format!("args: [{}]", tr.args.iter().map(|a| quoted(a)).collect::<Vec<_>>().join(", ")));
             }

@@ -51,7 +51,7 @@ fn index(t: &str, ix: &Index, idempotent: bool) -> String {
     sql
 }
 
-fn trigger(t: &str, tr: &Trigger, idempotent: bool) -> String {
+pub fn trigger(t: &str, tr: &Trigger, idempotent: bool) -> String {
     // Trigger names are global in SQLite; qualify the schema-local name by its table.
     let name = super::model::object_name(&[t, &tr.name, "trigger"]);
     let timing = match tr.timing { TriggerTiming::Before => "BEFORE", TriggerTiming::After => "AFTER", TriggerTiming::InsteadOf => "INSTEAD OF" };

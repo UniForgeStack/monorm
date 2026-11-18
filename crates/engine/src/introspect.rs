@@ -795,7 +795,7 @@ const LITE_INDEXES: &str = "SELECT coalesce(json_group_array(json_object('table'
                  FROM pragma_index_xinfo(i.name) c WHERE c.key = 1)))), '[]') \
      FROM sqlite_master m, pragma_index_list(m.name) i \
      WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%' AND m.name <> 'monorm_migrations'";
-const LITE_OTHERS: &str = "SELECT coalesce(json_group_array(json_object('name', name, 'table', tbl_name)), '[]') \
+const LITE_OTHERS: &str = "SELECT coalesce(json_group_array(json_object('name', name, 'table', tbl_name, 'sql', sql)), '[]') \
      FROM sqlite_master WHERE type = 'trigger'";
 
 /// `text` split at top-level commas (outside parentheses and quotes).
@@ -985,6 +985,58 @@ fn lite_view_body(sql: &str) -> Option<String> {
     Some(view_body(&sql[at + 2..])).filter(|b| !b.is_empty())
 }
 
+/// One identifier at the start of `s`: double-quoted (a doubled quote is one quote) or a bare word; and the rest.
+fn lite_ident(s: &str) -> Option<(String, &str)> {
+    let Some(body) = s.strip_prefix('"') else {
+        let end = s.find(|c: char| !(c.is_alphanumeric() || c == '_')).unwrap_or(s.len());
+        return (end > 0).then(|| (s[..end].to_owned(), &s[end..]));
+    };
+    let (mut name, mut chars) = (String::new(), body.char_indices().peekable());
+    while let Some((i, c)) = chars.next() {
+        match (c, chars.peek()) {
+            ('"', Some((_, '"'))) => { name.push('"'); chars.next(); }
+            ('"', _) => return Some((name, &body[i + 1..])),
+            _ => name.push(c),
+        }
+    }
+    None
+}
+
+/// A trigger from its `sqlite_master` text, when the text is what MonOrm writes for it (`migrate::sqlite::trigger`):
+/// the name has the form `<table>_<name>_trigger`, and the text is the same when it is written again from the parts.
+fn lite_trigger(sql: &str, table: &str, stored: &str) -> Option<Trigger> {
+    use monorm_core::migrate::model::object_name;
+    let name = stored.strip_prefix(table)?.strip_prefix('_')?.strip_suffix("_trigger")?;
+    if object_name(&[table, name, "trigger"]) != stored { return None; }
+    let rest = sql.strip_prefix("CREATE TRIGGER ")?;
+    let (_, rest) = lite_ident(rest)?;
+    let rest = rest.strip_prefix(' ')?;
+    let (timing, rest) = [("BEFORE ", TriggerTiming::Before), ("AFTER ", TriggerTiming::After), ("INSTEAD OF ", TriggerTiming::InsteadOf)]
+        .into_iter().find_map(|(w, t)| rest.strip_prefix(w).map(|r| (t, r)))?;
+    let (event, update_of, rest) = if let Some(mut r) = rest.strip_prefix("UPDATE OF ") {
+        let mut columns = vec![];
+        loop {
+            let (c, after) = lite_ident(r)?;
+            columns.push(c);
+            match after.strip_prefix(", ") { Some(more) => r = more, None => break (TriggerEvent::Update, columns, after) }
+        }
+    } else {
+        let (e, r) = [("INSERT", TriggerEvent::Insert), ("DELETE", TriggerEvent::Delete), ("UPDATE", TriggerEvent::Update)]
+            .into_iter().find_map(|(w, e)| rest.strip_prefix(w).map(|r| (e, r)))?;
+        (e, vec![], r)
+    };
+    let (on, rest) = lite_ident(rest.strip_prefix(" ON ")?)?;
+    if on != table { return None; }
+    let rest = rest.strip_prefix(" FOR EACH ROW")?;
+    let (when, rest) = match rest.strip_prefix(" WHEN (") {
+        Some(r) => { let end = r.find(") BEGIN\n")?; (Some(r[..end].to_owned()), &r[end + 1..]) }
+        None => (None, rest),
+    };
+    let body = rest.strip_prefix(" BEGIN\n")?.strip_suffix(";\nEND")?.to_owned();
+    let trigger = Trigger { name: name.to_owned(), timing, events: vec![event], update_of, for_each: ForEach::Row, when, function: object_name(&[table, name]), body: Some(body), args: vec![] };
+    (monorm_core::migrate::sqlite::trigger(table, &trigger, false) == sql).then_some(trigger)
+}
+
 fn lite_action(a: &str) -> Option<OnDelete> {
     match a.to_ascii_uppercase().as_str() {
         "CASCADE" => Some(OnDelete::Cascade),
@@ -1040,6 +1092,7 @@ async fn sqlite(conn: &dyn Executor) -> Result<Introspection> {
     struct Other {
         name: String,
         table: String,
+        sql: Option<String>,
     }
     let others: Vec<Other> = json(conn, LITE_OTHERS).await?;
 
@@ -1188,7 +1241,10 @@ async fn sqlite(conn: &dyn Executor) -> Result<Introspection> {
         out.schema.tables.push(t);
     }
     for o in others {
-        gaps.push(format!("trigger {} on {}: SQLite triggers are not read", o.name, o.table));
+        match out.schema.tables.iter_mut().find(|t| t.name == o.table).zip(o.sql.as_deref().and_then(|sql| lite_trigger(sql, &o.table, &o.name))) {
+            Some((t, trigger)) => t.triggers.push(trigger),
+            None => gaps.push(format!("trigger {} on {}: it is not in the form MonOrm writes; it is left out", o.name, o.table)),
+        }
     }
     for v in views {
         let Some(body) = v.sql.as_deref().and_then(lite_view_body) else {
@@ -1513,6 +1569,27 @@ mod tests {
         assert_eq!(keys[0].expr.as_deref(), Some("lower(a)"));
         assert_eq!(keys[1].collation.as_deref(), Some("NOCASE"));
         assert_eq!(w.as_deref(), Some("b > 0"));
+    }
+
+    #[test]
+    fn sqlite_trigger_text() {
+        use monorm_core::migrate::model::object_name;
+        let make = |name: &str, update_of: &[&str], when: Option<&str>| Trigger {
+            name: name.into(), timing: TriggerTiming::After, events: vec![TriggerEvent::Update], update_of: update_of.iter().map(|s| (*s).into()).collect(),
+            for_each: ForEach::Row, when: when.map(Into::into), function: object_name(&["t", name]), body: Some("UPDATE \"t\" SET \"a\" = 1".into()), args: vec![],
+        };
+        for tr in [make("touch", &[], None), make("touch", &["a", "we\"ird"], Some("old.a <> new.a"))] {
+            let sql = monorm_core::migrate::sqlite::trigger("t", &tr, false);
+            let stored = object_name(&["t", "touch", "trigger"]);
+            assert_eq!(lite_trigger(&sql, "t", &stored), Some(tr));
+        }
+        let tr = make("touch", &[], None);
+        let sql = monorm_core::migrate::sqlite::trigger("t", &tr, false);
+        // a trigger that another tool wrote, a name that is not `<table>_<name>_trigger`, and a table that differs, are left out
+        assert_eq!(lite_trigger("CREATE TRIGGER x AFTER INSERT ON t BEGIN SELECT 1; END", "t", "x"), None);
+        assert_eq!(lite_trigger(&sql, "t", "audit"), None);
+        assert_eq!(lite_trigger(&sql, "u", &object_name(&["u", "touch", "trigger"])), None);
+        assert_eq!(lite_trigger(&sql.replace("FOR EACH ROW", "FOR EACH ROW  "), "t", &object_name(&["t", "touch", "trigger"])), None);
     }
 
     #[test]
