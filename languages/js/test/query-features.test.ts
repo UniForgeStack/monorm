@@ -106,6 +106,18 @@ test("string functions and concatenation", async () => {
   assert.deepEqual((await Post.objects.filter(Post.title.concat("!").eq("a2!")).all()).map((p) => p.title), ["a2"]);
 });
 
+test("substr, split_part and random take expressions", async () => {
+  await seed();
+  const length = func.length(Post.title);
+  const row = await Post.objects.filter(Post.title.eq("b1")).select({
+    tail: func.substr(Post.title, length), head: func.substr(Post.title, 1, length.sub(1)),
+    second: func.splitPart(func.concat(Post.title, "-x-y"), "-", 2), byExpr: func.splitPart(func.concat(Post.title, "-x-y"), "-", length),
+  }).first();
+  assert.deepEqual(row, { tail: "1", head: "b", second: "x", byExpr: "x" });
+  const values = await Post.objects.select({ r: func.random() }).all();
+  assert.ok(values.length === 4 && values.every(({ r }) => r >= 0 && r <= 1));
+});
+
 test("outer() through relation paths", async () => {
   await seed();
   const others = Comment.objects.filter(Comment.postId.eq(outer(Post.id)), Comment.author.name.ne(outer(Post.author.name))).select({ n: func.count() }).asScalar();

@@ -331,6 +331,27 @@ async def test_string_functions_and_concatenation():
         await db.close()
 
 
+async def test_split_part_is_refused_and_random_and_substr_expressions_run():
+    from monorm import QueryError, func
+
+    registry, m = models(
+        'datasource db { provider = "sqlite" }\nmodel Note {\n  id BigInt @id @default(autoincrement())\n  title String\n}'
+    )
+    Note = m["Note"]
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
+    try:
+        await db.create_tables()
+        await Note.objects.using(db).insert_many([{"title": "abc"}, {"title": "de"}])
+        with pytest.raises(QueryError, match="sqlite does not support split_part"):
+            await Note.objects.using(db).select(func.split_part(Note.title, "-", 1)).scalars()
+        tails = await Note.objects.using(db).order_by(Note.id).select(func.substr(Note.title, func.length(Note.title))).scalars()
+        assert tails == ["c", "e"]
+        values = await Note.objects.using(db).select(func.random()).scalars()
+        assert len(values) == 2 and all(isinstance(v, float) and 0 <= v <= 1 for v in values)
+    finally:
+        await db.close()
+
+
 async def test_case_expression():
     from monorm import func
 

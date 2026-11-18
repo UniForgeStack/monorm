@@ -1153,11 +1153,31 @@ class _Functions:
         return Func("replace", (expr, old, new))
 
     def substr(
-        self, expr: Expression[str] | Expression[str | None], start: int, length: int | None = None
+        self,
+        expr: Expression[str] | Expression[str | None],
+        start: int | Expression[int] | Expression[int | None],
+        length: int | Expression[int] | Expression[int | None] | None = None,
     ) -> Func[str]:
         """The characters from the 1-based ``start`` (at least 1), ``length`` of them
-        (at least 0; default: all)."""
-        return Func("substr", (expr, _Int(start)) if length is None else (expr, _Int(start), _Int(length)))
+        (at least 0; default: all). A number below those bounds is refused; an expression
+        is not checked."""
+        args: tuple[Any, ...] = (expr, _Int(start) if isinstance(start, int) else start)
+        if length is not None:
+            args += (_Int(length) if isinstance(length, int) else length,)
+        return Func("substr", args)
+
+    def split_part(
+        self,
+        expr: Expression[str] | Expression[str | None],
+        delimiter: str | Expression[str] | Expression[str | None],
+        n: int | Expression[int] | Expression[int | None],
+    ) -> Func[str]:
+        """The ``n``-th (1-based) piece of ``expr`` split at ``delimiter``; PostgreSQL only."""
+        return Func("split_part", (expr, delimiter, _Int(n) if isinstance(n, int) else n))
+
+    def random(self) -> Func[float]:
+        """A random float from 0 up to 1, new for each row."""
+        return Func("random")
 
     def strpos(
         self, expr: Expression[str] | Expression[str | None], part: str | Expression[str] | Expression[str | None]
@@ -1537,11 +1557,11 @@ def _to_one(column: ColumnRef[Any]) -> bool:
     return to_one
 
 
-_NEVER_NULL = frozenset({"count", "now", "row_number", "rank", "dense_rank", "percent_rank", "cume_dist", "ntile"})
+_NEVER_NULL = frozenset({"count", "now", "random", "row_number", "rank", "dense_rank", "percent_rank", "cume_dist", "ntile"})
 _ALWAYS_NULLABLE = frozenset({"sum", "avg", "min", "max", "array_agg", "unnest", "lag", "lead", "first_value", "last_value", "nth_value"})
 _NULL_PRESERVING = frozenset(
     {
-        "lower", "upper", "length", "concat", "trim", "ltrim", "rtrim", "replace", "substr", "strpos", "cardinality",
+        "lower", "upper", "length", "concat", "trim", "ltrim", "rtrim", "replace", "substr", "split_part", "strpos", "cardinality",
         "abs", "to_tsvector", "to_tsquery", "plainto_tsquery", "websearch_to_tsquery", "ts_rank",
     }
 )  # fmt: skip

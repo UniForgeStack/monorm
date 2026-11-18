@@ -207,6 +207,26 @@ test("string functions and concatenation", async () => {
   } finally { await db.close(); }
 });
 
+test("split_part is refused and random and substr expressions run", async () => {
+  const registry = new Registry();
+  const Note = loads(`
+    datasource db { provider = "sqlite" }
+    model Note {
+      id BigInt @id @default(autoincrement())
+      title String
+    }`, { registry })["Note"] as any;
+  const db = await connect("sqlite://:memory:", { registry, default: false });
+  try {
+    await db.createTables();
+    await Note.objects.using(db).insertMany([{ title: "abc" }, { title: "de" }]);
+    await assert.rejects(async () => Note.objects.using(db).select({ p: func.splitPart(Note.title, "-", 1) }).all(), /sqlite does not support split_part/);
+    const tails = await Note.objects.using(db).orderBy(Note.id).select({ s: func.substr(Note.title, func.length(Note.title)) }).all();
+    assert.deepEqual(tails, [{ s: "c" }, { s: "e" }]);
+    const values = await Note.objects.using(db).select({ r: func.random() }).all();
+    assert.ok(values.length === 2 && values.every(({ r }: { r: number }) => typeof r === "number" && r >= 0 && r <= 1));
+  } finally { await db.close(); }
+});
+
 test("onConflict infers the partial unique index", async () => {
   const registry = new Registry();
   const Account = loads(`

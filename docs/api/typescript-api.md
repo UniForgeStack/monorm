@@ -270,7 +270,7 @@ A sibling test handles a comparison only in the shape the methods build: an `or`
 A computed value is nullable unless the ORM can prove it non-null.
 These are non-null: `count()`, `now()`, the ranking window functions, a `coalesce` with a non-null argument, a `case` with a default and non-null branches, a call of a function from the list below on non-null arguments, a literal, a `param()` and an object value of a nested field.
 These are nullable: `max()`, `min()`, `sum()`, `avg()`, `arrayAgg()`, `lag()`, `lead()`, a scalar subquery, a `case` without a default, an array index, a division, a function of a nullable argument, and a value over a to-one path.
-These functions return NULL only when an argument is NULL: `lower`, `upper`, `length`, `concat`, `trim`, `ltrim`, `rtrim`, `replace`, `substr`, `strpos`, `cardinality`, `abs`, the text search functions and `ts_rank`.
+These functions return NULL only when an argument is NULL: `lower`, `upper`, `length`, `concat`, `trim`, `ltrim`, `rtrim`, `replace`, `substr`, `splitPart`, `strpos`, `cardinality`, `abs`, the text search functions and `ts_rank`.
 Any other function or value is nullable.
 The strict rule and the methods run on a function, an aggregate, a window function, a scalar subquery and a `case` the way they run on a column:
 `func.max(Post.views).ne(3n)` throws in `having()`, and `func.lower(User.nick).ne("a").orNull()` keeps the rows where `nick` is NULL.
@@ -602,7 +602,7 @@ await Shop.objects.filter(...).update({ address: null });
 
 `select({ alias: expr | Model })` gives object rows typed per key. `func` has `count sum
 avg min max coalesce lower upper length abs now cardinality unnest concat trim ltrim rtrim
-replace substr strpos` plus the window functions. `func.concat(a, " ", b)` reads a `null`
+replace substr splitPart strpos random` plus the window functions. `func.concat(a, " ", b)` reads a `null`
 part as an empty string; `a.concat(b)` (`a || b`) is `null` when either side is `null`.
 `func.count(col, { distinct: true })` and `func.sum(col, { distinct: true })` count or add distinct values.
 `Profile.links.element(1)` is SQL's 1-based element access (`null` out of range), and

@@ -297,7 +297,7 @@ A sibling test handles a comparison only in the shape the methods build: an `|` 
 A computed value is nullable unless the ORM can prove it non-null.
 These are non-null: `count()`, `now()`, the ranking window functions, a `coalesce` with a non-null argument, `Case` with a default and non-null branches, a call of a function from the list below on non-null arguments, a literal, a `param()` and an object value of a nested field.
 These are nullable: `max()`, `min()`, `sum()`, `avg()`, `array_agg()`, `lag()`, `lead()`, a scalar subquery, a `Case` without a default, an array index, a division, a function of a nullable argument, and a value over a to-one path.
-These functions return NULL only when an argument is NULL: `lower`, `upper`, `length`, `concat`, `trim`, `ltrim`, `rtrim`, `replace`, `substr`, `strpos`, `cardinality`, `abs`, the text search functions and `ts_rank`.
+These functions return NULL only when an argument is NULL: `lower`, `upper`, `length`, `concat`, `trim`, `ltrim`, `rtrim`, `replace`, `substr`, `split_part`, `strpos`, `cardinality`, `abs`, the text search functions and `ts_rank`.
 Any other function or value is nullable.
 The strict rule and the methods run on a function, an aggregate, a window function, a scalar subquery and a `case()` the way they run on a column:
 `func.max(Post.views) != 3` raises in `having()`, and `(func.lower(User.nick) != "a").or_null()` keeps the rows where `nick` is NULL.
@@ -976,8 +976,8 @@ await User.objects.select(User.id).union(Comment.objects.select(Comment.author_i
   Selecting fewer columns is about twice as fast as building instances (1000 rows: 1.2 ms
   vs 2.3 ms here).
 * **Aggregates** are `func.count` / `sum` / `avg` / `min` / `max`; scalar functions are
-  `lower`, `upper`, `length`, `abs`, `coalesce`, `now`, and for strings `concat`, `trim`,
-  `ltrim`, `rtrim`, `replace`, `substr` (1-based start, optional length) and `strpos`
+  `lower`, `upper`, `length`, `abs`, `coalesce`, `now`, `random` (a float from 0 to 1 for each row), and for strings `concat`, `trim`,
+  `ltrim`, `rtrim`, `replace`, `substr` (1-based start, optional length; a number or an expression), `split_part` (PostgreSQL only) and `strpos`
   (1-based, 0 if absent; `INSTR` on SQLite). Over the model's own columns an
   aggregate summarizes the rows (of each `group_by()` group). Over a relation path it is
   computed **per row in a correlated subquery**: `func.count(User.posts)` is `(SELECT

@@ -390,12 +390,12 @@ fn fold(mut items: Vec<SExpr>, and: bool) -> SExpr {
 }
 
 const AGGREGATES: [&str; 6] = ["count", "sum", "avg", "min", "max", "array_agg"];
-const SCALAR_FUNCS: [&str; 16] = [
+const SCALAR_FUNCS: [&str; 18] = [
     "lower", "upper", "length", "abs", "coalesce", "now", "cardinality", "concat", "trim", "ltrim", "rtrim", "replace",
-    "substr", "strpos", "element", "unnest",
+    "substr", "strpos", "element", "unnest", "split_part", "random",
 ];
 /// Functions whose arguments are strings: their parameters bind as text.
-const TEXT_FUNCS: [&str; 7] = ["concat", "trim", "ltrim", "rtrim", "replace", "substr", "strpos"];
+const TEXT_FUNCS: [&str; 8] = ["concat", "trim", "ltrim", "rtrim", "replace", "substr", "strpos", "split_part"];
 /// Functions that only exist with `OVER (...)`.
 const WINDOW_FUNCS: [&str; 11] = [
     "row_number", "rank", "dense_rank", "percent_rank", "cume_dist", "ntile", "lag", "lead", "first_value",
@@ -2140,7 +2140,8 @@ impl<'s> Planner<'s> {
                         t => ValueType { array: true, ..t },
                     },
                     "length" | "ntile" | "cardinality" | "strpos" => scalar(ColType::Int),
-                    "lower" | "upper" | "concat" | "trim" | "ltrim" | "rtrim" | "replace" | "substr" => scalar(ColType::Text),
+                    "lower" | "upper" | "concat" | "trim" | "ltrim" | "rtrim" | "replace" | "substr" | "split_part" => scalar(ColType::Text),
+                    "random" => scalar(ColType::Float),
                     "element" | "unnest" if self.target.dialect == Dialect::Sqlite => {
                         return Err(Error::query("sqlite does not support array element access or unnest()"))
                     }
@@ -2352,6 +2353,9 @@ impl<'s> Planner<'s> {
         if self.target.dialect == Dialect::Sqlite && name == "cardinality" {
             return Err(Error::query("sqlite does not support cardinality()"));
         }
+        if self.target.dialect == Dialect::Sqlite && name == "split_part" {
+            return Err(Error::query("sqlite does not support split_part()"));
+        }
         // Below these bounds SQLite and Postgres give different results.
         let below = |i: usize, min: i64| matches!(args.get(i), Some(Expr::Int { value }) if *value < min);
         if name == "substr" && (below(1, 1) || below(2, 0)) {
@@ -2439,6 +2443,9 @@ impl<'s> Planner<'s> {
             },
             "unnest" => one("UNNEST($1)", planned)?,
             "now" if planned.is_empty() => SExpr::cust("CURRENT_TIMESTAMP"),
+            "split_part" if n == 3 => call("SPLIT_PART", planned)?,
+            // SQLite RANDOM() is a signed 64-bit integer: scale it to a float in [0, 1].
+            "random" if planned.is_empty() => SExpr::cust(if dialect == Dialect::Sqlite { "(RANDOM() / 18446744073709551616.0 + 0.5)" } else { "RANDOM()" }),
             "coalesce" if !planned.is_empty() => call("COALESCE", planned)?,
             "row_number" | "rank" | "dense_rank" | "percent_rank" | "cume_dist" if planned.is_empty() => {
                 SExpr::cust(format!("{}()", name.to_uppercase()))

@@ -475,10 +475,10 @@ export abstract class Condition<S extends string = never, P = {}> extends Expres
   }
 }
 
-const NEVER_NULL = new Set(["count", "now", "row_number", "rank", "dense_rank", "percent_rank", "cume_dist", "ntile"]);
+const NEVER_NULL = new Set(["count", "now", "random", "row_number", "rank", "dense_rank", "percent_rank", "cume_dist", "ntile"]);
 const ALWAYS_NULLABLE = new Set(["sum", "avg", "min", "max", "array_agg", "unnest", "lag", "lead", "first_value", "last_value", "nth_value"]);
 const NULL_PRESERVING = new Set([
-  "lower", "upper", "length", "concat", "trim", "ltrim", "rtrim", "replace", "substr", "strpos", "cardinality",
+  "lower", "upper", "length", "concat", "trim", "ltrim", "rtrim", "replace", "substr", "split_part", "strpos", "cardinality",
   "abs", "to_tsvector", "to_tsquery", "plainto_tsquery", "websearch_to_tsquery", "ts_rank",
 ]); // prettier-ignore
 export const AGGREGATES = new Set(["count", "sum", "avg", "min", "max", "array_agg"]);
@@ -1438,8 +1438,27 @@ class Functions {
   }
 
   /** The characters from the 1-based `start` (at least 1), `length` of them (at least 0; default: all). */
-  substr<T extends string | null, S extends string, P>(expr: AnyExpr<T, S, P>, start: number, length?: number): Func<T, S, P> {
-    return new Func("substr", length === undefined ? [expr, new Int(start)] : [expr, new Int(start), new Int(length)]);
+  substr<T extends string | null, S extends string, P, S2 extends string = never, P2 = {}, S3 extends string = never, P3 = {}>(
+    expr: AnyExpr<T, S, P>,
+    start: number | AnyExpr<number | null, S2, P2>,
+    length?: number | AnyExpr<number | null, S3, P3>,
+  ): Func<T, S | S2 | S3, P & P2 & P3> {
+    const num = (v: number | AnyExpr<number | null, any, any>) => (typeof v === "number" ? new Int(v) : v);
+    return new Func("substr", length === undefined ? [expr, num(start)] : [expr, num(start), num(length)]);
+  }
+
+  /** The `n`-th (1-based) piece of `expr` split at `delimiter`; PostgreSQL only. */
+  splitPart<T extends string | null, S extends string, P, S2 extends string = never, P2 = {}, S3 extends string = never, P3 = {}>(
+    expr: AnyExpr<T, S, P>,
+    delimiter: Operand<string, S2, P2>,
+    n: number | AnyExpr<number | null, S3, P3>,
+  ): Func<T, S | S2 | S3, P & P2 & P3> {
+    return new Func("split_part", [expr, wrap(delimiter), typeof n === "number" ? new Int(n) : n]);
+  }
+
+  /** A random number from 0 up to 1, new for each row. */
+  random(): Func<number> {
+    return new Func("random");
   }
 
   /** The 1-based position of the first `part` in `expr`, 0 if absent (`STRPOS`; `INSTR`

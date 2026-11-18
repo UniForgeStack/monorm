@@ -151,6 +151,24 @@ async def test_string_functions_and_concatenation(clean):
     assert await Post.objects.filter(Post.title == "b1").select(func.concat(Post.views, "!")).scalar() == "100!"
 
 
+async def test_substr_split_part_and_random_take_expressions(clean):
+    await seed()
+    length = func.length(Post.title)
+    row = (
+        await Post.objects.filter(Post.title == "b1")
+        .select(
+            func.substr(Post.title, length).label("tail"),
+            func.substr(Post.title, 1, length - 1).label("head"),
+            func.split_part(func.concat(Post.title, "-x-y"), "-", 2).label("second"),
+            func.split_part(func.concat(Post.title, "-x-y"), "-", length).label("by_expr"),
+        )
+        .first()
+    )
+    assert row is not None and tuple(row) == ("1", "b", "x", "x")
+    values = await Post.objects.select(func.random()).scalars()
+    assert len(values) == 4 and all(0 <= v <= 1 for v in values)
+
+
 async def test_case_with_a_null_first_branch(clean):
     await seed()
     rows = await Post.objects.order_by(Post.title).select(func.case((Post.views >= 50, None), default=1)).scalars()

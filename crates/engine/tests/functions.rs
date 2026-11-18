@@ -182,3 +182,17 @@ fn full_text_search() {
     let error = plan(Dialect::Sqlite, vec![col("id")], vec![matches]).unwrap_err();
     assert!(error.contains("sqlite does not support full-text search"), "{error}");
 }
+
+#[test]
+fn split_part_random_and_substr_with_expressions() {
+    let split = func("split_part", vec![col("title"), text("-"), json!({"t":"int","value":2})]);
+    assert_eq!(plan(Dialect::Postgres, vec![split.clone()], vec![]).unwrap(), r#"SELECT SPLIT_PART("notes"."title", $1, 2) FROM "notes""#);
+    let error = plan(Dialect::Sqlite, vec![split], vec![]).unwrap_err();
+    assert!(error.contains("sqlite does not support split_part()"), "{error}");
+    let random = || vec![func("random", vec![])];
+    assert_eq!(plan(Dialect::Postgres, random(), vec![]).unwrap(), r#"SELECT RANDOM() FROM "notes""#);
+    let sqlite = plan(Dialect::Sqlite, random(), vec![]).unwrap();
+    assert!(sqlite.contains("RANDOM() / 18446744073709551616.0"), "{sqlite}");
+    let substr = func("substr", vec![col("title"), func("length", vec![col("title")])]);
+    assert_eq!(plan(Dialect::Postgres, vec![substr], vec![]).unwrap(), r#"SELECT SUBSTR("notes"."title", LENGTH("notes"."title")) FROM "notes""#);
+}
