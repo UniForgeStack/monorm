@@ -1,6 +1,8 @@
 """A default filter is a schema expression: methods, a to-one path and a typed scope on both databases; a string filter still works."""
 
 import os
+import subprocess
+import sys
 
 import pytest
 
@@ -269,3 +271,100 @@ async def test_a_child_filter_extends_the_filter_of_its_parent():
             monorm.loads(PARENT.replace('@@query.parent("FxParent")', ""), registry=monorm.Registry())
     finally:
         await db.close()
+
+
+# (name, filter expression, ids that the filter keeps); every case runs on both databases.
+ROW_SHAPES = [
+    ("in", 'rank.in_([1, 4])', [1, 3]),
+    ("not_in", 'rank.not_in([1, 4])', [2, 4, 5]),
+    ("like_case", 'title.like("T%")', [4]),
+    ("like_lower", 'title.like("t%")', [1, 2, 3]),
+    ("ilike", 'title.ilike("T%")', [1, 2, 3, 4]),
+    ("function", 'lower(email) == "a@x.io"', [1, 4]),
+    ("arith", "rank * 2 > 7", [3, 5]),
+    ("enum", "status == ACTIVE", [1, 3, 5]),
+    ("enum_ne", "status != ACTIVE", [2, 4]),
+]
+ROW_SHAPE_ROWS = [
+    {"id": 1, "title": "tea", "rank": 1, "email": "A@x.io", "status": "ACTIVE"},
+    {"id": 2, "title": "toast", "rank": 2, "email": "b@x.io", "status": "ARCHIVED"},
+    {"id": 3, "title": "tart", "rank": 4, "email": "c@x.io", "status": "ACTIVE"},
+    {"id": 4, "title": "Tin", "rank": 3, "email": "a@x.io", "status": "ARCHIVED"},
+    {"id": 5, "title": "bun", "rank": 5, "email": "d@x.io", "status": "ACTIVE"},
+]
+
+
+def shape_source(provider):
+    models = "".join(
+        f'model FxShape_{name} {{\n  id Int @id\n  title String\n  rank Int\n  email String\n  status FxStatus\n  @@map("fx_shape_{name}")\n  @@query.filter("f", {expression})\n}}\n'
+        for name, expression, _ in ROW_SHAPES
+    )
+    return f'datasource db {{\n  provider = "{provider}"\n}}\nenum FxStatus {{\n  ACTIVE\n  ARCHIVED\n  @@storage(text)\n}}\n{models}'
+
+
+@pytest.fixture(params=["sqlite", "postgresql"])
+async def shapes(request):
+    provider = request.param
+    url = "sqlite://:memory:" if provider == "sqlite" else os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
+    registry = monorm.Registry()
+    models = monorm.loads(shape_source(provider), registry=registry)
+    try:
+        db = await monorm.connect(url, registry=registry, default=False)
+    except monorm.DatabaseError as e:
+        pytest.skip(f"{url} not reachable: {e}")
+    await db.drop_tables()
+    await db.create_tables()
+    for name, _, _ in ROW_SHAPES:
+        await models[f"FxShape_{name}"].objects.using(db).insert_many(ROW_SHAPE_ROWS)
+    yield db, models
+    await db.drop_tables()
+    await db.close()
+
+
+@pytest.mark.parametrize("name", [s[0] for s in ROW_SHAPES])
+async def test_each_filter_shape_keeps_the_same_rows_on_both_databases(shapes, name):
+    db, models = shapes
+    Model = models[f"FxShape_{name}"]
+    expected = next(kept for n, _, kept in ROW_SHAPES if n == name)
+    assert ids(await Model.objects.using(db).order_by(Model.id)) == expected
+
+
+# The string form and the native form of a filter give the same generated models (story 31).
+CONVERT = """model FxConvert {
+  id   Int @id
+  rank Int
+  @@query.defaults(filter: "rank > 1 and rank != 7", fields: ["id", "rank"], related: [])
+  @@query.filter("big", "rank > 1")
+}
+"""
+
+
+def run_cli(cwd, *args):
+    return subprocess.run([sys.executable, "-m", "monorm", *args], cwd=cwd, capture_output=True, text=True, env={**os.environ, "MONORM_DATABASE_URL": ""})
+
+
+@pytest.mark.skipif(not has_extension("monorm.query-defaults"), reason="requires the monorm.query-defaults package")
+def test_fmt_native_converts_string_filters_and_leaves_the_generated_models_unchanged(tmp_path):
+    schema = tmp_path / "schema.prisma"
+    schema.write_text("// keep me\n" + CONVERT)
+
+    def generated():
+        for language, target in (("python", "models.py"), ("typescript", "models.ts")):
+            done = run_cli(tmp_path, "--schema", str(schema), "generate", language, "-o", str(tmp_path / target))
+            assert done.returncode == 0, done.stderr
+        return (tmp_path / "models.py").read_text(), (tmp_path / "models.ts").read_text()
+
+    before = generated()
+    warned = run_cli(tmp_path, "check", "--schema", str(schema))
+    assert warned.returncode == 0, warned.stderr
+    assert warned.stderr.count("this filter is a string; write the expression:") == 2, warned.stderr
+    assert "schema.prisma:5:" in warned.stderr and "schema.prisma:6:" in warned.stderr
+    converted = run_cli(tmp_path, "fmt", "--native", "--schema", str(schema))
+    assert converted.returncode == 0, converted.stderr
+    text = schema.read_text()
+    assert text.startswith("// keep me\n")
+    assert '"rank > 1' not in text and "filter: (rank > 1) & (rank != 7)" in text and '@@query.filter("big", rank > 1)' in text
+    assert generated() == before
+    assert "warning" not in run_cli(tmp_path, "check", "--schema", str(schema)).stderr
+    again = run_cli(tmp_path, "fmt", "--native", "--schema", str(schema))
+    assert again.returncode == 0 and schema.read_text() == text

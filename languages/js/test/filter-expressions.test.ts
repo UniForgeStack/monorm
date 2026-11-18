@@ -1,8 +1,10 @@
 /** A default filter is a schema expression: methods, a to-one path and a typed scope on both databases; a string filter still works. */
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { connect, load, loads, QueryError, Registry, scope } from "../src/index.js";
 import { hasExtension } from "./artifact-caps.js";
@@ -261,5 +263,99 @@ test("a child filter extends the filter of its parent", { skip }, async () => {
     assert.throws(() => loads(parent.replace('@@query.parent("FxParent")', ""), { registry: new Registry() }), /parent\.default_filter has no inherited filter/);
   } finally {
     await db.close();
+  }
+});
+
+// (name, filter expression, ids that the filter keeps); every case runs on both databases.
+const SHAPES: [string, string, number[]][] = [
+  ["in", "rank.in_([1, 4])", [1, 3]],
+  ["not_in", "rank.not_in([1, 4])", [2, 4, 5]],
+  ["like_case", 'title.like("T%")', [4]],
+  ["like_lower", 'title.like("t%")', [1, 2, 3]],
+  ["ilike", 'title.ilike("T%")', [1, 2, 3, 4]],
+  ["function", 'lower(email) == "a@x.io"', [1, 4]],
+  ["arith", "rank * 2 > 7", [3, 5]],
+  ["enum", "status == ACTIVE", [1, 3, 5]],
+  ["enum_ne", "status != ACTIVE", [2, 4]],
+];
+const SHAPE_ROWS = [
+  { id: 1, title: "tea", rank: 1, email: "A@x.io", status: "ACTIVE" },
+  { id: 2, title: "toast", rank: 2, email: "b@x.io", status: "ARCHIVED" },
+  { id: 3, title: "tart", rank: 4, email: "c@x.io", status: "ACTIVE" },
+  { id: 4, title: "Tin", rank: 3, email: "a@x.io", status: "ARCHIVED" },
+  { id: 5, title: "bun", rank: 5, email: "d@x.io", status: "ACTIVE" },
+];
+
+function shapeSource(provider: string): string {
+  const models = SHAPES.map(
+    ([name, expression]) =>
+      `model FxShape_${name} {\n  id Int @id\n  title String\n  rank Int\n  email String\n  status FxStatus\n  @@map("fx_shape_${name}")\n  @@query.filter("f", ${expression})\n}\n`,
+  ).join("");
+  return `datasource db {\n  provider = "${provider}"\n}\nenum FxStatus {\n  ACTIVE\n  ARCHIVED\n  @@storage(text)\n}\n${models}`;
+}
+
+for (const provider of ["sqlite", "postgresql"]) {
+  const url = provider === "sqlite" ? "sqlite://:memory:" : (process.env["ORM_TEST_DATABASE_URL"] ?? "postgres://postgres:postgres@localhost/orm_test");
+  for (const [shape, , expected] of SHAPES) {
+    test(`each filter shape keeps the same rows on both databases (${provider}, ${shape})`, { skip }, async () => {
+      const registry = new Registry();
+      const models = loads(shapeSource(provider), { registry }) as Record<string, Any>;
+      const db = await connect(url, { registry, default: false });
+      try {
+        await db.dropTables();
+        await db.createTables();
+        await models[`FxShape_${shape}`].objects.using(db).insertMany(SHAPE_ROWS);
+        assert.deepEqual(ids(await models[`FxShape_${shape}`].objects.using(db).orderBy("id")), expected);
+      } finally {
+        await db.dropTables();
+        await db.close();
+      }
+    });
+  }
+}
+
+// The string form and the native form of a filter give the same generated models (story 31).
+const CONVERT = `model FxConvert {
+  id   Int @id
+  rank Int
+  @@query.defaults(filter: "rank > 1 and rank != 7", fields: ["id", "rank"], related: [])
+  @@query.filter("big", "rank > 1")
+}
+`;
+const CLI = [".js", ".ts"].map((ext) => fileURLToPath(new URL(`../src/cli${ext}`, import.meta.url))).find(existsSync)!;
+function cli(args: string[], cwd: string): { code: number; err: string } {
+  const r = spawnSync(process.execPath, [CLI, ...args], { cwd, encoding: "utf8", env: { ...process.env, MONORM_DATABASE_URL: "" } });
+  return { code: r.status ?? -1, err: r.stderr };
+}
+
+test("fmt native converts string filters and leaves the generated models unchanged", { skip }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "monorm-filter-convert-"));
+  try {
+    const schema = join(dir, "schema.prisma");
+    writeFileSync(schema, `// keep me\n${CONVERT}`);
+    const generated = () => {
+      for (const [language, target] of [["python", "models.py"], ["typescript", "models.ts"]]) {
+        const done = cli(["--schema", schema, "generate", language!, "-o", join(dir, target!)], dir);
+        assert.equal(done.code, 0, done.err);
+      }
+      return [readFileSync(join(dir, "models.py"), "utf8"), readFileSync(join(dir, "models.ts"), "utf8")];
+    };
+    const before = generated();
+    const warned = cli(["check", "--schema", schema], dir);
+    assert.equal(warned.code, 0, warned.err);
+    assert.equal(warned.err.split("this filter is a string; write the expression:").length - 1, 2, warned.err);
+    assert.match(warned.err, /schema\.prisma:5:/);
+    assert.match(warned.err, /schema\.prisma:6:/);
+    const converted = cli(["fmt", "--native", "--schema", schema], dir);
+    assert.equal(converted.code, 0, converted.err);
+    const text = readFileSync(schema, "utf8");
+    assert.ok(text.startsWith("// keep me\n"));
+    assert.ok(!text.includes('"rank > 1') && text.includes("filter: (rank > 1) & (rank != 7)") && text.includes('@@query.filter("big", rank > 1)'));
+    assert.deepEqual(generated(), before);
+    assert.ok(!cli(["check", "--schema", schema], dir).err.includes("warning"));
+    assert.equal(cli(["fmt", "--native", "--schema", schema], dir).code, 0);
+    assert.equal(readFileSync(schema, "utf8"), text);
+  } finally {
+    rmSync(dir, { recursive: true });
   }
 });
