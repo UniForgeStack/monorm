@@ -203,7 +203,10 @@ Source declarations use namespaced attributes, for example `name String @app.ren
 Names, arguments and source locations are preserved in schema requirements.
 Unknown namespaces request a rebuild; `@db.*` keeps its existing database meaning.
 
-A pass declares `id`, `phase`, `after`, and owned `effects` paths.
+A pass declares `id`, `phase`, `after`, owned `effects` paths, and `additive` paths.
+An effect in `effects` is exclusive: one pass owns it.
+An effect in `additive` adds entries to a per-model list, for example `behavior.read_defaults`: any number of passes may claim it, and the pass order sets the entry order.
+An additive claim still conflicts with an exclusive claim of the same, a parent or a child path.
 Phases run declaration, logical, storage, behavior, validation, generation.
 Ordering is stable;
 cycles, missing pass dependencies, duplicate IDs and overlapping effect ownership fail.

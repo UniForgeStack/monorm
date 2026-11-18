@@ -685,9 +685,13 @@ pub struct Pass {
     pub phase: Phase,
     #[serde(default)]
     pub after: Vec<String>,
-    /// Exclusive effects, e.g. `model.User.field.name.type`.
+    /// Exclusive effects, e.g. `model.User.field.name.type`: a pass sets one value, so no other pass may claim an overlapping effect.
     #[serde(default)]
     pub effects: Vec<String>,
+    /// Additive effects, e.g. `behavior.read_defaults`: a pass adds entries to a per-model list.
+    /// Any number of passes may claim one; the pass order (`phase`, `after`, pass id) orders the entries.
+    #[serde(default)]
+    pub additive: Vec<String>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]

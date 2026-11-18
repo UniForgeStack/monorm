@@ -9,6 +9,13 @@ pub struct Resolved {
     pub passes: Vec<Pass>,
 }
 
+/// One pass claims one effect path. Two additive claims of the same path do not conflict; any other overlap does.
+struct Claim<'a> {
+    effect: &'a String,
+    pass: &'a String,
+    additive: bool,
+}
+
 /// The DSL type names that no attribute can own: the scalar types and `Unsupported`.
 pub const RESERVED_TYPES: [&str; 10] = ["BigInt", "Int", "Float", "Boolean", "String", "DateTime", "Json", "Decimal", "Bytes", "Unsupported"];
 
@@ -20,7 +27,7 @@ pub fn resolve(mut manifests: Vec<Manifest>, check_language: &dyn Fn(&Manifest, 
     let mut field_types: BTreeMap<&str, &str> = BTreeMap::new();
     let mut exports = BTreeSet::new();
     let mut passes = BTreeMap::new();
-    let mut effects: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut effects: Vec<Claim> = vec![];
     for m in &manifests {
         m.check_contracts()?;
         if m.library.is_none() { return Err(format!("{}: a manifest needs `library`, the file name of the native library", m.id)); }
@@ -71,13 +78,15 @@ pub fn resolve(mut manifests: Vec<Manifest>, check_language: &dyn Fn(&Manifest, 
         }
         for p in &m.passes {
             if passes.insert(p.id.clone(), p.clone()).is_some() { return Err(format!("duplicate pass {}", p.id)); }
-            for effect in &p.effects {
-                for (existing, owner) in &effects {
-                    if *existing == effect || existing.starts_with(&format!("{effect}.")) || effect.starts_with(&format!("{existing}.")) {
+            let claims = p.effects.iter().map(|e| (e, false)).chain(p.additive.iter().map(|e| (e, true)));
+            for (effect, additive) in claims {
+                for Claim { effect: existing, pass: owner, additive: existing_additive } in &effects {
+                    let overlap = *existing == effect || existing.starts_with(&format!("{effect}.")) || effect.starts_with(&format!("{existing}."));
+                    if overlap && !(additive && *existing_additive && *existing == effect) {
                         return Err(format!("conflicting effect {effect} / {existing}: {owner} and {}; uninstall one of the extensions", p.id));
                     }
                 }
-                effects.insert(effect, &p.id);
+                effects.push(Claim { effect, pass: &p.id, additive });
             }
         }
     }
@@ -180,6 +189,34 @@ mod tests {
         assert!(resolve_all(vec![owner("acme.a", serde_json::json!({"name": "a.x", "target": "model", "no_table": true}))]).is_ok());
         let error = resolve_all(vec![owner("acme.a", serde_json::json!({"name": "a.x", "target": "field", "no_table": true}))]).unwrap_err();
         assert!(error.contains("acme.a") && error.contains("`no_table`") && error.contains("only a model attribute takes"), "{error}");
+    }
+
+    fn claiming(id: &str, effects: serde_json::Value, additive: serde_json::Value) -> Manifest {
+        library(serde_json::json!({"id": id, "passes": [{"id": format!("{id}.run"), "phase": "behavior", "effects": effects, "additive": additive}]}))
+    }
+
+    #[test]
+    fn an_additive_effect_takes_several_claims_and_an_exclusive_effect_takes_one() {
+        let add = |id: &str| claiming(id, serde_json::json!([]), serde_json::json!(["behavior.read_defaults"]));
+        let set = |id: &str, effect: &str| claiming(id, serde_json::json!([effect]), serde_json::json!([]));
+        // The order of the passes is by pass id, and `after` overrides it.
+        let order = |r: Resolved| r.passes.into_iter().map(|p| p.id).collect::<Vec<_>>();
+        assert_eq!(order(resolve_all(vec![add("acme.b"), add("acme.a"), add("acme.c")]).unwrap()), ["acme.a.run", "acme.b.run", "acme.c.run"]);
+        // `after` overrides the id order: `acme.a` waits for `acme.c`.
+        let mut late = add("acme.a");
+        late.passes[0].after = vec!["acme.c.run".into()];
+        assert_eq!(order(resolve_all(vec![late, add("acme.b"), add("acme.c")]).unwrap()), ["acme.b.run", "acme.c.run", "acme.a.run"]);
+        // An exclusive claim of the same effect, or of a parent or child path, conflicts with an additive one in both orders.
+        for exclusive in ["behavior.read_defaults", "behavior", "behavior.read_defaults.x"] {
+            for (first, second) in [(add("acme.a"), set("acme.b", exclusive)), (set("acme.a", exclusive), add("acme.b"))] {
+                let error = resolve_all(vec![first, second]).unwrap_err();
+                assert!(error.contains("conflicting effect") && error.contains("acme.a.run") && error.contains("acme.b.run"), "{exclusive}: {error}");
+            }
+        }
+        assert!(resolve_all(vec![set("acme.a", "behavior.x"), set("acme.b", "behavior.x")]).is_err());
+        // An additive claim of a parent path does not share with a child path.
+        let child = claiming("acme.b", serde_json::json!([]), serde_json::json!(["behavior.read_defaults.x"]));
+        assert!(resolve_all(vec![add("acme.a"), child]).is_err());
     }
 
     #[test]

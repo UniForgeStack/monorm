@@ -11,6 +11,7 @@ databases = ["postgres", "sqlite"]
 id = "query.defaults.lower"
 phase = "behavior"
 effects = ["query-defaults"]
+additive = ["behavior.read_defaults"]
 
 [[attributes]]
 name = "query.defaults"

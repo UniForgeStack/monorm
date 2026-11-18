@@ -10,7 +10,9 @@ databases = ["postgres", "sqlite"]
 [[passes]]
 id = "monorm.scope.prepare"
 phase = "behavior"
-effects = ["behavior.published_scope_keys", "behavior.read_defaults", "behavior.scoped_fields", "models.row_security", "storage.row_security"]
+effects = ["models.row_security", "storage.row_security"]
+# Lists that other extensions add to as well.
+additive = ["behavior.published_scope_keys", "behavior.read_defaults", "behavior.scoped_fields"]
 
 # `@@scope.by(shop: shop_id, mode: livemode)`: each name is a scope key, each value the field that holds it.
 [[attributes]]
