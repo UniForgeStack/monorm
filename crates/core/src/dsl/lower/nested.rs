@@ -444,6 +444,9 @@ pub(super) fn resolve_paths(b: &Attr, paths: &Paths, model: &str, dialect: Diale
     }
     // A UNIQUE constraint can't hold an expression; a unique index can.
     if expression && out.name == "unique" {
+        if let Some((_, p, _)) = out.args.named.iter().find(|(n, _, _)| n == "deferrable") {
+            return err(*p, format!("{model}: @@unique: a key on a json subfield becomes a unique index, and an index cannot be deferrable; use @storage(columns) or drop deferrable:"));
+        }
         out.name = "index".to_owned();
         out.args.named.push(("unique".to_owned(), b.pos, Value::Bool(true)));
         out.args.named_values.push(b.pos);

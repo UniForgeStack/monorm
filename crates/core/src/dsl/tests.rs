@@ -1879,3 +1879,12 @@ fn path_method_and_function_shapes_resolve_to_one_pinned_tree() {
     let (tree, _) = resolved_in(SHAPE_MODELS, "\"x\", a + 1 > 3").unwrap();
     assert_eq!(tree["l"]["t"], "arith", "{tree}");
 }
+
+#[test]
+fn a_deferrable_unique_on_a_json_subfield_is_refused_by_name() {
+    let json = NESTED.replace("address Address", "address Address @storage(json)");
+    let with = |args: &str| json.trim_end().trim_end_matches('}').to_owned() + &format!("  @@unique([address.city]{args})\n}}\n");
+    assert!(nested_sql(&with("")).contains("UNIQUE INDEX"));
+    let e = fails(&with(", deferrable: deferred"));
+    assert!(e.contains("@@unique: a key on a json subfield") && e.contains("cannot be deferrable"), "{e}");
+}
