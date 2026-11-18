@@ -36,7 +36,8 @@ type Objects = {
   filter(...filters: unknown[]): Objects;
   load(...items: unknown[]): Objects;
   update(values: Row): InspectedStatement<number>;
-  delete(): InspectedStatement<number>;
+  delete(): InspectedStatement<number> & { returning(): Promise<Row[]> };
+  insertMany(rows: Row[]): Promise<number>;
 };
 
 for (const provider of ["sqlite", "postgresql"]) {
@@ -84,12 +85,35 @@ for (const provider of ["sqlite", "postgresql"]) {
       const person = await objects(Person).load(field(Person, "employee"), field(Person, "customer")).get();
       assert.deepEqual([(person["employee"] as Row)["salary"], (person["customer"] as Row)["points"]], [20, 5]);
 
-      // Deleting a child keeps its parent and the sibling child.
+      // Deleting through a child removes every level, the sibling child too.
       const deletion = objects(Manager).filter(field(Manager, "id").eq(alice["id"])).delete();
       assert.equal(deletion.inspect().statementCount, 2);
       assert.equal(deletion.inspect().hasBatching, true);
       await deletion;
-      assert.deepEqual(await counts(Person, Employee, Manager, Customer), [1, 1, 0, 1]);
+      assert.deepEqual(await counts(Person, Employee, Manager, Customer), [0, 0, 0, 0]);
+    } finally {
+      await db.dropTables();
+      await db.close();
+    }
+  });
+  test(`a delete through a child model removes every level and counts like the root (${provider})`, { skip: !enabled || !url }, async () => {
+    const registry = new Registry();
+    const models = loads(`datasource db {\n provider = "${provider}"\n}\n${source}`, { registry });
+    const [Person, Employee, Manager] = ["Person", "Employee", "Manager"].map((name) => models[name]!);
+    const field = (model: unknown, name: string) => (model as Record<string, { eq(value: unknown): unknown }>)[name]!;
+    const db = await connect(url!, { registry, default: false });
+    const objects = (model: unknown) => (model as { objects: { using(db: unknown): Objects } }).objects.using(db);
+    await db.dropTables();
+    await db.createTables();
+    try {
+      await objects(Manager).insertMany([{ name: "Alice", salary: 1, level: 1 }, { name: "Bob", salary: 2, level: 2 }, { name: "Cy", salary: 3, level: 3 }, { name: "Dee", salary: 4, level: 4 }]);
+      assert.equal(await objects(Manager).filter(field(Manager, "name").eq("Alice")).delete(), 1);
+      const returned = await objects(Manager).filter(field(Manager, "name").eq("Bob")).delete().returning();
+      assert.deepEqual(returned.map((row) => row["name"]), ["Bob"]);
+      assert.equal(await objects(Person).filter(field(Person, "name").eq("Cy")).delete(), 1);
+      const rootReturned = await objects(Person).filter(field(Person, "name").eq("Dee")).delete().returning();
+      assert.deepEqual(rootReturned.map((row) => row["name"]), ["Dee"]);
+      assert.deepEqual(await Promise.all([Person, Employee, Manager].map((model) => objects(model).count())), [0, 0, 0]);
     } finally {
       await db.dropTables();
       await db.close();

@@ -83,13 +83,40 @@ async def test_composed_create_attach_update_and_delete(provider):
         person = await Person.objects.using(db).load(Person.employee, Person.customer).get()
         assert (person.employee.salary, person.customer.points) == (20, 5)
 
-        # Deleting a child keeps its parent and the sibling child.
+        # Deleting through a child removes every level, the sibling child too.
         delete = Manager.objects.using(db).filter(Manager.id == alice.id).delete()
         assert delete.inspect().statement_count == 2
         assert delete.inspect().has_batching
         await delete
         counts = [await m.objects.using(db).count() for m in (Person, Employee, Manager, Customer)]
-        assert counts == [1, 1, 0, 1]
+        assert counts == [0, 0, 0, 0]
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@pytest.mark.parametrize("provider", ["sqlite", "postgresql"])
+async def test_a_delete_through_a_child_model_removes_every_level_and_counts_like_the_root(provider):
+    url = "sqlite://:memory:" if provider == "sqlite" else os.environ.get("ORM_TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("set ORM_TEST_DATABASE_URL for PostgreSQL")
+    registry = monorm.Registry()
+    models = monorm.loads(f'datasource db {{\n provider = "{provider}"\n}}\n' + SOURCE, registry=registry)
+    Person, Employee, Manager = (models[k] for k in ("Person", "Employee", "Manager"))
+    db = await monorm.connect(url, registry=registry, default=False)
+    await db.drop_tables()
+    await db.create_tables()
+    try:
+        managers = Manager.objects.using(db)
+        await managers.insert_many([{"name": "Alice", "salary": 1, "level": 1}, {"name": "Bob", "salary": 2, "level": 2}, {"name": "Cy", "salary": 3, "level": 3}, {"name": "Dee", "salary": 4, "level": 4}])
+        assert await managers.filter(Manager.name == "Alice").delete() == 1
+        returned = await managers.filter(Manager.name == "Bob").delete().returning()
+        assert [m.name for m in returned] == ["Bob"]
+        people = Person.objects.using(db)
+        assert await people.filter(Person.name == "Cy").delete() == 1
+        returned = await people.filter(Person.name == "Dee").delete().returning()
+        assert [p.name for p in returned] == ["Dee"]
+        assert [await m.objects.using(db).count() for m in (Person, Employee, Manager)] == [0, 0, 0]
     finally:
         await db.drop_tables()
         await db.close()

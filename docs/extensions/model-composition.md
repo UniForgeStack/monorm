@@ -79,14 +79,16 @@ Signatures: `Model.objects.attach(parent_id, values)` and `attach_many(items)` i
 - `attach_many(items)` (TypeScript `attachMany`) takes `(parent_id, values)` pairs and inserts the child levels for existing parents with one multi-row `INSERT` for each level; it returns the rows in input order.
 - Column roles (`updated_at`, soft delete, version) live on the root. A change on any level bumps the root; a soft delete updates only the root. See [schema extensions](schema-extensions.md).
 - `update` takes a filter on local or inherited fields.
-- `delete` removes the child row. Parent rows and sibling children stay.
-  `hard_delete()` on a soft-delete model removes every level row of the matched rows, sibling children too, through any level model.
+- `delete` through any level model removes every level row of the matched rows, sibling children too, as Django does.
+  A model with soft delete keeps its soft delete: `delete()` marks the root row, and `hard_delete()` removes every level.
+  Breaking: before, `delete()` through a child model removed only that level and kept the parent and sibling rows. Code that relies on that must delete the child level with raw SQL.
+  Each level key needs `ON DELETE CASCADE` (see Limits).
 - Generated modules have an `<Model>Attach` type for each composed model.
 
 ## Limits
 
 - `update_many` on a composed model is rejected.
-- `hard_delete()` runs one `DELETE` on the root row and relies on the `ON DELETE CASCADE` of each level key to remove the other levels, sibling levels included. A composition over tables made by hand or by Django (whose multi-table keys have no database cascade) needs that cascade added first.
+- `delete()` (no soft delete) and `hard_delete()` run one `DELETE` on the root row and rely on the `ON DELETE CASCADE` of each level key to remove the other levels, sibling levels included. A composition over tables made by hand or by Django (whose multi-table keys have no database cascade) needs that cascade added first.
 - `outer()` and `distinct(on=...)` on inherited columns raise `QueryError: ... requires an explicit owner projection`. Project the columns of the owner model.
 - Ordinary (not composed) model writes reject inherited storage.
 - The executor is `monorm_engine::multi_table`; [optional-packaging.md](../contracts/optional-packaging.md#logical-fields-and-physical-storage) describes the storage contract.

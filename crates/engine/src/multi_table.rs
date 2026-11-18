@@ -467,7 +467,7 @@ pub struct Mutation {
     read: SelectStatement,
     table: String,
     key: FieldIr,
-    /// Where a delete goes: the model's own level, or the chain root for a hard delete (its foreign keys remove every level below it).
+    /// Where a delete goes: the chain root row, and its foreign keys remove every level below it.
     delete_table: String,
     delete_key: FieldIr,
     key_position: usize,
@@ -601,7 +601,7 @@ pub fn prepare_delete(
     params: &dyn crate::Params,
 ) -> Result<Mutation> {
     let logical = schema.model(schema.model_idx(&query.model).map_err(query_err)?);
-    // A delete rewrite of the root (a soft delete) updates only the root row; `hard` removes every level.
+    // A delete rewrite of the root (a soft delete) updates only the root row; any other delete removes every level.
     let rewrite = logical.delete_rewrite.as_ref().filter(|_| !query.hard);
     let mut filters = query.filters.clone();
     if let Some(rewrite) = rewrite { filters.push(rewrite.guard.clone()); }
@@ -619,8 +619,8 @@ pub fn prepare_delete(
         query.without_root_filter,
         None,
     )?;
-    if query.hard {
-        plan.hard = true;
+    if rewrite.is_none() {
+        plan.hard = query.hard;
         let owners = &schema.physical().models;
         let root = owner_chain(schema, logical.owner).last().map_or(logical.owner, |link| link.parent);
         plan.delete_table = owners[root.0].table().into();
