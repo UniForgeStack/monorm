@@ -522,6 +522,8 @@
 "languages/js/test/auth/password-breached.test.ts" = "The Python twin is in apps/auth/python/tests/test_password_breached.py"
 
 [typescript-only.ids]
+# languages/js/test/partial-instances.test.ts
+"partial_instances::delete_on_a_loaded_field_of_a_partial_instance_reads_undefined_like_a_whole_instance" = "one-language: TypeScript-only: Python has no `delete` of a property"
 # languages/js/test/app-imports.test.ts
 "app_imports::an_app_that_only_another_app_depends_on_resolves_in_pnpm_s_strict_layout" = "one-language: TypeScript-only: pnpm's strict node_modules layout"
 "app_imports::the_auth_app_comes_with_monorm_and_needs_no_install" = "add-py: app_imports::the_auth_app_comes_with_monorm_and_needs_no_install"

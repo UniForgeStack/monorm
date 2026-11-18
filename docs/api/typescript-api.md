@@ -403,6 +403,7 @@ A relation query set can lock (`load(User.posts.objects.lock())`) or select (`lo
 * Columns narrow the row type to the loaded fields: `load(Post.title)` gives `Omit<Post, ...>` with `title`, `pk` and the methods; a later `load(Post.views)` adds `views`, and `load()` without items gives whole rows again.
   `load(Post.author.name)` keeps whole posts and gives a partial `author`; `load(Post.author.name, Post.author)` gives a whole `author`. `load(User.posts.title)` gives partial posts in `u.posts.cached`.
   Reading an unloaded field is a type error, and past a cast it throws `NotLoaded`.
+  `delete row.title` on a loaded field removes its value, and the field then reads `undefined` (as on a whole instance); it is not `NotLoaded`.
 * `User.posts.objects` is the relation query set: `Post.objects` bound to `User.posts`.
   Use it inside `load()` (including instance loading and prefetching). Running it on its own, preparing it, writing through it, or using it in a projection, CTE or subquery raises `TypeError`; use `Post.objects` for standalone queries.
   A column or path through the relation combined with an unlabeled query set that filters, orders, slices or bypasses defaults raises `QueryError`: put the columns in the set's own `.load()`, or label the set to request a separate result. A plain set or one that only adds `.load()` can share the path.
