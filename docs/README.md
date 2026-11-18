@@ -34,11 +34,11 @@ Start with the runnable [quickstart](../examples/quickstart) (Python and TypeScr
 
 | Feature | Crate | Attributes | Doc |
 |---|---|---|---|
-| proxy-models | `extensions/proxy` (`monorm/extensions/proxy` on npm) | `@@proxy.of`, `@@proxy.fields` | [proxy-models.md](extensions/proxy-models.md) |
-| model-composition | `extensions/model-composition/` (`monorm/extensions/model-composition` on npm) | `@@composition.model` | [model-composition.md](extensions/model-composition.md) |
-| file-storage | `extensions/file-storage` (`monorm/extensions/file-storage` on npm) | `@storage.file` | [file-storage.md](extensions/file-storage.md) |
-| proto | `extensions/proto` (`monorm/extensions/proto` on npm) | `@proto.message` | [proto.md](extensions/proto.md) |
-| generic | `extensions/generic` (`monorm/extensions/generic` on npm) | `@generic.relation`, `@@generic.relation`, `@generic.reverse` | [generic-identities.md](schema/generic-identities.md) |
+| proxy-models | `extensions/proxy` (`monorm/extensions/proxy` on npm) | `@@proxy.of`, `@@proxy.fields`, `@@partition.values` | [proxy-models.md](extensions/proxy-models.md) |
+| model-composition | `extensions/model-composition/` (`monorm/extensions/model-composition` on npm) | `@@composition.model(parent:, parentRef:, childRef:)` | [model-composition.md](extensions/model-composition.md) |
+| file-storage | `extensions/file-storage` (`monorm/extensions/file-storage` on npm) | `@storage.file(storage:)` | [file-storage.md](extensions/file-storage.md) |
+| proto | `extensions/proto` (`monorm/extensions/proto` on npm) | `@proto.message("<full name>")` | [proto.md](extensions/proto.md) |
+| generic | `extensions/generic` (`monorm/extensions/generic` on npm) | `@generic.relation(targets:, type:, key:)`, `@@generic.relation`, `@generic.reverse` | [generic-identities.md](schema/generic-identities.md) |
 | timestamps | `extensions/timestamps` (`monorm/extensions/timestamps` on npm) | `@@timestamps.updated_at(name, mode:, upsert:)` | [schema-extensions.md](extensions/schema-extensions.md) |
 | soft-delete | `extensions/soft-delete` (`monorm/extensions/soft-delete` on npm) | `@@soft_delete.deleted_at(name, mode:)` | [schema-extensions.md](extensions/schema-extensions.md) |
 | locking | `extensions/locking` (`monorm/extensions/locking` on npm) | `@@locking.version(name, upsert:)` | [schema-extensions.md](extensions/schema-extensions.md) |

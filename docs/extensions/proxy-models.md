@@ -5,8 +5,9 @@ A proxy is a different logical view of one physical model.
 Default filters and default selection come from the `monorm.query-defaults` extension
 ([selection-and-defaults.md](../schema/selection-and-defaults.md)).
 
-**Enable:** nothing to install. The extension is built into the `monorm` Python wheel and the `monorm` npm package. The source is in `extensions/proxy`.
+**Enable:** nothing to install. The extension is built into the `monorm` Python wheel (module `monorm_proxy`) and the `monorm` npm package (`monorm/extensions/proxy`). The source is in `extensions/proxy`.
 See [optional-packaging.md](../contracts/optional-packaging.md#installable-packages).
+How it works and where the code is: [extensions/proxy/README.md](../../extensions/proxy/README.md).
 
 ```prisma
 enum Status {
@@ -123,8 +124,40 @@ can violate those hints. Strict validation requires a separately declared valida
 
 The proxy pass emits `model_views`, `result_checks` and `storage`, which the host reads.
 Its own data stays in `extension_data["monorm.proxy"]`.
+It asks the host for the `schema-transformations` and `physical-schema` capabilities.
 The host has no proxy feature and no proxy record.
 Without the installed package, `@@proxy.of` fails at definition with an unknown attribute.
+
+## Use
+
+A proxy is a model like any other: it has `objects`, filters and writes.
+Its reads and writes go to the table of the root model.
+
+```python
+import monorm
+
+models = monorm.loads(schema_text, registry=registry)
+User, ActiveUser = models["User"], models["ActiveUser"]
+db = await monorm.connect(url, registry=registry, default=False)
+await db.create_tables()                       # one table: user
+await User.objects.using(db).insert_many([{"id": 1, "name": None, "status": Status.OLD, "legacy_note": "x"},
+                                          {"id": 2, "name": "ok", "status": Status.ACTIVE}])
+rows = await ActiveUser.objects.using(db).order_by(ActiveUser.id)   # both rows; no filter is added
+row = await ActiveUser.objects.using(db).insert(id=3)               # name and status come from @client_default
+ActiveUser.legacy_note                         # AttributeError: the field is omitted
+```
+
+```ts
+const { User, ActiveUser } = loads(schemaText, { registry });
+const db = await connect(url, { registry, default: false });
+await db.createTables();
+await User.objects.using(db).insertMany([{ id: 1, name: null, status: "old", legacyNote: "x" }, { id: 2, name: "ok", status: "active" }]);
+const rows = await ActiveUser.objects.using(db).all();
+const row = await ActiveUser.objects.using(db).insert({ id: 3 });   // `legacyNote` is not in the type or the row
+```
+
+`create_tables` and `makemigrations` add no table for a proxy.
+`monorm pull` reads the database and writes only the tables, so a pulled schema has no proxy; declare the proxies again.
 
 ## Owning a list partition (PostgreSQL)
 
@@ -144,7 +177,7 @@ model FixedReward {
   @@proxy.fields(exclude: ["kind"])
   @@partition.values(["fixed"])
   @@map("reward_fixed")
-  @@check("amount IS NOT NULL AND amount >= 0")
+  @@check(raw("amount IS NOT NULL AND amount >= 0"))
   @@unique([amount])
 }
 ```
@@ -185,3 +218,45 @@ to the partition table, and PostgreSQL 16 does not give a partition the identity
 of its parent: the insert fails with a not-null error on the key. Reads, updates
 and deletes through the proxy, and all writes through the source model, work on
 PostgreSQL 16.
+
+## Errors
+
+The schema load fails with a message of this form:
+`extension monorm.proxy: pass monorm.proxy.lower: schema.prisma:5:2: @@proxy.fields: <text>`.
+The table lists the `<text>` of the main causes.
+
+| Message | Fix |
+|---|---|
+| `@@proxy.fields: requires include: or exclude:` | Give one list. |
+| `@@proxy.fields: include and exclude together; use one` | Use one of them. |
+| `@@proxy.fields: duplicate @@proxy.fields` | Write one `@@proxy.fields` on the model. |
+| `P: @@proxy.fields names x, which is not a field or relation of U` | Name a field or relation of the source. |
+| `P: @@proxy.fields names x twice` | List each name once. |
+| `P: duplicate proxy source` | A model has one `@@proxy.of`. |
+| `P: unknown proxy source U; define dependent schemas together` | Load the source model and the proxy in one schema set. |
+| `P: cyclic proxy source chain` | Remove the loop of `@@proxy.of`. |
+| `P: proxy relation overrides are unsupported; inherited relations retain their logical targets` | Do not redeclare a relation. |
+| `P.f: a redeclared field must be in the inherited set` | The field must exist in the source and not be omitted. |
+| `P.f: a proxy cannot add a stored field` | Declare a new column on the source. |
+| `P.f: proxy override changes physical type, encoding, identity or constraint; redeclare only nullability, an enum subset or @client_default` | Keep the type and the constraints of the source. |
+| `P: a proxy cannot declare @@protected_write; protect the root model U` | Move the attribute to the root model. |
+| `P.id: the primary key cannot be omitted` | Keep every key field. |
+| `P.b: a NOT NULL field without a database default cannot be omitted, because an insert through the proxy would fail` | Keep the field, or give the source field a default. |
+| `P: @@partition.values requires @@proxy.of` | Put `@@partition.values` on a proxy. |
+| `P: @@partition.values requires PostgreSQL` | A partition proxy needs PostgreSQL. |
+| `P: @@partition.values requires a source with one list key field` | The source needs `@@partition(list: [key])` with one key. |
+| `P: @@partition.values requires one nonempty literal list` | Write `@@partition.values(["a", "b"])`. |
+| `P: @@partition.values cannot own a partition of a proxy` | Put it on a proxy of the partitioned root model. |
+| `P: a multi-value partition must expose k` | Keep the key field in the proxy when it has several values. |
+| `P: duplicate @@partition.values` | A proxy has one `@@partition.values`. |
+
+A rule that an omitted field breaks (primary key, `NOT NULL` without a default, relation key) fails with the field name; see "Inherited fields".
+A warning, not an error, comes from `@@check("sql text")` with a plain string: write `raw("...")` to keep the text as SQL.
+
+## Limits
+
+- A proxy cannot add a stored field, change a type or a key, or override a relation.
+- A proxy has no `@@protected_write`; it uses the one of its root model.
+- A partition proxy needs PostgreSQL.
+  An insert through a partition proxy with a string key and no default partition fails on PostgreSQL when the value matches no partition (`no partition of relation "reward" found for row`).
+- The shape checks warn; they never filter a row or reject a value.

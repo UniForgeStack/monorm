@@ -1,10 +1,11 @@
 # Abstract models and model overrides
 
 The `monorm.inherit` extension (crate `monorm-inherit`, `extensions/inherit`) lets one schema share model shape and lets a consumer replace an app model.
-It has no host feature and no capability.
+It asks the host for two capabilities, `schema-transformations` and `physical-schema`, and for no host feature.
 Its pass runs in the `declaration` phase, so the host and the other extensions see only ordinary models.
 
-**Enable:** nothing to install. The extension is built into the `monorm` Python wheel and the `monorm` npm package; see [optional-packaging.md](../contracts/optional-packaging.md#extension-contracts).
+**Enable:** nothing to install. The extension is built into the `monorm` Python wheel (module `monorm_inherit`) and the `monorm` npm package (`monorm/extensions/inherit`); see [optional-packaging.md](../contracts/optional-packaging.md#extension-contracts).
+How it works and where the code is: [extensions/inherit/README.md](../../extensions/inherit/README.md).
 
 ## Schema
 
@@ -49,6 +50,8 @@ model MyUser {
 - A list relation with no `through:` stays one-to-many.
   The target gets a nullable foreign key for each child (`Role.user_roles_id`).
   A role belongs to one user only.
+- An abstract model can extend another abstract model.
+  Declarations that other extensions add (for example `@@history.track`) are copied to each child with the rest of the base.
 - A child can redeclare a primary key field and change its type and default (`id String @id @default(uuid())`).
   A primary key on another field is an error.
   Redeclare the primary key field of the base (`id`) instead.
@@ -99,8 +102,9 @@ A hand-written `through:` relation on `User` and its join model follow the child
 
 ## Get the active model
 
-`model_for("User")` (Python, `monorm_inherit`) and `modelFor("User")` (TypeScript, `monorm/extensions/inherit`) return `MyUser`.
+`model_for(name, registry=None)` (Python, `monorm_inherit`) and `modelFor(name, registry = defaultRegistry)` (TypeScript, `monorm/extensions/inherit`) return `MyUser` for `"User"`.
 They return the name's own model when nothing overrides it.
+Pass the registry that you gave to `loads`; the default is the default registry.
 The Python function returns `Any`; the TypeScript function returns the registered model without a static type.
 
 ```python
@@ -108,6 +112,45 @@ from monorm_inherit import model_for
 
 Account = model_for("User")
 ```
+
+## Use
+
+The generated models are ordinary models.
+`monorm.loads` (Python) and `loads` (TypeScript) return the concrete models only: `MyUser`, `Admin`, `Role`, `Team`, `UserTeam` and `AdminTeam` for the schema above.
+The abstract models and the overridden `User` are not in the result.
+
+```python
+import monorm
+from monorm_inherit import model_for
+
+models = monorm.loads(schema_text, registry=registry)
+User = model_for("User", registry)                  # MyUser
+db = await monorm.connect(url, registry=registry, default=False)
+await db.create_tables()
+user = await User.objects.using(db).insert(email="a@b.c", bio="hi")
+await Role.objects.using(db).insert(name="staff", user_roles_id=user.pk)
+roles = await user.roles.using(db).all()            # one-to-many through the generated foreign key
+teams = await user.teams.using(db).all()            # many-to-many through UserTeam
+```
+
+```ts
+import { connect, loads, Registry } from "monorm";
+import { modelFor } from "monorm/extensions/inherit";
+
+const registry = new Registry();
+const models = loads(schemaText, { registry });
+const User = modelFor("User", registry);             // MyUser
+const db = await connect(url, { registry, default: false });
+await db.createTables();
+const user = await User.objects.using(db).insert({ email: "a@b.c", bio: "hi" });
+await models.Role.objects.using(db).insert({ name: "staff", userRolesId: user.pk });
+const roles = await user.roles.using(db).all();
+const teams = await user.teams.using(db).all();
+```
+
+The child column and member names follow the usual rules: snake case in Python (`user_roles_id`), camel case in TypeScript (`userRolesId`).
+Abstract models add no table, so `makemigrations` and `sqlmigrate` show tables for the concrete models only.
+`monorm pull` reads the database and writes ordinary models: it writes no `@@inherit.*` attribute back.
 
 ## Types of an abstract model
 
@@ -175,6 +218,50 @@ class UserMethods(_Fields):
 ```
 
 In TypeScript, annotate `this`: `domain(this: AbstractUserData): string`.
+
+## Errors
+
+The schema load fails with a message of this form:
+`extension monorm.inherit: pass monorm.inherit.expand: schema.prisma:5:2: @@inherit.extends: <text>`.
+The table lists the `<text>` of the main causes.
+
+| Message | Fix |
+|---|---|
+| `extends cycle: A -> B -> A` | Remove one `@@inherit.extends`. |
+| `` `U` is not abstract; use `@@inherit.override("U")` `` | Add `@@inherit.abstract` to `U`, or use `@@inherit.override`. |
+| `` `U` is abstract; use `@@inherit.extends` `` | An override takes a concrete model. |
+| `M and N both override U` | A model has one override. |
+| `U is itself an override; override the concrete model, not a chain` | Override the model that holds the table. |
+| `C extends itself`, `C overrides itself` | Name another model. |
+| `unknown model Nope` | Define the base in the same schema set. |
+| `A is abstract and has no table; @@map is not allowed on it` | Remove `@@map`, `@@renamed_from` or `@@partition` from the abstract model. |
+| `B.a: A is abstract and has no table; a relation to it is not allowed` | Relate to a child. |
+| `A is abstract and cannot override a model` | Move `@@inherit.override` to a concrete model. |
+| `C.n: the field is in both A and B; redeclare it in C` | Declare the field in the child. The same holds for a relation (`the relation is in both ...`). |
+| `C: @@query_set is in both A and B; declare one on C` | The same for `@@model_methods` and other copied declarations. |
+| `C: the primary key of A (id) differs from the one of B (code)` | Make the bases agree, or redeclare the key in the child. |
+| `` `C.id`: an override cannot change the key type of `U`; incoming foreign keys keep it `` | Keep the key type of the base. |
+| `C.teams: a generated join model needs a one-field primary key on C and T` | Give both models a one-field key, or write the join model by hand. |
+| `C.teams: a generated back relation needs a one-field primary key on C` | Give the child a one-field primary key. |
+| `C.teams: the join model CT already exists; name it differently with {model} in through:` | Rename the join model or the existing model. |
+| `C.teams: a generated join model needs two different models; ...` | A relation from a model to itself needs a hand-written join model. |
+| `A.r and C.r both generate T.c_r; put {model} in the relation name` | Two children generate the same back relation. Put `{model}` in the relation name. |
+| `A has an explicit index or constraint name "n" and two or more children; ...` | Remove the name. It would repeat in each child table. |
+| `inheritance across schema batches is not supported; declare the base and the child in one schema set` | Load the base and its children together. |
+| `lists A twice` | List each base once. |
+| `has a second @@inherit.extends; list every base in one` | Write one `@@inherit.extends([...])`. |
+
+`{model}` in a relation name or a `through:` name of a concrete model fails in the host, with no extension prefix:
+`relation C.ts: {model} in a relation name is only expanded in a relation that an extension pass derives; name this relation without it`.
+
+## Limits
+
+- Inheritance works inside one schema set.
+  A child cannot extend an abstract model that another batch loaded.
+- An override of an override is an error: override the concrete model.
+- An abstract model cannot override a model.
+- The generated types carry fields only (see above).
+- `pull` writes no inheritance attribute: the result is plain models.
 
 ## Checks
 

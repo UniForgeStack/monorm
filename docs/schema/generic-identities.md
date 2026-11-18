@@ -25,7 +25,7 @@ bindings and runtime-loaded models. Python obtains runtime members from
 Inline `define()` consumes compiled IR with embedded `identities` and `enums`.
 No database metadata table or registration rows are created.
 
-Identity-bearing migration snapshots use version 3. They retain all retired IDs
+Identity-bearing migration snapshots use version 3 (version 4 when the schema has partitions, and a higher version when it has SQL views). They retain all retired IDs
 and reject removed/reassigned historical allocations. Identity-only changes still
 produce a reviewable snapshot migration. Ordinary integer enum constraints prevent
 unknown/retired values in referencing columns; a retirement migration fails if
@@ -102,11 +102,86 @@ for paired nulls and the allowed discriminator subset, plus forward/reverse setu
 metadata. It contributes no conventional multi-target foreign key. Database checks
 preserve pair validity for external scalar writes without promising target existence.
 
-**Enable:** nothing to install. The extension is built into the `monorm` Python wheel and the `monorm` npm package. No build is needed.
+**Enable:** nothing to install. The extension is built into the `monorm` Python wheel (module `monorm_generic`) and the `monorm` npm package (`monorm/extensions/generic`). It has no Python or TypeScript code of its own. No build is needed.
 See [Installable packages](../contracts/optional-packaging.md#installable-packages).
-Its relation and reverse records live in `behavior.extension_data["monorm.generic"]`, and the host has no generic code or capability.
+The extension asks for the host capabilities `schema-transformations` and `physical-schema`, and for no host feature.
+Its pass is `monorm.generic.prepare` (phase `behavior`). It declares the effects `behavior.extension_data.generic` and `storage.generic_checks`.
+Its relation and reverse records live in `behavior.extension_data["monorm.generic"]`. The host has no generic code.
 Models generated for schema contract 2 fail to load with an instruction to regenerate them.
 Frozen identities and `ContentType` work in every build.
+How it works, the layout and the tests: [`extensions/generic/README.md`](../../extensions/generic/README.md).
 
-**Limits:** the bindings have no generic accessor, loader, prefetch or reverse query API, and no generated target union.
-The type and key columns are ordinary fields: write `ContentType.<Model>` and the target key, and filter on them.
+## Attributes
+
+| Attribute | On | Arguments (default) |
+|---|---|---|
+| `@@generic.relation("name", ...)` | model | `type:` (required), `key:` (required), `targets:` (required list) |
+| `@generic.relation(...)` | field of type `Generic` or `Generic?` | `targets:` (required list), `type:` (created field `<name>_type`), `key:` (created field `<name>_id`), `index:` (`true`) |
+| `@generic.reverse` | list field of the source model, such as `Tag[]` | `relation:` (the only generic relation of the source that has this model in its targets) |
+
+`@@generic.reverse(...)` on a model is removed.
+
+## Use
+
+The pair fields are ordinary fields.
+The type field is an integer enum, `ContentType`, and the key field has the type of the target key.
+
+```python
+import monorm
+
+registry = monorm.Registry()
+models = monorm.loads(open("schema.prisma").read(), registry=registry)
+Tag = models["Tag"]
+ContentType = registry.get_enum("ContentType")
+db = await monorm.connect(url, registry=registry, default=False)
+await Tag.objects.using(db).insert(id=1, target_type=ContentType.Post, target_id=7)
+tags = await Tag.objects.using(db).filter(Tag.target_type == ContentType.Post, Tag.target_id == 7)
+```
+
+```ts
+import { connect, loads, Registry } from "monorm";
+
+const registry = new Registry();
+const { Tag } = loads(schemaText, { registry });
+const ContentType = registry.getEnum("ContentType");
+const db = await connect(url, { registry, default: false });
+await Tag.objects.using(db).insert({ id: 1, targetType: ContentType.Post, targetId: 7 });
+const tags = await Tag.objects.using(db).filter(Tag.targetType.eq(ContentType.Post), Tag.targetId.eq(7));
+```
+
+A query is awaitable: `await queryset` returns the list of rows.
+The TypeScript members are camel case (`targetType`, `targetId`).
+
+The migration adds the two columns, a check for the allowed type values and for a paired null, and the pair index.
+Sample from PostgreSQL (`monorm sqlmigrate`). The hash in the name of the second check depends on its text:
+
+```sql
+CONSTRAINT "tag_target_type_enum_check" CHECK ("target_type" IN (1, 2, 3))
+CONSTRAINT "tag_exprd8fa822b_check" CHECK ((("target_type" IS NULL) = ("target_id" IS NULL)) AND ("target_type" IN (1, 2)))
+CREATE INDEX "tag_target_type_target_id_idx" ON "tag" ("target_type", "target_id");
+```
+
+`pull` reads these columns back as plain fields. It writes no `@generic.relation`.
+
+## Errors
+
+Schema errors have the prefix `extension monorm.generic: pass monorm.generic.prepare:` and the position of the attribute.
+
+| Message | Fix |
+|---|---|
+| `@generic.relation: targets must be nonempty and unique` | List each target once. |
+| `@generic.relation: unknown target Nope` | The target is not a model. |
+| `@generic.relation: targets' primary keys have different types; use @@generic.relation with an explicit key field` | Use the explicit form with a `key:` field of a common type. |
+| `@generic.relation: type field k must match the nullability of Generic?` | Give both fields the same nullability. |
+| `@generic.relation: Tag.t_type: the created type field collides with a member; name an existing field with type:` | Name another field with `type:` or `key:`. |
+| `@generic.reverse: Tag has no generic relation with Q in its targets` | The source relation does not list this model. |
+| `@generic.reverse: must be on a list field of the source model, such as Tag[]` | Declare the reverse as a list. |
+| `@generic.reverse: Tag has more than one generic relation to Post; name one with relation:` | Add `relation: "<name>"`. |
+
+The host raises two more errors before the pass runs:
+`Tag.t: @map is not allowed on a Generic field; remove it`, and `Tag.t: unknown type Generic` for a `Generic` field without `@generic.relation`.
+
+## Limits
+
+- The check does not test that the target row exists. A pair that names a missing row inserts. A half pair, or a type that is not a target, raises `IntegrityError`.
+- The bindings have no generic accessor, loader, prefetch, reverse query API or generated target union.
