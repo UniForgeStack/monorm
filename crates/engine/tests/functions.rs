@@ -163,9 +163,18 @@ fn json_paths_containment_and_merge() {
     assert!(plan(&pg, Dialect::Postgres, vec![not_json]).unwrap_err().contains("needs a Json column"));
     fields.truncate(3);
     let lite = schema("sqlite", &fields);
-    for e in [path, has, merge] {
+    for e in [path.clone(), merge] {
         assert!(plan(&lite, Dialect::Sqlite, vec![e]).unwrap_err().contains("sqlite does not support"));
     }
+    let contains = json!({"t":"cmp","op":"contains","l":col("meta"),"r":text("{}")});
+    let contained = json!({"t":"cmp","op":"contained_by","l":col("meta"),"r":text("{}")});
+    let planned = plan(&lite, Dialect::Sqlite, vec![has, contains, contained]).unwrap();
+    assert!(planned.contains("json_each") && planned.contains("monorm_json_contains(\"docs\".\"meta\", ?)"), "{planned}");
+    let json_path = json!({"t":"json_path","item":col("meta"),"path":["a"]});
+    let on_path = json!({"t":"cmp","op":"has_key","l":json_path,"r":text("k")});
+    assert!(plan(&lite, Dialect::Sqlite, vec![on_path]).unwrap_err().contains("sqlite does not support"));
+    let on_text = json!({"t":"cmp","op":"has_key","l":col("title"),"r":text("k")});
+    assert!(plan(&lite, Dialect::Sqlite, vec![on_text]).unwrap_err().contains("take a Json column"));
 }
 
 #[test]

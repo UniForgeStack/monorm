@@ -28,7 +28,7 @@ chrono = "0.4"
 uuid = { version = "1", features = ["v4", "v7"] }
 bigdecimal = "0.4"
 
-rusqlite = { optional = true, version = "0.37", features = ["bundled"] }
+rusqlite = { optional = true, version = "0.37", features = ["bundled", "functions"] }
 blake2 = "0.10"
 
 [dev-dependencies]

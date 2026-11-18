@@ -1615,8 +1615,13 @@ impl<'s> Planner<'s> {
                 if self.target.dialect == Dialect::Sqlite && matches!(op, CmpOp::Match) {
                     return Err(Error::query("sqlite does not support full-text search"));
                 }
-                if self.target.dialect == Dialect::Sqlite && matches!(op, CmpOp::Contains | CmpOp::ContainedBy | CmpOp::Overlaps | CmpOp::HasKey) {
-                    return Err(Error::query("sqlite does not support PostgreSQL containment, overlap or JSON key operators"));
+                if self.target.dialect == Dialect::Sqlite {
+                    if matches!(op, CmpOp::Overlaps) {
+                        return Err(Error::query("sqlite does not support the array overlap operator"));
+                    }
+                    if matches!(op, CmpOp::Contains | CmpOp::ContainedBy | CmpOp::HasKey) && self.expr_type(l)? != ValueType::scalar(ColType::Json) {
+                        return Err(Error::query("on sqlite, containment and key tests take a Json column: sqlite has no array columns"));
+                    }
                 }
                 if !matches!(op, CmpOp::Eq | CmpOp::Ne) {
                     self.refuse_bytes(l, "a comparison")?;
@@ -1633,6 +1638,15 @@ impl<'s> Planner<'s> {
                     CmpOp::Le => l.lte(r),
                     CmpOp::Gt => l.gt(r),
                     CmpOp::Ge => l.gte(r),
+                    CmpOp::Contains if self.target.dialect == Dialect::Sqlite => template(Dialect::Sqlite, format!("{}($1, $2)", crate::json_contains::SQL_NAME), vec![l, r]),
+                    CmpOp::ContainedBy if self.target.dialect == Dialect::Sqlite => template(Dialect::Sqlite, format!("{}($2, $1)", crate::json_contains::SQL_NAME), vec![l, r]),
+                    // NULL stays NULL, as with `?`, so `~has_key()` drops the row. An object matches a key;
+                    // an array or a scalar string matches an equal string element.
+                    CmpOp::HasKey if self.target.dialect == Dialect::Sqlite => template(
+                        Dialect::Sqlite,
+                        r#"CASE WHEN $1 IS NULL THEN NULL ELSE EXISTS (SELECT 1 FROM json_each($1) AS "k" WHERE CASE WHEN json_type($1) = 'object' THEN "k"."key" = $2 ELSE "k"."type" = 'text' AND "k"."atom" = $2 END) END"#,
+                        vec![l, r],
+                    ),
                     CmpOp::Contains => SExpr::cust_with_exprs("$1 @> $2", [l, r]),
                     CmpOp::ContainedBy => SExpr::cust_with_exprs("$1 <@ $2", [l, r]),
                     CmpOp::Overlaps => SExpr::cust_with_exprs("$1 && $2", [l, r]),
