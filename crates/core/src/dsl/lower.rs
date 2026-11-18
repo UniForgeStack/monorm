@@ -1793,8 +1793,8 @@ impl Deferred {
     /// Appends to the slots that the IR already holds. Fails if a marker is left in the IR.
     pub fn finish(self, ir: &mut SchemaIr) -> Result<()> {
         let mut left = false;
-        for_each_slot(&mut ir.models, |_, _, _, slot| left |= slot.starts_with(MARK));
-        if let Some(storage) = &mut ir.behavior.storage { for_each_slot(&mut storage.models, |_, _, _, slot| left |= slot.starts_with(MARK)); }
+        for_each_slot(&mut ir.models, |_, _, _, slot| left |= slot.contains(MARK));
+        if let Some(storage) = &mut ir.behavior.storage { for_each_slot(&mut storage.models, |_, _, _, slot| left |= slot.contains(MARK)); }
         if left {
             return Err(super::syntax::Error { pos: Pos::default(), msg: "a native expression was not resolved: an extension pass moved it where the compiler does not look".into() });
         }

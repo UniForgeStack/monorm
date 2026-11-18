@@ -918,8 +918,8 @@ model Doc {
     const docs = models.Doc!.objects.using(db);
     try {
       await docs.insert({ id: 1, slug: "a" });
-      await assert.rejects(Promise.resolve(docs.insert({ id: 2, slug: "a" })));
-      await assert.rejects(Promise.resolve(docs.insert({ id: 3, slug: "b", views: -1 })));
+      await assert.rejects(Promise.resolve(docs.insert({ id: 2, slug: "a" })), /unique|duplicate/i);
+      await assert.rejects(Promise.resolve(docs.insert({ id: 3, slug: "b", views: -1 })), /check/i);
       assert.equal(await docs.filter(models.Doc!.id.eq(1)).delete(), 1);
       await docs.insert({ id: 2, slug: "a" });
       assert.equal(await docs.allWithDeleted().count(), 2);

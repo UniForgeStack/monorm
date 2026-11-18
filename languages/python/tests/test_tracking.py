@@ -1138,9 +1138,9 @@ model Doc {
     try:
         docs = Doc.objects.using(db)
         await docs.insert_many([{"id": 1, "slug": "a"}])
-        with pytest.raises(Exception):
+        with pytest.raises(Exception, match=r"(?i)unique|duplicate"):
             await docs.insert_many([{"id": 2, "slug": "a"}])
-        with pytest.raises(Exception):
+        with pytest.raises(Exception, match=r"(?i)check"):
             await docs.insert_many([{"id": 3, "slug": "b", "views": -1}])
         assert await docs.filter(Doc.id == 1).delete() == 1
         await docs.insert_many([{"id": 2, "slug": "a"}])

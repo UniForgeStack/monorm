@@ -1950,3 +1950,15 @@ fn a_native_slot_follows_its_index_when_a_pass_inserts_one_before() {
     assert!(ir.native_expression_slots.contains(&("A".to_owned(), "index:1:where".to_owned())), "{:?}", ir.native_expression_slots);
     assert!(!ir.native_expression_slots.iter().any(|(_, p)| p == "index:0:where"), "{:?}", ir.native_expression_slots);
 }
+
+/// A pass that leaves a marker inside a longer text is reported, not shipped to the database.
+#[test]
+fn a_marker_that_a_pass_wrapped_is_an_error() {
+    let (mut ir, mut deferred) = lower_deferred(LATE);
+    let wrapped = format!("({})", ir.models[0].indexes[0].where_.as_deref().unwrap());
+    ir.models[0].indexes[0].where_ = Some(wrapped);
+    late_field(&mut ir);
+    deferred.resolve(&mut ir, true).unwrap();
+    let e = deferred.finish(&mut ir).unwrap_err();
+    assert!(e.msg.contains("was not resolved"), "{}", e.msg);
+}
