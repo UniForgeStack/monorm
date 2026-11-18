@@ -1,63 +1,98 @@
-# File-storage package
+# monorm.file-storage
 
-The `monorm.file-storage` package adds `@storage.file(storage: "name")` to a `Json` field.
-The ORM stores a reference (JSON) in the column and the application keeps the bytes in an [OpenDAL](https://opendal.apache.org/) service.
-The extension has two parts:
+Stores a file in an [OpenDAL](https://opendal.apache.org/) service and keeps a reference to it in a `Json` column.
+It adds the field attribute `@storage.file(storage: "<name>")`.
 
-- `monorm-extension.toml` and `src/`: the Rust crate `monorm-file-storage`, a `cdylib` with the ABI macro.
-  It validates the schema and contributes the field adapter metadata.
-  It has no host code.
-- `integration/python` and `integration/typescript`: the runtime sources.
-  They hold the `Reference` codec v1, `Upload`, `Registry`, and the field adapter that registers with the public async field adapter API.
+## Install
 
-`monorm-extension-package` builds them into one wheel `monorm-file-storage` and one npm package `@ufstack/monorm-file-storage`; both use `opendal`.
-Install the package; there is no crate to select.
+Nothing to install.
+The extension ships inside the one `monorm` wheel (Python module `monorm_file_storage`) and the one `monorm` npm package (`monorm/extensions/file-storage`).
+The Rust crate is `monorm-file-storage` (`publish = false`).
+The storage library `opendal` is an optional peer: Python `opendal>=0.47,<0.48`, TypeScript `opendal` `^0.49.0`.
+The extension loads it on first use.
 
-See [docs/extensions/file-storage.md](../../docs/extensions/file-storage.md) for use, and [integration/README.md](integration/README.md) for write failures and recovery.
+## Smallest example
 
-## Registry
+```prisma
+model Report {
+  id   Int   @id @default(autoincrement())
+  file Json? @storage.file(storage: "reports")
+}
+```
 
-`Registry` maps a storage name to an OpenDAL operator.
-The application owns the operator, its credentials and its lifetime.
+Run `monorm generate`.
+The generated module installs the adapter and exports `configure_file_storage` (TypeScript: `configureFileStorage`).
 
 ```python
 import opendal
-from monorm_file_storage import Registry
+from monorm_file_storage import Registry, Upload
+from app.models import Report, configure_file_storage
 
-registry = Registry({"reports": opendal.AsyncOperator("fs", root="/srv/reports")})
-stored = await registry.upload("reports", report_bytes, filename="report.xlsx")
-# stored is a Reference; the ORM persists stored.to_dict() in the column.
-async for chunk in registry.open(stored): ...
-url = await registry.signed_url(stored, expires_in=300)  # CapabilityError without presign
+configure_file_storage(Registry({"reports": opendal.AsyncOperator("fs", root="/srv/reports")}))
+report = await Report.objects.using(db).insert(file=Upload(data, filename="report.xlsx"))
+print(report.file.key)  # a Reference: the ORM wrote the bytes to the service before the SQL statement
 ```
 
-```typescript
-import { Registry } from "@ufstack/monorm-file-storage";
+```ts
+import { Registry, Upload } from "monorm/extensions/file-storage";
 import { Operator } from "opendal";
+import { Report, configureFileStorage } from "./models.js";
 
-const registry = new Registry(new Map([["reports", new Operator("fs", { root: "/srv/reports" })]]));
-const stored = await registry.upload("reports", reportBytes, { filename: "report.xlsx" });
+configureFileStorage(new Registry(new Map([["reports", new Operator("fs", { root: "/srv/reports" })]])));
+const report = await Report.objects.using(db).insert({ file: new Upload(data, { filename: "report.xlsx" }) });
+console.log(report.file?.key);
 ```
 
-- Keys are random UUID4 hex. Caller filenames are metadata, never paths.
-- Content type defaults to `application/octet-stream` and goes to the service. It is not inferred from a filename.
-- `max_size` / `maxSize` applies while the source streams. Memory does not scale with the file size.
-- The service version is read with `stat()` after the write, only when the service reports `read_with_version`. It is stored in the reference and passed to `open` and to the signed URL (Python only).
-- A failed upload raises `UploadError`. Its `reference` is the candidate reference. The extension has no delete: the application decides on cleanup.
-- Retries, multipart and local-file safety belong to OpenDAL.
+## How it works
 
-## Durable wire contract
+**Pass.** `monorm.file-storage.fields` runs in the `behavior` phase.
+Its effect is `behavior.field_adapters.file-storage`.
+For each `@storage.file` the pass writes one field adapter record: adapter `file-storage.reference.v1` and option `storage` (the storage name).
+A view of the model (`@@proxy.of`) gets a copy of the record.
 
-```json
-{"v":1,"storage":"reports","key":"unique-object-key","version":"optional-provider-version","filename":"report.xlsx","content_type":"application/octet-stream","size":42}
+**What the pass checks.**
+It refuses a field that is not a scalar `Json` field, a key, a field with a database default, an empty storage name, a second adapter on the same field, and a generated member name (`<field>_open`, `<field>_signed_url`) that collides with a member of the model.
+The user doc lists each message.
+
+**SQL.** None.
+The column is an ordinary `Json` column (`jsonb` on PostgreSQL, `TEXT` on SQLite).
+
+**Runtime.** The adapter checks an `Upload` or a `Reference` without I/O, uploads each `Upload` before the SQL statement, and reads the column back as a `Reference`.
+A failed SQL statement keeps the uploaded files.
+The ORM never deletes a stored file.
+
+**Rust and bindings.** The Rust crate checks the schema and writes the record.
+It has no host code and no storage code.
+The `Reference` codec, `Upload`, `Registry` and the adapter are in the bindings: `integration/python/src/monorm_file_storage` and `integration/typescript/src`.
+The generated models import `install` from `monorm_file_storage.model` (TypeScript: `monorm/extensions/file-storage/model`).
+
+**Other extensions.** `monorm.proxy` views get the record of their root.
+
+## Layout
+
+```
+extensions/file-storage/
+  Cargo.toml                          crate monorm-file-storage
+  monorm-extension.toml               manifest: one pass, one attribute, two field adapters
+  src/lib.rs                          the pass and its unit tests
+  integration/python/src/             Reference, Upload, Registry and the adapter
+  integration/python/tests/           test_decoder.py, test_prepared.py, test_storage.py
+  integration/typescript/src/         the same in TypeScript
+  integration/typescript/test/        decoder, prepared and storage tests
+  integration/tests/                  native_python.py and native_node.mjs, end to end
+  examples/                           generated_report.py and generated-report.ts
+  fixtures/references.json            Reference fixtures shared by both languages
 ```
 
-Optional properties are omitted, never null. Unknown properties and versions fail validation.
-`size` is an integer from 0 to 2^53-1, for exact cross-language serialization.
-A reference holds no credentials, client or expiring URL.
-A storage name must keep pointing at the same object namespace: changing a configured bucket does not migrate old objects.
-A reference gives location, not authorization. Authorize a reference from outside input before you attach or read it.
-`fixtures/references.json` is the shared cross-language fixture set.
+The extension has no `tests/public`.
+
+```bash
+cargo test -q -p monorm-file-storage
+python -m unittest discover -s extensions/file-storage/integration/python/tests
+scripts/check-extension-packages.sh   # the end-to-end tests, in fresh Python, Node and Bun consumers, on SQLite and PostgreSQL
+```
+
+[integration/README.md](integration/README.md) explains the adapter design.
 
 ## Why OpenDAL
 
@@ -79,10 +114,16 @@ Treat differences under about 20% as noise.
 **Plan:** `object_store` was faster than OpenDAL in Python in this benchmark but has no Node binding.
 We use OpenDAL in both languages. We will consider `object_store` when it has a Node binding.
 
-## Tests
+## Limits
 
-- `cargo test -p monorm-file-storage` tests the extension crate.
-- `python languages/python/packaging/stage.py && maturin develop` builds and installs the one `monorm` wheel.
-  Then run the Python unit tests with `python -m unittest discover -s extensions/file-storage/integration/python/tests`.
-- End to end: `integration/tests/native_python.py` and `native_node.mjs` (Node and Bun) run on the installed package, on SQLite and PostgreSQL.
-- `scripts/check-extension-packages.sh` runs all of them in fresh Python, Node and Bun consumers that install the one `monorm` wheel and the one `monorm` npm package.
+- The ORM has no delete. A replaced row, a rollback or a failed statement leaves the old object. The application owns cleanup.
+- A reference gives location, not authorization. Authorize a reference that comes from outside input before you attach or read it.
+- A filtered `update` uploads one object and writes the same reference to every matching row.
+- Upserts, expressions and `insert_many(copy=True)` reject `Upload`.
+- A storage name must keep pointing at the same object namespace. Changing a configured bucket does not migrate old objects.
+- A signed URL needs a service that supports presign (`CapabilityError` otherwise).
+- A schema error starts with `extension monorm.file-storage: pass monorm.file-storage.fields:`.
+
+## More
+
+Usage, the `Registry` API, the reference wire contract, upload errors and recovery: [docs/extensions/file-storage.md](../../docs/extensions/file-storage.md).

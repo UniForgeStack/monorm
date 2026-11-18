@@ -1,6 +1,6 @@
 # File-field binding preparation
 
-`python/` and `typescript/` are the runtime sources of the file-storage modules of the one `monorm` wheel (`monorm_file_storage`) and the one `monorm` npm package (`monorm/extensions/file-storage`).
+`integration/python` and `integration/typescript` are the runtime sources of the file-storage modules of the one `monorm` wheel (`monorm_file_storage`) and the one `monorm` npm package (`monorm/extensions/file-storage`).
 They depend on `opendal`, not on the project's storage library. They keep the Reference
 codec v1, `Upload`, the `Registry` (storage name to OpenDAL operator), `max_size` while
 streaming and the upload error with the candidate reference. They do not import ORM
@@ -69,7 +69,7 @@ prepared file layout exists in the native core.
 Code generation reads the `file-storage.reference.v1` runtime entry of the
 extension manifest (`[[python.field_adapters]]`, `[[typescript.field_adapters]]`).
 The generated module imports `install` from `monorm_file_storage.model` (Python) or
-`@ufstack/monorm-file-storage/model` (TypeScript) and calls it once for each model with the
+`monorm/extensions/file-storage/model` (TypeScript) and calls it once for each model with the
 field names, their options and nullability. Generated modules expose
 `configure_file_storage(registry)` / `configureFileStorage(registry)` for the
 application's storage Registry. Methods delegate signing/opening explicitly;
@@ -78,12 +78,9 @@ update wrappers prepare Upload outside native SQL execution and retain
 completed references after SQL failure. Conflict, expression and copy uploads
 reject before I/O.
 
-Python retains the prepared operation on the selected statement's `operation`.
-TypeScript's selected query exposes `prepareFileInsert(values)` returning
-`{ operation, execute }` when the caller needs recovery after a successful
-statement followed by outer rollback. Convenience errors in both bindings retain
-the operation. Retry explicitly with its `.execute()`; no upload replay or
-physical cleanup is automatic.
+A failed write raises `AdapterWriteError`, which holds the prepared `operation`.
+Retry explicitly with `operation.execute()`; no upload replay or physical cleanup is automatic.
+`monorm.hooks.prepare_insert` and `prepare_update` (TypeScript: `qs.prepareInsert` and `qs.prepareUpdate`) give the same prepared write without SQL or I/O.
 
 Dynamic hosts use the same setup function and fixed decoder. For TypeScript pass
 `meta` as the fourth installModel argument to install selected query statements;
