@@ -24,6 +24,7 @@ use crate::key;
 use crate::list::{self, Binds, ListError, ListRequest, Position, RowScope};
 use crate::permissions::{Grants, Op};
 use crate::scope::Scoped;
+use crate::sight::Sight;
 use crate::server::{authorize, deny, error_response, filters_of, found_keys, open_resource_with, open_tab_with, reject, Reach, Shared, State_, User};
 use crate::site::{Action, Column, Placement, Resource, BULK_DELETE, COUNT_CAP};
 use crate::write::{self, meta_of, read_only_reason, server_error, statement_failure, user_key_text, Meta, Problems, MAX_BODY};
@@ -64,7 +65,7 @@ pub(crate) async fn on_tab(State(s): Shared, user: Option<Extension<User>>, Path
 }
 
 struct Open<'a> {
-    resource: &'a Resource,
+    resource: Sight<'a>,
     user: User,
     grants: Grants,
     scope: Scoped,
@@ -109,7 +110,8 @@ struct QuerySet {
 }
 
 async fn run(s: &State_, o: Open<'_>, name: &str, body: axum::body::Body) -> Response {
-    let Open { resource, user, grants, scope, reach, pins, tab, meta, uri } = o;
+    let Open { resource: sight, user, grants, scope, reach, pins, tab, meta, uri } = o;
+    let resource = &*sight;
     let kind = if name == BULK_DELETE {
         Kind::Delete
     } else {
@@ -236,7 +238,7 @@ async fn run(s: &State_, o: Open<'_>, name: &str, body: axum::body::Body) -> Res
     let (answer, scope) = if direct {
         let mut op = json!({"op": "delete", "model": model, "filters": set.filters});
         set.rows.apply(&mut op);
-        let c = write::Call { resource, user: user.clone(), grants, scope, meta: Meta { request_id: meta.request_id.clone(), ip: meta.ip.clone(), agent: meta.agent.clone() }, uri: uri.clone(), body: Map::new() };
+        let c = write::Call { resource: sight.clone(), user: user.clone(), grants, scope, meta: Meta { request_id: meta.request_id.clone(), ip: meta.ip.clone(), agent: meta.agent.clone() }, uri: uri.clone(), body: Map::new() };
         let out = write::run_mutation(&s.site, &c, s.target, op, set.binds).await;
         let scope = c.scope;
         match out {

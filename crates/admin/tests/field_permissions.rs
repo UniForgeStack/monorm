@@ -1,0 +1,153 @@
+//! Field permissions: a view of a resource is built once per granted set, and the cost is measured.
+use std::collections::BTreeSet;
+use std::sync::Arc;
+use std::time::Instant;
+
+use monorm_admin::permissions::Grants;
+use monorm_admin::{call, Site};
+use monorm_core::{dsl, migrate, schema::Schema};
+use monorm_engine::db::{self, Driver, Executor};
+use serde_json::{json, Value};
+
+const ADMIN: &str = include_str!("../../../apps/admin/schema.prisma");
+const AUTH: &str = r#"
+model User {
+  id           Int          @id @default(autoincrement())
+  username     String       @unique
+  is_active    Boolean      @default(true)
+  is_superuser Boolean      @default(false)
+  roles        Role[]       @relation(through: UserRole)
+  permissions  Permission[] @relation(through: UserPermission)
+}
+
+model Role {
+  id          Int          @id @default(autoincrement())
+  name        String       @unique
+  permissions Permission[] @relation(through: RolePermission)
+}
+
+model Permission {
+  id       Int    @id @default(autoincrement())
+  label    String
+  codename String
+  name     String
+  @@unique([label, codename])
+}
+
+model RolePermission {
+  id            Int        @id @default(autoincrement())
+  role_id       Int
+  permission_id Int
+  role          Role       @relation(fields: [role_id], references: [id], onDelete: Cascade)
+  permission    Permission @relation(fields: [permission_id], references: [id], onDelete: Cascade)
+}
+
+model UserRole {
+  id      Int  @id @default(autoincrement())
+  user_id Int
+  role_id Int
+  user    User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  role    Role @relation(fields: [role_id], references: [id], onDelete: Cascade)
+}
+
+model UserPermission {
+  id            Int        @id @default(autoincrement())
+  user_id       Int
+  permission_id Int
+  user          User       @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  permission    Permission @relation(fields: [permission_id], references: [id], onDelete: Cascade)
+}
+"#;
+
+fn schema() -> Arc<Schema> {
+    let source = format!(
+        "datasource db {{\n  provider = \"sqlite\"\n}}\n\nmodel Product {{\n  id    Int    @id\n  name  String\n  code  String\n  cost  Int\n}}\n\nmodel Note {{\n  id Int @id\n}}\n{AUTH}\n{ADMIN}"
+    );
+    Arc::new(dsl::check(dsl::compile(&source, None).unwrap()).unwrap().1)
+}
+
+fn site(schema: &Arc<Schema>) -> Arc<Site> {
+    let config = json!({"resources": [
+        {"model": "Product", "list": {"columns": ["name", "code", "cost"], "order": ["id"]}, "see": {"cost": "see_cost", "code": "see_code"}},
+        {"model": "Note"},
+    ]});
+    Arc::new(Site::build(schema.clone(), &config.to_string()).unwrap())
+}
+
+/// Users 1 and 2 hold the page level only, 3 adds `see_cost`, 4 is a superuser.
+async fn database(schema: &Schema) -> Arc<dyn Driver> {
+    let driver = db::connect("sqlite://:memory:", 1).await.unwrap();
+    for step in migrate::plan(schema, &Default::default()).unwrap().up {
+        driver.batch(step.sql).await.unwrap();
+    }
+    let seed = [
+        "INSERT INTO \"User\" (id, username, is_superuser) VALUES (1, 'ann', 0), (2, 'bob', 0), (3, 'cy', 0), (4, 'di', 1)",
+        "INSERT INTO \"Permission\" (id, label, codename, name) VALUES (1, 'admin', 'access', 'a'), (2, 'admin', 'read_product', 'b'), (3, 'admin', 'see_cost', 'c')",
+        "INSERT INTO \"UserPermission\" (user_id, permission_id) VALUES (1, 1), (1, 2), (2, 1), (2, 2), (3, 1), (3, 2), (3, 3)",
+        "INSERT INTO \"Product\" (id, name, code, cost) VALUES (1, 'bolt', 'B1', 5), (2, 'nut', 'N1', 3)",
+    ];
+    for sql in seed {
+        driver.batch(sql.to_string()).await.unwrap();
+    }
+    driver
+}
+
+async fn list(site: &Arc<Site>, conn: &Arc<dyn Executor>, resource: &str, key: i64) -> (u16, Value) {
+    let user = if key == 4 { json!({"is_superuser": true}) } else { json!({"key": key}) };
+    let (status, body) = call(site.clone(), conn.clone(), "GET", &format!("/admin/api/resources/{resource}"), Some(user)).await;
+    (status, serde_json::from_str(&body).unwrap())
+}
+
+#[tokio::test]
+async fn a_view_is_built_once_per_granted_set() {
+    let schema = schema();
+    let driver = database(&schema).await;
+    let conn: Arc<dyn Executor> = driver;
+    let site = site(&schema);
+    let built = site.meta_builds();
+    assert_eq!(built, 6, "one page of Product and Note and the four built-in resources");
+
+    let (status, body) = list(&site, &conn, "Product", 1).await;
+    assert_eq!(status, 200);
+    assert_eq!(body["columns"].as_array().unwrap().len(), 2, "ann sees name and the key: {body}");
+    assert_eq!(site.meta_builds(), built + 1, "the first user of a granted set builds its view");
+
+    for key in [1, 2, 1, 2] {
+        assert_eq!(list(&site, &conn, "Product", key).await.0, 200);
+    }
+    assert_eq!(site.meta_builds(), built + 1, "two users with the same granted set share one view");
+
+    let (_, body) = list(&site, &conn, "Product", 3).await;
+    assert_eq!(body["columns"].as_array().unwrap().len(), 3, "cy sees name, cost and the key: {body}");
+    assert_eq!(site.meta_builds(), built + 2, "a new granted set adds one view");
+
+    let (_, body) = list(&site, &conn, "Product", 4).await;
+    assert_eq!(body["columns"].as_array().unwrap().len(), 4, "a superuser holds every name");
+    assert_eq!(site.meta_builds(), built + 2, "a full grant uses the page");
+
+    assert_eq!(list(&site, &conn, "Note", 1).await.0, 403);
+    assert_eq!(site.meta_builds(), built + 2, "a resource without a bound name never builds a view");
+}
+
+/// Prints the cost of a view: `cargo test -p monorm-admin --test field_permissions cost -- --nocapture`.
+#[test]
+fn the_cost_of_a_view_is_one_build_and_then_a_lookup() {
+    let schema = schema();
+    let site = site(&schema);
+    let grants = Grants { all: false, names: BTreeSet::from(["admin.read_product".to_string()]) };
+    let built = site.meta_builds();
+    let start = Instant::now();
+    let first = site.sight("Product", &grants).unwrap();
+    let build = start.elapsed();
+    let labels: Vec<&str> = first.columns.iter().map(|c| c.label.as_str()).collect();
+    assert_eq!(labels, ["name", "id"]);
+    let rounds = 10_000u32;
+    let start = Instant::now();
+    for _ in 0..rounds {
+        let again = site.sight("Product", &grants).unwrap();
+        assert_eq!(again.columns.len(), 2);
+    }
+    let lookup = start.elapsed() / rounds;
+    eprintln!("view build (first call, includes the metadata): {build:?}; cache hit: {lookup:?} per call");
+    assert_eq!(site.meta_builds(), built + 1);
+}

@@ -258,7 +258,8 @@ pub(crate) fn key_object(r: &Resource, key: &[Value]) -> Value {
 
 /// Calls the host and answers the request. Rolls the admin transaction back before the call.
 pub(crate) async fn run(s: &State_, c: Call<'_>, p: Prepared) -> Response {
-    let Call { resource, user, grants, scope, meta, uri, body } = c;
+    let Call { resource: sight, user, grants, scope, meta, uri, body } = c;
+    let resource = &*sight;
     scope.rollback().await;
     let Some((bridge, auth)) = &s.bridge else {
         return reject(StatusCode::FORBIDDEN, "ReadOnly", "this write needs host code, and this admin has no host");
@@ -291,7 +292,7 @@ pub(crate) async fn run(s: &State_, c: Call<'_>, p: Prepared) -> Response {
         Ok(sc) => sc,
         Err(e) => return server_error(&meta, &e.message),
     };
-    let c = Call { resource, user, grants, scope: new_scope, meta, uri, body };
+    let c = Call { resource: sight, user, grants, scope: new_scope, meta, uri, body };
     answer_of(s, c, p, answer).await
 }
 
@@ -305,7 +306,8 @@ pub(crate) fn texts(v: Option<&Value>) -> Vec<String> {
 
 /// The envelope of the host: `{ok: true, key, audited}` or `{ok: false, kind, ...}`.
 async fn answer_of(s: &State_, c: Call<'_>, p: Prepared, answer: Value) -> Response {
-    let resource = c.resource;
+    let sight = c.resource.clone();
+    let resource = &*sight;
     if answer["ok"] != Value::Bool(true) {
         let kind = answer["kind"].as_str().unwrap_or("");
         return match kind {
@@ -393,11 +395,12 @@ async fn answer_of(s: &State_, c: Call<'_>, p: Prepared, answer: Value) -> Respo
 /// The record as it is stored after the write, or none when the `queryset` hides it. It reads on the scope the caller holds.
 /// An error is the final answer: the scope is rolled back.
 async fn read_after<'a>(s: &State_, c: Call<'a>, key: &[Value]) -> Result<(Call<'a>, Option<Vec<Value>>), Response> {
-    let Call { resource, user, grants, scope, meta, uri, body } = c;
+    let Call { resource: sight, user, grants, scope, meta, uri, body } = c;
+    let resource = &*sight;
     let (scope, rows) = reach(s, resource, &user, &grants, Vec::new(), scope).await.map_err(|r| *r)?;
     let record = list::read_record(&s.site, resource, scope.executor(), s.target, key, &rows.rows, false).await;
     match record {
-        Ok(r) => Ok((Call { resource, user, grants, scope, meta, uri, body }, r.map(|r| r.cells))),
+        Ok(r) => Ok((Call { resource: sight.clone(), user, grants, scope, meta, uri, body }, r.map(|r| r.cells))),
         Err(e) => {
             scope.rollback().await;
             Err(list_failure(&meta, e))
@@ -437,7 +440,8 @@ async fn conflict(s: &State_, c: Call<'_>, p: &Prepared) -> Response {
         },
         None => (c, None),
     };
-    let Call { scope, resource, .. } = c;
+    let Call { scope, resource: sight, .. } = c;
+    let resource = &*sight;
     scope.rollback().await;
     let labels: Vec<String> = p.loaded.keys().cloned().collect();
     let found = match &now {

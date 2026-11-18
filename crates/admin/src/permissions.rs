@@ -232,7 +232,10 @@ impl Site {
             .resources
             .iter()
             .filter(|r| self.allows(grants, r, Op::Read))
-            .map(|r| {
+            .map(|page| {
+                // The view of the user: a field that the user may not see is not in its metadata.
+                let sight = self.sight_of(page, grants);
+                let r: &Resource = &sight;
                 let mut meta = r.meta.clone();
                 meta["actions"] = json!(r.actions.iter().filter(|a| a.placement.is_some() && self.action_allowed(grants, r, a)).map(action_meta).collect::<Vec<_>>());
                 meta["ops"] = json!([Op::Create, Op::Update, Op::Delete].iter().filter(|o| r.allow.contains(o) && self.allows(grants, r, **o)).map(|o| o.name()).collect::<Vec<_>>());

@@ -32,6 +32,7 @@ pub mod routes;
 pub mod scope;
 pub mod security;
 pub mod serve;
+pub mod sight;
 pub mod server;
 pub mod service;
 pub mod site;

@@ -23,6 +23,7 @@ use crate::list::{self, FilterClause, FilterOp, ListError, ListRequest, Page, Po
 use crate::permissions::{self, Grants, Op};
 use crate::scope::Scoped;
 use crate::service::ErrorNote;
+use crate::sight::Sight;
 use crate::site::{Related, Resource, Site, Slot, Source};
 
 /// The user of a request: a JSON object with `key`, `is_superuser` and, when it is false, `is_active`.
@@ -328,24 +329,24 @@ fn flag(v: &Option<String>) -> bool {
 }
 
 /// The preamble of a read route: authorize, find the resource, check the read permission.
-async fn open_resource<'a>(s: &'a State_, user: Option<Extension<User>>, name: &str, uri: &Uri) -> Result<(Scoped, &'a Resource, Reach), Box<Response>> {
+async fn open_resource<'a>(s: &'a State_, user: Option<Extension<User>>, name: &str, uri: &Uri) -> Result<(Scoped, Sight<'a>, Reach), Box<Response>> {
     let (user, scope, grants) = authorize(s, user).await?;
     open_resource_with(s, user, scope, grants, name, uri).await.map(|(scope, resource, reach, _)| (scope, resource, reach))
 }
 
 /// `open_resource` for a caller that authorized already and needs the user and the grants after it.
-pub(crate) async fn open_resource_with<'a>(s: &'a State_, user: User, scope: Scoped, grants: Grants, name: &str, uri: &Uri) -> Result<(Scoped, &'a Resource, Reach, (User, Grants)), Box<Response>> {
-    let Some(resource) = s.site.resource(name) else {
+pub(crate) async fn open_resource_with<'a>(s: &'a State_, user: User, scope: Scoped, grants: Grants, name: &str, uri: &Uri) -> Result<(Scoped, Sight<'a>, Reach, (User, Grants)), Box<Response>> {
+    let Some(resource) = s.site.sight(name, &grants) else {
         scope.rollback().await;
         return Err(Box::new(reject(StatusCode::NOT_FOUND, "NotFound", &format!("no resource {name:?}"))));
     };
     if !resource.allow.contains(&Op::Read) {
         return Err(Box::new(deny(&s.site, scope, &user, &resource.name, json!({"reason": "allow"})).await));
     }
-    if !s.site.allows(&grants, resource, Op::Read) {
-        return Err(Box::new(deny(&s.site, scope, &user, &resource.name, json!({"needs": s.site.requires(resource, Op::Read)})).await));
+    if !s.site.allows(&grants, &resource, Op::Read) {
+        return Err(Box::new(deny(&s.site, scope, &user, &resource.name, json!({"needs": s.site.requires(&resource, Op::Read)})).await));
     }
-    let (scope, reach) = reach(s, resource, &user, &grants, without_of(uri), scope).await?;
+    let (scope, reach) = reach(s, &resource, &user, &grants, without_of(uri), scope).await?;
     Ok((scope, resource, reach, (user, grants)))
 }
 
@@ -580,7 +581,7 @@ async fn rows(State(s): Shared, user: Option<Extension<User>>, Path(name): Path<
         Ok(t) => t,
         Err(r) => return r,
     };
-    run_rows(&s, resource, scope, reach, q, &uri, Vec::new()).await
+    run_rows(&s, &resource, scope, reach, q, &uri, Vec::new()).await
 }
 
 /// The count of a list, a separate request after the rows: capped at 10,000, or exact when `exact=1`.
@@ -593,7 +594,7 @@ async fn counts(State(s): Shared, user: Option<Extension<User>>, Path(name): Pat
         Ok(t) => t,
         Err(r) => return r,
     };
-    run_counts(&s, resource, scope, reach, q, &uri, Vec::new()).await
+    run_counts(&s, &resource, scope, reach, q, &uri, Vec::new()).await
 }
 
 /// The preamble of a tab route: the parent (read permission), the tab (404), the child (read permission),
@@ -608,19 +609,19 @@ async fn open_tab<'a>(s: &'a State_, user: Option<Extension<User>>, name: &str, 
 /// `open_tab` for a caller that authorized already.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn open_tab_with<'a>(s: &'a State_, user: &User, scope: Scoped, grants: &Grants, name: &str, raw: &str, rel: &str, uri: &Uri) -> Result<Tab<'a>, Box<Response>> {
-    let Some(parent) = s.site.resource(name) else {
+    let Some(parent) = s.site.sight(name, grants) else {
         scope.rollback().await;
         return Err(Box::new(reject(StatusCode::NOT_FOUND, "NotFound", &format!("no resource {name:?}"))));
     };
-    for r in [Some(parent), s.site.plan_related(parent, rel).map(|r| r.child)].into_iter().flatten() {
+    for r in [Some(parent.clone()), s.site.plan_related(&parent, rel, grants).map(|r| r.child)].into_iter().flatten() {
         if !r.allow.contains(&Op::Read) {
             return Err(Box::new(deny(&s.site, scope, user, &r.name, json!({"reason": "allow"})).await));
         }
-        if !s.site.allows(grants, r, Op::Read) {
-            return Err(Box::new(deny(&s.site, scope, user, &r.name, json!({"needs": s.site.requires(r, Op::Read)})).await));
+        if !s.site.allows(grants, &r, Op::Read) {
+            return Err(Box::new(deny(&s.site, scope, user, &r.name, json!({"needs": s.site.requires(&r, Op::Read)})).await));
         }
     }
-    let Some(related) = s.site.plan_related(parent, rel) else {
+    let Some(related) = s.site.plan_related(&parent, rel, grants) else {
         scope.rollback().await;
         return Err(Box::new(reject(StatusCode::NOT_FOUND, "NotFound", &format!("{name:?} has no tab {rel:?}"))));
     };
@@ -633,9 +634,9 @@ pub(crate) async fn open_tab_with<'a>(s: &'a State_, user: &User, scope: Scoped,
         }
     };
     // The parent record must be inside the queryset of its resource, with its read defaults on.
-    let (scope, parent_reach) = reach(s, parent, user, grants, Vec::new(), scope).await?;
-    let (scope, child_reach) = reach(s, related.child, user, grants, without_of(uri), scope).await?;
-    match list::parent_values(&s.site, parent, &related, scope.executor(), s.target, &key, &parent_reach.rows).await {
+    let (scope, parent_reach) = reach(s, &parent, user, grants, Vec::new(), scope).await?;
+    let (scope, child_reach) = reach(s, &related.child, user, grants, without_of(uri), scope).await?;
+    match list::parent_values(&s.site, &parent, &related, scope.executor(), s.target, &key, &parent_reach.rows).await {
         Ok(Some(values)) => {
             let pins = related.child_to.iter().cloned().zip(values).collect();
             Ok((scope, related, pins, child_reach))
@@ -661,7 +662,7 @@ async fn tab_rows(State(s): Shared, user: Option<Extension<User>>, Path((name, _
         Ok(t) => t,
         Err(r) => return r,
     };
-    run_rows(&s, related.child, scope, reach, q, &uri, pins).await
+    run_rows(&s, &related.child, scope, reach, q, &uri, pins).await
 }
 
 async fn tab_counts(State(s): Shared, user: Option<Extension<User>>, Path((name, _, rel)): Path<(String, String, String)>, uri: Uri, q: Result<Query<ListQuery>, QueryRejection>) -> Response {
@@ -674,7 +675,7 @@ async fn tab_counts(State(s): Shared, user: Option<Extension<User>>, Path((name,
         Ok(t) => t,
         Err(r) => return r,
     };
-    run_counts(&s, related.child, scope, reach, q, &uri, pins).await
+    run_counts(&s, &related.child, scope, reach, q, &uri, pins).await
 }
 
 /// The raw segment of the path, `back` segments from the end. `Path` decodes a segment, and then a `,` in a key value cannot be told from the separator.
@@ -726,15 +727,15 @@ async fn detail(State(s): Shared, user: Option<Extension<User>>, Path((name, _))
         Ok(t) => t,
         Err(r) => return *r,
     };
-    let Some(resource) = s.site.resource(&name) else {
+    let Some(resource) = s.site.sight(&name, &grants) else {
         scope.rollback().await;
         return reject(StatusCode::NOT_FOUND, "NotFound", &format!("no resource {name:?}"));
     };
     if !resource.allow.contains(&Op::Read) {
         return deny(&s.site, scope, &user, &resource.name, json!({"reason": "allow"})).await;
     }
-    if !s.site.allows(&grants, resource, Op::Read) {
-        return deny(&s.site, scope, &user, &resource.name, json!({"needs": s.site.requires(resource, Op::Read)})).await;
+    if !s.site.allows(&grants, &resource, Op::Read) {
+        return deny(&s.site, scope, &user, &resource.name, json!({"needs": s.site.requires(&resource, Op::Read)})).await;
     }
     let raw = segment(&uri, 0);
     let types: Vec<_> = resource.key_columns.iter().map(|c| c.ty.ty).collect();
@@ -745,14 +746,14 @@ async fn detail(State(s): Shared, user: Option<Extension<User>>, Path((name, _))
             return reject(StatusCode::BAD_REQUEST, "BadRequest", &m);
         }
     };
-    let (scope, reach) = match reach(&s, resource, &user, &grants, without_of(&uri), scope).await {
+    let (scope, reach) = match reach(&s, &resource, &user, &grants, without_of(&uri), scope).await {
         Ok(t) => t,
         Err(r) => return *r,
     };
-    match list::detail(&s.site, resource, scope.executor(), s.target, &key, &reach.rows).await {
+    match list::detail(&s.site, &resource, scope.executor(), s.target, &key, &reach.rows).await {
         Ok(Some(record)) => {
             let values = record.cells;
-            let (scope, inlines) = match inline_rows(&s, resource, &user, &grants, &key, &reach, scope).await {
+            let (scope, inlines) = match inline_rows(&s, &resource, &user, &grants, &key, &reach, scope).await {
                 Ok(t) => t,
                 Err(r) => return *r,
             };

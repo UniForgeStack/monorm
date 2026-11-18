@@ -47,8 +47,8 @@ struct Deleted {
     before: Vec<Value>,
 }
 
-struct Part<'a> {
-    inline: &'a Inline,
+struct Part {
+    inline: Inline,
     /// The child columns and the values that tie the rows to the parent. Empty while the parent is new.
     pins: Vec<(Column, Value)>,
     /// The row scope of the inline with the pins: what an update or delete may reach.
@@ -59,11 +59,11 @@ struct Part<'a> {
 }
 
 /// The checked rows of the inlines of one parent write.
-pub(crate) struct Changes<'a> {
-    parts: Vec<Part<'a>>,
+pub(crate) struct Changes {
+    parts: Vec<Part>,
 }
 
-impl Changes<'_> {
+impl Changes {
     pub(crate) fn is_empty(&self) -> bool {
         self.parts.iter().all(|p| p.creates.is_empty() && p.updates.is_empty() && p.deletes.is_empty())
     }
@@ -116,7 +116,7 @@ fn merge(problems: &mut Problems, prefix: &str, inline: &Inline, mut sub: Proble
 
 /// Read, lock and check the rows of the change set in the body. The caller runs `apply`, or sends `json` to a service.
 /// `parent` is the key and the row scope of the parent record on an update; a new parent has none.
-pub(crate) async fn check<'a>(s: &State_, c: &Call<'a>, parent_op: Op, parent: Option<(&[Value], &RowScope)>, problems: &mut Problems) -> Result<Changes<'a>, Fail> {
+pub(crate) async fn check(s: &State_, c: &Call<'_>, parent_op: Op, parent: Option<(&[Value], &RowScope)>, problems: &mut Problems) -> Result<Changes, Fail> {
     let mut changes = Changes { parts: Vec::new() };
     let Some(sets) = c.body.get("inlines") else { return Ok(changes) };
     let Value::Object(sets) = sets else { return Err(bad("\"inlines\" is an object")) };
@@ -146,8 +146,8 @@ pub(crate) async fn check<'a>(s: &State_, c: &Call<'a>, parent_op: Op, parent: O
             if !child.allow.contains(&op) {
                 return Err(Fail::Deny { resource: child.name.clone(), changes: json!({"reason": "allow"}) });
             }
-            if !site.inline_allows(&c.grants, c.resource, inline, op) {
-                return Err(Fail::Deny { resource: child.name.clone(), changes: json!({"needs": site.inline_requires(c.resource, inline, op)}) });
+            if !site.inline_allows(&c.grants, &c.resource, inline, op) {
+                return Err(Fail::Deny { resource: child.name.clone(), changes: json!({"needs": site.inline_requires(&c.resource, inline, op)}) });
             }
         }
         if !create.is_empty() || !update.is_empty() || !delete.is_empty() {
@@ -159,7 +159,7 @@ pub(crate) async fn check<'a>(s: &State_, c: &Call<'a>, parent_op: Op, parent: O
         let (pins, rows) = match parent {
             Some((key, parent_rows)) => {
                 let related = site.inline_related(inline);
-                let values = match list::parent_values(site, c.resource, &related, c.scope.executor(), s.target, key, parent_rows).await {
+                let values = match list::parent_values(site, &c.resource, &related, c.scope.executor(), s.target, key, parent_rows).await {
                     Ok(Some(v)) => v,
                     Ok(None) => return Err(Fail::Reply(reject(StatusCode::NOT_FOUND, "NotFound", "no such record"))),
                     Err(e) => return Err(Fail::Reply(write::list_failure(&c.meta, e))),
@@ -171,7 +171,7 @@ pub(crate) async fn check<'a>(s: &State_, c: &Call<'a>, parent_op: Op, parent: O
             None => (Vec::new(), unpinned.clone()),
         };
         let pin_labels: Vec<&String> = inline.child_to.iter().map(|col| &col.label).collect();
-        let mut part = Part { inline, pins: pins.clone(), rows, creates: Vec::new(), updates: Vec::new(), deletes: Vec::new() };
+        let mut part = Part { inline: inline.clone(), pins: pins.clone(), rows, creates: Vec::new(), updates: Vec::new(), deletes: Vec::new() };
 
         if !create.is_empty() {
             let existing = if pins.is_empty() {
@@ -288,9 +288,9 @@ async fn fetch(s: &State_, c: &Call<'_>, child: &Resource, key: &[Value], rows: 
 
 /// Run the checked rows: deletes, then updates, then creates, with one audit row per row under the name of the child page.
 /// `parent_cells` are the detail cells of a parent that the same request created. The caller rolls back on an error.
-pub(crate) async fn apply(s: &State_, c: &Call<'_>, changes: &Changes<'_>, parent_cells: Option<&[Value]>) -> Result<(), Response> {
+pub(crate) async fn apply(s: &State_, c: &Call<'_>, changes: &Changes, parent_cells: Option<&[Value]>) -> Result<(), Response> {
     for part in &changes.parts {
-        let (inline, child) = (part.inline, &part.inline.resource);
+        let (inline, child) = (&part.inline, &part.inline.resource);
         let pins = match parent_cells {
             Some(cells) => new_pins(c, inline, cells)?,
             None => part.pins.clone(),
@@ -349,12 +349,19 @@ pub(crate) async fn refuse(s: &State_, c: Call<'_>, fail: Fail) -> Response {
 async fn open_inline<'a>(s: &'a State_, user: Option<Extension<User>>, parent: &str, inline: &str, op: Op, req: Request, key_back: usize) -> Result<(Call<'a>, Pin), Box<Response>> {
     let (user, scope, grants) = authorize(s, user).await?;
     let (meta, uri) = write::meta_of(s, &req);
-    let found = s.site.resource(parent).and_then(|p| p.inlines.iter().find(|i| i.name == inline && i.save == InlineSave::Row).map(|i| (p, i)));
+    // The view of the user: an inline whose parent field is hidden is not there for the user.
+    let sight = s.site.sight(parent, &grants);
+    let found = sight.as_ref().and_then(|p| p.inlines.iter().find(|i| i.name == inline && i.save == InlineSave::Row).map(|i| (p, i)));
     let Some((parent, inline)) = found else {
         scope.rollback().await;
         return Err(Box::new(reject(StatusCode::NOT_FOUND, "NotFound", &format!("no inline {inline:?} on {parent:?}"))));
     };
     let child = &inline.resource;
+    let at = parent.inlines.iter().position(|i| i.name == inline.name).expect("the inline was found in this page");
+    let child_sight = match &sight {
+        Some(crate::sight::Sight::View(view)) => crate::sight::Sight::Inline(view.clone(), at),
+        _ => crate::sight::Sight::Page(&s.site.resource(&parent.name).expect("the page of the view").inlines[at].resource),
+    };
     if op == Op::Delete && !inline.delete {
         scope.rollback().await;
         return Err(Box::new(reject(StatusCode::FORBIDDEN, "Forbidden", &format!("the inline {:?} does not delete rows", inline.name))));
@@ -414,7 +421,7 @@ async fn open_inline<'a>(s: &'a State_, user: Option<Extension<User>>, parent: &
         }
     };
     let pin = Pin { pins: pins_of(inline, values), max: inline.max };
-    let call = Call { resource: child, user, grants, scope, meta, uri, body: Map::new() };
+    let call = Call { resource: child_sight, user, grants, scope, meta, uri, body: Map::new() };
     Ok((write::read_body(call, req).await?, pin))
 }
 

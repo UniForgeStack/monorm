@@ -51,7 +51,7 @@ impl Section {
 }
 
 /// What a resource form needs at a request: its sections, its read-only fields, its widgets and its module.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct FormSpec {
     pub create: Vec<Section>,
     pub edit: Vec<Section>,

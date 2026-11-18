@@ -43,6 +43,9 @@ pub const MAX_SEARCH_LEN: usize = 200;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConfigError(pub String);
 
+/// The user views of the resources: the key is the index of the resource and which bound names the user holds.
+pub(crate) type Views = std::collections::HashMap<(usize, Vec<bool>), Arc<Resource>>;
+
 impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
@@ -121,6 +124,12 @@ struct ResourceConfig {
     /// Names of field permissions (`see_cost`): `<label>.<name>`.
     #[serde(default)]
     field_permissions: Vec<String>,
+    /// Field to permission name: only a user with that name sees the field. A bound name is declared as a field permission.
+    #[serde(default)]
+    see: BTreeMap<String, String>,
+    /// Field to permission name: only a user with that name changes the field, the others see it read-only.
+    #[serde(default)]
+    change: BTreeMap<String, String>,
     /// Actions: a permission name (`<label>.<action>_<resource>`), a placement, a confirmation and inputs.
     #[serde(default)]
     actions: Vec<ActionConfig>,
@@ -204,7 +213,7 @@ pub enum InlineSave {
 }
 
 /// A to-many relation of a page, shown and edited in place on its detail page: the page of the child with the wrapper settings.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Inline {
     /// The relation name: the name of the inline in the URL and in a change set.
     pub name: String,
@@ -384,7 +393,7 @@ pub struct PackageTab {
     pub module: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Resource {
     pub model: usize,
     pub name: String,
@@ -401,6 +410,16 @@ pub struct Resource {
     /// `delete` is its own page level, and `manage` does not include it.
     pub split_delete: bool,
     pub field_permissions: Vec<String>,
+    /// Field (column label) to the field permission that shows it.
+    pub see: BTreeMap<String, String>,
+    /// Field (column label) to the field permission that lets a user change it.
+    pub change: BTreeMap<String, String>,
+    /// The full names (`<label>.<name>`) of the field permissions of this page and of its inlines that bind a field, sorted: the key of a user view.
+    pub bound: Vec<String>,
+    /// The labels of the fields that the user of this view may not see: empty on the page itself.
+    pub hidden: BTreeSet<String>,
+    /// The labels of the fields that the user of this view may see and not change.
+    pub locked: BTreeSet<String>,
     pub actions: Vec<Action>,
     /// Bulk delete of the list: on by default.
     pub bulk_delete: bool,
@@ -461,7 +480,7 @@ pub struct Resource {
     pub package_tabs: Vec<PackageTab>,
     tabs_config: Option<Vec<String>>,
     /// Whether the table is large, and when it was read.
-    large: Mutex<Option<(Instant, bool)>>,
+    large: Arc<Mutex<Option<(Instant, bool)>>>,
 }
 
 /// What a parameter of a `queryset` holds at a request.
@@ -606,7 +625,7 @@ pub struct Tab {
 /// The rows of a to-many relation of one record: the child rows whose `child_to` equals the `parent_from` of the record.
 #[derive(Debug)]
 pub struct Related<'a> {
-    pub child: &'a Resource,
+    pub child: crate::sight::Sight<'a>,
     pub parent_from: Vec<Column>,
     pub child_to: Vec<Column>,
 }
@@ -661,7 +680,9 @@ pub struct Site {
     pub routes: Vec<crate::routes::Route>,
     /// The loaded extension packages.
     pub packages: crate::packages::Packages,
-    meta_builds: AtomicUsize,
+    pub(crate) meta_builds: AtomicUsize,
+    /// The user views of the pages that bind fields: one for each page and set of granted names.
+    pub(crate) views: Mutex<Views>,
 }
 
 impl Site {
@@ -762,6 +783,7 @@ impl Site {
         }
         let meta_builds = AtomicUsize::new(0);
         for r in &mut resources {
+            r.bound = crate::sight::bound_names(r);
             r.meta = meta::resource(&schema, r, &meta_builds);
         }
         let brand = meta::brand(config.brand.as_ref())?;
@@ -774,7 +796,7 @@ impl Site {
             0 => None,
             ms => Some(Duration::from_millis(ms)),
         };
-        let mut site = Site { schema, base_path, prefix, strategy, resources, brand, groups, statement_timeout, export_idle_timeout, warnings, routes: Vec::new(), packages, meta_builds };
+        let mut site = Site { schema, base_path, prefix, strategy, resources, brand, groups, statement_timeout, export_idle_timeout, warnings, routes: Vec::new(), packages, meta_builds, views: Mutex::new(Default::default()) };
         site.routes = crate::routes::build(&config.routes, &site)?;
         if let Some(role) = added.role {
             // The picker lists the names of the site, the names of the routes included, so it waits for the routes.
@@ -786,7 +808,7 @@ impl Site {
         Ok(site)
     }
 
-    /// How many times `build` made the metadata of a resource: one per resource, and no request adds to it.
+    /// How many times the metadata of a resource was made: one per resource at `build`, and one per set of granted names of a page that binds fields.
     pub fn meta_builds(&self) -> usize {
         self.meta_builds.load(Ordering::SeqCst)
     }
@@ -824,19 +846,20 @@ impl Site {
         ["/files/", "/export/", "/routes/"].iter().any(|p| rest.starts_with(p))
     }
 
+    /// The page as built, with no user view: for names, permissions and the build. A handler that reads columns uses `sight`.
     pub fn resource(&self, name: &str) -> Option<&Resource> {
         self.resources.iter().find(|r| r.name == name)
     }
 
     /// The rows of an inline of a record: the child rows whose `child_to` equals the `parent_from` of the record.
     pub fn inline_related<'a>(&self, inline: &'a Inline) -> Related<'a> {
-        Related { child: &inline.resource, parent_from: inline.parent_from.clone(), child_to: inline.child_to.clone() }
+        Related { child: crate::sight::Sight::Page(&inline.resource), parent_from: inline.parent_from.clone(), child_to: inline.child_to.clone() }
     }
 
     /// The rows of the to-many relation `rel` of a record of `parent`: none when `rel` is not a tab of the resource.
-    pub fn plan_related<'a>(&'a self, parent: &Resource, rel: &str) -> Option<Related<'a>> {
+    pub fn plan_related<'a>(&'a self, parent: &Resource, rel: &str, grants: &crate::permissions::Grants) -> Option<Related<'a>> {
         let tab = parent.tabs.iter().find(|t| t.name == rel)?;
-        let child = self.resource(&tab.target)?;
+        let child = self.sight(&tab.target, grants)?;
         let parent_model = self.schema.model(parent.model);
         let relation = parent_model.ir.relations.iter().find(|r| r.name == rel)?;
         let (parent_from, child_to) = (field_columns(&self.schema, parent.model, &relation.from)?, field_columns(&self.schema, child.model, &relation.to)?);
@@ -845,7 +868,7 @@ impl Site {
 }
 
 /// The columns of the fields that `names` (field or column names) point to.
-fn field_columns(schema: &Schema, model: usize, names: &[String]) -> Option<Vec<Column>> {
+pub(crate) fn field_columns(schema: &Schema, model: usize, names: &[String]) -> Option<Vec<Column>> {
     names
         .iter()
         .map(|n| {
@@ -1082,7 +1105,7 @@ fn concrete(m: &monorm_core::schema::Model) -> bool {
 
 impl ResourceConfig {
     fn of(model: &str) -> ResourceConfig {
-        ResourceConfig { model: model.to_owned(), list: ListConfig::default(), allow: None, perms: None, label: None, title: None, group: None, field_permissions: Vec::new(), actions: Vec::new(), bulk_delete: true, queryset: None, can: BTreeMap::new(), check_messages: BTreeMap::new(), service: Default::default(), inputs: Vec::new(), allow_protected_writes: false, host_behavior: false, form: None, readonly: Vec::new(), widgets: BTreeMap::new(), form_component: None, detail_tabs: Vec::new(), relations: BTreeMap::new(), files: Vec::new(), inlines: Vec::new() }
+        ResourceConfig { model: model.to_owned(), list: ListConfig::default(), allow: None, perms: None, label: None, title: None, group: None, field_permissions: Vec::new(), see: BTreeMap::new(), change: BTreeMap::new(), actions: Vec::new(), bulk_delete: true, queryset: None, can: BTreeMap::new(), check_messages: BTreeMap::new(), service: Default::default(), inputs: Vec::new(), allow_protected_writes: false, host_behavior: false, form: None, readonly: Vec::new(), widgets: BTreeMap::new(), form_component: None, detail_tabs: Vec::new(), relations: BTreeMap::new(), files: Vec::new(), inlines: Vec::new() }
     }
 }
 
@@ -1099,7 +1122,7 @@ struct PermissionOptions {
     split_delete: bool,
 }
 
-fn permission_options(name: &str, config: &ResourceConfig, strategy: Strategy, site_label: &str) -> Result<PermissionOptions, ConfigError> {
+fn permission_options(name: &str, config: &ResourceConfig, field_names: &[String], strategy: Strategy, site_label: &str) -> Result<PermissionOptions, ConfigError> {
     let label = config.label.clone().unwrap_or_else(|| site_label.to_owned());
     check_name("label", &label)?;
     let mut allow = Vec::new();
@@ -1127,7 +1150,7 @@ fn permission_options(name: &str, config: &ResourceConfig, strategy: Strategy, s
             return err(format!("{name}: perms must name read and manage"));
         }
     }
-    if strategy == Strategy::Access && (!config.field_permissions.is_empty() || config.actions.iter().any(|a| a.permission.is_some())) {
+    if strategy == Strategy::Access && (!field_names.is_empty() || config.actions.iter().any(|a| a.permission.is_some())) {
         return err(format!("{name}: field and action names need the page or model strategy"));
     }
     // An unnamed action needs `update`, and the access strategy has no such grant: every staff user would run it.
@@ -1137,7 +1160,7 @@ fn permission_options(name: &str, config: &ResourceConfig, strategy: Strategy, s
         }
     }
     let mut seen = BTreeSet::new();
-    for n in &config.field_permissions {
+    for n in field_names {
         check_name(&format!("{name}: permission name"), n)?;
         if !seen.insert(n) {
             return err(format!("{name}: permission name {n:?} is declared twice"));
@@ -1147,7 +1170,7 @@ fn permission_options(name: &str, config: &ResourceConfig, strategy: Strategy, s
     for a in &config.actions {
         if let Some(p) = &a.permission {
             check_name(&format!("{name}: permission name"), p)?;
-            if config.field_permissions.contains(p) {
+            if field_names.contains(p) {
                 return err(format!("{name}: permission name {p:?} is declared twice"));
             }
         }
@@ -1163,7 +1186,13 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
     let list = &config.list;
     let model = schema.model(idx);
     let name = model.ir.name.clone();
-    let PermissionOptions { label, allow, split_delete } = permission_options(&name, config, strategy, site_label)?;
+    let mut field_names = config.field_permissions.clone();
+    for n in config.see.values().chain(config.change.values()) {
+        if !field_names.contains(n) {
+            field_names.push(n.clone());
+        }
+    }
+    let PermissionOptions { label, allow, split_delete } = permission_options(&name, config, &field_names, strategy, site_label)?;
     let extras = extra_columns(schema, idx, &name, list)?;
     let extra = |n: &str| extras.columns.iter().find(|e| e.label == n).cloned();
     let mut columns = match &list.columns {
@@ -1251,6 +1280,7 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
         return err(format!("{name}: check_messages names {k:?}, which is not a named @@check of the model"));
     }
     crate::hostwrite::check_config(&name, &detail, &config.service, &config.inputs)?;
+    check_bindings(&name, config, &columns, &detail, &key_columns)?;
     let form = crate::form::build(schema, idx, &name, &detail, &allow, &FormConfig { form: config.form.clone(), readonly: config.readonly.clone(), widgets: config.widgets.clone(), component: config.form_component.clone() }, global)?;
     let mut package_tabs = Vec::new();
     for full in &config.detail_tabs {
@@ -1270,7 +1300,12 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
         label,
         allow,
         split_delete,
-        field_permissions: config.field_permissions.clone(),
+        field_permissions: field_names,
+        see: config.see.clone(),
+        change: config.change.clone(),
+        bound: Vec::new(),
+        hidden: BTreeSet::new(),
+        locked: BTreeSet::new(),
         actions,
         bulk_delete: config.bulk_delete,
         title,
@@ -1305,8 +1340,25 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
         inlines: Vec::new(),
         package_tabs,
         tabs_config: list.tabs.clone(),
-        large: Mutex::new(None),
+        large: Arc::new(Mutex::new(None)),
     })
+}
+
+/// `see` and `change` name a column or a field of the page, never a key field: a row names its record with the key.
+fn check_bindings(name: &str, config: &ResourceConfig, columns: &[Column], detail: &[Column], key_columns: &[Column]) -> Result<(), ConfigError> {
+    for (what, map) in [("see", &config.see), ("change", &config.change)] {
+        for (field, permission) in map {
+            let known = if what == "see" { columns.iter().chain(detail).any(|c| c.label == *field) } else { detail.iter().any(|c| c.label == *field) };
+            if !known {
+                return err(format!("{name}: {what} names {field:?}, which is not {}", if what == "see" { "a column or a field" } else { "a field of the form" }));
+            }
+            if key_columns.iter().any(|k| k.label == *field) {
+                return err(format!("{name}: {what} names the key field {field:?}: a row names its record with the key"));
+            }
+            check_name(&format!("{name}: {what} permission name"), permission)?;
+        }
+    }
+    Ok(())
 }
 
 /// The Json fields of a resource that hold an uploaded file.

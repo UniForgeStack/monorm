@@ -249,7 +249,7 @@ struct Aim<'a> {
     c: Call<'a>,
     reach: Reach,
     at: usize,
-    label: &'a str,
+    label: String,
     key: Vec<Value>,
     raw: String,
     record: Record,
@@ -259,7 +259,8 @@ struct Aim<'a> {
 /// `lock` takes the row lock. The transaction stays open on `Ok`; every `Err` closed it.
 async fn locate<'a>(s: &'a State_, user: Option<Extension<User>>, name: &str, field: &str, head: (Meta, Uri), lock: bool) -> Result<Aim<'a>, Response> {
     let c = open_head(s, user, name, Op::Update, head).await.map_err(|r| *r)?;
-    let (site, resource) = (&s.site, c.resource);
+    let sight = c.resource.clone();
+    let (site, resource) = (&s.site, &*sight);
     let Some((at, label)) = file_column(resource, field) else {
         c.scope.rollback().await;
         return Err(reject(StatusCode::NOT_FOUND, "NotFound", &format!("no file field {field:?} on {name:?}")));
@@ -294,7 +295,7 @@ async fn locate<'a>(s: &'a State_, user: Option<Extension<User>>, name: &str, fi
     if record.flags.get("change") == Some(&Value::Bool(false)) {
         return Err(deny(site, c.scope, &c.user, &resource.name, json!({"reason": "can", "rule": "change"})).await);
     }
-    Ok(Aim { c, reach, at, label, key, raw, record })
+    Ok(Aim { c, reach, at, label: label.to_owned(), key, raw, record })
 }
 
 /// `POST /files/<resource>/<key>/<field>`: the multipart body replaces the file of the record. One audit row.
@@ -309,7 +310,7 @@ pub(crate) async fn upload(State(s): Shared, user: Option<Extension<User>>, Path
         Err(r) => return r,
     };
     c.scope.rollback().await;
-    let (site, resource, meta) = (&s.site, c.resource, &c.meta);
+    let (site, resource, meta) = (&s.site, &c.resource, &c.meta);
     let Some((bridge, auth)) = &s.bridge else { return no_bridge(meta) };
     let Some(boundary) = boundary else { return reject(StatusCode::BAD_REQUEST, "BadRequest", "the body is multipart/form-data with a boundary") };
     let Ok(bytes) = axum::body::to_bytes(body, MAX_UPLOAD).await else {
@@ -354,7 +355,7 @@ pub(crate) async fn upload(State(s): Shared, user: Option<Extension<User>>, Path
         c.scope.rollback().await;
         return response;
     }
-    let response = Json(json!({"ok": true, "key": raw, "changed": [label], "value": reference})).into_response();
+    let response = Json(json!({"ok": true, "key": raw, "changed": [&label], "value": reference})).into_response();
     finish(c, response).await
 }
 
@@ -366,32 +367,32 @@ pub(crate) async fn download(State(s): Shared, user: Option<Extension<User>>, Pa
         Ok(t) => t,
         Err(r) => return *r,
     };
-    let Some(resource) = s.site.resource(&name) else {
+    let Some(resource) = s.site.sight(&name, &grants) else {
         scope.rollback().await;
         return reject(StatusCode::NOT_FOUND, "NotFound", &format!("no resource {name:?}"));
     };
     if !resource.allow.contains(&Op::Read) {
         return deny(&s.site, scope, &user, &resource.name, json!({"reason": "allow"})).await;
     }
-    if !s.site.allows(&grants, resource, Op::Read) {
-        return deny(&s.site, scope, &user, &resource.name, json!({"needs": s.site.requires(resource, Op::Read)})).await;
+    if !s.site.allows(&grants, &resource, Op::Read) {
+        return deny(&s.site, scope, &user, &resource.name, json!({"needs": s.site.requires(&resource, Op::Read)})).await;
     }
-    let Some((at, _)) = file_column(resource, &field) else {
+    let Some((at, _)) = file_column(&resource, &field) else {
         scope.rollback().await;
         return reject(StatusCode::NOT_FOUND, "NotFound", &format!("no file field {field:?} on {name:?}"));
     };
-    let key = match decode_key(resource, segment(&uri, 1)) {
+    let key = match decode_key(&resource, segment(&uri, 1)) {
         Ok((_, k)) => k,
         Err(m) => {
             scope.rollback().await;
             return reject(StatusCode::BAD_REQUEST, "BadRequest", &m);
         }
     };
-    let (scope, reach) = match reach(&s, resource, &user, &grants, Vec::new(), scope).await {
+    let (scope, reach) = match reach(&s, &resource, &user, &grants, Vec::new(), scope).await {
         Ok(t) => t,
         Err(r) => return *r,
     };
-    let record = list::read_record(&s.site, resource, scope.executor(), s.target, &key, &reach.rows, false).await;
+    let record = list::read_record(&s.site, &resource, scope.executor(), s.target, &key, &reach.rows, false).await;
     scope.rollback().await;
     let record = match record {
         Ok(Some(r)) => r,

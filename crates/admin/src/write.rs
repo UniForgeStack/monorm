@@ -135,7 +135,7 @@ pub(crate) struct Meta {
 
 /// A checked request: the user, the transaction, the resource and the body.
 pub(crate) struct Call<'a> {
-    pub(crate) resource: &'a Resource,
+    pub(crate) resource: crate::sight::Sight<'a>,
     pub(crate) user: User,
     pub(crate) grants: Grants,
     pub(crate) scope: Scoped,
@@ -159,21 +159,21 @@ pub(crate) fn meta_of(s: &State_, req: &Request) -> (Meta, Uri) {
 /// a model that is read-only here (403). The body stays unread: the caller reads it.
 pub(crate) async fn open_head<'a>(s: &'a State_, user: Option<Extension<User>>, name: &str, op: Op, (meta, uri): (Meta, Uri)) -> Result<Call<'a>, Box<Response>> {
     let (user, scope, grants) = authorize(s, user).await?;
-    let Some(resource) = s.site.resource(name) else {
+    let Some(resource) = s.site.sight(name, &grants) else {
         scope.rollback().await;
         return Err(Box::new(reject(StatusCode::NOT_FOUND, "NotFound", &format!("no resource {name:?}"))));
     };
     if !resource.allow.contains(&op) {
         return Err(Box::new(deny(&s.site, scope, &user, &resource.name, json!({"reason": "allow"})).await));
     }
-    if !s.site.allows(&grants, resource, op) {
-        return Err(Box::new(deny(&s.site, scope, &user, &resource.name, json!({"needs": s.site.requires(resource, op)})).await));
+    if !s.site.allows(&grants, &resource, op) {
+        return Err(Box::new(deny(&s.site, scope, &user, &resource.name, json!({"needs": s.site.requires(&resource, op)})).await));
     }
-    if let Some(reason) = read_only_reason(&s.site.schema, resource) {
+    if let Some(reason) = read_only_reason(&s.site.schema, &resource) {
         scope.rollback().await;
         return Err(Box::new(reject(StatusCode::FORBIDDEN, "ReadOnly", &reason)));
     }
-    if s.bridge.is_none() && hostwrite::route(&s.site.schema, resource, op).is_some() {
+    if s.bridge.is_none() && hostwrite::route(&s.site.schema, &resource, op).is_some() {
         scope.rollback().await;
         return Err(Box::new(reject(StatusCode::FORBIDDEN, "ReadOnly", "this write needs host code, and this admin has no host")));
     }
@@ -333,7 +333,9 @@ fn constraint_problems(schema: &Schema, r: &Resource, written: &[String], deleti
         }
         Some("23502") => {
             let column = between(&d.message, "column \"", "\"").map(str::to_owned).or_else(|| d.message.split_once("constraint failed: ").map(|(_, c)| c.rsplit('.').next().unwrap_or(c).trim().to_owned()));
-            match column.as_deref().and_then(field_of) {
+            // A required field that the user cannot see is named too: the user cannot fill it, and the error says which field blocks the create.
+            let hidden = |column: &str| model.fields().iter().find(|f| f.column == column).map(|f| f.name.clone()).filter(|n| r.hidden.contains(n));
+            match column.as_deref().and_then(|c| field_of(c).or_else(|| hidden(c))) {
                 Some(f) => p.field(&f, "This field is required."),
                 None => p.form.push("A required value is missing.".into()),
             }
@@ -548,7 +550,7 @@ pub(crate) async fn write_audit(s: &State_, c: &Call<'_>, action: &str, key_text
 
 /// `write_audit` with more keys in `changes`: the inputs and the opt-in of a host write.
 pub(crate) async fn write_audit_with(s: &State_, c: &Call<'_>, action: &str, key_text: &str, cells: &[Value], diff: Value, extra: Map<String, Value>) -> Result<(), String> {
-    write_audit_for(s, c, c.resource, action, key_text, cells, diff, extra).await
+    write_audit_for(s, c, &c.resource, action, key_text, cells, diff, extra).await
 }
 
 /// `write_audit_with` for a resource that is not the page of the call: the child page of an inline row.
@@ -631,7 +633,7 @@ pub(crate) async fn check_picks(s: &State_, c: &Call<'_>, resource: &Resource, s
         let Ok(key) = relations::canonical(s, relation, v) else { continue };
         let found = async {
             let rows = relations::offer(s, relation, &c.user, &c.scope, true).await?;
-            relations::offered(s, c.scope.executor(), relation, &rows, std::slice::from_ref(&key)).await
+            relations::offered(s, c.scope.executor(), relation, &c.grants, &rows, std::slice::from_ref(&key)).await
         }
         .await
         .map_err(|e| list_failure(&c.meta, e))?;
@@ -653,7 +655,8 @@ fn refuse_files(resource: &Resource, set: &Map<String, Value>, problems: &mut Pr
 
 /// Adds and removes the links in the request transaction. The result is the audit diff of the links that changed.
 async fn apply_links(s: &State_, c: &Call<'_>, links: &[Link<'_>], source: &Value, problems: &mut Problems) -> Result<Map<String, Value>, Response> {
-    let (site, resource) = (&s.site, c.resource);
+    let sight = c.resource.clone();
+    let (site, resource) = (&s.site, &*sight);
     let mut diff = Map::new();
     for link in links {
         let (rel, through) = (link.relation, link.relation.through.as_ref().expect("chips have a join model"));
@@ -662,7 +665,7 @@ async fn apply_links(s: &State_, c: &Call<'_>, links: &[Link<'_>], source: &Valu
         let failed = |e: ListError| list_failure(&c.meta, e);
         if !link.add.is_empty() {
             let rows = relations::offer(s, rel, &c.user, &c.scope, true).await.map_err(failed)?;
-            let found = relations::offered(s, c.scope.executor(), rel, &rows, &link.add).await.map_err(failed)?;
+            let found = relations::offered(s, c.scope.executor(), rel, &c.grants, &rows, &link.add).await.map_err(failed)?;
             if link.add.iter().any(|k| !found.iter().any(|(f, _)| json::same(tkey.ty.ty, f, k))) {
                 problems.field(&rel.name, "Choose records that the list offers.");
                 continue;
@@ -755,8 +758,8 @@ fn pinned_labels(pin: Option<&Pin>) -> Vec<String> {
 
 /// A row that would pass the cap of the inline is a form problem.
 async fn check_cap(s: &State_, c: &Call<'_>, p: &Pin, problems: &mut Problems) -> Result<(), Response> {
-    let rows = crate::server::child_rows(s, c.resource, &c.user, &c.scope).await.map_err(|e| list_failure(&c.meta, e))?;
-    let have = list::read_pinned(&s.site, c.resource, c.scope.executor(), s.target, &p.pins, &rows, p.max, false).await.map_err(|e| list_failure(&c.meta, e))?;
+    let rows = crate::server::child_rows(s, &c.resource, &c.user, &c.scope).await.map_err(|e| list_failure(&c.meta, e))?;
+    let have = list::read_pinned(&s.site, &c.resource, c.scope.executor(), s.target, &p.pins, &rows, p.max, false).await.map_err(|e| list_failure(&c.meta, e))?;
     if have.len() >= p.max {
         problems.form.push(format!("This list holds at most {} rows.", p.max));
     }
@@ -800,7 +803,8 @@ pub(crate) async fn create_in(s: &State_, c: Call<'_>, pin: Option<&Pin>) -> Res
         Ok(m) => m,
         Err(m) => return c.bad(&m).await,
     };
-    let (site, resource) = (&s.site, c.resource);
+    let sight = c.resource.clone();
+    let (site, resource) = (&s.site, &*sight);
     let model = site.schema.model(resource.model);
     let mut problems = Problems::default();
     let values = convert_set(site, resource, &set, false, &mut problems);
@@ -951,7 +955,8 @@ pub(crate) async fn update(State(s): Shared, user: Option<Extension<User>>, Path
 
 /// `update`, inside the pins of an inline row.
 pub(crate) async fn update_in(s: &State_, c: Call<'_>, pin: Option<&Pin>) -> Response {
-    let (site, resource) = (&s.site, c.resource);
+    let sight = c.resource.clone();
+    let (site, resource) = (&s.site, &*sight);
     let model = site.schema.model(resource.model);
     let set = match c.set() {
         Ok(m) => m,
@@ -1106,7 +1111,8 @@ pub(crate) async fn destroy(State(s): Shared, user: Option<Extension<User>>, Pat
 
 /// `destroy`, inside the pins of an inline row.
 pub(crate) async fn destroy_in(s: &State_, c: Call<'_>, pin: Option<&Pin>) -> Response {
-    let (site, resource) = (&s.site, c.resource);
+    let sight = c.resource.clone();
+    let (site, resource) = (&s.site, &*sight);
     let loaded = c.loaded();
     let (raw, key) = match key_of_path(resource, &c.uri) {
         Ok(k) => k,
@@ -1175,7 +1181,7 @@ pub(crate) async fn destroy_in(s: &State_, c: Call<'_>, pin: Option<&Pin>) -> Re
 
 /// The UPDATE of the changed fields of one record, with the `queryset` filter and the `can=` rule. The caller rolls back on an error.
 pub(crate) async fn run_update(s: &State_, c: &Call<'_>, reach: &crate::server::Reach, key: &[Value], changed: &[(String, Bind, Value)]) -> Result<(), Response> {
-    update_rows(s, c, c.resource, reach, key, changed).await
+    update_rows(s, c, &c.resource, reach, key, changed).await
 }
 
 /// The same reach with the pins of an inline row added to its row scope.

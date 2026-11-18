@@ -21,6 +21,7 @@ use crate::list::{self, Binds, ListError, ListRequest, Position, RowScope};
 use crate::permissions::{Grants, Op};
 use crate::scope::Scoped;
 use crate::server::{authorize, deny, error_response, finish, found_keys, queryset_rows, reject, Shared, State_, User};
+use crate::sight::Sight;
 use crate::site::{column, err, queryset_of, Column, ConfigError, Queryset, QuerysetConfig, Resource, Source};
 
 /// The rows that one autocomplete call returns when the call sets no limit, and the most it returns.
@@ -60,7 +61,7 @@ pub struct Through {
     pub scope_defaults: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Relation {
     /// The relation name.
     pub name: String,
@@ -168,6 +169,11 @@ fn target_of<'a>(s: &'a State_, relation: &Relation) -> &'a Resource {
     s.site.resource(&relation.target).expect("a relation leads to a resource: `build` checked it")
 }
 
+/// The target as the user may see it: a hidden field is not there.
+fn target_view<'a>(s: &'a State_, relation: &Relation, grants: &Grants) -> Sight<'a> {
+    s.site.sight(&relation.target, grants).expect("a relation leads to a resource: `build` checked it")
+}
+
 /// The rows of the target that the relation offers: the `queryset` of the target and, with `choices`, the `choices` of the relation.
 /// The read defaults that read a scope value are off, as for every route. The admin ignores tenancy.
 pub(crate) async fn offer(s: &State_, relation: &Relation, user: &User, scope: &Scoped, choices: bool) -> Result<RowScope, ListError> {
@@ -190,7 +196,7 @@ pub(crate) fn canonical(s: &State_, relation: &Relation, v: &Value) -> Result<Va
 }
 
 /// Which of `keys` (canonical) the rows offer, each with its label.
-pub(crate) async fn offered(s: &State_, conn: &dyn Executor, relation: &Relation, rows: &RowScope, keys: &[Value]) -> Result<Vec<(Value, String)>, ListError> {
+pub(crate) async fn offered(s: &State_, conn: &dyn Executor, relation: &Relation, grants: &Grants, rows: &RowScope, keys: &[Value]) -> Result<Vec<(Value, String)>, ListError> {
     if keys.is_empty() {
         return Ok(Vec::new());
     }
@@ -201,12 +207,14 @@ pub(crate) async fn offered(s: &State_, conn: &dyn Executor, relation: &Relation
     for k in keys {
         params.push(binds.push(json::bind(key.ty.ty, k).map_err(ListError::Bad)?));
     }
+    // A label that the user may not see falls back to the key.
+    let label = if target_view(s, relation, grants).hidden.contains(&relation.label.label) { key } else { &relation.label };
     let mut filters = vec![json!({"t": "in", "item": list::col(key), "values": params})];
     filters.extend(rows.push(&mut binds));
     let mut op = json!({
         "op": "select",
         "model": s.site.schema.model(target.model).ir.name,
-        "columns": [{"t": "expr", "expr": list::col(key)}, {"t": "expr", "expr": list::col(&relation.label)}],
+        "columns": [{"t": "expr", "expr": list::col(key)}, {"t": "expr", "expr": list::col(label)}],
         "filters": filters,
         "limit": keys.len(),
     });
@@ -219,7 +227,7 @@ pub(crate) async fn offered(s: &State_, conn: &dyn Executor, relation: &Relation
             let cell = selected.rows.cell(r, c, *ty).map_err(|e| ListError::Engine(e.to_string()))?;
             cells.push(json::cell(&s.site.schema, *ty, cell));
         }
-        out.push((cells[0].clone(), cells[1].as_str().unwrap_or_default().to_string()));
+        out.push((cells[0].clone(), cells[1].as_str().map_or_else(|| if cells[1].is_null() { String::new() } else { cells[1].to_string() }, str::to_owned)));
     }
     Ok(out)
 }
@@ -265,20 +273,20 @@ struct Opened<'a> {
     user: User,
     scope: Scoped,
     grants: Grants,
-    resource: &'a Resource,
-    relation: &'a Relation,
-    target: &'a Resource,
+    resource: Sight<'a>,
+    relation: Relation,
+    target: Sight<'a>,
 }
 
 /// The preamble of the two routes: the user, the source resource and relation (404), the permission on the source
 /// (`write`: create or update; else read) and the read permission on the target.
 async fn open<'a>(s: &'a State_, user: Option<Extension<User>>, name: &str, rel: &str, write: bool) -> Result<Opened<'a>, Box<Response>> {
     let (user, scope, grants) = authorize(s, user).await?;
-    let Some(resource) = s.site.resource(name) else {
+    let Some(resource) = s.site.sight(name, &grants) else {
         scope.rollback().await;
         return Err(Box::new(reject(StatusCode::NOT_FOUND, "NotFound", &format!("no resource {name:?}"))));
     };
-    let Some(relation) = resource.relations.iter().find(|r| r.name == rel) else {
+    let Some(relation) = resource.relations.iter().find(|r| r.name == rel).cloned() else {
         scope.rollback().await;
         return Err(Box::new(reject(StatusCode::NOT_FOUND, "NotFound", &format!("no relation field {rel:?} on {name:?}"))));
     };
@@ -286,16 +294,16 @@ async fn open<'a>(s: &'a State_, user: Option<Extension<User>>, name: &str, rel:
     if !ops.iter().any(|&op| resource.allow.contains(&op)) {
         return Err(Box::new(deny(&s.site, scope, &user, &resource.name, json!({"reason": "allow"})).await));
     }
-    if !ops.iter().any(|&op| resource.allow.contains(&op) && s.site.allows(&grants, resource, op)) {
-        let needs: Vec<_> = ops.iter().filter(|op| resource.allow.contains(op)).flat_map(|&op| s.site.requires(resource, op)).collect();
+    if !ops.iter().any(|&op| resource.allow.contains(&op) && s.site.allows(&grants, &resource, op)) {
+        let needs: Vec<_> = ops.iter().filter(|op| resource.allow.contains(op)).flat_map(|&op| s.site.requires(&resource, op)).collect();
         return Err(Box::new(deny(&s.site, scope, &user, &resource.name, json!({"needs": needs})).await));
     }
-    let target = target_of(s, relation);
+    let target = target_view(s, &relation, &grants);
     if !target.allow.contains(&Op::Read) {
         return Err(Box::new(deny(&s.site, scope, &user, &target.name, json!({"reason": "allow"})).await));
     }
-    if !s.site.allows(&grants, target, Op::Read) {
-        return Err(Box::new(deny(&s.site, scope, &user, &target.name, json!({"needs": s.site.requires(target, Op::Read)})).await));
+    if !s.site.allows(&grants, &target, Op::Read) {
+        return Err(Box::new(deny(&s.site, scope, &user, &target.name, json!({"needs": s.site.requires(&target, Op::Read)})).await));
     }
     Ok(Opened { user, scope, grants, resource, relation, target })
 }
@@ -321,11 +329,9 @@ pub(crate) async fn autocomplete(axum::extract::State(s): Shared, user: Option<E
             return reject(StatusCode::BAD_REQUEST, "BadRequest", &e.body_text());
         }
     };
-    let (target, relation) = (o.target, o.relation);
-    let Some(label_at) = target.columns.iter().position(|c| c.label == relation.label.label) else {
-        o.scope.rollback().await;
-        return reject(StatusCode::INTERNAL_SERVER_ERROR, "ServerError", "the label is not a column of the list");
-    };
+    let (target, relation) = (&o.target, &o.relation);
+    // A label that the user may not see falls back to the key, so the picker still works and shows no hidden value.
+    let label_at = target.columns.iter().position(|c| c.label == relation.label.label).unwrap_or(target.key_positions[0]);
     let out = async {
         let rows = offer(&s, relation, &o.user, &o.scope, true).await?;
         let position = q.cursor.map_or(Position::First, Position::After);
@@ -350,7 +356,7 @@ pub(crate) async fn links(axum::extract::State(s): Shared, user: Option<Extensio
         Ok(o) => o,
         Err(r) => return *r,
     };
-    let (resource, relation) = (o.resource, o.relation);
+    let (resource, relation) = (&o.resource, &o.relation);
     if relation.through.is_none() {
         o.scope.rollback().await;
         return reject(StatusCode::NOT_FOUND, "NotFound", &format!("{rel:?} is not a many-to-many relation"));
@@ -376,7 +382,7 @@ pub(crate) async fn links(axum::extract::State(s): Shared, user: Option<Extensio
         let linked = current(&s, scope.executor(), relation, resource, &key[0], None).await?;
         let truncated = linked.len() > LINKS_CAP;
         let rows = offer(&s, relation, &user, &scope, false).await?;
-        let found = offered(&s, scope.executor(), relation, &rows, &linked[..linked.len().min(LINKS_CAP)]).await?;
+        let found = offered(&s, scope.executor(), relation, &o.grants, &rows, &linked[..linked.len().min(LINKS_CAP)]).await?;
         let items: Vec<Value> = found.into_iter().map(|(value, label)| json!({"value": value, "label": label})).collect();
         Ok::<_, ListError>(Some((items, truncated)))
     }

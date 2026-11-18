@@ -17,6 +17,7 @@ use http_body_util::channel::{Channel, Sender};
 use serde_json::json;
 
 use crate::audit::{self, Entry};
+use crate::permissions::Grants;
 use crate::list::{self, ListError, ListRequest, Page, Position};
 use crate::server::{authorize, begin_scope, database_error, error_response, fill_batch, filters_of, found_keys, open_resource_with, query, ListQuery, Shared, State_, User};
 use crate::service::{Logger, RequestId};
@@ -31,7 +32,7 @@ pub(crate) async fn export(State(s): Shared, user: Option<Extension<User>>, log:
         Ok(t) => t,
         Err(r) => return *r,
     };
-    let (scope, resource, reach, (user, _)) = match open_resource_with(&s, user, scope, grants, &name, &uri).await {
+    let (scope, resource, reach, (user, grants)) = match open_resource_with(&s, user, scope, grants, &name, &uri).await {
         Ok(t) => t,
         Err(r) => return *r,
     };
@@ -49,10 +50,10 @@ pub(crate) async fn export(State(s): Shared, user: Option<Extension<User>>, log:
     // The cursor, page and limit of the query string do not apply: the export starts at the first row and takes batches of its own size.
     let mut request = ListRequest { limit: Some(EXPORT_BATCH), max_limit: Some(EXPORT_BATCH), sort: q.sort, q: q.q, filters, named, scope: reach.rows, ..ListRequest::new(Position::First) };
     let first = async {
-        list::check_request(&s.site, resource, &request)?;
-        request.found = found_keys(&s, resource, &scope, request.q.as_deref()).await?;
-        let mut page = list::list(&s.site, resource, scope.executor(), s.target, &request).await?;
-        fill_batch(&s, resource, &scope, &mut page).await?;
+        list::check_request(&s.site, &resource, &request)?;
+        request.found = found_keys(&s, &resource, &scope, request.q.as_deref()).await?;
+        let mut page = list::list(&s.site, &resource, scope.executor(), s.target, &request).await?;
+        fill_batch(&s, &resource, &scope, &mut page).await?;
         Ok::<_, ListError>(page)
     }
     .await;
@@ -73,10 +74,10 @@ pub(crate) async fn export(State(s): Shared, user: Option<Extension<User>>, log:
         return database_error(&e.message);
     }
     let (tx, body) = Channel::<Bytes, io::Error>::new(WAITING_CHUNKS);
-    let first_chunk = s.site.encode_csv(resource, &page.rows, true);
+    let first_chunk = s.site.encode_csv(&resource, &page.rows, true);
     let file: String = resource.name.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-')).collect();
     let trace = log.map(|Extension(l)| (l, id.map(|Extension(i)| i.0).unwrap_or_default()));
-    tokio::spawn(stream(s.clone(), resource.name.clone(), request, page, first_chunk, tx, trace));
+    tokio::spawn(stream(s.clone(), (resource.name.clone(), grants), request, page, first_chunk, tx, trace));
     let mut response = Response::new(Body::new(body));
     *response.status_mut() = StatusCode::OK;
     let headers = response.headers_mut();
@@ -89,7 +90,7 @@ pub(crate) async fn export(State(s): Shared, user: Option<Extension<User>>, log:
 
 /// Sends the chunks, a batch after a batch. An error or an idle timeout aborts the body, so a cut file never looks complete.
 /// The request log shows the 200 of the head, so a cut also leaves one `error` line when `trace` (the logger and the request id) is set.
-async fn stream(s: Arc<State_>, name: String, mut request: ListRequest, mut page: Page, mut chunk: String, mut tx: Sender<Bytes, io::Error>, trace: Option<(Logger, String)>) {
+async fn stream(s: Arc<State_>, (name, grants): (String, Grants), mut request: ListRequest, mut page: Page, mut chunk: String, mut tx: Sender<Bytes, io::Error>, trace: Option<(Logger, String)>) {
     let site = s.site.clone();
     let cut = |tx: Sender<Bytes, io::Error>, error: io::Error| {
         if let Some((log, id)) = &trace {
@@ -97,7 +98,7 @@ async fn stream(s: Arc<State_>, name: String, mut request: ListRequest, mut page
         }
         tx.abort(error);
     };
-    let Some(resource) = site.resource(&name) else { return };
+    let Some(resource) = site.sight(&name, &grants) else { return };
     loop {
         if !chunk.is_empty() {
             let data = Bytes::from(std::mem::take(&mut chunk));
@@ -115,14 +116,14 @@ async fn stream(s: Arc<State_>, name: String, mut request: ListRequest, mut page
         let Some(cursor) = page.next.take() else { return };
         request.position = Position::After(cursor);
         let read = match site.export_idle_timeout {
-            Some(idle) => tokio::time::timeout(idle, batch(&s, resource, &request)).await.unwrap_or_else(|_| Err(ListError::Timeout(format!("the batch took more than {} ms", idle.as_millis())))),
-            None => batch(&s, resource, &request).await,
+            Some(idle) => tokio::time::timeout(idle, batch(&s, &resource, &request)).await.unwrap_or_else(|_| Err(ListError::Timeout(format!("the batch took more than {} ms", idle.as_millis())))),
+            None => batch(&s, &resource, &request).await,
         };
         page = match read {
             Ok(p) => p,
             Err(e) => return cut(tx, io::Error::other(describe(e))),
         };
-        chunk = site.encode_csv(resource, &page.rows, false);
+        chunk = site.encode_csv(&resource, &page.rows, false);
     }
 }
 
