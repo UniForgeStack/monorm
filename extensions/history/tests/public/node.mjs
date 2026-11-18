@@ -8,10 +8,11 @@ const fixture = readFileSync(new URL('../fixtures/schema.prisma', import.meta.ur
 // Packages are discovered from the consumer's working directory.
 process.chdir(new URL('../../../../languages/js/', import.meta.url).pathname);
 assert.ok('monorm.history' in resolveExtensions(), 'run `npm run assemble` in languages/js');
+const { history } = await import('../../../../languages/js/extensions/history/index.js');
 
 async function run(provider, url) {
   const registry = new Registry();
-  const { Post } = loads(fixture.replace('"sqlite"', `"${provider}"`), { registry });
+  const { Post, BundleVersion } = loads(fixture.replace('"sqlite"', `"${provider}"`), { registry });
   const db = await connect(url, { registry, default: false });
   await db.dropTables();
   await db.createTables();
@@ -30,6 +31,20 @@ async function run(provider, url) {
     const again = await post.history.restore(last);
     assert.deepEqual([again.id, again.title], [post.id, 'a']);
     assert.equal(await post.history.purge({ before: new Date(Date.now() + 86_400_000) }), 5);
+
+    // versions mode: register, record twice, a repeated snapshot writes nothing, restore leaves a restore version
+    const bundles = { 1: { id: 1, title: 'a' } };
+    const applied = [];
+    history(BundleVersion).register({ generate: (id) => ({ ...bundles[id] }), restore: (snapshot) => applied.push(snapshot) });
+    const versions = history(BundleVersion).using(db);
+    const first = await versions.record(1, 'create');
+    bundles[1].title = 'b';
+    assert.equal((await versions.record(1, 'update')).versionNumber, 2);
+    assert.equal((await versions.record(1, 'update')).versionNumber, 2);
+    const restoredVersion = await versions.restore(first);
+    assert.deepEqual([restoredVersion.versionNumber, restoredVersion.changeType, restoredVersion.restoredFrom], [3, 'restore', first.id]);
+    assert.deepEqual(applied, [{ id: 1, title: 'a' }]);
+    assert.deepEqual((await versions.timeline(1)).map((e) => e.event.versionNumber), [1, 2, 3]);
   } finally {
     await db.dropTables();
     await db.close();
