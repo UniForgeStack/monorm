@@ -47,3 +47,17 @@ pub async fn fill_label(site: &Site, conn: &dyn Executor, resource: &str, record
     let args = vec![Value::from(label.to_string()), Value::from(resource.to_string()), Value::from(record_key.to_string())];
     conn.execute(sql, args).await.map(|_| ()).map_err(|e| e.message)
 }
+
+/// Completes the row that the default host writer wrote in the write transaction, found by its id: the key text, the label and the full `changes`
+/// (the key of a create and the diff are known only after the write and the read of the stored record).
+pub async fn complete(site: &Site, conn: &dyn Executor, id: i64, record_key: &str, label: &str, changes: Json) -> Result<(), String> {
+    let table = Table::of(site, "AdminLogEntry")?;
+    let (key_col, label_col, changes_col, id_col) = (table.column("record_key")?, table.column("record_label")?, table.column("changes")?, table.column("id")?);
+    let d = conn.dialect();
+    let sql = format!("UPDATE {} SET {key_col} = {}, {label_col} = {}, {changes_col} = {} WHERE {id_col} = {}", table.quoted(), mark(d, 1), mark(d, 2), mark(d, 3), mark(d, 4));
+    let args = vec![Value::from(record_key.to_string()), Value::from(label.to_string()), Value::from(Some(changes)), Value::from(id)];
+    match conn.execute(sql, args).await.map_err(|e| e.message)? {
+        0 => Err(format!("the host wrote no audit row {id}")),
+        _ => Ok(()),
+    }
+}

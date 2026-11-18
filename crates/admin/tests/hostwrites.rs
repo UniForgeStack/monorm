@@ -40,7 +40,9 @@ struct Host {
 
 impl HostBridge for Host {
     fn call(&self, name: &str, payload: Value, ctx: CallContext) -> BoxFuture<Result<Value, BridgeError>> {
-        assert!(ctx.tx.is_none(), "the service owns its transactions: the call holds no transaction");
+        // The default writer runs in the transaction of the request; a service owns its transactions.
+        assert_eq!(ctx.tx.is_some(), name == "admin.write", "only the default writer gets the transaction of the request");
+        let tx = ctx.tx.clone();
         self.seen.lock().unwrap().push((name.to_owned(), payload.clone()));
         let canned = self.answer.lock().unwrap().clone();
         let conn = self.conn.clone();
@@ -51,8 +53,11 @@ impl HostBridge for Host {
             }
             match name.as_str() {
                 "admin.write" => {
-                    conn.batch(format!("INSERT INTO \"Locked\" (x) VALUES ({})", payload["values"]["x"])).await.unwrap();
-                    Ok(json!({"ok": true, "key": {"id": 1}}))
+                    let tx = tx.expect("the default writer holds the transaction");
+                    tx.batch(format!("INSERT INTO \"Locked\" (x) VALUES ({})", payload["values"]["x"])).await.unwrap();
+                    // A blank row with an explicit id, as the default writer leaves it: the admin completes the row by this id.
+                    tx.batch("INSERT INTO \"AdminLogEntry\" (id, user_key, action, resource, record_key, record_label, changes) VALUES (41, '7', 'create', 'Locked', '', '', '{\"request_id\":\"r\",\"inputs\":{},\"service\":false}')".into()).await.unwrap();
+                    Ok(json!({"ok": true, "key": {"id": 1}, "audited": true, "audit_id": 41}))
                 }
                 "service.Book.update" => {
                     conn.batch(format!("UPDATE \"Book\" SET title = '{}' WHERE id = 1", payload["values"]["title"].as_str().unwrap())).await.unwrap();
@@ -144,6 +149,7 @@ async fn a_protected_model_stays_closed_until_the_resource_opens_it() {
 #[tokio::test]
 async fn an_open_protected_model_writes_through_the_host_and_the_audit_row_records_the_opt_in() {
     let w = world(json!({"resources": [{"model": "Locked", "allow_protected_writes": true}]})).await;
+    w.conn.batch("INSERT INTO \"AdminLogEntry\" (id, user_key, action, resource, record_key, record_label) VALUES (1, '7', 'create', 'Locked', '', '')".into()).await.unwrap();
     let (status, out) = w.send("POST", "/resources/Locked", json!({"set": {"x": 5}})).await;
     assert_eq!(status, 201, "{out}");
     assert_eq!(out["key"], "1");
@@ -152,8 +158,21 @@ async fn an_open_protected_model_writes_through_the_host_and_the_audit_row_recor
     assert_eq!(seen[0].0, "admin.write");
     assert_eq!((&seen[0].1["op"], &seen[0].1["values"], &seen[0].1["allow_protected"], &seen[0].1["user"]["key"]), (&json!("create"), &json!({"x": 5}), &json!(true), &json!(7)));
     let audit = w.audit().await;
-    assert_eq!(audit.len(), 1);
-    assert_eq!((audit[0].0.as_str(), &audit[0].1["allow_protected_writes"]), ("create", &json!(true)));
+    assert_eq!(audit.len(), 2);
+    assert_eq!((audit[1].0.as_str(), &audit[1].1["allow_protected_writes"]), ("create", &json!(true)));
+    // The host wrote the row in its transaction; the admin completes that row by its id and writes no second row.
+    assert!(audit[1].1["diff"].is_object(), "{}", audit[1].1);
+    let rows = w.rows("SELECT id, record_key, record_label FROM \"AdminLogEntry\" ORDER BY id").await;
+    let rows: Vec<_> = rows.into_iter().map(|r| (r[0].clone().unwrap(), r[1].clone().unwrap(), r[2].clone().unwrap())).collect();
+    assert_eq!(rows, [("1".into(), "".into(), "".into()), ("41".into(), "1".into(), "1".into())], "an app row with the same blank key keeps its blank label");
+}
+
+#[tokio::test]
+async fn an_audited_answer_without_the_audit_row_id_is_a_server_error() {
+    let w = world(json!({"resources": [{"model": "Locked", "allow_protected_writes": true}]})).await;
+    w.answer(json!({"ok": true, "key": {"id": 1}, "audited": true}));
+    let (status, out) = w.send("POST", "/resources/Locked", json!({"set": {"x": 5}})).await;
+    assert_eq!((status, &out["error"]["kind"]), (500, &json!("ServerError")));
 }
 
 #[tokio::test]

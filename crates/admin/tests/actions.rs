@@ -49,7 +49,8 @@ struct Host {
 
 impl HostBridge for Host {
     fn call(&self, name: &str, payload: Value, ctx: CallContext) -> BoxFuture<Result<Value, BridgeError>> {
-        assert!(ctx.tx.is_none(), "the host action owns its transactions");
+        // An action runs in the transaction of the request; a service function owns its transactions.
+        assert_eq!(ctx.tx.is_some(), !name.starts_with("service."), "the transaction of the request goes to an action, not to a service");
         // A file reaches the host as a path that holds the bytes, for the time of the call.
         let mut payload = payload;
         if let Some(path) = payload["inputs"]["attachment"]["path"].as_str() {

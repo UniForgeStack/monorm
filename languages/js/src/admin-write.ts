@@ -257,14 +257,14 @@ function scalarKey(value: unknown): unknown {
   return value;
 }
 
-async function writeLog(db: Database, user: string, action: string, resource: string, recordKey: string, label: string, changes: Readonly<Record<string, unknown>> | null): Promise<void> {
+async function writeLog(db: Database, user: string, action: string, resource: string, recordKey: string, label: string, changes: Readonly<Record<string, unknown>> | null): Promise<Loose> {
   let entry: Loose;
   try {
     entry = db.registry.get("AdminLogEntry").model;
   } catch {
     throw new Error("the admin log needs the AdminLogEntry model: import the admin app schema");
   }
-  await entry.objects.using(db).insert({ userKey: user, action, resource, recordKey, recordLabel: label, changes });
+  return entry.objects.using(db).insert({ userKey: user, action, resource, recordKey, recordLabel: label, changes });
 }
 
 // -- values from the JSON of the request ---------------------------------------------------------------------------
@@ -431,23 +431,74 @@ function guarded<T>(model: AnyModel, args: Loose, run: () => Promise<T>): Promis
   return args.allow_protected ? allowWrites([model], run) : run();
 }
 
-/** The host function `admin.write`'s share for one model: a query-set write with the filters of the resource. */
+/** The compare of the Rust core (`json::same`): a decimal compares by number, so `5` and `5.00` match. */
+function same(type: string, stored: unknown, loaded: unknown): boolean {
+  if (type === "decimal" && stored instanceof Decimal && loaded instanceof Decimal) return stored.equals(loaded);
+  if (stored instanceof Date && loaded instanceof Date) return stored.getTime() === loaded.getTime();
+  if (stored === loaded) return true;
+  if (stored === null || stored === undefined || loaded === null || loaded === undefined) return false;
+  if (stored instanceof Uint8Array && loaded instanceof Uint8Array) return Buffer.from(stored).equals(Buffer.from(loaded));
+  if (typeof stored === "object" || typeof loaded === "object") return JSON.stringify(stored) === JSON.stringify(loaded);
+  return String(stored) === String(loaded);
+}
+
+/**
+ * Reads the row under a lock and compares the loaded values of the `compare` fields with it. `false` when the row is gone.
+ * The compare runs in the write transaction, so a concurrent edit between the load and the save is a `VersionConflict`.
+ */
+async function checkLoaded(meta: ModelMeta, qs: Loose, args: Loose): Promise<boolean> {
+  const loadedJson: Record<string, unknown> = args.loaded ?? {};
+  const names: string[] = (args.compare ?? []).filter((n: string) => n in loadedJson);
+  const row = await (args.lock ? qs.lock() : qs).first();
+  if (row === null || row === undefined) return false;
+  const loaded = decodeValues(meta, Object.fromEntries(names.map((n) => [n, loadedJson[n]])));
+  for (const n of names) {
+    const field = meta.fieldByIr.get(n);
+    const name = field?.name ?? n;
+    if (!same(field?.type ?? "", row[name], loaded[name])) throw new VersionConflict(`${meta.name} ${JSON.stringify(args.key)} was changed since the form loaded`);
+  }
+  return true;
+}
+
+/** The audit row of a default write, inside the write transaction. Answers its id. Rust sends the key text of an update and a delete; the admin sets the label, the key text of a create and the diff after it reads the record, by the id that this function answers. */
+async function writeAudit(database: Database, meta: ModelMeta, args: Loose): Promise<unknown> {
+  const changes: Record<string, unknown> = { request_id: args.request_id ?? "", inputs: { ...(args.audit_inputs ?? {}) }, service: false };
+  if (args.ip !== undefined && args.ip !== null) changes["ip"] = args.ip;
+  if (args.user_agent !== undefined && args.user_agent !== null) changes["user_agent"] = args.user_agent;
+  const entry = await writeLog(database, userKey(args.user ?? {}), args.op, args.resource || meta.name, args.key_text ?? "", "", changes);
+  return entry.id;
+}
+
+/**
+ * The host function `admin.write`'s share for one model: a query-set write with the filters of the resource.
+ *
+ * It runs in one transaction: the compare of the loaded values, the write and the audit row commit or roll back together.
+ */
 export function defaultWriter(model: AnyModel, config: Loose): HostFunction {
   const meta = model._meta;
   return async (database, args) => {
-    const values = decodeValues(meta, args.values ?? {});
+    // A bulk delete sends a query set: `values` are the binds of its filters, not field values.
+    const bulk = Array.isArray(args.filters);
+    const values = bulk ? {} : decodeValues(meta, args.values ?? {});
     const op: string = args.op;
     try {
       return await guarded(model, args, () =>
         database.transaction(async () => {
+          if (bulk) {
+            // The admin writes the summary row of a bulk delete.
+            const n = Number(await querySet(model, database, args).delete());
+            return { ok: true, audited: false, affected: n, result: { kind: "message", message: `Deleted ${n} row(s).` } };
+          }
           if (op === "create") {
             const created = await (model as Loose).objects.using(database).insert(values);
-            return { ok: true, key: keyJson(meta, created), audited: false };
+            const key = keyJson(meta, created);
+            return { ok: true, key, audited: true, audit_id: await writeAudit(database, meta, args) };
           }
           const qs = oneRow(model, database, args.key, await resourceFilters(config, args.user, op));
+          if (!(await checkLoaded(meta, qs, args))) return { ok: false, kind: "not_found" };
           const done = op === "update" ? (Object.keys(values).length > 0 ? await qs.update(values) : await qs.exists()) : await qs.delete();
           if (!done) return { ok: false, kind: "not_found" };
-          return { ok: true, key: args.key, audited: false };
+          return { ok: true, key: args.key, audited: true, audit_id: await writeAudit(database, meta, args) };
         }),
       );
     } catch (e) {

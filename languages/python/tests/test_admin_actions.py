@@ -392,6 +392,29 @@ async def test_an_action_has_a_permission_name_and_an_action_without_one_needs_m
     assert (await post(site.test_client(db, user=SU), "export", {"keys": ["1"], "inputs": {}})).status == 404
 
 
+async def test_an_action_audit_row_and_its_writes_roll_back_together_and_commit_together(world):
+    registry, db, models = world
+
+    @admin.action(placement="bulk", inputs=[admin.input("fail", type="checkbox")])
+    async def bump(ctx, qs):
+        await qs.update(qty=99)
+        for row in await qs:
+            await ctx.audit(row, action="bumped", changes={"qty": 99})
+        if ctx.inputs.get("fail"):
+            raise RuntimeError("the action fails after its audit rows")
+
+    client = site_of(registry, models, bump).test_client(db, user=SU)
+    before = await qtys(db, models)
+    r = await post(client, "bump", {"keys": ["1", "2"], "inputs": {"fail": True}})
+    assert r.status >= 500, r.text
+    assert await qtys(db, models) == before
+    assert await audit(db, models) == []
+    r = await post(client, "bump", {"keys": ["1", "2"], "inputs": {}})
+    assert r.status == 200, r.text
+    assert (await qtys(db, models))[:2] == [("a", 99), ("b", 99)]
+    assert [a for a, *_ in await audit(db, models)] == ["bumped", "bumped", "action:bump"]
+
+
 async def test_the_rows_of_one_request_share_one_group_id_and_a_bulk_action_writes_a_summary_row(world):
     registry, db, models = world
 

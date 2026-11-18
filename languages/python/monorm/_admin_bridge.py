@@ -17,7 +17,7 @@ HostFunction = Callable[[Any, Any], Awaitable[Any]]
 
 async def run(fn: HostFunction, database: Any, tx: Any, payload: str, scope: str) -> str:
     args = json.loads(payload)
-    if tx is None:  # a write function owns its transactions
+    if tx is None:  # a service owns its transactions: Rust binds no request transaction for it
         return json.dumps(await fn(database, args))
     with database.bind_request(tx, scope=json.loads(scope)):
         return json.dumps(await fn(database, args))

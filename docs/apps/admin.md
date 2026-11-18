@@ -573,7 +573,7 @@ They follow the permission strategy of the site, so each has its own names (`adm
 - `Role` holds the role name and a `permissions` picker. It offers only the names that `admin.permissions` lists, labeled with the text of the `Permission`, and not any other row of the table.
 - `UserRole` is the role membership of a user.
 - `Permission` searches on `label`. `sync-permissions` creates its rows.
-- `AdminLogEntry` is the audit log. It is read-only for everyone, superusers too: a write gives `403`.
+- `AdminLogEntry` is the audit log. It is read-only for everyone, superusers too: a write gives `403`. A reader who cannot see a field of the logged resource (see [field permissions](#field-permissions)) gets no value of that field in `changes`.
 
 ### `admin.permissions` and `sync-permissions`
 
@@ -734,10 +734,16 @@ admin.register(Post, {
 Without a `ctx.audit()` call, Rust writes the audit row after the service returns.
 With a call, the row commits with the service transaction and Rust adds none.
 
-The audit row of the default writer, and of a service that does not call `ctx.audit()`, is not atomic with the host write.
-Rust writes it after the host commit, in a new transaction.
-If that insert fails, the staff user reads "The record was not saved", although the record is saved, and a retry of a create can make a duplicate row.
-The window is open for the default writer in the same way: Rust compares the loaded values before the host call and holds no lock across it, so two staff users who save at the same time can overwrite each other with no `409`.
+The default writer (`admin.write`) runs in the transaction of the request.
+It compares the loaded values, writes the record and writes the audit row in that one transaction.
+On PostgreSQL the compare holds a row lock (`SELECT ... FOR UPDATE`).
+SQLite has no row lock: every transaction holds the whole-database write lock (`BEGIN IMMEDIATE`), so a second writer waits for the first.
+A failed write leaves no audit row, a good write leaves exactly one, and two staff users who save at the same time cannot overwrite each other: the second one gets `409`.
+Rust adds the label and the diff to that row after the write and writes no second row.
+An action writes its audit row (`ctx.audit()` and the summary row) in the transaction of the action: both roll back together when the action fails.
+
+A service that does not call `ctx.audit()` still gets its audit row from Rust after the service commits, in a new transaction.
+If that insert fails, the staff user reads "The record was not saved", although the record is saved.
 A service owns its check and its transaction: use `ctx.audit()` and a version check in the service when this matters.
 
 ### Inputs
@@ -1462,6 +1468,7 @@ A failure includes a database without the admin tables: the message names the mi
 `db_settings` is a table of text values.
 On PostgreSQL, the admin runs `set_config(key, value, true)` at the start of each request transaction for every entry.
 A row-level security policy can read the value with `current_setting('app.tenant')`. The setting name is free: `db_settings` is separate from the `scope.<key>` settings of `monorm.scope()`.
+The default writer and the actions of a resource run in that transaction, so the settings and the policies apply to their writes. A service opens its own transaction and does not get them.
 The value is static for the whole process.
 SQLite has no such settings: the admin ignores the key and writes one message at startup.
 

@@ -2,9 +2,11 @@
 //! resource opens, and a resource with a service (`create`, `update`, `delete`).
 //!
 //! The admin checks the user, the permission, the field rules, the `queryset` filter and the `can=`
-//! rule, then rolls its transaction back and calls the host with no transaction: the host function owns
-//! its transactions. The host answers with an envelope that this module maps to 201, 200, 404, 409,
-//! 422 or 500. The audit row is the host's (`ctx.audit()`) or, when the host wrote none, the admin's.
+//! rule. The default writer (`admin.write`) runs in the transaction of the request: the row lock, the
+//! write and the audit row commit or roll back together, and `db_settings` and row-level security apply.
+//! A service function owns its transactions: the admin rolls its transaction back and calls it with none.
+//! The host answers with an envelope that this module maps to 201, 200, 404, 409, 422 or 500. The audit
+//! row is the host's (`ctx.audit()`, or the default writer) or, when the host wrote none, the admin's.
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -23,7 +25,7 @@ use crate::permissions::Op;
 use crate::scope::Scoped;
 use crate::server::{reach, reject, State_};
 use crate::site::{err, Column, ConfigError, Resource};
-use crate::write::{conflicts, finish, list_failure, server_error, write_audit_with, Call, Problems};
+use crate::write::{audit_changes, conflicts, finish, list_failure, server_error, write_audit_with, Call, Problems};
 
 /// One service function of a resource. `sync` is a plain Python function; it runs in a thread.
 #[derive(Deserialize, Default, Clone, Debug)]
@@ -243,6 +245,8 @@ pub(crate) struct Prepared {
     pub key: Option<Vec<Value>>,
     /// The detail cells of the record before the write (update, delete).
     pub before: Option<Vec<Value>>,
+    /// The form labels whose loaded value the write compares with the stored row (update, delete).
+    pub compared: Vec<String>,
     /// The checked change set of the inlines (`with_parent`): the rows the service writes with the record.
     pub inlines: Option<Value>,
 }
@@ -256,13 +260,20 @@ pub(crate) fn key_object(r: &Resource, key: &[Value]) -> Value {
     Value::Object(r.key_columns.iter().zip(key).map(|(c, v)| (c.field.clone(), v.clone())).collect())
 }
 
-/// Calls the host and answers the request. Rolls the admin transaction back before the call.
+/// Calls the host and answers the request. A service gets no transaction, so the admin rolls its own back first;
+/// the default writer gets the transaction of the request.
 pub(crate) async fn run(s: &State_, c: Call<'_>, p: Prepared) -> Response {
     let Call { resource: sight, user, grants, scope, meta, uri, body } = c;
     let resource = &*sight;
-    scope.rollback().await;
     let Some((bridge, auth)) = &s.bridge else {
+        scope.rollback().await;
         return reject(StatusCode::FORBIDDEN, "ReadOnly", "this write needs host code, and this admin has no host");
+    };
+    let held = if resource.service.get(p.op).is_some() {
+        scope.rollback().await;
+        None
+    } else {
+        Some(scope)
     };
     let protected = s.site.schema.model(resource.model).ir.protected_write;
     let payload = json!({
@@ -270,8 +281,11 @@ pub(crate) async fn run(s: &State_, c: Call<'_>, p: Prepared) -> Response {
         "model": s.site.schema.model(resource.model).ir.name,
         "op": op_name(p.op),
         "key": p.key.as_ref().map(|k| key_object(resource, k)),
+        "key_text": p.key.as_ref().map(|k| key::encode(k)),
         "values": by_field(resource, &p.values),
         "loaded": by_field(resource, &p.loaded),
+        "lock": s.site.schema.dialect == monorm_core::dialect::Dialect::Postgres,
+        "compare": p.compared.iter().map(|l| resource.detail.iter().find(|d| &d.label == l).map_or_else(|| l.clone(), |d| d.field.clone())).collect::<Vec<_>>(),
         "inputs": p.inputs,
         "audit_inputs": audit_inputs(resource, &p.inputs),
         "inlines": p.inlines,
@@ -283,14 +297,22 @@ pub(crate) async fn run(s: &State_, c: Call<'_>, p: Prepared) -> Response {
         "service": resource.service.get(p.op).is_some(),
         "sync": resource.service.get(p.op).is_some_and(|o| o.sync),
     });
-    let ctx = CallContext { request_id: auth.security.call_id(), scope: json!({}), tx: None };
+    let ctx = CallContext { request_id: auth.security.call_id(), scope: json!({}), tx: held.as_ref().map(Scoped::transaction) };
     let answer = match bridge.call(&p.function, payload, ctx).await {
         Ok(v) => v,
-        Err(e) => return host_failure(&meta, &p.function, e),
+        Err(e) => {
+            if let Some(scope) = held {
+                scope.rollback().await;
+            }
+            return host_failure(&meta, &p.function, e);
+        }
     };
-    let new_scope = match Scoped::begin(s.conn.as_ref()).await {
-        Ok(sc) => sc,
-        Err(e) => return server_error(&meta, &e.message),
+    let new_scope = match held {
+        Some(scope) => scope,
+        None => match Scoped::begin(s.conn.as_ref()).await {
+            Ok(sc) => sc,
+            Err(e) => return server_error(&meta, &e.message),
+        },
     };
     let c = Call { resource: sight, user, grants, scope: new_scope, meta, uri, body };
     answer_of(s, c, p, answer).await
@@ -361,8 +383,10 @@ async fn answer_of(s: &State_, c: Call<'_>, p: Prepared, answer: Value) -> Respo
     };
     let before = p.before.clone();
     let cells = after.clone().or(before.clone()).unwrap_or_default();
-    if answer["audited"] == Value::Bool(true) {
-        // The host wrote the row in its own transaction and sent no label: the label rule lives here.
+    let service = resource.service.get(p.op).is_some();
+    let audited = answer["audited"] == Value::Bool(true);
+    if audited && service {
+        // The service wrote the row and sent no label: the label rule lives here.
         let label = crate::write::record_label(resource, &cells, &key_text);
         if let Err(m) = audit::fill_label(&s.site, c.scope.executor(), &resource.name, &key_text, &label).await {
             let response = server_error(&c.meta, &format!("the write ran but its audit label failed: {m}"));
@@ -374,11 +398,21 @@ async fn answer_of(s: &State_, c: Call<'_>, p: Prepared, answer: Value) -> Respo
         let mut extra = Map::new();
         extra.insert("inputs".into(), Value::Object(audit_inputs(resource, &p.inputs)));
         extra.insert("allow_protected_writes".into(), Value::Bool(s.site.schema.model(resource.model).ir.protected_write && resource.allow_protected));
-        extra.insert("service".into(), Value::Bool(resource.service.get(p.op).is_some()));
+        extra.insert("service".into(), Value::Bool(service));
         if let Some(rows) = &p.inlines {
             extra.insert("inlines".into(), rows.clone());
         }
-        if let Err(m) = write_audit_with(s, &c, op_name(p.op), &key_text, &cells, diff, extra).await {
+        let result = if audited {
+            // The default writer wrote the row in the write transaction. Only the admin knows the key text (of a create too), the diff and the label.
+            let label = crate::write::record_label(resource, &cells, &key_text);
+            match answer["audit_id"].as_i64() {
+                Some(id) => audit::complete(&s.site, c.scope.executor(), id, &key_text, &label, audit_changes(&c.meta, diff, extra)).await,
+                None => Err("the host answered audited with no audit_id".to_owned()),
+            }
+        } else {
+            write_audit_with(s, &c, op_name(p.op), &key_text, &cells, diff, extra).await
+        };
+        if let Err(m) = result {
             let response = server_error(&c.meta, &format!("the write ran but its audit row failed: {m}"));
             c.scope.rollback().await;
             return response;

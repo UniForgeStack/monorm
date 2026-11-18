@@ -48,6 +48,23 @@ model WLocked {
   @@protected_write
   @@map("w_locked")
 }
+
+model WCoded {
+  code String @id
+  note String @default("")
+  @@protected_write
+  @@map("w_coded")
+}
+%(money)s"""
+
+# SQLite has no exact decimal, so the decimal model exists on PostgreSQL only.
+MONEY = """
+model WMoney {
+  code  String  @id
+  price Decimal @db.Decimal(10, 2)
+  @@protected_write
+  @@map("w_money")
+}
 """
 
 BOOKS = "/admin/api/resources/WBook"
@@ -57,7 +74,7 @@ SU = {"key": 1, "is_superuser": True}
 
 @pytest.fixture(params=["sqlite", "postgres"])
 async def world(request, tmp_path):
-    (tmp_path / "schema.prisma").write_text(SCHEMA % {"provider": request.param, "storage": "@@storage(text)" if request.param == "sqlite" else ""})
+    (tmp_path / "schema.prisma").write_text(SCHEMA % {"provider": request.param, "storage": "@@storage(text)" if request.param == "sqlite" else "", "money": "" if request.param == "sqlite" else MONEY})
     registry = monorm.Registry()
     models = monorm.load(tmp_path / "schema.prisma", registry=registry)
     url = "sqlite://:memory:" if request.param == "sqlite" else PG_URL
@@ -152,6 +169,107 @@ async def test_a_stale_loaded_value_is_a_409_with_the_current_value_and_writes_n
     book = await models["WBook"].objects.using(db).filter(models["WBook"].id == 1).first()
     assert book.title == "First"
     assert await audit(db, models) == []
+
+
+async def opened(world):
+    """A site whose protected model is open: its writes go through the host function `admin.write`."""
+    base, db, models = world
+    with monorm.allow_writes(models["WLocked"]):
+        await models["WLocked"].objects.using(db).insert_many([{"x": 1}])
+    site = admin.Admin(base._registry)
+    site.register(models["WLocked"], {"allow_protected_writes": True})
+    return site.test_client(db, user=SU), db, models
+
+
+LOCKED = "/admin/api/resources/WLocked"
+
+
+async def test_a_failed_host_write_leaves_no_audit_row_and_a_good_one_leaves_exactly_one(world, monkeypatch):
+    from monorm import _admin_write
+
+    client, db, models = await opened(world)
+    write_audit = _admin_write._write_audit
+
+    async def fails_after_the_audit_row(*args, **kwargs):
+        await write_audit(*args, **kwargs)
+        raise RuntimeError("the host fails after the audit row")
+
+    monkeypatch.setattr(_admin_write, "_write_audit", fails_after_the_audit_row)
+    r = await client.patch(f"{LOCKED}/1", json={"set": {"x": 2}, "loaded": {"x": 1}})
+    assert r.status >= 500, r.text
+    assert (await models["WLocked"].objects.using(db).first()).x == 1
+    assert await audit(db, models) == []
+    monkeypatch.setattr(_admin_write, "_write_audit", write_audit)
+    r = await client.patch(f"{LOCKED}/1", json={"set": {"x": 3}, "loaded": {"x": 1}})
+    assert r.status == 200, r.text
+    rows = await audit(db, models)
+    assert [(a.action, a.record_key, a.record_label) for a in rows] == [("update", "1", "1")]
+    assert rows[0].changes["diff"] == {"x": {"from": 1, "to": 3}}
+
+
+async def test_a_concurrent_edit_between_the_load_and_the_save_is_a_409_with_the_default_writer(world, monkeypatch):
+    from monorm import _admin_write
+
+    client, db, models = await opened(world)
+    check = _admin_write._check_loaded
+
+    async def edited_first(model, qs, args):
+        await qs.update(x=9)
+        return await check(model, qs, args)
+
+    monkeypatch.setattr(_admin_write, "_check_loaded", edited_first)
+    r = await client.patch(f"{LOCKED}/1", json={"set": {"x": 2}, "loaded": {"x": 1}})
+    assert r.status == 409, r.text
+    assert (await models["WLocked"].objects.using(db).first()).x == 1, "the whole write rolled back, with the other edit"
+    assert await audit(db, models) == []
+
+
+CODED = "/admin/api/resources/WCoded"
+MONEY_URL = "/admin/api/resources/WMoney"
+
+
+async def test_a_host_create_with_a_key_that_needs_escaping_writes_the_audit_row_under_the_rust_key_text(world):
+    base, db, models = world
+    site = admin.Admin(base._registry)
+    site.register(models["WCoded"], {"allow_protected_writes": True})
+    client = site.test_client(db, user=SU)
+    for code in ("a b", "a,b", "é", "a/b", "a\\b", "plain"):
+        r = await client.post(CODED, json={"set": {"code": code}})
+        assert r.status == 201, (code, r.text)
+    rows = await audit(db, models)
+    keys = [a.record_key for a in rows]
+    assert keys == ["a%20b", "a%2Cb", "%C3%A9", "a%2Fb", "a%5Cb", "plain"]
+    assert all(a.record_label for a in rows)
+    assert await models["WCoded"].objects.using(db).count() == 6
+
+
+async def test_a_host_write_compares_a_decimal_by_value_not_by_text(world):
+    base, db, models = world
+    if "WMoney" not in models:
+        pytest.skip("SQLite has no exact decimal")
+    Money = models["WMoney"]
+    with monorm.allow_writes(Money):
+        await Money.objects.using(db).insert_many([{"code": "k", "price": "5.00"}])
+    site = admin.Admin(base._registry)
+    site.register(Money, {"allow_protected_writes": True})
+    client = site.test_client(db, user=SU)
+    for loaded in ("5", "5.0", "5.00"):
+        r = await client.patch(f"{MONEY_URL}/k", json={"set": {"price": "7.50"}, "loaded": {"price": loaded}})
+        assert r.status == 200, (loaded, r.text)
+        with monorm.allow_writes(Money):
+            await Money.objects.using(db).filter(Money.code == "k").update(price="5.00")
+    r = await client.patch(f"{MONEY_URL}/k", json={"set": {"price": "7.50"}, "loaded": {"price": "5.01"}})
+    assert (r.status, list(r.json()["conflicts"])) == (409, ["price"])
+
+
+async def test_a_bulk_delete_through_the_host_writer_deletes_the_query_set_and_writes_one_summary_row(world):
+    client, db, models = await opened(world)
+    with monorm.allow_writes(models["WLocked"]):
+        await models["WLocked"].objects.using(db).insert_many([{"x": 2}, {"x": 3}])
+    r = await client.post("/admin/api/actions/WLocked/bulk_delete", json={"keys": ["1", "2"], "inputs": {}})
+    assert r.status == 200, r.text
+    assert [row.x for row in await models["WLocked"].objects.using(db).order_by(models["WLocked"].id)] == [3]
+    assert [a.action for a in await audit(db, models)] == ["bulk_delete"]
 
 
 async def test_an_update_checks_the_request_before_it_writes(world):

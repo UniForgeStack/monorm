@@ -250,8 +250,8 @@ async fn run(s: &State_, o: Open<'_>, name: &str, body: axum::body::Body) -> Res
             }
         }
     } else {
-        scope.rollback().await;
         let Some((bridge, auth)) = &s.bridge else {
+            scope.rollback().await;
             return reject(StatusCode::FORBIDDEN, "ReadOnly", "this action needs host code, and this admin has no host");
         };
         let function = match kind {
@@ -277,14 +277,31 @@ async fn run(s: &State_, o: Open<'_>, name: &str, body: axum::body::Body) -> Res
             "user_agent": meta.agent,
             "allow_protected": s.site.schema.model(resource.model).ir.protected_write && resource.allow_protected,
         });
-        let ctx = CallContext { request_id: auth.security.call_id(), scope: json!({}), tx: None };
+        // An action runs in the transaction of the request, so its writes and the summary row commit together and `db_settings` apply.
+        // A service delete owns its transactions: it gets none, and the admin opens a new one after it.
+        let own = function.starts_with("service.");
+        let held = if own {
+            scope.rollback().await;
+            None
+        } else {
+            Some(scope)
+        };
+        let ctx = CallContext { request_id: auth.security.call_id(), scope: json!({}), tx: held.as_ref().map(Scoped::transaction) };
         let answer = match bridge.call(&function, payload, ctx).await {
             Ok(v) => v,
-            Err(e) => return hostwrite::host_failure(&meta, &function, e),
+            Err(e) => {
+                if let Some(scope) = held {
+                    scope.rollback().await;
+                }
+                return hostwrite::host_failure(&meta, &function, e);
+            }
         };
-        match Scoped::begin(s.conn.as_ref()).await {
-            Ok(scope) => (answer, scope),
-            Err(e) => return server_error(&meta, &e.message),
+        match held {
+            Some(scope) => (answer, scope),
+            None => match Scoped::begin(s.conn.as_ref()).await {
+                Ok(scope) => (answer, scope),
+                Err(e) => return server_error(&meta, &e.message),
+            },
         }
     };
     drop(temps);

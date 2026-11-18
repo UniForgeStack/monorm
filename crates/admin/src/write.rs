@@ -556,10 +556,15 @@ pub(crate) async fn write_audit_with(s: &State_, c: &Call<'_>, action: &str, key
 /// `write_audit_with` for a resource that is not the page of the call: the child page of an inline row.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn write_audit_for(s: &State_, c: &Call<'_>, resource: &Resource, action: &str, key_text: &str, cells: &[Value], diff: Value, extra: Map<String, Value>) -> Result<(), String> {
-    let mut changes = json!({"request_id": c.meta.request_id, "ip": c.meta.ip, "user_agent": c.meta.agent, "diff": diff});
-    changes.as_object_mut().expect("an object").extend(extra);
-    let entry = Entry { user_key: &user_key_text(&c.user), action, resource: &resource.name, record_key: key_text, record_label: &record_label(resource, cells, key_text), changes: Some(changes) };
+    let entry = Entry { user_key: &user_key_text(&c.user), action, resource: &resource.name, record_key: key_text, record_label: &record_label(resource, cells, key_text), changes: Some(audit_changes(&c.meta, diff, extra)) };
     audit::record(&s.site, c.scope.executor(), entry).await
+}
+
+/// The `changes` of a write row: the request, the diff and what the write adds.
+pub(crate) fn audit_changes(meta: &Meta, diff: Value, extra: Map<String, Value>) -> Value {
+    let mut changes = json!({"request_id": meta.request_id, "ip": meta.ip, "user_agent": meta.agent, "diff": diff});
+    changes.as_object_mut().expect("an object").extend(extra);
+    changes
 }
 
 pub(crate) async fn finish(c: Call<'_>, response: Response) -> Response {
@@ -855,7 +860,7 @@ pub(crate) async fn create_in(s: &State_, c: Call<'_>, pin: Option<&Pin>) -> Res
         for (col, v) in pin.map(|p| p.pins.as_slice()).unwrap_or_default() {
             values.insert(col.label.clone(), v.clone());
         }
-        return hostwrite::run(s, c, Prepared { op: Op::Create, function, values, loaded: Map::new(), inputs, key: None, before: None, inlines: (!changes.is_empty()).then(|| changes.json()) }).await;
+        return hostwrite::run(s, c, Prepared { op: Op::Create, function, values, loaded: Map::new(), inputs, key: None, before: None, compared: Vec::new(), inlines: (!changes.is_empty()).then(|| changes.json()) }).await;
     }
     let cells = match plain_insert(s, &c, resource, values, pin.map(|p| p.pins.as_slice()).unwrap_or_default()).await {
         Ok(cells) => cells,
@@ -1045,7 +1050,7 @@ pub(crate) async fn update_in(s: &State_, c: Call<'_>, pin: Option<&Pin>) -> Res
         for (col, v) in pin.map(|p| p.pins.as_slice()).unwrap_or_default() {
             values.insert(col.label.clone(), v.clone());
         }
-        return hostwrite::run(s, c, Prepared { op: Op::Update, function, values, loaded, inputs, key: Some(key), before: Some(record.cells), inlines: (!changes.is_empty()).then(|| changes.json()) }).await;
+        return hostwrite::run(s, c, Prepared { op: Op::Update, function, values, loaded, inputs, key: Some(key), before: Some(record.cells), compared, inlines: (!changes.is_empty()).then(|| changes.json()) }).await;
     }
     let changed = changed_values(site, resource, values, &record.cells);
     let changed_names: Vec<String> = changed.iter().map(|(n, _, _)| n.clone()).collect();
@@ -1163,7 +1168,7 @@ pub(crate) async fn destroy_in(s: &State_, c: Call<'_>, pin: Option<&Pin>) -> Re
         return conflict_response(found);
     }
     if let Some(function) = route {
-        return hostwrite::run(s, c, Prepared { op: Op::Delete, function, values: Map::new(), loaded, inputs, key: Some(key), before: Some(record.cells), inlines: None }).await;
+        return hostwrite::run(s, c, Prepared { op: Op::Delete, function, values: Map::new(), loaded, inputs, key: Some(key), before: Some(record.cells), compared, inlines: None }).await;
     }
     if let Err(r) = delete_row(s, &c, resource, &reach, &key).await {
         c.scope.rollback().await;

@@ -313,6 +313,28 @@ for (const provider of PROVIDERS) {
     assert.deepEqual(await audit(w), []);
   }));
 
+  test(`an action audit row and its writes roll back together and commit together (${provider})`, () => world(provider, async (w) => {
+    const item = w.models["AItem"];
+    const bump = action(
+      async function bump(ctx, qs) {
+        await qs.update({ qty: 99 });
+        for (const row of await qs) await ctx.audit(row, { action: "bumped", changes: { qty: 99 } });
+        if (ctx.inputs["fail"]) throw new Error("the action fails after its audit rows");
+      },
+      { placement: "bulk", inputs: [input("fail", { type: "checkbox" })] },
+    );
+    const client = siteOf(w, [bump]).testClient(w.db, { user: SU });
+    const before = await qtys(w);
+    const r = await post(client, "bump", { keys: ["1", "2"], inputs: { fail: true } });
+    assert.ok(r.status >= 500, r.text);
+    assert.deepEqual(await qtys(w), before);
+    assert.deepEqual(await audit(w), []);
+    const ok = await post(client, "bump", { keys: ["1", "2"], inputs: {} });
+    assert.equal(ok.status, 200, ok.text);
+    assert.deepEqual((await qtys(w)).slice(0, 2), [["a", 99], ["b", 99]]);
+    assert.deepEqual((await audit(w)).map(([a]) => a), ["bumped", "bumped", "action:bump"]);
+  }));
+
   // -- bulk delete ------------------------------------------------------------------------------------------------
 
   test(`bulk delete is one delete of the query set and bulkDelete false removes it (${provider})`, () => world(provider, async (w) => {

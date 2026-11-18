@@ -7,10 +7,20 @@ import { test } from "node:test";
 
 import { Admin, AdminConfigError } from "../src/admin.js";
 import { hasExtension } from "./artifact-caps.js";
-import { connect, load, param, Registry, type Database } from "../src/index.js";
+import { allowWrites, connect, load, param, Registry, type Database } from "../src/index.js";
 
 const PG_URL = process.env["ORM_TEST_DATABASE_URL"] ?? "postgres://postgres:postgres@localhost/orm_test";
 const PROVIDERS = ["sqlite", "postgres"] as const;
+
+// SQLite has no exact decimal, so the decimal model exists on PostgreSQL only.
+const MONEY = `
+model WMoney {
+  code  String  @id
+  price Decimal @db.Decimal(10, 2)
+  @@protected_write
+  @@map("w_money")
+}
+`;
 
 const SCHEMA = (provider: string) => `datasource db {
   provider = "${provider}"
@@ -49,7 +59,14 @@ model WLocked {
   @@protected_write
   @@map("w_locked")
 }
-`;
+
+model WCoded {
+  code String @id
+  note String @default("")
+  @@protected_write
+  @@map("w_coded")
+}
+${provider === "sqlite" ? "" : MONEY}`;
 
 const GUARDED = (provider: string) => `datasource db {
   provider = "${provider}"
@@ -68,6 +85,9 @@ model GBook {
 const BOOKS = "/admin/api/resources/WBook";
 const AUTHORS = "/admin/api/resources/WAuthor";
 const SU = { key: 1, is_superuser: true };
+const LOCKED = "/admin/api/resources/WLocked";
+const CODED = "/admin/api/resources/WCoded";
+const MONEY_URL = "/admin/api/resources/WMoney";
 
 type Loose = any;
 interface World {
@@ -179,6 +199,109 @@ for (const provider of PROVIDERS) {
     const Book = w.models["WBook"];
     assert.equal((await Book.objects.using(w.db).filter(Book.id.eq(1)).first()).title, "First");
     assert.deepEqual(await audit(w), []);
+  }));
+
+  test(`a failed host write leaves no audit row and a good one leaves exactly one (${provider})`, () => world(provider, async (w) => {
+    const Locked = w.models["WLocked"];
+    await allowWrites([Locked], () => Locked.objects.using(w.db).insertMany([{ x: 1 }]));
+    const site = new Admin(w.registry);
+    site.register(Locked, { allowProtectedWrites: true } as never);
+    const client = site.testClient(w.db, { user: SU });
+    const entry = w.models["AdminLogEntry"];
+    const root: Loose = entry.objects;
+    root.using = (db: Database) => {
+      const qs: Loose = Object.getPrototypeOf(root).using.call(root, db);
+      qs.insert = (values: unknown) => {
+        const written: PromiseLike<unknown> = Object.getPrototypeOf(qs).insert.call(qs, values);
+        return { then: (ok: never, fail: never) => Promise.resolve(written).then(() => { throw new Error("the host fails after the audit row"); }).then(ok, fail) };
+      };
+      return qs;
+    };
+    try {
+      const failed = await client.patch(`${LOCKED}/1`, { json: { set: { x: 2 }, loaded: { x: 1 } } });
+      assert.ok(failed.status >= 500, failed.text);
+    } finally {
+      delete root.using;
+    }
+    assert.equal((await Locked.objects.using(w.db).first()).x, 1);
+    assert.deepEqual(await audit(w), []);
+    const ok = await client.patch(`${LOCKED}/1`, { json: { set: { x: 3 }, loaded: { x: 1 } } });
+    assert.equal(ok.status, 200, ok.text);
+    const rows = await audit(w);
+    assert.deepEqual(rows.map((a) => [a.action, a.recordKey, a.recordLabel]), [["update", "1", "1"]]);
+    assert.deepEqual(rows[0].changes.diff, { x: { from: 1, to: 3 } });
+  }));
+
+  test(`a concurrent edit between the load and the save is a 409 with the default writer (${provider})`, () => world(provider, async (w) => {
+    const Locked = w.models["WLocked"];
+    await allowWrites([Locked], () => Locked.objects.using(w.db).insertMany([{ x: 1 }]));
+    const site = new Admin(w.registry);
+    site.register(Locked, { allowProtectedWrites: true } as never);
+    const client = site.testClient(w.db, { user: SU });
+    let owner: Loose = Object.getPrototypeOf(Locked.objects);
+    while (!Object.prototype.hasOwnProperty.call(owner, "first")) owner = Object.getPrototypeOf(owner);
+    const original = Object.getOwnPropertyDescriptor(owner, "first") as PropertyDescriptor;
+    // The other edit lands in the transaction, before the writer compares.
+    Object.defineProperty(owner, "first", {
+      ...original,
+      value: async function (this: Loose, ...args: unknown[]) {
+        Object.defineProperty(owner, "first", original);
+        await Locked.objects.using(this.state.db).filter(Locked.id.eq(1)).update({ x: 9 });
+        return original.value.apply(this, args);
+      },
+    });
+    try {
+      const r = await client.patch(`${LOCKED}/1`, { json: { set: { x: 2 }, loaded: { x: 1 } } });
+      assert.equal(r.status, 409, r.text);
+    } finally {
+      Object.defineProperty(owner, "first", original);
+    }
+    assert.equal((await Locked.objects.using(w.db).first()).x, 1, "the whole write rolled back, with the other edit");
+    assert.deepEqual(await audit(w), []);
+  }));
+
+  test(`a host create with a key that needs escaping writes the audit row under the Rust key text (${provider})`, () => world(provider, async (w) => {
+    const Coded = w.models["WCoded"];
+    const site = new Admin(w.registry);
+    site.register(Coded, { allowProtectedWrites: true } as never);
+    const client = site.testClient(w.db, { user: SU });
+    for (const code of ["a b", "a,b", "é", "a/b", "a\\b", "plain"]) {
+      const r = await client.post(CODED, { json: { set: { code } } });
+      assert.equal(r.status, 201, `${code}: ${r.text}`);
+    }
+    const rows = await audit(w);
+    assert.deepEqual(rows.map((a) => a.recordKey), ["a%20b", "a%2Cb", "%C3%A9", "a%2Fb", "a%5Cb", "plain"]);
+    assert.ok(rows.every((a) => a.recordLabel));
+    assert.equal(await Coded.objects.using(w.db).count(), 6);
+  }));
+
+  test(`a host write compares a decimal by value, not by text (${provider})`, () => world(provider, async (w) => {
+    const Coded = w.models["WMoney"];
+    if (Coded === undefined) return;
+    await allowWrites([Coded], () => Coded.objects.using(w.db).insertMany([{ code: "k", price: "5.00" }]));
+    const site = new Admin(w.registry);
+    site.register(Coded, { allowProtectedWrites: true } as never);
+    const client = site.testClient(w.db, { user: SU });
+    for (const loaded of ["5", "5.0", "5.00"]) {
+      const r = await client.patch(`${MONEY_URL}/k`, { json: { set: { price: "7.50" }, loaded: { price: loaded } } });
+      assert.equal(r.status, 200, `${loaded}: ${r.text}`);
+      await allowWrites([Coded], () => Coded.objects.using(w.db).filter(Coded.code.eq("k")).update({ price: "5.00" }));
+    }
+    const r = await client.patch(`${MONEY_URL}/k`, { json: { set: { price: "7.50" }, loaded: { price: "5.01" } } });
+    assert.equal(r.status, 409, r.text);
+    assert.deepEqual(Object.keys(JSON.parse(r.text).conflicts), ["price"]);
+  }));
+
+  test(`a bulk delete through the host writer deletes the query set and writes one summary row (${provider})`, () => world(provider, async (w) => {
+    const Locked = w.models["WLocked"];
+    await allowWrites([Locked], () => Locked.objects.using(w.db).insertMany([{ x: 1 }, { x: 2 }, { x: 3 }]));
+    const site = new Admin(w.registry);
+    site.register(Locked, { allowProtectedWrites: true } as never);
+    const client = site.testClient(w.db, { user: SU });
+    const r = await client.post("/admin/api/actions/WLocked/bulk_delete", { json: { keys: ["1", "2"], inputs: {} } });
+    assert.equal(r.status, 200, r.text);
+    assert.deepEqual((await Locked.objects.using(w.db).orderBy(Locked.id)).map((row: Loose) => row.x), [3]);
+    assert.deepEqual((await audit(w)).map((a) => a.action), ["bulk_delete"]);
   }));
 
   test(`an update checks the request before it writes (${provider})`, () => world(provider, async (w) => {

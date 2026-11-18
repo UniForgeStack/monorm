@@ -257,13 +257,13 @@ async def log(
     await _write_log(db, "" if key is None else str(key), action, resource, record_key if isinstance(record_key, str) else _key_scalar(record_key), label, dict(changes) if changes else None)
 
 
-async def _write_log(db: Any, user_key: str, action: str, resource: str, record_key: str, label: str, changes: Mapping[str, Any] | None) -> None:
+async def _write_log(db: Any, user_key: str, action: str, resource: str, record_key: str, label: str, changes: Mapping[str, Any] | None) -> Any:
     registry = db._registry
     try:
         entry_model = registry.get("AdminLogEntry")
     except Exception:
         raise RuntimeError("the admin log needs the AdminLogEntry model: import the admin app schema") from None
-    await entry_model.objects.using(db).insert(
+    return await entry_model.objects.using(db).insert(
         user_key=user_key, action=action, resource=resource, record_key=record_key, record_label=label, changes=None if changes is None else dict(changes)
     )
 
@@ -416,28 +416,79 @@ def _context(database: Any, args: Mapping[str, Any], model: Any, models: Mapping
     return ctx
 
 
+def _same(type_name: str, stored: Any, loaded: Any) -> bool:
+    """The compare of the Rust core (`json::same`): a decimal compares by number, so `5` and `5.00` match."""
+    if stored == loaded:
+        return True
+    if stored is None or loaded is None:
+        return False
+    if type_name == "decimal":
+        try:
+            return bool(decimal.Decimal(str(stored)) == decimal.Decimal(str(loaded)))
+        except decimal.InvalidOperation:
+            return False
+    return str(stored) == str(loaded)
+
+
+async def _check_loaded(model: Any, qs: Any, args: Mapping[str, Any]) -> bool:
+    """Reads the row (under a lock where the database has one) and compares the loaded values of the ``compare`` fields with it. False when the row is gone.
+
+    The compare runs in the write transaction, so a concurrent edit between the load and the save is a ``VersionConflict``."""
+    names = [n for n in args.get("compare") or [] if n in (args.get("loaded") or {})]
+    row = await (qs.lock() if args.get("lock") else qs).first()
+    if row is None:
+        return False
+    loaded = decode_values(model, {n: args["loaded"][n] for n in names})
+    fields = model._meta.fields
+    if any(not _same(fields[n].type_name if n in fields else "", getattr(row, n), loaded[n]) for n in names):
+        raise VersionConflict(f"{model.__name__} {args.get('key')!r} was changed since the form loaded")
+    return True
+
+
+async def _write_audit(database: Any, model: Any, args: Mapping[str, Any]) -> int:
+    """The audit row of a default write, inside the write transaction. Answers its id.
+
+    Rust sends the key text of an update and a delete (its own encoder); the admin sets the label, the key text of a create and the diff after it reads the record, by the id that this function answers."""
+    changes: dict[str, Any] = {"request_id": args.get("request_id") or "", "inputs": dict(args.get("audit_inputs") or {}), "service": False}
+    for name in ("ip", "user_agent"):
+        if args.get(name) is not None:
+            changes[name] = args[name]
+    entry = await _write_log(database, _user_key(args.get("user") or {}), args["op"], args.get("resource") or model.__name__, args.get("key_text") or "", "", changes)
+    return int(entry.id)
+
+
 def default_writer(model: Any, config: Mapping[str, Any]) -> Callable[[Any, dict[str, Any]], Awaitable[Any]]:
-    """The host function ``admin.write``'s share for one model: a query-set write with the filters of the resource."""
+    """The host function ``admin.write``'s share for one model: a query-set write with the filters of the resource.
+
+    It runs in one transaction: the compare of the loaded values, the write and the audit row commit or roll back together."""
 
     async def write(database: Any, args: dict[str, Any]) -> Any:
         op = args["op"]
-        values = decode_values(model, args.get("values") or {})
+        bulk = "filters" in args
+        # A bulk delete sends a query set: `values` are the binds of its filters, not field values.
+        values = {} if bulk else decode_values(model, args.get("values") or {})
         user = args.get("user") or {}
         protect = allow_writes(model) if args.get("allow_protected") else contextlib.nullcontext()
         try:
             with protect:
                 async with database.transaction():
+                    if bulk:
+                        # The admin writes the summary row of a bulk delete.
+                        n = int(await _query_set(model, database, args).delete() or 0)
+                        return {"ok": True, "audited": False, "affected": n, "result": {"kind": "message", "message": f"Deleted {n} row(s)."}}
                     if op == "create":
                         created = await model.objects.using(database).insert(**values)
-                        return {"ok": True, "key": _key_json(model, created), "audited": False}
+                        return {"ok": True, "key": _key_json(model, created), "audited": True, "audit_id": await _write_audit(database, model, args)}
                     qs = _one_row(model, database, args["key"], await _resource_filters(config, user, op))
+                    if not await _check_loaded(model, qs, args):
+                        return {"ok": False, "kind": "not_found"}
                     if op == "update":
                         done = await qs.update(**values) if values else await qs.exists()
                     else:
                         done = await qs.delete()
                     if not done:
                         return {"ok": False, "kind": "not_found"}
-                    return {"ok": True, "key": args["key"], "audited": False}
+                    return {"ok": True, "key": args["key"], "audited": True, "audit_id": await _write_audit(database, model, args)}
         except ValidationError as e:
             return _invalid(e)
         except FieldAdapterError as e:
