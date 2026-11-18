@@ -19,6 +19,15 @@ model StampCopy {
   at DateTime @db.Timestamp(6)
   maybe DateTime? @db.Timestamp(6)
 }
+type StampAddr {
+  city String
+  opened DateTime
+}
+model StampDoc {
+  id Int @id
+  addr StampAddr? @storage(json)
+  src DateTime @db.Timestamp(6)
+}
 model StampRef {
   id Int @id
   at DateTime @db.Timestamp(6)
@@ -109,3 +118,24 @@ async def test_timestamp_prepared_statements_keep_the_utc_wall_clock_under_a_ses
         assert [r.id for r in await q.filter(M.at.in_(param('v'))).order_by(M.id).prepare()(v=[WHEN, later])] == [1, 2]
         await q.filter(M.id == 1).update(at=param('a')).prepare()(a=later + dt.timedelta(days=1))
         assert (await db.fetch('SELECT at::text AS at FROM "stamprow" WHERE id = 1'))[0]['at'] == '2024-01-04 07:08:09.123456'
+
+
+@pytest.mark.parametrize('zone', ZONES)
+async def test_timestamp_nested_expression_and_prepared_keys_and_rows_keep_the_utc_wall_clock_under_a_session_zone(world, zone):
+    db, classes = world
+    M, Ref, Doc = classes['StampRow'], classes['StampRef'], classes['StampDoc']
+    q = M.objects.using(db)
+    later = WHEN + dt.timedelta(days=1)
+    async with db.transaction():
+        await db.execute(f"SET LOCAL TIME ZONE '{zone}'")
+        await q.insert_many([{'id': 1, 'at': WHEN, 'ats': []}, {'id': 2, 'at': later, 'ats': []}])
+        await Ref.objects.using(db).insert_many([{'id': 1, 'at': WHEN}, {'id': 2, 'at': later}])
+        await Doc.objects.using(db).insert(id=1, addr={'city': 'Oslo', 'opened': later}, src=WHEN)
+        await Doc.objects.using(db).filter(Doc.id == 1).update(addr={'opened': Doc.src})
+        assert (await Doc.objects.using(db).get(Doc.id == 1)).addr.opened == WHEN
+        rows = await q.load(M.refs).order_by(M.id).prepare()()
+        assert [[c.id for c in r.refs.cached] for r in rows] == [[1], [2]]
+        edit = q.update_many(param('rows', fields=(M.id, M.maybe))).prepare()
+        await edit(rows=[{'id': 1, 'maybe': later + dt.timedelta(days=1)}, {'id': 2, 'maybe': later + dt.timedelta(days=2)}])
+        stored = await db.fetch('SELECT maybe::text AS maybe FROM "stamprow" ORDER BY id')
+        assert [r['maybe'] for r in stored] == ['2024-01-04 07:08:09.123456', '2024-01-05 07:08:09.123456']

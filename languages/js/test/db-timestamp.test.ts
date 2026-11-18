@@ -17,6 +17,15 @@ model StampCopy {
   at DateTime @db.Timestamp(6)
   maybe DateTime? @db.Timestamp(6)
 }
+type StampAddr {
+  city String
+  opened DateTime
+}
+model StampDoc {
+  id Int @id
+  addr StampAddr? @storage(json)
+  src DateTime @db.Timestamp(6)
+}
 model StampRef {
   id Int @id
   at DateTime @db.Timestamp(6)
@@ -122,6 +131,30 @@ test("timestamp prepared statements keep the utc wall clock under a session zone
         const later = stamp("2024-01-04T07:08:09.123Z", 456);
         await q.filter(M.id.eq(1)).update({ at: param("a") }).prepare().run({ a: later });
         assert.equal((await db.fetch('SELECT at::text AS at FROM "stamprow" WHERE id = 1'))[0]!.at, "2024-01-04 07:08:09.123456");
+      });
+    } finally { await db.dropTables(); await db.close(); }
+  });
+});
+
+test("timestamp nested expression and prepared keys and rows keep the utc wall clock under a session zone", async (t) => {
+  for (const zone of ZONES) await t.test(zone, async () => {
+    const { db, classes } = await world();
+    try {
+      const { StampRow: M, StampRef: Ref, StampDoc: Doc } = classes;
+      const q = M.objects.using(db);
+      await db.transaction(async () => {
+        await db.execute(`SET LOCAL TIME ZONE '${zone}'`);
+        await q.insertMany([{ id: 1, at: WHEN(), ats: [] }, { id: 2, at: LATER(), ats: [] }]);
+        await Ref.objects.using(db).insertMany([{ id: 1, at: WHEN() }, { id: 2, at: LATER() }]);
+        await Doc.objects.using(db).insert({ id: 1, addr: new classes.$types.StampAddr({ city: "Oslo", opened: LATER() }), src: WHEN() });
+        await Doc.objects.using(db).filter(Doc.id.eq(1)).update({ addr: { opened: Doc.src } });
+        assert.equal((await Doc.objects.using(db).get(Doc.id.eq(1))).addr.opened.toISOString(), WHEN().toISOString());
+        const rows = await q.load(M.refs).orderBy(M.id).prepare().all({});
+        assert.deepEqual(rows.map((r: any) => r.refs.cached.map((c: any) => c.id)), [[1], [2]]);
+        const edit = q.updateMany(param("rows", { fields: [M.id, M.maybe] })).prepare();
+        await edit.run({ rows: [{ id: 1, maybe: stamp("2024-01-04T07:08:09.123Z", 456) }, { id: 2, maybe: stamp("2024-01-05T07:08:09.123Z", 456) }] });
+        const stored = await db.fetch('SELECT maybe::text AS maybe FROM "stamprow" ORDER BY id');
+        assert.deepEqual(stored.map((r: any) => r.maybe), ["2024-01-04 07:08:09.123456", "2024-01-05 07:08:09.123456"]);
       });
     } finally { await db.dropTables(); await db.close(); }
   });
