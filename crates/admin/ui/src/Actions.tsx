@@ -1,50 +1,13 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useState } from "react";
 import * as api from "./api";
 import { InputFields, type InputValues, startInputs } from "./Inputs";
 import { BASE, navigate } from "./router";
-import { Alert, Button, message } from "./ui";
+import { ConfirmDialog } from "./components/confirm-dialog";
+import { toast } from "./components/ui/toast";
+import { Alert, message } from "./ui";
 
-type Level = "info" | "success" | "warning" | "error";
-interface Toast {
-  id: number;
-  text: string;
-  level: Level;
-}
-
-let toasts: Toast[] = [];
-let nextToast = 1;
-const watchers = new Set<() => void>();
-const publish = (next: Toast[]) => {
-  toasts = next;
-  watchers.forEach((fn) => fn());
-};
-
-/** Show a message from an action. It leaves by itself after eight seconds. */
-export function toast(text: string, level: Level = "info") {
-  const id = nextToast++;
-  publish([...toasts, { id, text, level }]);
-  setTimeout(() => publish(toasts.filter((t) => t.id !== id)), 8000);
-}
-
-/** The messages of the actions: one place for the whole app. */
-export function Toasts() {
-  const list = useSyncExternalStore(
-    (fn) => (watchers.add(fn), () => void watchers.delete(fn)),
-    () => toasts,
-  );
-  if (list.length === 0) return null;
-  return (
-    <div className="toasts" aria-live="polite">
-      {list.map((t) => (
-        <div key={t.id} className={`toast toast-${t.level}`} role={t.level === "error" ? "alert" : "status"}>
-          <span>{t.text}</span>
-          <button type="button" className="toast-close" aria-label="Dismiss" onClick={() => publish(toasts.filter((x) => x.id !== t.id))}>×</button>
-        </div>
-      ))}
-    </div>
-  );
-}
+export { toast };
 
 /** A path under the admin stays in the app: any other path of the site is a page load. */
 const inApp = (to: string) => to === BASE || to.startsWith(`${BASE}/`);
@@ -122,11 +85,6 @@ export function ActionDialog({ resource, action, target, onClose, onDone }: { re
   const [problem, setProblem] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [large, setLarge] = useState(false);
-  useEffect(() => {
-    const esc = (e: KeyboardEvent) => e.key === "Escape" && !busy && onClose();
-    window.addEventListener("keydown", esc);
-    return () => window.removeEventListener("keydown", esc);
-  }, [busy, onClose]);
   const plain = action.inputs.filter((d) => d.type !== "file");
   const run = async () => {
     setBusy(true);
@@ -154,28 +112,32 @@ export function ActionDialog({ resource, action, target, onClose, onDone }: { re
   };
   const label = action.name === "bulk_delete" ? "Delete" : action.label;
   return (
-    <div className="confirm" role="alertdialog" aria-label={`Confirm ${label}`}>
-      <p>
-        <strong>{label}</strong> on {target.what}.{" "}
-        {action.confirm}
-      </p>
-      {plain.length > 0 && <InputFields defs={plain} vals={ins} errors={bad} onChange={(n, v) => setIns((s) => ({ ...s, [n]: v }))} scope={`action-${action.name}`} />}
-      {action.inputs.filter((d) => d.type === "file").map((d) => (
-        <div key={d.name} className={(bad[d.name] ?? []).length > 0 ? "field field-bad" : "field"}>
-          <label htmlFor={`in-action-${action.name}-${d.name}`}>
-            {d.label}
-            {d.required && <span className="req" title="Required"> *</span>}
-          </label>
-          <input id={`in-action-${action.name}-${d.name}`} type="file" onChange={(e) => setFiles((s) => ({ ...s, [d.name]: e.target.files?.[0] ?? null }))} />
-          {d.help && <p className="muted">{d.help}</p>}
-          {(bad[d.name] ?? []).map((m) => <p key={m} className="msg msg-error">{m}</p>)}
-        </div>
-      ))}
-      {large && <Alert>This selection holds more than 10,000 records. Confirm once more to run the action on all of them.</Alert>}
-      {problem.map((m) => <Alert key={m}>{m}</Alert>)}
-      <Button disabled={busy} onClick={run}>{large ? `Yes, ${label.toLowerCase()} them all` : label}</Button>{" "}
-      <Button variant="plain" disabled={busy} onClick={onClose}>Cancel</Button>
-    </div>
+    <ConfirmDialog
+      title={`Confirm ${label}`}
+      description={<><strong>{label}</strong> on {target.what}. {action.confirm}</>}
+      confirm={large ? `Yes, ${label.toLowerCase()} them all` : label}
+      destructive={action.name === "bulk_delete"}
+      busy={busy}
+      onConfirm={run}
+      onClose={onClose}
+    >
+      <div className="grid gap-3">
+        {plain.length > 0 && <InputFields defs={plain} vals={ins} errors={bad} onChange={(n, v) => setIns((s) => ({ ...s, [n]: v }))} scope={`action-${action.name}`} />}
+        {action.inputs.filter((d) => d.type === "file").map((d) => (
+          <div key={d.name} className={(bad[d.name] ?? []).length > 0 ? "field field-bad" : "field"}>
+            <label htmlFor={`in-action-${action.name}-${d.name}`}>
+              {d.label}
+              {d.required && <span className="req" title="Required"> *</span>}
+            </label>
+            <input id={`in-action-${action.name}-${d.name}`} type="file" onChange={(e) => setFiles((s) => ({ ...s, [d.name]: e.target.files?.[0] ?? null }))} />
+            {d.help && <p className="muted">{d.help}</p>}
+            {(bad[d.name] ?? []).map((m) => <p key={m} className="msg msg-error">{m}</p>)}
+          </div>
+        ))}
+        {large && <Alert>This selection holds more than 10,000 records. Confirm once more to run the action on all of them.</Alert>}
+        {problem.map((m) => <Alert key={m}>{m}</Alert>)}
+      </div>
+    </ConfirmDialog>
   );
 }
 

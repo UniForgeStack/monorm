@@ -8,6 +8,9 @@ import { InlineRowsView } from "./Inlines";
 import { InputFields, inputBody, startInputs, type InputValues } from "./Inputs";
 import { ActionDialog, needsDialog, useQuick, type Target } from "./Actions";
 import { PackageTab, widgetCall, widgetStream } from "./Packages";
+import { ConfirmDialog } from "./components/confirm-dialog";
+import { buttonVariants } from "./components/ui/button";
+import { Tabs, TabsList, TabsTrigger } from "./components/ui/tabs";
 import { Alert, Bypass, Button, message } from "./ui";
 
 /** A record: its fields and links, and one tab per to-many relation whose target the user can read. */
@@ -33,7 +36,7 @@ export function DetailPage({ resource, id, zone, site }: { resource: string; id:
       {meta?.writable === false && <p className="muted" role="note">Read-only here: {meta.read_only_reason}</p>}
       {!tab && !packageTab && meta && <RowActions meta={meta} id={id} flags={d.flags ?? {}} detail={d} />}
       {!tab && !packageTab && meta?.bypass && meta.bypass.length > 0 && <div className="toolbar"><Bypass names={meta.bypass} params={params} change={change} /></div>}
-      {tabs.length + packageTabs.length > 0 && <Tabs tabs={[...tabs, ...packageTabs]} current={tab?.name ?? packageTab?.name ?? null} base={detailUrl(resource, id)} />}
+      {tabs.length + packageTabs.length > 0 && <DetailTabs tabs={[...tabs, ...packageTabs]} current={tab?.name ?? packageTab?.name ?? null} base={detailUrl(resource, id)} />}
       {tab && target && api.may(target, "create") && <AddOnTab tab={tab} detail={d} />}
       {packageTab && site ? (
         <PackageTab key={packageTab.name} site={site} name={packageTab.name} resource={resource} id={id} record={Object.fromEntries(d.fields.map((f, i) => [f.label, d.values[i]]))} call={widgetCall} stream={widgetStream} />
@@ -72,7 +75,7 @@ function AddOnTab({ tab, detail }: { tab: api.Tab; detail: api.Detail }) {
   const text = params.toString();
   return (
     <div className="actions">
-      <Link className="btn btn-primary" href={newUrl(tab.target, text ? `?${text}` : "")}>Add</Link>
+      <Link className={buttonVariants()} href={newUrl(tab.target, text ? `?${text}` : "")}>Add</Link>
     </div>
   );
 }
@@ -119,7 +122,7 @@ function RowActions({ meta, id, flags, detail }: { meta: api.Resource; id: strin
       <div className="actions" role="group" aria-label="Actions">
         {api.may(meta, "update") &&
           (allows("change") ? (
-            <Link className="btn btn-plain" href={editUrl(meta.name, id)}>Edit</Link>
+            <Link className={buttonVariants({ variant: "outline" })} href={editUrl(meta.name, id)}>Edit</Link>
           ) : (
             <Button variant="plain" disabled title="This record does not allow change">Edit</Button>
           ))}
@@ -136,35 +139,34 @@ function RowActions({ meta, id, flags, detail }: { meta: api.Resource; id: strin
       </div>
       {pending && <ActionDialog key={pending.name} resource={meta.name} action={pending} target={target} onClose={() => setPending(null)} />}
       {asking && (
-        <div className="confirm" role="alertdialog" aria-label="Confirm delete">
-          <p>Delete this {meta.title} for good? This cannot be undone.</p>
-          {(meta.inputs?.length ?? 0) > 0 && <InputFields defs={meta.inputs ?? []} vals={ins} errors={bad} onChange={(n, v) => setIns((s) => ({ ...s, [n]: v }))} scope="delete" />}
-          {problem.map((m) => <Alert key={m}>{m}</Alert>)}
-          <Button disabled={busy} onClick={remove}>Delete it</Button>{" "}
-          <Button variant="plain" disabled={busy} onClick={() => { setAsking(false); setProblem([]); }}>Cancel</Button>
-        </div>
+        <ConfirmDialog
+          title="Confirm delete"
+          description={`Delete this ${meta.title} for good? This cannot be undone.`}
+          confirm="Delete it"
+          destructive
+          busy={busy}
+          onConfirm={remove}
+          onClose={() => { setAsking(false); setProblem([]); }}
+        >
+          <div className="grid gap-3">
+            {(meta.inputs?.length ?? 0) > 0 && <InputFields defs={meta.inputs ?? []} vals={ins} errors={bad} onChange={(n, v) => setIns((s) => ({ ...s, [n]: v }))} scope="delete" />}
+            {problem.map((m) => <Alert key={m}>{m}</Alert>)}
+          </div>
+        </ConfirmDialog>
       )}
     </>
   );
 }
 
 /** "Details" and one tab per to-many relation. The tab is `?tab=<relation>` on the detail URL. */
-function Tabs({ tabs, current, base }: { tabs: { name: string; title: string }[]; current: string | null; base: string }) {
-  const items = [{ name: null as string | null, title: "Details" }, ...tabs];
+function DetailTabs({ tabs, current, base }: { tabs: { name: string; title: string }[]; current: string | null; base: string }) {
+  const items = [{ name: DETAILS, title: "Details" }, ...tabs];
   return (
-    <div role="tablist" className="tabs">
-      {items.map((t) => (
-        <button
-          key={t.name ?? ""}
-          type="button"
-          role="tab"
-          aria-selected={t.name === current}
-          className={t.name === current ? "tab tab-on" : "tab"}
-          onClick={() => navigate(t.name ? `${base}?tab=${encodeURIComponent(t.name)}` : base)}
-        >
-          {t.title}
-        </button>
-      ))}
-    </div>
+    <Tabs value={current ?? DETAILS} onValueChange={(name) => navigate(name === DETAILS ? base : `${base}?tab=${encodeURIComponent(name)}`)} className="mb-4">
+      <TabsList aria-label="Sections" className="flex-wrap">
+        {items.map((t) => <TabsTrigger key={t.name} value={t.name}>{t.title}</TabsTrigger>)}
+      </TabsList>
+    </Tabs>
   );
 }
+const DETAILS = "__details__";

@@ -1,24 +1,33 @@
-// The own small component set. Radix gives the behavior of the menu and the label; the rest is plain markup.
-import * as Label from "@radix-ui/react-label";
-import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode } from "react";
+// The page's small set of helpers. They sit on the kit (components/ui) so a screen keeps one look.
+import type { InputHTMLAttributes, ReactNode } from "react";
+import { cn } from "./lib/utils";
+import { Button as KitButton, type ButtonProps } from "./components/ui/button";
+import { Card as KitCard, CardContent, CardHeader, CardTitle } from "./components/ui/card";
+import { Input } from "./components/ui/input";
+import { Label } from "./components/ui/label";
 
-export function Button({ variant = "primary", ...rest }: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "plain" }) {
-  return <button className={`btn btn-${variant}`} {...rest} />;
+/** `primary` is the filled button, `plain` the outlined one. */
+export function Button({ variant = "primary", ...rest }: Omit<ButtonProps, "variant"> & { variant?: "primary" | "plain" | "destructive" | "ghost" }) {
+  const map = { primary: "default", plain: "outline", destructive: "destructive", ghost: "ghost" } as const;
+  return <KitButton variant={map[variant]} {...rest} />;
 }
 
-export function Field({ label, ...rest }: InputHTMLAttributes<HTMLInputElement> & { label: string }) {
+export function Field({ label, className, ...rest }: InputHTMLAttributes<HTMLInputElement> & { label: string }) {
   const id = `f-${rest.name ?? label}`;
   return (
-    <div className="field">
-      <Label.Root htmlFor={id}>{label}</Label.Root>
-      <input id={id} {...rest} />
+    <div className="mb-3 grid gap-1.5">
+      <Label htmlFor={id}>{label}</Label>
+      <Input id={id} className={className} {...rest} />
     </div>
   );
 }
 
 export function Alert({ children, kind = "error" }: { children: ReactNode; kind?: "error" | "ok" }) {
   return (
-    <p className={`alert alert-${kind}`} role={kind === "error" ? "alert" : "status"}>
+    <p
+      className={cn("my-2 rounded-md border px-3 py-2 text-sm", kind === "error" ? "border-destructive/50 bg-destructive/10 text-destructive" : "border-success/50 bg-success/10 text-success")}
+      role={kind === "error" ? "alert" : "status"}
+    >
       {children}
     </p>
   );
@@ -26,10 +35,12 @@ export function Alert({ children, kind = "error" }: { children: ReactNode; kind?
 
 export function Card({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <section className="card">
-      <h1>{title}</h1>
-      {children}
-    </section>
+    <KitCard className="w-full max-w-sm">
+      <CardHeader>
+        <CardTitle className="text-lg">{title}</CardTitle>
+      </CardHeader>
+      <CardContent>{children}</CardContent>
+    </KitCard>
   );
 }
 

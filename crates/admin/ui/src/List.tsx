@@ -6,6 +6,7 @@ import { type Zone } from "./format";
 import { Link, navigate, newUrl, rememberList, useSearch } from "./router";
 import { Table } from "./Table";
 import { ActionDialog, deleteAction, needsDialog, useQuick, type Target } from "./Actions";
+import { buttonVariants } from "./components/ui/button";
 import { Alert, Bypass, Button, message } from "./ui";
 
 const SIZES = [10, 25, 50, 100, 200];
@@ -152,7 +153,7 @@ export function ListView({ resource, zone, meta, params, change, scope }: { reso
             <Button type="submit" variant="plain">Search</Button>
           </form>
         )}
-        {!scope && api.may(meta, "create") && <Link className="btn btn-primary" href={newUrl(resource)}>Add</Link>}
+        {!scope && api.may(meta, "create") && <Link className={buttonVariants()} href={newUrl(resource)}>Add</Link>}
         {listActions.map((a) => (
           <Button key={a.name} variant="plain" onClick={() => go(a, { search: filterSearch, what: "all the records that match the filters" })}>{a.label}</Button>
         ))}
