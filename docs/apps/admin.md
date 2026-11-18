@@ -520,8 +520,49 @@ It takes `read`, `create`, `update` and `delete`.
 
 A request without a grant gets `403` and one audit row (action `permission_denied`).
 The resources and actions that the user cannot use are absent from `GET {prefix}/resources`.
-The columns of a resource that the user can read are all listed: only the names in `field_permissions` follow the grants.
+A field follows the page level unless a `see` or `change` binding names it: see [Field permissions](#field-permissions).
 The audit row says why in `changes`: `{"needs": [...]}` (one of these names is enough) or `{"reason": "allow"}` (`allow=` excludes read).
+
+### Field permissions
+
+`see=` and `change=` bind a named permission to a field.
+A field with no binding follows the page level.
+
+```python
+site.register(Product, {
+    "list": {"columns": ["name", "code", "cost"], "search": ["name"], "filters": ["cost"], "sortable": ["cost"]},
+    "see": {"cost": "see_cost"},
+    "change": {"price": "change_price"},
+})
+```
+
+- `see` keys are column or detail labels. A user without the name cannot see the field.
+- `change` keys are form labels. A user without the name sees the field but cannot write it.
+- A bound name is a field permission of the resource (`admin.see_cost`), so `sync-permissions` creates it. Use `page` or `model`: with `access` the build fails.
+- A key field cannot be bound.
+- TypeScript uses the same keys: `see: { cost: "see_cost" }` and `change: { price: "change_price" }`.
+
+Rust applies the bindings in one place, before it builds metadata and queries.
+A field that the user cannot see leaves the columns, the detail, the tabs, the search, the filters, the sort, the export, the autocomplete labels, the inlines, the metadata and every response, so it cannot leak through a side door.
+A field that the user may see but not change shows read-only in the form.
+
+A forbidden request gives an error, not a silent drop:
+
+- A filter or a sort on a field that the user cannot see gives `400`.
+- A write to a field that the user can see but not change gives `422` with "This field is read-only."
+- A write to a field that the user cannot see gives `422` with "This field cannot be written."
+
+The service builds the prepared list query and the metadata once for each granted set, not for each request.
+A user who holds every bound name, and a resource with no binding, use the page and build nothing.
+Measured on a loaded development machine (debug build, `cargo test -p monorm-admin --test field_permissions -- --nocapture`): the first request of a new granted set builds its view in about 0.2 ms, and each later request of that set looks it up in about 2 µs.
+The number of views is at most 2^n for n bound names of one page.
+
+These paths do not scan a field by its content, so bind the field by its own label:
+
+- A computed or aggregate column that reads a hidden field.
+- A path column such as `author.name`, which a `see` binding on `name` does not hide.
+- A named filter or `search_with` that the developer wrote.
+- The `changes` of an audit row, which can hold a value that a later reader may not see.
 
 ### Built-in resources: roles and the audit log
 
@@ -917,7 +958,7 @@ The wrapper takes these keys:
 | `page` | Page keys that replace the keys of the registered page. A child with no page needs the keys here. |
 
 `page` takes `list`, `queryset`, `can`, `check_messages`, `form`, `readonly`, `widgets`, `relations`, `inputs` and `allow`.
-Other page keys have no meaning for a row, and the build refuses them with a reason: `create`, `update` and `delete` (a service writes one record), `inlines` (an inline is never nested), `files` (a change set carries no file), `title` and `group`, `perms` and `label`, `field_permissions`, `actions`, `form_component` and `allow_protected_writes`.
+Other page keys have no meaning for a row, and the build refuses them with a reason: `create`, `update` and `delete` (a service writes one record), `inlines` (an inline is never nested), `files` (a change set carries no file), `title` and `group`, `perms` and `label`, `field_permissions`, `see` and `change` (they belong to the registered page of the child), `actions`, `form_component` and `allow_protected_writes`.
 The field that points at the parent is fixed by the parent, so a row has no control for it.
 
 An inline is to-many only and is never nested.
