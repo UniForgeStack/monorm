@@ -1,4 +1,4 @@
-//! Shared by the tracking extensions (timestamps, soft-delete, locking): a model attribute adds
+//! Shared by the extensions that track a field on a model: a model attribute adds
 //! the field that it tracks, and a field attribute fails with the model attribute to write instead.
 use crate::{extension::{attribute_namespace, Declaration}, ir::{ColType, FieldIr, SchemaIr}, writes::UpsertDefault};
 

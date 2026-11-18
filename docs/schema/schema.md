@@ -113,7 +113,7 @@ model Post {
   @@index([author_id, created_at(sort: Desc)], where: raw("published"))
   @@index([title(ops: raw("gin_trgm_ops"))], type: Gin) // pulls in pg_trgm
   @@map("posts")
-  @@check("views >= 0", name: "posts_views_not_negative")
+  @@check(raw("views >= 0"), name: "posts_views_not_negative")
 }
 ```
 
@@ -591,7 +591,7 @@ followers User[]  @relation(through: Follow, through_fields: [followee, follower
 @@index([embedding(ops: vector_cosine_ops)], type: hnsw, with: { m: 16, ef_construction: 64 })
 
 @@unique([author_id, slug], nulls_not_distinct: true, deferrable: deferred)
-@@check("starts_at < ends_at", name: "bookings_order")
+@@check(raw("starts_at < ends_at"), name: "bookings_order")
 @@exclude([room_id(op: "="), sql("tstzrange(starts_at, ends_at)", op: "&&")], where: "not cancelled")
 
 @@trigger(touch, before: [update], update_of: [title], when: "OLD.title <> NEW.title", body: "BEGIN NEW.updated_at := now(); RETURN NEW; END;")

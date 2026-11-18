@@ -158,7 +158,7 @@ already does.
 | `@@unique([a, b])` | `@@unique([a, b])` | native |
 | `type: hnsw` / `ivfflat` / `bloom`, `include:`, `with:`, `sql("expr")` keys; key options `nulls: last`, `collate:` | same arguments in `@@index` | ours (Prisma flags the argument) |
 | `nulls_not_distinct:`, `deferrable:` | same arguments in `@@unique` (no key order) | ours |
-| `@@check("...", name: "...")` | same | ours |
+| `@@check(raw("..."), name: "...")` | same | ours |
 | `@@exclude([...], where: "...")` | same | ours |
 | `@@trigger(name, before: [...], function: f, args: [...])` | same, on one line | ours |
 | `@@comment("...")`, `@@renamed_from("old")` | same | ours |
@@ -225,7 +225,7 @@ model Post {
   @@index([author_id, created_at(sort: Desc)], where: raw("published"))
   @@index([title(ops: raw("gin_trgm_ops"))], type: Gin) // pulls in the pg_trgm extension
   @@map("posts")
-  @@check("views >= 0", name: "posts_views_not_negative")
+  @@check(raw("views >= 0"), name: "posts_views_not_negative")
 }
 
 model Comment {
@@ -314,7 +314,7 @@ model Account {
   @@index([sql("lower(email)", collate: "C")], unique: true)
   @@index([embedding(ops: vector_cosine_ops)], type: hnsw, with: { m: 16, ef_construction: 64 })
   @@map("accounts")
-  @@check("char_length(nick) > 0")
+  @@check(raw("char_length(nick) > 0"))
   @@exclude([id(op: "="), sql("tstzrange(updated_at, updated_at)", op: "&&")], where: "views > 0")
   @@trigger(touch, before: [update], update_of: [nick], when: "OLD.nick <> NEW.nick", body: "BEGIN NEW.updated_at := now(); RETURN NEW; END;")
   @@trigger(audit, after: [insert, update, delete], for_each: statement, function: audit_row, args: ["accounts"])

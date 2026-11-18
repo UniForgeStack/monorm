@@ -35,7 +35,7 @@ model Reward {
  @@id([id, type])
  @@map("partition_example_reward")
  @@index([shop_id])
- @@check("mode = 'TOTAL' OR target = 'PRODUCT'", name: "reward_mode_total_unless_product")
+ @@check(raw("mode = 'TOTAL' OR target = 'PRODUCT'"), name: "reward_mode_total_unless_product")
  @@partition(list: [type])
  @@query.filter("tenant", (shop_id == scope.shop) & (deleted_at == null))
 }
@@ -45,8 +45,8 @@ model PercentageDiscountReward {
  @@proxy.fields(exclude: ["type", "mode", "amount", "price"])
  @@partition.values([PERCENTAGE_DISCOUNT])
  @@map("partition_example_percentage")
- @@check("percent IS NOT NULL AND percent BETWEEN 0 AND 100 AND amount IS NULL AND price IS NULL")
- @@check("mode = 'TOTAL'")
+ @@check(raw("percent IS NOT NULL AND percent BETWEEN 0 AND 100 AND amount IS NULL AND price IS NULL"))
+ @@check(raw("mode = 'TOTAL'"))
  @@index([tier_id, content_hash], unique: true, where: raw("_deleted_at IS NULL AND content_hash <> ''"))
 }
 model FixedDiscountReward {
@@ -55,7 +55,7 @@ model FixedDiscountReward {
  @@proxy.fields(exclude: ["type", "percent", "price"])
  @@partition.values([FIXED_DISCOUNT])
  @@map("partition_example_fixed")
- @@check("amount IS NOT NULL AND amount >= 0 AND percent IS NULL AND price IS NULL")
+ @@check(raw("amount IS NOT NULL AND amount >= 0 AND percent IS NULL AND price IS NULL"))
  @@index([tier_id, content_hash], unique: true, where: raw("_deleted_at IS NULL AND content_hash <> ''"))
 }
 model SetPriceReward {
@@ -64,6 +64,6 @@ model SetPriceReward {
  @@proxy.fields(exclude: ["type", "percent", "amount"])
  @@partition.values([SET_PRICE])
  @@map("partition_example_price")
- @@check("price IS NOT NULL AND price >= 0 AND percent IS NULL AND amount IS NULL")
+ @@check(raw("price IS NOT NULL AND price >= 0 AND percent IS NULL AND amount IS NULL"))
  @@index([tier_id, content_hash], unique: true, where: raw("_deleted_at IS NULL AND content_hash <> ''"))
 }

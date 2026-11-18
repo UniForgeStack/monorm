@@ -53,7 +53,7 @@ model Post {
   @@index([author_id, created_at(sort: Desc)], where: raw("published"))
   @@index([title(ops: raw("gin_trgm_ops"))], type: Gin) // pulls in the pg_trgm extension
   @@map("posts")
-  @@check("views >= 0", name: "posts_views_not_negative")
+  @@check(raw("views >= 0"), name: "posts_views_not_negative")
 }
 
 model Comment {
