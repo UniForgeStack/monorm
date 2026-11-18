@@ -1,217 +1,22 @@
-// Browser smoke test of the admin UI. It starts a real `python -m monorm admin` process on SQLite,
+// Browser smoke test of the admin UI. It starts a real `python -m monorm admin` process on SQLite (see harness.mjs),
 // signs in, opens a list and a detail page, and fails on any console error, CSP violation or failed request.
 // Needs: the `monorm` wheel in the active Python (`maturin develop`), `npm install` and `npm run install-browser` here.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { cpSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { after, before, test } from "node:test";
-import { fileURLToPath } from "node:url";
 
 import { chromium } from "playwright";
 
 import { CLIENT_SECRET, startIdp, CLIENT_ID } from "./fake-idp.mjs";
-
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
-const PYTHON = process.env.MONORM_PYTHON ?? "python";
-const SECRET = "smoke-secret-of-at-least-32-bytes!";
-// 2026-01-02T03:04:05Z in this zone is 6:34:05 AM (UTC+03:30, no daylight saving time since 2022).
-const ZONE = "Asia/Tehran";
-
-const SCHEMA = `datasource db {
-  provider = "sqlite"
-}
-import "app:monorm-auth" (prefix: "auth_")
-
-model Author {
-  id    BigInt @id @default(autoincrement())
-  name  String
-  books Book[]
-  @@map("authors")
-}
-
-model Book {
-  id         BigInt   @id @default(autoincrement())
-  title      String
-  created_at DateTime
-  author_id  BigInt?
-  author     Author?  @relation(fields: [author_id], references: [id])
-  @@map("books")
-}
-
-model Note {
-  id    BigInt @id @default(autoincrement())
-  title String
-  @@map("notes")
-}
-
-model Reviewer {
-  id     BigInt  @id @default(autoincrement())
-  name   String
-  papers Paper[]
-  @@map("reviewers")
-}
-
-model Paper {
-  id        BigInt  @id @default(autoincrement())
-  title     String
-  reviewer_id BigInt?
-  cover     Json?
-  reviewer    Reviewer? @relation(fields: [reviewer_id], references: [id])
-  @@map("papers")
-}
-
-model Ticket {
-  id     BigInt @id @default(autoincrement())
-  title  String
-  status String @default("open")
-  @@map("tickets")
-}
-
-model Movie {
-  id    BigInt @id @default(autoincrement())
-  title String
-  stars Int?
-  @@map("movies")
-}
-
-model Album {
-  id     BigInt  @id @default(autoincrement())
-  title  String
-  tracks Track[]
-  @@map("albums")
-}
-
-model Track {
-  id       BigInt @id @default(autoincrement())
-  title    String
-  plays    Int    @default(0)
-  album_id BigInt
-  album    Album  @relation(fields: [album_id], references: [id])
-  @@map("tracks")
-}
-`;
-
-// A custom form: the module default-exports a function from React to a component.
-const NOTE_FORM = `export default (React) => function NoteForm({ values, errors, saving, save }) {
-  const [title, setTitle] = React.useState(values.title ?? "");
-  const h = React.createElement;
-  return h("form", { className: "form", onSubmit: (e) => { e.preventDefault(); void save(title === "" ? {} : { title }); } },
-    h("label", { htmlFor: "note-title" }, "Note text"),
-    h("input", { id: "note-title", value: title, onChange: (e) => setTitle(e.target.value) }),
-    ...(errors.fields.title ?? []).map((m) => h("p", { key: m, role: "note" }, m)),
-    h("button", { type: "submit", disabled: saving }, "Save note"));
-};
-`;
-
-// A bulk action on the selected rows, with a confirmation and a message.
-const TICKET = `@action(name="close_tickets", label="Close", placement="bulk", confirm="Close the chosen tickets?")
-async def close_tickets(ctx, qs):
-    await qs.update(status="closed")
-    return message(f"Closed {ctx.count} tickets", "success")
-
-
-admin.register(Ticket, {"actions": [close_tickets]})`;
-
-const HELD_ROLES = `
-import asyncio, os
-import monorm
-import models
-
-async def main():
-    db = await monorm.connect(os.environ["MONORM_DATABASE_URL"])
-    user = await models.User.objects.using(db).filter(models.User.username == "sso@example.com").first()
-    held = await models.UserRole.objects.using(db).filter(models.UserRole.user_id == user.id)
-    roles = await models.Role.objects.using(db).filter(models.Role.id.in_([j.role_id for j in held]))
-    print(",".join(sorted(r.name for r in roles)))
-
-asyncio.run(main())
-`;
-
-const SEED = `
-import asyncio, datetime, os
-import monorm
-from monorm_auth import make_password
-import models
-
-async def main():
-    db = await monorm.connect(os.environ["MONORM_DATABASE_URL"])
-    await models.User.objects.insert_many([{"username": "ann", "email": "ann@example.com", "password": make_password("pw-of-ann"), "is_superuser": True}])
-    await models.Role.objects.insert_many([{"name": "support"}])
-    (ada,) = await models.Author.objects.insert_many([{"name": "Ada"}]).returning()
-    at = datetime.datetime(2026, 1, 2, 3, 4, 5, tzinfo=datetime.timezone.utc)
-    await models.Book.objects.insert_many([
-        {"title": "First", "created_at": at, "author_id": ada.id},
-        {"title": "Second", "created_at": at, "author_id": None},
-    ])
-    await models.Reviewer.objects.insert_many([{"name": f"Rev {n:02d}"} for n in range(1, 26)])
-    await models.Ticket.objects.insert_many([{"title": f"Ticket {n}"} for n in range(1, 4)])
-    await models.Movie.objects.insert_many([{"title": "Alpha", "stars": 4}, {"title": "Beta", "stars": 2}])
-    (debut,) = await models.Album.objects.insert_many([{"title": "Debut"}]).returning()
-    await models.Track.objects.insert_many([{"title": "Intro", "plays": 1, "album_id": debut.id}])
-    await db.close()
-
-asyncio.run(main())
-`;
+import { HELD_ROLES, PYTHON, ROOT, SECRET, ZONE, startProject } from "./harness.mjs";
 
 let dir, server, base, browser;
-const stderr = [];
-
-function run(args, env) {
-  const done = spawnSync(PYTHON, args, { cwd: dir, env, encoding: "utf8" });
-  assert.equal(done.status, 0, `${PYTHON} ${args.join(" ")}\n${done.stdout}${done.stderr}`);
-}
 
 before(async () => {
-  dir = mkdtempSync(join(tmpdir(), "monorm-admin-smoke-"));
-  // The built-in apps import from the source tree when `monorm` is an editable install; the root makes that path resolve.
-  const env = { ...process.env, PYTHONPATH: ROOT, MONORM_DATABASE_URL: `sqlite://${dir}/app.db`, MONORM_ADMIN_SECRET: SECRET, MONORM_ADMIN_PORT: "0" };
-  writeFileSync(join(dir, "schema.prisma"), SCHEMA);
-  writeFileSync(join(dir, "seed.py"), SEED);
-  run(["-m", "monorm", "admin", "init", "--models", "models"], env);
-  // A search box on Book: the title is a plain column, so the search is "contains". A filter on its author.
-  const module = readFileSync(join(dir, "admin.py"), "utf8");
-  assert.ok(module.includes("admin.register(Book)"), "the generated admin.py registers Book");
-  assert.ok(module.includes("admin.register(Note)"), "the generated admin.py registers Note");
-  // Book: a section layout with a collapsed section. Note: a custom form from a module file.
-  const book = 'admin.register(Book, {"list": {"search": [Book.title], "filters": [Book.author]}, "form": [{"title": "Basics", "fields": ["title", "created_at"]}, {"title": "More", "fields": ["author_id"], "collapsed": True}]})';
-  writeFileSync(join(dir, "note-form.js"), NOTE_FORM);
-  // Paper: a picker over Reviewer (with a create modal) and a file field in a memory store.
-  assert.ok(module.includes("admin.register(Reviewer)") && module.includes("admin.register(Paper)"), "the generated admin.py registers Reviewer and Paper");
-  assert.ok(module.includes("admin.register(Ticket)"), "the generated admin.py registers Ticket");
-  assert.ok(module.includes("admin.register(Album)") && module.includes("admin.register(Track)"), "the generated admin.py registers Album and Track");
-  assert.ok(module.includes("admin.register(Movie)"), "the generated admin.py registers Movie");
-  // Movie: the example extension package (a stars widget, a Summary tab, a route and an action).
-  cpSync(join(ROOT, "examples", "admin-package"), join(dir, "package"), { recursive: true });
-  const withStorage = module
-    .replace("from monorm.admin import Admin\n", "from monorm.admin import Admin, inline\nfrom monorm_file_storage import Registry\nfrom opendal import AsyncOperator\n")
-    // Album: its Track rows as an inline that saves with the album.
-    .replace("admin.register(Album)", 'admin.register(Album, {"inlines": [inline(Track)]})')
-    .replace("admin = Admin()", 'admin = Admin(storage=Registry({"media": AsyncOperator("memory")}))')
-    .replace("from monorm.admin import Admin, inline\n", "from monorm.admin import Admin, inline, action, message\n")
-    .replace("admin.register(Ticket)", TICKET)
-    .replace("admin.register(Movie)", "import sys\nsys.path.insert(0, str(__import__('pathlib').Path(__file__).parent / 'package'))\nfrom rating import install\n\ninstall(admin, Movie)")
-    .replace("admin.register(Reviewer)", 'admin.register(Reviewer, {"list": {"search": [Reviewer.name]}})')
-    .replace("admin.register(Paper)", 'admin.register(Paper, {"relations": {"reviewer": {"create": True}}, "files": {"cover": "media"}})');
-  writeFileSync(join(dir, "admin.py"), withStorage.replace("admin.register(Book)", book).replace("admin.register(Note)", 'admin.register(Note, {"form_component": "note-form.js"})'));
-  run(["-m", "monorm", "generate"], env);
-  run(["-m", "monorm", "makemigrations"], env);
-  run(["-m", "monorm", "migrate", "--url", env.MONORM_DATABASE_URL], env);
-  run(["seed.py"], env);
-  server = spawn(PYTHON, ["-m", "monorm", "admin"], { cwd: dir, env, stdio: ["ignore", "ignore", "pipe"] });
-  base = await new Promise((resolveUrl, reject) => {
-    let text = "";
-    server.stderr.on("data", (chunk) => {
-      text += chunk;
-      stderr.push(String(chunk));
-      const found = /"url":"([^"]+)"/.exec(text);
-      if (found && text.includes('"listening"')) resolveUrl(found[1]);
-    });
-    server.on("exit", (code) => reject(new Error(`the admin ended with ${code}\n${text}`)));
-  });
+  ({ dir, server, base } = await startProject());
   browser = await chromium.launch();
-  // A server that never listens ends the hook, not the CI job.
 }, { timeout: 120_000 });
 
 after(async () => {
@@ -261,6 +66,160 @@ test("sign in, open a list and a detail page", async () => {
   assert.deepEqual(problems, []);
   await context.close();
 });
+
+test("the shell: home, sidebar filter, theme toggle, keyboard focus, kit import and sign out", async () => {
+  const { context, page, problems, idle } = await signedIn();
+  // The home page: a card for each group, and the card of the last audit rows (it can be empty here: the next tests make rows).
+  await page.getByRole("heading", { name: "Admin", exact: true }).waitFor();
+  await page.getByRole("heading", { name: "Users and access" }).waitFor();
+  await page.getByRole("heading", { name: "Recent activity" }).waitFor();
+  await idle();
+
+  // The sidebar: a group collapses, and the filter finds a resource and opens its group.
+  const nav = page.getByRole("navigation", { name: "Resources" });
+  const group = nav.getByRole("button", { name: /Users and access/ });
+  assert.equal(await group.getAttribute("aria-expanded"), "true");
+  await nav.getByRole("link", { name: "Role", exact: true }).waitFor();
+  await group.click();
+  assert.equal(await group.getAttribute("aria-expanded"), "false");
+  assert.equal(await nav.getByRole("link", { name: "Role", exact: true }).count(), 0, "a shut group hides its links");
+  await group.click();
+  await page.getByRole("searchbox", { name: "Filter the resources" }).fill("rev");
+  await nav.getByRole("link", { name: "Reviewer", exact: true }).waitFor();
+  assert.equal(await nav.getByRole("link", { name: "Book", exact: true }).count(), 0, "the filter hides the other resources");
+  await page.getByRole("searchbox", { name: "Filter the resources" }).fill("");
+  assert.equal(await group.locator("svg").count(), 2, "the built-in group has a chevron and its own icon");
+
+  // The group of the open page can collapse, and a hidden sidebar keeps its filter and its collapsed groups.
+  await nav.getByRole("link", { name: "Role", exact: true }).click();
+  await page.waitForURL(/\/admin\/Role$/);
+  assert.equal(await group.getAttribute("aria-expanded"), "true", "the group of the open page is shown when the page opens");
+  await group.click();
+  assert.equal(await group.getAttribute("aria-expanded"), "false", "the group of the open page collapses");
+  const filter = page.getByRole("searchbox", { name: "Filter the resources" });
+  await filter.fill("zzz");
+  await page.getByRole("button", { name: "Hide the sidebar" }).click();
+  await page.getByRole("button", { name: "Show the sidebar" }).click();
+  assert.equal(await filter.inputValue(), "zzz", "the filter survives a hide");
+  await filter.fill("");
+  assert.equal(await group.getAttribute("aria-expanded"), "false", "the collapsed group survives a hide");
+  await group.click();
+  assert.equal(await group.getAttribute("aria-expanded"), "true");
+  await nav.getByRole("link", { name: "Home", exact: true }).click();
+  await page.waitForURL(/\/admin\/?$/);
+
+  // The sidebar toggle is a button with a state, and the choice survives a reload.
+  const toggle = page.getByRole("button", { name: "Hide the sidebar" });
+  assert.equal(await toggle.getAttribute("aria-expanded"), "true");
+  await toggle.click();
+  await page.getByRole("button", { name: "Show the sidebar" }).waitFor();
+  await page.reload();
+  await page.getByRole("button", { name: "Show the sidebar" }).waitFor();
+  await page.getByRole("button", { name: "Show the sidebar" }).click();
+
+  // Keyboard: Tab reaches the sidebar toggle, and the focus ring is visible.
+  await page.locator("body").click({ position: { x: 1, y: 1 } });
+  let ring = null;
+  for (let i = 0; i < 12 && !ring; i++) {
+    await page.keyboard.press("Tab");
+    ring = await page.evaluate(() => {
+      const el = document.activeElement;
+      if (!el || el.getAttribute("aria-label") !== "Hide the sidebar") return null;
+      const css = getComputedStyle(el);
+      return { style: css.outlineStyle, width: css.outlineWidth };
+    });
+  }
+  assert.ok(ring && ring.style !== "none" && ring.width !== "0px", `the keyboard focus shows a ring: ${JSON.stringify(ring)}`);
+
+  // The kit for packages: the import map names `monorm-admin/ui`, and the shim has every name of the kit.
+  const names = await page.evaluate(async () => {
+    const shim = await import("monorm-admin/ui");
+    return { shim: Object.keys(shim).sort(), kit: Object.keys(globalThis.__monormAdmin.ui).sort() };
+  });
+  assert.deepEqual(names.shim, names.kit);
+  for (const name of ["Button", "Input", "Select", "Dialog", "Badge", "Card", "Tabs", "Table", "toast"]) assert.ok(names.kit.includes(name), `${name} is in the kit`);
+
+  // The theme: the user menu switches to dark, the page keeps it after a reload, and System follows the browser.
+  const menu = page.getByRole("button", { name: "User menu" });
+  await menu.click();
+  await page.getByRole("menuitemradio", { name: "Dark" }).click();
+  await page.waitForFunction(() => document.documentElement.classList.contains("dark"));
+  assert.equal(await page.evaluate(() => localStorage.getItem("monorm-admin-theme")), "dark");
+  await page.reload();
+  await page.getByRole("heading", { name: "Admin", exact: true }).waitFor();
+  assert.ok(await page.evaluate(() => document.documentElement.classList.contains("dark")), "dark after a reload");
+  await menu.click();
+  await page.getByRole("menuitemradio", { name: "System" }).click();
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.waitForFunction(() => !document.documentElement.classList.contains("dark"));
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.waitForFunction(() => document.documentElement.classList.contains("dark"));
+  await page.emulateMedia({ colorScheme: "light" });
+
+  // Sign out leaves the session.
+  await menu.click();
+  await page.getByRole("menuitem", { name: "Sign out" }).click();
+  await page.waitForURL(`${base}/admin/-/login`);
+  await idle();
+  assert.deepEqual(problems, []);
+  await context.close();
+});
+
+test("the site theme reaches the page: brand colour, accent surface and logo", async () => {
+  const { context, page } = await signedIn();
+  // The metadata route is stubbed with a theme; the Rust side of the theme has its own tests.
+  await page.route(/\/api\/resources$/, async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.brand = { ...body.brand, name: "Acme", logo: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8'/%3E", colors: { primary: "#7c3aed", accent: "#0b7a5b" } };
+    await route.fulfill({ response, json: body });
+  });
+  for (const scheme of ["light", "dark"]) {
+    await page.emulateMedia({ colorScheme: scheme });
+    await page.goto(`${base}/admin/`);
+    await page.getByRole("heading", { name: "Acme", exact: true }).waitFor();
+    const seen = await page.evaluate(() => {
+      const css = getComputedStyle(document.documentElement);
+      return { brand: css.getPropertyValue("--brand").trim(), accent: css.getPropertyValue("--accent").trim(), foreground: css.getPropertyValue("--accent-foreground").trim(), logo: document.querySelector("header img")?.getAttribute("src") ?? null };
+    });
+    assert.equal(seen.brand, "#7c3aed");
+    assert.ok(seen.logo?.startsWith("data:image/svg+xml"), "the logo is in the header");
+    assert.notEqual(seen.accent, scheme === "light" ? "#e9eef5" : "#1f2a4d", `the accent colour changes the accent token (${scheme})`);
+    const lum = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)).reduce((a, v, i) => a + v * [0.2126, 0.7152, 0.0722][i], 0);
+    const [x, y] = [lum(seen.accent), lum(seen.foreground)];
+    assert.ok((Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05) >= 4.5, `text on the accent surface reads (${scheme}): ${seen.accent} on ${seen.foreground}`);
+  }
+  await context.close();
+});
+
+// WCAG AA: 4.5:1 for text and 3:1 for the border of a control, in both themes, from the resolved colour tokens.
+for (const scheme of ["light", "dark"]) {
+  test(`the colour tokens meet WCAG AA (${scheme})`, async () => {
+    const context = await browser.newContext({ colorScheme: scheme });
+    const page = await context.newPage();
+    await page.goto(`${base}/admin/-/login`);
+    await page.getByRole("button", { name: "Sign in" }).waitFor();
+    const tokens = await page.evaluate(() => {
+      const css = getComputedStyle(document.documentElement);
+      return Object.fromEntries(["background", "foreground", "card", "card-foreground", "primary", "primary-foreground", "link", "secondary", "secondary-foreground", "muted", "muted-foreground", "accent", "accent-foreground", "destructive", "destructive-foreground", "success", "warning", "input"].map((n) => [n, css.getPropertyValue(`--${n}`).trim()]));
+    });
+    const lum = (token) => {
+      assert.match(token, /^#([0-9a-f]{3}|[0-9a-f]{6})$/i, `a token is a hex colour: ${token}`);
+      const hex = token.length === 4 ? `#${[...token.slice(1)].map((c) => c + c).join("")}` : token;
+      const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const ratio = (a, b) => {
+      const [x, y] = [lum(a), lum(b)];
+      return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+    };
+    const text = [["foreground", "background"], ["card-foreground", "card"], ["muted-foreground", "background"], ["muted-foreground", "card"], ["muted-foreground", "muted"], ["primary-foreground", "primary"], ["link", "background"], ["link", "card"], ["secondary-foreground", "secondary"], ["accent-foreground", "accent"], ["destructive-foreground", "destructive"], ["destructive", "card"], ["success", "card"], ["warning", "card"]];
+    const low = text.map(([f, b]) => [f, b, ratio(tokens[f], tokens[b])]).filter(([, , r]) => r < 4.5);
+    assert.deepEqual(low, [], "text pairs under 4.5:1");
+    assert.ok(ratio(tokens.input, tokens.card) >= 3, `the control border is at least 3:1: ${ratio(tokens.input, tokens.card)}`);
+    await context.close();
+  });
+}
 
 test("sort a column and search a list", async () => {
   const context = await browser.newContext({ timezoneId: ZONE, locale: "en-US" });
@@ -614,7 +573,7 @@ test("a package widget and a package detail tab load under the page policy and c
   const stars = page.getByRole("group", { name: "Stars" });
   await stars.waitFor();
   assert.equal(await stars.getByRole("button", { pressed: true }).count(), 4);
-  await stars.getByRole("button", { name: "5", exact: true }).click();
+  await stars.getByRole("button", { name: "5 of 5", exact: true }).click();
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await page.waitForURL(`${base}/admin/Movie/1`);
   const rows = (await (await context.request.get(`${base}/admin/api/resources/Movie`)).json()).rows.map((r) => JSON.stringify(r));
@@ -731,4 +690,19 @@ test("single sign-on: a user signs in at the provider, gets the roles of the cla
     await idp.close();
     rmSync(copy, { recursive: true, force: true });
   }
+});
+
+// Last: it adds an author, and the tests above count the authors.
+test("the home page lists the last audit rows", async () => {
+  const { context, page, idle } = await signedIn();
+  await page.goto(`${base}/admin/Author/-/new`);
+  await page.getByLabel("Name").fill("Home Audit Author");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.waitForURL(/\/admin\/Author\/\d+$/);
+  await page.goto(`${base}/admin/`);
+  const table = page.getByRole("table");
+  await table.getByRole("cell", { name: "Author", exact: true }).first().waitFor();
+  assert.ok((await table.getByRole("row").count()) >= 2, "a header row and at least one audit row");
+  await idle();
+  await context.close();
 });

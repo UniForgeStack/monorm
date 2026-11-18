@@ -6,7 +6,8 @@
   "description": "Browser smoke test of the admin UI: a real `monorm admin` process on SQLite, driven by Playwright. The browser is not part of `npm install`; run `npm run install-browser` once.",
   "scripts": {
     "install-browser": "playwright install chromium",
-    "test": "node --test smoke.test.mjs"
+    "test": "node --test smoke.test.mjs",
+    "shots": "node shots.mjs"
   },
   "devDependencies": {
     "playwright": "1.65.0"

@@ -1,4 +1,6 @@
-.rating-stars button { border: 0; background: none; cursor: pointer; font-size: 1.25rem; }
-.rating-on { color: goldenrod; }
-.rating-off { color: lightgray; }
-.rating-summary { padding: 0.5rem 0; }
+/* The kit gives the layout and focus ring; this file only colours the stars. */
+.rating-stars { display: flex; align-items: center; gap: 0.125rem; }
+.rating-on { color: #a16207; }
+.rating-off { color: #6b7280; }
+.dark .rating-on { color: #facc15; }
+.dark .rating-off { color: #9ca3af; }
