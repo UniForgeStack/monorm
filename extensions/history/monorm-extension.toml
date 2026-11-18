@@ -8,12 +8,12 @@ languages = ["python", "typescript"]
 databases = ["postgres", "sqlite"]
 capabilities = ["schema-transformations", "physical-schema"]
 
-# Builds the event model of each tracker. Runs after the passes that lower proxies and composed models, so it sees their roots.
+# Builds the event model of each tracker and the version columns of each version model. Runs after the passes that lower proxies and composed models, so it sees their roots.
 [[passes]]
-id = "monorm.history.events"
+id = "monorm.history.models"
 phase = "logical"
 after = ["monorm.proxy.lower", "monorm.composition.lower"]
-effects = ["models.history_events", "storage.history_events", "behavior.extension_records", "behavior.published_scope_keys"]
+effects = ["models.history_events", "models.history_versions", "storage.history_events", "storage.history_versions", "behavior.extension_records", "behavior.published_scope_keys"]
 
 # Adds the row triggers of each tracker to the table that it tracks.
 [[passes]]
@@ -39,6 +39,15 @@ kind = "value"
 [attributes.arguments.fields]
 kind = "value"
 [attributes.arguments.exclude]
+kind = "value"
+[attributes.arguments.scope]
+kind = "value"
+
+# `@@history.versions(of: bundle_id, scope: [user])`: the version columns of an aggregate model.
+[[attributes]]
+name = "history.versions"
+target = "model"
+[attributes.arguments.of]
 kind = "value"
 [attributes.arguments.scope]
 kind = "value"

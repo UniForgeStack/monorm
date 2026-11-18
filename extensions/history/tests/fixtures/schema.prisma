@@ -11,3 +11,11 @@ model Post {
   @@history.track
   @@map("hx_pub_posts")
 }
+
+model BundleVersion {
+  id        Int @id @default(autoincrement())
+  bundle_id Int
+
+  @@history.versions(of: bundle_id)
+  @@map("hx_pub_bundle_versions")
+}
