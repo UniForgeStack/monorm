@@ -177,3 +177,44 @@ async fn the_audit_log_drops_the_values_of_fields_the_reader_cannot_see() {
     let (_, di) = list(&site, &conn, "AdminLogEntry", 4).await;
     assert_eq!(changes_of(&di)["diff"]["cost"], json!({"from": 1, "to": 5}), "a superuser sees every field");
 }
+
+#[tokio::test]
+async fn a_list_edit_drops_the_fields_the_user_may_not_change() {
+    let schema = schema();
+    let conn: Arc<dyn Executor> = database(&schema).await;
+    let config = json!({"resources": [
+        {"model": "Product", "list": {"columns": ["name", "cost"], "editable": ["name", "cost"], "order": ["id"]}, "change": {"cost": "change_cost"}},
+    ]});
+    let site = Arc::new(Site::build(schema.clone(), &config.to_string()).unwrap());
+    let seed = [
+        "INSERT INTO \"User\" (id, username) VALUES (5, 'eve'), (6, 'fay')",
+        "INSERT INTO \"Permission\" (id, label, codename, name) VALUES (4, 'admin', 'manage_product', 'd'), (5, 'admin', 'change_cost', 'e')",
+        "INSERT INTO \"UserPermission\" (user_id, permission_id) VALUES (5, 1), (5, 2), (5, 4), (6, 1), (6, 2), (6, 4), (6, 5)",
+    ];
+    for sql in seed {
+        conn.batch(sql.to_string()).await.unwrap();
+    }
+    let editable = |key: i64| {
+        let (site, conn) = (site.clone(), conn.clone());
+        async move {
+            let (_, body) = call(site, conn, "GET", "/admin/api/resources", Some(json!({"key": key}))).await;
+            let body: Value = serde_json::from_str(&body).unwrap();
+            body["resources"].as_array().unwrap().iter().find(|r| r["name"] == "Product").unwrap()["editable"].clone()
+        }
+    };
+    assert_eq!(editable(5).await, json!(["name"]), "eve may not change cost");
+    assert_eq!(editable(6).await, json!(["name", "cost"]));
+    let save = |key: i64, set: Value| {
+        let (site, conn) = (site.clone(), conn.clone());
+        async move {
+            let body = json!({"rows": [{"key": "1", "set": set, "loaded": {"name": "bolt", "cost": 5}}]}).to_string();
+            let (status, _, out) = monorm_admin::call_full(site, conn, "PATCH", "/admin/api/resources/Product", Some(json!({"key": key})), None, Some(("application/json", body.into_bytes()))).await;
+            (status, serde_json::from_slice::<Value>(&out).unwrap())
+        }
+    };
+    let (status, out) = save(5, json!({"cost": 9})).await;
+    assert_eq!((status, &out["error"]["kind"]), (400, &json!("BadRequest")), "{out}");
+    assert_eq!(save(6, json!({"cost": 9})).await.0, 200);
+    let rows = conn.query_text("SELECT cost FROM \"Product\" WHERE id = 1".into()).await.unwrap();
+    assert_eq!(rows[0][0].as_deref(), Some("9"));
+}

@@ -247,6 +247,9 @@ struct ListConfig {
     search: Option<Vec<String>>,
     /// The name of a host function that replaces the search: it takes the text and returns keys.
     search_with: Option<String>,
+    /// Field names whose cells the list edits in place: list columns that are scalar fields of the model.
+    #[serde(default)]
+    editable: Vec<String>,
     /// Field names that the sort headers may use. Default: the list columns that can sort.
     sortable: Option<Vec<String>>,
     /// The title of a column, by column name.
@@ -445,6 +448,8 @@ pub struct Resource {
     pub meta: serde_json::Value,
     pub search: Vec<SearchField>,
     pub search_with: Option<String>,
+    /// The labels of the list columns that a user edits in the list: every user view cuts it to the fields that user may change.
+    pub editable: Vec<String>,
     pub sortable: Vec<Sortable>,
     /// The config names the sort columns: no table size rule.
     pub sortable_explicit: bool,
@@ -1309,6 +1314,7 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
     crate::hostwrite::check_config(&name, &detail, &config.service, &config.inputs)?;
     check_bindings(&name, config, &columns, &detail, &key_columns)?;
     let form = crate::form::build(schema, idx, &name, &detail, &allow, &FormConfig { form: config.form.clone(), readonly: config.readonly.clone(), widgets: config.widgets.clone(), component: config.form_component.clone() }, global)?;
+    let editable = editable_of(&name, list, &columns, &key_columns, &detail, &form, &allow, config, model)?;
     let mut package_tabs = Vec::new();
     for full in &config.detail_tabs {
         let Some(module) = global.packages.tab(full) else { return err(format!("{name}: detail_tabs names {full:?}, which is not a tab of a package")) };
@@ -1347,6 +1353,7 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
         meta: serde_json::Value::Null,
         search,
         search_with: list.search_with.clone(),
+        editable,
         sortable,
         sortable_explicit: list.sortable.is_some(),
         labels: list.computed.iter().map(|c| (&c.name, &c.label)).chain(list.aggregates.iter().map(|a| (&a.name, &a.label))).filter_map(|(n, l)| Some((n.clone(), l.clone()?))).chain(list.labels.clone()).collect(),
@@ -1371,6 +1378,48 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
         tabs_config: list.tabs.clone(),
         large: Arc::new(Mutex::new(None)),
     })
+}
+
+/// `list.editable` names list columns that are scalar fields the update form writes, on a page that allows `update` and asks no required input.
+#[allow(clippy::too_many_arguments)]
+fn editable_of(name: &str, list: &ListConfig, columns: &[Column], key_columns: &[Column], detail: &[Column], form: &crate::form::FormSpec, allow: &[Op], config: &ResourceConfig, model: &monorm_core::schema::Model) -> Result<Vec<String>, ConfigError> {
+    let mut out: Vec<String> = Vec::new();
+    for f in &list.editable {
+        let Some(column) = columns.iter().find(|c| c.label == *f) else { return err(format!("{name}: list.editable names {f:?}, which is not a column of the list")) };
+        if out.contains(f) {
+            return err(format!("{name}: list.editable lists {f:?} twice"));
+        }
+        if key_columns.iter().any(|k| k.label == *f) {
+            return err(format!("{name}: list.editable names {f:?}, a key field: a row names its record with the key"));
+        }
+        if config.files.contains(f) {
+            return err(format!("{name}: list.editable names {f:?}, a file field: upload it on the detail page"));
+        }
+        if !crate::write::writable(column) {
+            return err(format!("{name}: list.editable names {f:?}, which is not a scalar field of the model (a relation, computed or aggregate column cannot be edited in the list)"));
+        }
+        if form.readonly.contains(f) {
+            return err(format!("{name}: list.editable names {f:?}, a read-only field of the update form"));
+        }
+        if !detail.iter().any(|d| d.label == *f) {
+            return err(format!("{name}: list.editable names {f:?}, a field that the update form does not write"));
+        }
+        out.push(f.clone());
+    }
+    if out.is_empty() {
+        return Ok(out);
+    }
+    if !allow.contains(&Op::Update) {
+        return err(format!("{name}: list.editable needs the page to allow update"));
+    }
+    if config.service.update.is_some() && config.inputs.iter().any(|i| i.required) {
+        return err(format!("{name}: list.editable cannot save through an update service that asks a required input: the list has no input to give"));
+    }
+    // The page carries the list columns only, and a save sends them as `loaded`: the guard fields must be among them.
+    if let Some(g) = crate::write::guard_labels(model, detail).into_iter().find(|g| !columns.iter().any(|c| c.label == *g)) {
+        return err(format!("{name}: list.editable needs the guard field {g:?} among the list columns: a save sends the loaded value of each column"));
+    }
+    Ok(out)
 }
 
 /// `see` and `change` name a column or a field of the page, never a key field: a row names its record with the key.

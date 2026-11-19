@@ -296,7 +296,7 @@ pub(crate) async fn apply(s: &State_, c: &Call<'_>, changes: &Changes, parent_ce
             None => part.pins.clone(),
         };
         let extra = || -> Map<String, Value> { Map::from_iter([("inline".to_owned(), json!(format!("{}.{}", c.resource.name, inline.name)))]) };
-        let reach = Reach { rows: part.rows.clone(), labels: Vec::new() };
+        let reach = Reach { rows: part.rows.clone(), labels: Vec::new(), change: false };
         for row in &part.deletes {
             write::delete_row(s, c, child, &reach, &row.key).await?;
             let diff: Map<String, Value> = child.detail.iter().zip(&row.before).filter(|(_, v)| !v.is_null()).map(|(d, v)| (d.label.clone(), json!({"from": v, "to": null}))).collect();
@@ -306,7 +306,7 @@ pub(crate) async fn apply(s: &State_, c: &Call<'_>, changes: &Changes, parent_ce
             if row.changed.is_empty() {
                 continue;
             }
-            write::update_rows(s, c, child, &reach, &row.key, &row.changed).await?;
+            write::update_changed(s, c, child, &reach, &row.key, &row.changed).await?;
             let diff: Map<String, Value> = row.changed.iter().filter_map(|(n, _, to)| child.detail.iter().position(|d| &d.label == n).map(|at| (n.clone(), json!({"from": row.before[at], "to": to})))).collect();
             write::write_audit_for(s, c, child, "update", &row.raw, &row.before, Value::Object(diff), extra()).await.map_err(|m| write::server_error(&c.meta, &m))?;
         }

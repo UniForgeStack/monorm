@@ -23,7 +23,7 @@ use crate::key;
 use crate::list;
 use crate::permissions::Op;
 use crate::scope::Scoped;
-use crate::server::{reach, reject, State_};
+use crate::server::{reach, reject, State_, User};
 use crate::site::{err, Column, ConfigError, Resource};
 use crate::write::{audit_changes, conflicts, finish, list_failure, server_error, write_audit_with, Call, Problems};
 
@@ -260,23 +260,10 @@ pub(crate) fn key_object(r: &Resource, key: &[Value]) -> Value {
     Value::Object(r.key_columns.iter().zip(key).map(|(c, v)| (c.field.clone(), v.clone())).collect())
 }
 
-/// Calls the host and answers the request. A service gets no transaction, so the admin rolls its own back first;
-/// the default writer gets the transaction of the request.
-pub(crate) async fn run(s: &State_, c: Call<'_>, p: Prepared) -> Response {
-    let Call { resource: sight, user, grants, scope, meta, uri, body } = c;
-    let resource = &*sight;
-    let Some((bridge, auth)) = &s.bridge else {
-        scope.rollback().await;
-        return reject(StatusCode::FORBIDDEN, "ReadOnly", "this write needs host code, and this admin has no host");
-    };
-    let held = if resource.service.get(p.op).is_some() {
-        scope.rollback().await;
-        None
-    } else {
-        Some(scope)
-    };
+/// The payload of one write for the host function.
+pub(crate) fn payload_of(s: &State_, resource: &Resource, user: &User, meta: &crate::write::Meta, p: &Prepared) -> Value {
     let protected = s.site.schema.model(resource.model).ir.protected_write;
-    let payload = json!({
+    json!({
         "resource": resource.name,
         "model": s.site.schema.model(resource.model).ir.name,
         "op": op_name(p.op),
@@ -296,25 +283,53 @@ pub(crate) async fn run(s: &State_, c: Call<'_>, p: Prepared) -> Response {
         "allow_protected": protected && resource.allow_protected,
         "service": resource.service.get(p.op).is_some(),
         "sync": resource.service.get(p.op).is_some_and(|o| o.sync),
-    });
+    })
+}
+
+/// One call of a host function. A service gets no transaction, so the admin rolls its own back first;
+/// the default writer gets the transaction of the request. The call comes back with a scope that is open again.
+/// A failure is the final answer: the scope is rolled back.
+pub(crate) async fn call_host<'a>(s: &State_, c: Call<'a>, op: Op, function: &str, payload: impl FnOnce(&Call<'a>) -> Value) -> Result<(Call<'a>, Value), Response> {
+    let payload = payload(&c);
+    let Call { resource: sight, user, grants, scope, meta, uri, body } = c;
+    let resource = &*sight;
+    let Some((bridge, auth)) = &s.bridge else {
+        scope.rollback().await;
+        return Err(reject(StatusCode::FORBIDDEN, "ReadOnly", "this write needs host code, and this admin has no host"));
+    };
+    let held = if resource.service.get(op).is_some() {
+        scope.rollback().await;
+        None
+    } else {
+        Some(scope)
+    };
     let ctx = CallContext { request_id: auth.security.call_id(), scope: json!({}), tx: held.as_ref().map(Scoped::transaction) };
-    let answer = match bridge.call(&p.function, payload, ctx).await {
+    let answer = match bridge.call(function, payload, ctx).await {
         Ok(v) => v,
         Err(e) => {
             if let Some(scope) = held {
                 scope.rollback().await;
             }
-            return host_failure(&meta, &p.function, e);
+            return Err(host_failure(&meta, function, e));
         }
     };
     let new_scope = match held {
         Some(scope) => scope,
         None => match Scoped::begin(s.conn.as_ref()).await {
             Ok(sc) => sc,
-            Err(e) => return server_error(&meta, &e.message),
+            Err(e) => return Err(server_error(&meta, &e.message)),
         },
     };
-    let c = Call { resource: sight, user, grants, scope: new_scope, meta, uri, body };
+    Ok((Call { resource: sight, user, grants, scope: new_scope, meta, uri, body }, answer))
+}
+
+/// Calls the host and answers the request.
+pub(crate) async fn run(s: &State_, c: Call<'_>, p: Prepared) -> Response {
+    let function = p.function.clone();
+    let (c, answer) = match call_host(s, c, p.op, &function, |c| payload_of(s, &c.resource, &c.user, &c.meta, &p)).await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
     answer_of(s, c, p, answer).await
 }
 
@@ -365,6 +380,26 @@ async fn answer_of(s: &State_, c: Call<'_>, p: Prepared, answer: Value) -> Respo
             }
         };
     }
+    let (c, key_text, before, after) = match settle(s, c, &p, &answer).await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let body = match p.op {
+        Op::Create => (StatusCode::CREATED, Json(json!({"ok": true, "resource": resource.name, "key": key_text, "values": after.unwrap_or_default()}))),
+        Op::Update => (StatusCode::OK, Json(json!({"ok": true, "key": key_text, "changed": changed_labels(resource, before.as_deref(), after.as_deref())}))),
+        _ => (StatusCode::OK, Json(json!({"ok": true, "key": key_text}))),
+    };
+    finish(c, body.into_response()).await
+}
+
+/// The cells before and after a write.
+type Cells = Option<Vec<Value>>;
+
+/// What follows a host write that answered ok: the record as stored now and its audit row. It returns the key text and the cells before and after.
+/// A failure is the final answer: the scope is rolled back.
+pub(crate) async fn settle<'a>(s: &State_, c: Call<'a>, p: &Prepared, answer: &Value) -> Result<(Call<'a>, String, Cells, Cells), Response> {
+    let resource = c.resource.clone();
+    let resource = &*resource;
     let new_key: Vec<Value> = match p.op {
         Op::Create => {
             let k = &answer["key"];
@@ -373,22 +408,15 @@ async fn answer_of(s: &State_, c: Call<'_>, p: Prepared, answer: Value) -> Respo
         _ => p.key.clone().unwrap_or_default(),
     };
     let key_text = key::encode(&new_key);
-    let (c, after) = if p.op == Op::Delete {
-        (c, None)
-    } else {
-        match read_after(s, c, &new_key).await {
-            Ok(done) => done,
-            Err(r) => return r,
-        }
-    };
+    let (c, after) = if p.op == Op::Delete { (c, None) } else { read_after(s, c, &new_key).await? };
     let before = p.before.clone();
     let cells = after.clone().or(before.clone()).unwrap_or_default();
     let service = resource.service.get(p.op).is_some();
     let audited = answer["audited"] == Value::Bool(true);
-    if let Err(m) = audit::set_keys(&s.site, c.scope.executor(), &answer).await {
+    if let Err(m) = audit::set_keys(&s.site, c.scope.executor(), answer).await {
         let response = server_error(&c.meta, &format!("the write ran but its audit key failed: {m}"));
         c.scope.rollback().await;
-        return response;
+        return Err(response);
     }
     if audited && service {
         // The service wrote the row and sent no label: the label rule lives here.
@@ -396,7 +424,7 @@ async fn answer_of(s: &State_, c: Call<'_>, p: Prepared, answer: Value) -> Respo
         if let Err(m) = audit::fill_label(&s.site, c.scope.executor(), &resource.name, &key_text, &label).await {
             let response = server_error(&c.meta, &format!("the write ran but its audit label failed: {m}"));
             c.scope.rollback().await;
-            return response;
+            return Err(response);
         }
     } else {
         let diff = diff_of(resource, p.op, before.as_deref(), after.as_deref());
@@ -420,20 +448,15 @@ async fn answer_of(s: &State_, c: Call<'_>, p: Prepared, answer: Value) -> Respo
         if let Err(m) = result {
             let response = server_error(&c.meta, &format!("the write ran but its audit row failed: {m}"));
             c.scope.rollback().await;
-            return response;
+            return Err(response);
         }
     }
-    let body = match p.op {
-        Op::Create => (StatusCode::CREATED, Json(json!({"ok": true, "resource": resource.name, "key": key_text, "values": after.unwrap_or_default()}))),
-        Op::Update => (StatusCode::OK, Json(json!({"ok": true, "key": key_text, "changed": changed_labels(resource, before.as_deref(), after.as_deref())}))),
-        _ => (StatusCode::OK, Json(json!({"ok": true, "key": key_text}))),
-    };
-    finish(c, body.into_response()).await
+    Ok((c, key_text, before, after))
 }
 
 /// The record as it is stored after the write, or none when the `queryset` hides it. It reads on the scope the caller holds.
 /// An error is the final answer: the scope is rolled back.
-async fn read_after<'a>(s: &State_, c: Call<'a>, key: &[Value]) -> Result<(Call<'a>, Option<Vec<Value>>), Response> {
+pub(crate) async fn read_after<'a>(s: &State_, c: Call<'a>, key: &[Value]) -> Result<(Call<'a>, Option<Vec<Value>>), Response> {
     let Call { resource: sight, user, grants, scope, meta, uri, body } = c;
     let resource = &*sight;
     let (scope, rows) = reach(s, resource, &user, &grants, Vec::new(), scope).await.map_err(|r| *r)?;
@@ -463,7 +486,7 @@ fn diff_of(r: &Resource, op: Op, before: Option<&[Value]>, after: Option<&[Value
     Value::Object(diff)
 }
 
-fn changed_labels(r: &Resource, before: Option<&[Value]>, after: Option<&[Value]>) -> Vec<String> {
+pub(crate) fn changed_labels(r: &Resource, before: Option<&[Value]>, after: Option<&[Value]>) -> Vec<String> {
     match diff_of(r, Op::Update, before, after) {
         Value::Object(m) => m.keys().cloned().collect(),
         _ => Vec::new(),

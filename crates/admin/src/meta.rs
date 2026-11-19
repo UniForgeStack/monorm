@@ -293,6 +293,7 @@ pub fn resource(schema: &Schema, r: &Resource, builds: &AtomicUsize) -> Value {
         "max_page_size": crate::site::MAX_PAGE_SIZE,
         "sortable": r.sortable.iter().map(|c| json!({"column": c.column.label, "indexed": c.indexed})).collect::<Vec<_>>(),
         "sortable_explicit": r.sortable_explicit,
+        "editable": r.editable,
         "search": json!({"fields": r.search.iter().map(|f| f.column.label.clone()).collect::<Vec<_>>(), "custom": r.search_with.is_some()}),
         "permissions": ["read"],
         "table": schema.model(r.model).table(),

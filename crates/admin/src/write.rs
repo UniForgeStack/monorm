@@ -105,6 +105,11 @@ pub(crate) fn writable(c: &Column) -> bool {
     matches!(c.source, Source::Field) && c.path.is_empty()
 }
 
+/// The guard fields of a model that the update form writes, as form labels: a save must carry their loaded values.
+pub(crate) fn guard_labels(model: &monorm_core::schema::Model, detail: &[Column]) -> Vec<String> {
+    model.guards.iter().filter_map(|&p| model.fields().get(p)).filter_map(|f| detail.iter().find(|d| d.field == f.name && writable(d)).map(|d| d.label.clone())).collect()
+}
+
 /// Messages for fields, and messages for the form.
 #[derive(Default)]
 pub(crate) struct Problems {
@@ -294,7 +299,7 @@ fn sqlstate(d: &DbError) -> Option<&str> {
     [("UNIQUE constraint failed", "23505"), ("PRIMARY KEY constraint failed", "23505"), ("FOREIGN KEY constraint failed", "23503"), ("NOT NULL constraint failed", "23502"), ("CHECK constraint failed", "23514")].iter().find(|(m, _)| d.message.contains(m)).map(|(_, c)| *c)
 }
 
-fn constraint_problems(schema: &Schema, r: &Resource, written: &[String], deleting: bool, d: &DbError) -> Option<Problems> {
+pub(crate) fn constraint_problems(schema: &Schema, r: &Resource, written: &[String], deleting: bool, d: &DbError) -> Option<Problems> {
     if d.kind != ErrorKind::Integrity {
         return None;
     }
@@ -1067,7 +1072,7 @@ pub(crate) async fn update_in(s: &State_, c: Call<'_>, pin: Option<&Pin>) -> Res
         return finish(c, response).await;
     }
     if !changed.is_empty() {
-        if let Err(r) = update_rows(s, &c, resource, &reach, &key, &changed).await {
+        if let Err(r) = update_changed(s, &c, resource, &reach, &key, &changed).await {
             c.scope.rollback().await;
             return r;
         }
@@ -1186,7 +1191,7 @@ pub(crate) async fn destroy_in(s: &State_, c: Call<'_>, pin: Option<&Pin>) -> Re
 
 /// The UPDATE of the changed fields of one record, with the `queryset` filter and the `can=` rule. The caller rolls back on an error.
 pub(crate) async fn run_update(s: &State_, c: &Call<'_>, reach: &crate::server::Reach, key: &[Value], changed: &[(String, Bind, Value)]) -> Result<(), Response> {
-    update_rows(s, c, &c.resource, reach, key, changed).await
+    update_changed(s, c, &c.resource, reach, key, changed).await
 }
 
 /// The same reach with the pins of an inline row added to its row scope.
@@ -1213,12 +1218,31 @@ pub(crate) async fn delete_row(s: &State_, c: &Call<'_>, resource: &Resource, re
     }
 }
 
+/// Why the UPDATE of one record did not run.
+pub(crate) enum RowFailure {
+    /// No row matched: it is gone, or the row scope hides it.
+    Gone,
+    /// The statement failed; the names are the fields it wrote.
+    Statement(Error, Vec<String>),
+    /// The answer is final already.
+    Other(Response),
+}
+
 /// The UPDATE of the changed fields of one record of `resource`, as `run_update`.
-pub(crate) async fn update_rows(s: &State_, c: &Call<'_>, resource: &Resource, reach: &crate::server::Reach, key: &[Value], changed: &[(String, Bind, Value)]) -> Result<(), Response> {
+pub(crate) async fn update_changed(s: &State_, c: &Call<'_>, resource: &Resource, reach: &crate::server::Reach, key: &[Value], changed: &[(String, Bind, Value)]) -> Result<(), Response> {
+    update_row(s, c, resource, reach, key, changed).await.map_err(|f| match f {
+        RowFailure::Gone => reject(StatusCode::NOT_FOUND, "NotFound", "no such record"),
+        RowFailure::Statement(e, written) => statement_failure(&s.site, resource, &c.meta, &written, false, e),
+        RowFailure::Other(r) => r,
+    })
+}
+
+/// `update_changed` with the failure as data: the list save names the row that failed.
+pub(crate) async fn update_row(s: &State_, c: &Call<'_>, resource: &Resource, reach: &crate::server::Reach, key: &[Value], changed: &[(String, Bind, Value)]) -> Result<(), RowFailure> {
     let site = &s.site;
     let model = site.schema.model(resource.model);
     let mut binds = Binds::default();
-    let filter = list::key_filter(resource, key, &mut binds).map_err(|e| list_failure(&c.meta, e))?;
+    let filter = list::key_filter(resource, key, &mut binds).map_err(|e| RowFailure::Other(list_failure(&c.meta, e)))?;
     let mut filters = vec![filter];
     let mut assignments = Vec::new();
     let mut written = Vec::new();
@@ -1232,8 +1256,8 @@ pub(crate) async fn update_rows(s: &State_, c: &Call<'_>, resource: &Resource, r
     reach.rows.apply(&mut op);
     match run_mutation(site, c, s.target, op, binds).await {
         Ok(Outcome::Affected(1)) => Ok(()),
-        Ok(_) => Err(reject(StatusCode::NOT_FOUND, "NotFound", "no such record")),
-        Err(e) => Err(statement_failure(site, resource, &c.meta, &written, false, e)),
+        Ok(_) => Err(RowFailure::Gone),
+        Err(e) => Err(RowFailure::Statement(e, written)),
     }
 }
 

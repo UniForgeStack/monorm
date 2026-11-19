@@ -22,6 +22,7 @@ pub mod inproc;
 pub mod json;
 pub mod key;
 pub mod list;
+pub mod listwrite;
 pub mod meta;
 pub mod oidc;
 pub mod packages;

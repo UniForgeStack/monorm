@@ -48,7 +48,7 @@ pub fn api(site: Arc<Site>, conn: Arc<dyn Executor>) -> Router {
 pub fn api_with(site: Arc<Site>, conn: Arc<dyn Executor>, auth: Option<AuthConfig>) -> Router {
     let target = Target::new(conn.dialect());
     let prefix = site.prefix.clone();
-    let routes = Router::new().route("/resources", get(resources)).route("/resources/{name}", get(rows).post(crate::write::create)).route("/resources/{name}/{key}", get(detail).patch(crate::write::update).delete(crate::write::destroy)).route("/resources/{name}/{key}/{rel}", get(tab_rows))
+    let routes = Router::new().route("/resources", get(resources)).route("/resources/{name}", get(rows).post(crate::write::create).patch(crate::listwrite::save)).route("/resources/{name}/{key}", get(detail).patch(crate::write::update).delete(crate::write::destroy)).route("/resources/{name}/{key}/{rel}", get(tab_rows))
         .route("/resources/{name}/{key}/inlines/{inline}", post(crate::inlinewrite::row_create))
         .route("/resources/{name}/{key}/inlines/{inline}/{row}", patch(crate::inlinewrite::row_update).delete(crate::inlinewrite::row_destroy)).route("/forms/{name}", get(form_module)).route("/counts/{name}", get(counts)).route("/export/{name}", get(crate::export::export)).route("/counts/{name}/{key}/{rel}", get(tab_counts)).route("/autocomplete/{name}/{rel}", get(crate::relations::autocomplete)).route("/links/{name}/{key}/{rel}", get(crate::relations::links)).route("/files/{name}/{key}/{field}", get(crate::files::download).post(crate::files::upload))
         .route("/routes/{*path}", axum::routing::any(crate::routes::handle))
@@ -197,6 +197,8 @@ pub(crate) struct Reach {
     pub(crate) rows: RowScope,
     /// The positions in `Resource::refs` that the user may read: a list shows the label of the related record there.
     pub(crate) labels: Vec<usize>,
+    /// The user may update rows of the page: the `change` flag of each row of a list with editable cells includes it.
+    pub(crate) change: bool,
 }
 
 /// A JSON value from a slot as a bound value.
@@ -264,7 +266,8 @@ pub(crate) async fn reach(s: &State_, resource: &Resource, user: &User, grants: 
         }
     }
     let labels = (0..resource.refs.len()).filter(|&i| s.site.resources.iter().find(|t| t.name == resource.refs[i].target).is_some_and(|t| s.site.allows(grants, t, Op::Read))).collect();
-    Ok((scope, Reach { rows, labels }))
+    let change = !resource.editable.is_empty() && s.site.allows(grants, resource, Op::Update) && crate::write::read_only_reason(&s.site.schema, resource).is_none() && (s.bridge.is_some() || crate::hostwrite::route(&s.site.schema, resource, Op::Update).is_none());
+    Ok((scope, Reach { rows, labels, change }))
 }
 
 pub(crate) async fn queryset_rows(s: &State_, resource: &Resource, q: &crate::site::Queryset, user: &User, scope: &Scoped, rows: &mut RowScope) -> Result<(), ListError> {
@@ -531,12 +534,19 @@ async fn run_rows(s: &State_, resource: &Resource, scope: Scoped, reach: Reach, 
             return error_response(e);
         }
     };
+    let change = reach.change;
     let mut request = ListRequest { limit: q.limit, sort: q.sort, q: q.q, filters, named, pins, scope: reach.rows, labels: reach.labels, ..ListRequest::new(position) };
     let out = async {
         list::check_request(&s.site, resource, &request)?;
         request.found = found_keys(s, resource, &scope, request.q.as_deref()).await?;
         let mut page = list::list(&s.site, resource, scope.executor(), s.target, &request).await?;
         fill_batch(s, resource, &scope, &mut page).await?;
+        if !resource.editable.is_empty() {
+            for f in page.flags.iter_mut().filter_map(Value::as_object_mut) {
+                let rule = f.get("change").and_then(Value::as_bool).unwrap_or(true);
+                f.insert("change".into(), json!(rule && change));
+            }
+        }
         // The function ran once: its keys give the count too, so the count request need not call it again.
         let total = match &request.found {
             Some(found) => {
