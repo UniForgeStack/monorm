@@ -1,8 +1,8 @@
 //! One check and one order for the manifests of an artifact: the compiled ones and the ones of libraries.
-use crate::extension::{AttributeTarget, Export, LanguageSection, Manifest, Pass, HOST_CAPABILITIES, LANGUAGE_CONTRACT};
+use crate::extension::{AttributeTarget, Export, LanguageSection, Manifest, Pass, Phase, HOST_CAPABILITIES, LANGUAGE_CONTRACT};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The manifests, sorted by id, and their passes in run order: by `phase`, then `after`, then pass id.
+/// The manifests, sorted by id, and their passes in run order: by `phase`, then `after` (inside one manifest), then pass id.
 #[derive(Debug)]
 pub struct Resolved {
     pub manifests: Vec<Manifest>,
@@ -97,19 +97,40 @@ pub fn resolve(mut manifests: Vec<Manifest>, check_language: &dyn Fn(&Manifest, 
             if !requirement.matches(version) { return Err(format!("{} requires {id}@{requirement}, resolved {version}", m.id)); }
         }
     }
-    for p in passes.values() {
-        // An `after` pass that no selected extension provides is skipped: it orders only passes that are present.
-        for id in &p.after {
-            let Some(dependency) = passes.get(id) else { continue };
-            if dependency.phase > p.phase { return Err(format!("{} depends on later phase {id}", p.id)); }
+    // `after` names passes of the same manifest; the phase orders a pass against another manifest.
+    let known: BTreeMap<&str, (&str, Phase)> = manifests.iter().flat_map(|m| m.passes.iter().map(move |p| (p.id.as_str(), (m.id.as_str(), p.phase)))).collect();
+    for m in &manifests {
+        for p in &m.passes {
+            for id in &p.after {
+                if m.passes.iter().any(|own| own.id == *id) { continue; }
+                let dependency = known.get(id.as_str());
+                // A pass id need not start with its manifest id, so the pass wins over the prefix.
+                let by_prefix = manifests.iter().filter(|o| id.strip_prefix(o.id.as_str()).is_some_and(|rest| rest.starts_with('.'))).max_by_key(|o| o.id.len()).map(|o| o.id.as_str());
+                let Some(owner) = dependency.map(|d| d.0).or(by_prefix).filter(|owner| *owner != m.id) else {
+                    return Err(format!("{}: pass {} lists `after = [\"{id}\"]`, which is not a pass of {}; `after` names passes of the same manifest, so name one of them or use the phase", m.id, p.id, m.id));
+                };
+                let advice = match dependency {
+                    Some((_, phase)) if *phase < p.phase => format!("remove it: the phase `{}` already runs after the phase `{}` of {id}", p.phase.name(), phase.name()),
+                    Some((_, phase)) => match phase.next() {
+                        Some(next) => format!("set `phase = \"{}\"` on {}, which then runs after the phase `{}` of {id}", next.name(), p.id, phase.name()),
+                        None => format!("{id} is in the last phase, `{}`, so no phase runs after it", phase.name()),
+                    },
+                    None => format!("give {} a phase later than the phase of {id}", p.id),
+                };
+                return Err(format!("{}: pass {} lists `after = [\"{id}\"]`, a pass of {owner}; `after` orders the passes of one manifest, so use the phase: {advice}", m.id, p.id));
+            }
         }
     }
-    let present: BTreeSet<String> = passes.keys().cloned().collect();
+    for p in passes.values() {
+        for id in &p.after {
+            if passes[id].phase > p.phase { return Err(format!("{} depends on later phase {id}", p.id)); }
+        }
+    }
     let mut ordered = vec![];
     let mut complete = BTreeSet::new();
     while !passes.is_empty() {
         let earliest = passes.values().map(|p| p.phase).min().unwrap();
-        let next = passes.values().find(|p| p.phase == earliest && p.after.iter().all(|id| complete.contains(id) || !present.contains(id))).map(|p| p.id.clone());
+        let next = passes.values().find(|p| p.phase == earliest && p.after.iter().all(|id| complete.contains(id))).map(|p| p.id.clone());
         let Some(next) = next else { return Err(format!("pass dependency cycle: {:?}", passes.keys().collect::<Vec<_>>())); };
         complete.insert(next.clone());
         ordered.push(passes.remove(&next).unwrap());
@@ -202,10 +223,14 @@ mod tests {
         // The order of the passes is by pass id, and `after` overrides it.
         let order = |r: Resolved| r.passes.into_iter().map(|p| p.id).collect::<Vec<_>>();
         assert_eq!(order(resolve_all(vec![add("acme.b"), add("acme.a"), add("acme.c")]).unwrap()), ["acme.a.run", "acme.b.run", "acme.c.run"]);
-        // `after` overrides the id order: `acme.a` waits for `acme.c`.
-        let mut late = add("acme.a");
-        late.passes[0].after = vec!["acme.c.run".into()];
-        assert_eq!(order(resolve_all(vec![late, add("acme.b"), add("acme.c")]).unwrap()), ["acme.b.run", "acme.c.run", "acme.a.run"]);
+        // `after` overrides the id order inside one manifest: `acme.a.run` waits for `acme.a.zz`.
+        let mut pair = add("acme.a");
+        pair.passes[0].after = vec!["acme.a.zz".into()];
+        let mut zz = pair.passes[0].clone();
+        zz.id = "acme.a.zz".into();
+        zz.after = vec![];
+        pair.passes.push(zz);
+        assert_eq!(order(resolve_all(vec![pair, add("acme.b")]).unwrap()), ["acme.a.zz", "acme.a.run", "acme.b.run"]);
         // An exclusive claim of the same effect, or of a parent or child path, conflicts with an additive one in both orders.
         for exclusive in ["behavior.read_defaults", "behavior", "behavior.read_defaults.x"] {
             for (first, second) in [(add("acme.a"), set("acme.b", exclusive)), (set("acme.a", exclusive), add("acme.b"))] {
@@ -217,6 +242,58 @@ mod tests {
         // An additive claim of a parent path does not share with a child path.
         let child = claiming("acme.b", serde_json::json!([]), serde_json::json!(["behavior.read_defaults.x"]));
         assert!(resolve_all(vec![add("acme.a"), child]).is_err());
+    }
+
+    fn with_pass(id: &str, pass: &str, phase: &str, after: &[&str]) -> Manifest {
+        library(serde_json::json!({"id": id, "passes": [{"id": pass, "phase": phase, "after": after}]}))
+    }
+
+    #[test]
+    fn after_names_a_pass_of_the_same_manifest_only() {
+        let order = |r: Resolved| r.passes.into_iter().map(|p| p.id).collect::<Vec<_>>();
+        let two = |first: &str| library(serde_json::json!({"id": "acme.a", "passes": [
+            {"id": "acme.a.one", "phase": "behavior", "after": [first]}, {"id": "acme.a.two", "phase": "behavior"}]}));
+        assert_eq!(order(resolve_all(vec![two("acme.a.two")]).unwrap()), ["acme.a.two", "acme.a.one"]);
+        // A pass of another manifest, by pass id: the message names the manifest and the phase to use.
+        let error = resolve_all(vec![with_pass("acme.a", "acme.a.run", "behavior", &["acme.b.run"]), with_pass("acme.b", "acme.b.run", "behavior", &[])]).unwrap_err();
+        assert!(error.contains("acme.a: pass acme.a.run lists `after = [\"acme.b.run\"]`, a pass of acme.b") && error.contains("phase = \"late_behavior\"") && error.contains("phase `behavior` of acme.b.run"), "{error}");
+        // The pass id need not start with the manifest id.
+        let error = resolve_all(vec![with_pass("acme.a", "acme.a.run", "declaration", &["other.run"]), with_pass("acme.b", "other.run", "declaration", &[])]).unwrap_err();
+        assert!(error.contains("a pass of acme.b") && error.contains("phase = \"logical\""), "{error}");
+        // The later phase already orders the pass: the message says to drop `after`.
+        let error = resolve_all(vec![with_pass("acme.a", "acme.a.run", "late_behavior", &["acme.b.run"]), with_pass("acme.b", "acme.b.run", "behavior", &[])]).unwrap_err();
+        assert!(error.contains("remove it") && error.contains("phase `late_behavior` already runs after the phase `behavior`"), "{error}");
+        // The last phase has no later one.
+        let error = resolve_all(vec![with_pass("acme.a", "acme.a.run", "generation", &["acme.b.run"]), with_pass("acme.b", "acme.b.run", "generation", &[])]).unwrap_err();
+        assert!(error.contains("no phase runs after it"), "{error}");
+        // A manifest that is not installed has no pass to find, and its id as a prefix of the `after` id still refuses: the longest manifest id wins.
+        let error = resolve_all(vec![with_pass("acme.a", "acme.a.run", "behavior", &["acme.b.x.run"]), with_pass("acme.b", "acme.b.run", "behavior", &[])]).unwrap_err();
+        assert!(error.contains("a pass of acme.b") && error.contains("give acme.a.run a phase later"), "{error}");
+        let nested = resolve_all(vec![with_pass("acme.b", "acme.b.one", "behavior", &["acme.b.sub.run"]), with_pass("acme.b.sub", "acme.b.sub.run", "behavior", &[])]).unwrap_err();
+        assert!(nested.contains("a pass of acme.b.sub"), "{nested}");
+        // An id that no installed manifest owns is refused too, so a manifest loads the same way with or without the other extension.
+        let error = resolve_all(vec![with_pass("acme.a", "acme.a.run", "behavior", &["elsewhere.run"])]).unwrap_err();
+        assert!(error.contains("acme.a: pass acme.a.run lists `after = [\"elsewhere.run\"]`, which is not a pass of acme.a"), "{error}");
+        // A pass of another manifest, with that manifest absent: the same refusal, not a skip.
+        let error = resolve_all(vec![with_pass("acme.a", "acme.a.run", "behavior", &["acme.b.run"])]).unwrap_err();
+        assert!(error.contains("which is not a pass of acme.a"), "{error}");
+        // A dangling own id is a plain refusal.
+        let error = resolve_all(vec![with_pass("acme.b", "acme.b.one", "behavior", &["acme.b.typo"]), with_pass("acme.b.sub", "acme.b.sub.run", "behavior", &[])]).unwrap_err();
+        assert!(error.contains("which is not a pass of acme.b"), "{error}");
+    }
+
+    #[test]
+    fn the_phases_run_in_the_order_of_the_contract() {
+        let phases = ["expansion", "declaration", "logical", "storage", "behavior", "late_behavior", "validation", "generation"];
+        let manifests = phases.iter().rev().enumerate().map(|(i, phase)| with_pass(&format!("acme.p{i}"), &format!("acme.p{i}.run"), phase, &[])).collect();
+        let ordered = resolve_all(manifests).unwrap().passes.into_iter().map(|p| p.phase.name()).collect::<Vec<_>>();
+        assert_eq!(ordered, phases);
+        let mut phase = Some(Phase::Expansion);
+        for name in phases {
+            assert_eq!(phase.unwrap().name(), name);
+            phase = phase.unwrap().next();
+        }
+        assert_eq!(phase, None);
     }
 
     #[test]

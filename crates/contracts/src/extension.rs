@@ -5,7 +5,7 @@ use crate::ir::{ColType, SchemaIr, ValueType};
 pub use crate::version::ContractVersion;
 
 /// The IR records. A library of the same major and a lower or equal minor fits.
-pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(5, 3);
+pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(5, 4);
 /// The C ABI that `monorm::extension!` writes.
 pub const ABI_VERSION: ContractVersion = ContractVersion::new(0, 2);
 /// The stamps of an IR and an artifact keep the major only.
@@ -714,14 +714,48 @@ pub enum ArgumentKind {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AttributeTarget { Model, Field }
+/// The pass phases in run order. A pass orders itself against a pass of another manifest by its phase, never by `after`.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
-pub enum Phase { Declaration, Logical, Storage, Behavior, Validation, Generation }
+pub enum Phase {
+    /// Rewrites the declarations into ordinary models, before any pass reads them (schema contract 5.4).
+    Expansion,
+    /// Adds fields and models that the logical passes then see.
+    Declaration,
+    /// Lowers models that stand for other models.
+    Logical,
+    /// Builds objects on the lowered models.
+    Storage,
+    /// Writes the behavior records of a model.
+    Behavior,
+    /// Runs after every `behavior` pass, so the records of those passes exist (schema contract 5.4).
+    LateBehavior,
+    Validation,
+    Generation,
+}
+impl Phase {
+    /// The name that a manifest writes.
+    pub fn name(self) -> &'static str {
+        match self {
+            Phase::Expansion => "expansion", Phase::Declaration => "declaration", Phase::Logical => "logical", Phase::Storage => "storage",
+            Phase::Behavior => "behavior", Phase::LateBehavior => "late_behavior", Phase::Validation => "validation", Phase::Generation => "generation",
+        }
+    }
+    /// The phase that runs right after this one.
+    pub fn next(self) -> Option<Phase> {
+        match self {
+            Phase::Expansion => Some(Phase::Declaration), Phase::Declaration => Some(Phase::Logical), Phase::Logical => Some(Phase::Storage),
+            Phase::Storage => Some(Phase::Behavior), Phase::Behavior => Some(Phase::LateBehavior), Phase::LateBehavior => Some(Phase::Validation),
+            Phase::Validation => Some(Phase::Generation), Phase::Generation => None,
+        }
+    }
+}
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Pass {
     pub id: String,
     pub phase: Phase,
+    /// Passes of this manifest that run first. A pass of another manifest is ordered by `phase`, and `resolve` refuses its id here.
     #[serde(default)]
     pub after: Vec<String>,
     /// Exclusive effects, e.g. `model.User.field.name.type`: a pass sets one value, so no other pass may claim an overlapping effect.
