@@ -2,7 +2,7 @@
 // are added to the IR; the extension modules and `define()` are real.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BoundQuerySet, define, QuerySet, Registry, useQuerySet } from "../src/index.js";
+import { BoundQuerySet, define, QuerySet, Registry, useModelMethods, useQuerySet } from "../src/index.js";
 import { InstanceBase } from "../src/ext.js";
 import { call, native } from "../src/native.js";
 
@@ -181,4 +181,15 @@ test("a bound class is composed from the extensions", () => {
   const tag = Tag.objects.of([Object.assign(new Tag._meta.Row(), { id: 2 })]);
   assert.equal(Object.getPrototypeOf(tag).constructor, BoundQuerySet);
   assert.equal(tag.everything, undefined);
+});
+
+// case: model_classes::a_method_named_like_an_extension_member_is_an_error
+test("a method named like an extension member is an error", () => {
+  for (const [name, ok] of [["label", false], ["other", true]] as const) {
+    const { Post } = build([record("ext.a")], code(), { Post: ["ext.a"] }) as Record<string, any>;
+    const methods = class { };
+    Object.defineProperty(methods.prototype, name, { value() { return null; }, configurable: true });
+    if (ok) useModelMethods(Post, methods);
+    else assert.throws(() => useModelMethods(Post, methods), new RegExp(`Post\\.${name}: model method collision`));
+  }
 });

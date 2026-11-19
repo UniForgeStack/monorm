@@ -149,9 +149,6 @@
 # languages/python/tests/test_json_key_escape.py
 "json_key_escape::nul_key_is_rejected" = "change: TS checks this only as its last line inside the hostile-keys test (at `count()`);"
 # languages/python/tests/test_load_annotations.py
-"load_annotations::a_bound_join_cannot_write" = "add-ts: a_bound_join_cannot_write"
-"load_annotations::a_bound_join_counts_each_object_once" = "add-ts: a_bound_join_counts_each_object_once"
-"load_annotations::a_bound_join_filters_the_relation_load_too" = "add-ts: a_bound_join_filters_the_relation_load_too"
 "load_annotations::a_bound_join_that_matches_twice_raises" = "change: TS also matches 'returned User .* more than once', so Py must add that to the match."
 "load_annotations::a_bound_join_that_matches_twice_raises_on_count_and_exists_too" = "change: The TS twin also asserts a single-match join gives count 2 and exists true, so Py must add those."
 "load_annotations::a_labeled_expression_must_not_name_a_field" = "duplicate: kept test load_annotations::label_must_not_name_a_field_relation_or_member"
@@ -160,7 +157,6 @@
 "load_annotations::instance_load_reads_a_loaded_label_again" = "change: TS puts this and the aggregate-only read in one test, so TS must split it into two tests with the Py names."
 "load_annotations::instance_load_reads_only_the_aggregate" = "change: The TS combined test must split into this name and instance_load_reads_a_loaded_label_again."
 "load_annotations::label_must_be_unique_among_loads" = "change: twin load_annotations::a_label_must_be_unique_among_loads; For the second case, TS asserts only `QueryError`, so TS must add `/twice/`."
-"load_annotations::labeled_load_only_adds_to_the_full_row" = "add-ts: a_labeled_load_only_adds_to_the_full_row"
 "load_annotations::load_takes_a_labeled_expression" = "change: TS loads one label only, so TS must add a plain column label and the body check."
 "load_annotations::load_takes_a_window_expression_with_one_row_per_instance" = "change: TS has one author (`[2, 2]`), so the partition is not tested, and TS must add a second author's post."
 # languages/python/tests/test_migrations.py
@@ -169,22 +165,18 @@
 "migrations::second_migration_alters_in_place" = "change: twin migrations::the_second_migration_alters_in_place; TS asserts only the first extension, the rename, the warning, the name and a 64-hex checksum."
 "migrations::table_rename_renames_generated_constraint_names" = "engine-covered: crates/core/src/migrate/tests.rs::renames_keep_data_and_rename_generated_names"
 # languages/python/tests/test_migrations_db.py
-"migrations_db::enum_migrations" = "add-ts: migrations::enum_migrations"
-"migrations_db::extension_types_at_runtime" = "add-ts: migrations::extension_types_at_runtime"
 # languages/python/tests/test_model_classes.py
 "model_classes::a_method_named_like_a_model_member_is_an_error" = "change: align the name lists (add update and pk to Python)."
-"model_classes::a_method_named_like_an_extension_member_is_an_error" = "add-ts: model_classes::a_method_named_like_an_extension_member_is_an_error"
 "model_classes::a_methods_class_may_define_the_display_members" = "change: Python must also assert that another object member still collides;"
 "model_classes::a_namespace_package_gives_the_path_from_src" = "keep: The Python lookup ignores out_dir, and the kept no-import-root test proves generate_python runs the lookup."
 "model_classes::a_schema_in_a_plain_subdirectory_gives_the_path_from_the_project_root" = "keep: The Python lookup ignores out_dir, and the kept no-import-root test proves generate_python runs the lookup."
 "model_classes::a_schema_with_no_import_root_asks_for_the_full_path" = "move-to-engine: crates/core/src/codegen/lookup.rs::tests::python_without_an_import_root_explicit_targets_need_no_lookup"
-"model_classes::load_and_loads_take_the_model_methods" = "add-ts: model_classes::load_and_loads_take_the_model_methods"
+"model_classes::load_and_loads_take_the_model_methods" = "one-language: TypeScript load() and loads() take no model_methods argument; useModelMethods names the class"
 "model_classes::module_lookup_goes_up_through_the_package" = "keep: The Python lookup ignores out_dir, and the kept no-import-root test proves generate_python runs the lookup."
 "model_classes::schema_outside_a_package_gives_the_top_level_module" = "keep: The Python lookup ignores out_dir, and the kept no-import-root test proves generate_python runs the lookup."
 # languages/python/tests/test_isolated.py
 "isolated::the_fixture_the_mark_and_the_ini_option" = "one-language: Python-only: the monorm_db fixture, the monorm mark and the monorm_autouse option of the monorm.testing pytest plugin"
 # languages/python/tests/test_n_plus_one.py
-"n_plus_one::a_block_that_raises_keeps_its_own_error" = "add-ts: a block that raises keeps its own error"
 "n_plus_one::a_related_query_in_a_loop_names_load" = "change: TS asserts exactly one warning but no count (a TS warn-mode scope gives no report): TS can match '8 queries' in the message, Python must assert one warning;"
 "n_plus_one::an_awaited_query_set_reports_the_awaiting_line_and_a_many_to_many_names_its_fix" = "change: twin n_plus_one::a_many_to_many_query_in_a_loop_names_load; TS asserts only fix 'load(Person.tags)' and null for the filtered set: TS must add the site-line"
 "n_plus_one::nested_scopes_prepared_update_many_and_a_filtered_related_set" = "change: TS runs filter().exists() in place of a prepared query: TS must use `.prepare()` (it exists in query.ts);"
@@ -252,7 +244,6 @@
 # languages/python/tests/test_pagination.py
 "pagination::a_char_column_from_ir_without_write_sql" = "move-to-engine: crates/engine/tests/functions.rs::a_char_n_parameter_compares_as_bpchar (extend)"
 "pagination::a_char_order_column" = "change: twin pagination::a_char_order_column_postgres; TS also walks -k → [3, 1, 2, 4, 5]: Python must add the descending walk and rename to"
-"pagination::a_nullable_unique_order_gets_the_primary_key" = "add-ts: a nullable unique order gets the primary key"
 "pagination::cursor_of_a_microsecond_datetime" = "change: TS asserts the same cursor and an eq filter on a microsecond `at`, but no walk: split TS out under this name with the walk;"
 "pagination::non_finite_float_order_values" = "change: twin pagination::non_finite_float_order_values_postgres; TS has the Decimal part in edited_cursors_of_decimal_and_uuid_keys_postgres: move that part to a new"
 "pagination::page_shape_and_related_rows" = "change: twin pagination::page_shape_related_rows_and_new_rows; TS has all but the repr (Python-only) inside a combined test: split TS under this name."
@@ -293,7 +284,6 @@
 "pull::sqlite_pull_reads_column_clauses" = "add-ts: pull::sqlite_pull_reads_column_clauses"
 # languages/python/tests/test_queries.py
 "queries::bound_lock_replaces_refresh_lock" = "change: twin queries::a_bound_set_locks_the_row_of_an_object; Python adds ValueError on `nowait`+`skip_locked` and `load(reload=True) is alice`;"
-"queries::database_error_fields_default_to_none" = "add-ts: database error fields default to none"
 "queries::instances_are_read_only" = "one-language: Python runtime guard; TypeScript checks read-only instances in"
 "queries::integrity_error" = "change: twin queries::integrity_errors; TS also asserts the message starts with `ERROR (23505)` and the 1/0 error is not an IntegrityError: Python adds both and"
 "queries::load_to_many" = "change: twin queries::load_a_to_many_relation; Python also asserts `inspect()` = 2 statements with batching, 2 query events, and 0 events for `await alice.posts`: TS"

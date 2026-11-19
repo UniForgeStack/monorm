@@ -816,3 +816,8 @@ test("a one-row query inspects, prints its SQL and prepares", async () => {
   const only = User.objects.filter(User.name.eq(param("name"))).get().prepare();
   assert.equal((await only.run({ name: "Carol" }))!.name, "Carol");
 });
+
+test("database error fields default to none", () => {
+  const err = new DatabaseError("from user code");
+  assert.deepEqual([err.sqlstate, err.constraint, err.detail], [null, null, null]);
+});

@@ -329,3 +329,22 @@ model Named {
     await db.dropTables(); await db.close();
   }
 });
+
+for (const dialect of ["sqlite", "postgres"] as const) {
+  // case: pagination::a_nullable_unique_order_gets_the_primary_key
+  test(`a nullable unique order gets the primary key (${dialect})`, async () => {
+    const registry = new Registry();
+    const source = `datasource db { provider = "${dialect === "postgres" ? "postgresql" : "sqlite"}" }\nmodel Coded {\n  id Int @id\n  code String? @unique\n  @@map("page07_coded_js")\n}`;
+    const { Coded } = loads(source, { registry }) as any;
+    const url = dialect === "sqlite" ? "sqlite://:memory:" : process.env["ORM_TEST_DATABASE_URL"] ?? "postgres://postgres:postgres@localhost/orm_test";
+    const db = await connect(url, { registry, default: false });
+    await db.dropTables(); await db.createTables();
+    try {
+      await Coded.objects.using(db).insertMany([{ id: 1, code: "x" }, { id: 2, code: null }, { id: 3, code: null }, { id: 4, code: "y" }]);
+      assert.deepEqual(await walk(Coded.objects.using(db).orderBy(Coded.code.asc({ nulls: "last" })), 1), [1, 4, 2, 3]);
+    } finally {
+      await db.dropTables();
+      await db.close();
+    }
+  });
+}

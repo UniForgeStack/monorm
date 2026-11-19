@@ -200,3 +200,13 @@ test("one updateMany call counts once and a loop of insertMany is an N plus one"
     }, { threshold: 5, fail: true });
   } finally { await db.close(); }
 });
+
+test("a block that raises keeps its own error", async () => {
+  const { Person, db } = await shop();
+  try {
+    await assert.rejects(debug.nPlusOne(async () => {
+      for (let i = 0; i < 3; i++) await Person.objects.using(db).filter(Person.id.eq(1)).exists();
+      throw new RangeError("mine");
+    }, { threshold: 1, fail: true }), RangeError);
+  } finally { await db.close(); }
+});

@@ -992,3 +992,107 @@ test("squash adopts once with two migrators", async () => {
   assert.equal(names.filter((n) => n === squashed.name).length, 1);
   assert.equal(names.length, 2);
 });
+
+// -- extension types and enums at runtime ---------------------------------------------------------
+
+// case: migrations_db::extension_types_at_runtime
+test("extension types at runtime", async (t) => {
+  const reg = models(`
+    model Doc {
+      id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+      email     String   @db.Citext
+      attrs     Json?
+      embedding Unsupported("vector(3)")?
+
+      @@map("ext_docs")
+    }
+  `);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const Doc = reg.get("Doc").model as any;
+  const db = await connect(MIGRATIONS_URL, { maxConnections: 2, default: false, registry: reg });
+  opened.push(db);
+  await db.execute("DROP TABLE IF EXISTS ext_docs");
+  try {
+    try {
+      await db.createTables();
+    } catch (e) {
+      if (e instanceof DatabaseError) {
+        t.skip(`extension not installed: ${e.message}`);
+        return;
+      }
+      throw e;
+    }
+    await db.createTables(); // idempotent
+    const d = await Doc.objects.using(db).insert({ email: "Bob@X.io", attrs: { tags: ["a", "b"], n: 1, ok: true, x: null }, embedding: [1, 2.5, 3] });
+    assert.match(d.id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    assert.deepEqual(d.attrs, { tags: ["a", "b"], n: 1, ok: true, x: null });
+    assert.deepEqual(d.embedding, [1, 2.5, 3]);
+    const got = await Doc.objects.using(db).get(Doc.email.eq("bob@x.IO"));
+    assert.deepEqual(got.embedding, [1, 2.5, 3]);
+    assert.equal(got.id, d.id);
+    assert.equal(await Doc.objects.using(db).filter(Doc.id.eq(String(d.id))).exists(), true);
+    assert.equal(await Doc.objects.using(db).filter(Doc.email.in(["BOB@x.io"])).count(), 1);
+    await got.update({ embedding: [0, 0, 1], attrs: [1, 2] });
+    assert.deepEqual([got.embedding, got.attrs], [[0, 0, 1], [1, 2]]);
+    await Doc.objects.using(db).insert({ email: "no@x.io" });
+    assert.equal(await Doc.objects.using(db).filter(Doc.embedding.eq(null)).count(), 1);
+  } finally {
+    await db.execute("DROP TABLE IF EXISTS ext_docs");
+  }
+});
+
+const ENUM_V1 = `
+enum Status {
+  draft
+  published
+}
+
+model Doc {
+  id      BigInt   @id @default(autoincrement())
+  status  Status   @default(draft)
+  history Status[] @default([draft])
+
+  @@map("docs")
+}
+`;
+// a value added in the middle and one at the end
+const ENUM_V2 = ENUM_V1.replace("  draft\n  published\n", "  draft\n  review\n  published\n  archived\n");
+// `review` removed again: the type is recreated
+const ENUM_V3 = ENUM_V1.replace("  draft\n  published\n", "  draft\n  published\n  archived\n");
+
+// case: migrations_db::enum_migrations
+test("enum migrations", async () => {
+  const dir = tmp();
+  const regs = [ENUM_V1, ENUM_V2, ENUM_V3].map(models);
+  const db = await connect(MIGRATIONS_URL, { maxConnections: 2, default: false, registry: regs[2]! });
+  opened.push(db);
+  const drop = () => db.execute("DROP TABLE IF EXISTS docs, monorm_migrations CASCADE; DROP TYPE IF EXISTS status, status_old");
+  await drop();
+  try {
+    regs.forEach((reg, i) => new Migrations(dir, reg).make(`v${i + 1}`));
+    const migrator = new Migrator(db, new Migrations(dir, regs[2]!));
+    await migrator.upgrade("0002");
+    const labels = "SELECT string_agg(enumlabel, ',' ORDER BY enumsortorder) FROM pg_enum JOIN pg_type t ON t.oid = enumtypid WHERE typname = 'status'";
+    assert.equal(await scalar(db, labels), "draft,review,published,archived");
+    await db.execute("INSERT INTO docs (status, history) VALUES ('published', '{draft,published}'), ('archived', DEFAULT)");
+    await migrator.upgrade();
+    assert.equal(await scalar(db, labels), "draft,published,archived");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const Doc = regs[2]!.get("Doc").model as any;
+    const docs = await Doc.objects.using(db).orderBy(Doc.id).all();
+    assert.deepEqual(docs.map((d: { status: string; history: string[] }) => [d.status, d.history]), [
+      ["published", ["draft", "published"]],
+      ["archived", ["draft"]],
+    ]);
+    // a row still using a value that a migration removes makes it fail (and roll back)
+    await migrator.downgrade(); // back to v2: recreated with review again
+    await db.execute("UPDATE docs SET status = 'review' WHERE id = 1");
+    await assert.rejects(migrator.upgrade(), (e: unknown) => e instanceof DatabaseError && /invalid input value for enum/.test(e.message));
+    assert.equal(await scalar(db, labels), "draft,review,published,archived");
+    await db.execute("UPDATE docs SET status = 'draft'");
+    await migrator.downgrade({ target: "zero", allowDestructive: true });
+    assert.equal(await scalar(db, "SELECT to_regtype('status')::text"), null);
+  } finally {
+    await drop();
+  }
+});

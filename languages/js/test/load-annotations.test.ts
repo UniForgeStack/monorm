@@ -217,3 +217,37 @@ test("sqlite load sets the label", async () => {
     await db.close();
   }
 });
+
+test("labeled load only adds to the full row", async () => {
+  await seed();
+  const posts = await Post.objects.load(nComments()).orderBy(Post.title).all();
+  assert.deepEqual(posts.map((p) => p.body), ["", ""]);
+});
+
+test("a bound join counts each object once", async () => {
+  const { a, b, c } = await seedViews();
+  const t = totals();
+  const inner = User.objects.of([a, b, c]).join(t, t.c.authorId.eq(User.id));
+  assert.equal(await inner.count(), 2);
+  assert.equal(await inner.filter(t.c.views.gt(100)).count(), 1);
+  assert.equal(await inner.filter(t.c.views.gt(1000)).exists(), false);
+  assert.equal(await inner.exists(), true);
+  const outer = User.objects.of([a, b, c]).join(t, t.c.authorId.eq(User.id), { outer: true });
+  assert.equal(await outer.count(), 3);
+});
+
+test("a bound join filters the relation load too", async () => {
+  const { a, b, c } = await seedViews();
+  const t = totals();
+  const users = await User.objects.of([a, b, c]).join(t, t.c.authorId.eq(User.id)).filter(t.c.views.gt(100)).load(User.posts);
+  assert.deepEqual(users.map((u) => [u.name, u.posts.cached.length]), [["Alice", 2]]);
+});
+
+test("a bound join cannot write", async () => {
+  const { a, b, c } = await seedViews();
+  const t = totals();
+  await assert.rejects(
+    async () => await User.objects.of([a, b, c]).join(t, t.c.authorId.eq(User.id)).update({ name: "x" }),
+    { name: "QueryError", message: /join/ },
+  );
+});
