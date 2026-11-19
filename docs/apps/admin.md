@@ -630,6 +630,7 @@ The server checks them again on each request.
 | `POST {prefix}/resources/{name}` | `{"set": {field: value}}` | `201` with `{"ok", "resource", "key", "values"}`. |
 | `PATCH {prefix}/resources/{name}/{key}` | `{"set": {...}, "loaded": {...}}` | `200` with `{"ok", "key", "changed": [names]}`. |
 | `DELETE {prefix}/resources/{name}/{key}` | `{"loaded": {...}}` (optional) | `200` with `{"ok", "key"}`. |
+| `PATCH {prefix}/resources/{name}` | `{"rows": [{"key", "set", "loaded"}]}` | `200` with `{"ok", "keys", "changed": {key: [names]}}`. See [Edit in the list](#edit-in-the-list). |
 
 The body is at most 1 MB (the upload route takes 25 MiB).
 Each resource in `GET {prefix}/resources` has `writable`, `read_only_reason`, `sections` (the `create` and `edit` layouts), `form_component` (whether a module replaces the form) and `form`: for each writable field its `name`, `required`, `default`, `readonly_on_update` (the key fields), `readonly` (the config), `widget`, `max_length`, `relation` (the picker of a relation field, or `null`) and `file` (whether the field holds a file). The resource has `chips`, the many-to-many relations that the form edits.
@@ -1020,6 +1021,60 @@ The UI shows a table or stacked blocks, with "Add row" (off at the cap), "Remove
 A problem in a collapsed inline opens it.
 An `admin.input` of the child page has no control in the inline, and a `with_parent` change set carries no inputs: only a `row` save runs the inputs of the child page, through the API.
 
+### Edit in the list
+
+`list.editable` names the columns that staff edit in the cells of the list, as Django does with `list_editable`:
+
+```python
+admin.register(Ticket, {"list": {"columns": ["title", "status", "owner"], "editable": ["title", "status"]}})
+```
+
+```ts
+admin.register(Ticket, { list: { columns: ["title", "status", "owner"], editable: ["title", "status"] } });
+```
+
+The site refuses a bad name when it builds (`admin.check()` reports it).
+Each name must be a column of the list and a scalar field that the update form writes.
+A key field, a file field, a relation, a computed or aggregate column and a read-only field of the form are errors.
+The page must allow `update`, and an update service must not ask for a required input, because the list has none to give.
+The order of the names does not matter: the order of the list columns rules.
+
+The resource in `GET {prefix}/resources` has `editable` (the field names for this user), and each row of the main list has `flags[i].change`.
+A user who lacks the `change=` [field permission](#field-permissions) of a field does not get it in `editable`.
+A row that its `can=` rule refuses, or that the user may not change, shows plain values.
+A tab list is read-only.
+
+`PATCH {prefix}/resources/{name}` saves many rows in one request and one transaction.
+The body is `{"rows": [{"key", "set", "loaded"}]}`, at most 200 rows (the `max_page_size` ceiling), each key once.
+`set` takes only fields of `editable`, and `loaded` holds every field of `set` and every guard field, as in a form update (a `400` otherwise).
+The answers:
+
+| Status | Body |
+|---|---|
+| `200` | `{"ok": true, "keys": [...], "changed": {key: [names]}}`. A row that sets no new value writes nothing and gets no audit row, but its `loaded` values are still compared (a stale one is a `409`). |
+| `400` | `{"ok": false, "rows": {index: {"fields": {field: [messages]}, "form": [messages]}}}`. The server collects the problems of every row first, and writes nothing. |
+| `409` | `{"ok": false, "conflicts": {index: {field: {"loaded", "current"}}}}`. A stored value is not the loaded value; nothing is written. |
+| `403` | A row is out of reach: the permission, the `can=` rule, or a `queryset` that hides the row. Nothing is written. |
+| `404` | A key does not exist. |
+
+`index` is the position of the row in the request.
+A row that the `queryset` hides answers `403` here (the form route answers `404`), so the answer tells a user that the key exists.
+
+On the plain path the save locks every row in key order, checks the rules of each, and writes each row and its audit row in one transaction.
+A host behavior or an update service goes through one bridge call (`update_rows`): the Python and TypeScript host opens one `database.transaction()` and runs the update function (or the default writer) once for each changed row, in key order (the order that the plain path locks the rows in).
+The transactions of a service become savepoints, and `on_commit` runs after the outer commit.
+The first error rolls back every row.
+A sync `threaded` service reaches the outer transaction through `ctx.run`.
+`admin.test_client` sends the same request in both languages.
+
+The UI keeps the changes by row and shows a bar with the count, Save and Discard.
+A changed cell is marked, and a cell error or a conflict shows on its cell (a conflict shows the stored value, with "Use that value").
+A row error (a form message, or a field that the list does not edit) shows under the first editable cell of its row.
+After an error every change stays; after `200` the list reloads its current state.
+A page change, sort, filter, search, link to another page or bulk action asks before it drops the changes, and closing the tab warns.
+Tab and Shift+Tab move between the cells; the row selection and the link to the detail page stay.
+A guard field that is not a column of the list has no value in the page, so the build refuses the editable list: put the guard field in the columns.
+
 ## Actions
 
 An action is a function that runs on a set of records. It has a button in the list, in the row, on the detail page or next to the save button.
@@ -1276,6 +1331,7 @@ The list page has these controls:
 - A density toggle (comfortable or compact) stays in the browser.
 - A row menu holds the row actions, and a bar over the table holds the bulk actions of the selected rows.
 - The footer has the page links and a page size choice (up to `max_page_size`).
+- With `list.editable`, the cells of those columns are inputs, and a bar saves or discards the changes: see [Edit in the list](#edit-in-the-list).
 - A list shows a skeleton while it loads. An empty list offers to clear the search and filters, or to add a record. An error shows as an alert.
 
 A key is stable and easy to bookmark.
@@ -1398,7 +1454,7 @@ Give the probes of the pod the root paths `/healthz` and `/readyz`, not the base
 ### Browser smoke test
 
 `crates/admin/ui/e2e` holds the first browser suite of the repository.
-It starts a real `python -m monorm admin` process on SQLite (it makes a temporary project, migrates, and seeds a user and two rows), signs in, sorts a list, searches it, opens a record, adds, changes and deletes a record through the forms, saves an inline row and a new inline row with their parent, opens a section layout and a custom form, opens a widget and a detail tab of the example package (it saves through the widget and reads the route of the tab), and fails on any console error, CSP violation or failed request.
+It starts a real `python -m monorm admin` process on SQLite (it makes a temporary project, migrates, and seeds a user and two rows), signs in, sorts a list, searches it, opens a record, adds, changes and deletes a record through the forms, saves an inline row and a new inline row with their parent, edits two cells on two rows of a list and saves them, shows a refused cell, opens a section layout and a custom form, opens a widget and a detail tab of the example package (it saves through the widget and reads the route of the tab), and fails on any console error, CSP violation or failed request.
 The driver is Playwright (`playwright` 1.65.0, pinned) with `node:test`.
 Playwright downloads a browser, so the install is not part of the default `npm install` of any package.
 Run it from a checkout, with the `monorm` wheel installed in the active Python (`maturin develop`):
