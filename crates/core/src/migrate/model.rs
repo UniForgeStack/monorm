@@ -220,6 +220,13 @@ pub struct Column {
     pub nested: NestedLink,
 }
 
+impl Column {
+    /// The default draws from a sequence that the column does not own: an owned serial is an identity column, so a `nextval` default left over is a shared or unowned sequence.
+    pub fn uses_foreign_sequence(&self) -> bool {
+        !self.identity && self.default.as_deref().is_some_and(|d| d.starts_with("nextval("))
+    }
+}
+
 /// Where a column's value comes from in the schema: the shape of a `json` column, or the
 /// `(field, path)` of a `columns` leaf.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]

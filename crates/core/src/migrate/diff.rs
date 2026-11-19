@@ -1252,6 +1252,16 @@ fn diff_tables(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<Vec<
                 (Some(oc), Some(nc)) => {
                     let column = nc.name.clone();
                     let t = || table.clone();
+                    if nc.identity && oc.uses_foreign_sequence() {
+                        return Err(format!(
+                            "{table}.{column}: the column takes its values from a sequence it does not own (a `nextval` default). Other writers can still use that sequence, and the identity would be a second counter beside it. Keep the raw `@default(dbgenerated(\"nextval(...)\"))` in the schema, or move the other writers off the sequence and change the column by hand"
+                        ));
+                    }
+                    if oc.identity && nc.uses_foreign_sequence() {
+                        return Err(format!(
+                            "{table}.{column}: the schema sets the default of an identity column to a sequence it does not own (a `nextval` default). The identity sequence stays and would count beside it. Keep `@default(autoincrement())` in the schema, or drop the identity and set the default by hand in a migration of your own"
+                        ));
+                    }
                     if oc.identity && !nc.identity {
                         alters.push(Op::DropIdentity { table: t(), column: column.clone() });
                     }

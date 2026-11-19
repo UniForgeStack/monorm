@@ -704,8 +704,7 @@ pub fn pull_claims(db: &DbSchema, gaps: &[String], claimed: &[ClaimedRule], obje
             if c.name == pk {
                 attrs.push("@id".to_owned());
             }
-            // An owned serial arrives as an identity column; a `nextval` default left here is a shared or unowned sequence.
-            let shared = !c.identity && c.default.as_deref().is_some_and(|d| d.starts_with("nextval("));
+            let shared = c.uses_foreign_sequence();
             if let Some(g) = &c.generated {
                 let stored = if g.stored { "" } else { ", stored: false" };
                 attrs.push(format!("@generated(raw({}){stored})", quoted(&g.sql)));

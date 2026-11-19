@@ -2289,3 +2289,23 @@ fn a_snapshot_without_a_shape_is_not_rewritten_for_it() {
         assert!(p.up.is_empty(), "{dialect}");
     }
 }
+
+#[test]
+fn identity_and_a_sequence_the_column_does_not_own_are_not_swapped_in_either_direction() {
+    let src = |field: &str| format!("model S {{\n  id Int @id\n  n  Int {field}\n}}\n");
+    let shared = json_source("postgresql", &src("@default(dbgenerated(\"nextval('s_seq'::regclass)\"))"));
+    let owned = json_source("postgresql", &src("@default(autoincrement())"));
+    let shared_snapshot = super::plan(&shared, &DbSchema::default()).unwrap().snapshot;
+    let owned_snapshot = super::plan(&owned, &DbSchema::default()).unwrap().snapshot;
+    // the sequence to identity: the old sequence still feeds other writers, the identity is a second counter
+    let e = super::plan(&owned, &stored(&shared_snapshot)).unwrap_err();
+    assert!(e.contains("s.n: the column takes its values from a sequence it does not own"), "{e}");
+    assert!(e.contains("second counter") && e.contains("Keep the raw `@default(dbgenerated("), "{e}");
+    // identity to the sequence: the identity stays; keeping the raw default is no fix here
+    let e = super::plan(&shared, &stored(&owned_snapshot)).unwrap_err();
+    assert!(e.contains("s.n: the schema sets the default of an identity column to a sequence it does not own"), "{e}");
+    assert!(e.contains("Keep `@default(autoincrement())`") && !e.contains("raw"), "{e}");
+    // the same column kept as it is, and a plain default, still plan
+    assert!(super::plan(&shared, &stored(&shared_snapshot)).unwrap().up.is_empty());
+    assert!(super::plan(&json_source("postgresql", &src("@default(7)")), &stored(&shared_snapshot)).is_ok());
+}
