@@ -243,7 +243,7 @@ test("otel names a statement that has no word", async () => {
   } finally { await db.close(); }
 });
 
-test("the N+1 finder counts the traced SQL", async () => {
+test("the N plus one finder counts the traced SQL", async () => {
   const { Person, db } = await shop();
   try {
     const report = await debug.nPlusOne(async () => {
@@ -257,6 +257,7 @@ test("the N+1 finder counts the traced SQL", async () => {
     const [shape] = error.report.repeated;
     assert.equal(shape!.count, 3);
     assert.match(shape!.sql, /^INSERT INTO "person".*\?/);
+    assert.match(shape!.site, /query-hooks\.test\.(ts|js):\d+$/);
   } finally { await db.close(); }
 });
 

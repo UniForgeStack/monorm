@@ -465,6 +465,7 @@ model Book {
     } finally { await db.dropTables(); await db.close(); }
   });
 
+  // case: tracking::a_stale_instance_write_raises_version_conflict
   test(`a stale instance write throws VersionConflict (${dialect})`, { skip: !hasExtension("monorm.locking") }, async () => {
     const [db, models] = await open(dialect, `
 model Doc {
@@ -479,8 +480,10 @@ model Doc {
       const second = await docs.get(Doc.id.eq(1));
       await first.update({ title: "b" });
       assert.equal(first.version, 1);
+      assert.equal(first.title, "b");
       await assert.rejects(second.update({ title: "c" }), VersionConflict);
       await assert.rejects(second.delete(), VersionConflict);
+      assert.equal((await docs.get(Doc.id.eq(1))).title, "b");
       assert.equal(await docs.all().update({ title: "d" }), 1);
       assert.equal((await docs.get(Doc.id.eq(1))).version, 2);
       await second.load({ reload: true });

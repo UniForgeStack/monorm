@@ -61,6 +61,7 @@ test("a native or raw() check does not warn", async () => {
   assert.deepEqual(seen, []);
 });
 
+// case: schema_expressions::native_adoption_survives_registry_ir_and_unrelated_snapshots
 test("native adoption survives registry IR and unrelated migration snapshots", async () => {
   const { Migrations } = await import("../src/index.js");
   const dir = mkdtempSync(join(tmpdir(), "monorm-native-adoption-"));
@@ -75,7 +76,8 @@ test("native adoption survives registry IR and unrelated migration snapshots", a
     assert.deepEqual(native.plan().up, []);
     assert.deepEqual(native.plan().down, []);
     const unrelated = new Migrations(dir, registry("qty > 0", "  note String?\n"));
-    assert.ok(unrelated.make("unrelated").length);
+    const [migration] = unrelated.make("unrelated");
+    assert.ok(migration!.upSql.includes("CHECK (((qty > 0)))"));
     assert.deepEqual(unrelated.plan().up, []);
   } finally {
     rmSync(dir, { recursive: true });

@@ -72,11 +72,15 @@ test("a share lock with skipLocked", async () => {
 });
 
 test("a locked relation set needs a transaction", async () => {
-  const { alice } = await seed();
+  await seed();
   await assert.rejects(async () => { await User.objects.load(User.posts.objects.lock()); }, TransactionRequired);
   await assert.rejects(async () => { await User.objects.load(User.posts.comments).load(User.posts.objects.lock()); }, TransactionRequired);
-  await assert.rejects(async () => { await alice.load(User.posts.objects.lock()); }, TransactionRequired);
+});
+
+test("a bound read and prefetch check the transaction", async () => {
+  const { alice } = await seed();
   await assert.rejects(async () => { await User.objects.of([alice]).load(User.posts.objects.lock()); }, TransactionRequired);
+  await assert.rejects(async () => { await alice.load(User.posts.objects.lock()); }, TransactionRequired);
 });
 
 test("a locked relation set blocks a second lock", async () => {

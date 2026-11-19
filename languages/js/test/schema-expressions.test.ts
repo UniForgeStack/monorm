@@ -1,7 +1,12 @@
 /** Native checks: a bad row is rejected by the database, and each dialect gives the same answer. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { connect, IntegrityError, loads, Registry } from "../src/index.js";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { connect, IntegrityError, loads, Migrations, Migrator, pull, Registry } from "../src/index.js";
 import { DATABASE_URL } from "./helpers.js";
 
 type Any = any; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -65,4 +70,57 @@ for (const dialect of Object.keys(PROVIDERS) as Provider[]) {
       }
     });
   }
+}
+
+const CLI = [".js", ".ts"].map((ext) => fileURLToPath(new URL(`../src/cli${ext}`, import.meta.url))).find(existsSync)!;
+
+for (const dialect of Object.keys(PROVIDERS) as Provider[]) {
+  // case: schema_expressions::offline_native_conversion_preserves_live_rules_and_later_migrations
+  test(`offline native conversion preserves live rules and later migrations (${dialect})`, async () => {
+    const [provider, url] = PROVIDERS[dialect];
+    const dir = mkdtempSync(join(tmpdir(), "monorm-conversion-"));
+    const path = join(dir, "schema.prisma");
+    const legacy =
+      `datasource db {\n provider = "${provider}"\n}\n` +
+      'model Item {\n id Int @id\n qty Int @map("Qty")\n @@map("conversion_item_js")\n' +
+      ' @@check(raw("((\\"Qty\\" > 0))"))\n @@index([sql("abs( \\"Qty\\" )")], where: raw("(\\"Qty\\" > 0)"))\n}\n';
+    writeFileSync(path, legacy);
+    const migrations = new Migrations(join(dir, "migrations"), path);
+    assert.equal(migrations.make().length, 1);
+    const registry = new Registry();
+    loads(`datasource db { provider = "${provider}" }\n`, { registry });
+    const db = await connect(url, { registry, default: false, maxConnections: 1 });
+    if (dialect === "postgres") await db.execute("DROP SCHEMA IF EXISTS pl12_conversion_js CASCADE; CREATE SCHEMA pl12_conversion_js; SET search_path = pl12_conversion_js");
+    const runner = new Migrator(db, migrations);
+    const insert = (id: number, qty: number) => db.execute(`INSERT INTO conversion_item_js (id, "Qty") VALUES (${id}, ${qty})`);
+    try {
+      await runner.upgrade();
+      await db.execute('INSERT INTO conversion_item_js (id, "Qty") VALUES (1, 2), (2, 3)');
+      const converted = spawnSync(process.execPath, [CLI, "--schema", path, "--dir", migrations.directory, "fmt", "--native"], { encoding: "utf8" });
+      assert.equal(converted.status, 0, converted.stderr);
+      assert.ok(readFileSync(path, "utf8").includes("@@check((((qty > 0))))"));
+      assert.deepEqual(migrations.plan().up, []);
+      assert.deepEqual(migrations.plan().down, []);
+      assert.deepEqual(await runner.upgrade(), []);
+      await assert.rejects(insert(3, -1), IntegrityError);
+      const pulled = await pull(db);
+      assert.deepEqual(pulled.differences, [], pulled.schema);
+      assert.deepEqual((await runner.drift()).steps, []);
+      writeFileSync(path, readFileSync(path, "utf8").replace(" qty Int", " note String?\n qty Int"));
+      assert.equal(migrations.make("unrelated").length, 1);
+      await runner.upgrade();
+      assert.deepEqual(migrations.plan().up, []);
+      writeFileSync(path, readFileSync(path, "utf8").replace("qty > 0", "qty > 1"));
+      const [real] = migrations.make("stricter");
+      assert.ok(real!.downSql);
+      await runner.upgrade();
+      await assert.rejects(insert(3, 1), IntegrityError);
+      await runner.downgrade({ allowDestructive: true });
+      await insert(3, 1);
+    } finally {
+      if (dialect === "postgres") await db.execute("SET search_path = public; DROP SCHEMA IF EXISTS pl12_conversion_js CASCADE");
+      await db.close();
+      rmSync(dir, { recursive: true });
+    }
+  });
 }

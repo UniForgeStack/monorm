@@ -31,34 +31,22 @@
 # languages/python/tests/test_bound_writes.py
 # languages/python/tests/test_chain_alias.py
 # languages/python/tests/test_char_like.py
-"char_like::like_compares_the_text" = "change: TS lacks `icontains('C')`, `~ilike`, and the CAST check: TS adds them."
 # languages/python/tests/test_client_defaults.py
-"client_defaults::client_defaults_make_fields_optional_but_stay_out_of_the_database_default" = "change: Python asserts that exact list, TS adds the `_meta.ir.fields` id `client_default` deepEqual `{call: 'uuid7'}`, and Python renames to"
 "client_defaults::python_callable_defaults_fill_the_same_omitted_values" = "one-language: Python-only: class-defined models with callable defaults"
 # languages/python/tests/test_composite_keys.py
 "composite_keys::generated_key_types" = "engine-covered: crates/core/tests/codegen_keys.rs::composite_primary_key_types"
 # languages/python/tests/test_composition.py
 # languages/python/tests/test_connections.py
-"connections::instance_reload_reads_the_primary_for_to_one_and_to_many" = "change: TS checks only the to-one half here."
-"connections::on_commit_after_the_transaction_ended_raises" = "change: TS checks only the message."
-"connections::refresh_reads_the_primary_on_a_database_with_replicas" = "change: both take 'reload reads the primary on a database with replicas' (connections::reload_reads_the_primary_on_a_database_with_replicas)."
 "connections::replica_disconnect_observation_rejects_a_leaked_session" = "one-language: self-test of the Python assert_backends test helper"
 "connections::replica_disconnect_observation_waits_for_postgres" = "one-language: self-test of the Python assert_backends test helper"
-"connections::replicas_answer_reads_outside_a_transaction" = "change: Python adds that, and takes the TS name."
-"connections::session_lock_keeps_the_error_of_its_block_when_the_unlock_fails" = "change: TS splits its test, adds the REVOKE case, and takes the Python name."
 "connections::session_lock_survives_a_cancelled_waiter" = "one-language: asyncio task cancellation; JS lock() has no cancel"
-"connections::session_lock_timeout_bounds" = "change: TS splits it into its own test named 'session lock timeout bounds' (connections::session_lock_timeout_bounds)."
 # languages/python/tests/test_data_migrations.py
 "data_migrations::data_module_is_a_real_module" = "one-language: Python-only: a data.py module must be in sys.modules while it runs (dataclasses, pickle)"
-"data_migrations::data_step_runs_in_the_migration_transaction" = "change: tails differ: Python checks a sync `def run` gives 'needs `async def run`', TS checks a data.py is refused."
-"data_migrations::python_m_orm_migrate_runs_data_steps" = "change: twin data_migrations::npx_monorm_migrate_runs_data_steps; Python also asserts showmigrations shows [x] for both, so TS adds that check."
+"data_migrations::a_data_step_with_a_sync_run_is_refused" = "one-language: Python-only: a sync `def run` is a Python mistake; a TypeScript step has no sync form"
 # languages/python/tests/test_definition.py
 "definition::class_declarations_require_preparation_and_keep_previous_snapshot" = "one-language: reason: 'Python-only: class-declared models and Registry.prepare()'."
-"definition::definition_is_eager_and_failure_is_atomic" = "change: Split the TS test: a TS test 'definition is eager and failure is atomic' (add `registry.get('User').model === User`) gives ID"
-"definition::existing_models_keep_their_prepared_snapshot" = "change: Move that part of the TS test to its own test 'existing models keep their prepared snapshot' (ID definition::existing_models_keep_their_prepared_snapshot)."
 "definition::migrations_prepare_class_declarations" = "one-language: reason: 'Python-only: class-declared models and Registry.prepare()'."
 # languages/python/tests/test_driver.py
-"driver::unknown_sslmode" = "change: twin driver::an_unknown_sslmode; TS asserts only the message."
 # languages/python/tests/test_explain_fetch.py
 # languages/python/tests/test_expressions.py
 "expressions::full_text_search_config_names" = "change: split the TS test and name the config part 'full-text search config names' (ID expressions::full_text_search_config_names), with the 'español' check added."
@@ -68,51 +56,30 @@
 "expressions::matches_forms" = "change: the TS combined test checks only a bare toTsvector(body).matches('lazy') gives [2n]."
 "expressions::matches_prepared_param" = "change: Split the TS test: the param part becomes TS 'matches prepared param' (ID expressions::matches_prepared_param)."
 # languages/python/tests/test_ext.py
-"ext::behavior_value_is_none_without_a_record" = "change: twin ext::a_behavior_value_is_undefined_without_a_record; Python must add the call with an explicit registry, as TS does;"
 "ext::every_exported_name_exists_and_the_dead_row_query_is_gone" = "one-language: Python-only: the __all__ export list; the TypeScript compiler checks the exports"
-"ext::the_hard_delete_statement_is_a_hard_delete_of_the_query_set" = "change: Python must run the statement on a database and assert the deleted and remaining rows;"
 # languages/python/tests/test_extension_discovery.py
 "extension_discovery::a_dotted_module_resolves_to_its_directory" = "one-language: Python-only: an entry point names a dotted module path"
-"extension_discovery::a_hook_error_names_the_model_and_field_once" = "change: TS must split that test into three with the Python names."
-"extension_discovery::a_native_schema_without_package_directories_leaves_the_hook_bindings_unresolved" = "change: The TS part checks only the first two;"
-"extension_discovery::a_value_that_the_caller_sets_goes_through_the_hook_that_assigns_the_field" = "change: TS must split it out under this name."
-"extension_discovery::an_installed_outside_library_lowers_the_schema_through_load_and_loads" = "change: TS covers this plus CLI, generated models and hash-only in one test;"
-"extension_discovery::an_outside_package_with_a_built_in_id_names_the_built_in_copy" = "change: Rename to the TS name (extension_discovery::an_outside_package_with_a_bundled_id_fails_and_names_the_bundled_copy);"
-"extension_discovery::hash_only_package_is_imported_by_generated_models" = "change: TS must split it out under this name."
-"extension_discovery::packaged_generated_models_use_runtime_without_the_pass_library" = "change: After the TS split, TS adds the missing-class error and Python adds the `databases` check ('does not support sqlite') that TS has."
-"extension_discovery::the_command_line_lowers_the_schema_with_an_installed_outside_library" = "change: TS must split its CLI block out under this name and add the 'locked'/'installed' asserts."
 # languages/python/tests/test_extension_language.py
-"extension_language::user_query_set_comes_first" = "change: Python must use two extensions and assert ['mine', 'b', 'a'] and that the query set is a Mine;"
 # languages/python/tests/test_fetch_review.py
-"fetch_review::postgres_fetch_parameters_of_bool_float_date_and_list" = "change: The TS test combines both databases and binds a JS Date as timestamptz (JS has no date-only type): split TS into postgres_/sqlite_ tests with the Python names"
-"fetch_review::sqlite_fetch_parameters_of_bool_float_date_and_list" = "change: The SQLite part of the TS test binds no date: split it out under this name and add a Date parameter with its stored value."
-"fetch_review::sqlite_not_null_check_and_unique_have_a_sqlstate" = "change: TS also asserts that the NOT NULL error has constraint null: Python must add `constraint is None` for 23502 and use the TS name."
 # languages/python/tests/test_field_adapters.py
 "field_adapters::a_prepare_call_that_raises_cancelled_leaves_no_call_running" = "one-language: asyncio cancellation; a JS promise has no cancel"
 "field_adapters::prepare_system_exit_is_not_wrapped" = "one-language: SystemExit is a Python BaseException"
 # languages/python/tests/test_generic_identities.py
-"generic_identities::generic_field_form_creates_the_pair_and_the_reverse" = "change: TS lacks the relations entry and the insert/get, and adds a bare `Generic` error (Rust crates/core/src/dsl/tests.rs:245 covers it)."
-"generic_identities::runtime_and_generated_identities_roundtrip" = "change: TS lacks Tag=2 and the object_id read after delete (it only counts);"
 # languages/python/tests/test_grouped_expressions.py
 "grouped_expressions::equal_numeric_values_with_different_scale_keep_separate_binds" = "one-language: Python-only: a JS Decimal loses its scale before it binds; the float -0 twin is bind-merge.test.ts"
 "grouped_expressions::update_keeps_the_scale_with_a_distinct_subquery" = "one-language: Python-only: a JS Decimal loses its scale before it binds; the float -0 twin is bind-merge.test.ts"
 # languages/python/tests/test_hooks.py
-"hooks::decode_field_reads_the_loaded_value_through_the_decoder" = "change: Python must add a decoded insert result, and keeps its read-only and missing-field checks."
 # languages/python/tests/test_inspection.py
 "inspection::inspecting_a_write_is_a_valid_terminal_use" = "one-language: Python-only: the never-awaited RuntimeWarning of write statements"
 # languages/python/tests/test_json_key_escape.py
-"json_key_escape::nul_key_is_rejected" = "change: TS checks this only as its last line inside the hostile-keys test (at `count()`);"
 # languages/python/tests/test_load_annotations.py
 "load_annotations::a_labeled_expression_must_not_name_a_field" = "duplicate: kept test load_annotations::label_must_not_name_a_field_relation_or_member"
 # languages/python/tests/test_migrations.py
-"migrations::first_migration" = "change: twin migrations::the_first_migration; Python also asserts CREATE INDEX 'books_author_id_idx', so TS adds it."
 "migrations::kept_rename_hints_do_nothing_after_the_rename" = "engine-covered: crates/core/src/migrate/tests.rs::kept_rename_hints_do_nothing_after_the_rename"
-"migrations::second_migration_alters_in_place" = "change: twin migrations::the_second_migration_alters_in_place; TS asserts only the first extension, the rename, the warning, the name and a 64-hex checksum."
 "migrations::table_rename_renames_generated_constraint_names" = "engine-covered: crates/core/src/migrate/tests.rs::renames_keep_data_and_rename_generated_names"
 # languages/python/tests/test_migrations_db.py
 # languages/python/tests/test_model_classes.py
-"model_classes::a_method_named_like_a_model_member_is_an_error" = "change: align the name lists (add update and pk to Python)."
-"model_classes::a_methods_class_may_define_the_display_members" = "change: Python must also assert that another object member still collides;"
+"model_classes::a_method_named_like_an_internal_member_is_an_error" = "one-language: Python-only: `objects`, `_meta`, `__eq__` and `__hash__` are Python model members; TypeScript has no such members"
 "model_classes::a_namespace_package_gives_the_path_from_src" = "keep: The Python lookup ignores out_dir, and the kept no-import-root test proves generate_python runs the lookup."
 "model_classes::a_schema_in_a_plain_subdirectory_gives_the_path_from_the_project_root" = "keep: The Python lookup ignores out_dir, and the kept no-import-root test proves generate_python runs the lookup."
 "model_classes::a_schema_with_no_import_root_asks_for_the_full_path" = "engine-covered: crates/core/src/codegen/lookup.rs::tests::python_without_an_import_root_explicit_targets_need_no_lookup"
@@ -130,15 +97,9 @@
 "n_plus_one::the_pytest_fixture_fails_a_test_with_an_n_plus_one" = "one-language: Python-only: the n_plus_one pytest fixture of monorm.testing"
 # languages/python/tests/test_native_codegen.py
 "native_codegen::generate_python_checks_query_sets" = "engine-covered: crates/core/src/codegen/mod.rs::reference_tests::python_query_sets_reject_hard_keywords"
-"native_codegen::generate_python_query_sets" = "change: Python must add the two error asserts that TS has (no model Missing;"
 # languages/python/tests/test_nested.py
 "nested::a_re_prepared_registry_keeps_its_nested_types" = "one-language: Python artifact re-prepare path (_REPREPARE)"
-"nested::example_models_are_current" = "change: twin migrations::the_generated_models_are_current; Cross-stem: move this check into test_migrations.py and rename test_generated_blog_module_is_current to"
-"nested::ne_on_a_whole_field_is_three_valued" = "change: TS must move line 129 into its own scenario 'ne on a whole field is three-valued' (ID nested::ne_on_a_whole_field_is_three_valued)."
-"nested::value_classes_are_immutable_equal_and_picklable" = "change: Python adds an inequality check against city 'Other', and keeps hash and copy as Python extras."
 # languages/python/tests/test_nested_decode.py
-"nested_decode::select_of_a_list_leaf_on_columns_storage" = "change: the twin test is one looped or wrapper test; split it to match the names nested_decode::select_of_a_list_leaf_postgres"
-"nested_decode::select_of_a_list_leaf_on_json_storage" = "change: the twin test is one looped or wrapper test; split it to match the names nested_decode::select_of_a_list_leaf_postgres"
 # languages/python/tests/test_nested_entry_points.py
 "nested_entry_points::get_or_insert_keeps_a_leaf_column_name_valid" = "keep: a twin is not clear."
 # languages/python/tests/test_nested_migrations.py
@@ -175,27 +136,12 @@
 "null_strict::a_nested_column_keeps_its_own_value_key" = "one-language: Python-only: tests the private expr._ckey"
 # languages/python/tests/test_pagination.py
 "pagination::a_char_column_from_ir_without_write_sql" = "engine-covered: crates/engine/tests/functions.rs::a_char_n_parameter_compares_as_bpchar"
-"pagination::a_char_order_column" = "change: twin pagination::a_char_order_column_postgres; TS also walks -k → [3, 1, 2, 4, 5]: Python must add the descending walk and rename to"
-"pagination::cursor_of_a_microsecond_datetime" = "change: TS asserts the same cursor and an eq filter on a microsecond `at`, but no walk: split TS out under this name with the walk;"
-"pagination::non_finite_float_order_values" = "change: twin pagination::non_finite_float_order_values_postgres; TS has the Decimal part in edited_cursors_of_decimal_and_uuid_keys_postgres: move that part to a new"
-"pagination::page_shape_and_related_rows" = "change: twin pagination::page_shape_related_rows_and_new_rows; TS has all but the repr (Python-only) inside a combined test: split TS under this name."
-"pagination::reading_back_from_the_second_row" = "change: TS has the same lines inside the microsecond test: split them into a TS test of this name."
-"pagination::rows_added_between_pages_are_not_repeated" = "change: twin pagination::page_shape_related_rows_and_new_rows; TS has the same lines inside the combined test: split them into a TS test of this name."
 # languages/python/tests/test_partition.py
-"partition::partition_routes_orm_inserts_and_checks_moves" = "change: TS uses a bare `assert.rejects` and must add `IntegrityError`;"
-"partition::proxy_partition_bound_is_storage_and_prunes_without_defaults" = "change: TS must add those checks and IntegrityError on its rejects;"
 # languages/python/tests/test_prepared.py
-"prepared::limit_offset_sql" = "change: twin prepared::limit_and_offset_are_parameters; Fold this assertion into the renamed Python test_limit_and_offset_are_parameters and drop this test."
 # languages/python/tests/test_protected_write.py
-"protected_write::a_package_check_before_its_own_io_also_checks_protection" = "change: TS asserts prepareInsert/prepareUpdate inside the omnibus test;"
-"protected_write::tasks_started_in_the_scope_get_it_and_reads_and_raw_sql_are_unchanged" = "change: split TS out under one shared name such as 'the scope follows async work and reads and raw sql are unchanged', PY adds the lazy-await case, TS adds an async"
-"protected_write::the_check_is_on_the_model_the_sql_writes" = "change: TS keeps this part under 'the check is on the model the SQL writes'."
 # languages/python/tests/test_proxy.py
-"proxy::proxy_warning_rows_defaults_writes_and_relation_targets" = "change: The engine prints the warnings with `eprintln!` (crates/engine/src/result_check.rs `emit`), so Node gets them too but only on fd 2: TS must read them from a"
 # languages/python/tests/test_proxy_members.py
-"proxy_members::inherited_method_reads_a_root_column_on_a_proxy" = "change: Python must add a database run that returns one PmDraft row;"
 "proxy_members::mypy" = "one-language: Python type test: mypy over the generated proxy models; the TypeScript twin is the tsc test in proxy-members.test.ts"
-"proxy_members::proxy_has_the_soft_delete_members_of_its_root" = "change: TS must add the SQL checks;"
 "proxy_members::pyright" = "one-language: Python type test: pyright over the generated proxy models; the TypeScript twin is the tsc test in proxy-members.test.ts"
 # languages/python/tests/test_pull.py
 "pull::a_database_made_by_the_orm_pulls_back_without_differences" = "engine-covered: crates/engine/tests/pull.rs::a_database_made_by_the_orm_pulls_back_without_differences"
@@ -205,7 +151,6 @@
 "pull::bytea_pulls_as_bytes_without_drift" = "one-language: Python-only: runs `python -m monorm pull` on PostgreSQL, the Rust command both hosts share"
 "pull::comments_cannot_escape_the_shadow" = "engine-covered: crates/engine/tests/pull.rs::comments_cannot_escape_the_shadow"
 "pull::drift_after_an_enum_value_recreates_the_columns" = "engine-covered: crates/engine/tests/pull.rs::drift_after_an_enum_value_recreates_the_columns"
-"pull::owned_serials_pull_as_identity_and_shared_sequences_stay_defaults" = "change: TS adds the baseline and pg_attribute checks, Python adds differences == [];"
 "pull::pull_reports_what_it_cannot_write" = "engine-covered: crates/engine/tests/pull.rs::pull_reports_what_it_cannot_write"
 "pull::pull_without_create_writes_the_schema" = "engine-covered: crates/cli/tests/binary.rs::pull_and_baseline_without_create_privilege"
 # languages/python/tests/test_queries.py
@@ -249,13 +194,9 @@
 # languages/python/tests/test_query_hooks.py
 "query_hooks::orm_otel_is_a_member_of_the_package" = "one-language: Python package attribute; TypeScript imports the monorm/otel subpath"
 "query_hooks::postgres_a_cancelled_statement_gives_an_event_with_the_error_cancelled" = "one-language: asyncio cancellation; a JS promise has no cancel"
-"query_hooks::the_n_plus_one_finder_counts_the_traced_sql" = "change: twin query_hooks::the_n_1_finder_counts_the_traced_sql; TS must add the shape.site file:line check;"
 # languages/python/tests/test_reference_loading.py
 # languages/python/tests/test_relation_set_lock_select.py
-"relation_set_lock_select::a_bound_read_and_prefetch_check_the_transaction" = "change: TS already asserts both lines inside the matched a_locked_relation_set_needs_a_transaction;"
 # languages/python/tests/test_schema_expressions.py
-"schema_expressions::native_adoption_survives_registry_ir_and_unrelated_snapshots" = "change: TS adds it."
-"schema_expressions::offline_native_conversion_preserves_live_rules_and_later_migrations" = "change: The TS launcher test checks only the offline rewrite, idempotence and the unchanged snapshot;"
 # languages/python/tests/test_schema_imports.py
 "schema_imports::generated_schema_modules" = "one-language: reason: 'Python-only: per-schema-file facade modules and .pyi stubs'."
 # languages/python/tests/test_selection_defaults.py
@@ -288,7 +229,6 @@
 "sqlite::migration_refuses_unmanaged_objects" = "engine-covered: crates/engine/tests/sqlite.rs::rebuild_refuses_unmanaged_objects"
 "sqlite::migrations_rebuild_preserve_rows_and_sequences" = "engine-covered: crates/engine/tests/sqlite.rs::rebuilds_preserve_cascading_relations_and_autoincrement"
 # languages/python/tests/test_tracking.py
-"tracking::a_stale_instance_write_raises_version_conflict" = "change: TS must add both."
 # languages/python/tests/test_transaction_failures.py
 # languages/python/tests/test_validation_error.py
 "validation_error::a_copy_keeps_the_paths_and_messages" = "one-language: Python pickle protocol; TypeScript has no copy protocol for errors"
@@ -324,62 +264,36 @@
 # languages/js/test/bound-writes.test.ts
 # languages/js/test/chain-alias.test.ts
 # languages/js/test/char-like.test.ts
-"char_like::like_on_a_char_column_compares_the_text_postgres" = "change: twin char_like::like_compares_the_text; TS adds icontains, negated ilike and the `CAST(..."
 # languages/js/test/client-defaults.test.ts
-"client_defaults::client_defaults_make_fields_optional_but_are_not_database_defaults" = "change: TS adds the id IR `client_default` check;"
 # languages/js/test/connections.test.ts
-"connections::a_session_lock_keeps_the_error_of_its_function_when_the_unlock_fails_and_checks_its_options" = "change: Split into two tests with the Python names;"
-"connections::a_to_one_reload_reads_the_primary_on_a_database_with_replicas" = "change: Add the User.posts reload (moved from the load-reload test) and take the Python name."
-"connections::load_reload_reads_the_primary_on_a_database_with_replicas" = "change: both take connections::reload_reads_the_primary_on_a_database_with_replicas."
-"connections::on_commit_after_the_transaction_ended_throws" = "change: Add the TransactionRequired class check and rename to 'onCommit after the transaction ended raises'."
-"connections::replicas_answer_reads_outside_a_transaction_writes_and_transactions_use_the_primary" = "change: Python adds the failed-open check;"
 # languages/js/test/data-migrations.test.ts
-"data_migrations::a_data_step_runs_in_the_migration_s_transaction" = "change: its data.py tail duplicates its checked-before test, so drop it and rename to 'a data step runs in the migration transaction'."
-"data_migrations::npx_monorm_migrate_runs_data_steps" = "change: twin data_migrations::python_m_orm_migrate_runs_data_steps; add the showmigrations [x] check and rename to 'cli migrate runs data steps'."
 # languages/js/test/definition.test.ts
-"definition::definition_prepares_atomically_and_old_models_retain_their_snapshot" = "change: Split into two tests named like the two Python tests;"
 # languages/js/test/driver.test.ts
-"driver::an_unknown_sslmode" = "change: twin driver::unknown_sslmode; Add an `instanceof DatabaseError` check and rename to 'unknown sslmode';"
 # languages/js/test/explain-fetch.test.ts
 # languages/js/test/expressions.test.ts
 "expressions::full_text_search_config_names_a_param_query_and_a_vector_without_a_config" = "change: twin expressions::full_text_search_config_names; Split into three tests named like the Python ones (full_text_search_config_names + 'español' accept"
 "expressions::json_paths_compare_as_json_as_text_as_text" = "change: twin expressions::json_paths; Rename to 'JSON paths compare as JSON and as text' and add the orderBy desc check giving ['c','a','b']."
 # languages/js/test/ext.test.ts
-"ext::a_behavior_value_is_undefined_without_a_record" = "change: twin ext::behavior_value_is_none_without_a_record; Rename to 'a behavior value is absent without a record' (ext::a_behavior_value_is_absent_without_a_record);"
-"ext::the_hard_delete_statement_is_a_delete_of_the_query_set" = "change: Rename to 'the hard-delete statement is a hard delete of the query set' and use a model with a delete rewrite so the test proves the rewrite is off."
 # languages/js/test/extension-discovery.test.ts
 "extension_discovery::a_package_that_only_another_package_depends_on_is_not_an_extension_of_the_project" = "one-language: TypeScript-only: npm discovery reads only the direct dependencies of package.json"
-"extension_discovery::an_installed_outside_library_lowers_the_schema_through_load_loads_and_the_command_line" = "change: Split into four tests named like the Python ones (load and loads;"
-"extension_discovery::an_outside_package_with_a_bundled_id_fails_and_names_the_bundled_copy" = "change: TS must assert the 'uninstall the package `acme-locking`' hint;"
 "extension_discovery::dev_dependencies_and_optional_dependencies_count_and_a_subdirectory_finds_the_project" = "one-language: TypeScript-only: npm dependency kinds and the package.json lookup"
 "extension_discovery::esm_only_and_dual_packages_share_runtime_identity_across_generated_models_load_and_loads" = "one-language: TypeScript-only: ESM, CommonJS and module-sync package formats"
-"extension_discovery::hooks_of_an_outside_library_one_error_prefix_a_caller_value_for_a_hook_4_field_and_the_unbound_native_schema" = "change: Split into three tests with the Python names;"
 "extension_discovery::no_package_json_means_no_extensions" = "one-language: TypeScript-only: npm discovery needs a package.json"
 "extension_discovery::without_a_schema_file_the_project_is_the_one_of_the_working_directory" = "one-language: TypeScript-only: npm discovery starts at the project package.json"
 # languages/js/test/extension-language.test.ts
-"extension_language::the_user_query_set_class_comes_first_then_the_extension_classes" = "change: twin extension_language::user_query_set_comes_first; The Python test takes this name and adds the second extension."
 # languages/js/test/fetch-review.test.ts
 "fetch_review::a_column_named_proto_is_an_own_key_of_the_row" = "one-language: TypeScript-only: a __proto__ column must stay an own key of a JS object"
-"fetch_review::fetch_parameters_of_the_types_bool_float_date_and_list" = "change: Split into the two Python names, and add a Date parameter on SQLite."
 "fetch_review::from_native_keeps_the_stack_frames_and_not_the_lines_of_a_multi_line_message" = "one-language: TypeScript-only: fromNative rebuilds the JS Error stack of a native error"
 "fetch_review::raw_fetch_keeps_proto_as_an_own_key_in_json" = "one-language: TypeScript-only: a __proto__ JSON key must stay an own key of a JS object"
 "fetch_review::raw_fetch_keeps_proto_as_an_own_key_in_json_on_sqlite" = "one-language: TypeScript-only: a __proto__ JSON key must stay an own key of a JS object"
-"fetch_review::sqlite_not_null_and_check_give_a_sqlstate_a_unique_error_has_no_constraint" = "change: The Python test must add constraint None for 23502 and take this name."
 # languages/js/test/field-adapters.test.ts
 # languages/js/test/hooks.test.ts
-"hooks::add_row_decoder_runs_on_every_materialized_instance" = "change: Result ID `hooks::a_decoder_reads_the_loaded_value_and_a_filter_compares_the_stored_value` (both sides checked with normalize and TS_HOLE)."
 # languages/js/test/identities.test.ts
-"identities::a_generic_field_creates_its_pair_its_index_and_the_reverse_field" = "change: TS adds the relations entry and the insert/get round trip."
-"identities::content_type_identity_roundtrip_and_frozen_generation" = "change: add Tag=2 and the objectId 7 read after delete."
 # languages/js/test/inspection.test.ts
 # languages/js/test/load-annotations.test.ts
 # languages/js/test/migrations.test.ts
-"migrations::node_launcher_converts_native_expressions_offline_and_preserves_pending_changes" = "change: b11 pairs it with the Python launcher test, so TS adds the live steps and Python takes an explicit ID] Asserts fmt --native through cli.ts rewrites raw('qty >"
 "migrations::the_cli_against_a_database" = "engine-covered: crates/cli/tests/binary.rs::migrate_showmigrations_and_rollback_print_their_progress"
-"migrations::the_first_migration" = "change: twin migrations::first_migration; add the CREATE INDEX 'books_author_id_idx' assertion that Python has."
-"migrations::the_second_migration_alters_in_place" = "change: twin migrations::second_migration_alters_in_place; it lacks the rest of the up list and the down tail that Python asserts."
 # languages/js/test/model-classes.test.ts
-"model_classes::a_methods_class_may_override_to_string_other_object_members_still_collide" = "change: Rename to 'a methods class may define the display members;"
 "model_classes::a_schema_in_the_package_of_the_output_keeps_relative_paths" = "keep: lookup.rs::typescript_own_schema_in_a_named_package_is_relative_to_the_models_file covers the lookup with an explicit out_dir, but the binding picks out_dir = the schema"
 "model_classes::a_schema_outside_a_package_gives_paths_relative_to_the_models_file" = "keep: lookup.rs::typescript_schema_outside_a_package_is_relative_to_the_models_file covers the lookup with an explicit out_dir, but the relative path depends on the binding's"
 "model_classes::an_installed_package_without_a_name_asks_for_the_full_path" = "engine-covered: crates/core/src/codegen/lookup.rs::tests::typescript_package_without_a_name_explicit_targets_need_no_lookup"
@@ -392,12 +306,9 @@
 "n_plus_one::expect_no_nplus_one_is_the_test_helper" = "one-language: TypeScript-only: the debug.expectNoNPlusOne test helper; Python has the n_plus_one pytest fixture"
 "n_plus_one::nested_scopes_count_in_the_outer_scope_update_many_counts_a_changed_related_set_names_no_fix" = "change: the Python test takes this name."
 # languages/js/test/native-codegen.test.ts
-"native_codegen::native_generation_accepts_query_set_maps_and_matches_the_cli" = "change: twin native_codegen::generate_python_query_sets; The Python test takes this name and adds the error asserts."
 "native_codegen::native_generation_accepts_subpath_imports_and_dollar_export_names" = "engine-covered: crates/core/src/codegen/mod.rs::reference_tests::typescript_query_sets_accept_subpaths_and_dollar_exports"
 # languages/js/test/nested-decode.test.ts
-"nested_decode::select_of_a_list_leaf_postgres" = "change: the twin test is one looped or wrapper test; split it to match the names nested_decode::select_of_a_list_leaf_on_json_storage"
 # languages/js/test/nested.test.ts
-"nested::nested_value_classes_are_immutable_and_equal_by_value" = "change: twin nested::value_classes_are_immutable_equal_and_picklable; Rename to `value classes are immutable and equal by value (${kind})`;"
 # languages/js/test/null-strict.test.ts
 # languages/js/test/on-conflict-index.test.ts
 "on_conflict_index::model_indexes_offers_the_unique_indexes" = "change: twin writes::model_indexes_offer_the_unique_indexes; TS add `.name`;"
@@ -405,24 +316,13 @@
 "on_conflict_index::on_conflict_index_picks_a_partial_index" = "change: twin writes::on_conflict_index_picks_a_partial_index; TS runs on SQLite and PostgreSQL, Python only on PostgreSQL: parametrize the `notes` fixture over both"
 "on_conflict_index::on_conflict_index_takes_a_boolean_column_and_a_list_of_one" = "change: twin writes::on_conflict_index_with_a_boolean_column; Python runs only on PostgreSQL (TS both);"
 # languages/js/test/pagination.test.ts
-"pagination::a_char_order_column_postgres" = "change: twin pagination::a_char_order_column; Python must add the -k walk and take this name."
 "pagination::a_date_order_column_past_year_9999_postgres" = "one-language: TypeScript-only: a JS Date passes year 9999; Python's datetime stops at 9999"
-"pagination::microsecond_date_time_cursors_and_reading_back" = "change: Split into the two Python names and add the walk by (name, -at)."
-"pagination::non_finite_float_order_values_postgres" = "change: twin pagination::non_finite_float_order_values; It matches the Python test after the Python Decimal part moves out and the Python test takes this name."
-"pagination::page_shape_related_rows_and_new_rows" = "change: Split into the two Python names."
 # languages/js/test/partition.test.ts
-"partition::partition_routes_inserts_and_validates_row_moves" = "change: Add `IntegrityError` to both rejects;"
-"partition::proxy_partition_fills_its_key_and_keeps_its_predicate_without_defaults" = "change: Add the duplicate `content_hash` reject, a root PRICE insert with root row type, the EXPLAIN pruning check, the unchanged fixed row, a copy insert, and"
 # languages/js/test/protected-write.test.ts
-"protected_write::the_check_is_on_the_model_the_sql_writes_scopes_nest_lazy_writes_read_the_scope_at_await" = "change: Split into three TS tests named as PY the_check_is_on_the_model_the_sql_writes, a_package_check_before_its_own_io_also_checks_protection, and the shared"
 # languages/js/test/proxy-members.test.ts
-"proxy_members::a_proxy_gets_the_soft_delete_members_at_run_time_through_the_record_of_the_extension" = "change: Add the SQL checks (default filter, allWithDeleted, deletedOnly IS NOT NULL);"
 "proxy_members::a_proxy_has_the_soft_delete_members_and_the_query_set_class_of_its_root" = "one-language: TypeScript type test: tsc over the generated proxy models; the Python twins are proxy_members::mypy and ::pyright"
-"proxy_members::an_inherited_query_set_method_returns_rows_of_the_proxy_at_run_time" = "change: Python must add this database run;"
 # languages/js/test/proxy.test.ts
-"proxy::proxy_rows_client_defaults_writes_and_relation_targets" = "change: Add the shape-warning, field-metadata, relation row type and proxy-delete checks;"
 # languages/js/test/pull.test.ts
-"pull::owned_serials_read_as_identity_a_shared_sequence_stays_a_raw_default" = "change: Add the s_empty table, the autoincrement count of 2, baseline with an empty plan and the pg_attribute check;"
 # languages/js/test/queries.test.ts
 "queries::a_bound_set_locks_the_row_of_an_object" = "change: twin queries::bound_lock_replaces_refresh_lock; Python adds plain `lock()` on a deleted row gives `[]`;"
 "queries::aggregates_over_to_one_paths_join_at_the_root" = "change: TS adds the grouped and two-hop cases and drops the sum."
@@ -457,13 +357,12 @@
 "query_features::reading_rows_from_a_cte" = "change: twin query_features::cte_from_filters_window; TS adds the instance check (Post with authorId);"
 "query_features::scalar_subqueries" = "change: twin query_features::scalar_subquery; TS adds `scalarCorrelated: 1` inspection;"
 # languages/js/test/query-hooks.test.ts
-"query_hooks::the_n_1_finder_counts_the_traced_sql" = "change: Must add the shape.site check;"
 # languages/js/test/reference-loading.test.ts
 # languages/js/test/required-queries.test.ts
 # languages/js/test/rows.test.ts
 "rows::packed_null_columns_and_nested_arrays_decode_once_per_row_set" = "one-language: TypeScript-only: the JS decoder of the packed row buffer (src/rows.ts)"
 # languages/js/test/select-reads.test.ts
-"select_reads::a_bound_join_count_and_exists_apply_the_one_row_per_object_rule" = "change: Needs explicit ID: split the TS test into two in load-annotations.test.ts with the two Python names, or `// case:` comments."
+"select_reads::a_bound_join_count_and_exists_apply_the_one_row_per_object_rule" = "duplicate: Python covers it in test_load_annotations.py (a_bound_join_that_matches_twice_raises_on_count_and_exists_too and a_bound_join_counts_each_object_once); the load_annotations entries own that pair."
 # languages/js/test/selection-defaults.test.ts
 "selection_defaults::a_default_annotation_stays_an_instance_read" = "change: Add a prototype check and an explicit `load(func.count(...).label('bookCount'))`;"
 "selection_defaults::schema_default_order" = "change: twin selection_defaults::default_order; TS adds at(1)/at(-1), the `filter().withoutDefaults()` SQL check, exists(), a `from(cte)` read and filtered"
@@ -484,7 +383,6 @@
 "sqlite::relation_comparison_rejects_null_prototype_objects_clearly" = "duplicate: kept test queries::relation_comparison_rejects_null_prototype_objects_clearly"
 "sqlite::sqlite_related_lazy_inserts_join_the_transaction_at_await" = "keep: The kept writes.test.ts test asserts the same on Postgres plus an m2m tags insert;"
 # languages/js/test/tracking.test.ts
-"tracking::a_stale_instance_write_throws_version_conflict" = "change: Must add first.title and stored title 'b' checks;"
 # languages/js/test/transaction-failures.test.ts
 # languages/js/test/values.test.ts
 # languages/js/test/writes.test.ts
