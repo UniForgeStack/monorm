@@ -721,3 +721,115 @@ fn admin_init_edits_the_first_settings_file_and_keeps_its_content() {
     let edited = std::fs::read_to_string(package.join("package.json")).unwrap();
     assert_eq!(edited, "{\n  \"name\": \"x\",\n  \"monorm\": {\n    \"admin\": {\"app\": \"./admin.ts:admin\"},\n    \"migrations\": \"db\"\n  },\n  \"type\": \"module\"\n}\n");
 }
+
+fn scratch(label: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("monorm-cli-{label}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn generate_reads_query_sets_from_the_project_config() {
+    let dir = scratch("query-sets-config");
+    std::fs::write(dir.join("schema.prisma"), "model Book {\n id Int @id\n}\n").unwrap();
+    std::fs::write(dir.join("pyproject.toml"), "[tool.monorm.query_sets]\nBook = \"app.queries:BookQueries\"\n").unwrap();
+    let done = monorm(&dir, &["generate", "python", "-o", "models.py"]);
+    assert!(done.status.success(), "{}", text(&done.stderr));
+    assert!(std::fs::read_to_string(dir.join("models.py")).unwrap().contains("use_query_set(Book, \"app.queries:BookQueries\")"));
+    assert!(std::fs::read_to_string(dir.join("models.pyi")).unwrap().contains("objects: ClassVar[_BookObjects]"));
+    let bad = monorm(&dir, &["generate", "python", "-o", "models.py", "--query-set", "Book=nomodule"]);
+    assert_eq!(bad.status.code(), Some(1));
+    assert!(text(&bad.stderr).contains("expected module:Class"), "{}", text(&bad.stderr));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn duplicate_query_set_flags_fail_before_writing() {
+    let dir = scratch("query-sets-duplicate");
+    std::fs::write(dir.join("schema.prisma"), "model Book {\n id Int @id\n}\n").unwrap();
+    let out = monorm(&dir, &["generate", "python", "-o", "models.py", "--query-set", "Book=a:B", "--query-set", "Book=c:D"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(text(&out.stderr).contains("duplicate --query-set for model Book"), "{}", text(&out.stderr));
+    assert!(!dir.join("models.py").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_query_set_flag_overrides_the_project_config() {
+    let dir = scratch("query-sets-flag");
+    std::fs::write(dir.join("schema.prisma"), "model Book {\n id Int @id\n}\n").unwrap();
+    std::fs::write(dir.join("pyproject.toml"), "[tool.monorm.query_sets]\nBook = \"app.queries:BookQueries\"\n").unwrap();
+    let done = monorm(&dir, &["generate", "python", "-o", "models.py", "--query-set", "Book=other:Queries"]);
+    assert!(done.status.success(), "{}", text(&done.stderr));
+    assert!(std::fs::read_to_string(dir.join("models.py")).unwrap().contains("use_query_set(Book, \"other:Queries\")"));
+    assert!(std::fs::read_to_string(dir.join("models.pyi")).unwrap().contains("from other import Queries as _BookObjects"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn migrate_showmigrations_and_rollback_print_their_progress() {
+    let dir = scratch("progress");
+    let url = format!("sqlite://{}", dir.join("live.db").display());
+    std::fs::write(dir.join("schema.prisma"), format!("datasource db {{\n  provider = \"sqlite\"\n}}\n\n{SCHEMA}")).unwrap();
+    let run = |args: &[&str]| monorm(&dir, &[&["--url", url.as_str()][..], args].concat());
+    let made = run(&["makemigrations"]);
+    assert!(made.status.success(), "{}", text(&made.stderr));
+    let migrate = run(&["migrate"]);
+    assert_eq!((migrate.status.code(), text(&migrate.stdout), text(&migrate.stderr)), (Some(0), "Applied 0001_initial\n".to_string(), String::new()));
+    let shown = text(&run(&["showmigrations"]).stdout);
+    assert!(shown.starts_with("[x] 0001_initial  ("), "{shown}");
+    assert_eq!(text(&run(&["migrate"]).stdout), "Nothing to apply.\n");
+    let back = run(&["rollback", "--to", "zero"]);
+    assert_eq!((back.status.code(), text(&back.stdout), text(&back.stderr)), (Some(0), "Reverted 0001_initial\n".to_string(), String::new()));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn pull_and_baseline_without_create_privilege() {
+    let Ok(url) = std::env::var("ORM_RUST_TEST_POSTGRES_URL") else { return };
+    let Some((base, name)) = url.split('?').next().unwrap().rsplit_once('/') else { return };
+    let (admin_url, name) = (format!("{base}/postgres"), format!("{name}_cli_pull"));
+    let host = base.rsplit_once('@').map_or(base, |(_, h)| h).trim_start_matches("postgres://");
+    let (db_url, role) = (format!("{base}/{name}"), format!("monorm_pull_reader_{name}"));
+    let reader_url = format!("postgres://{role}:r@{host}/{name}");
+    let dir = scratch("pull-no-create");
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let admin = monorm_engine::db::connect(&admin_url, 1).await.unwrap();
+        if admin.query_text(format!("SELECT 1 FROM pg_database WHERE datname = '{name}'")).await.unwrap().is_empty() {
+            admin.batch(format!("CREATE DATABASE \"{name}\"")).await.unwrap();
+        }
+        let db = monorm_engine::db::connect(&db_url, 1).await.unwrap();
+        db.batch(format!(
+            "DROP SCHEMA public CASCADE; CREATE SCHEMA public; CREATE TABLE t (id bigint PRIMARY KEY);\
+             DROP ROLE IF EXISTS {role}; CREATE ROLE {role} LOGIN PASSWORD 'r';\
+             REVOKE CREATE ON DATABASE \"{name}\" FROM PUBLIC; GRANT USAGE ON SCHEMA public TO {role};\
+             GRANT SELECT ON ALL TABLES IN SCHEMA public TO {role}"
+        )).await.unwrap();
+    });
+    let run = |args: &[&str]| monorm(&dir, &[&["--url", reader_url.as_str()][..], args].concat());
+    let pulled = run(&["pull"]);
+    let cleanup = || runtime.block_on(async {
+        let db = monorm_engine::db::connect(&db_url, 1).await.unwrap();
+        db.batch(format!("GRANT CREATE ON DATABASE \"{name}\" TO PUBLIC; DROP TABLE IF EXISTS monorm_migrations; DROP OWNED BY {role}; DROP ROLE {role}")).await.unwrap();
+    });
+    let outcome = std::panic::catch_unwind(|| {
+        assert!(pulled.status.success(), "{}", text(&pulled.stderr));
+        let schema = std::fs::read_to_string(dir.join("schema.prisma")).unwrap();
+        assert!(schema.contains("model T {"), "{schema}");
+        assert!(text(&pulled.stdout).contains("the schema was not checked against the database"), "{}", text(&pulled.stdout));
+    });
+    if let Err(panic) = outcome { cleanup(); std::panic::resume_unwind(panic) }
+    // baseline marks the migration; a drift check it cannot run is a warning
+    runtime.block_on(async {
+        let db = monorm_engine::db::connect(&db_url, 1).await.unwrap();
+        db.batch(format!("GRANT CREATE ON SCHEMA public TO {role}")).await.unwrap();
+    });
+    let baseline = run(&["--schema", "schema.prisma", "--dir", "migrations", "baseline"]);
+    let (code, stdout, stderr) = (baseline.status.code(), text(&baseline.stdout), text(&baseline.stderr));
+    cleanup();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(code, Some(0), "{stderr}");
+    assert!(stdout.contains("warning: the database was not compared with 0001_initial"), "{stdout}");
+}

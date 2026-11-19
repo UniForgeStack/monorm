@@ -265,7 +265,7 @@
 "pull::drift_after_an_enum_value_recreates_the_columns" = "engine-covered: crates/engine/tests/pull.rs::drift_after_an_enum_value_recreates_the_columns"
 "pull::owned_serials_pull_as_identity_and_shared_sequences_stay_defaults" = "change: TS adds the baseline and pg_attribute checks, Python adds differences == [];"
 "pull::pull_reports_what_it_cannot_write" = "engine-covered: crates/engine/tests/pull.rs::pull_reports_what_it_cannot_write"
-"pull::pull_without_create_writes_the_schema" = "move-to-engine: crates/cli/tests/binary.rs::pull_and_baseline_without_create_privilege"
+"pull::pull_without_create_writes_the_schema" = "engine-covered: crates/cli/tests/binary.rs::pull_and_baseline_without_create_privilege"
 # languages/python/tests/test_queries.py
 "queries::bound_lock_replaces_refresh_lock" = "change: twin queries::a_bound_set_locks_the_row_of_an_object; Python adds ValueError on `nowait`+`skip_locked` and `load(reload=True) is alice`;"
 "queries::instances_are_read_only" = "one-language: Python runtime guard; TypeScript checks read-only instances in"
@@ -283,9 +283,9 @@
 "query_api::bound_load_reads_keys_from_the_instances" = "change: The first half of the TS test asserts exactly this: split it into `test('bound load reads keys from the instances')`, which normalizes to this ID."
 "query_api::bound_load_rejects_a_model_subclass" = "one-language: Python-only: a Model subclass with its own registry"
 "query_api::bound_load_to_one_and_many_to_many" = "change: The second half of the TS test loads only `Post.tags`: split it into `test('bound load to-one and many-to-many')` and add the `Post.author` load, the"
-"query_api::cli_query_set_flag_overrides_config" = "move-to-engine: crates/cli/tests/binary.rs::a_query_set_flag_overrides_the_project_config"
-"query_api::cli_reads_query_sets_from_pyproject" = "move-to-engine: crates/cli/tests/binary.rs::generate_reads_query_sets_from_the_project_config"
-"query_api::cli_rejects_duplicate_query_set_flags" = "move-to-engine: crates/cli/tests/binary.rs::duplicate_query_set_flags_fail_before_writing"
+"query_api::cli_query_set_flag_overrides_config" = "engine-covered: crates/cli/tests/binary.rs::a_query_set_flag_overrides_the_project_config"
+"query_api::cli_reads_query_sets_from_pyproject" = "engine-covered: crates/cli/tests/binary.rs::generate_reads_query_sets_from_the_project_config"
+"query_api::cli_rejects_duplicate_query_set_flags" = "engine-covered: crates/cli/tests/binary.rs::duplicate_query_set_flags_fail_before_writing"
 "query_api::describe_array_python_type_is_list" = "one-language: Python-only describe() key: python_type"
 "query_api::describe_optional_belongs_to_is_nullable" = "change: Python adds `relations['post']['nullable'] is False` and renames to `test_describe_marks_an_optional_belongs_to_nullable`."
 "query_api::describe_reports_client_default" = "change: twin query_api::describe_reports_a_client_default; Python adds `fields['n']['insert'] is True` and renames to `test_describe_reports_a_client_default`."
@@ -544,7 +544,7 @@
 "load_annotations::load_takes_any_labeled_expression_of_the_row" = "change: twin load_annotations::load_takes_a_labeled_expression; TS must add a second label on a plain column (`Post.id.label('sameId')`) and assert that `body` is"
 # languages/js/test/migrations.test.ts
 "migrations::node_launcher_converts_native_expressions_offline_and_preserves_pending_changes" = "change: b11 pairs it with the Python launcher test, so TS adds the live steps and Python takes an explicit ID] Asserts fmt --native through cli.ts rewrites raw('qty >"
-"migrations::the_cli_against_a_database" = "move-to-engine: crates/cli/tests/binary.rs::migrate_showmigrations_and_rollback_print_their_progress"
+"migrations::the_cli_against_a_database" = "engine-covered: crates/cli/tests/binary.rs::migrate_showmigrations_and_rollback_print_their_progress"
 "migrations::the_first_migration" = "change: twin migrations::first_migration; add the CREATE INDEX 'books_author_id_idx' assertion that Python has."
 "migrations::the_second_migration_alters_in_place" = "change: twin migrations::second_migration_alters_in_place; it lacks the rest of the up list and the down tail that Python asserts."
 # languages/js/test/model-classes.test.ts
