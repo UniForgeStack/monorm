@@ -37,6 +37,16 @@ async function seed() {
   return { alice, bob, carol, posts };
 }
 
+async function withEvents<T>(run: (events: unknown[]) => Promise<T>): Promise<T> {
+  const events: unknown[] = [];
+  const stop = getDatabase().onQuery((e) => events.push(e));
+  try {
+    return await run(events);
+  } finally {
+    stop();
+  }
+}
+
 const byTitle = <T extends { title: string }>(xs: T[]) => [...xs].sort((a, b) => a.title.localeCompare(b.title));
 
 // -- inBulk -------------------------------------------------------------------------------------
@@ -59,13 +69,17 @@ test("inBulk", async () => {
 test("exists() expressions", async () => {
   await seed();
   const popular = exists(Post.objects.filter(Post.authorId.eq(outer(User.id)), Post.views.gte(50)));
-  assert.deepEqual((await User.objects.filter(popular).orderBy(User.id).all()).map((u) => u.name), ["Alice", "Bob"]);
+  const query = User.objects.filter(popular);
+  assert.deepStrictEqual(query.inspect().statements[0], statementInspection({ setCorrelated: 1 }));
+  assert.deepEqual((await query.orderBy(User.id).all()).map((u) => u.name), ["Alice", "Bob"]);
   assert.deepEqual((await User.objects.filter(popular.not()).all()).map((u) => u.name), ["Carol"]);
   // In select(): a boolean per row.
   const rows = await User.objects.select({ name: User.name, popular }).orderBy(User.name).all();
   assert.deepEqual(rows, [{ name: "Alice", popular: true }, { name: "Bob", popular: true }, { name: "Carol", popular: false }]);
   // Uncorrelated.
-  assert.equal((await User.objects.filter(exists(Post.objects.filter(Post.views.gt(1000)))).all()).length, 0);
+  const none = User.objects.filter(exists(Post.objects.filter(Post.views.gt(1000))));
+  assert.deepStrictEqual(none.inspect().statements[0], statementInspection({ setUncorrelated: 1 }));
+  assert.equal((await none.all()).length, 0);
   // A select() with groupBy / having.
   const many = exists(
     Post.objects.filter(Post.authorId.eq(outer(User.id))).select({ a: Post.authorId }).groupBy(Post.authorId).having(func.count().gt(2)),
@@ -76,7 +90,9 @@ test("exists() expressions", async () => {
 test("scalar subqueries", async () => {
   const { alice } = await seed();
   const latest = Post.objects.filter(Post.authorId.eq(outer(User.id))).orderBy(Post.createdAt.desc()).select({ title: Post.title }).limit(1).asScalar();
-  const rows = await User.objects.select({ user: User, latest }).orderBy(User.id).all();
+  const query = User.objects.select({ user: User, latest }).orderBy(User.id);
+  assert.deepStrictEqual(query.inspect(), { statementCount: 1, hasBatching: false, statements: [statementInspection({ scalarCorrelated: 1 })] });
+  const rows = await query.all();
   assert.deepEqual(rows.map((r) => [r.user.name, r.latest]), [["Alice", "a3"], ["Bob", "b1"], ["Carol", null]]);
   assert.equal(rows[0]!.user.id, alice.id);
   // In filters and ordering.
@@ -91,7 +107,9 @@ test("scalar subqueries", async () => {
 test("a scalar subquery in an update", async () => {
   await seed();
   const nComments = Comment.objects.filter(Comment.postId.eq(outer(Post.id))).select({ n: func.count() }).asScalar();
-  await Post.objects.all().update({ views: nComments });
+  const statement = Post.objects.all().update({ views: nComments });
+  assert.deepStrictEqual(statement.inspect(), { statementCount: 1, hasBatching: false, statements: [statementInspection({ scalarCorrelated: 1 })] });
+  await statement;
   const views = Object.fromEntries((await Post.objects.all()).map((p) => [p.title, p.views]));
   assert.deepEqual(views, { a1: 0, a2: 2, a3: 0, b1: 1 });
 });
@@ -156,9 +174,17 @@ test("CASE expressions", async () => {
   }).groupBy(Post.authorId).all();
   assert.deepEqual(counts, [{ a: alice.id, hot: 1n, rest: 25n }, { a: bob.id, hot: 1n, rest: 0n }]);
   assert.equal(await Post.objects.filter(heat.eq("hot")).count(), 2);
+  const byHeat = await Post.objects.orderBy(func.case([Post.views.gte(50), 0], { default: 1 }), Post.title).select({ t: Post.title }).scalars();
+  assert.deepEqual(byHeat, ["a2", "b1", "a1", "a3"]);
+  // annotate: the model with a computed column
+  const users = await User.objects.orderBy(User.id).select({ user: User, n: func.case([func.count(User.posts).gt(1), "many"], { default: "few" }) }).all();
+  assert.deepEqual(users.map((u) => [u.user.name, u.n]), [["Alice", "many"], ["Bob", "few"], ["Carol", "few"]]);
+  // in an update, values bind with the field's type
   await Post.objects.all().update({ views: func.case([Post.views.gte(50), Post.views.sub(50)], [Post.title.eq("a1"), 1], { default: Post.views }) });
   const views = Object.fromEntries((await Post.objects.all()).map((p) => [p.title, p.views]));
   assert.deepEqual(views, { a1: 1, a2: 0, a3: 20, b1: 50 });
+  // a float among integer values makes the case a float
+  assert.equal(await Post.objects.filter(Post.title.eq("a1")).select({ v: func.case([Post.published, 1], { default: 0.5 }) }).scalar(), 0.5);
 });
 
 test("aggregate FILTER", async () => {
@@ -341,6 +367,7 @@ test("reading rows from a CTE", async () => {
   const ranked = Post.objects.select({ post: Post, rank }).cte("ranked");
   let top = await Post.objects.from(ranked).filter(ranked.c.rank.lte(2)).orderBy(Post.title).all();
   assert.deepEqual(top.map((p) => p.title), ["a2", "a3", "b1"]);
+  assert.ok(top[0]!.authorId != null); // a Post row, with its foreign key
   // Relation filters, joined and prefetched loads still work on rows read from a CTE.
   const withAuthor = await Post.objects.from(ranked).filter(ranked.c.rank.eq(1), Post.author.name.eq("Alice")).load(Post.author).all();
   assert.deepEqual(withAuthor.map((p) => [p.title, p.author.name]), [["a2", "Alice"]]);
@@ -442,7 +469,14 @@ test("filtered prefetch", async () => {
 test("a sliced prefetch is per parent", async () => {
   await seed();
   const top = User.posts.objects.orderBy(Post.views.desc()).load(Post.comments).limit(2);
-  const users = await User.objects.load(top.label("top")).orderBy(User.id).all();
+  const query = User.objects.load(top.label("top")).orderBy(User.id);
+  // Per-parent slicing uses one windowed subquery, not a query for each user.
+  assert.deepStrictEqual(query.inspect(), {
+    statementCount: 3,
+    hasBatching: true,
+    statements: [statementInspection(), statementInspection({ hasBatching: true, derivedUncorrelated: 1 }), statementInspection({ hasBatching: true })],
+  });
+  const users = await withEvents((events) => query.all().then((r) => { assert.equal(events.length, 3); return r; }));
   assert.deepEqual(users.map((u) => u.top.map((p) => p.title)), [["a2", "a3"], ["b1"], []]);
   assert.deepEqual(users[0]!.top.map((p) => p.comments.cached.length), [2, 0]);
   const second = User.posts.objects.orderBy(Post.createdAt, Post.author.name).slice(1, 2);
@@ -452,13 +486,19 @@ test("a sliced prefetch is per parent", async () => {
 
 test("a relation query set with joins and a nested query set", async () => {
   await seed();
-  const users = await User.objects
+  const query = User.objects
     .load(
       User.comments.objects.load(Comment.post.author),
       User.posts.objects.load(Post.comments.objects.filter(Comment.authorId.isNull())),
     )
-    .orderBy(User.id)
-    .all();
+    .orderBy(User.id);
+  const batched = statementInspection({ hasBatching: true });
+  assert.deepStrictEqual(query.inspect(), {
+    statementCount: 4,
+    hasBatching: true,
+    statements: [statementInspection(), statementInspection({ hasBatching: true, joinsCount: 2 }), batched, batched],
+  });
+  const users = await withEvents((events) => query.all().then((r) => { assert.equal(events.length, 4); return r; }));
   assert.deepEqual(users[1]!.comments.cached.map((x) => [x.post.title, x.post.author.name]), [["a2", "Alice"]]);
   assert.deepEqual(users[0]!.posts.cached.map((p) => p.comments.cached.map((x) => x.body)), [[], ["c2"], []]);
 });
@@ -488,17 +528,24 @@ test("instances get their database", async () => {
 test("a prefetch query reading a CTE", async () => {
   await seed();
   const best = Post.objects.select({ id: Post.id }).filter(Post.views.gte(50)).cte("best");
-  const users = await User.objects
+  const query = User.objects
     .load(User.posts.objects.filter(Post.id.in(best.select({ id: best.c.id }))).label("best"))
-    .orderBy(User.id)
-    .all();
+    .orderBy(User.id);
+  assert.deepStrictEqual(query.inspect(), {
+    statementCount: 2,
+    hasBatching: true,
+    statements: [statementInspection(), statementInspection({ hasBatching: true, setUncorrelated: 1, cteCount: 1 })],
+  });
+  const users = await withEvents((events) => query.all().then((r) => { assert.equal(events.length, 2); return r; }));
   assert.deepEqual(users.map((u) => u.best.map((p) => p.title)), [["a2"], ["b1"], []]);
 });
 
 test("a correlated in() subquery", async () => {
   await seed();
   const commented = Comment.objects.filter(Comment.authorId.eq(outer(User.id))).select({ p: Comment.postId });
-  const rows = await User.objects.filter(exists(Post.objects.filter(Post.id.in(commented)))).orderBy(User.id).all();
+  const query = User.objects.filter(exists(Post.objects.filter(Post.id.in(commented)))).orderBy(User.id);
+  assert.deepStrictEqual(query.inspect(), { statementCount: 1, hasBatching: false, statements: [statementInspection({ setCorrelated: 2 })] });
+  const rows = await query.all();
   assert.deepEqual(rows.map((u) => u.name), ["Alice", "Bob"]);
 });
 
@@ -666,7 +713,8 @@ test("load refuses columns beside a set that changes its rows", () => {
   ];
   for (const qs of changes) for (const col of [User.posts.title, User.posts.comments.body]) {
     assert.throws(() => User.objects.load(col, qs), /\.load\(\).*label\(\)/);
-    assert.throws(() => User.objects.load(qs, col), /label\(\)/);
+    assert.throws(() => User.objects.load(qs, col), /\.load\(\).*label\(\)/);
+    assert.throws(() => User.objects.load(col).load(qs), /label\(\)/);
     assert.throws(() => User.objects.load(qs).load(col), /label\(\)/);
     User.objects.load(col, qs.label("chosen"));
     User.objects.load(qs.load(Post.title));
@@ -679,6 +727,8 @@ test("a plain, reset or labeled set beside a column keeps its meaning", async ()
     const users = await User.objects.load(qs, User.posts.views).orderBy(User.id);
     assert.equal(users[0]!.posts.cached[0]!.body, "");
   }
+  const bare = await User.objects.load(User.posts, User.posts.views).orderBy(User.id);
+  assert.equal(bare[0]!.posts.cached[0]!.body, "");
   const users = await User.objects.load(User.posts.objects.filter(Post.views.gt(10)).label("hot"), User.posts.views).orderBy(User.id);
   assert.equal((users[0] as unknown as { hot: { views: number }[] }).hot[0]!.views, 50);
 });
@@ -710,6 +760,7 @@ test("load combines plain paths and sets; withoutRelated keeps IN loads and root
   assert.deepEqual(posts.map((p) => p.title), ["a1", "a2", "a3", "b1"]);
   assert.deepEqual(posts.map((p) => p.comments.cached.length), [0, 2, 0, 1]);
   assert.throws(() => posts[0]!.author, NotLoaded);
+  assert.throws(() => (posts[0] as unknown as { body: string }).body, NotLoaded);
   // A rejected standalone run doesn't change the bound set or its nested loads.
   const bound = User.posts.objects.load(Post.comments);
   // @ts-expect-error bound query sets cannot be awaited directly

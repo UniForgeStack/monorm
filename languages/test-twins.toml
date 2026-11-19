@@ -169,18 +169,6 @@
 "query_api::one_row_repr" = "one-language: Python-only: __repr__ text"
 # languages/python/tests/test_query_features.py
 "query_features::array_agg_errors" = "engine-covered: crates/engine/tests/functions.rs::array_agg_plan_errors"
-"query_features::case_expression" = "change: twin query_features::case_expressions; TS adds the order_by, the model-with-CASE annotate and the float case."
-"query_features::correlated_in_subquery" = "change: twin query_features::a_correlated_in_subquery; TS checks only the names: TS adds the statementInspection check."
-"query_features::cte_from_filters_window" = "change: twin query_features::reading_rows_from_a_cte; TS adds the instance check;"
-"query_features::exists_expression" = "change: twin query_features::exists_expressions; TS adds the two inspection checks."
-"query_features::load_plain_path_and_query_and_without_related" = "change: TS lacks the NotLoaded on `body`: TS adds it."
-"query_features::load_row_changing_set_refuses_columns" = "change: TS checks the strict message only for (col, qs) and lacks `load(col).load(qs)`: TS adds both."
-"query_features::load_set_and_column_guards" = "change: TS lacks the bare path `load(User.posts, User.posts.views)` case: TS adds it."
-"query_features::prefetch_query_reading_a_cte" = "change: twin query_features::a_prefetch_query_reading_a_cte; TS adds the inspection and the event count."
-"query_features::relation_query_set_with_joins_and_nested_query_set" = "change: TS adds the inspection and the event count."
-"query_features::scalar_subquery" = "change: twin query_features::scalar_subqueries; TS adds the inspection check."
-"query_features::scalar_subquery_in_update" = "change: twin query_features::a_scalar_subquery_in_an_update; TS adds the inspection check."
-"query_features::sliced_prefetch_is_per_parent" = "change: twin query_features::a_sliced_prefetch_is_per_parent; TS adds the inspection and the event count."
 # languages/python/tests/test_query_hooks.py
 "query_hooks::orm_otel_is_a_member_of_the_package" = "one-language: Python package attribute; TypeScript imports the monorm/otel subpath"
 "query_hooks::postgres_a_cancelled_statement_gives_an_event_with_the_error_cancelled" = "one-language: asyncio cancellation; a JS promise has no cancel"
@@ -313,18 +301,6 @@
 # languages/js/test/query-api.test.ts
 # languages/js/test/query-features.test.ts
 "query_features::a_case_of_plain_integers_decodes_as_number" = "one-language: TypeScript-only: an integer CASE decodes as number, not bigint"
-"query_features::a_correlated_in_subquery" = "change: twin query_features::correlated_in_subquery; TS adds `statementInspection({ setCorrelated: 2 })`;"
-"query_features::a_plain_reset_or_labeled_set_beside_a_column_keeps_its_meaning" = "change: twin query_features::load_set_and_column_guards; TS adds the bare path `load(User.posts, User.posts.views)` case;"
-"query_features::a_prefetch_query_reading_a_cte" = "change: twin query_features::prefetch_query_reading_a_cte; TS adds the inspection (2 statements, cte_count 1) and an onQuery count of 2."
-"query_features::a_relation_query_set_with_joins_and_a_nested_query_set" = "change: TS adds the 4-statement inspection (joinsCount 2) and an onQuery count of 4."
-"query_features::a_scalar_subquery_in_an_update" = "change: twin query_features::scalar_subquery_in_update; TS adds `scalarCorrelated: 1` inspection of the update."
-"query_features::a_sliced_prefetch_is_per_parent" = "change: twin query_features::sliced_prefetch_is_per_parent; TS adds the 3-statement inspection (derivedUncorrelated 1) and an onQuery count of 3."
-"query_features::case_expressions" = "change: twin query_features::case_expression; TS adds order_by CASE, select of User with a CASE over count, and the float 0.5 case;"
-"query_features::exists_expressions" = "change: twin query_features::exists_expression; TS adds `setCorrelated: 1` and `setUncorrelated: 1` inspection checks."
-"query_features::load_combines_plain_paths_and_sets_without_related_keeps_in_loads_and_root_fields" = "change: TS adds NotLoaded on `posts[0].body`;"
-"query_features::load_refuses_columns_beside_a_set_that_changes_its_rows" = "change: twin query_features::load_row_changing_set_refuses_columns; TS adds `load(col).load(qs)` and the strict message for (qs, col);"
-"query_features::reading_rows_from_a_cte" = "change: twin query_features::cte_from_filters_window; TS adds the instance check (Post with authorId);"
-"query_features::scalar_subqueries" = "change: twin query_features::scalar_subquery; TS adds `scalarCorrelated: 1` inspection;"
 # languages/js/test/query-hooks.test.ts
 # languages/js/test/reference-loading.test.ts
 # languages/js/test/required-queries.test.ts

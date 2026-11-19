@@ -71,6 +71,7 @@ async def test_in_bulk_chunks(clean, monkeypatch, observe_queries):
 # -- exists() and scalar subqueries ------------------------------------------------------
 
 
+@pytest.mark.case("exists_expressions")
 async def test_exists_expression(clean):
     (alice, bob, carol), _ = await seed()
     popular = exists(Post.objects.filter(Post.author_id == outer(User.id), Post.views >= 50))
@@ -95,6 +96,7 @@ async def test_exists_expression(clean):
     assert [u.name for u in await User.objects.filter(many)] == ["Alice"]
 
 
+@pytest.mark.case("scalar_subqueries")
 async def test_scalar_subquery(clean):
     (alice, bob, carol), _ = await seed()
     latest = (
@@ -117,6 +119,7 @@ async def test_scalar_subquery(clean):
     assert sorted(p.title for p in await Post.objects.filter(Post.views > avg)) == ["a2"]
 
 
+@pytest.mark.case("a_scalar_subquery_in_an_update")
 async def test_scalar_subquery_in_update(clean):
     (alice, bob, carol), _ = await seed()
     n_comments = Comment.objects.filter(Comment.post_id == outer(Post.id)).select(func.count()).as_scalar()
@@ -216,6 +219,7 @@ async def test_case_value_types(clean):
     )
 
 
+@pytest.mark.case("case_expressions")
 async def test_case_expression(clean):
     (alice, bob, carol), _ = await seed()
     heat = func.case((Post.views >= 50, "hot"), (Post.views >= 20, "warm"), default="cold")
@@ -758,6 +762,7 @@ async def _db():
 # -- CTEs --------------------------------------------------------------------------------------
 
 
+@pytest.mark.case("reading_rows_from_a_cte")
 async def test_cte_from_filters_window(clean):
     await seed()
     rank = func.row_number().over(partition_by=Post.author_id, order_by=Post.views.desc())
@@ -902,6 +907,7 @@ async def test_filtered_prefetch(clean, observe_queries):
         users[0].posts.cached
 
 
+@pytest.mark.case("a_sliced_prefetch_is_per_parent")
 async def test_sliced_prefetch_is_per_parent(clean, observe_queries):
     await seed()
     top = User.posts.objects.order_by(Post.views.desc()).load(Post.comments)[:2]
@@ -926,6 +932,7 @@ async def test_sliced_prefetch_is_per_parent(clean, observe_queries):
     assert [[p.title for p in u.posts.cached] for u in users] == [["a2"], [], []]
 
 
+@pytest.mark.case("a_relation_query_set_with_joins_and_a_nested_query_set")
 async def test_relation_query_set_with_joins_and_nested_query_set(clean, observe_queries):
     await seed()
     query = User.objects.load(
@@ -977,6 +984,7 @@ async def test_instances_get_their_database(clean):
     assert "_db" not in (await User.objects.first()).__dict__
 
 
+@pytest.mark.case("a_prefetch_query_reading_a_cte")
 async def test_prefetch_query_reading_a_cte(clean, observe_queries):
     await seed()
     best = Post.objects.select(Post.id).filter(Post.views >= 50).cte("best")
@@ -997,6 +1005,7 @@ async def test_prefetch_query_reading_a_cte(clean, observe_queries):
     assert [[p.title for p in u.best] for u in users] == [["a2"], ["b1"], []]
 
 
+@pytest.mark.case("a_correlated_in_subquery")
 async def test_correlated_in_subquery(clean):
     await seed()
     commented = Comment.objects.filter(Comment.author_id == outer(User.id)).select(Comment.post_id)
@@ -1206,6 +1215,7 @@ async def test_load_gives_a_bare_path_beside_a_set_the_normal_selection(clean, r
 @pytest.mark.parametrize("change", ["filter", "order", "limit", "offset", "defaults"])
 @pytest.mark.parametrize("column", ["first", "deep"])
 @pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.case("load_refuses_columns_beside_a_set_that_changes_its_rows")
 def test_load_row_changing_set_refuses_columns(change, column, reverse):
     qs = {
         "filter": User.posts.objects.filter(Post.published),
@@ -1224,6 +1234,7 @@ def test_load_row_changing_set_refuses_columns(change, column, reverse):
     User.objects.load(qs.load(Post.title))
 
 
+@pytest.mark.case("a_plain_reset_or_labeled_set_beside_a_column_keeps_its_meaning")
 async def test_load_set_and_column_guards(clean):
     await seed()
     users = await User.objects.load(User.posts.objects, User.posts.views).order_by(User.id)
@@ -1256,6 +1267,7 @@ async def test_load_the_same_plain_set_twice(clean):
     assert [len(u.posts.cached) for u in users] == [2, 1, 0]
 
 
+@pytest.mark.case("load_combines_plain_paths_and_sets_without_related_keeps_in_loads_and_root_fields")
 async def test_load_plain_path_and_query_and_without_related(clean):
     await seed()
     for qs in (User.posts.objects, User.posts.objects.load(Post.comments)):
