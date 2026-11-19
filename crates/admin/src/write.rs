@@ -778,7 +778,7 @@ fn pinned_labels(pin: Option<&Pin>) -> Vec<String> {
 /// A row that would pass the cap of the inline is a form problem.
 async fn check_cap(s: &State_, c: &Call<'_>, p: &Pin, problems: &mut Problems) -> Result<(), Response> {
     let rows = crate::server::child_rows(s, &c.resource, &c.user, &c.scope).await.map_err(|e| list_failure(&c.meta, e))?;
-    let have = list::read_pinned(&s.site, &c.resource, c.scope.executor(), s.target, &p.pins, &rows, p.max, false).await.map_err(|e| list_failure(&c.meta, e))?;
+    let have = list::read_pinned(&s.site, &c.resource, c.scope.executor(), s.target, s.viewer(), &p.pins, &rows, p.max, false).await.map_err(|e| list_failure(&c.meta, e))?;
     if have.len() >= p.max {
         problems.form.push(format!("This list holds at most {} rows.", p.max));
     }
@@ -1031,7 +1031,7 @@ pub(crate) async fn update_in(s: &State_, c: Call<'_>, pin: Option<&Pin>) -> Res
             return response;
         }
     };
-    let record = match list::read_record(site, resource, c.scope.executor(), s.target, &key, &reach.rows, true).await {
+    let record = match list::read_record(site, resource, c.scope.executor(), s.target, s.viewer(), &key, &reach.rows, true).await {
         Ok(Some(r)) => r,
         Ok(None) => {
             c.scope.rollback().await;
@@ -1166,7 +1166,7 @@ pub(crate) async fn destroy_in(s: &State_, c: Call<'_>, pin: Option<&Pin>) -> Re
             return response;
         }
     };
-    let record = match list::read_record(site, resource, c.scope.executor(), s.target, &key, &reach.rows, true).await {
+    let record = match list::read_record(site, resource, c.scope.executor(), s.target, s.viewer(), &key, &reach.rows, true).await {
         Ok(Some(r)) => r,
         Ok(None) => {
             c.scope.rollback().await;

@@ -280,7 +280,7 @@ async fn locate<'a>(s: &'a State_, user: Option<Extension<User>>, name: &str, fi
     };
     let (scope, reach) = reach(s, resource, &c.user, &c.grants, Vec::new(), c.scope).await.map_err(|r| *r)?;
     let c = Call { scope, ..c };
-    let record = match list::read_record(site, resource, c.scope.executor(), s.target, &key, &reach.rows, lock).await {
+    let record = match list::read_record(site, resource, c.scope.executor(), s.target, s.viewer(), &key, &reach.rows, lock).await {
         Ok(Some(r)) => r,
         Ok(None) => {
             c.scope.rollback().await;
@@ -392,7 +392,7 @@ pub(crate) async fn download(State(s): Shared, user: Option<Extension<User>>, Pa
         Ok(t) => t,
         Err(r) => return *r,
     };
-    let record = list::read_record(&s.site, &resource, scope.executor(), s.target, &key, &reach.rows, false).await;
+    let record = list::read_record(&s.site, &resource, scope.executor(), s.target, s.viewer(), &key, &reach.rows, false).await;
     scope.rollback().await;
     let record = match record {
         Ok(Some(r)) => r,

@@ -727,8 +727,6 @@ pub struct Site {
     pub(crate) meta_builds: AtomicUsize,
     /// The user views of the pages that bind fields: one for each page and set of granted names.
     pub(crate) views: Mutex<Views>,
-    /// The host bridge and the call ids for the host calls that convert the cells of a view column. Set when the API starts with auth.
-    pub(crate) viewer: Mutex<Option<crate::auth::AuthConfig>>,
 }
 
 impl Site {
@@ -853,7 +851,7 @@ impl Site {
             0 => None,
             ms => Some(Duration::from_millis(ms)),
         };
-        let mut site = Site { schema, base_path, prefix, strategy, resources, brand, groups, statement_timeout, export_idle_timeout, warnings, routes: Vec::new(), packages, meta_builds, views: Mutex::new(Default::default()), viewer: Mutex::new(None) };
+        let mut site = Site { schema, base_path, prefix, strategy, resources, brand, groups, statement_timeout, export_idle_timeout, warnings, routes: Vec::new(), packages, meta_builds, views: Mutex::new(Default::default()) };
         site.routes = crate::routes::build(&config.routes, &site)?;
         if let Some(role) = added.role {
             // The picker lists the names of the site, the names of the routes included, so it waits for the routes.

@@ -37,6 +37,13 @@ pub(crate) struct State_ {
     pub(crate) bridge: Option<(Arc<dyn HostBridge>, AuthConfig)>,
 }
 
+impl State_ {
+    /// The host bridge that converts the cells of a view column; none when the API runs without auth.
+    pub(crate) fn viewer(&self) -> Option<&AuthConfig> {
+        self.bridge.as_ref().map(|(_, a)| a)
+    }
+}
+
 pub(crate) type Shared = State<Arc<State_>>;
 
 /// The admin routes without a fallback, so a caller can merge other routes first.
@@ -56,9 +63,6 @@ pub fn api_with(site: Arc<Site>, conn: Arc<dyn Executor>, auth: Option<AuthConfi
         .route("/actions/{name}/{action}", post(crate::actions::on_list))
         .route("/tab-actions/{name}/{key}/{rel}/{action}", post(crate::actions::on_tab));
     let bridge = auth.clone().map(|a| (a.bridge.clone(), a));
-    if let (Some((_, a)), Ok(mut viewer)) = (&bridge, site.viewer.lock()) {
-        *viewer = Some(a.clone());
-    }
     let extra = auth.map(|auth| auth::routes(auth, site.clone(), conn.clone()));
     let state = Arc::new(State_ { site, conn, target, bridge });
     let mut routes = routes.with_state(state);
@@ -542,7 +546,7 @@ async fn run_rows(s: &State_, resource: &Resource, scope: Scoped, reach: Reach, 
     let out = async {
         list::check_request(&s.site, resource, &request)?;
         request.found = found_keys(s, resource, &scope, request.q.as_deref()).await?;
-        let mut page = list::list(&s.site, resource, scope.executor(), s.target, &request).await?;
+        let mut page = list::list(&s.site, resource, scope.executor(), s.target, s.viewer(), &request).await?;
         fill_batch(s, resource, &scope, &mut page).await?;
         if !resource.editable.is_empty() {
             for f in page.flags.iter_mut().filter_map(Value::as_object_mut) {
@@ -724,7 +728,7 @@ async fn inline_rows(s: &State_, parent: &Resource, user: &User, grants: &Grants
         let pins: Vec<_> = inline.child_to.iter().cloned().zip(values).collect();
         let (next, child_reach) = reach(s, &inline.resource, user, grants, Vec::new(), scope).await?;
         scope = next;
-        let rows = match list::read_pinned(&s.site, &inline.resource, scope.executor(), s.target, &pins, &child_reach.rows, inline.max + 1, false).await {
+        let rows = match list::read_pinned(&s.site, &inline.resource, scope.executor(), s.target, s.viewer(), &pins, &child_reach.rows, inline.max + 1, false).await {
             Ok(r) => r,
             Err(e) => {
                 scope.rollback().await;
@@ -768,7 +772,7 @@ async fn detail(State(s): Shared, user: Option<Extension<User>>, Path((name, _))
         Ok(t) => t,
         Err(r) => return *r,
     };
-    match list::detail(&s.site, &resource, scope.executor(), s.target, &key, &reach.rows).await {
+    match list::detail(&s.site, &resource, scope.executor(), s.target, s.viewer(), &key, &reach.rows).await {
         Ok(Some(record)) => {
             let mut values = record.cells;
             crate::sight::redact_row(&resource, &resource.detail, &mut values);

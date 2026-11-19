@@ -52,7 +52,7 @@ pub(crate) async fn export(State(s): Shared, user: Option<Extension<User>>, log:
     let first = async {
         list::check_request(&s.site, &resource, &request)?;
         request.found = found_keys(&s, &resource, &scope, request.q.as_deref()).await?;
-        let mut page = list::list(&s.site, &resource, scope.executor(), s.target, &request).await?;
+        let mut page = list::list(&s.site, &resource, scope.executor(), s.target, s.viewer(), &request).await?;
         fill_batch(&s, &resource, &scope, &mut page).await?;
         Ok::<_, ListError>(page)
     }
@@ -131,7 +131,7 @@ async fn stream(s: Arc<State_>, (name, grants): (String, Grants), mut request: L
 async fn batch(s: &State_, resource: &Resource, request: &ListRequest) -> Result<Page, ListError> {
     let scope = begin_scope(s).await.map_err(ListError::Engine)?;
     let out = async {
-        let mut page = list::list(&s.site, resource, scope.executor(), s.target, request).await?;
+        let mut page = list::list(&s.site, resource, scope.executor(), s.target, s.viewer(), request).await?;
         fill_batch(s, resource, &scope, &mut page).await?;
         Ok::<_, ListError>(page)
     }

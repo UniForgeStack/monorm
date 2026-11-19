@@ -14,6 +14,7 @@ use monorm_engine::{Error, Params, Result as EngineResult};
 use sea_query::Value as Bind;
 use serde_json::{json, Value};
 
+use crate::auth::AuthConfig;
 use crate::json;
 use crate::key;
 use crate::site::{Column, Filter, FilterKind, Mode, OrderColumn, Related, Resource, Site, Source, COUNT_CAP, LARGE_TABLE_ROWS, MAX_PAGE_SIZE};
@@ -686,7 +687,7 @@ fn page_limit(resource: &Resource, request: &ListRequest) -> Result<usize, ListE
     Ok(limit)
 }
 
-pub async fn list(site: &Site, resource: &Resource, conn: &dyn Executor, target: Target, request: &ListRequest) -> Result<Page, ListError> {
+pub async fn list(site: &Site, resource: &Resource, conn: &dyn Executor, target: Target, viewer: Option<&AuthConfig>, request: &ListRequest) -> Result<Page, ListError> {
     let limit = page_limit(resource, request)?;
     let (order, sort_text) = effective_order(resource, request.sort.as_deref())?;
     if !sort_text.is_empty() && !resource.sortable_explicit {
@@ -801,7 +802,7 @@ pub async fn list(site: &Site, resource: &Resource, conn: &dyn Executor, target:
     let keys = rows.iter().map(|r| key::encode(&resource.key_positions.iter().map(|&p| r[p].clone()).collect::<Vec<_>>())).collect();
     // After the cursors and keys: a cursor and a sort compare the stored bytes.
     let mut cells: Vec<&mut Vec<Value>> = rows.iter_mut().filter_map(Value::as_array_mut).collect();
-    crate::view::convert_rows(site, model, &resource.columns, &mut cells).await?;
+    crate::view::convert_rows(viewer, model, &resource.columns, &mut cells).await?;
     Ok(Page { rows, keys, next, prev, batch, flags, labels })
 }
 
@@ -868,7 +869,7 @@ pub struct InlineRow {
 /// The detail columns of the rows that the pins fix (`column = value`), in the order of the resource, within `scope`.
 /// With `lock` the select takes the row locks of a write (PostgreSQL only).
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn read_pinned(site: &Site, resource: &Resource, conn: &dyn Executor, target: Target, pins: &[(Column, Value)], scope: &RowScope, limit: usize, lock: bool) -> Result<Vec<InlineRow>, ListError> {
+pub(crate) async fn read_pinned(site: &Site, resource: &Resource, conn: &dyn Executor, target: Target, viewer: Option<&AuthConfig>, pins: &[(Column, Value)], scope: &RowScope, limit: usize, lock: bool) -> Result<Vec<InlineRow>, ListError> {
     let mut binds = Binds::default();
     let mut filters = Vec::new();
     for (c, v) in pins {
@@ -911,17 +912,18 @@ pub(crate) async fn read_pinned(site: &Site, resource: &Resource, conn: &dyn Exe
         out.push(InlineRow { key, cells, flags: Value::Object(flags) });
     }
     let mut shown: Vec<&mut Vec<Value>> = out.iter_mut().map(|r| &mut r.cells).collect();
-    crate::view::convert_rows(site, model, &resource.detail, &mut shown).await?;
+    crate::view::convert_rows(viewer, model, &resource.detail, &mut shown).await?;
     Ok(out)
 }
 
 /// The detail columns of the record with this key, as JSON cells, or none when no row has the key.
-pub async fn detail(site: &Site, resource: &Resource, conn: &dyn Executor, target: Target, key: &[Value], scope: &RowScope) -> Result<Option<Record>, ListError> {
-    read_record(site, resource, conn, target, key, scope, false).await
+pub async fn detail(site: &Site, resource: &Resource, conn: &dyn Executor, target: Target, viewer: Option<&AuthConfig>, key: &[Value], scope: &RowScope) -> Result<Option<Record>, ListError> {
+    read_record(site, resource, conn, target, viewer, key, scope, false).await
 }
 
 /// `detail`; with `lock` the select takes the row lock of a write (`FOR UPDATE`, PostgreSQL only: SQLite has no row locks).
-pub(crate) async fn read_record(site: &Site, resource: &Resource, conn: &dyn Executor, target: Target, key: &[Value], scope: &RowScope, lock: bool) -> Result<Option<Record>, ListError> {
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn read_record(site: &Site, resource: &Resource, conn: &dyn Executor, target: Target, viewer: Option<&AuthConfig>, key: &[Value], scope: &RowScope, lock: bool) -> Result<Option<Record>, ListError> {
     if key.len() != resource.key_columns.len() {
         return Err(ListError::Bad("the key does not fit this resource".into()));
     }
@@ -958,6 +960,6 @@ pub(crate) async fn read_record(site: &Site, resource: &Resource, conn: &dyn Exe
             }
         }
     }
-    crate::view::convert_rows(site, model, &resource.detail, &mut [&mut cells]).await?;
+    crate::view::convert_rows(viewer, model, &resource.detail, &mut [&mut cells]).await?;
     Ok(Some(Record { cells, flags: Value::Object(flags) }))
 }

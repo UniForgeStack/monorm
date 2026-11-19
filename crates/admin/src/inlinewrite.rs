@@ -177,7 +177,7 @@ pub(crate) async fn check(s: &State_, c: &Call<'_>, parent_op: Op, parent: Optio
             let existing = if pins.is_empty() {
                 0
             } else {
-                list::read_pinned(site, child, c.scope.executor(), s.target, &pins, &unpinned, MAX_INLINE_MAX + 1, false).await.map_err(|e| Fail::Reply(write::list_failure(&c.meta, e)))?.len()
+                list::read_pinned(site, child, c.scope.executor(), s.target, s.viewer(), &pins, &unpinned, MAX_INLINE_MAX + 1, false).await.map_err(|e| Fail::Reply(write::list_failure(&c.meta, e)))?.len()
             };
             if (existing + create.len()).saturating_sub(delete.len()) > inline.max {
                 problems.form.push(format!("{} holds at most {} rows.", inline.label, inline.max));
@@ -279,7 +279,7 @@ pub(crate) async fn check(s: &State_, c: &Call<'_>, parent_op: Op, parent: Optio
 
 /// One locked row of the inline, inside the row scope of the inline: 404 when it is not one of the rows of the parent.
 async fn fetch(s: &State_, c: &Call<'_>, child: &Resource, key: &[Value], rows: &RowScope, lock: bool) -> Result<list::Record, Fail> {
-    match list::read_record(&s.site, child, c.scope.executor(), s.target, key, rows, lock).await {
+    match list::read_record(&s.site, child, c.scope.executor(), s.target, s.viewer(), key, rows, lock).await {
         Ok(Some(r)) => Ok(r),
         Ok(None) => Err(Fail::Reply(reject(StatusCode::NOT_FOUND, "NotFound", "no such row"))),
         Err(e) => Err(Fail::Reply(write::list_failure(&c.meta, e))),
@@ -393,7 +393,7 @@ async fn open_inline<'a>(s: &'a State_, user: Option<Extension<User>>, parent: &
     };
     let (scope, parent_reach) = reach(s, parent, &user, &grants, Vec::new(), scope).await?;
     if parent.can.iter().any(|(name, _)| name == "change") {
-        let locked = match list::read_record(&s.site, parent, scope.executor(), s.target, &parent_key, &parent_reach.rows, false).await {
+        let locked = match list::read_record(&s.site, parent, scope.executor(), s.target, s.viewer(), &parent_key, &parent_reach.rows, false).await {
             Ok(Some(r)) => r.flags.get("change") == Some(&Value::Bool(false)),
             Ok(None) => {
                 scope.rollback().await;

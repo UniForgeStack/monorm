@@ -459,7 +459,7 @@ pub(crate) async fn read_after<'a>(s: &State_, c: Call<'a>, key: &[Value]) -> Re
     let Call { resource: sight, user, grants, scope, meta, uri, body } = c;
     let resource = &*sight;
     let (scope, rows) = reach(s, resource, &user, &grants, Vec::new(), scope).await.map_err(|r| *r)?;
-    let record = list::read_record(&s.site, resource, scope.executor(), s.target, key, &rows.rows, false).await;
+    let record = list::read_record(&s.site, resource, scope.executor(), s.target, s.viewer(), key, &rows.rows, false).await;
     match record {
         Ok(r) => Ok((Call { resource: sight.clone(), user, grants, scope, meta, uri, body }, r.map(|r| r.cells))),
         Err(e) => {

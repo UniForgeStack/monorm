@@ -132,12 +132,12 @@ async fn save_in(s: &State_, c: Call<'_>) -> Response {
     let mut read: BTreeMap<usize, Read> = BTreeMap::new();
     for &at in &order {
         let row = &rows[at];
-        let record = match list::read_record(site, resource, c.scope.executor(), s.target, &row.key, &reach.rows, true).await {
+        let record = match list::read_record(site, resource, c.scope.executor(), s.target, s.viewer(), &row.key, &reach.rows, true).await {
             Ok(Some(r)) => r,
             Ok(None) => {
                 // A row that the `queryset` hides is out of reach (403); a row that is not in the table is gone (404).
                 let open = RowScope { without: reach.rows.without.clone(), ..RowScope::default() };
-                return match list::read_record(site, resource, c.scope.executor(), s.target, &row.key, &open, false).await {
+                return match list::read_record(site, resource, c.scope.executor(), s.target, s.viewer(), &row.key, &open, false).await {
                     Ok(Some(_)) => deny(site, c.scope, &c.user, &resource.name, json!({"reason": "queryset", "key": row.raw})).await,
                     Ok(None) => fail(c, reject(StatusCode::NOT_FOUND, "NotFound", &format!("no record {:?}", row.raw))).await,
                     Err(e) => fail_with(c, |c| write::list_failure(&c.meta, e)).await,
@@ -345,7 +345,7 @@ async fn host_refusal(s: &State_, c: Call<'_>, rows: &[Row], sent: &[usize], pre
                 Ok(t) => t,
                 Err(r) => return *r,
             };
-            let now = list::read_record(site, resource, scope.executor(), s.target, &rows[at].key, &reach.rows, false).await;
+            let now = list::read_record(site, resource, scope.executor(), s.target, s.viewer(), &rows[at].key, &reach.rows, false).await;
             scope.rollback().await;
             let record = match now {
                 Ok(Some(r)) => r,

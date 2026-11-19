@@ -339,7 +339,7 @@ pub(crate) async fn autocomplete(axum::extract::State(s): Shared, user: Option<E
         let mut request = ListRequest { limit: Some(q.limit.unwrap_or(PICK_PAGE).min(PICK_MAX)), q: q.q, named, scope: rows, ..ListRequest::new(position) };
         list::check_request(&s.site, target, &request)?;
         request.found = found_keys(&s, target, &o.scope, request.q.as_deref()).await?;
-        list::list(&s.site, target, o.scope.executor(), s.target, &request).await
+        list::list(&s.site, target, o.scope.executor(), s.target, s.viewer(), &request).await
     }
     .await;
     finish(o.scope, out, |page| {
@@ -376,7 +376,7 @@ pub(crate) async fn links(axum::extract::State(s): Shared, user: Option<Extensio
         Err(r) => return *r,
     };
     let out = async {
-        if list::detail(&s.site, resource, scope.executor(), s.target, &key, &reach.rows).await?.is_none() {
+        if list::detail(&s.site, resource, scope.executor(), s.target, s.viewer(), &key, &reach.rows).await?.is_none() {
             return Ok(None);
         }
         let linked = current(&s, scope.executor(), relation, resource, &key[0], None).await?;
