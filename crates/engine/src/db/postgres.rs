@@ -923,6 +923,7 @@ pub struct PgDriver {
     tls: Option<tls::MakeRustlsConnect>,
     /// The URL says a transaction pooler is in front of the server.
     pgbouncer: bool,
+    cascades: Arc<super::CascadeCache>,
 }
 
 impl PgDriver {
@@ -968,7 +969,7 @@ impl PgDriver {
             }
         }
         drop(probe);
-        Ok(PgDriver { pool, config, tls, pgbouncer })
+        Ok(PgDriver { pool, config, tls, pgbouncer, cascades: Default::default() })
     }
 
     /// Takes a connection and sends `BEGIN`. The session owns the connection before the first
@@ -991,6 +992,7 @@ impl PgDriver {
             savepoint: None,
             done: AtomicBool::new(false),
             expiry,
+            cascades: self.cascades.clone(),
         });
         Ok(tx)
     }
@@ -1040,6 +1042,7 @@ async fn get_client(pool: &Pool) -> DbResult<Object> {
 }
 
 impl Executor for PgDriver {
+    fn cascade_cache(&self) -> Option<&super::CascadeCache> { Some(&self.cascades) }
     fn pooler_transactions(&self) -> bool {
         self.pgbouncer
     }
@@ -1225,6 +1228,7 @@ struct PgTx {
     savepoint: Option<String>,
     done: AtomicBool,
     expiry: Arc<Expiry>,
+    cascades: Arc<super::CascadeCache>,
 }
 
 impl PgTx {
@@ -1247,6 +1251,7 @@ impl PgTx {
             savepoint: Some(name),
             done: AtomicBool::new(false),
             expiry: self.expiry.clone(),
+            cascades: self.cascades.clone(),
         })
     }
 
@@ -1339,6 +1344,7 @@ impl PgTx {
 }
 
 impl Executor for PgTx {
+    fn cascade_cache(&self) -> Option<&super::CascadeCache> { Some(&self.cascades) }
     fn advisory_lock(&self, key: i64, exclusive: bool, nowait: bool) -> BoxFuture<'_, DbResult<bool>> {
         Box::pin(async move {
             let sql = crate::advisory::sql(key, exclusive, nowait);
@@ -1618,6 +1624,7 @@ mod failure_tests {
                 savepoint: None,
                 done: AtomicBool::new(false),
                 expiry,
+                cascades: Default::default(),
             });
             let (started, ready) = tokio::sync::oneshot::channel();
             let (rolled_back, finished) = tokio::sync::oneshot::channel();
@@ -1679,6 +1686,7 @@ mod failure_tests {
                 savepoint: None,
                 done: AtomicBool::new(false),
                 expiry,
+                cascades: Default::default(),
             };
             let killer = driver().await;
             killer.batch(format!("SELECT pg_terminate_backend({pid})")).await.unwrap();

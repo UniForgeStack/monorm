@@ -88,7 +88,7 @@ Signatures: `Model.objects.attach(parent_id, values)` and `attach_many(items)` i
 ## Limits
 
 - `update_many` on a composed model is rejected.
-- `delete()` (no soft delete) and `hard_delete()` run one `DELETE` on the root row and rely on the `ON DELETE CASCADE` of each level key to remove the other levels, sibling levels included. A composition over tables made by hand or by Django (whose multi-table keys have no database cascade) needs that cascade added first.
+- `delete()` (no soft delete) and `hard_delete()` run one `DELETE` on the root row and rely on the `ON DELETE CASCADE` of each level key to remove the other levels, sibling levels included. Before the delete, the engine reads the live foreign keys of the level keys (it remembers a pass for the database connection and forgets it when a migration or a script changes the schema) and raises `QueryError` that names each level key without `ON DELETE CASCADE`, and no row is deleted. On SQLite it raises the same error while `foreign_keys` is off. A composition over tables made by hand or by Django (whose multi-table keys have no database cascade) needs that cascade added first: see [Django coexistence](../guides/django-coexistence.md#composed-models-over-django-multi-table-tables). A delete of the root model itself does not run this check.
 - `outer()` and `distinct(on=...)` on inherited columns raise `QueryError: ... requires an explicit owner projection`. Project the columns of the owner model.
 - Ordinary (not composed) model writes reject inherited storage.
 - The executor is `monorm_engine::multi_table`; [optional-packaging.md](../contracts/optional-packaging.md#logical-fields-and-physical-storage) describes the storage contract.

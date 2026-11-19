@@ -145,6 +145,7 @@ impl Executor for Traced {
     fn dialect(&self) -> Dialect {
         self.conn.dialect()
     }
+    fn cascade_cache(&self) -> Option<&crate::db::CascadeCache> { self.conn.cascade_cache() }
     fn pooler_transactions(&self) -> bool {
         self.conn.pooler_transactions()
     }

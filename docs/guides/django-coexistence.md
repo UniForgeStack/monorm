@@ -70,6 +70,19 @@ The `id` column needs no field: Django adds `id` as the primary key.
 The column default `now()` is not visible to Django: the Django field needs `default=timezone.now`, because Django sends every column in an insert.
 On an update, Django writes back the stored `updated_at`. The database trigger sees the same value and sets the current time.
 
+### Composed models over Django multi-table tables
+
+A Django multi-table model (a child with a `OneToOneField` parent link) matches a `@@composition.model` of monorm.
+`delete()` and `hard_delete()` through a composed model send one `DELETE` to the root row and rely on `ON DELETE CASCADE` of each level key.
+Django creates that key without a database cascade, so monorm raises `QueryError` that names the level key and deletes nothing.
+Add the cascade once for each level key (PostgreSQL; the constraint name comes from `\d <table>`).
+Keep `DEFERRABLE INITIALLY DEFERRED`, the way Django creates the key:
+
+```sql
+ALTER TABLE app_employee DROP CONSTRAINT app_employee_person_ptr_id_fkey,
+  ADD CONSTRAINT app_employee_person_ptr_id_fkey FOREIGN KEY (person_ptr_id) REFERENCES app_person (id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+```
+
 ### Checklist
 
 | Feature | What Django sees | What to do |

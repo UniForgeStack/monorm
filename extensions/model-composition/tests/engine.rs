@@ -328,8 +328,119 @@ async fn check(url: &str) {
 fn composed_models_write_read_and_roll_back_together() {
     tokio::runtime::Runtime::new().unwrap().block_on(async {
         check("sqlite://:memory:").await;
+        check_missing_cascade("sqlite://:memory:").await;
+        check_cascade_cache("sqlite://:memory:").await;
+        check_sqlite_cascade_names("sqlite://:memory:").await;
         if let Ok(url) = std::env::var("ORM_TEST_DATABASE_URL") {
             check(&url).await;
+            check_missing_cascade(&url).await;
+            check_cascade_cache(&url).await;
         }
     });
+}
+
+/// Tables made by hand or by Django have no `ON DELETE CASCADE` on a level key.
+async fn check_missing_cascade(url: &str) {
+    let dialect = if url.starts_with("sqlite:") { Dialect::Sqlite } else { Dialect::Postgres };
+    let schema = Schema::from_ir(composed(dialect)).unwrap();
+    let target = Target::new(dialect);
+    let db = db::connect(url, 1).await.unwrap();
+    for statement in migrate::drop_all(&schema).unwrap() {
+        db.batch(statement).await.unwrap();
+    }
+    let id = if dialect == Dialect::Sqlite { "INTEGER PRIMARY KEY AUTOINCREMENT" } else { "BIGSERIAL PRIMARY KEY" };
+    db.batch(format!("CREATE TABLE person (id {id}, name TEXT NOT NULL)")).await.unwrap();
+    // Employee has the cascade; Manager and Customer do not (Customer has no foreign key at all).
+    db.batch("CREATE TABLE employee (id BIGINT PRIMARY KEY REFERENCES person (id) ON DELETE CASCADE, salary BIGINT NOT NULL)".into()).await.unwrap();
+    db.batch("CREATE TABLE manager (id BIGINT PRIMARY KEY REFERENCES employee (id), level BIGINT NOT NULL)".into()).await.unwrap();
+    db.batch("CREATE TABLE customer (id BIGINT PRIMARY KEY, points BIGINT NOT NULL)".into()).await.unwrap();
+    db.batch("INSERT INTO person (id, name) VALUES (1, 'A'); INSERT INTO employee VALUES (1, 5); INSERT INTO manager VALUES (1, 1); INSERT INTO customer VALUES (1, 2)".into()).await.unwrap();
+    let count = |table: &'static str| {
+        let db = &db;
+        async move { db.query(format!("SELECT COUNT(*) FROM {table}"), vec![]).await.unwrap().get_i64(0, 0).unwrap() }
+    };
+    for op in [r#"{"op":"delete","model":"Manager"}"#, r#"{"op":"delete","model":"Manager","hard":true}"#] {
+        let op = monorm_engine::parse_op(op).unwrap();
+        let plan = monorm_engine::plan::Planner::plan(&schema, target, &op, &NoParams).unwrap();
+        let Err(error) = exec::run(db.as_ref(), target, plan).await else { panic!("the delete must fail") };
+        let error = error.to_string();
+        assert!(error.contains("ON DELETE CASCADE") && error.contains("manager.id") && error.contains("customer.id"), "{error}");
+        assert!(!error.contains("employee.id"), "{error}");
+    }
+    assert_eq!([count("person").await, count("employee").await, count("manager").await, count("customer").await], [1, 1, 1, 1]);
+    db.batch("DROP TABLE customer; DROP TABLE manager; DROP TABLE employee; DROP TABLE person".into()).await.unwrap();
+    db.close().await;
+}
+
+/// Runs `delete` of `model` (all rows) on `exec`; the tables of the cache and name tests are empty.
+async fn delete_all(exec: &dyn db::Executor, schema: &Schema, target: Target, model: &str) -> monorm_engine::Result<Outcome> {
+    let op = monorm_engine::parse_op(&format!(r#"{{"op":"delete","model":"{model}"}}"#)).unwrap();
+    let plan = monorm_engine::plan::Planner::plan(schema, target, &op, &NoParams).unwrap();
+    exec::run(exec, target, plan).await
+}
+
+/// The tables of a composed `Person <- Employee <- Manager` and `Person <- Customer`, with each key written by `key`.
+async fn make_tables(db: &dyn db::Driver, schema: &Schema, dialect: Dialect, manager: &str) {
+    for statement in migrate::drop_all(schema).unwrap() {
+        db.batch(statement).await.unwrap();
+    }
+    let id = if dialect == Dialect::Sqlite { "INTEGER PRIMARY KEY AUTOINCREMENT" } else { "BIGSERIAL PRIMARY KEY" };
+    db.batch(format!("CREATE TABLE person (id {id}, name TEXT NOT NULL)")).await.unwrap();
+    db.batch("CREATE TABLE employee (id BIGINT PRIMARY KEY REFERENCES person (id) ON DELETE CASCADE, salary BIGINT NOT NULL)".into()).await.unwrap();
+    db.batch("CREATE TABLE customer (id BIGINT PRIMARY KEY REFERENCES person (id) ON DELETE CASCADE, points BIGINT NOT NULL)".into()).await.unwrap();
+    db.batch(format!("CREATE TABLE manager (id BIGINT PRIMARY KEY REFERENCES employee (id){manager}, level BIGINT NOT NULL)")).await.unwrap();
+}
+
+/// A failed check is not cached, a passed check is cached for the connection, its transactions and the settings
+/// wrappers, and a schema script clears it.
+async fn check_cascade_cache(url: &str) {
+    let dialect = if url.starts_with("sqlite:") { Dialect::Sqlite } else { Dialect::Postgres };
+    let schema = Schema::from_ir(composed(dialect)).unwrap();
+    let target = Target::new(dialect);
+    let db = db::connect(url, 1).await.unwrap();
+    make_tables(db.as_ref(), &schema, dialect, "").await;
+    let failed = delete_all(db.as_ref(), &schema, target, "Manager").await;
+    assert!(failed.is_err_and(|e| e.to_string().contains("manager.id")));
+    // The cascade is added: the next delete passes, so the failure was not cached.
+    make_tables(db.as_ref(), &schema, dialect, " ON DELETE CASCADE").await;
+    delete_all(db.as_ref(), &schema, target, "Manager").await.unwrap();
+    // The cascade is dropped behind the cache: the cached pass still holds on the connection, a transaction and a scoped connection.
+    make_tables(db.as_ref(), &schema, dialect, "").await;
+    delete_all(db.as_ref(), &schema, target, "Manager").await.unwrap();
+    let tx = db.begin().await.unwrap();
+    delete_all(tx.as_ref(), &schema, target, "Customer").await.unwrap();
+    delete_all(tx.as_ref(), &schema, target, "Manager").await.unwrap();
+    tx.rollback().await.unwrap();
+    if dialect == Dialect::Postgres {
+        let scoped = db::WithSettings::new(db.clone(), vec![("app.role".into(), "x".into())]);
+        delete_all(&scoped, &schema, target, "Manager").await.unwrap();
+    }
+    // A schema script forgets the checks.
+    exec::run_script(db.clone(), vec![], false).await.unwrap();
+    let failed = delete_all(db.as_ref(), &schema, target, "Manager").await;
+    assert!(failed.is_err_and(|e| e.to_string().contains("manager.id")));
+    for statement in migrate::drop_all(&schema).unwrap() {
+        db.batch(statement).await.unwrap();
+    }
+    db.batch("DROP TABLE IF EXISTS manager; DROP TABLE IF EXISTS employee; DROP TABLE IF EXISTS customer; DROP TABLE IF EXISTS person".into()).await.unwrap();
+    db.close().await;
+}
+
+/// SQLite compares table and column names without regard to case, and ignores a cascade while `foreign_keys` is off.
+async fn check_sqlite_cascade_names(url: &str) {
+    let schema = Schema::from_ir(composed(Dialect::Sqlite)).unwrap();
+    let target = Target::new(Dialect::Sqlite);
+    let db = db::connect(url, 1).await.unwrap();
+    make_tables(db.as_ref(), &schema, Dialect::Sqlite, "").await;
+    db.batch("DROP TABLE manager".into()).await.unwrap();
+    db.batch("CREATE TABLE manager (ID BIGINT PRIMARY KEY REFERENCES EMPLOYEE (ID) ON DELETE CASCADE, level BIGINT NOT NULL)".into()).await.unwrap();
+    delete_all(db.as_ref(), &schema, target, "Manager").await.unwrap();
+    // The cascade is in the schema, but SQLite does not run it while `foreign_keys` is off.
+    let off = db::connect(url, 1).await.unwrap();
+    make_tables(off.as_ref(), &schema, Dialect::Sqlite, " ON DELETE CASCADE").await;
+    off.batch("PRAGMA foreign_keys = OFF".into()).await.unwrap();
+    let failed = delete_all(off.as_ref(), &schema, target, "Manager").await;
+    assert!(failed.is_err_and(|e| e.to_string().contains("PRAGMA foreign_keys = ON")));
+    off.close().await;
+    db.close().await;
 }

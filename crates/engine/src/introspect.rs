@@ -63,6 +63,44 @@ pub async fn introspect(conn: &dyn Executor) -> Result<Introspection> {
     }
 }
 
+/// A level key of a composed model: a column of `table` that references `parent`.
+pub struct LevelKey {
+    pub table: String,
+    pub column: String,
+    pub parent: String,
+}
+
+fn literal(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "''"))
+}
+
+/// The level keys that have no `ON DELETE CASCADE` to their parent in the live schema, and no
+/// effect at all on SQLite while `foreign_keys` is off. SQLite names match without regard to case;
+/// PostgreSQL names match exactly.
+pub async fn missing_cascades(conn: &dyn Executor, keys: &[LevelKey]) -> Result<Vec<String>> {
+    let mut missing = vec![];
+    let off = conn.dialect() == Dialect::Sqlite
+        && conn.query_text("SELECT foreign_keys FROM pragma_foreign_keys".into()).await.map_err(bad)?.first().and_then(|r| r.first()).and_then(|v| v.as_deref()) == Some("0");
+    for k in keys {
+        let found = match conn.dialect() {
+            Dialect::Postgres => format!(
+                "SELECT 1 FROM pg_constraint c JOIN pg_class t ON t.oid = c.conrelid JOIN pg_class p ON p.oid = c.confrelid \
+                 JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = c.conkey[1] \
+                 WHERE c.contype = 'f' AND c.confdeltype = 'c' AND cardinality(c.conkey) = 1 AND t.relnamespace = current_schema()::regnamespace \
+                 AND t.relname = {} AND p.relname = {} AND a.attname = {}",
+                literal(&k.table), literal(&k.parent), literal(&k.column)),
+            Dialect::Sqlite => format!(
+                "SELECT 1 FROM pragma_foreign_key_list({}) WHERE lower(\"from\") = lower({}) AND lower(\"table\") = lower({}) AND upper(on_delete) = 'CASCADE'",
+                literal(&k.table), literal(&k.column), literal(&k.parent)),
+        };
+        let rows = conn.query_text(found).await.map_err(bad)?;
+        if off || rows.is_empty() {
+            missing.push(format!("{}.{} (references {})", k.table, k.column, k.parent));
+        }
+    }
+    Ok(missing)
+}
+
 // ---------------------------------------------------------------------------------------
 // Postgres
 // ---------------------------------------------------------------------------------------

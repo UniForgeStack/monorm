@@ -401,6 +401,7 @@ async fn locked(
     match run.await {
         Ok(ran) => {
             tx.commit().await?;
+            crate::db::forget_cascades(conn);
             Ok(ran)
         }
         Err(e) => {
@@ -492,7 +493,11 @@ pub async fn begin_apply(conn: &dyn Executor, m: &Migration, allow_destructive: 
 pub async fn finish_apply(tx: &dyn Transaction, m: &Migration) -> Result<()> {
     let record = format!("INSERT INTO {TABLE} (name, checksum) VALUES ({}, {})", lit(&m.name), lit(&m.checksum()?));
     match tx.batch(record).await {
-        Ok(_) => Ok(tx.commit().await?),
+        Ok(_) => {
+            tx.commit().await?;
+            crate::db::forget_cascades(tx);
+            Ok(())
+        }
         Err(e) => {
             let _ = tx.rollback().await;
             Err(e.into())
@@ -590,6 +595,7 @@ async fn run_no_transaction(driver: &dyn Driver, m: &Migration, step: NoTxRun<'_
     let released = lock.release().await;
     let ran = out?;
     released?;
+    crate::db::forget_cascades(driver);
     Ok(ran)
 }
 

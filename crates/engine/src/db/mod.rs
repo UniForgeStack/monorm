@@ -134,10 +134,31 @@ pub trait RawRows: Send + Sync {
 /// The end of a session-lock refusal behind a pooler (the engine and `migrate` both say it).
 pub const POOLER_LOCK_REFUSAL: &str = "a direct connection, and this URL has pgbouncer=true: use a URL without it (for migrate, set MONORM_DATABASE_URL)";
 
+/// The composed deletes whose level keys a driver already checked for `ON DELETE CASCADE`.
+/// The driver, its transactions and its scoped wrappers share one cache.
+#[derive(Default)]
+pub struct CascadeCache(std::sync::Mutex<std::collections::HashSet<String>>);
+
+impl CascadeCache {
+    fn keys(&self) -> std::sync::MutexGuard<'_, std::collections::HashSet<String>> {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+    pub(crate) fn contains(&self, key: &str) -> bool { self.keys().contains(key) }
+    pub(crate) fn insert(&self, key: String) { self.keys().insert(key); }
+    pub(crate) fn clear(&self) { self.keys().clear(); }
+}
+
+/// Forgets the cascade checks of `conn`: a schema change can drop a cascade that a check saw.
+pub fn forget_cascades(conn: &dyn Executor) {
+    if let Some(cache) = conn.cascade_cache() { cache.clear(); }
+}
+
 /// Something statements run on: the pool (each call takes a connection) or an open
 /// transaction (every call uses its connection).
 pub trait Executor: Send + Sync {
     fn dialect(&self) -> Dialect { Dialect::Postgres }
+    /// The cascade checks of a composed delete that passed; `None` checks at each delete.
+    fn cascade_cache(&self) -> Option<&CascadeCache> { None }
     /// True when a connection may belong to another server session after each transaction
     /// (`pgbouncer=true`), so a session lock cannot work.
     fn pooler_transactions(&self) -> bool { false }
@@ -289,6 +310,7 @@ impl Executor for Guarded {
     fn dialect(&self) -> Dialect {
         self.inner.dialect()
     }
+    fn cascade_cache(&self) -> Option<&CascadeCache> { self.inner.cascade_cache() }
     fn pooler_transactions(&self) -> bool {
         self.inner.pooler_transactions()
     }
@@ -443,6 +465,7 @@ impl Executor for SettingsTx {
     fn dialect(&self) -> Dialect { self.inner.dialect() }
     fn pooler_transactions(&self) -> bool { self.inner.pooler_transactions() }
     fn settings(&self) -> Vec<(String, String)> { self.settings.clone() }
+    fn cascade_cache(&self) -> Option<&CascadeCache> { self.inner.cascade_cache() }
     fn settle(&self, settings: Vec<(String, String)>) -> BoxFuture<'_, DbResult<()>> { self.inner.settle(settings) }
     fn query(&self, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<Box<dyn RowSet>>> {
         self.inner.query_settled(self.settings.clone(), sql, args)
@@ -493,6 +516,7 @@ impl Executor for WithSettings {
     fn dialect(&self) -> Dialect {
         self.inner.dialect()
     }
+    fn cascade_cache(&self) -> Option<&CascadeCache> { self.inner.cascade_cache() }
     fn settings(&self) -> Vec<(String, String)> { self.settings.clone() }
     fn pooler_transactions(&self) -> bool {
         self.inner.pooler_transactions()

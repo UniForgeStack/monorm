@@ -714,6 +714,7 @@ pub async fn run_script(conn: Arc<dyn Executor>, statements: Vec<String>, in_tx:
         for s in statements {
             conn.batch(s).await?;
         }
+        crate::db::forget_cascades(&*conn);
         return Ok(());
     }
     let tx = conn.begin().await?;
@@ -723,7 +724,9 @@ pub async fn run_script(conn: Arc<dyn Executor>, statements: Vec<String>, in_tx:
             return Err(e.into());
         }
     }
-    Ok(tx.commit().await?)
+    tx.commit().await?;
+    crate::db::forget_cascades(&*conn);
+    Ok(())
 }
 
 /// Runs schema DDL with SQLite foreign key validation at commit (also handles cycles).
@@ -735,5 +738,7 @@ pub async fn run_schema_script(conn: Arc<dyn Executor>, statements: Vec<String>)
             return Err(e.into());
         }
     }
-    Ok(tx.commit().await?)
+    tx.commit().await?;
+    crate::db::forget_cascades(&*conn);
+    Ok(())
 }

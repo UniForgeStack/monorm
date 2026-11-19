@@ -40,6 +40,22 @@ type Objects = {
   insertMany(rows: Row[]): Promise<number>;
 };
 
+type Db = Awaited<ReturnType<typeof connect>>;
+const name = (model: unknown) => (model as Record<string, { eq(value: unknown): unknown }>)["name"]!.eq("Alice");
+/** The composition06 tables, empty, with `managerKey` as the manager level key. */
+async function handMadeTables(db: Db, managerKey: string): Promise<void> {
+  await db.dropTables();
+  for (const statement of [
+    "CREATE TABLE composition06_node_people (id INTEGER PRIMARY KEY, name TEXT NOT NULL)",
+    "CREATE TABLE composition06_node_employees (id INTEGER PRIMARY KEY REFERENCES composition06_node_people (id) ON DELETE CASCADE, salary INTEGER NOT NULL)",
+    `CREATE TABLE composition06_node_managers (${managerKey}, level INTEGER NOT NULL)`,
+    "CREATE TABLE composition06_node_customers (id INTEGER PRIMARY KEY REFERENCES composition06_node_people (id) ON DELETE CASCADE, points INTEGER NOT NULL)",
+  ]) await db.execute(statement);
+}
+async function dropHandMadeTables(db: Db): Promise<void> {
+  for (const table of ["managers", "employees", "customers", "people"]) await db.execute(`DROP TABLE IF EXISTS composition06_node_${table}`);
+}
+
 for (const provider of ["sqlite", "postgresql"]) {
   const url = provider === "sqlite" ? "sqlite://:memory:" : (process.env["ORM_TEST_DATABASE_URL"] ?? "postgres://postgres:postgres@localhost/orm_test");
   test(`composed create, attach, update and delete (${provider})`, { skip: !enabled || !url }, async () => {
@@ -117,6 +133,79 @@ for (const provider of ["sqlite", "postgresql"]) {
     } finally {
       await db.dropTables();
       await db.close();
+    }
+  });
+  test(`a delete through a child model over tables without a cascade fails and deletes nothing (${provider})`, { skip: !enabled || !url }, async () => {
+    const registry = new Registry();
+    const models = loads(`datasource db {\n provider = "${provider}"\n}\n${source}`, { registry });
+    const [Person, Employee, Manager] = ["Person", "Employee", "Manager"].map((name) => models[name]!);
+    const field = (model: unknown, name: string) => (model as Record<string, { eq(value: unknown): unknown }>)[name]!;
+    const db = await connect(url!, { registry, default: false });
+    const objects = (model: unknown) => (model as { objects: { using(db: unknown): Objects } }).objects.using(db);
+    await db.dropTables();
+    // Tables made by hand: the manager key has no ON DELETE CASCADE.
+    for (const statement of [
+      "CREATE TABLE composition06_node_people (id INTEGER PRIMARY KEY, name TEXT NOT NULL)",
+      "CREATE TABLE composition06_node_employees (id INTEGER PRIMARY KEY REFERENCES composition06_node_people (id) ON DELETE CASCADE, salary INTEGER NOT NULL)",
+      "CREATE TABLE composition06_node_managers (id INTEGER PRIMARY KEY REFERENCES composition06_node_employees (id), level INTEGER NOT NULL)",
+      "CREATE TABLE composition06_node_customers (id INTEGER PRIMARY KEY, points INTEGER NOT NULL)",
+      "INSERT INTO composition06_node_people (id, name) VALUES (1, 'Alice')",
+      "INSERT INTO composition06_node_employees (id, salary) VALUES (1, 5)",
+      "INSERT INTO composition06_node_managers (id, level) VALUES (1, 1)",
+    ]) await db.execute(statement);
+    try {
+      await assert.rejects(async () => { await objects(Manager).filter(field(Manager, "name").eq("Alice")).delete(); }, /ON DELETE CASCADE.*composition06_node_managers\.id/);
+      assert.deepEqual(await Promise.all([Person, Employee, Manager].map((model) => objects(model).count())), [1, 1, 1]);
+    } finally {
+      for (const table of ["managers", "employees", "customers", "people"]) await db.execute(`DROP TABLE composition06_node_${table}`);
+      await db.close();
+    }
+  });
+  test(`a composed delete checks the cascades again after a script changes them (${provider})`, { skip: !enabled || !url }, async () => {
+    const registry = new Registry();
+    const models = loads(`datasource db {\n provider = "${provider}"\n}\n${source}`, { registry });
+    const Manager = models["Manager"]!;
+    const db = await connect(url!, { registry, default: false });
+    const remove = () => (Manager as unknown as { objects: { using(db: unknown): Objects } }).objects.using(db).filter(name(Manager)).delete();
+    const plain = "id INTEGER PRIMARY KEY REFERENCES composition06_node_employees (id)";
+    try {
+      await handMadeTables(db, plain);
+      await assert.rejects(async () => { await remove(); }, /composition06_node_managers\.id/);
+      // The failure was not cached: the next delete sees the cascade that was added.
+      await handMadeTables(db, `${plain} ON DELETE CASCADE`);
+      await remove();
+      // A script that drops the cascade clears the passed check, so the next delete fails again.
+      await handMadeTables(db, plain);
+      await assert.rejects(async () => { await remove(); }, /composition06_node_managers\.id/);
+      await db.transaction(async () => {
+        await assert.rejects(async () => { await remove(); }, /composition06_node_managers\.id/);
+      });
+    } finally {
+      await dropHandMadeTables(db);
+      await db.close();
+    }
+  });
+  test(`a composed delete compares key names without case and needs foreign_keys on sqlite (${provider})`, { skip: !enabled || provider !== "sqlite" }, async () => {
+    const registry = new Registry();
+    const models = loads(`datasource db {\n provider = "sqlite"\n}\n${source}`, { registry });
+    const Manager = models["Manager"]!;
+    const remove = (db: unknown) => (Manager as unknown as { objects: { using(db: unknown): Objects } }).objects.using(db).filter(name(Manager)).delete();
+    const db = await connect("sqlite://:memory:", { registry, default: false });
+    try {
+      await handMadeTables(db, "ID INTEGER PRIMARY KEY REFERENCES COMPOSITION06_NODE_EMPLOYEES (ID) ON DELETE CASCADE");
+      await remove(db);
+    } finally {
+      await dropHandMadeTables(db);
+      await db.close();
+    }
+    const off = await connect("sqlite://:memory:", { registry, default: false });
+    try {
+      await handMadeTables(off, "id INTEGER PRIMARY KEY REFERENCES composition06_node_employees (id) ON DELETE CASCADE");
+      await off.execute("PRAGMA foreign_keys = OFF");
+      await assert.rejects(async () => { await remove(off); }, /PRAGMA foreign_keys = ON/);
+    } finally {
+      await dropHandMadeTables(off);
+      await off.close();
     }
   });
   test(`a failed composed insert marks the enclosing transaction (${provider})`, { skip: !enabled || !url }, async () => {

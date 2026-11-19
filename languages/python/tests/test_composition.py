@@ -123,6 +123,105 @@ async def test_a_delete_through_a_child_model_removes_every_level_and_counts_lik
 
 
 @pytest.mark.parametrize("provider", ["sqlite", "postgresql"])
+async def test_a_delete_through_a_child_model_over_tables_without_a_cascade_fails_and_deletes_nothing(provider):
+    url = "sqlite://:memory:" if provider == "sqlite" else os.environ.get("ORM_TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("set ORM_TEST_DATABASE_URL for PostgreSQL")
+    registry = monorm.Registry()
+    models = monorm.loads(f'datasource db {{\n provider = "{provider}"\n}}\n' + SOURCE, registry=registry)
+    Person, Employee, Manager = (models[k] for k in ("Person", "Employee", "Manager"))
+    db = await monorm.connect(url, registry=registry, default=False)
+    await db.drop_tables()
+    # Tables made by hand: the manager key has no ON DELETE CASCADE.
+    for statement in (
+        "CREATE TABLE composition06_people (id INTEGER PRIMARY KEY, name TEXT NOT NULL)",
+        "CREATE TABLE composition06_employees (id INTEGER PRIMARY KEY REFERENCES composition06_people (id) ON DELETE CASCADE, salary INTEGER NOT NULL)",
+        "CREATE TABLE composition06_managers (id INTEGER PRIMARY KEY REFERENCES composition06_employees (id), level INTEGER NOT NULL)",
+        "CREATE TABLE composition06_customers (id INTEGER PRIMARY KEY, points INTEGER NOT NULL)",
+        "INSERT INTO composition06_people (id, name) VALUES (1, 'Alice')",
+        "INSERT INTO composition06_employees (id, salary) VALUES (1, 5)",
+        "INSERT INTO composition06_managers (id, level) VALUES (1, 1)",
+    ):
+        await db.execute(statement)
+    try:
+        with pytest.raises(monorm.QueryError, match="ON DELETE CASCADE.*composition06_managers.id"):
+            await Manager.objects.using(db).filter(Manager.name == "Alice").delete()
+        assert [await m.objects.using(db).count() for m in (Person, Employee, Manager)] == [1, 1, 1]
+    finally:
+        for table in ("managers", "employees", "customers", "people"):
+            await db.execute(f"DROP TABLE composition06_{table}")
+        await db.close()
+
+
+async def _hand_made_tables(db, manager_key):
+    """The composition06 tables, empty, with `manager_key` as the manager level key."""
+    await db.drop_tables()
+    for statement in (
+        "CREATE TABLE composition06_people (id INTEGER PRIMARY KEY, name TEXT NOT NULL)",
+        "CREATE TABLE composition06_employees (id INTEGER PRIMARY KEY REFERENCES composition06_people (id) ON DELETE CASCADE, salary INTEGER NOT NULL)",
+        f"CREATE TABLE composition06_managers ({manager_key}, level INTEGER NOT NULL)",
+        "CREATE TABLE composition06_customers (id INTEGER PRIMARY KEY REFERENCES composition06_people (id) ON DELETE CASCADE, points INTEGER NOT NULL)",
+    ):
+        await db.execute(statement)
+
+
+async def _drop_hand_made_tables(db):
+    for table in ("managers", "employees", "customers", "people"):
+        await db.execute(f"DROP TABLE IF EXISTS composition06_{table}")
+
+
+@pytest.mark.parametrize("provider", ["sqlite", "postgresql"])
+async def test_a_composed_delete_checks_the_cascades_again_after_a_script_changes_them(provider):
+    url = "sqlite://:memory:" if provider == "sqlite" else os.environ.get("ORM_TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("set ORM_TEST_DATABASE_URL for PostgreSQL")
+    registry = monorm.Registry()
+    models = monorm.loads(f'datasource db {{\n provider = "{provider}"\n}}\n' + SOURCE, registry=registry)
+    Manager = models["Manager"]
+    db = await monorm.connect(url, registry=registry, default=False)
+    plain = "id INTEGER PRIMARY KEY REFERENCES composition06_employees (id)"
+    try:
+        await _hand_made_tables(db, plain)
+        with pytest.raises(monorm.QueryError, match="composition06_managers.id"):
+            await Manager.objects.using(db).filter(Manager.name == "Alice").delete()
+        # The failure was not cached: the next delete sees the cascade that was added.
+        await _hand_made_tables(db, plain + " ON DELETE CASCADE")
+        await Manager.objects.using(db).filter(Manager.name == "Alice").delete()
+        # A script that drops the cascade clears the passed check, so the next delete fails again.
+        await _hand_made_tables(db, plain)
+        with pytest.raises(monorm.QueryError, match="composition06_managers.id"):
+            await Manager.objects.using(db).filter(Manager.name == "Alice").delete()
+        async with db.transaction():
+            with pytest.raises(monorm.QueryError, match="composition06_managers.id"):
+                await Manager.objects.using(db).filter(Manager.name == "Alice").delete()
+    finally:
+        await _drop_hand_made_tables(db)
+        await db.close()
+
+
+async def test_a_composed_delete_compares_key_names_without_case_and_needs_foreign_keys_on_sqlite():
+    registry = monorm.Registry()
+    models = monorm.loads('datasource db {\n provider = "sqlite"\n}\n' + SOURCE, registry=registry)
+    Manager = models["Manager"]
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
+    try:
+        await _hand_made_tables(db, "ID INTEGER PRIMARY KEY REFERENCES COMPOSITION06_EMPLOYEES (ID) ON DELETE CASCADE")
+        await Manager.objects.using(db).filter(Manager.name == "Alice").delete()
+    finally:
+        await _drop_hand_made_tables(db)
+        await db.close()
+    off = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
+    try:
+        await _hand_made_tables(off, "id INTEGER PRIMARY KEY REFERENCES composition06_employees (id) ON DELETE CASCADE")
+        await off.execute("PRAGMA foreign_keys = OFF")
+        with pytest.raises(monorm.QueryError, match="PRAGMA foreign_keys = ON"):
+            await Manager.objects.using(off).filter(Manager.name == "Alice").delete()
+    finally:
+        await _drop_hand_made_tables(off)
+        await off.close()
+
+
+@pytest.mark.parametrize("provider", ["sqlite", "postgresql"])
 async def test_a_failed_composed_insert_marks_the_enclosing_transaction(provider):
     url = "sqlite://:memory:" if provider == "sqlite" else os.environ.get("ORM_TEST_DATABASE_URL")
     if not url:

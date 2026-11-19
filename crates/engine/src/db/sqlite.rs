@@ -81,6 +81,8 @@ struct Worker {
     interrupt: rusqlite::InterruptHandle,
     /// A rollback failed: the connection may hold a transaction nobody can end, so it takes no more jobs.
     quarantined: AtomicBool,
+    /// Shared by the driver and its transactions: they use one connection.
+    cascades: super::CascadeCache,
 }
 
 impl Worker {
@@ -123,7 +125,7 @@ impl SqliteDriver {
             }
         }).map_err(|e| DbError::other(e.to_string()))?;
         let interrupt = opened.await.map_err(|_| closed())??;
-        Ok(Self { worker: Arc::new(Worker { sender: Mutex::new(Some(sender)), next_savepoint: AtomicU64::new(0), interrupt, quarantined: AtomicBool::new(false) }), gate: Arc::new(AsyncMutex::new(())) })
+        Ok(Self { worker: Arc::new(Worker { sender: Mutex::new(Some(sender)), next_savepoint: AtomicU64::new(0), interrupt, quarantined: AtomicBool::new(false), cascades: Default::default() }), gate: Arc::new(AsyncMutex::new(())) })
     }
 
     async fn with<T: Send + 'static>(&self, f: impl FnOnce(&mut Connection) -> DbResult<T> + Send + 'static) -> DbResult<T> {
@@ -249,6 +251,7 @@ fn query_text(conn: &mut Connection, sql: String) -> DbResult<Vec<Vec<Option<Str
 }
 
 impl Executor for SqliteDriver {
+    fn cascade_cache(&self) -> Option<&super::CascadeCache> { Some(&self.worker.cascades) }
     fn dialect(&self) -> Dialect { Dialect::Sqlite }
     fn query(&self, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<Box<dyn RowSet>>> { Box::pin(self.with(move |c| query(c, sql, args))) }
     fn fetch(&self, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<Box<dyn RawRows>>> { Box::pin(self.with(move |c| fetch(c, sql, args))) }
@@ -350,6 +353,7 @@ impl SqliteTx {
 }
 
 impl Executor for SqliteTx {
+    fn cascade_cache(&self) -> Option<&super::CascadeCache> { Some(&self.state.worker.cascades) }
     fn dialect(&self) -> Dialect { Dialect::Sqlite }
     fn query(&self, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<Box<dyn RowSet>>> { Box::pin(self.with(move |c| query(c, sql, args))) }
     fn fetch(&self, sql: String, args: Vec<Value>) -> BoxFuture<'_, DbResult<Box<dyn RawRows>>> { Box::pin(self.with(move |c| fetch(c, sql, args))) }
