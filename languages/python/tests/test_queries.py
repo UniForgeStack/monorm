@@ -154,6 +154,7 @@ async def test_instances_are_read_only(clean):
         User(email="x", name="y")
 
 
+@pytest.mark.case("await_runs_a_query_set_once_all_queries_afresh")
 async def test_result_cache(clean, observe_queries):
     await User.objects.insert(email="a@example.com", name="A")
     qs = User.objects.filter(User.name != "Z")
@@ -167,6 +168,7 @@ async def test_result_cache(clean, observe_queries):
         again = await qs
     assert events == []
     assert names(again) == ["A"] and again == first and again is not first
+    assert again[0] is first[0]
     assert [u.name async for u in qs] == ["A"]
     # Builders and all() are new query sets: they query again. So does Model.objects.
     assert names(await qs.all()) == names(await qs.order_by(User.name)) == ["A", "B"]
@@ -179,6 +181,7 @@ async def test_result_cache(clean, observe_queries):
         a, b = await asyncio.gather(fresh, fresh)
     assert len(events) == 1
     assert names(a) == names(b) == ["A", "B", "C"] and fresh._result is not None
+    assert a[0] is b[0]
     rows = User.objects.select(User.name)
     assert await rows == await rows
     # A failed run isn't kept.
@@ -273,6 +276,7 @@ async def test_nested_and_reverse_paths(clean):
     assert len(await Post.objects.filter(Post.author.email.endswith("@example.com"))) == 3
 
 
+@pytest.mark.case("load_a_to_one_relation")
 async def test_load_to_one(clean, observe_queries):
     await seed()
     query = Comment.objects.load(Comment.post.author, Comment.author).order_by(Comment.id)
@@ -296,6 +300,7 @@ async def test_an_unloaded_to_one_relation_gives_not_loaded(clean):
     assert c.author is None  # null FK needs no loading
 
 
+@pytest.mark.case("load_a_to_many_relation")
 async def test_load_to_many(clean, observe_queries):
     await seed()
     query = User.objects.load(User.posts).order_by(User.name)
@@ -379,6 +384,7 @@ async def test_update_and_delete(clean):
     assert carol.name == "Caroline"
 
 
+@pytest.mark.case("update_and_delete_returning_rows")
 async def test_update_and_delete_returning(clean):
     alice, bob, carol, (a1, a2, b1) = await seed()
     posts = await Post.objects.filter(Post.author_id == alice.id).update(views=Post.views + 1).returning()
@@ -390,6 +396,18 @@ async def test_update_and_delete_returning(clean):
     assert [p.title for p in gone] == ["bob's old"]
     assert await Post.objects.count() == 2
 
+
+async def test_load_reload_overwrites_the_named_columns_from_the_row(clean):
+    row, *_ = await seed()
+    await User.objects.filter(User.id == row.id).update(name="Changed")
+    assert (await row.load(User.name)).name == "Alice"  # loaded: not read again
+    assert (await row.load(User.name, reload=True)).name == "Changed"
+    await User.objects.filter(User.id == row.id).update(name="Again")
+    assert (await row.load(reload=True)).name == "Again"
+
+
+async def test_unawaited_update_warns(clean):
+    await seed()
     # A statement that is never awaited warns, like an un-awaited coroutine.
     with pytest.warns(RuntimeWarning, match="never awaited"):
         Post.objects.all().update(views=0)
@@ -584,6 +602,7 @@ async def test_select_rows(clean):
     ]
 
 
+@pytest.mark.case("select_the_model_with_aggregates_over_relations")
 async def test_select_model_with_relation_aggregates(clean):
     alice, bob, carol, (a1, a2, b1) = await seed()
     from monorm import func
@@ -640,6 +659,7 @@ async def test_select_model_with_relation_aggregates(clean):
     assert names(await User.objects.filter(func.coalesce(func.sum(User.posts.views), 0) > 60)) == ["Bob"]
 
 
+@pytest.mark.case("subqueries_with_in")
 async def test_subqueries(clean):
     alice, bob, carol, (a1, a2, b1) = await seed()
     authors = User.objects.filter(User.name.in_(["Alice", "Carol"])).select(User.id)
@@ -647,6 +667,8 @@ async def test_subqueries(clean):
     assert [p.title for p in await Post.objects.filter(Post.author_id.not_in(authors))] == ["bob's old"]
     popular = Post.objects.filter(Post.views >= 50).select(Post.author_id)
     assert names(await User.objects.filter(User.id.in_(popular))) == ["Alice", "Bob"]
+    assert await Post.objects.filter(Post.id.in_([])).count() == 0
+    assert await Post.objects.filter(Post.id.not_in([])).count() == 3
 
 
 async def test_batches(clean, observe_queries):
@@ -716,6 +738,7 @@ async def test_row_locks(clean):
             await _in_new_tx(lambda: Post.objects.lock(nowait=True).filter(Post.id == a1.id))
 
 
+@pytest.mark.case("a_bound_set_locks_the_row_of_an_object")
 async def test_bound_lock_replaces_refresh_lock(clean):
     alice, bob, _, _ = await seed()
     db = monorm.get_database()
@@ -752,6 +775,7 @@ async def test_bound_lock_replaces_refresh_lock(clean):
     await User.objects.filter(User.id == bob.id).delete()
     async with db.transaction():
         assert await bob.qs().lock(skip_locked=True) == []
+        assert await bob.qs().lock() == []
     with pytest.raises(User.DoesNotExist):
         await bob.load(reload=True)
 
@@ -809,6 +833,7 @@ async def test_advisory_locks(clean):
     assert await _in_new_tx(lambda: db.lock("import", nowait=True)) is True  # released at commit
 
 
+@pytest.mark.case("integrity_errors")
 async def test_integrity_error(clean):
     a = await User.objects.insert(email="dup@example.com", name="A")
     with pytest.raises(monorm.IntegrityError) as e:
@@ -816,11 +841,13 @@ async def test_integrity_error(clean):
     assert e.value.sqlstate == "23505"
     assert e.value.constraint == "users_email_key"
     assert e.value.detail == "Key (email)=(dup@example.com) already exists."
+    assert str(e.value).startswith("ERROR (23505)")
     with pytest.raises(monorm.IntegrityError) as e:
         await Post.objects.insert(author_id=a.id + 1000, title="t", body="b")
     assert (e.value.sqlstate, e.value.constraint) == ("23503", "posts_author_id_fkey")
     with pytest.raises(monorm.DatabaseError) as e:
         await monorm.get_database().execute("SELECT 1/0")
+    assert not isinstance(e.value, monorm.IntegrityError)
     assert (e.value.sqlstate, e.value.constraint, e.value.detail) == (
         "22012",
         None,
@@ -861,6 +888,16 @@ async def test_concurrent_queries(clean):
     assert counts[0] == 2 and counts[-1] == 2
 
 
+@pytest.mark.case("instance_load_and_update_name_a_missing_row_refresh_is_gone")
 async def test_refresh_is_removed(clean):
-    alice, *_ = await seed()
+    alice, bob, *_ = await seed()
     assert not hasattr(alice, "refresh")
+    await User.objects.filter(User.id == bob.id).delete()
+    with pytest.raises(User.DoesNotExist):
+        await bob.load(reload=True)
+    with pytest.raises(User.DoesNotExist):
+        await bob.load(User.name, reload=True)
+    with pytest.raises(User.DoesNotExist):
+        await bob.update(name="x")
+    await bob.delete()
+    assert bob.name == "Bob"

@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { NotLoaded, QueryError, connect, exists, func, getDatabase, of, outer, statementInspection, window } from "../src/index.js";
+import { Literal } from "../src/expr.js";
 import { DB } from "../src/model.js";
 import { Decimal } from "../src/decimal.js";
 import { Comment, Post, Profile, Role, User } from "./blog/models.js";
@@ -818,6 +819,111 @@ test("lateral disabled connection uses scalar subqueries", async () => {
 test("load set of another model raises", () => {
   assert.throws(() => User.objects.load(Comment.objects.all() as never), TypeError);
   assert.throws(() => User.objects.load(Post.comments.objects as never), /Post\.comments does not start at User/);
+});
+
+const rejectsQuery = (run: () => PromiseLike<unknown>, message: RegExp) =>
+  assert.rejects(Promise.resolve(run()), (e: unknown) => e instanceof QueryError && message.test(e.message));
+
+test("array_agg", async () => {
+  const { alice, bob } = await seed();
+  // Grouped: the elements in the order given; the empty group does not exist.
+  const rows = await Post.objects
+    .orderBy(Post.authorId)
+    .select({
+      authorId: Post.authorId,
+      byViews: func.arrayAgg(Post.title, { orderBy: Post.views.desc() }),
+      views: func.arrayAgg(Post.views, { orderBy: [Post.views] }),
+      popular: func.arrayAgg(Post.title, { filter: Post.views.gte(20), orderBy: Post.title }),
+    })
+    .groupBy(Post.authorId)
+    .all();
+  assert.deepEqual(rows.map((r) => [r.authorId, r.byViews, r.views, r.popular]), [
+    [alice.id, ["a2", "a3", "a1"], [5, 20, 50], ["a2", "a3"]],
+    [bob.id, ["b1"], [100], ["b1"]],
+  ]);
+  assert.deepEqual(await Post.objects.select({ v: func.arrayAgg(Post.views, { distinct: true, orderBy: Post.views }) }).scalar(), [5, 20, 50, 100]);
+  // NULL elements are kept; no rows gives null, not [].
+  assert.deepEqual(await Comment.objects.select({ v: func.arrayAgg(Comment.authorId, { orderBy: Comment.body }) }).scalar(), [bob.id, null, alice.id]);
+  assert.equal(await Post.objects.filter(Post.views.gt(1000)).select({ v: func.arrayAgg(Post.title) }).scalar(), null);
+  // Over a relation: the two aggregates share one LATERAL join, null for a user without posts.
+  const users = await User.objects
+    .orderBy(User.id)
+    .select({ name: User.name, titles: func.arrayAgg(User.posts.title, { orderBy: User.posts.views.desc() }), n: func.count(User.posts) })
+    .all();
+  assert.deepEqual(users.map((u) => [u.name, u.titles, u.n]), [["Alice", ["a2", "a3", "a1"], 3n], ["Bob", ["b1"], 1n], ["Carol", null, 0n]]);
+  assert.deepEqual(users[0]!.titles, ["a2", "a3", "a1"]);
+  const filtered = await User.objects
+    .orderBy(User.id)
+    .select({ v: func.arrayAgg(User.posts.title, { filter: User.posts.views.lt(50), orderBy: User.posts.title }) })
+    .scalars();
+  assert.deepEqual(filtered, [["a1", "a3"], null, null]);
+});
+
+test("array_agg over a to-one tail keeps null elements", async () => {
+  await seed();
+  const posts = Post.objects.orderBy(Post.title);
+  const names = func.arrayAgg(Post.comments.author.name, { orderBy: Post.comments.author.name });
+  // The comment without an author stays an element (NULL sorts last); a post without comments gives null.
+  assert.deepEqual((await posts.select({ title: Post.title, names }).all()).map((r) => [r.title, r.names]), [
+    ["a1", null],
+    ["a2", ["Bob", null]],
+    ["a3", null],
+    ["b1", ["Alice"]],
+  ]);
+  // The key may sit on the relation itself: the tail is opened below it.
+  const byId = func.arrayAgg(Post.comments.author.name, { orderBy: Post.comments.id });
+  assert.deepEqual((await posts.select({ title: Post.title, byId }).all()).map((r) => r.byId), [null, ["Bob", null], null, ["Alice"]]);
+  // In a LATERAL group: the count of the to-one path counts its rows, not the missing author.
+  const rows = await posts.select({ title: Post.title, names, n: func.count(Post.comments.author) }).all();
+  assert.deepEqual(rows.map((r) => [r.title, r.names, Number(r.n)]), [
+    ["a1", null, 0],
+    ["a2", ["Bob", null], 1],
+    ["a3", null, 0],
+    ["b1", ["Alice"], 1],
+  ]);
+  // The count of a plain to-one tail beside it, with a filter on the tail.
+  const counted = await posts.select({ title: Post.title, n: func.count(Post.comments.author, { filter: Post.comments.author.name.eq("Bob") }) }).all();
+  assert.deepEqual(counted.map((r) => Number(r.n)), [0, 1, 0, 0]);
+});
+
+test("aggregate over a to-one key joins at the root", async () => {
+  const { alice, bob } = await seed();
+  const byAuthor = func.arrayAgg(Post.title, { orderBy: [Post.author.name, Post.id] });
+  assert.deepEqual(await Post.objects.select({ v: byAuthor }).scalars(), [["a1", "a2", "a3", "b1"]]);
+  const rows = await Post.objects.orderBy(Post.authorId).select({ a: Post.authorId, v: byAuthor }).groupBy(Post.authorId).all();
+  assert.deepEqual(rows.map((r) => [r.a, r.v]), [[alice.id, ["a1", "a2", "a3"]], [bob.id, ["b1"]]]);
+  // A NULL foreign key keeps its row: the LEFT JOIN gives a NULL key, which sorts last.
+  const byCommenter = func.arrayAgg(Comment.body, { orderBy: [Comment.author.name, Comment.id] });
+  assert.deepEqual(await Comment.objects.select({ v: byCommenter }).scalars(), [["c3", "c1", "c2"]]);
+  const byPost = func.arrayAgg(Comment.body, { orderBy: [Comment.post.title, Comment.author.name, Comment.id] });
+  assert.deepEqual(await Comment.objects.select({ v: byPost }).scalars(), [["c1", "c2", "c3"]]);
+});
+
+test("array_agg rejects invalid order keys", async () => {
+  await seed();
+  // An outer-only key is constant inside the subquery.
+  await rejectsQuery(() => User.objects.select({ v: func.arrayAgg(User.posts.title, { orderBy: User.name }) }), /reads no column of the relation path/);
+  await rejectsQuery(() => Post.objects.select({ v: func.arrayAgg(Post.title, { distinct: true, orderBy: Post.views }) }), /can only order by its argument/);
+  await rejectsQuery(() => Post.objects.select({ v: func.arrayAgg(Post.title, { orderBy: func.rowNumber().over() }) }), /window function/);
+  await rejectsQuery(() => Post.objects.select({ v: func.arrayAgg(Post.title, { orderBy: func.count(Post.id) }) }), /constant for each group/);
+  await rejectsQuery(() => User.objects.select({ v: func.arrayAgg(User.posts.title, { orderBy: func.count(User.posts) }) }), /constant for each group/);
+  // A local argument with a to-many key.
+  await rejectsQuery(() => User.objects.select({ v: func.arrayAgg(User.name, { orderBy: User.posts.title }) }), /does not/);
+  // Valid shapes stay valid.
+  const views = await Post.objects.select({ v: func.arrayAgg(Post.views.add(1), { distinct: true, orderBy: Post.views.add(1) }) }).scalar();
+  assert.deepEqual(views, [6, 21, 51, 101]);
+  const titles = await Post.objects.select({ v: func.arrayAgg(Post.title, { orderBy: new Literal(1) }) }).scalar();
+  assert.deepEqual([...titles!].sort(), ["a1", "a2", "a3", "b1"]);
+  const cased = await Post.objects.select({ v: func.arrayAgg(Post.title, { orderBy: func.case([Post.views.gt(30), 0], { default: 1 }) }) }).scalar();
+  assert.deepEqual([...cased!].sort(), ["a1", "a2", "a3", "b1"]);
+  // An aggregate key on a deeper relation path, and a key with a column on and a column off the path.
+  const deeper = await User.objects.select({ v: func.arrayAgg(User.name, { orderBy: func.count(User.posts) }) }).scalar();
+  assert.deepEqual(deeper, ["Carol", "Bob", "Alice"]);
+  const mixed = await User.objects
+    .orderBy(User.id)
+    .select({ name: User.name, t: func.arrayAgg(User.posts.title, { orderBy: User.posts.views.add(func.length(User.name)) }) })
+    .all();
+  assert.deepEqual(mixed[0]!.t, ["a1", "a3", "a2"]);
 });
 
 test("nested aggregate needs a deeper path", async () => {

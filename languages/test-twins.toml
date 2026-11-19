@@ -156,17 +156,9 @@
 "pull::pull_reports_what_it_cannot_write" = "engine-covered: crates/engine/tests/pull.rs::pull_reports_what_it_cannot_write"
 "pull::pull_without_create_writes_the_schema" = "engine-covered: crates/cli/tests/binary.rs::pull_and_baseline_without_create_privilege"
 # languages/python/tests/test_queries.py
-"queries::bound_lock_replaces_refresh_lock" = "change: twin queries::a_bound_set_locks_the_row_of_an_object; Python adds ValueError on `nowait`+`skip_locked` and `load(reload=True) is alice`;"
 "queries::instances_are_read_only" = "one-language: Python runtime guard; TypeScript checks read-only instances in"
-"queries::integrity_error" = "change: twin queries::integrity_errors; TS also asserts the message starts with `ERROR (23505)` and the 1/0 error is not an IntegrityError: Python adds both and"
-"queries::load_to_many" = "change: twin queries::load_a_to_many_relation; Python also asserts `inspect()` = 2 statements with batching, 2 query events, and 0 events for `await alice.posts`: TS"
-"queries::load_to_one" = "change: twin queries::load_a_to_one_relation; Python also asserts `inspect()` joins_count=3 and exactly 1 query: TS adds both."
-"queries::refresh_is_removed" = "change: TS also deletes Bob and asserts DoesNotExist from `load(reload)`, `load(User.name, reload)` and `update`, and that `bob.delete()` is a no-op that keeps"
-"queries::result_cache" = "change: twin queries::await_runs_a_query_set_once_all_queries_afresh; Each side adds the other's checks;"
-"queries::select_model_with_relation_aggregates" = "change: TS asserts only the page shape: TS adds the three."
-"queries::subqueries" = "change: twin queries::subqueries_with_in; TS also asserts `in([])` counts 0 and `notIn([])` counts 3: Python adds `in_([])` and `not_in([])` and renames to"
 "queries::unawaited_insert_warns" = "one-language: Python-only: RuntimeWarning for a never-awaited statement"
-"queries::update_and_delete_returning" = "change: twin queries::update_and_delete_returning_rows; Python also has a 'never awaited' RuntimeWarning block: move it into a Python-only test (beside"
+"queries::unawaited_update_warns" = "one-language: Python-only: RuntimeWarning for a never-awaited update statement"
 # languages/python/tests/test_query_api.py
 "query_api::bound_load_rejects_a_model_subclass" = "one-language: Python-only: a Model subclass with its own registry"
 "query_api::cli_query_set_flag_overrides_config" = "engine-covered: crates/cli/tests/binary.rs::a_query_set_flag_overrides_the_project_config"
@@ -176,11 +168,7 @@
 "query_api::generated_query_set_types" = "one-language: Python type test: mypy and pyright over generated query-set stubs; TypeScript type-checks languages/js/test/typing/queries in"
 "query_api::one_row_repr" = "one-language: Python-only: __repr__ text"
 # languages/python/tests/test_query_features.py
-"query_features::aggregate_over_a_to_one_key_joins_at_the_root" = "change: twin queries::aggregates_over_to_one_paths_join_at_the_root; TS adds the grouped and two-hop cases."
-"query_features::array_agg" = "change: TS covers the relation, distinct, NULL and empty cases but not the grouped `groupBy(authorId)` arrays: TS adds them."
 "query_features::array_agg_errors" = "engine-covered: crates/engine/tests/functions.rs::array_agg_plan_errors"
-"query_features::array_agg_over_a_to_one_tail_keeps_null_elements" = "change: TS adds the filtered count."
-"query_features::array_agg_rejects_invalid_order_keys" = "change: TS checks only the QueryError class, lacks the window key and the valid shapes except one: TS adds them."
 "query_features::case_expression" = "change: twin query_features::case_expressions; TS adds the order_by, the model-with-CASE annotate and the float case."
 "query_features::correlated_in_subquery" = "change: twin query_features::a_correlated_in_subquery; TS checks only the names: TS adds the statementInspection check."
 "query_features::cte_from_filters_window" = "change: twin query_features::reading_rows_from_a_cte; TS adds the instance check;"
@@ -319,23 +307,9 @@
 # languages/js/test/proxy.test.ts
 # languages/js/test/pull.test.ts
 # languages/js/test/queries.test.ts
-"queries::a_bound_set_locks_the_row_of_an_object" = "change: twin queries::bound_lock_replaces_refresh_lock; Python adds plain `lock()` on a deleted row gives `[]`;"
-"queries::aggregates_over_to_one_paths_join_at_the_root" = "change: TS adds the grouped and two-hop cases and drops the sum."
-"queries::array_agg_order_filter_distinct_null_and_empty_results" = "change: twin query_features::array_agg; TS adds it."
-"queries::array_agg_over_a_to_one_tail_keeps_the_null_elements" = "change: TS adds it."
-"queries::array_agg_rejects_order_keys_that_do_not_belong_to_its_argument" = "change: twin query_features::array_agg_rejects_invalid_order_keys; TS adds the messages, the window key and the valid shapes."
-"queries::await_runs_a_query_set_once_all_queries_afresh" = "change: twin queries::result_cache; TS adds `inspect()` and `onQuery` event counts (1, 0, and 1 for `Promise.all`);"
 "queries::first_last_at_and_get_start_no_query_until_awaited" = "change: twin selection_defaults::one_row_laziness_and_fresh_awaits; The bindings disagree: the owner picks one behavior, then both assert it."
-"queries::instance_load_and_update_name_a_missing_row_refresh_is_gone" = "change: twin queries::refresh_is_removed; Shared ID queries::instance_load_and_update_name_a_missing_row_refresh_is_gone."
-"queries::integrity_errors" = "change: twin queries::integrity_error; Shared ID queries::integrity_errors."
-"queries::load_a_to_many_relation" = "change: twin queries::load_to_many; Shared ID queries::load_a_to_many_relation."
-"queries::load_a_to_one_relation" = "change: twin queries::load_to_one; Shared ID queries::load_a_to_one_relation."
-"queries::load_reload_overwrites_the_named_columns_from_the_row" = "change: Each adds the other's checks."
 "queries::relation_comparison_rejects_null_prototype_objects_clearly" = "one-language: TypeScript-only: null-prototype objects"
-"queries::select_the_model_with_aggregates_over_relations" = "change: twin queries::select_model_with_relation_aggregates; Shared ID queries::select_the_model_with_aggregates_over_relations."
 "queries::string_lock_keys_hash_like_the_python_package_s" = "one-language: TypeScript-only: unit test of the JS blake2b port"
-"queries::subqueries_with_in" = "change: twin queries::subqueries; Shared ID queries::subqueries_with_in."
-"queries::update_and_delete_returning_rows" = "change: twin queries::update_and_delete_returning; Shared ID queries::update_and_delete_returning_rows."
 # languages/js/test/query-api.test.ts
 # languages/js/test/query-features.test.ts
 "query_features::a_case_of_plain_integers_decodes_as_number" = "one-language: TypeScript-only: an integer CASE decodes as number, not bigint"

@@ -37,11 +37,19 @@ test("insert returns the row with server defaults", async () => {
 
 test("await runs a query set once; all() queries afresh", async () => {
   await User.objects.insert({ email: "a@x.io", name: "A" });
+  const events: unknown[] = [];
+  const stop = getDatabase().onQuery((e) => events.push(e));
+  try {
   const qs = User.objects.filter(User.name.ne("Z"));
+  assert.deepStrictEqual(qs.inspect(), { statementCount: 1, hasBatching: false, statements: [statementInspection()] });
+  events.length = 0;
   const first = await qs;
+  assert.equal(events.length, 1);
   await User.objects.insert({ email: "b@x.io", name: "B" });
   // the same query set gives its first rows again, without a query; a copy each time
+  events.length = 0;
   const again = await qs;
+  assert.equal(events.length, 0);
   assert.deepEqual(again.map((u) => u.name), ["A"]);
   assert.notEqual(again, first);
   assert.equal(again[0], first[0]);
@@ -58,7 +66,9 @@ test("await runs a query set once; all() queries afresh", async () => {
   assert.equal((await User.objects).length, 3);
   // concurrent awaits share one run
   const fresh = User.objects.filter(User.name.ne("Z"));
+  events.length = 0;
   const [a, b] = await Promise.all([fresh, fresh]);
+  assert.equal(events.length, 1);
   assert.equal(a.length, 3);
   assert.equal(a[0], b[0]);
   const sel = User.objects.select({ name: User.name }).orderBy(User.name);
@@ -67,6 +77,7 @@ test("await runs a query set once; all() queries afresh", async () => {
   const bad = User.objects.filter(User.id.eq(param("id")));
   await assert.rejects(Promise.resolve(bad as never), QueryError);
   await assert.rejects(Promise.resolve(bad as never), QueryError);
+  } finally { stop(); }
 });
 
 test("all() is lazy: it sends no query until awaited", async () => {
@@ -190,7 +201,13 @@ test("nested and reverse paths", async () => {
 
 test("load a to-one relation", async () => {
   await seed();
-  const [first, anon] = await Comment.objects.load(Comment.post.author, Comment.author).orderBy(Comment.id).all();
+  const query = Comment.objects.load(Comment.post.author, Comment.author).orderBy(Comment.id);
+  assert.deepStrictEqual(query.inspect(), { statementCount: 1, hasBatching: false, statements: [statementInspection({ joinsCount: 3 })] });
+  const events: unknown[] = [];
+  const stop = getDatabase().onQuery((e) => events.push(e));
+  let comments;
+  try { comments = await query.all(); assert.equal(events.length, 1); } finally { stop(); }
+  const [first, anon] = comments;
   assert.equal(first!.post.title, "new post");
   assert.equal(first!.post.author.name, "Alice");
   assert.equal(first!.author?.name, "Bob");
@@ -207,10 +224,20 @@ test("an unloaded to-one relation gives NotLoaded", async () => {
 
 test("load a to-many relation", async () => {
   await seed();
-  const users = await User.objects.load(User.posts).orderBy(User.name).all();
-  assert.deepEqual(users.map((u) => u.posts.cached.length), [2, 1, 0]);
+  const query = User.objects.load(User.posts).orderBy(User.name);
+  assert.deepStrictEqual(query.inspect(), { statementCount: 2, hasBatching: true, statements: [statementInspection(), statementInspection({ hasBatching: true })] });
+  const events: unknown[] = [];
+  const stop = getDatabase().onQuery((e) => events.push(e));
+  let users;
+  try {
+    users = await query.all();
+    assert.equal(events.length, 2);
+    assert.deepEqual(users.map((u) => u.posts.cached.length), [2, 1, 0]);
+    events.length = 0;
+    assert.deepEqual((await users[0]!.posts.all()).map((p) => p.title), ["old draft", "new post"]);
+    assert.equal(events.length, 0); // the prefetched collection needs no additional query
+  } finally { stop(); }
   const alice = users[0]!;
-  assert.deepEqual((await alice.posts.all()).map((p) => p.title), ["old draft", "new post"]);
   // the reverse relation is filled in
   assert.equal((alice.posts.cached[0] as unknown as { author: unknown }).author, alice);
 });
@@ -397,7 +424,10 @@ test("a LATERAL group reads a to-one join", async () => {
 
 test("select the model with aggregates over relations", async () => {
   const { alice } = await seed();
-  const rows = await User.objects.select({ user: User, posts: func.count(User.posts), views: func.sum(User.posts.views) }).orderBy(User.id).all();
+  const query = User.objects.select({ user: User, posts: func.count(User.posts), views: func.sum(User.posts.views) }).orderBy(User.id);
+  // Same-relation aggregates share one LATERAL subquery: empty counts stay 0, empty sums null.
+  assert.deepStrictEqual(query.inspect(), { statementCount: 1, hasBatching: false, statements: [statementInspection({ joinsCount: 1, derivedCorrelated: 1 })] });
+  const rows = await query.all();
   assert.deepEqual(rows.map((r) => [r.user.name, r.posts, r.views]), [["Alice", 2n, 55n], ["Bob", 1n, 100n], ["Carol", 0n, null]]);
   assert.equal(rows[0]!.user.id, alice.id);
   const page = User.objects.select({ user: User, posts: func.count(User.posts), views: func.sum(User.posts.views) })
@@ -405,81 +435,20 @@ test("select the model with aggregates over relations", async () => {
   assert.deepStrictEqual(page.inspect().statements, [statementInspection({ scalarCorrelated: 2 })]);
   assert.deepEqual((await page.all()).map((r) => [r.user.name, r.posts, r.views]), [["Bob", 1n, 100n], ["Carol", 0n, null]]);
   // Per-aggregate filter and distinct inside one shared subquery, next to another relation.
-  const shared = await User.objects
+  const sharedQuery = User.objects
     .select({ name: User.name, popular: func.count(User.posts, { filter: User.posts.views.gt(10) }), views: func.sum(User.posts.views, { filter: User.posts.views.gt(10) }), d: func.count(User.posts.views, { distinct: true }), c: func.count(User.comments) })
-    .orderBy(User.id)
-    .all();
+    .orderBy(User.id);
+  assert.deepStrictEqual(sharedQuery.inspect().statements, [statementInspection({ joinsCount: 1, scalarCorrelated: 1, derivedCorrelated: 1 })]);
+  const shared = await sharedQuery.all();
   assert.deepEqual(shared, [{ name: "Alice", popular: 1n, views: 50n, d: 2n, c: 1n }, { name: "Bob", popular: 1n, views: 100n, d: 1n, c: 1n }, { name: "Carol", popular: 0n, views: null, d: 0n, c: 0n }]);
   // Two counts over different relations don't multiply each other (no JOIN fan-out).
-  const counts = await User.objects.select({ name: User.name, posts: func.count(User.posts), c: func.count(User.comments) }).orderBy(User.id).all();
+  const countsQuery = User.objects.select({ name: User.name, posts: func.count(User.posts), c: func.count(User.comments) }).orderBy(User.id);
+  assert.deepStrictEqual(countsQuery.inspect(), { statementCount: 1, hasBatching: false, statements: [statementInspection({ scalarCorrelated: 2 })] });
+  const counts = await countsQuery.all();
   assert.deepEqual(counts, [{ name: "Alice", posts: 2n, c: 1n }, { name: "Bob", posts: 1n, c: 1n }, { name: "Carol", posts: 0n, c: 0n }]);
   assert.equal(await User.objects.filter(User.id.eq(alice.id)).select({ n: func.count(User.posts.comments) }).scalar(), 2n);
   assert.deepEqual(names(await User.objects.filter(func.count(User.posts).gte(1)).all()), ["Alice", "Bob"]);
   assert.deepEqual(names(await User.objects.filter(func.coalesce(func.sum(User.posts.views), 0).gt(60)).all()), ["Bob"]);
-});
-
-test("array_agg: order, filter, distinct, NULL and empty results", async () => {
-  const { alice, bob } = await seed();
-  const rows = await User.objects
-    .select({
-      name: User.name,
-      titles: func.arrayAgg(User.posts.title, { orderBy: User.posts.views.desc() }),
-      small: func.arrayAgg(User.posts.title, { filter: User.posts.views.lt(50), orderBy: User.posts.title }),
-      n: func.count(User.posts),
-    })
-    .orderBy(User.id)
-    .all();
-  assert.deepEqual(rows, [
-    { name: "Alice", titles: ["new post", "old draft"], small: ["old draft"], n: 2n },
-    { name: "Bob", titles: ["bob's old"], small: null, n: 1n },
-    { name: "Carol", titles: null, small: null, n: 0n },
-  ]);
-  assert.deepEqual(await Post.objects.select({ v: func.arrayAgg(Post.views, { orderBy: Post.views.desc() }) }).scalar(), [100, 50, 5]);
-  assert.deepEqual(await Post.objects.select({ v: func.arrayAgg(Post.authorId, { distinct: true, orderBy: Post.authorId }) }).scalar(), [alice.id, bob.id]);
-  assert.equal(await Post.objects.filter(Post.views.gt(100000)).select({ v: func.arrayAgg(Post.title) }).scalar(), null);
-  assert.deepEqual(await Comment.objects.select({ a: func.arrayAgg(Comment.authorId, { orderBy: Comment.body }) }).scalar(), [null, alice.id, bob.id]);
-});
-
-test("array_agg rejects order keys that do not belong to its argument", async () => {
-  await seed();
-  const bad: Array<() => PromiseLike<unknown>> = [
-    () => User.objects.select({ v: func.arrayAgg(User.posts.title, { orderBy: User.name }) }),
-    () => Post.objects.select({ v: func.arrayAgg(Post.title, { distinct: true, orderBy: Post.views }) }),
-    () => Post.objects.select({ v: func.arrayAgg(Post.title, { orderBy: func.count(Post.id) }) }),
-    () => User.objects.select({ v: func.arrayAgg(User.posts.title, { orderBy: func.count(User.posts) }) }),
-    () => User.objects.select({ v: func.arrayAgg(User.name, { orderBy: User.posts.title }) }),
-    () => Post.objects.select({ v: func.sum(func.max(Post.author.id)) }),
-  ];
-  for (const run of bad) await assert.rejects(Promise.resolve(run()), QueryError);
-  assert.deepEqual(
-    await User.objects.select({ v: func.arrayAgg(User.name, { orderBy: func.count(User.posts) }) }).scalar(),
-    ["Carol", "Bob", "Alice"],
-  );
-});
-
-test("array_agg over a to-one tail keeps the NULL elements", async () => {
-  await seed();
-  const names = func.arrayAgg(Post.comments.author.name, { orderBy: Post.comments.author.name });
-  const byId = func.arrayAgg(Post.comments.author.name, { orderBy: Post.comments.id });
-  const rows = await Post.objects.select({ title: Post.title, names, byId }).orderBy(Post.title).all();
-  assert.deepEqual(rows, [
-    { title: "bob's old", names: ["Alice"], byId: ["Alice"] },
-    { title: "new post", names: ["Bob", null], byId: ["Bob", null] },
-    { title: "old draft", names: null, byId: null },
-  ]);
-  // In a LATERAL group the count of the to-one path counts its rows, not the missing author.
-  const grouped = await Post.objects.select({ title: Post.title, names, n: func.count(Post.comments.author) }).orderBy(Post.title).all();
-  assert.deepEqual(grouped.map((r) => r.n), [1n, 1n, 0n]);
-});
-
-test("aggregates over to-one paths join at the root", async () => {
-  const { alice, bob } = await seed();
-  const titles = func.arrayAgg(Post.title, { orderBy: [Post.author.name, Post.id] });
-  assert.deepEqual(await Post.objects.select({ titles }).scalar(), ["old draft", "new post", "bob's old"]);
-  assert.equal(await Post.objects.select({ total: func.sum(Post.author.id) }).scalar(), 2n * alice.id + bob.id);
-  // A NULL foreign key keeps its row: the LEFT JOIN gives a NULL key, which sorts last.
-  const bodies = func.arrayAgg(Comment.body, { orderBy: [Comment.author.name, Comment.id] });
-  assert.deepEqual(await Comment.objects.select({ bodies }).scalar(), ["hello", "nice, 100% agree", "anonymous"]);
 });
 
 test("subqueries with in()", async () => {
@@ -548,6 +517,8 @@ test("a bound set locks the row of an object", async () => {
   const other = await otherDatabase();
   try {
     await assert.rejects(async () => await alice.qs().lock(), TransactionRequired);
+    assert.throws(() => alice.qs().lock({ nowait: true, skipLocked: true } as never), TypeError);
+    assert.equal(await alice.load({ reload: true }), alice);
     await db.transaction(async () => {
       assert.deepEqual(await alice.qs().load(User.name).lock(), [alice]);
       // a partial read locks the whole row
