@@ -1445,7 +1445,7 @@ fn links_of(schema: &Schema, resources: &[Resource], r: &Resource) -> Vec<Link> 
 /// The column that names a record: the first plain text column of the list that is not part of the key and has no `see` permission.
 /// The list label of a foreign key and the filter chips of the UI use this one rule.
 pub(crate) fn name_of(r: &Resource) -> Option<&Column> {
-    r.columns.iter().find(|c| c.path.is_empty() && c.source == Source::Field && crate::list::is_text(c.ty) && !r.key_columns.iter().any(|k| k.label == c.label) && !r.see.contains_key(&c.label))
+    r.columns.iter().find(|c| c.path.is_empty() && c.source == Source::Field && crate::list::is_text(c.ty) && !c.ty.array && !r.key_columns.iter().any(|k| k.label == c.label) && !r.see.contains_key(&c.label))
 }
 
 /// The foreign-key columns of the list that can show the name of the related record.
