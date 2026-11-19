@@ -499,8 +499,8 @@ function trackRequests(page) {
   };
 }
 
-async function signedIn() {
-  const context = await browser.newContext({ timezoneId: ZONE, locale: "en-US" });
+async function signedIn(timezoneId = ZONE) {
+  const context = await browser.newContext({ timezoneId, locale: "en-US" });
   const page = await context.newPage();
   const problems = [];
   const idle = trackRequests(page);
@@ -597,6 +597,72 @@ test("a protobuf message shows as JSON, a bad JSON is a field error, and the edi
   await page.locator("pre.json-value").getByText('"new"').waitFor();
   await idle();
   assert.deepEqual(problems, [`HTTP 422: ${base}/admin/api/resources/Setting/1`, "console: Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)"]);
+  await context.close();
+});
+
+test("pickers, a switch, a select and a JSON editor load, change, validate and save, in the browser time zone", async () => {
+  const { context, page, problems, idle } = await signedIn();
+  await page.goto(`${base}/admin/Event/1/edit`);
+  await page.getByRole("heading", { name: "Change Event" }).waitFor();
+  // 03:04:05Z is 06:34:05 in Asia/Tehran (the browser drops zero seconds from a value: 08:00:00 reads 08:00); a date and a time of day have no zone and stay as stored.
+  assert.equal(await page.getByLabel("Starts").inputValue(), "2026-01-02T06:34:05");
+  assert.equal(await page.getByLabel("Day").inputValue(), "2026-03-04");
+  assert.equal(await page.getByLabel("At", { exact: true }).inputValue(), "09:30:15");
+  assert.equal(await page.getByLabel("Day").getAttribute("type"), "date");
+  assert.equal(await page.getByLabel("At", { exact: true }).getAttribute("type"), "time");
+  assert.equal(await page.getByLabel("Starts").getAttribute("type"), "datetime-local");
+  const live = page.getByRole("switch", { name: "Live" });
+  assert.equal(await live.isChecked(), true);
+  const mood = page.getByLabel("Mood");
+  assert.equal(await mood.evaluate((e) => e.tagName), "SELECT");
+  assert.equal(await mood.inputValue(), "tense");
+  const extra = page.getByLabel("Extra");
+  assert.equal(await extra.inputValue(), '{\n  "a": 1\n}');
+
+  // A bad JSON shows a message at once; Validate says so when it is good; Format indents it.
+  await extra.fill('{"a":');
+  await page.getByRole("status").filter({ hasText: "Not valid JSON" }).waitFor();
+  await extra.fill('{"b":[1,2]}');
+  await page.getByRole("button", { name: "Validate" }).click();
+  await page.getByRole("status").filter({ hasText: "Valid JSON" }).waitFor();
+  await page.getByRole("button", { name: "Format" }).click();
+  assert.equal(await extra.inputValue(), '{\n  "b": [\n    1,\n    2\n  ]\n}');
+
+  await page.getByLabel("Starts").fill("2026-01-02T08:00:00");
+  await page.getByLabel("Day").fill("2026-12-31");
+  await page.getByLabel("At", { exact: true }).fill("23:59:58");
+  await live.click();
+  await mood.selectOption("calm");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.waitForURL(`${base}/admin/Event/1`);
+  await idle();
+
+  await page.goto(`${base}/admin/Event/1/edit`);
+  assert.equal(await page.getByLabel("Starts").inputValue(), "2026-01-02T08:00");
+  assert.equal(await page.getByLabel("Day").inputValue(), "2026-12-31");
+  assert.equal(await page.getByLabel("At", { exact: true }).inputValue(), "23:59:58");
+  assert.equal(await page.getByRole("switch", { name: "Live" }).isChecked(), false);
+  assert.equal(await page.getByLabel("Mood").inputValue(), "calm");
+  await idle();
+  assert.deepEqual(problems, []);
+  await context.close();
+});
+
+test("a date keeps its day and a date with a time keeps its moment in a zone west of UTC", async () => {
+  const { context, page, problems, idle } = await signedIn("America/Los_Angeles");
+  await page.goto(`${base}/admin/Event/1/edit`);
+  await page.getByRole("heading", { name: "Change Event" }).waitFor();
+  // 08:00 in Tehran is 04:30Z, which is the evening before in Los Angeles; the date column does not move.
+  assert.equal(await page.getByLabel("Starts").inputValue(), "2026-01-01T20:30");
+  assert.equal(await page.getByLabel("Day").inputValue(), "2026-12-31");
+  await page.getByLabel("Starts").fill("2026-06-01T12:00:00");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.waitForURL(`${base}/admin/Event/1`);
+  await idle();
+  await page.goto(`${base}/admin/Event/1/edit`);
+  assert.equal(await page.getByLabel("Starts").inputValue(), "2026-06-01T12:00");
+  await idle();
+  assert.deepEqual(problems, []);
   await context.close();
 });
 

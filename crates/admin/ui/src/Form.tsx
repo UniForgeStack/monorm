@@ -5,9 +5,10 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Label from "@radix-ui/react-label";
 import * as api from "./api";
 import { PackageWidget, packageWidget, versionProblem, widgetCall, widgetStream } from "./Packages";
-import { cell, fromInput, inputType, toInput, type Input, type Zone } from "./format";
+import { cell, fromInput, toInput, widgetFor, type Input, type Zone } from "./format";
 import { Link, detailUrl, editUrl, listBack, navigate, newUrl, useSearch } from "./router";
 import { Chips, FileField, Picker } from "./relations";
+import { ValueControl } from "./controls";
 import { InlineSections, planInlines, startInlines, type InlineState } from "./Inlines";
 import { InputFields, inputBody, startInputs, type InputValues } from "./Inputs";
 import { ActionDialog, needsDialog, request, toast, useFinish } from "./Actions";
@@ -160,7 +161,7 @@ function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }:
   const creating = id === undefined;
   const fields = (meta.form ?? []).flatMap((f) => {
     const column = columns.find((c) => c.label === f.name);
-    return column ? [{ f, column, w: f.widget ?? column.widget }] : [];
+    return column ? [{ f, column, w: widgetFor(f.widget ?? column.widget, column) }] : [];
   });
   const search = useSearch();
   // The modal is a create form that no URL fills.
@@ -350,7 +351,7 @@ function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }:
     const conflict = conflicts[name];
     const id_ = `f-${modal ? "m-" : ""}${name}`;
     const common = { id: id_, name, disabled: locked, "aria-invalid": errors.length > 0 || undefined, "aria-describedby": `${id_}-msg` };
-    const value = vals[name];
+    const value = vals[name] ?? "";
     return (
       <div key={name} className={errors.length > 0 || conflict ? "field field-bad" : "field"}>
         <Label.Root id={`${id_}-label`} htmlFor={id_}>
@@ -404,25 +405,16 @@ function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }:
               void client.invalidateQueries({ queryKey: ["detail"] });
             }}
           />
-        ) : w === "checkbox" ? (
-          <input {...common} type="checkbox" checked={value === true} onChange={(e) => set(name, e.target.checked)} />
         ) : w === "radio" ? (
-          <div role="radiogroup" aria-labelledby={`${id_}-label`} aria-invalid={common["aria-invalid"]} aria-describedby={common["aria-describedby"]} className="radios">
+          <div role="radiogroup" aria-labelledby={`${id_}-label`} aria-invalid={common["aria-invalid"]} aria-describedby={common["aria-describedby"]} className="flex flex-wrap gap-x-4 gap-y-1">
             {(c.nullable || creating ? ["", ...(c.choices ?? [])] : (c.choices ?? [])).map((v) => (
-              <label key={v} className="radio">
+              <label key={v} className="inline-flex items-center gap-1.5 text-sm">
                 <input type="radio" name={name} disabled={locked} value={v} checked={value === v} onChange={() => set(name, v)} /> {v === "" ? "—" : v}
               </label>
             ))}
           </div>
-        ) : w === "select" ? (
-          <select {...common} value={String(value)} onChange={(e) => set(name, e.target.value)}>
-            <option value="">{c.nullable || creating ? "—" : "Choose…"}</option>
-            {c.choices?.map((v) => <option key={v} value={v}>{v}</option>)}
-          </select>
-        ) : w === "textarea" || w === "json" || w === "list" ? (
-          <textarea {...common} className={w === "json" ? "mono" : undefined} rows={w === "textarea" ? 4 : w === "json" ? 10 : 6} value={String(value)} maxLength={f.max_length ?? undefined} onChange={(e) => set(name, e.target.value)} spellCheck={w === "textarea"} />
         ) : (
-          <input {...common} type={inputType(w)} step={w === "datetime" ? 1 : undefined} inputMode={w === "number" ? "decimal" : undefined} value={String(value)} maxLength={f.max_length ?? undefined} onChange={(e) => set(name, e.target.value)} />
+          <ValueControl w={w} column={c} value={value} set={(v) => set(name, v)} blank={c.nullable || creating ? "—" : "Choose…"} id={id_} name={name} disabled={locked} invalid={errors.length > 0} described={common["aria-describedby"]} maxLength={f.max_length} rows={w === "textarea" ? 4 : w === "json" ? 10 : 6} />
         )}
         <div id={`${id_}-msg`}>
           {errors.map((m) => <p key={m} className="msg msg-error">{m}</p>)}

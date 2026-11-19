@@ -1,8 +1,11 @@
 // The relation fields of a form: a picker for one record, chips for many, and the upload of a file field.
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { ChevronsUpDown, Plus, X } from "lucide-react";
 import * as api from "./api";
-import { message } from "./ui";
+import { Button, message } from "./ui";
+import { Input } from "./components/ui/input";
+import { cn } from "./lib/utils";
 
 /** The value after `ms` of quiet: the picker asks the server for the text that the user stopped typing. */
 function useDebounced<T>(value: T, ms: number): T {
@@ -36,6 +39,25 @@ function Combobox({ id, resource, relation, text, disabled, invalid, described, 
   const [open, setOpen] = useState(false);
   const [typed, setTyped] = useState("");
   const [active, setActive] = useState(0);
+  const [place, setPlace] = useState<CSSProperties>();
+  // The list is `fixed`: a table wrapper with `overflow-x: auto` would clip an absolute one. It sits under the box, or over it when the room below is short.
+  useLayoutEffect(() => {
+    if (!open) return;
+    const at = () => {
+      const r = root.current?.getBoundingClientRect();
+      if (!r) return;
+      const below = window.innerHeight - r.bottom - 8;
+      const up = below < 240 && r.top > below;
+      setPlace({ left: r.left, width: r.width, maxHeight: Math.min(288, up ? r.top - 8 : below), ...(up ? { bottom: window.innerHeight - r.top + 4 } : { top: r.bottom + 4 }) });
+    };
+    at();
+    window.addEventListener("scroll", at, true);
+    window.addEventListener("resize", at);
+    return () => {
+      window.removeEventListener("scroll", at, true);
+      window.removeEventListener("resize", at);
+    };
+  }, [open]);
   const q = useDebounced(typed, 250);
   const found = useInfiniteQuery({
     queryKey: ["autocomplete", resource, relation.name, q],
@@ -63,13 +85,13 @@ function Combobox({ id, resource, relation, text, disabled, invalid, described, 
   };
   return (
     <div
-      className="combo"
+      className="relative min-w-0 flex-1"
       ref={root}
       onBlur={(e) => {
         if (!root.current?.contains(e.relatedTarget as Node | null)) close();
       }}
     >
-      <input
+      <Input
         id={id}
         role="combobox"
         aria-expanded={open}
@@ -80,6 +102,7 @@ function Combobox({ id, resource, relation, text, disabled, invalid, described, 
         aria-describedby={described}
         autoComplete="off"
         disabled={disabled}
+        className="pr-9"
         value={open ? typed : text}
         placeholder={open ? "Search…" : undefined}
         onFocus={() => setOpen(true)}
@@ -105,16 +128,17 @@ function Combobox({ id, resource, relation, text, disabled, invalid, described, 
           }
         }}
       />
+      <ChevronsUpDown aria-hidden="true" className="pointer-events-none absolute right-3 top-2.5 size-4 text-muted-foreground" />
       {open && (
-        <div className="combo-pop">
-          <ul id={list} role="listbox" aria-label={`${relation.target} choices`} className="combo-list">
+        <div style={place} className="fixed z-40 overflow-y-auto rounded-md border border-border bg-popover text-popover-foreground shadow-md">
+          <ul id={list} role="listbox" aria-label={`${relation.target} choices`} className="m-0 list-none p-1">
             {items.map((o, i) => (
               <li
                 key={JSON.stringify(o.value)}
                 id={`${list}-${i}`}
                 role="option"
                 aria-selected={i === active}
-                className={i === active ? "combo-opt combo-on" : "combo-opt"}
+                className={cn("cursor-pointer rounded-sm px-2 py-1.5 text-sm hover:bg-accent", i === active && "bg-accent text-accent-foreground")}
                 // The mouse must not take the focus from the input before the click lands.
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => pick(o)}
@@ -123,13 +147,20 @@ function Combobox({ id, resource, relation, text, disabled, invalid, described, 
               </li>
             ))}
           </ul>
-          {found.isError && <p className="msg msg-error" role="alert">{message(found.error)}</p>}
-          {found.isFetching && <p className="muted combo-note" role="status">Loading…</p>}
-          {!found.isFetching && !found.isError && items.length === 0 && <p className="muted combo-note">No match</p>}
-          <div className="combo-foot">
-            {found.hasNextPage && <button type="button" className="linkish" disabled={found.isFetchingNextPage} onMouseDown={(e) => e.preventDefault()} onClick={() => void found.fetchNextPage()}>Show more</button>}
-            {onCreate && <button type="button" className="linkish" onMouseDown={(e) => e.preventDefault()} onClick={() => void make()}>New {relation.target}…</button>}
-          </div>
+          {found.isError && <p className="m-0 px-2 py-1.5 text-sm text-destructive" role="alert">{message(found.error)}</p>}
+          {found.isFetching && <p className="m-0 px-2 py-1.5 text-sm text-muted-foreground" role="status">Loading…</p>}
+          {!found.isFetching && !found.isError && items.length === 0 && <p className="m-0 px-2 py-1.5 text-sm text-muted-foreground">No match</p>}
+          {(found.hasNextPage || onCreate) && (
+            <div className="flex flex-wrap gap-1 border-t border-border p-1">
+              {found.hasNextPage && <Button type="button" variant="ghost" size="sm" disabled={found.isFetchingNextPage} onMouseDown={(e) => e.preventDefault()} onClick={() => void found.fetchNextPage()}>Show more</Button>}
+              {onCreate && (
+                <Button type="button" variant="ghost" size="sm" onMouseDown={(e) => e.preventDefault()} onClick={() => void make()}>
+                  <Plus aria-hidden="true" />
+                  New {relation.target}…
+                </Button>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -169,7 +200,7 @@ export function Picker({ id, resource, relation, target, value, nullable, disabl
   const known = useLabel(relation, target, picked?.value === value ? "" : value);
   const text = value === "" ? "" : picked?.value === value ? picked.label : (known.data ?? (known.isError ? value : ""));
   return (
-    <div className="picker">
+    <div className="flex items-center gap-2">
       <Combobox
         id={id}
         resource={resource}
@@ -184,7 +215,12 @@ export function Picker({ id, resource, relation, target, value, nullable, disabl
         }}
         onCreate={onCreate}
       />
-      {nullable && value !== "" && !disabled && <button type="button" className="linkish" aria-label={`Clear ${relation.name}`} onClick={() => onChange("")}>Clear</button>}
+      {nullable && value !== "" && !disabled && (
+        <Button type="button" variant="ghost" size="sm" aria-label={`Clear ${relation.name}`} onClick={() => onChange("")}>
+          <X aria-hidden="true" />
+          Clear
+        </Button>
+      )}
     </div>
   );
 }
@@ -202,18 +238,22 @@ export function Chips({ id, resource, relation, items, disabled, onChange, onCre
 }) {
   const rows = items ?? [];
   return (
-    <div className="chip-field">
-      <ul className="chips" aria-label={`${relation.name} chips`}>
+    <div className="grid gap-2">
+      <ul className="m-0 flex list-none flex-wrap gap-1.5 p-0" aria-label={`${relation.name} chips`}>
         {rows.map((o) => (
-          <li key={JSON.stringify(o.value)} className="chip">
+          <li key={JSON.stringify(o.value)} className="inline-flex items-center gap-1 rounded-full border border-border bg-secondary py-0.5 pl-3 pr-1 text-sm">
             {o.label}
-            {!disabled && <button type="button" aria-label={`Remove ${o.label}`} onClick={() => onChange(rows.filter((r) => !same(r.value, o.value)))}>×</button>}
+            {!disabled && (
+              <button type="button" aria-label={`Remove ${o.label}`} className="grid size-5 place-items-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground" onClick={() => onChange(rows.filter((r) => !same(r.value, o.value)))}>
+                <X aria-hidden="true" className="size-3.5" />
+              </button>
+            )}
           </li>
         ))}
-        {items !== undefined && rows.length === 0 && <li className="muted">None</li>}
+        {items !== undefined && rows.length === 0 && <li className="text-sm text-muted-foreground">None</li>}
       </ul>
       {items === undefined ? (
-        <p className="muted">Loading…</p>
+        <p className="m-0 text-sm text-muted-foreground">Loading…</p>
       ) : (
         <Combobox id={id} resource={resource} relation={relation} text="" disabled={disabled} exclude={rows.map((r) => r.value)} onPick={(o) => onChange([...rows, o])} onCreate={onCreate} />
       )}
@@ -236,7 +276,7 @@ export function FileField({ id, resource, recordKey, field, reference, disabled,
   const [problem, setProblem] = useState("");
   const input = useRef<HTMLInputElement>(null);
   const ref = reference !== null && typeof reference === "object" ? (reference as { filename?: string; size?: number }) : null;
-  if (recordKey === undefined) return <p className="muted">Save the record first, then upload the file.</p>;
+  if (recordKey === undefined) return <p className="m-0 text-sm text-muted-foreground">Save the record first, then upload the file.</p>;
   const send = async (file: File) => {
     setBusy(true);
     setProblem("");
@@ -251,20 +291,20 @@ export function FileField({ id, resource, recordKey, field, reference, disabled,
     }
   };
   return (
-    <div className="file-field">
-      <p className="file-now">
+    <div className="grid gap-2">
+      <p className="m-0 text-sm">
         {ref ? (
           <>
             <a href={api.fileUrl(resource, recordKey, field)} download>{ref.filename ?? "Download"}</a>
-            {typeof ref.size === "number" && <span className="muted"> ({ref.size} bytes)</span>}
+            {typeof ref.size === "number" && <span className="text-muted-foreground"> ({ref.size} bytes)</span>}
           </>
         ) : (
-          <span className="muted">No file</span>
+          <span className="text-muted-foreground">No file</span>
         )}
       </p>
-      <input id={id} ref={input} type="file" disabled={disabled || busy} aria-describedby={described} onChange={(e) => e.target.files?.[0] && void send(e.target.files[0])} />
-      {busy && <p className="muted" role="status">Uploading…</p>}
-      {problem && <p className="msg msg-error" role="alert">{problem}</p>}
+      <input id={id} ref={input} type="file" className="block w-full text-sm file:mr-3 file:rounded-md file:border file:border-input file:bg-card file:px-3 file:py-1.5 file:text-sm file:font-medium" disabled={disabled || busy} aria-describedby={described} onChange={(e) => e.target.files?.[0] && void send(e.target.files[0])} />
+      {busy && <p className="m-0 text-sm text-muted-foreground" role="status">Uploading…</p>}
+      {problem && <p className="m-0 text-sm text-destructive" role="alert">{problem}</p>}
     </div>
   );
 }

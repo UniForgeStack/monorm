@@ -1,6 +1,7 @@
 import { useEffect, useState, type Dispatch, type SetStateAction } from "react";
 import * as api from "./api";
-import { cell, fromInput, inputType, toInput, type Input, type Zone } from "./format";
+import { cell, fromInput, toInput, widgetFor, type Input, type Zone } from "./format";
+import { ValueControl } from "./controls";
 import { Picker } from "./relations";
 import { Link, detailUrl } from "./router";
 import { Alert, Button, message } from "./ui";
@@ -29,7 +30,7 @@ type Field = { f: api.FormField; column: api.Column; w: string };
 const fieldsOf = (inline: api.InlineInfo): Field[] =>
   (inline.form ?? []).flatMap((f) => {
     const column = inline.fields.find((c) => c.label === f.name);
-    return column ? [{ f, column, w: f.widget ?? column.widget }] : [];
+    return column ? [{ f, column, w: widgetFor(f.widget ?? column.widget, column) }] : [];
   });
 
 const locked = (f: api.FormField, row: Row) => f.readonly || (row.key !== null && f.readonly_on_update);
@@ -102,7 +103,6 @@ type Cell = { id: string; field: Field; value: Input; disabled: boolean; errors:
 
 /** The control of one field of a row. A file field has none here: a change set carries no file. */
 function Control({ id, field: { f, column: c, w }, value, disabled, errors, inline, site, set }: Cell) {
-  const common = { id, name: c.label, disabled, "aria-label": c.title, "aria-invalid": errors.length > 0 || undefined };
   if (f.file) return <span className="muted">Upload it on its own page</span>;
   if (f.relation) {
     return (
@@ -120,17 +120,7 @@ function Control({ id, field: { f, column: c, w }, value, disabled, errors, inli
       />
     );
   }
-  if (w === "checkbox") return <input {...common} type="checkbox" checked={value === true} onChange={(e) => set(e.target.checked)} />;
-  if (w === "select" || w === "radio") {
-    return (
-      <select {...common} value={String(value)} onChange={(e) => set(e.target.value)}>
-        <option value="">{c.nullable ? "—" : "Choose…"}</option>
-        {c.choices?.map((v) => <option key={v} value={v}>{v}</option>)}
-      </select>
-    );
-  }
-  if (w === "textarea" || w === "json" || w === "list") return <textarea {...common} rows={3} value={String(value)} onChange={(e) => set(e.target.value)} />;
-  return <input {...common} type={inputType(w)} step={w === "datetime" ? 1 : undefined} inputMode={w === "number" ? "decimal" : undefined} value={String(value)} maxLength={f.max_length ?? undefined} onChange={(e) => set(e.target.value)} />;
+  return <ValueControl w={w} column={c} value={value} set={set} blank={c.nullable ? "—" : "Choose…"} id={id} name={c.label} disabled={disabled} invalid={errors.length > 0} described={`${id}-msg`} label={c.title} maxLength={f.max_length} rows={3} />;
 }
 
 /** The inlines of a form: for each one, its rows as a table or as stacked blocks, with Add and Remove. */

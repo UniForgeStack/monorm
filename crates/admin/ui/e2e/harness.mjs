@@ -92,6 +92,25 @@ model Setting {
   @@map("settings")
 }
 
+// Every kind of picker and control: a date, a time, a date with a time, a switch, an enum and JSON.
+enum Mood {
+  calm
+  tense
+  @@storage(text)
+}
+
+model Event {
+  id      BigInt   @id @default(autoincrement())
+  title   String
+  day     DateTime @db.Date
+  at      DateTime @db.Time
+  starts  DateTime
+  live    Boolean  @default(false)
+  mood    Mood     @default(calm)
+  extra   Json?
+  @@map("events")
+}
+
 model Track {
   id       BigInt @id @default(autoincrement())
   title    String
@@ -165,6 +184,7 @@ async def main():
     await models.Ticket.objects.insert_many([{"title": f"Ticket {n}"} for n in range(1, 4)])
     await models.Movie.objects.insert_many([{"title": "Alpha", "stars": 4}, {"title": "Beta", "stars": 2}])
     await models.Shelf.objects.insert_many([{"title": "Oak", "qty": 1}, {"title": "Pine", "qty": 2}, {"title": "Elm", "qty": 3}])
+    await models.Event.objects.insert_many([{"title": "Launch", "day": datetime.date(2026, 3, 4), "at": datetime.time(9, 30, 15), "starts": at, "live": True, "mood": "tense", "extra": {"a": 1}}])
     await models.Setting.objects.insert_many([{"name": "Welcome", "config": note_pb2.Note(title="hi", priority=3, tags=["a"])}])
     (debut,) = await models.Album.objects.insert_many([{"title": "Debut"}]).returning()
     await models.Track.objects.insert_many([{"title": "Intro", "plays": 1, "album_id": debut.id}])
@@ -200,6 +220,7 @@ export async function startProject() {
   assert.ok(module.includes("admin.register(Reviewer)") && module.includes("admin.register(Paper)"), "the generated admin.py registers Reviewer and Paper");
   assert.ok(module.includes("admin.register(Ticket)"), "the generated admin.py registers Ticket");
   assert.ok(module.includes("admin.register(Album)") && module.includes("admin.register(Track)"), "the generated admin.py registers Album and Track");
+  assert.ok(module.includes("admin.register(Event)"), "the generated admin.py registers Event");
   assert.ok(module.includes("admin.register(Movie)"), "the generated admin.py registers Movie");
   assert.ok(module.includes("admin.register(Shelf)"), "the generated admin.py registers Shelf");
   // Movie: the example extension package (a stars widget, a Summary tab, a route and an action).
