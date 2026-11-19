@@ -2309,3 +2309,152 @@ fn identity_and_a_sequence_the_column_does_not_own_are_not_swapped_in_either_dir
     assert!(super::plan(&shared, &stored(&shared_snapshot)).unwrap().up.is_empty());
     assert!(super::plan(&json_source("postgresql", &src("@default(7)")), &stored(&shared_snapshot)).is_ok());
 }
+
+const NESTED_V1: &str = "type Geo {\n  lat Float\n  lng Float?\n}\n\ntype Address {\n  city String\n  geo   Geo\n}\n\nmodel Shop {\n  id      Int      @id\n  address Address?\n}\n";
+
+const NESTED_CHECK: &str = "CHECK ((\"address_city\" IS NULL AND \"address_geo_lat\" IS NULL AND \"address_geo_lng\" IS NULL) OR (\"address_city\" IS NOT NULL AND \"address_geo_lat\" IS NOT NULL))";
+
+/// The plan from the stored snapshot of `from` to `to`, as a stored file would give it.
+fn nested_step(dialect: &str, from: &str, to: &str) -> MigrationPlan {
+    let first = super::plan(&json_source(dialect, from), &DbSchema::default()).unwrap();
+    super::plan(&json_source(dialect, to), &stored(&first.snapshot)).unwrap()
+}
+
+#[test]
+fn a_first_nested_plan_creates_the_leaf_columns_and_the_null_check() {
+    let s = json_source("postgresql", NESTED_V1);
+    let first = super::plan(&s, &DbSchema::default()).unwrap();
+    let all = sql(&first.up).join("\n");
+    for column in ["\"address_city\" varchar", "\"address_geo_lat\" double precision", "\"address_geo_lng\" double precision"] {
+        assert!(all.contains(column), "{column}: {all}");
+    }
+    assert!(all.contains(NESTED_CHECK), "{all}");
+    assert!(!all.contains("\"address_city\" varchar NOT NULL"), "a null field leaves every column null: {all}");
+    settled(&s, &first);
+}
+
+#[test]
+fn adding_a_nested_subfield_adds_a_column_and_extends_the_check() {
+    let up = nested_step("postgresql", NESTED_V1, &NESTED_V1.replace("  city String\n", "  city String\n  zip  String\n")).up;
+    let up = sql(&up);
+    assert!(up.contains(&"ALTER TABLE \"shop\" ADD COLUMN \"address_zip\" varchar"), "{up:?}");
+    assert!(up.iter().any(|s| s.contains("DROP CONSTRAINT")), "{up:?}");
+    assert!(up.iter().any(|s| s.contains("ADD CONSTRAINT") && s.contains("\"address_zip\" IS NOT NULL")), "{up:?}");
+    assert!(!up.iter().any(|s| s.contains("\"address_zip\" varchar NOT NULL")), "old null rows have no value: {up:?}");
+}
+
+#[test]
+fn removing_a_nested_subfield_drops_its_column() {
+    let plan = nested_step("postgresql", NESTED_V1, &NESTED_V1.replace("  lng Float?\n", ""));
+    assert!(sql(&plan.up).contains(&"ALTER TABLE \"shop\" DROP COLUMN \"address_geo_lng\""), "{:?}", sql(&plan.up));
+}
+
+#[test]
+fn nested_rename_hints_rename_the_leaf_columns() {
+    let rename = |old: &str, new: &str| format!("ALTER TABLE \"shop\" RENAME COLUMN \"{old}\" TO \"{new}\"");
+    // a subfield hint
+    let up = nested_step("postgresql", NESTED_V1, &NESTED_V1.replace("  lng Float?", "  longitude Float? @renamed_from(\"lng\")")).up;
+    assert!(sql(&up).contains(&rename("address_geo_lng", "address_geo_longitude").as_str()), "{:?}", sql(&up));
+    assert!(!sql(&up).iter().any(|s| s.contains("DROP COLUMN")), "{:?}", sql(&up));
+    // the field and a parent subfield
+    let both = NESTED_V1.replace("  geo   Geo", "  place Geo @renamed_from(\"geo\")").replace("  address Address?", "  where   Address? @renamed_from(\"address\")");
+    let up = nested_step("postgresql", NESTED_V1, &both).up;
+    for (old, new) in [("address_city", "where_city"), ("address_geo_lat", "where_place_lat"), ("address_geo_lng", "where_place_lng")] {
+        assert!(sql(&up).contains(&rename(old, new).as_str()), "{old}: {:?}", sql(&up));
+    }
+    assert!(!sql(&up).iter().any(|s| s.contains("DROP COLUMN") || s.contains("ADD COLUMN")), "{:?}", sql(&up));
+    // a new prefix: no hint is a drop and an add, a hint renames the default-named columns
+    let prefixed = NESTED_V1.replace("  address Address?", "  address Address? @storage(columns, prefix: \"a_\")");
+    let up = nested_step("postgresql", NESTED_V1, &prefixed).up;
+    assert!(!sql(&up).contains(&rename("address_city", "a_city").as_str()), "{:?}", sql(&up));
+    let hinted = NESTED_V1.replace("  address Address?", "  addr Address? @storage(columns, prefix: \"a_\") @renamed_from(\"address\")");
+    let up = nested_step("postgresql", NESTED_V1, &hinted).up;
+    for (old, new) in [("address_city", "a_city"), ("address_geo_lat", "a_geo_lat")] {
+        assert!(sql(&up).contains(&rename(old, new).as_str()), "{old}: {:?}", sql(&up));
+    }
+}
+
+#[test]
+fn nested_column_changes_settle_on_a_stored_snapshot() {
+    let changes = [
+        ("a nested change", NESTED_V1.replace("  city String\n", "  city String\n  zip  String\n")),
+        ("a removed subfield", NESTED_V1.replace("  lng Float?\n", "")),
+        ("a check change", NESTED_V1.replace("  lat Float\n", "  lat Float?\n")),
+    ];
+    for dialect in DIALECTS {
+        for (what, changed) in &changes {
+            let plan = nested_step(dialect, NESTED_V1, changed);
+            assert!(!plan.up.is_empty(), "{dialect} {what}");
+            let again = super::plan(&json_source(dialect, changed), &stored(&plan.snapshot)).unwrap();
+            assert!(again.up.is_empty(), "{dialect} {what}: {:?}", sql(&again.up));
+        }
+        let first = super::plan(&json_source(dialect, NESTED_V1), &DbSchema::default()).unwrap();
+        assert!(!first.up.is_empty());
+        let again = super::plan(&json_source(dialect, NESTED_V1), &stored(&first.snapshot)).unwrap();
+        assert!(again.up.is_empty(), "{dialect}: {:?}", sql(&again.up));
+    }
+}
+
+#[test]
+fn a_snapshot_holds_no_root_required_and_settles() {
+    let source = NESTED_V1.replace("  address Address?\n", "  address Address\n");
+    let s = json_source("postgresql", &source);
+    let first = super::plan(&s, &DbSchema::default()).unwrap();
+    assert!(!serde_json::to_string(&first.snapshot).unwrap().contains("root_required"), "the snapshot holds database tables only");
+    assert!(super::plan(&s, &stored(&first.snapshot)).unwrap().up.is_empty());
+}
+
+const NESTED_JSON_V1: &str = "type Geo {\n  lat Float\n}\n\ntype Address {\n  city String\n  geo  Geo\n}\n\nmodel Shop {\n  id      Int     @id\n  address Address @storage(json)\n}\n";
+
+fn nested_json_v2() -> String {
+    NESTED_JSON_V1.replace("  lat Float\n", "  lat Float\n  alt Float @default(0)\n").replace("  city String\n", "  city String\n  zip  String @default(\"0\")\n")
+}
+
+#[test]
+fn a_new_required_json_subfield_with_a_default_fills_the_rows_that_lack_it() {
+    let up = nested_step("postgresql", NESTED_JSON_V1, &nested_json_v2()).up;
+    let up = sql(&up);
+    assert!(!up.iter().any(|s| s.contains("ADD COLUMN")), "the column is the same; only its rows change: {up:?}");
+    let fills: Vec<_> = up.iter().filter(|s| s.starts_with("UPDATE \"shop\"")).collect();
+    assert_eq!(fills.len(), 2, "{up:?}");
+    let zip = fills.iter().find(|s| s.contains("'zip'")).unwrap();
+    assert!(zip.contains("jsonb_set(\"address\", ARRAY['zip'], '\"0\"'::jsonb)"), "{zip}");
+    assert!(zip.contains("jsonb_typeof(\"address\") = 'object' AND COALESCE(jsonb_typeof((\"address\") -> 'zip'), 'null') = 'null'"), "{zip}");
+    let alt = fills.iter().find(|s| s.contains("'alt'")).unwrap();
+    assert!(alt.contains("ARRAY['geo', 'alt']") && alt.contains("\"address\" #> ARRAY['geo']"), "{alt}");
+}
+
+#[test]
+fn a_new_required_json_subfield_fills_on_sqlite() {
+    let up = nested_step("sqlite", NESTED_JSON_V1, &nested_json_v2()).up;
+    assert_eq!(up.len(), 1, "{:?}", sql(&up));
+    let s = &up[0].sql;
+    assert!(s.contains("json_set(\"address\", '$.\"geo\".\"alt\"', json('0'))"), "{s}");
+    assert!(s.contains("json_type(\"address\", '$.\"geo\"') = 'object' AND COALESCE(json_type(\"address\", '$.\"geo\".\"alt\"'), 'null') = 'null'"), "{s}");
+}
+
+#[test]
+fn a_new_required_json_subfield_without_a_default_is_an_error() {
+    let first = super::plan(&json_source("postgresql", NESTED_JSON_V1), &DbSchema::default()).unwrap();
+    let to = json_source("postgresql", &NESTED_JSON_V1.replace("  city String\n", "  city String\n  zip  String\n"));
+    let err = super::plan(&to, &stored(&first.snapshot)).unwrap_err().to_string();
+    assert!(err.contains("shop.address.zip: a required subfield added to a json field needs a @default"), "{err}");
+}
+
+#[test]
+fn a_new_nullable_json_subfield_changes_no_rows() {
+    let up = nested_step("postgresql", NESTED_JSON_V1, &NESTED_JSON_V1.replace("  city String\n", "  city String\n  zip  String?\n")).up;
+    assert_eq!(sql(&up), ["-- The shape of a json column is recorded in snapshot.json"]);
+}
+
+#[test]
+fn a_second_plan_after_a_json_backfill_is_empty() {
+    let v2 = nested_json_v2();
+    for dialect in DIALECTS {
+        let plan = nested_step(dialect, NESTED_JSON_V1, &v2);
+        assert!(!plan.up.is_empty(), "{dialect}");
+        let again = super::plan(&json_source(dialect, &v2), &stored(&plan.snapshot)).unwrap();
+        assert!(again.up.is_empty(), "{dialect}: {:?}", sql(&again.up));
+        assert!(serde_json::to_string(&plan.snapshot).unwrap().contains("\"alt\""), "the shape records the new key");
+    }
+}
