@@ -2259,3 +2259,33 @@ fn a_required_subfield_of_a_list_is_filled_for_every_element() {
         assert!(p3.up.is_empty(), "{dialect}");
     }
 }
+
+#[test]
+fn a_change_of_the_shape_of_a_json_field_alone_gives_a_plan_that_records_it() {
+    let types = |zip: &str| format!("type A {{\n  city String\n  zip {zip}\n}}\n\nmodel S {{\n  id Int @id\n  a A @storage(json)\n}}\n");
+    for dialect in DIALECTS {
+        let p1 = super::plan(&json_source(dialect, &types("String @default(\"z\")")), &DbSchema::default()).unwrap();
+        let same = super::plan(&json_source(dialect, &types("String @default(\"z\")")), &stored(&p1.snapshot)).unwrap();
+        assert!(same.up.is_empty() && same.down.is_empty(), "{dialect}: an unchanged shape has no step");
+        let p2 = super::plan(&json_source(dialect, &types("String?")), &stored(&p1.snapshot)).unwrap();
+        assert_eq!(sql(&p2.up), vec!["-- The shape of a json column is recorded in snapshot.json"], "{dialect}");
+        assert_eq!(p2.down.len(), 1, "{dialect}");
+        let p3 = super::plan(&json_source(dialect, &types("String?")), &stored(&p2.snapshot)).unwrap();
+        assert!(p3.up.is_empty(), "{dialect}: the stored shape is the new one");
+    }
+}
+
+#[test]
+fn a_snapshot_without_a_shape_is_not_rewritten_for_it() {
+    let types = "type A {\n  city String\n}\n\nmodel S {\n  id Int @id\n  a A @storage(json)\n}\n";
+    for dialect in DIALECTS {
+        let mut old = super::plan(&json_source(dialect, types), &DbSchema::default()).unwrap().snapshot;
+        for t in &mut old.tables {
+            for c in &mut t.columns {
+                c.nested = Default::default();
+            }
+        }
+        let p = super::plan(&json_source(dialect, types), &stored(&old)).unwrap();
+        assert!(p.up.is_empty(), "{dialect}");
+    }
+}

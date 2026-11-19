@@ -205,7 +205,8 @@ def test_a_new_required_json_subfield_without_a_default_is_an_error(tmp_path):
 
 def test_a_new_nullable_json_subfield_changes_no_rows(tmp_path):
     Migrations(tmp_path, models(JSON_V1)).make()
-    assert up(tmp_path, JSON_V1.replace("  city String\n", "  city String\n  zip  String?\n")) == []
+    sql = up(tmp_path, JSON_V1.replace("  city String\n", "  city String\n  zip  String?\n"))
+    assert sql == ["-- The shape of a json column is recorded in snapshot.json"]
 
 
 def test_a_new_required_subfield_in_a_json_list_is_filled_per_element(tmp_path):
@@ -799,3 +800,15 @@ async def test_a_list_element_that_is_not_an_object_keeps_its_exact_number_throu
         got = (await addresses(db))[1]
         assert got[0]["geos"] == [{"lat": 1}]
         assert got[1:] == odd[1:]
+
+
+JSON_SHAPE_V1 = FILL_V1.replace("  geos Geo[]\n", "  zip  String @default(\"0\")\n")
+JSON_SHAPE_V2 = JSON_SHAPE_V1.replace('  zip  String @default("0")', "  zip  String?")
+
+
+def test_make_writes_a_snapshot_when_only_the_shape_of_a_json_field_changes(tmp_path):
+    Migrations(tmp_path, models(JSON_SHAPE_V1)).make()
+    assert Migrations(tmp_path, models(JSON_SHAPE_V1)).make() == []
+    [m] = Migrations(tmp_path, models(JSON_SHAPE_V2)).make()
+    assert "-- The shape of a json column" in (m.path / "up.sql").read_text()
+    assert Migrations(tmp_path, models(JSON_SHAPE_V2)).make() == []

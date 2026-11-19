@@ -119,6 +119,8 @@ struct Prepared {
     current: DbSchema,
     renames: model::Renames,
     identity_changed: bool,
+    /// The shape of a json column changed in a way that has no SQL (see [`shape_changed`]).
+    shape_changed: bool,
     /// The data ops on json columns that follow the diff in `up`: the key renames, then the fills of new subfields.
     fills: Vec<Op>,
     /// The key renames that follow the diff in `down`.
@@ -137,11 +139,12 @@ fn prepare(schema: &Schema, previous: &DbSchema, baseline: bool) -> Result<Prepa
         return Err(format!("migration snapshot targets {}, schema targets {}; use a separate migrations directory", previous.dialect.name(), current.dialect.name()));
     }
     let identity_changed = previous.identities != current.identities;
+    let shape_changed = shape_changed(previous, &current);
     let (fills, down_fills) = json_ops(previous, &current, &renames)?;
     diff::check_copies(previous, &current, &renames)?;
     diff::check_generated_to_plain(previous, &current, &renames)?;
     diff::check_copies(&current, previous, &renames.reversed())?;
-    Ok(Prepared { current, renames, identity_changed, fills, down_fills })
+    Ok(Prepared { current, renames, identity_changed, shape_changed, fills, down_fills })
 }
 
 /// The data ops on json columns of the change (key renames, then fills) and of its reverse (key renames).
@@ -180,6 +183,7 @@ fn sqlite_plan(previous: &DbSchema, p: Prepared) -> Result<MigrationPlan> {
     let mut up = sqlite::steps_with(previous, &p.current, &p.renames, &p.fills)?;
     let mut down = sqlite::steps_with(&p.current, previous, &p.renames.reversed(), &p.down_fills)?;
     if p.identity_changed { identity_step(&mut up); identity_step(&mut down); }
+    shape_step(&p, &mut up, &mut down);
     Ok(MigrationPlan { up, down, snapshot: p.current, kind: FolderKind::Main })
 }
 
@@ -187,6 +191,7 @@ fn pg_plan(previous: &DbSchema, p: Prepared, up: &[Op], down: &[Op]) -> Migratio
     let mut up = steps(up, &p.current);
     let mut down = steps(down, previous);
     if p.identity_changed { identity_step(&mut up); identity_step(&mut down); }
+    shape_step(&p, &mut up, &mut down);
     MigrationPlan { up, down, snapshot: p.current, kind: FolderKind::Main }
 }
 
@@ -228,6 +233,28 @@ pub fn reconcile_introspection(previous: &DbSchema, current: &mut DbSchema) {
     let pulled = pull::pull(current, &[]);
     if let Ok(schema) = crate::dsl::compile_with_overrides(&pulled.schema, None, &pulled.views).and_then(Schema::from_ir) {
         reconcile::reconcile(&schema, previous, current);
+    }
+}
+
+/// Whether a json column kept by both snapshots has another shape in `current`, for example a subfield
+/// that became optional. The database is the same, but the snapshot must keep the new shape for the next
+/// fill. A column whose old snapshot has no shape is not compared: that snapshot is older than the shape.
+fn shape_changed(previous: &DbSchema, current: &DbSchema) -> bool {
+    current.tables.iter().any(|t| {
+        let Some(old) = previous.tables.iter().find(|o| o.name == t.name) else { return false };
+        t.columns.iter().any(|c| {
+            let Some(oc) = old.columns.iter().find(|o| o.name == c.name) else { return false };
+            matches!((&oc.nested.0, &c.nested.0), (Some(a), Some(b)) if serde_json::to_value(a).ok() != serde_json::to_value(b).ok())
+        })
+    })
+}
+
+/// A change of shape alone gives a plan with no SQL; one comment step makes `make` write the snapshot.
+fn shape_step(p: &Prepared, up: &mut Vec<Step>, down: &mut Vec<Step>) {
+    if p.shape_changed && up.is_empty() {
+        for steps in [up, down] {
+            steps.push(Step::new("Record the shape of json columns".into(), "-- The shape of a json column is recorded in snapshot.json".into(), None, vec![]));
+        }
     }
 }
 
