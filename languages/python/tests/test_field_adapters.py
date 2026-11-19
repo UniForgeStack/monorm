@@ -684,3 +684,14 @@ async def test_inspect_on_an_adapted_write_shows_the_placeholder_and_calls_no_pr
         insert._used = update._used = True
     finally:
         await db.close()
+
+
+async def test_insert_many_with_a_bad_batch_size_fails_before_any_prepare():
+    db, models, body = await setup()
+    try:
+        objects = models["Doc"].objects.using(db)
+        with pytest.raises(ValueError, match="batch_size"):
+            await objects.insert_many([{"id": 1, "title": "a", "body": "one"}], batch_size=0)
+        assert body.calls == []
+    finally:
+        await db.close()

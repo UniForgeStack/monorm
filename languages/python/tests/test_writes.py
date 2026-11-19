@@ -672,3 +672,23 @@ async def test_timestamp_write_read_with_a_non_utc_database():
             quoted_zone = zone.replace("'", "''")
             await admin.execute(f"ALTER DATABASE {database} SET TimeZone = '{quoted_zone}'")
         await admin.close()
+
+
+async def test_related_lazy_inserts_join_the_transaction_at_await(clean):
+    author = await User.objects.insert(email="lazy@x.io", name="Lazy")
+    post = await Post.objects.insert(author=author, title="existing", body="b")
+    statements = [
+        author.posts.insert(title="one", body="b"),
+        author.posts.insert_many([{"title": "many", "body": "b"}]).returning(),
+        post.tags.insert(name="lazy tag"),
+    ]
+    rollback = RuntimeError("rollback related insert")
+    for statement in statements:
+        with pytest.raises(RuntimeError) as caught:
+            async with clean.transaction():
+                await statement
+                raise rollback
+        assert caught.value is rollback
+    assert await Post.objects.count() == 1
+    assert await Tag.objects.count() == 0
+    assert await PostTag.objects.count() == 0

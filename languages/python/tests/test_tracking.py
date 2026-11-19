@@ -1148,3 +1148,94 @@ model Doc {
     finally:
         await db.drop_tables()
         await db.close()
+
+
+@requires("monorm.soft-delete")
+@requires("monorm.locking")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_an_instance_reloads_and_updates_its_own_soft_deleted_row(dialect):
+    db, models = await connect(dialect, VERSIONED_SOFT_DELETE)
+    Doc = models["Doc"]
+    try:
+        docs = Doc.objects.using(db)
+        await docs.insert_many([{"id": 1}])
+        doc = await docs.get(Doc.id == 1)
+        await doc.delete()
+        assert len(await doc.qs()) == 1  # qs() applies no root default
+        await doc.load(reload=True)
+        assert doc.deleted is not None
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@requires("monorm.locking")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_a_partial_versioned_instance_updates_twice_without_a_conflict(dialect):
+    db, models = await connect(
+        dialect,
+        """
+model Doc {
+  id      Int    @id
+  title   String
+  @@locking.version
+  @@map("tracking_partial_docs")
+}
+""",
+    )
+    Doc = models["Doc"]
+    try:
+        docs = Doc.objects.using(db)
+        await docs.insert_many([{"id": 1, "title": "a"}])
+        partial = await docs.load(Doc.title, Doc.version).get(Doc.id == 1)
+        await partial.update(title="b")
+        await partial.update(title="c")
+        assert partial.version == 2
+        stale = await docs.get(Doc.id == 1)
+        await partial.update(title="d")
+        with pytest.raises(monorm.VersionConflict):
+            await stale.update(title="e")
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@requires("monorm.soft-delete")
+@pytest.mark.parametrize("dialect", DATABASES)
+async def test_the_soft_delete_members_work_on_a_two_word_field(dialect):
+    db, models = await connect(
+        dialect,
+        """
+model Page {
+  id         Int       @id
+  @@soft_delete.deleted_at(mode: "application")
+  @@map("tracking_two_word_pages")
+}
+""",
+    )
+    Page = models["Page"]
+    pages = Page.objects.using(db)
+
+    async def ids(qs):
+        return [p.id for p in await qs.order_by(Page.id)]
+
+    try:
+        await pages.insert_many([{"id": i} for i in (1, 2, 3, 4)])
+        assert await pages.filter(Page.id < 4).delete() == 3
+        assert await ids(pages.deleted_only()) == [1, 2, 3]
+        assert await ids(pages.all_with_deleted()) == [1, 2, 3, 4]
+        assert await pages.filter(Page.id == 1).undelete() == 1
+        (back,) = await pages.filter(Page.id == 2).undelete().returning()
+        assert back.id == 2 and back.deleted_at is None
+        held = await pages.deleted_only()
+        assert len(await monorm.of(held).hard_delete()) == 1
+        gone = await pages.all_with_deleted().get(Page.id == 4)
+        await gone.delete()
+        assert gone.deleted_at is not None
+        await gone.undelete()
+        assert gone.deleted_at is None
+        await gone.hard_delete()
+        assert await ids(pages.all_with_deleted()) == [1, 2]
+    finally:
+        await db.drop_tables()
+        await db.close()

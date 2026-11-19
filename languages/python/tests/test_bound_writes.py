@@ -161,3 +161,23 @@ async def test_a_bound_update_of_two_objects_cannot_assign_a_key_field(clean):
     assert await Post.objects.of([held[2], held[2]]).update(views=1) == [held[2], held[2]]
     [moved] = await Post.objects.of([held[0]]).update(id=Post.id + 100)
     assert moved is held[0] and moved.id >= 100
+
+
+async def test_bound_update_and_delete_of_a_model_without_locking_the_last_write_wins(db):
+    registry = monorm.Registry()
+    Note = monorm.loads("model Note {\n  id Int @id\n  title String\n  views Int @default(0)\n}\n", registry=registry)["Note"]
+    other = await monorm.connect(os.environ["ORM_TEST_DATABASE_URL"], registry=registry, default=False)
+    try:
+        await other.drop_tables()
+        await other.create_tables()
+        notes = Note.objects.using(other)
+        held = await notes.insert_many([{"id": i, "title": "a"} for i in (1, 2)]).returning()
+        await notes.filter(Note.id == 2).update(title="other")
+        done = await Note.objects.of(held).using(other).update(title="b")
+        assert len(done) == 2
+        assert [n.title for n in await notes.order_by(Note.id)] == ["b", "b"]
+        assert len(await Note.objects.of(held).using(other).delete()) == 2
+        assert await notes.count() == 0
+    finally:
+        await other.drop_tables()
+        await other.close()
