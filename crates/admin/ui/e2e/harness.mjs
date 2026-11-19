@@ -99,14 +99,20 @@ export const NOTE_FORM = `export default (React) => function NoteForm({ values, 
 };
 `;
 
-// A bulk action on the selected rows, with a confirmation and a message.
+// A bulk action on the selected rows, with a confirmation and a message, and a row action in the row menu.
 export const TICKET = `@action(name="close_tickets", label="Close", placement="bulk", confirm="Close the chosen tickets?")
 async def close_tickets(ctx, qs):
     await qs.update(status="closed")
     return message(f"Closed {ctx.count} tickets", "success")
 
 
-admin.register(Ticket, {"actions": [close_tickets]})`;
+@action(name="reopen_ticket", label="Reopen", placement="row")
+async def reopen_ticket(ctx, qs):
+    await qs.update(status="open")
+    return message("Reopened", "success")
+
+
+admin.register(Ticket, {"actions": [close_tickets, reopen_ticket]})`;
 
 export const HELD_ROLES = `
 import asyncio, os

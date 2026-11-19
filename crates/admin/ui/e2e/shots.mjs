@@ -20,13 +20,15 @@ const { dir, server, base } = await startProject();
 const browser = await chromium.launch();
 const problems = [];
 const written = [];
+// A shot of an error state that the script itself causes: the console error and the HTTP status are expected.
+let expected = false;
 
 async function session(scheme, viewport = { width: 1280, height: 800 }) {
   const context = await browser.newContext({ timezoneId: ZONE, locale: "en-US", colorScheme: scheme, viewport });
   const page = await context.newPage();
-  page.on("console", (m) => m.type() === "error" && !/status of (401|422)/.test(m.text()) && problems.push(`${scheme} console: ${m.text()}`));
+  page.on("console", (m) => m.type() === "error" && !expected && !/status of (401|422)/.test(m.text()) && problems.push(`${scheme} console: ${m.text()}`));
   page.on("pageerror", (e) => problems.push(`${scheme} page error: ${e.message}`));
-  page.on("response", (r) => r.status() >= 400 && r.status() !== 401 && r.status() !== 422 && problems.push(`${scheme} HTTP ${r.status()}: ${r.url()}`));
+  page.on("response", (r) => r.status() >= 400 && r.status() !== 401 && r.status() !== 422 && !expected && problems.push(`${scheme} HTTP ${r.status()}: ${r.url()}`));
   return { context, page };
 }
 
@@ -37,6 +39,13 @@ async function settle(page) {
 
 async function shot(page, scheme, name) {
   await settle(page);
+  const file = join(folder, `${name}-${scheme}.png`);
+  await page.screenshot({ path: file, fullPage: true });
+  written.push(file);
+}
+
+// Without the wait for the network: for a state that lasts only while a request is open.
+async function shotNow(page, scheme, name) {
   const file = join(folder, `${name}-${scheme}.png`);
   await page.screenshot({ path: file, fullPage: true });
   written.push(file);
@@ -97,6 +106,51 @@ try {
     await page.getByRole("alertdialog").waitFor();
     await shot(page, scheme, "09-confirm-bulk-action");
     await page.keyboard.press("Escape");
+
+    await page.goto(`${base}/admin/Ticket`);
+    await page.getByRole("button", { name: "Actions for row 1" }).click();
+    await page.getByRole("menu").waitFor();
+    await shot(page, scheme, "09b-list-row-menu");
+    await page.keyboard.press("Escape");
+
+    await page.goto(`${base}/admin/Book`);
+    await page.getByText("2 records").waitFor();
+    await page.getByRole("button", { name: /^Filters/ }).click();
+    await page.getByText("Choose Author").click();
+    await shot(page, scheme, "09c-list-filter-popover");
+    await page.getByRole("button", { name: "Ada", exact: true }).click();
+    await page.keyboard.press("Escape");
+    await page.getByRole("list", { name: "Active filters" }).getByText("Author: Ada").waitFor();
+    await shot(page, scheme, "09d-list-filter-chips");
+    await page.goto(`${base}/admin/Book`);
+    await page.getByText("2 records").waitFor();
+    await page.getByRole("button", { name: "Columns" }).click();
+    await page.getByRole("menu").waitFor();
+    await shot(page, scheme, "09e-list-columns-menu");
+    await page.keyboard.press("Escape");
+    await page.getByRole("button", { name: "Compact" }).click();
+    await shot(page, scheme, "09f-list-compact");
+    await page.getByRole("button", { name: "Compact" }).click();
+    await page.goto(`${base}/admin/Book?q=zzz-no-match`);
+    await page.getByText("No records match").waitFor();
+    await shot(page, scheme, "09g-list-empty");
+    const slow = /\/api\/resources\/Book(\?|$)/;
+    await page.route(slow, async (route) => {
+      await new Promise((done) => setTimeout(done, 2500));
+      await route.continue();
+    });
+    await page.goto(`${base}/admin/Book`, { waitUntil: "commit" });
+    await page.getByRole("status", { name: "Loading the records" }).waitFor();
+    await shotNow(page, scheme, "09h-list-loading");
+    await page.getByText("2 records").waitFor();
+    await page.unroute(slow);
+    expected = true;
+    await page.route(slow, (route) => route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "The database did not answer." }) }));
+    await page.goto(`${base}/admin/Book`);
+    await page.getByRole("button", { name: "Try again" }).waitFor();
+    await shot(page, scheme, "09i-list-error");
+    await page.unroute(slow);
+    expected = false;
 
     await page.goto(`${base}/admin/Book/1`);
     await page.getByText("First").first().waitFor();

@@ -294,26 +294,37 @@ test("filter a list, keep the view in the URL, and open a tab", async () => {
   await page.getByText("2 records").waitFor();
   await rowsAre(["First", "Second"]);
 
-  // A relation filter: pick the author from the list of options, and the chip carries the author's name.
-  await page.getByText("Pick a Author").click();
-  await page.getByRole("button", { name: "Ada" }).click();
+  // A relation filter in the popover: pick the author from the options. A chip in the bar carries the author's name.
+  const filtersButton = page.getByRole("button", { name: /^Filters/ });
+  await filtersButton.click();
+  await page.getByText("Choose Author").click();
+  await page.getByRole("button", { name: "Ada", exact: true }).click();
   await page.waitForURL(`${base}/admin/Book?f.author=1`);
   await rowsAre(["First"]);
-  await page.getByRole("button", { name: "Remove Ada" }).click();
+  await page.keyboard.press("Escape");
+  const chips = page.getByRole("list", { name: "Active filters" });
+  await chips.getByText("Author: Ada").waitFor();
+  await chips.getByRole("button", { name: /^Remove filter Author/ }).click();
   await page.waitForURL(`${base}/admin/Book`);
   await rowsAre(["First", "Second"]);
+  await chips.waitFor({ state: "detached" });
 
   // One filter: the books with no author. The view is in the URL, and it comes back after a reload.
+  await filtersButton.click();
   await page.getByLabel("Author: empty").selectOption("empty");
   await page.waitForURL(`${base}/admin/Book?f.author%3Aempty=1`);
   await rowsAre(["Second"]);
   await page.getByText("1 record", { exact: true }).waitFor();
+  await chips.getByText("Author is empty").waitFor();
   // The filter counts load after the rows, and a reload aborts a request still in flight.
   await idle();
   await page.reload();
   await rowsAre(["Second"]);
   await page.getByText("1 record", { exact: true }).waitFor();
+  await chips.getByText("Author is empty").waitFor();
+  await page.getByRole("button", { name: /^Filters/ }).click();
   assert.equal(await page.getByLabel("Author: empty").inputValue(), "empty");
+  await page.keyboard.press("Escape");
   // Leaving the list cancels a request still in flight, which the failed-request check would report.
   await idle();
 
@@ -565,6 +576,66 @@ test("run a bulk action on the selected rows, and on all rows that match", async
   await context.close();
 });
 
+test("a list shows the related row as a link, hides a column, switches density, and has an empty state and a row menu", async () => {
+  const { context, page, problems, idle } = await signedIn();
+  await page.goto(`${base}/admin/Book`);
+  await page.getByText("2 records").waitFor();
+  // The foreign key shows the label of the related row, not its id, and links to it.
+  const ada = page.getByRole("link", { name: "Ada", exact: true });
+  assert.match((await ada.getAttribute("href")) ?? "", /\/Author\/1$/);
+  await idle();
+  await ada.click();
+  await page.waitForURL(`${base}/admin/Author/1`);
+  await page.goBack();
+  await page.getByText("2 records").waitFor();
+
+  // A hidden column stays hidden after a reload; the first column cannot be hidden.
+  const authorHeader = page.getByRole("columnheader", { name: "Author", exact: true });
+  await authorHeader.waitFor();
+  await page.getByRole("button", { name: "Columns" }).click();
+  assert.equal(await page.getByRole("menuitemcheckbox", { name: "Id", exact: true }).getAttribute("aria-disabled"), "true");
+  await page.getByRole("menuitemcheckbox", { name: "Author", exact: true }).click();
+  await authorHeader.waitFor({ state: "detached" });
+  await page.keyboard.press("Escape");
+  await idle();
+  await page.reload();
+  await page.getByText("2 records").waitFor();
+  assert.equal(await page.getByRole("columnheader", { name: "Author", exact: true }).count(), 0);
+  await page.getByRole("button", { name: "Columns" }).click();
+  await page.getByRole("menuitemcheckbox", { name: "Author", exact: true }).click();
+  await page.getByRole("columnheader", { name: "Author", exact: true }).waitFor();
+  await page.keyboard.press("Escape");
+
+  // The density toggle is a pressed button, and the choice stays after a reload.
+  const density = page.getByRole("button", { name: "Compact" });
+  assert.equal(await density.getAttribute("aria-pressed"), "false");
+  await density.click();
+  assert.equal(await density.getAttribute("aria-pressed"), "true");
+  await idle();
+  await page.reload();
+  await page.getByText("2 records").waitFor();
+  assert.equal(await page.getByRole("button", { name: "Compact" }).getAttribute("aria-pressed"), "true");
+  await page.getByRole("button", { name: "Compact" }).click();
+
+  // A search with no match shows the empty state, and its button clears the search.
+  await page.getByRole("searchbox", { name: "Search" }).fill("zzz-no-match");
+  await page.getByRole("button", { name: "Search", exact: true }).click();
+  await page.getByText("No records match").waitFor();
+  await page.getByRole("button", { name: "Clear the search and filters" }).click();
+  await page.getByText("2 records").waitFor();
+  await idle();
+
+  // A row action sits in the row menu.
+  await page.goto(`${base}/admin/Ticket`);
+  await page.getByRole("cell", { name: "Ticket 1" }).waitFor();
+  await page.getByRole("button", { name: "Actions for row 1" }).click();
+  await page.getByRole("menuitem", { name: "Reopen" }).click();
+  await page.getByRole("status").filter({ hasText: "Reopened" }).waitFor();
+  await idle();
+  assert.deepEqual(problems, []);
+  await context.close();
+});
+
 test("a package widget and a package detail tab load under the page policy and call a custom route", async () => {
   const { context, page, problems, idle } = await signedIn();
   await page.goto(`${base}/admin/Movie/1/edit`);
@@ -611,6 +682,7 @@ test("a site at a non-default base path signs in, opens a list, a deep link and 
     const context = await browser.newContext({ timezoneId: ZONE, locale: "en-US" });
     const page = await context.newPage();
     const problems = [];
+    const idle = trackRequests(page);
     page.on("console", (m) => m.type() === "error" && !m.text().includes("status of 401") && problems.push(`console: ${m.text()}`));
     page.on("pageerror", (e) => problems.push(`page error: ${e.message}`));
     page.on("requestfailed", (r) => problems.push(`request failed: ${r.url()} ${r.failure()?.errorText}`));
@@ -625,11 +697,14 @@ test("a site at a non-default base path signs in, opens a list, a deep link and 
     await page.getByRole("navigation", { name: "Resources" }).getByRole("link", { name: "Book", exact: true }).click();
     await page.waitForURL(`${url}/bundler/admin/Book`);
     await page.getByText("2 records").waitFor();
-    // A deep link and a reload load the assets from the base path.
+    // A deep link and a reload load the assets from the base path. A request still in flight would end as a failed one.
+    await idle();
     await page.goto(`${url}/bundler/admin/Book/1`);
     await page.getByRole("heading", { name: /Book/ }).waitFor();
+    await idle();
     await page.reload();
     await page.getByText("First").first().waitFor();
+    await idle();
     const cookies = await context.cookies(`${url}/bundler/admin/`);
     const session = cookies.find((c) => c.name === "__Secure-monorm-session");
     assert.ok(session && session.path === "/bundler/admin/" && session.httpOnly, JSON.stringify(cookies));
