@@ -1883,8 +1883,11 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
       }
       if (o.index !== undefined) {
         conflictIndexes = (Array.isArray(o.index) ? o.index : [o.index]).map((ref: unknown) => {
-          if (!(ref instanceof IndexRef) || ref.model !== this.meta.name) {
+          if (!(ref instanceof IndexRef)) {
             throw new TypeError(`onConflict { index } takes ${this.meta.name}.indexes.<name> or a list of them`);
+          }
+          if (ref.model !== this.meta.name) {
+            throw new TypeError(`onConflict { index: ${String(ref)} } is not an index of ${this.meta.name}`);
           }
           return ref.name;
         });

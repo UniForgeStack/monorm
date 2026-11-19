@@ -195,10 +195,6 @@
 # languages/python/tests/test_validation_error.py
 "validation_error::a_copy_keeps_the_paths_and_messages" = "one-language: Python pickle protocol; TypeScript has no copy protocol for errors"
 # languages/python/tests/test_writes.py
-"writes::model_indexes_offer_the_unique_indexes" = "change: Python must add an `IndexRef` type and `repr`/`str` check (TS asserts `String()`) and run on SQLite too;"
-"writes::on_conflict_index_errors_name_the_problem" = "change: TS says 'takes Note.indexes' for the other model's index: align the message, run Python on SQLite too, add explicit ID"
-"writes::on_conflict_index_picks_a_partial_index" = "change: The TS twin asserts the same on SQLite and Postgres: Python must run on both providers, and needs explicit ID"
-"writes::on_conflict_index_with_a_boolean_column" = "change: TS asserts the same on both providers: Python must run on SQLite too, and needs explicit ID"
 "writes::on_conflict_infers_the_partial_unique_index" = "keep: move that line into the kept test in both languages, then remove this one."
 # languages/python/tests/test_proto_field.py
 "proto_field::the_generated_stub_types_the_field_as_the_message_class" = "one-language: reads the generated Python stub; the TypeScript types are checked by `npm run typecheck`"
@@ -268,10 +264,6 @@
 # languages/js/test/nested.test.ts
 # languages/js/test/null-strict.test.ts
 # languages/js/test/on-conflict-index.test.ts
-"on_conflict_index::model_indexes_offers_the_unique_indexes" = "change: twin writes::model_indexes_offer_the_unique_indexes; TS add `.name`;"
-"on_conflict_index::on_conflict_index_errors_name_the_problem" = "change: twin writes::on_conflict_index_errors_name_the_problem; Align the binding message, run Python on SQLite too (TS runs both providers), and add"
-"on_conflict_index::on_conflict_index_picks_a_partial_index" = "change: twin writes::on_conflict_index_picks_a_partial_index; TS runs on SQLite and PostgreSQL, Python only on PostgreSQL: parametrize the `notes` fixture over both"
-"on_conflict_index::on_conflict_index_takes_a_boolean_column_and_a_list_of_one" = "change: twin writes::on_conflict_index_with_a_boolean_column; Python runs only on PostgreSQL (TS both);"
 # languages/js/test/pagination.test.ts
 "pagination::a_date_order_column_past_year_9999_postgres" = "one-language: TypeScript-only: a JS Date passes year 9999; Python's datetime stops at 9999"
 # languages/js/test/partition.test.ts

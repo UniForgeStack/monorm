@@ -51,6 +51,7 @@ for (const provider of Object.keys(urls)) {
       assert.deepEqual(Object.keys(Note.indexes), ["notes_slug_live", "notes_slug_shown", "notes_body"]);
       assert.ok(Solo.indexes.solo_slug_active instanceof IndexRef);
       assert.equal(String(Solo.indexes.solo_slug_active), "Solo.indexes.solo_slug_active");
+      assert.equal(Solo.indexes.solo_slug_active.name, "solo_slug_active");
       assert.equal(Note.indexes.notes_body_slug, undefined);
     } finally {
       await db.close();
@@ -101,7 +102,7 @@ for (const provider of Object.keys(urls)) {
     const { db, Note, Solo } = await setup(provider);
     try {
       const notes = Note.objects.using(db);
-      await assert.rejects(notes.insert({ slug: "a" }).onConflict(Note.slug, { index: Solo.indexes.solo_slug_active, update: false }), /takes Note.indexes/);
+      await assert.rejects(notes.insert({ slug: "a" }).onConflict(Note.slug, { index: Solo.indexes.solo_slug_active, update: false }), /not an index of Note/);
       await assert.rejects(notes.insert({ slug: "a" }).onConflict(Note.slug, { index: "notes_slug_live", update: false } as never), /takes Note.indexes/);
       // A forged reference reaches the engine, which checks the schema.
       const forged = (name: string) => new IndexRef("Note", name);

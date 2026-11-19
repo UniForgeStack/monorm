@@ -98,7 +98,6 @@ async def test_insert_many_batch_size_is_checked(clean):
 # -- upserts on a partial unique index --------------------------------------------------------
 
 NOTES = """
-    datasource db { provider = "postgresql" }
     model Note {
       id      BigInt  @id @default(autoincrement())
       slug    String
@@ -120,19 +119,36 @@ NOTES = """
 """
 
 
-@pytest.fixture
-async def notes():
+async def open_notes(provider):
     registry = monorm.Registry()
-    classes = monorm.loads(NOTES, registry=registry)
-    db = await monorm.connect(DATABASE_URL, registry=registry, default=False, max_connections=1)
+    classes = monorm.loads(f'datasource db {{ provider = "{provider}" }}' + NOTES, registry=registry)
+    url = "sqlite://:memory:" if provider == "sqlite" else DATABASE_URL
+    db = await monorm.connect(url, registry=registry, default=False, max_connections=1)
     await db.create_tables()
-    yield db, classes["Note"], classes["Solo"]
+    return db, classes["Note"], classes["Solo"]
+
+
+@pytest.fixture(params=["sqlite", "postgresql"])
+async def notes(request):
+    db, Note, Solo = await open_notes(request.param)
+    yield db, Note, Solo
     await db.drop_tables()
     await db.close()
 
 
+@pytest.fixture
+async def notes_postgres():
+    db, Note, Solo = await open_notes("postgresql")
+    yield db, Note, Solo
+    await db.drop_tables()
+    await db.close()
+
+
+@pytest.mark.case("on_conflict_index::model_indexes_offers_the_unique_indexes")
 async def test_model_indexes_offer_the_unique_indexes(notes):
     _, Note, Solo = notes
+    assert isinstance(Solo.indexes.solo_slug_active, monorm.IndexRef)
+    assert repr(Solo.indexes.solo_slug_active) == str(Solo.indexes.solo_slug_active) == "Solo.indexes.solo_slug_active"
     assert [i.name for i in Note.indexes] == ["notes_slug_live", "notes_slug_shown", "notes_body"]
     assert Solo.indexes.solo_slug_active.name == "solo_slug_active"
     with pytest.raises(
@@ -158,6 +174,7 @@ def test_a_field_named_indexes_keeps_its_column():
     assert isinstance(Shadow.indexes, monorm.ColumnRef)
 
 
+@pytest.mark.case("on_conflict_index::on_conflict_index_picks_a_partial_index")
 async def test_on_conflict_index_picks_a_partial_index(notes, observe_queries):
     db, Note, _ = notes
     notes_ = Note.objects.using(db)
@@ -180,8 +197,8 @@ async def test_on_conflict_index_picks_a_partial_index(notes, observe_queries):
     assert await notes_.count() == 3
 
 
-async def test_on_conflict_index_list_sends_the_and_of_the_predicates(notes, observe_queries):
-    db, Note, _ = notes
+async def test_on_conflict_index_list_sends_the_and_of_the_predicates(notes_postgres, observe_queries):
+    db, Note, _ = notes_postgres
     notes_ = Note.objects.using(db)
     both = [Note.indexes.notes_slug_live, Note.indexes.notes_slug_shown]
     await notes_.insert_many(
@@ -203,6 +220,7 @@ async def test_on_conflict_index_list_sends_the_and_of_the_predicates(notes, obs
     assert sorted([n.body for n in await notes_]) == ["e", "f"]
 
 
+@pytest.mark.case("on_conflict_index::on_conflict_index_takes_a_boolean_column_and_a_list_of_one")
 async def test_on_conflict_index_with_a_boolean_column(notes):
     # The predicate is SQL text: a parameter would stop matching the index from the
     # sixth run of the prepared statement, when Postgres plans it generically.
@@ -250,6 +268,7 @@ async def test_on_conflict_infers_the_partial_unique_index():
         await db.close()
 
 
+@pytest.mark.case("on_conflict_index::on_conflict_index_errors_name_the_problem")
 async def test_on_conflict_index_errors_name_the_problem(notes):
     db, Note, Solo = notes
     notes_ = Note.objects.using(db)
