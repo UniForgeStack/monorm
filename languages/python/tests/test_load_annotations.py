@@ -107,13 +107,10 @@ async def test_load_takes_a_window_expression_with_one_row_per_instance(clean):
     assert [(p.title, p.author_posts) for p in posts] == [("p1", 2), ("p2", 2), ("p3", 1)]
 
 
-def test_load_rejects_an_aggregate_that_merges_rows():
+async def test_load_rejects_an_aggregate_that_merges_rows(clean):
+    await seed()
     with pytest.raises(QueryError, match="annotation x is an aggregate"):
         Post.objects.load(func.count().label("x")).sql()
-
-
-async def test_a_merging_aggregate_fails_when_run(clean):
-    await seed()
     with pytest.raises(QueryError, match="annotation x is an aggregate"):
         await Post.objects.load(func.count().label("x"))
 
@@ -167,11 +164,11 @@ async def test_join_annotates_a_query_set(clean):
     assert [(u.name, u.total_views) for u in users] == [("Alice", 120), ("Bob", 5)]
 
 
-async def test_a_bound_join_that_matches_twice_raises(clean):
+async def test_a_join_that_matches_an_object_twice_raises_a_query_error_that_names_it(clean):
     await seed_views()
     posts = Post.objects.select(Post.author_id, Post.views).cte("posts_of")
     users = await User.objects.all()
-    with pytest.raises(QueryError, match=r"join\(posts_of\)"):
+    with pytest.raises(QueryError, match=r"join\(posts_of\) returned User .* more than once"):
         await User.objects.of(users).join(posts, posts.c.author_id == User.id).load(posts.c.views.label("v"))
 
 

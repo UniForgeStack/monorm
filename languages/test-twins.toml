@@ -127,27 +127,10 @@
 "hooks::decode_field_reads_the_loaded_value_through_the_decoder" = "change: Python must add a decoded insert result, and keeps its read-only and missing-field checks."
 # languages/python/tests/test_inspection.py
 "inspection::inspecting_a_write_is_a_valid_terminal_use" = "one-language: Python-only: the never-awaited RuntimeWarning of write statements"
-"inspection::inspection_is_typed_immutable_and_needs_no_connection" = "change: TS also asserts the statement entries are frozen: Python add FrozenInstanceError on `result.statements[0].joins_count = 2`, and rename to"
-"inspection::mutations_inspect_generated_subqueries" = "change: The TS twin is inside a large write test: move its mutation/deletion part to a TS test 'mutations inspect generated subqueries'."
-"inspection::nested_relation_filters_count_each_subquery_once" = "change: TS has this as the first line of a merged test: move it to a TS test 'nested relation filters count each subquery once'."
-"inspection::nested_subqueries_have_their_own_dependencies" = "change: After the TS split above, the TS remainder renames to 'nested subqueries have their own dependencies'."
-"inspection::statement_inspection_has_keyword_defaults_and_a_short_repr" = "change: repr/keyword-only stay Python idioms and frozen stays a TS idiom."
-"inspection::subquery_shapes_are_reported_per_use" = "change: Python add the SQLite-registry aggregate case (scalar_correlated=2, offline);"
-"inspection::unbound_inspection_honors_default_connection_capabilities" = "change: TS also asserts `using(db)` with 3 rows gives 2 statements: Python add that, and rename to"
-"inspection::write_batch_inspection_and_observation" = "change: Python add an upsert `on_conflict(update=False).returning()` inspecting 1 statement with no event;"
 # languages/python/tests/test_json_key_escape.py
 "json_key_escape::nul_key_is_rejected" = "change: TS checks this only as its last line inside the hostile-keys test (at `count()`);"
 # languages/python/tests/test_load_annotations.py
-"load_annotations::a_bound_join_that_matches_twice_raises" = "change: TS also matches 'returned User .* more than once', so Py must add that to the match."
-"load_annotations::a_bound_join_that_matches_twice_raises_on_count_and_exists_too" = "change: The TS twin also asserts a single-match join gives count 2 and exists true, so Py must add those."
 "load_annotations::a_labeled_expression_must_not_name_a_field" = "duplicate: kept test load_annotations::label_must_not_name_a_field_relation_or_member"
-"load_annotations::a_merging_aggregate_fails_when_run" = "change: The matched TS twin asserts both `.sql()` and `.all()`, but the matched Py twin asserts only `.sql()`."
-"load_annotations::bound_load_takes_a_labeled_expression" = "change: TS has no window case, so TS must add it."
-"load_annotations::instance_load_reads_a_loaded_label_again" = "change: TS puts this and the aggregate-only read in one test, so TS must split it into two tests with the Py names."
-"load_annotations::instance_load_reads_only_the_aggregate" = "change: The TS combined test must split into this name and instance_load_reads_a_loaded_label_again."
-"load_annotations::label_must_be_unique_among_loads" = "change: twin load_annotations::a_label_must_be_unique_among_loads; For the second case, TS asserts only `QueryError`, so TS must add `/twice/`."
-"load_annotations::load_takes_a_labeled_expression" = "change: TS loads one label only, so TS must add a plain column label and the body check."
-"load_annotations::load_takes_a_window_expression_with_one_row_per_instance" = "change: TS has one author (`[2, 2]`), so the partition is not tested, and TS must add a second author's post."
 # languages/python/tests/test_migrations.py
 "migrations::first_migration" = "change: twin migrations::the_first_migration; Python also asserts CREATE INDEX 'books_author_id_idx', so TS adds it."
 "migrations::kept_rename_hints_do_nothing_after_the_rename" = "engine-covered: crates/core/src/migrate/tests.rs::kept_rename_hints_do_nothing_after_the_rename"
@@ -488,19 +471,7 @@
 "identities::a_generic_field_creates_its_pair_its_index_and_the_reverse_field" = "change: TS adds the relations entry and the insert/get round trip."
 "identities::content_type_identity_roundtrip_and_frozen_generation" = "change: add Tag=2 and the objectId 7 read after delete."
 # languages/js/test/inspection.test.ts
-"inspection::default_and_explicit_connection_capabilities_affect_write_batch_inspection" = "change: Python adds the explicit `using(db)` case and takes this name."
-"inspection::implicit_and_explicit_nested_subqueries_have_their_own_enclosing_dependencies" = "change: Split: the first assert becomes 'nested relation filters count each subquery once', the rest renames to 'nested subqueries have their own dependencies'."
-"inspection::inserts_upserts_mutations_and_bulk_returning_writes_inspect_without_execution" = "change: Split the mutation/deletion part into 'mutations inspect generated subqueries';"
-"inspection::inspection_is_typed_repeatable_and_deeply_immutable" = "change: Python adds the frozen check on statements[0] and renames."
-"inspection::shared_aggregates_use_one_correlated_lateral_on_postgre_sql_and_scalar_subqueries_on_sqlite" = "change: twin inspection::subquery_shapes_are_reported_per_use; Rename to 'subquery shapes are reported per use' and add the select-list outer() scalar"
-"inspection::statement_inspection_fills_zeros_and_the_result_is_compared_whole" = "change: rename both sides to 'statement inspection fills zeros and is compared whole'."
 # languages/js/test/load-annotations.test.ts
-"load_annotations::a_bound_load_takes_a_labeled_expression" = "change: twin load_annotations::bound_load_takes_a_labeled_expression; It must add the Py window case: `count().over({partitionBy: authorId})` on the bound set gives"
-"load_annotations::a_join_that_matches_an_object_twice_raises_a_query_error_that_names_it" = "change: The Py side must add 'more than once' to its match and take this name."
-"load_annotations::a_label_must_be_unique_among_loads" = "change: twin load_annotations::label_must_be_unique_among_loads; TS must add `/twice/` to that case."
-"load_annotations::a_window_expression_keeps_one_row_per_instance" = "change: TS must add a second author with one post and expect `[2, 2, 1]`."
-"load_annotations::instance_load_reads_only_the_aggregate_and_reads_a_loaded_label_again" = "change: Split it into `instance load reads only the aggregate` and `instance load reads a loaded label again`, to match the two Py tests."
-"load_annotations::load_takes_any_labeled_expression_of_the_row" = "change: twin load_annotations::load_takes_a_labeled_expression; TS must add a second label on a plain column (`Post.id.label('sameId')`) and assert that `body` is"
 # languages/js/test/migrations.test.ts
 "migrations::node_launcher_converts_native_expressions_offline_and_preserves_pending_changes" = "change: b11 pairs it with the Python launcher test, so TS adds the live steps and Python takes an explicit ID] Asserts fmt --native through cli.ts rewrites raw('qty >"
 "migrations::the_cli_against_a_database" = "engine-covered: crates/cli/tests/binary.rs::migrate_showmigrations_and_rollback_print_their_progress"

@@ -29,7 +29,7 @@ const nComments = () => func.count(Post.comments).label("n");
 
 async function seed() {
   const [alice] = (await User.objects.insertMany([{ email: "a@example.com", name: "Alice" }]).returning()) as [User];
-  const [p1] = (await Post.objects.insertMany([
+  const [p1, p2] = (await Post.objects.insertMany([
     { author: alice, title: "p1", body: "", views: 10 },
     { author: alice, title: "p2", body: "", views: 20 },
   ]).returning()) as [Post, Post];
@@ -37,7 +37,7 @@ async function seed() {
     { post: p1, body: "x" },
     { post: p1, body: "y" },
   ]);
-  return { alice, p1 };
+  return { alice, p1, p2 };
 }
 
 test("query set load sets the label", async () => {
@@ -64,12 +64,18 @@ test("a labeled relation query set nests the aggregate", async () => {
   assert.deepEqual(alice.counted.map((p: Dynamic) => [p.title, Number(p.n)]).sort(), [["p1", 2], ["p2", 0]]);
 });
 
-test("instance load reads only the aggregate and reads a loaded label again", async () => {
+test("instance load reads only the aggregate", async () => {
   const { p1 } = await seed();
   const post = (await Post.objects.load(Post.title).get(Post.id.eq(p1.id)))!;
   const loaded = (await post.load(nComments())) as Dynamic;
   assert.equal(Number(loaded.n), 2);
   assert.equal(post.title, "p1");
+});
+
+test("instance load reads a loaded label again", async () => {
+  const { p1 } = await seed();
+  const post = (await Post.objects.load(Post.title).get(Post.id.eq(p1.id)))!;
+  await post.load(nComments());
   await Comment.objects.insert({ post: p1, body: "z" });
   await post.load(nComments());
   assert.equal(Number((post as Dynamic).n), 3);
@@ -95,16 +101,19 @@ test("an aggregate over a filtered relation", async () => {
   assert.deepEqual(posts.map((p) => Number(p.n)), [1, 0]);
 });
 
-test("load takes any labeled expression of the row", async () => {
-  await seed();
-  const posts = await Post.objects.load(Post.views.mul(2).label("doubleViews")).orderBy(Post.title).all();
-  assert.deepEqual(posts.map((p) => [p.title, Number(p.doubleViews)]), [["p1", 20], ["p2", 40]]);
+test("load takes a labeled expression", async () => {
+  const { p1, p2 } = await seed();
+  const posts = await Post.objects.load(Post.views.mul(2).label("doubleViews"), Post.id.label("sameId")).orderBy(Post.title).all();
+  assert.deepEqual(posts.map((p) => [p.title, Number(p.doubleViews), p.sameId]), [["p1", 20, p1.id], ["p2", 40, p2.id]]);
+  assert.deepEqual(posts.map((p) => p.body), ["", ""]);
 });
 
-test("a window expression keeps one row per instance", async () => {
+test("load takes a window expression with one row per instance", async () => {
   await seed();
+  const [bob] = (await User.objects.insertMany([{ email: "b@example.com", name: "Bob" }]).returning()) as [User];
+  await Post.objects.insertMany([{ author: bob, title: "p3", body: "" }]);
   const posts = await Post.objects.load(func.count().over({ partitionBy: Post.authorId }).label("authorPosts")).orderBy(Post.title).all();
-  assert.deepEqual(posts.map((p) => Number(p.authorPosts)), [2, 2]);
+  assert.deepEqual(posts.map((p) => [p.title, Number(p.authorPosts)]), [["p1", 2], ["p2", 2], ["p3", 1]]);
 });
 
 test("load rejects an aggregate that merges rows", async () => {
@@ -114,11 +123,13 @@ test("load rejects an aggregate that merges rows", async () => {
   await assert.rejects(async () => merging().all(), QueryError);
 });
 
-test("a bound load takes a labeled expression", async () => {
+test("bound load takes a labeled expression", async () => {
   const { alice } = await seed();
   const posts = await Post.objects.filter(Post.authorId.eq(alice.id)).all();
   const got = await Post.objects.of(posts).load(Post.views.mul(2).label("doubleViews"));
   assert.deepEqual(got.map((p) => [p.title, Number(p.doubleViews)]).sort(), [["p1", 20], ["p2", 40]]);
+  const again = await Post.objects.of(posts).load(func.count().over({ partitionBy: Post.authorId }).label("sameAuthor"));
+  assert.deepEqual(again.map((p) => Number((p as Dynamic).sameAuthor)), [2, 2]);
   assert.throws(() => Post.objects.of(posts).load(Post.views.mul(2).label("title")), { name: "QueryError", message: /is a field, relation or member/ });
 });
 
@@ -150,12 +161,20 @@ test("join annotates a query set", async () => {
 });
 
 test("a join that matches an object twice raises a QueryError that names it", async () => {
-  const { a, b } = await seedViews();
-  const posts = Post.objects.select({ authorId: Post.authorId, title: Post.title }).cte("posts_of");
+  const { a, b, c } = await seedViews();
+  const posts = Post.objects.select({ authorId: Post.authorId, views: Post.views }).cte("posts_of");
   await assert.rejects(
-    async () => await User.objects.of([a, b]).join(posts, posts.c.authorId.eq(User.id)),
+    async () => await User.objects.of([a, b, c]).join(posts, posts.c.authorId.eq(User.id)).load(posts.c.views.label("v")),
     { name: "QueryError", message: /join\(posts_of\) returned User .* more than once/ },
   );
+});
+
+test("a bound join that matches twice raises on count and exists too", async () => {
+  const { a, b, c } = await seedViews();
+  const posts = Post.objects.select({ authorId: Post.authorId, views: Post.views }).cte("posts_of");
+  const bound = User.objects.of([a, b, c]).join(posts, posts.c.authorId.eq(User.id));
+  await assert.rejects(async () => await bound.count(), { name: "QueryError", message: /join\(posts_of\)/ });
+  await assert.rejects(async () => await bound.exists(), { name: "QueryError", message: /join\(posts_of\)/ });
 });
 
 test("an outer join gives null for an object without a match", async () => {
@@ -181,9 +200,9 @@ test("a label must not name a field, relation or member", () => {
   }
 });
 
-test("a label must be unique among loads", () => {
+test("label must be unique among loads", () => {
   assert.throws(() => Post.objects.load(func.count(Post.comments).label("n"), func.count(Post.comments).label("n")), /twice/);
-  assert.throws(() => Post.objects.load(nComments(), Post.comments.objects.label("n")), QueryError);
+  assert.throws(() => Post.objects.load(nComments(), Post.comments.objects.label("n")), /twice/);
   assert.throws(() => Post.objects.load(Post.comments.objects.label("n")).load(nComments()), /twice/);
 });
 

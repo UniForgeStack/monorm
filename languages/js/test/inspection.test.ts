@@ -7,7 +7,7 @@ import { DATABASE_URL, useDatabase } from "./helpers.js";
 
 useDatabase();
 
-test("inspection is typed, repeatable and deeply immutable", () => {
+test("inspection is typed repeatable and deeply immutable", () => {
   const query = Post.objects.load(Post.author);
   const result: QueryInspection = query.inspect();
   assert.deepStrictEqual(result, { statementCount: 1, hasBatching: false, statements: [statementInspection({ joinsCount: 1 })] });
@@ -17,8 +17,11 @@ test("inspection is typed, repeatable and deeply immutable", () => {
   assert.throws(() => Object.assign(result, { statementCount: 2 }), TypeError);
 });
 
-test("implicit and explicit nested subqueries have their own enclosing dependencies", () => {
+test("nested relation filters count each subquery once", () => {
   assert.deepStrictEqual(User.objects.filter(User.posts.comments.body.eq("hi")).inspect().statements, [statementInspection({ setCorrelated: 2 })]);
+});
+
+test("nested subqueries have their own dependencies", () => {
   const comments = exists(Comment.objects.filter(Comment.postId.eq(outer(Post.id))));
   assert.deepStrictEqual(
     User.objects.filter(exists(Post.objects.filter(comments))).inspect().statements,
@@ -38,7 +41,11 @@ test("CTEs are counted separately from subqueries", () => {
   );
 });
 
-test("shared aggregates use one correlated LATERAL on PostgreSQL and scalar subqueries on SQLite", () => {
+test("subquery shapes are reported per use", () => {
+  const posts = Post.objects.filter(Post.published).select({ authorId: Post.authorId });
+  assert.deepStrictEqual(User.objects.filter(User.id.in(posts)).inspect().statements, [statementInspection({ setUncorrelated: 1 })]);
+  const scalar = Post.objects.filter(Post.authorId.eq(outer(User.id))).select({ n: func.count() }).asScalar();
+  assert.deepStrictEqual(User.objects.select({ id: User.id, n: scalar }).inspect().statements, [statementInspection({ scalarCorrelated: 1 })]);
   const pg = User.objects.select({ n: func.count(User.posts), max: func.max(User.posts.views) }).inspect();
   assert.deepStrictEqual(pg.statements, [statementInspection({ joinsCount: 1, derivedCorrelated: 1 })]);
   // A different registry inspects offline even with a PostgreSQL default pool.
@@ -79,7 +86,7 @@ test("prefetch template counts differ from actual key batches", async () => {
   } finally { await db.close(); }
 });
 
-test("inserts, upserts, mutations and bulk returning writes inspect without execution", async () => {
+test("write batch inspection and observation", async () => {
   const db = getDatabase();
   const events: QueryEvent[] = [];
   const remove = db.onQuery(e => events.push(e));
@@ -98,21 +105,24 @@ test("inserts, upserts, mutations and bulk returning writes inspect without exec
     assert.equal((await update).length, 5);
     assert.equal(events.length, 3);
     events.length = 0;
-    const scalar = Comment.objects.filter(Comment.postId.eq(outer(Post.id))).select({ n: func.count() }).asScalar();
-    const mutation = Post.objects.all().update({ views: scalar });
-    assert.deepStrictEqual(mutation.inspect().statements, [statementInspection({ scalarCorrelated: 1 })]);
-    const deletion = Post.objects.filter(Post.comments.body.eq("hi")).delete().returning();
-    assert.deepStrictEqual(deletion.inspect().statements, [statementInspection({ setCorrelated: 1 })]);
     const upsert = Tag.objects.insert({ name: "t0!" }).onConflict(Tag.name, { update: false }).returning();
     assert.equal(upsert.inspect().statementCount, 1);
     assert.deepEqual(events, []);
-    assert.equal(await mutation, 0);
-    assert.deepEqual(await deletion, []);
     assert.equal(await upsert, null);
     assert.equal(Tag.objects.insertMany([]).inspect().statementCount, 0);
     assert.equal(Tag.objects.updateMany([]).inspect().statementCount, 0);
     assert.equal(Tag.objects.all().update({}).inspect().statementCount, 0);
   } finally { remove(); }
+});
+
+test("mutations inspect generated subqueries", async () => {
+  const scalar = Comment.objects.filter(Comment.postId.eq(outer(Post.id))).select({ n: func.count() }).asScalar();
+  const mutation = Post.objects.all().update({ views: scalar });
+  assert.deepStrictEqual(mutation.inspect().statements, [statementInspection({ scalarCorrelated: 1 })]);
+  assert.equal(await mutation, 0);
+  const deletion = Post.objects.filter(Post.comments.body.eq("hi")).delete().returning();
+  assert.deepStrictEqual(deletion.inspect().statements, [statementInspection({ setCorrelated: 1 })]);
+  assert.deepEqual(await deletion, []);
 });
 
 test("default and explicit connection capabilities affect write batch inspection", async () => {
@@ -154,7 +164,7 @@ test("SQLite inspection and actual batched writes share the same planner", async
   } finally { await db.close(); }
 });
 
-test("statementInspection fills zeros and the result is compared whole", () => {
+test("statement inspection fills zeros and is compared whole", () => {
   assert.deepStrictEqual(statementInspection(), statementInspection({ joinsCount: 0 }));
   const lateral = User.objects.select({ n: func.count(User.posts), max: func.max(User.posts.views) }).inspect();
   assert.deepStrictEqual(lateral.statements, [statementInspection({ joinsCount: 1, derivedCorrelated: 1 })]);

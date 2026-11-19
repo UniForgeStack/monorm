@@ -11,7 +11,7 @@ from blog.models import Comment, Post, Tag, User
 import monorm
 
 
-def test_inspection_is_typed_immutable_and_needs_no_connection():
+def test_inspection_is_typed_repeatable_and_deeply_immutable():
     query = Post.objects.load(Post.author)
     result = query.inspect()
     assert isinstance(result, monorm.QueryInspection)
@@ -19,6 +19,8 @@ def test_inspection_is_typed_immutable_and_needs_no_connection():
     assert query.inspect() == result
     with pytest.raises(FrozenInstanceError):
         result.statement_count = 2  # type: ignore[misc]
+    with pytest.raises(FrozenInstanceError):
+        result.statements[0].joins_count = 2  # type: ignore[misc]
 
 
 def test_nested_relation_filters_count_each_subquery_once():
@@ -94,6 +96,15 @@ async def test_write_batch_inspection_and_observation(clean):
     finally:
         remove()
     assert len(events) == result.statement_count
+    upsert = Tag.objects.insert(name="t0").on_conflict(Tag.name, update=False).returning()
+    events.clear()
+    remove = clean.on_query(events.append)
+    try:
+        assert upsert.inspect().statement_count == 1
+        assert events == []
+        assert await upsert is None
+    finally:
+        remove()
     update = Tag.objects.update_many([{"id": t.id, "name": t.name + "!"} for t in tags], batch_size=2)
     assert update.inspect().statement_count == 3
     assert update.inspect().has_batching
@@ -139,7 +150,7 @@ def test_inspecting_a_write_is_a_valid_terminal_use():
     assert caught == []
 
 
-async def test_unbound_inspection_honors_default_connection_capabilities(clean, monkeypatch):
+async def test_default_and_explicit_connection_capabilities_affect_write_batch_inspection(clean, monkeypatch):
     db = await monorm.connect(clean.url, default=False, _disable=("max_params=2",))
     try:
         with monkeypatch.context() as patch:
@@ -147,14 +158,20 @@ async def test_unbound_inspection_honors_default_connection_capabilities(clean, 
             result = Tag.objects.insert_many([{"name": f"t{i}"} for i in range(5)]).inspect()
             assert result.statement_count == 3
             assert result.has_batching
+        assert Tag.objects.using(db).insert_many([{"name": "a"}, {"name": "b"}, {"name": "c"}]).inspect().statement_count == 2
     finally:
         await db.close()
 
 
-def test_statement_inspection_has_keyword_defaults_and_a_short_repr():
+def test_statement_inspection_fills_zeros_and_is_compared_whole():
     assert monorm.StatementInspection() == monorm.StatementInspection(joins_count=0)
     one = monorm.StatementInspection(joins_count=1, derived_correlated=1)
     assert one != monorm.StatementInspection(joins_count=1, derived_uncorrelated=1)
+    lateral = User.objects.select(User.id, monorm.func.count(User.posts), monorm.func.max(User.posts.views)).inspect()
+    assert lateral.statements == (monorm.StatementInspection(joins_count=1, derived_correlated=1),)
+    assert lateral.statements[0] != monorm.StatementInspection(joins_count=1, derived_uncorrelated=1)
+    in_set = User.objects.filter(User.id.in_(Post.objects.select(Post.author_id))).inspect()
+    assert in_set.statements == (monorm.StatementInspection(set_uncorrelated=1),)
     assert repr(one) == "StatementInspection(joins_count=1, derived_correlated=1)"
     assert repr(monorm.StatementInspection()) == "StatementInspection()"
     with pytest.raises(TypeError):
@@ -170,6 +187,11 @@ def test_subquery_shapes_are_reported_per_use():
     assert User.objects.select(User.id, scalar).inspect().statements[0] == monorm.StatementInspection(scalar_correlated=1)
     lateral = User.objects.select(User.id, monorm.func.count(User.posts), monorm.func.max(User.posts.views))
     assert lateral.inspect().statements[0] == monorm.StatementInspection(joins_count=1, derived_correlated=1)
+    # A different registry inspects offline even with a PostgreSQL default pool.
+    source = Path(__file__).resolve().parents[3].joinpath("examples/sqlite/schema.prisma").read_text()
+    sqlite = monorm.loads(source, registry=monorm.Registry())["Author"]
+    shared = sqlite.objects.select(monorm.func.count(sqlite.books), monorm.func.max(sqlite.books.pages))
+    assert shared.inspect().statements[0] == monorm.StatementInspection(scalar_correlated=2)
 
 
 async def test_sqlite_inspection_and_actual_batched_writes_share_the_same_planner():
