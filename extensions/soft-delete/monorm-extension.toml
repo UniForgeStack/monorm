@@ -2,7 +2,7 @@ id = "monorm.soft-delete"
 version = "0.1.2"
 abi = "0.2"
 library = "monorm_soft_delete"
-schema_contract = "5.3"
+schema_contract = "5.4"
 language_contract = 1
 languages = ["python", "typescript"]
 databases = ["postgres", "sqlite"]
@@ -12,13 +12,12 @@ capabilities = ["schema-transformations", "physical-schema"]
 [[passes]]
 id = "monorm.soft-delete.fields"
 phase = "declaration"
-after = ["monorm.inherit.expand"]
 effects = ["models.soft_delete", "storage.soft_delete"]
 
+# Runs after the `behavior` passes of the other extensions, so their write assignments and read defaults exist.
 [[passes]]
 id = "monorm.soft-delete.prepare"
-phase = "behavior"
-after = ["monorm.locking.prepare", "monorm.timestamps.prepare"]
+phase = "late_behavior"
 effects = ["behavior.delete_rewrites", "storage.soft_delete_triggers"]
 additive = ["behavior.read_defaults"]
 

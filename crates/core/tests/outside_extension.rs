@@ -9,9 +9,8 @@ use std::{cell::RefCell, collections::BTreeMap, fs, path::{Path, PathBuf}, proce
 
 const ID: &str = "acme.outside";
 /// The passes and attributes that the manifest of `tests/outside-extension` stamps on a lowered schema.
-/// The passes in the order the stamp lists them; `PASSES` is the order they run in.
+/// The passes in the order the stamp lists them, which is the order they run in.
 const DECLARED_PASSES: [&str; 7] = ["acme.outside.fields", "acme.outside.tag", "acme.outside.guard", "acme.outside.template", "acme.outside.wrapped", "acme.outside.base", "acme.outside.view"];
-const PASSES: [&str; 7] = ["acme.outside.fields", "acme.outside.template", "acme.outside.wrapped", "acme.outside.tag", "acme.outside.guard", "acme.outside.base", "acme.outside.view"];
 const ATTRIBUTES: [&str; 8] = ["outside.tag", "outside.money", "outside.note", "outside.view", "outside.base", "outside.guard", "outside.wrapped", "outside.template"];
 const SCHEMA: &str = "model Post {\n id Int @id\n @@outside.tag(\"blue\")\n}\n";
 
@@ -249,20 +248,18 @@ fn unlowered() -> SchemaIr {
     ir
 }
 
-// The artifact has one pass before and one pass after the pass of the library, and `after` sets both sides.
+// The artifact has one pass before and one pass after the pass of the library, and the phases `expansion` and `logical` set both sides.
 // A compiled pass is a recording closure here.
 #[test]
 fn the_passes_of_the_artifact_and_of_a_library_run_in_one_order() {
     let manifest = installed("", "0.2");
-    let ordered = manifest.with_file_name("ordered.toml");
-    fs::write(&ordered, fs::read_to_string(&manifest).unwrap().replacen("[[passes]]\n", "[[passes]]\nafter = [\"acme.static.prep\"]\n", 1)).unwrap();
     let compiled: Manifest = toml::from_str(&format!(
         "id = \"acme.static\"\nversion = \"1.0.0\"\nabi = \"0.2\"\nlibrary = \"acme_static\"\nschema_contract = \"{SCHEMA_CONTRACT_VERSION}\"\n\
          languages = [\"python\"]\ndatabases = [\"postgres\"]\n\
-         [[passes]]\nid = \"acme.static.prep\"\nphase = \"declaration\"\neffects = [\"models.static_prep\"]\n\
-         [[passes]]\nid = \"acme.static.late\"\nphase = \"declaration\"\nafter = [\"acme.outside.tag\"]\neffects = [\"models.static_late\"]\n"
+         [[passes]]\nid = \"acme.static.prep\"\nphase = \"expansion\"\neffects = [\"models.static_prep\"]\n\
+         [[passes]]\nid = \"acme.static.late\"\nphase = \"logical\"\neffects = [\"models.static_late\"]\n"
     )).unwrap();
-    let plan = monorm_core::loader::plan(&[(ID.to_owned(), ordered)], &["outside".to_owned()].into(), &[], &[compiled]).unwrap().unwrap();
+    let plan = monorm_core::loader::plan(&[(ID.to_owned(), manifest)], &["outside".to_owned()].into(), &[], &[compiled]).unwrap().unwrap();
 
     // Each compiled pass records whether the library pass has run before it.
     let seen = RefCell::new(vec![]);
@@ -275,7 +272,7 @@ fn the_passes_of_the_artifact_and_of_a_library_run_in_one_order() {
 
     assert_eq!(*seen.borrow(), [("acme.static.prep".to_owned(), false), ("acme.static.late".to_owned(), true)]);
     let behavior = &ir.behavior;
-    assert_eq!(behavior.packages[ID].passes, PASSES);
+    assert_eq!(behavior.packages[ID].passes, DECLARED_PASSES);
     assert!(behavior.declarations.iter().all(|d| d.lowered));
     assert_eq!(ir.models[0].fields.iter().find(|f| f.name == "tag").unwrap().default, Some("blue".into()));
 }

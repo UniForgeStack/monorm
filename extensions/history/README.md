@@ -38,10 +38,10 @@ const timeline = await post.history.timeline(post, { diff: true });
 
 ### Schema pass
 
-* `monorm.history.models` (logical phase) runs after the proxy and composition passes, so it sees the root of each model.
+* `monorm.history.models` (storage phase) runs after the proxy and composition passes, which run in the logical phase, so it sees the root of each model.
   For a tracker it adds the event model, `<Model>Event` by default, with the table `<root table>_events`.
   For a version model it adds the version columns.
-* `monorm.history.triggers` (behavior phase) runs after `monorm.timestamps.prepare` and adds the row triggers.
+* `monorm.history.triggers` (late behavior phase) runs after `monorm.timestamps.prepare` (behavior phase) and adds the row triggers.
 * Checks (each error names the attribute and the place):
   * A composed model fails: `track each part model, or use versions mode`.
   * `when` needs `update` in `events`. `events`, `fields` and `exclude` name known values and no duplicates.

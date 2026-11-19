@@ -52,7 +52,7 @@ console.log(note.createdAt);
 
 ## How it works
 
-**Pass.** `monorm.inherit.expand` runs in the `declaration` phase, before the host and the other extensions see the schema.
+**Pass.** `monorm.inherit.expand` runs in the `expansion` phase, before the host and the other extensions see the schema.
 Its effects are `models.inherit` and `storage.inherit`.
 After the pass the schema has ordinary models only, so the rest of the engine knows nothing about inheritance.
 

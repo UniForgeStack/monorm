@@ -2,7 +2,7 @@ id = "monorm.timestamps"
 version = "0.1.2"
 abi = "0.2"
 library = "monorm_timestamps"
-schema_contract = "5.3"
+schema_contract = "5.4"
 language_contract = 1
 languages = ["python", "typescript"]
 databases = ["postgres", "sqlite"]
@@ -12,7 +12,6 @@ capabilities = ["schema-transformations", "physical-schema"]
 [[passes]]
 id = "monorm.timestamps.fields"
 phase = "declaration"
-after = ["monorm.inherit.expand"]
 effects = ["models.timestamps", "storage.timestamps"]
 
 [[passes]]

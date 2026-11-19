@@ -211,18 +211,18 @@ mod tests {
             {"model":"Child","attribute":"query.selectOut","field":"bio","arguments":{},"positional":[],"location":{"file":"test","line":3,"column":1}}
         ]}})).unwrap()
     }
-    /// The manifest takes `expression` arguments, so a host of contract 5.1 must refuse it with both versions in the text.
+    /// The pass is in the `late_behavior` phase, which needs contract 5.4, so a host of contract 5.3 must refuse the manifest with both versions in the text.
     #[test]
-    fn the_manifest_needs_contract_5_2_and_an_older_host_refuses_it_with_both_versions() {
+    fn the_manifest_needs_contract_5_4_and_an_older_host_refuses_it_with_both_versions() {
         use monorm::version::ContractVersion;
         let text = include_str!("../monorm-extension.toml");
         let line = text.lines().find_map(|l| l.strip_prefix("schema_contract = ")).expect("the manifest names its schema contract");
         let needed: ContractVersion = line.trim().trim_matches('"').parse().unwrap();
-        assert_eq!(needed, ContractVersion::new(5, 2));
-        assert!(text.contains("kind = \"expression\""), "the filter arguments are expressions");
-        assert!(needed.check("schema contract", ContractVersion::new(5, 2), "monorm.query-defaults").is_ok());
-        let error = needed.check("schema contract", ContractVersion::new(5, 1), "monorm.query-defaults").unwrap_err();
-        assert!(error.contains("schema contract 5.2 is newer than this engine (schema contract 5.1)") && error.contains("update the ORM"), "{error}");
+        assert_eq!(needed, ContractVersion::new(5, 4));
+        assert!(text.contains("phase = \"late_behavior\"") && text.contains("kind = \"expression\""), "the pass needs the late phase and the filter arguments are expressions");
+        assert!(needed.check("schema contract", ContractVersion::new(5, 4), "monorm.query-defaults").is_ok());
+        let error = needed.check("schema contract", ContractVersion::new(5, 3), "monorm.query-defaults").unwrap_err();
+        assert!(error.contains("schema contract 5.4 is newer than this engine (schema contract 5.3)") && error.contains("update the ORM"), "{error}");
     }
 
     /// `parent.default_filter` puts the JSON of the parent filter into the child filter, as one `and` item.

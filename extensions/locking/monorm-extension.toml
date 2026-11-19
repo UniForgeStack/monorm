@@ -2,7 +2,7 @@ id = "monorm.locking"
 version = "0.1.2"
 abi = "0.2"
 library = "monorm_locking"
-schema_contract = "5.0"
+schema_contract = "5.4"
 language_contract = 1
 languages = ["python", "typescript"]
 databases = ["postgres", "sqlite"]
@@ -12,7 +12,6 @@ capabilities = []
 [[passes]]
 id = "monorm.locking.fields"
 phase = "declaration"
-after = ["monorm.inherit.expand"]
 effects = ["models.locking", "storage.locking"]
 
 [[passes]]

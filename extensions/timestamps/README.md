@@ -74,7 +74,7 @@ The extension has no `python/` or `typescript/` source: the engine applies the w
 
 ### Other extensions
 
-* `monorm.soft-delete.prepare` runs after `monorm.timestamps.prepare`, so a soft delete also moves `updated_at`.
+* `monorm.soft-delete.prepare` (late behavior phase) runs after `monorm.timestamps.prepare` (behavior phase), so a soft delete also moves `updated_at`.
 * `monorm.history.triggers` runs after it too.
   An update that changes only `updated_at` writes no history event.
 * A proxy copies the field.

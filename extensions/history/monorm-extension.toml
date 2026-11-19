@@ -2,25 +2,23 @@ id = "monorm.history"
 version = "0.1.2"
 abi = "0.2"
 library = "monorm_history"
-schema_contract = "5.3"
+schema_contract = "5.4"
 language_contract = 1
 languages = ["python", "typescript"]
 databases = ["postgres", "sqlite"]
 capabilities = ["schema-transformations", "physical-schema"]
 
-# Builds the event model of each tracker and the version columns of each version model. Runs after the passes that lower proxies and composed models, so it sees their roots.
+# Builds the event model of each tracker and the version columns of each version model. Runs in the `storage` phase, after the `logical` passes that lower proxies and composed models, so it sees their roots.
 [[passes]]
 id = "monorm.history.models"
-phase = "logical"
-after = ["monorm.proxy.lower", "monorm.composition.lower"]
+phase = "storage"
 effects = ["models.history_events", "models.history_versions", "storage.history_events", "storage.history_versions", "behavior.extension_records"]
 additive = ["behavior.published_scope_keys"]
 
-# Adds the row triggers of each tracker to the table that it tracks.
+# Adds the row triggers of each tracker to the table that it tracks. Runs after the `behavior` passes, so the triggers of the other extensions exist.
 [[passes]]
 id = "monorm.history.triggers"
-phase = "behavior"
-after = ["monorm.timestamps.prepare"]
+phase = "late_behavior"
 effects = ["models.history_triggers", "storage.history_triggers", "behavior.added_triggers"]
 
 # `@@history.track(model: "EmailEvent", events: [update], row: old, label: "email_changed", when: "NEW.email <> OLD.email", fields: [email], exclude: [password], scope: [user])`; repeatable.

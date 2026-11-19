@@ -2,15 +2,16 @@ id = "monorm.inherit"
 version = "0.1.2"
 abi = "0.2"
 library = "monorm_inherit"
-schema_contract = "5.0"
+schema_contract = "5.4"
 language_contract = 1
 languages = ["python", "typescript"]
 databases = ["postgres", "sqlite"]
 capabilities = ["schema-transformations", "physical-schema"]
 
+# Runs first, so every other pass sees ordinary models.
 [[passes]]
 id = "monorm.inherit.expand"
-phase = "declaration"
+phase = "expansion"
 effects = ["models.inherit", "storage.inherit"]
 
 # `@@inherit.abstract`: the model has no table and no runtime model.

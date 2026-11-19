@@ -2,14 +2,15 @@ id = "monorm.query-defaults"
 version = "0.1.2"
 abi = "0.2"
 library = "monorm_query_defaults"
-schema_contract = "5.2"
+schema_contract = "5.4"
 language_contract = 1
 languages = ["python", "typescript"]
 databases = ["postgres", "sqlite"]
 
 [[passes]]
+# Runs with the other late passes so the read defaults keep the order they had.
 id = "query.defaults.lower"
-phase = "behavior"
+phase = "late_behavior"
 effects = ["query-defaults"]
 additive = ["behavior.read_defaults"]
 
