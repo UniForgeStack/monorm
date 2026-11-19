@@ -1021,6 +1021,21 @@ The UI shows a table or stacked blocks, with "Add row" (off at the cap), "Remove
 A problem in a collapsed inline opens it.
 An `admin.input` of the child page has no control in the inline, and a `with_parent` change set carries no inputs: only a `row` save runs the inputs of the child page, through the API.
 
+### Fields with a view
+
+A `Bytes` field can show as another value. The field adapter turns this on (the proto extension does it for a message field): its `admin_mode` hook (TypeScript `adminMode`) returns `"json"` or `"text"`.
+The registration then sets `host_behavior` and `views` for you. In a Rust or custom setup, `views` maps a field to `json` or `text`, and it needs `host_behavior`: without it the build fails.
+
+- `json`: the detail and the list show the JSON of `admin_to_view`, and the form edits it in a monospace box. The host calls `admin_from_view` and the adapter to build the stored value. A bad value answers `422` with the field name.
+- `text`: the admin shows `N bytes` and the form field is read only. A request that sets the field answers `422`.
+- A stored value that does not decode shows as `N bytes`. The version check compares the stored bytes, so a row with such a value can still be edited, repaired with a JSON value, and deleted.
+- A save is refused with `422` when the JSON view would drop data from the stored bytes (an unknown field of a newer schema).
+- `list.editable` rejects a view field with a build error.
+- A filter and a sort on a view column use the stored bytes.
+- A model that is only an inline of another resource has no `views` setting, so its field shows as base64 as before.
+- The host function is `admin.view`. It takes `{model, field, values}` and returns one value for each stored value.
+- The `json` widget pretty-prints every `json` field.
+
 ### Edit in the list
 
 `list.editable` names the columns that staff edit in the cells of the list, as Django does with `list_editable`:

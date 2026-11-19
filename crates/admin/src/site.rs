@@ -163,6 +163,9 @@ struct ResourceConfig {
     /// Fields that the form shows and a request cannot write.
     #[serde(default)]
     readonly: Vec<String>,
+    /// Bytes fields that the host shows as another value: the field to `json` (the host converts both ways) or `text` (read-only).
+    #[serde(default)]
+    views: BTreeMap<String, String>,
     /// Widgets of this resource: a field, `Type.subfield`, or a type name, to a widget name.
     #[serde(default)]
     widgets: BTreeMap<String, String>,
@@ -338,6 +341,15 @@ pub enum Source {
     Batch(String),
 }
 
+/// How the host shows the stored bytes of a column: the host converts each value, and `Column::ty` is the type of the shown value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum View {
+    /// JSON, read and written through the host.
+    Json,
+    /// A text that the host makes of the bytes; the field is read-only.
+    Text,
+}
+
 /// One column of a list: a field of the model or of a model reached through to-one relations.
 #[derive(Debug, Clone)]
 pub struct Column {
@@ -348,6 +360,17 @@ pub struct Column {
     pub ty: ValueType,
     pub nullable: bool,
     pub source: Source,
+    pub view: Option<View>,
+}
+
+impl Column {
+    /// Two cells of this column hold the same value. A JSON view compares numbers by value, so `1` and `1.0` match.
+    pub fn same(&self, a: &Value, b: &Value) -> bool {
+        match self.view {
+            Some(View::Json) => crate::json::same_json(a, b),
+            _ => crate::json::same(self.ty.ty, a, b),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -704,6 +727,8 @@ pub struct Site {
     pub(crate) meta_builds: AtomicUsize,
     /// The user views of the pages that bind fields: one for each page and set of granted names.
     pub(crate) views: Mutex<Views>,
+    /// The host bridge and the call ids for the host calls that convert the cells of a view column. Set when the API starts with auth.
+    pub(crate) viewer: Mutex<Option<crate::auth::AuthConfig>>,
 }
 
 impl Site {
@@ -828,7 +853,7 @@ impl Site {
             0 => None,
             ms => Some(Duration::from_millis(ms)),
         };
-        let mut site = Site { schema, base_path, prefix, strategy, resources, brand, groups, statement_timeout, export_idle_timeout, warnings, routes: Vec::new(), packages, meta_builds, views: Mutex::new(Default::default()) };
+        let mut site = Site { schema, base_path, prefix, strategy, resources, brand, groups, statement_timeout, export_idle_timeout, warnings, routes: Vec::new(), packages, meta_builds, views: Mutex::new(Default::default()), viewer: Mutex::new(None) };
         site.routes = crate::routes::build(&config.routes, &site)?;
         if let Some(role) = added.role {
             // The picker lists the names of the site, the names of the routes included, so it waits for the routes.
@@ -1137,7 +1162,7 @@ fn concrete(m: &monorm_core::schema::Model) -> bool {
 
 impl ResourceConfig {
     fn of(model: &str) -> ResourceConfig {
-        ResourceConfig { model: model.to_owned(), list: ListConfig::default(), allow: None, perms: None, label: None, title: None, group: None, field_permissions: Vec::new(), see: BTreeMap::new(), change: BTreeMap::new(), actions: Vec::new(), bulk_delete: true, queryset: None, can: BTreeMap::new(), check_messages: BTreeMap::new(), service: Default::default(), inputs: Vec::new(), allow_protected_writes: false, host_behavior: false, form: None, readonly: Vec::new(), widgets: BTreeMap::new(), form_component: None, detail_tabs: Vec::new(), relations: BTreeMap::new(), files: Vec::new(), inlines: Vec::new() }
+        ResourceConfig { model: model.to_owned(), list: ListConfig::default(), allow: None, perms: None, label: None, title: None, group: None, field_permissions: Vec::new(), see: BTreeMap::new(), change: BTreeMap::new(), actions: Vec::new(), bulk_delete: true, queryset: None, can: BTreeMap::new(), check_messages: BTreeMap::new(), service: Default::default(), inputs: Vec::new(), allow_protected_writes: false, host_behavior: false, form: None, readonly: Vec::new(), views: BTreeMap::new(), widgets: BTreeMap::new(), form_component: None, detail_tabs: Vec::new(), relations: BTreeMap::new(), files: Vec::new(), inlines: Vec::new() }
     }
 }
 
@@ -1279,7 +1304,11 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
         key_positions.push(columns.iter().position(|o| o.label == c.label).ok_or_else(|| ConfigError(format!("{name}: the key field {:?} is not a column", k.name)))?);
         key_columns.push(c);
     }
-    let detail = model.ir.fields.iter().filter(|f| listable(f)).map(|f| column(schema, idx, &f.name)).collect::<Result<Vec<_>, _>>()?;
+    let mut detail = model.ir.fields.iter().filter(|f| listable(f)).map(|f| column(schema, idx, &f.name)).collect::<Result<Vec<_>, _>>()?;
+    if !config.views.is_empty() && !config.host_behavior {
+        return err(format!("{name}: views needs host_behavior: the host converts a view field and writes it"));
+    }
+    let text_views = apply_views(&name, model, &config.views, &mut [&mut columns, &mut detail])?;
     let title = match &config.title {
         Some(t) if t.trim().is_empty() || t.chars().count() > 80 => return err(format!("{name}: title has 1 to 80 characters")),
         Some(t) => t.clone(),
@@ -1313,7 +1342,7 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
     }
     crate::hostwrite::check_config(&name, &detail, &config.service, &config.inputs)?;
     check_bindings(&name, config, &columns, &detail, &key_columns)?;
-    let form = crate::form::build(schema, idx, &name, &detail, &allow, &FormConfig { form: config.form.clone(), readonly: config.readonly.clone(), widgets: config.widgets.clone(), component: config.form_component.clone() }, global)?;
+    let form = crate::form::build(schema, idx, &name, &detail, &allow, &FormConfig { form: config.form.clone(), readonly: config.readonly.iter().cloned().chain(text_views).collect(), widgets: config.widgets.clone(), component: config.form_component.clone() }, global)?;
     let editable = editable_of(&name, list, &columns, &key_columns, &detail, &form, &allow, config, model)?;
     let mut package_tabs = Vec::new();
     for full in &config.detail_tabs {
@@ -1394,6 +1423,9 @@ fn editable_of(name: &str, list: &ListConfig, columns: &[Column], key_columns: &
         }
         if config.files.contains(f) {
             return err(format!("{name}: list.editable names {f:?}, a file field: upload it on the detail page"));
+        }
+        if column.view.is_some() {
+            return err(format!("{name}: list.editable names {f:?}, a field that the host shows as another value: edit it on the detail page"));
         }
         if !crate::write::writable(column) {
             return err(format!("{name}: list.editable names {f:?}, which is not a scalar field of the model (a relation, computed or aggregate column cannot be edited in the list)"));
@@ -1521,6 +1553,30 @@ fn listable(f: &monorm_core::ir::FieldIr) -> bool {
     f.generated.is_none()
 }
 
+/// Marks the columns of the view fields and gives them the type of the shown value. Answers the labels of the read-only ones.
+fn apply_views(name: &str, model: &monorm_core::schema::Model, views: &BTreeMap<String, String>, sets: &mut [&mut Vec<Column>]) -> Result<Vec<String>, ConfigError> {
+    let mut read_only = Vec::new();
+    for (field, mode) in views {
+        let Some(f) = model.ir.fields.iter().find(|f| &f.name == field) else { return err(format!("{name}: views names {field:?}, which is not a field")) };
+        if f.ty != ColType::Bytes || f.array {
+            return err(format!("{name}: views names {field:?}, which is not a Bytes field"));
+        }
+        let (view, shown) = match mode.as_str() {
+            "json" => (View::Json, ColType::Json),
+            "text" => (View::Text, ColType::String),
+            other => return err(format!("{name}: views gives {field:?} the mode {other:?}, not json or text")),
+        };
+        if view == View::Text {
+            read_only.push(field.clone());
+        }
+        for c in sets.iter_mut().flat_map(|s| s.iter_mut()).filter(|c| c.path.is_empty() && &c.field == field && c.source == Source::Field) {
+            c.view = Some(view);
+            c.ty = ValueType::scalar(shown);
+        }
+    }
+    Ok(read_only)
+}
+
 /// A column from `author.name`: each name before the last is a to-one relation.
 pub(crate) fn column(schema: &Schema, root: usize, spec: &str) -> Result<Column, ConfigError> {
     let model_name = &schema.model(root).ir.name;
@@ -1547,7 +1603,7 @@ pub(crate) fn column(schema: &Schema, root: usize, spec: &str) -> Result<Column,
     let mut ty = ValueType::scalar(field.ty);
     ty.array = field.array;
     ty.enum_idx = field.enum_idx;
-    Ok(Column { label: spec.to_owned(), path, field: field.name.clone(), ty, nullable: field.nullable, source: Source::Field })
+    Ok(Column { label: spec.to_owned(), path, field: field.name.clone(), ty, nullable: field.nullable, source: Source::Field, view: None })
 }
 
 fn order_column(schema: &Schema, root: usize, field: &str, desc: bool, name: &str) -> Result<OrderColumn, ConfigError> {
@@ -1840,7 +1896,7 @@ fn extra_columns(schema: &Schema, idx: usize, name: &str, list: &ListConfig) -> 
             }
             sortable.push(c.name.clone());
         }
-        columns.push(Column { label: c.name.clone(), path: Vec::new(), field: c.name.clone(), ty: ValueType::scalar(declared), nullable, source });
+        columns.push(Column { label: c.name.clone(), path: Vec::new(), field: c.name.clone(), ty: ValueType::scalar(declared), nullable, source, view: None });
     }
     for a in &list.aggregates {
         taken(&columns, &a.name)?;
@@ -1863,7 +1919,7 @@ fn extra_columns(schema: &Schema, idx: usize, name: &str, list: &ListConfig) -> 
             (other, _) => return err(format!("{name}: aggregate {:?}: function {other:?} is not count, sum, min, max or avg", a.name)),
         };
         let found = probe_type(schema, &model.ir.name, &expr).map_err(|e| ConfigError(format!("{name}: aggregate {:?}: {e}", a.name)))?;
-        columns.push(Column { label: a.name.clone(), path: Vec::new(), field: a.name.clone(), ty: found, nullable: a.function != "count", source: Source::Expr(expr) });
+        columns.push(Column { label: a.name.clone(), path: Vec::new(), field: a.name.clone(), ty: found, nullable: a.function != "count", source: Source::Expr(expr), view: None });
     }
     for (c, label) in list.computed.iter().map(|c| (&c.name, &c.label)).chain(list.aggregates.iter().map(|a| (&a.name, &a.label))) {
         if label.as_ref().is_some_and(|l| l.trim().is_empty() || l.chars().count() > 80) {

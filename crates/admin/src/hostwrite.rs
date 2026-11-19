@@ -18,7 +18,6 @@ use serde_json::{json, Map, Value};
 
 use crate::audit::{self, Entry};
 use crate::bridge::{BridgeError, CallContext};
-use crate::json;
 use crate::key;
 use crate::list;
 use crate::permissions::Op;
@@ -476,7 +475,7 @@ fn diff_of(r: &Resource, op: Op, before: Option<&[Value]>, after: Option<&[Value
         let from = before.map_or(Value::Null, |b| b[at].clone());
         let to = after.map_or(Value::Null, |a| a[at].clone());
         let skip = match op {
-            Op::Update => json::same(d.ty.ty, &from, &to),
+            Op::Update => d.same(&from, &to),
             _ => from.is_null() && to.is_null(),
         };
         if !skip && !(op == Op::Create && to.is_null()) && !(op == Op::Delete && from.is_null()) {

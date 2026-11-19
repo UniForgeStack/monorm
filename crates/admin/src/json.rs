@@ -109,6 +109,16 @@ fn bind_cell(b: &Bind) -> Cell<'_> {
     }
 }
 
+/// Two JSON values hold the same data: objects and lists compare by parts, and numbers by value (`1` and `1.0` match).
+pub fn same_json(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => x == y || x.as_f64().is_some_and(|x| Some(x) == y.as_f64()),
+        (Value::Array(x), Value::Array(y)) => x.len() == y.len() && x.iter().zip(y).all(|(x, y)| same_json(x, y)),
+        (Value::Object(x), Value::Object(y)) => x.len() == y.len() && x.iter().all(|(k, x)| y.get(k).is_some_and(|y| same_json(x, y))),
+        _ => a == b,
+    }
+}
+
 /// Two JSON cells of one column type hold the same value. A decimal compares by number, so `5` and `"5.00"` match.
 pub fn same(ty: ColType, a: &Value, b: &Value) -> bool {
     if a == b {

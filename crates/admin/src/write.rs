@@ -520,6 +520,15 @@ pub(crate) fn convert_set(site: &Site, r: &Resource, set: &Map<String, Value>, u
             problems.field(name, "The key of a record cannot change.");
             continue;
         }
+        // A view field carries the JSON that the host turns into bytes: the host owns the check.
+        if c.view == Some(crate::site::View::Json) {
+            if v.is_null() && !f.nullable {
+                problems.field(name, "This field is required.");
+            } else {
+                out.push((name.clone(), if v.is_null() { monorm_engine::params::null_of(Some(f.value_type())) } else { Bind::Json(Some(Box::new(v.clone()))) }));
+            }
+            continue;
+        }
         match convert(&site.schema, f, v) {
             Ok(b) => out.push((name.clone(), b)),
             Err(m) => problems.field(name, m.strip_suffix('.').map_or_else(|| capitalize(&m), capitalize)),
@@ -920,6 +929,9 @@ pub(crate) fn decode_key(r: &Resource, raw: &str) -> Result<(String, Vec<Value>)
 
 /// A client value as the JSON of a stored cell of the column: `5` and `"5"` for an int both read `5`. A value that does not convert stays as sent.
 pub(crate) fn as_cell(site: &Site, r: &Resource, d: &Column, v: &Value) -> Value {
+    if d.view.is_some() {
+        return v.clone();
+    }
     let Ok(f) = site.schema.model(r.model).field(&d.field) else { return v.clone() };
     convert(&site.schema, f, v).map_or_else(|_| v.clone(), |b| json::bind_json(&site.schema, f.value_type(), &b))
 }
@@ -930,7 +942,7 @@ pub(crate) fn conflicts(site: &Site, r: &Resource, cells: &[Value], loaded: &Map
     for name in fields {
         let Some(at) = r.detail.iter().position(|d| &d.label == name) else { continue };
         if let Some(was) = loaded.get(name) {
-            if !json::same(r.detail[at].ty.ty, &as_cell(site, r, &r.detail[at], was), &cells[at]) {
+            if !r.detail[at].same(&as_cell(site, r, &r.detail[at], was), &cells[at]) {
                 out.insert(name.clone(), json!({"loaded": was, "current": cells[at]}));
             }
         }
@@ -945,8 +957,11 @@ pub(crate) fn changed_values(site: &Site, r: &Resource, values: Vec<(String, Bin
         .into_iter()
         .filter_map(|(n, b)| {
             let at = r.detail.iter().position(|d| d.label == n)?;
-            let to = json::bind_json(&site.schema, model.field(&r.detail[at].field).ok()?.value_type(), &b);
-            (!json::same(r.detail[at].ty.ty, &to, &cells[at])).then_some((n, b, to))
+            let to = match &b {
+                Bind::Json(Some(v)) if r.detail[at].view.is_some() => (**v).clone(),
+                _ => json::bind_json(&site.schema, model.field(&r.detail[at].field).ok()?.value_type(), &b),
+            };
+            (!r.detail[at].same(&to, &cells[at])).then_some((n, b, to))
         })
         .collect()
 }

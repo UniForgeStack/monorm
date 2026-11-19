@@ -56,6 +56,9 @@ pub fn api_with(site: Arc<Site>, conn: Arc<dyn Executor>, auth: Option<AuthConfi
         .route("/actions/{name}/{action}", post(crate::actions::on_list))
         .route("/tab-actions/{name}/{key}/{rel}/{action}", post(crate::actions::on_tab));
     let bridge = auth.clone().map(|a| (a.bridge.clone(), a));
+    if let (Some((_, a)), Ok(mut viewer)) = (&bridge, site.viewer.lock()) {
+        *viewer = Some(a.clone());
+    }
     let extra = auth.map(|auth| auth::routes(auth, site.clone(), conn.clone()));
     let state = Arc::new(State_ { site, conn, target, bridge });
     let mut routes = routes.with_state(state);

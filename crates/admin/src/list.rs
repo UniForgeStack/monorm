@@ -799,6 +799,9 @@ pub async fn list(site: &Site, resource: &Resource, conn: &dyn Executor, target:
         Position::Last => (None, more.then_some(first_cursor).flatten()),
     };
     let keys = rows.iter().map(|r| key::encode(&resource.key_positions.iter().map(|&p| r[p].clone()).collect::<Vec<_>>())).collect();
+    // After the cursors and keys: a cursor and a sort compare the stored bytes.
+    let mut cells: Vec<&mut Vec<Value>> = rows.iter_mut().filter_map(Value::as_array_mut).collect();
+    crate::view::convert_rows(site, model, &resource.columns, &mut cells).await?;
     Ok(Page { rows, keys, next, prev, batch, flags, labels })
 }
 
@@ -907,6 +910,8 @@ pub(crate) async fn read_pinned(site: &Site, resource: &Resource, conn: &dyn Exe
         let key = key::encode(&key_at.iter().map(|&p| cells[p].clone()).collect::<Vec<_>>());
         out.push(InlineRow { key, cells, flags: Value::Object(flags) });
     }
+    let mut shown: Vec<&mut Vec<Value>> = out.iter_mut().map(|r| &mut r.cells).collect();
+    crate::view::convert_rows(site, model, &resource.detail, &mut shown).await?;
     Ok(out)
 }
 
@@ -953,5 +958,6 @@ pub(crate) async fn read_record(site: &Site, resource: &Resource, conn: &dyn Exe
             }
         }
     }
+    crate::view::convert_rows(site, model, &resource.detail, &mut [&mut cells]).await?;
     Ok(Some(Record { cells, flags: Value::Object(flags) }))
 }
