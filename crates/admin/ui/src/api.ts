@@ -77,6 +77,8 @@ export interface Section {
   title: string | null;
   fields: string[];
   collapsed: boolean;
+  /** True for the section that the server adds for the fields that no section names. */
+  other?: boolean;
 }
 
 export interface Resource {

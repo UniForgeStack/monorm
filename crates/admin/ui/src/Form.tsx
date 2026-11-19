@@ -341,7 +341,10 @@ function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }:
   const snapshot = JSON.stringify([vals, raws, ins]);
   first.current ??= snapshot;
   const changed = !modal && (first.current !== snapshot || links() !== undefined || (inlined && planInlines(meta, inl, zone).body !== undefined));
-  if (modal) modal.typed.current = first.current !== snapshot;
+  const typedNow = first.current !== snapshot;
+  useEffect(() => {
+    if (modal) modal.typed.current = typedNow;
+  }, [modal, typedNow]);
   const leaving = useRef(false);
   const askRef = useRef<() => boolean>(() => true);
   askRef.current = () => leaving.current || !changed || window.confirm(KEEP);
@@ -397,8 +400,8 @@ function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }:
     return [{ label, target: own_ ? `f-${modal ? "m-" : ""}${n}` : undefined }];
   }).filter((it, i, all) => all.findIndex((x) => x.label === it.label) === i);
   const configured = creating ? meta.sections?.create : meta.sections?.edit;
-  // The fields that no section names come last without a title: beside titled cards they get "Other", as on the detail page.
-  const layout = configured?.map((s) => (s.title === null && configured.length > 1 ? { ...s, title: "Other" } : s)) ?? [{ title: null, fields: fields.map(({ column }) => column.label), collapsed: false }];
+  // The fields that no section names come last in a section that the server marks: beside other cards it gets "Other", as on the detail page.
+  const layout = configured?.map((s) => (s.other && configured.length > 1 ? { ...s, title: "Other" } : s)) ?? [{ title: null, fields: fields.map(({ column }) => column.label), collapsed: false }];
 
   const input = ({ f, column: c, w }: (typeof fields)[number]) => {
     const name = c.label;

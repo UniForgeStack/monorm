@@ -102,13 +102,25 @@ for (const provider of PROVIDERS) {
     };
     const meta = (await siteOf(w, config, { widgets: { String: "email" } }).testClient(w.db, { user: SU }).get("/admin/api/resources")).json();
     const { resource, fields } = formOf(meta);
-    assert.deepEqual(resource.sections.create[0], { title: "Main", fields: ["title", "pages"], collapsed: false });
+    assert.deepEqual(resource.sections.create[0], { title: "Main", fields: ["title", "pages"], collapsed: false, other: false });
     assert.ok(resource.sections.create[1].title === null && resource.sections.create[1].fields.includes("blurb"));
+    assert.equal(resource.sections.create[1].other, true);
     assert.equal(resource.sections.edit[1].collapsed, true);
     assert.equal(fields["title"].widget, "url", "a field key beats a type key");
     assert.equal(fields["blurb"].widget, "email", "a site type key applies to a field of that type");
     assert.equal(fields["pages"].widget, "number");
     assert.equal(resource.form_component, false);
+  }));
+
+  test(`only the added section is marked other and an author untitled section is not (${provider})`, () => world(provider, async (w) => {
+    const config: ResourceConfig = { form: [{ title: "Main", fields: ["title"] }, { fields: ["pages"] }] };
+    const meta = (await siteOf(w, config).testClient(w.db, { user: SU }).get("/admin/api/resources")).json();
+    const { resource } = formOf(meta);
+    for (const part of ["create", "edit"]) {
+      const [main, untitled, rest] = resource.sections[part];
+      assert.deepEqual([main.other, untitled.other, rest.other], [false, false, true]);
+      assert.ok(untitled.title === null && rest.title === null);
+    }
   }));
 
   test(`a read-only field is a 422 on create and on update and nothing is written (${provider})`, () => world(provider, async (w) => {

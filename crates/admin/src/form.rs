@@ -42,11 +42,13 @@ pub struct Section {
     pub title: Option<String>,
     pub fields: Vec<String>,
     pub collapsed: bool,
+    /// True for the section that the server adds for the fields that no section names.
+    pub other: bool,
 }
 
 impl Section {
     pub fn json(&self) -> Value {
-        json!({"title": self.title, "fields": self.fields, "collapsed": self.collapsed})
+        json!({"title": self.title, "fields": self.fields, "collapsed": self.collapsed, "other": self.other})
     }
 }
 
@@ -248,11 +250,11 @@ fn sections(name: &str, which: &str, layout: Option<&Value>, fields: &[&Column])
                 return err(format!("{name}: form {which}: {f:?} is in two places"));
             }
         }
-        out.push(Section { title: c.title, fields: c.fields, collapsed: c.collapsed });
+        out.push(Section { title: c.title, fields: c.fields, collapsed: c.collapsed, other: false });
     }
     let rest: Vec<String> = fields.iter().filter(|c| !seen.contains(&c.label)).map(|c| c.label.clone()).collect();
     if !rest.is_empty() {
-        out.push(Section { title: None, fields: rest, collapsed: false });
+        out.push(Section { title: None, fields: rest, collapsed: false, other: true });
     }
     Ok(out)
 }

@@ -178,7 +178,10 @@ class Context:
         if changes:
             extra.update(changes)
         act = action or self.op or "service"
-        resource = model.__name__ if model is not None and model is not self._model else self.resource or (model.__name__ if model is not None else "")
+        if model is not None and model is not self._model:
+            resource = model.__name__
+        else:
+            resource = self.resource or (model.__name__ if model is not None else "")
         parts = None if not key else [_key_scalar(v) for v in key.values()]
         entry: dict[str, Any] = {"action": act, "resource": resource, "key": parts, "changes": extra}
         self.audits.append(entry)

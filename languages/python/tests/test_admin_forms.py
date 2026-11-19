@@ -85,13 +85,25 @@ async def test_sections_and_widgets_reach_the_form_metadata(world):
     site = site_of(registry, models, config, widgets={"String": "email"})
     meta = (await site.test_client(db, user=SU).get("/admin/api/resources")).json()
     resource, fields = form_of(meta, "FBook")
-    assert resource["sections"]["create"][0] == {"title": "Main", "fields": ["title", "pages"], "collapsed": False}
+    assert resource["sections"]["create"][0] == {"title": "Main", "fields": ["title", "pages"], "collapsed": False, "other": False}
     assert resource["sections"]["create"][1]["title"] is None and "blurb" in resource["sections"]["create"][1]["fields"]
+    assert resource["sections"]["create"][1]["other"] is True
     assert resource["sections"]["edit"][1]["collapsed"] is True
     assert fields["title"]["widget"] == "url", "a field key beats a type key"
     assert fields["blurb"]["widget"] == "email", "a site type key applies to a field of that type"
     assert fields["pages"]["widget"] == "number"
     assert resource["form_component"] is False
+
+
+async def test_only_the_added_section_is_marked_other_and_an_author_untitled_section_is_not(world):
+    registry, models, db = world
+    config = {"form": [{"title": "Main", "fields": ["title"]}, {"fields": ["pages"]}]}
+    meta = (await site_of(registry, models, config).test_client(db, user=SU).get("/admin/api/resources")).json()
+    resource, _ = form_of(meta, "FBook")
+    for part in ("create", "edit"):
+        main, untitled, rest = resource["sections"][part]
+        assert (main["other"], untitled["other"], rest["other"]) == (False, False, True)
+        assert untitled["title"] is None and rest["title"] is None
 
 
 async def test_a_read_only_field_is_a_422_on_create_and_on_update_and_nothing_is_written(world):
