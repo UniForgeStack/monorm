@@ -337,6 +337,39 @@ test('a to-one reload reads the primary on a database with replicas', async () =
   }
 });
 
+test('instance reload reads the primary in one statement', async () => {
+  const db = getDatabase(), url = await replicaUrl();
+  const routed = await connect(db.url, { replicas: [url], default: false, maxConnections: 2 });
+  try {
+    const user = await User.objects.using(routed).insert({ email: 'p@example.com', name: 'Primary' });
+    await User.objects.using(routed.primary).filter(User.id.eq(user.id)).update({ name: 'Newer' });
+    const seen: string[] = [];
+    routed.onQuery((e: QueryEvent) => { seen.push(e.sql); });
+    for (let i = 0; i < 3; i++) {
+      seen.length = 0;
+      assert.equal(await user.load({ reload: true }), user);
+      assert.equal(user.name, 'Newer');
+      assert.equal(seen.length, 1);
+    }
+  } finally {
+    await routed.close();
+  }
+});
+
+test('using("primary") resolves the default database', async () => {
+  const db = getDatabase(), url = await replicaUrl();
+  const routed = await connect(db.url, { replicas: [url], maxConnections: 2 });
+  try {
+    assert.deepEqual((await User.objects).map((u) => u.name), ['Replica']);
+    assert.deepEqual((await User.objects.using('primary')).map((u) => u.name), []);
+    assert.throws(() => User.objects.using('replica' as never), /primary/);
+  } finally {
+    await routed.close();
+    await db.close();
+    await connect(DATABASE_URL, { maxConnections: 4 });
+  }
+});
+
 test('the tenant block is gone', async () => {
   const db = getDatabase();
   assert.equal('tenant' in db, false);

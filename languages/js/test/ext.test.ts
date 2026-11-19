@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { connect } from "../src/index.js";
-import { behaviorValue, canonicalHash, databaseOf, hardDeleteStatement, jsonDiff, LANGUAGE_CONTRACT } from "../src/ext.js";
+import { behaviorField, behaviorRecords, behaviorValue, canonicalHash, databaseOf, hardDeleteStatement, jsonDiff, LANGUAGE_CONTRACT } from "../src/ext.js";
 import { Author, sqliteRegistry } from "./sqlite/models.js";
+import { Post, User } from "./blog/models.js";
 
 test("the hard-delete statement is a delete of the query set", async () => {
   const db = await connect("sqlite://:memory:", { registry: sqliteRegistry, default: false });
@@ -48,4 +49,14 @@ test("json diff lists changed added and removed keys with a null for a missing s
   const old = { a: 1, b: 2, c: 3 };
   assert.deepEqual(jsonDiff(old, { a: 1, b: 5, d: 4 }), { b: { old: 2, new: 5 }, c: { old: 3, new: null }, d: { old: null, new: 4 } });
   assert.deepEqual(jsonDiff(old, old), {});
+});
+
+test("behavior field takes the IR field name", () => {
+  const record = { model: "User", field: "created_at" };
+  assert.equal(behaviorField(User._meta, record).name, "createdAt");
+});
+
+test("behavior lookup is empty without records", () => {
+  assert.deepEqual(behaviorRecords(Post.objects, "delete_rewrites"), []);
+  assert.equal(LANGUAGE_CONTRACT, 1);
 });

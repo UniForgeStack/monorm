@@ -61,4 +61,18 @@ for (const dialect of ["sqlite", "postgres"]) {
       assert.equal(raw.status, "old"); assert.equal(raw.note, null);
     } finally { await db.dropTables(); await db.close(); }
   });
+
+  test(`a JSON null client default writes JSON null (${dialect})`, async () => {
+    const registry = new Registry();
+    const doc = 'model Doc {\n  id Int @id\n  a Json @client_default("null")\n  @@map("client_default_docs")\n}';
+    const Doc = loads((dialect === "sqlite" ? 'datasource db { provider = "sqlite" }\n' : "") + doc, { registry }).Doc!;
+    const url = dialect === "sqlite" ? "sqlite://:memory:" : process.env.ORM_TEST_DATABASE_URL ?? "postgres://postgres:postgres@localhost/orm_test";
+    const db = await connect(url, { registry, default: false });
+    await db.createTables();
+    try {
+      // The column is NOT NULL, so an SQL NULL fails the insert.
+      const row = await Doc.objects.using(db).insert({ id: 1 }) as { a: unknown };
+      assert.equal(row.a, null);
+    } finally { await db.dropTables(); await db.close(); }
+  });
 }

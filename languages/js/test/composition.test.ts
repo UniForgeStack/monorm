@@ -380,3 +380,48 @@ test("a multi-table write returns the default selection or the named columns", {
     assert.equal(await staff.withoutDefaults().count(), 4);
   } finally { await db.close(); }
 });
+
+const scopedSource = `
+model Person {
+ id Int @id @default(autoincrement())
+ name String
+ @@map("composition06_scoped_people")
+}
+model Employee {
+ shop_id Int
+ @@composition.model(parent: "Person", parentRef: "person", childRef: "employee")
+ @@query.filter("tenant", shop_id == scope.shop)
+ @@map("composition06_scoped_employees")
+}
+`;
+
+for (const provider of ["sqlite", "postgresql"]) {
+  const url = provider === "sqlite" ? "sqlite://:memory:" : process.env["ORM_TEST_DATABASE_URL"];
+  test(`composed writes read the scope (${provider})`, { skip: !enabled || !hasExtension("monorm.query-defaults") || !url }, async () => {
+    const registry = new Registry();
+    const models = loads(`datasource db {\n provider = "${provider}"\n}\n${scopedSource}`, { registry });
+    const Employee = models["Employee"] as unknown as { objects: { using(db: unknown): Objects & { withoutDefaults(): Objects } }; name: { eq(value: unknown): unknown } };
+    const db = await connect(url!, { registry, default: false });
+    await db.dropTables();
+    await db.createTables();
+    try {
+      const employees = Employee.objects.using(db);
+      await scope({ shop: 1 }, async () => {
+        const ann = await employees.insert({ name: "Ann", shopId: 1 });
+        assert.deepEqual([ann["name"], ann["shopId"]], ["Ann", 1]);
+      });
+      await scope({ shop: 2 }, async () => {
+        await employees.insert({ name: "Bob", shopId: 2 });
+        // Inserts do not read the scope, and the identity read skips the filter.
+        assert.equal((await employees.insert({ name: "Cid", shopId: 1 }))["name"], "Cid");
+      });
+      await scope({ shop: 1 }, async () => {
+        assert.equal(await employees.filter(Employee.name.eq("Ann")).update({ name: "Ann 2" }), 1);
+        assert.equal(await employees.filter(Employee.name.eq("Bob")).delete(), 0);
+      });
+      assert.equal(await employees.withoutDefaults().filter(Employee.name.eq("Bob")).update({ name: "Bob 2" }), 1);
+      const names = (await (employees.withoutDefaults() as unknown as Promise<Row[]>)).map((e) => e["name"]).sort();
+      assert.deepEqual(names, ["Ann 2", "Bob 2", "Cid"]);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+}

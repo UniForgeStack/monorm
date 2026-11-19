@@ -71,6 +71,13 @@ test("JSON merge with a path on the right keeps the object", async () => {
   assert.deepEqual(rows, ["dv"]);
 });
 
+test("JSON merge with a column", async () => {
+  await objects().insertMany([{ title: "e", meta: { kind: "post", n: 9 } }]);
+  await objects().filter(Doc.title.eq("e")).update({ meta: Doc.meta.jsonMerge(Doc.meta) });
+  assert.deepEqual((await objects().get(Doc.title.eq("e"))).meta, { kind: "post", n: 9 });
+  await objects().filter(Doc.title.eq("e")).delete();
+});
+
 test("JSON methods refuse null", async () => {
   for (const call of ["jsonMerge", "jsonContains", "jsonContainedBy"]) {
     assert.throws(() => Doc.meta[call](null), TypeError);

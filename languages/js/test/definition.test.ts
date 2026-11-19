@@ -21,3 +21,11 @@ test("definition prepares atomically and old models retain their snapshot", () =
   assert.equal(User._meta.registry.native(), prepared);
   assert.notEqual(registry.native(), prepared);
 });
+
+test("definition owns input schema", () => {
+  const registry = new Registry();
+  const ir = { models: [{ name: "User", table: "users", fields: [{ name: "id", column: "id", type: "int", primary_key: true }], relations: [] }] };
+  const User = define(ir as never, { registry })["User"]!;
+  ir.models[0]!.table = "mutated";
+  assert.equal((User._meta.registry.ir() as unknown as { models: { table: string }[] }).models[0]!.table, "users");
+});
