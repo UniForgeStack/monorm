@@ -81,7 +81,7 @@ async def test_bound_load_query_set_uses_custom_methods(clean, custom):
     assert [[p.title for p in u.posts.cached] for u in users] == [["hit", "quiet"], ["bob"]]
 
 
-def test_query_set_class_is_checked():
+def test_a_query_set_class_is_checked():
     with pytest.raises(TypeError, match="subclass of monorm.QuerySet"):
         use_query_set(Post, dict)  # type: ignore[arg-type]
 
@@ -93,6 +93,12 @@ def test_query_set_class_is_checked():
     use_query_set(Post, "_blog_queries")
     try:
         with pytest.raises(TypeError, match="module:Class"):
+            Post.objects
+    finally:
+        use_query_set(Post, QuerySet)
+    use_query_set(Post, "builtins:dict")
+    try:
+        with pytest.raises(TypeError, match="subclass of monorm.QuerySet"):
             Post.objects
     finally:
         use_query_set(Post, QuerySet)
@@ -465,7 +471,7 @@ async def test_a_factory_needs_only_describe_and_insert(clean):
 # -- columns through to-one load() paths (F11) ------------------------------------------------------
 
 
-async def test_only_through_a_to_one_path(clean):
+async def test_load_through_a_to_one_path(clean):
     await seed()
     qs = Comment.objects.load(Comment.body, Comment.post.title)
     assert qs.inspect() == monorm.QueryInspection(1, False, (monorm.StatementInspection(joins_count=1),))
@@ -773,10 +779,11 @@ def test_describe_marks_a_single_primary_key_unique():
     assert fields["id"]["unique"] is True
 
 
-def test_describe_reports_client_default():
+def test_describe_reports_a_client_default():
     models = monorm.loads("model ClientItem {\n id Int @id\n n Int @client_default(3)\n}", registry=monorm.Registry())
     fields = {f["name"]: f for f in monorm.describe(models["ClientItem"])["fields"]}
     assert fields["n"]["default"] == "client"
+    assert fields["n"]["insert"] is True
 
 
 def test_describe_keeps_an_autoincrement_field_insertable():
@@ -795,9 +802,10 @@ async def test_or_with_an_unfiltered_left_returns_all_rows(clean):
     assert {p.title for p in rows} == {"draft", "hit", "quiet", "bob"}
 
 
-def test_describe_optional_belongs_to_is_nullable():
+def test_describe_marks_an_optional_belongs_to_nullable():
     relations = {r["name"]: r for r in monorm.describe(Comment)["relations"]}
     assert relations["author"]["nullable"] is True
+    assert relations["post"]["nullable"] is False
 
 
 def test_get_cannot_be_labeled_for_loading():

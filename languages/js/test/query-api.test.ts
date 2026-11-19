@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { ManyRelatedSet, NotLoaded, QueryError, QuerySet, RelatedSet, Registry, connect, getDatabase, loads, column, describe, of, useQuerySet, type ModelClass, type ModelSpec } from "../src/index.js";
+import { ManyRelatedSet, NotLoaded, QueryError, QuerySet, RelatedSet, Registry, connect, getDatabase, loads, column, describe, of, useQuerySet, statementInspection, type ModelClass, type ModelSpec } from "../src/index.js";
 import { Comment, Post, PostTag, Profile, Tag, User, type PostSpec, type TagSpec } from "./blog/models.js";
 import { Decimal } from "../src/decimal.js";
 import { DATABASE_URL, useDatabase } from "./helpers.js";
@@ -45,41 +45,50 @@ async function seed() {
 
 // -- query-set classes ------------------------------------------------------------------------
 
-test("query-set classes", async (t) => {
+test("custom methods chain with builder methods", async (t) => {
   useQuerySet(Post, () => PostQueries);
   useQuerySet(Tag, TagQueries);
   t.after(() => {
     useQuerySet(Post, QuerySet);
     useQuerySet(Tag, QuerySet);
   });
+  const { alice } = await seed();
+  const qs = (posts().published().filter(Post.authorId.eq(alice.id)) as unknown as PostQueries).popular(10);
+  assert.ok(qs instanceof PostQueries);
+  assert.deepEqual((await qs).map((p) => p.title), ["hit"]);
+  assert.deepEqual((await (posts().orderBy("views") as unknown as PostQueries).popular(60).published()).map((p) => p.title), ["bob", "hit"]);
+  assert.equal(await posts().published().count(), 3);
+  assert.equal(Post.objects, Post.objects);
+});
 
-  await t.test("custom methods chain with builder methods", async () => {
-    const { alice } = await seed();
-    const qs = (posts().published().filter(Post.authorId.eq(alice.id)) as unknown as PostQueries).popular(10);
-    assert.ok(qs instanceof PostQueries);
-    assert.deepEqual((await qs).map((p) => p.title), ["hit"]);
-    assert.deepEqual((await (posts().orderBy("views") as unknown as PostQueries).popular(60).published()).map((p) => p.title), ["bob", "hit"]);
-    assert.equal(await posts().published().count(), 3);
-    assert.equal(Post.objects, Post.objects);
+test("relation sets have the custom methods", async (t) => {
+  useQuerySet(Post, () => PostQueries);
+  useQuerySet(Tag, TagQueries);
+  t.after(() => {
+    useQuerySet(Post, QuerySet);
+    useQuerySet(Tag, QuerySet);
   });
+  const { alice, posts: rows } = await seed();
+  const set = alice.posts as unknown as PostQueries;
+  assert.ok(alice.posts instanceof RelatedSet && alice.posts instanceof PostQueries);
+  assert.deepEqual((await (set.published().orderBy("views") as unknown as PostQueries)).map((p) => p.title), ["quiet", "hit"]);
+  assert.deepEqual((await (alice.posts.filter(Post.views.gt(5)) as unknown as PostQueries).published()).map((p) => p.title), ["hit"]);
+  const tags = await Tag.objects.insertMany([{ name: "python" }, { name: "rust" }]).returning();
+  await rows[1]!.tags.add(...tags);
+  assert.ok(rows[1]!.tags instanceof ManyRelatedSet);
+  assert.deepEqual((await (rows[1]!.tags as unknown as TagQueries).named("py")).map((t) => t.name), ["python"]);
+});
 
-  await t.test("relation sets have the custom methods", async () => {
-    const { alice, posts: rows } = await seed();
-    const set = alice.posts as unknown as PostQueries;
-    assert.ok(alice.posts instanceof RelatedSet && alice.posts instanceof PostQueries);
-    assert.deepEqual((await (set.published().orderBy("views") as unknown as PostQueries)).map((p) => p.title), ["quiet", "hit"]);
-    assert.deepEqual((await (alice.posts.filter(Post.views.gt(5)) as unknown as PostQueries).published()).map((p) => p.title), ["hit"]);
-    const tags = await Tag.objects.insertMany([{ name: "python" }, { name: "rust" }]).returning();
-    await rows[1]!.tags.add(...tags);
-    assert.ok(rows[1]!.tags instanceof ManyRelatedSet);
-    assert.deepEqual((await (rows[1]!.tags as unknown as TagQueries).named("py")).map((t) => t.name), ["python"]);
+test("bound load query set uses custom methods", async (t) => {
+  useQuerySet(Post, () => PostQueries);
+  useQuerySet(Tag, TagQueries);
+  t.after(() => {
+    useQuerySet(Post, QuerySet);
+    useQuerySet(Tag, QuerySet);
   });
-
-  await t.test("bound load query set uses custom methods", async () => {
-    await seed();
-    const users = await User.objects.orderBy("name").load((User.posts.objects as unknown as PostQueries).published() as never);
-    assert.deepEqual(users.map((u) => (u.posts as unknown as { cached: { title: string }[] }).cached.map((p) => p.title)), [["hit", "quiet"], ["bob"]]);
-  });
+  await seed();
+  const users = await User.objects.orderBy("name").load((User.posts.objects as unknown as PostQueries).published() as never);
+  assert.deepEqual(users.map((u) => (u.posts as unknown as { cached: { title: string }[] }).cached.map((p) => p.title)), [["hit", "quiet"], ["bob"]]);
 });
 
 test("a query-set class is checked", () => {
@@ -107,7 +116,7 @@ test("bound load onto loaded instances", async () => {
   assert.deepEqual(loaded.map((u) => u.top.map((p) => p.title)), [["hit"], ["bob"]]);
 });
 
-test("bound load reads keys from the instances, to-one and many-to-many", async () => {
+test("bound load reads keys from the instances", async () => {
   const { posts: rows } = await seed();
   await Comment.objects.insertMany([{ post: rows[0]!, body: "a" }, { post: rows[3]!, body: "b" }]);
   const comments = await Comment.objects.orderBy("id");
@@ -115,11 +124,23 @@ test("bound load reads keys from the instances, to-one and many-to-many", async 
   await of(comments).load(Comment.post.author);
   const loaded = comments as unknown as { post: { title: string; author: { name: string } } }[];
   assert.deepEqual(loaded.map((c) => [c.post.title, c.post.author.name]), [["draft", "Alice"], ["bob", "Bob"]]);
+});
+
+test("bound load to-one and many-to-many", async () => {
+  const { posts: rows } = await seed();
   const tags = await Tag.objects.insertMany([{ name: "a" }, { name: "b" }]).returning();
   await rows[0]!.tags.add(...tags);
   const posts = await Post.objects.orderBy("id");
-  await of(posts).load(Post.tags);
+  // The equivalent load describes the batched many-to-many statement too.
+  assert.deepStrictEqual(Post.objects.load(Post.author, Post.tags).inspect(), {
+    statementCount: 2,
+    hasBatching: true,
+    statements: [statementInspection({ joinsCount: 1 }), statementInspection({ hasBatching: true, joinsCount: 1 })],
+  });
+  await of(posts).load(Post.author, Post.tags);
+  assert.deepEqual(posts.map((p) => (p as unknown as { author: { name: string } }).author.name), ["Alice", "Alice", "Alice", "Bob"]);
   assert.deepEqual((posts[0]!.tags as unknown as { cached: { name: string }[] }).cached.map((t) => t.name), ["a", "b"]);
+  assert.deepEqual((posts[1]!.tags as unknown as { cached: unknown[] }).cached, []);
 });
 
 test("monorm.prefetch is removed", async () => {
@@ -266,16 +287,28 @@ test("a factory needs only describe and insert", async () => {
 test("load() through a to-one path", async () => {
   const { posts: rows } = await seed();
   const qs = Comment.objects.load(Comment.body, Comment.post.title);
-  assert.ok(qs.sql().includes('"title"') && !qs.sql().includes('"views"'));
-  await Comment.objects.insert({ post: rows[1]!, body: "x" });
-  const [c] = (await qs) as unknown as { body: string; post: { title: string; views: number } }[];
+  assert.deepStrictEqual(qs.inspect(), { statementCount: 1, hasBatching: false, statements: [statementInspection({ joinsCount: 1 })] });
+  const sql = qs.sql();
+  assert.ok(sql.includes('"title"') && !sql.includes('"views"') && !sql.includes('"published"'));
+  const comment = await Comment.objects.insert({ post: rows[1]!, body: "x" });
+  const [c] = (await qs.filter(Comment.id.eq(comment.id))) as unknown as { body: string; createdAt: Date; post: { title: string; views: number; pk: unknown } }[];
   assert.equal(c!.body, "x");
   assert.equal(c!.post.title, "hit");
+  assert.notEqual(c!.post.pk, null);
   assert.throws(() => c!.post.views, NotLoaded);
+  assert.throws(() => c!.createdAt, NotLoaded);
+});
+
+test("load() a path column keeps the root whole", async () => {
   // Q2.5.4: only a column of the model itself makes it partial
-  const [d] = await Comment.objects.load(Comment.post.author.name).filter(Comment.body.eq("x"));
+  const { posts: rows } = await seed();
+  await Comment.objects.insert({ post: rows[0]!, body: "x" });
+  const query = Comment.objects.load(Comment.post.author.name);
+  assert.deepStrictEqual(query.inspect(), { statementCount: 1, hasBatching: false, statements: [statementInspection({ joinsCount: 2 })] });
+  const [d] = await query;
   assert.equal(d!.post.author.name, "Alice");
   assert.equal(d!.body, "x");
+  assert.equal(d!.post.title, rows[0]!.title);
   assert.throws(() => (d!.post.author as unknown as { email: string }).email, NotLoaded);
   const [e] = await Comment.objects.load(Comment.id, Comment.post.author.name).filter(Comment.body.eq("x"));
   assert.throws(() => (e as unknown as { body: string }).body, NotLoaded);
@@ -308,8 +341,20 @@ test("or() of a relation set ignores the loaded rows", async () => {
   await seed();
   const users = await User.objects.orderBy("id").load(User.posts.objects.filter(Post.published.eq(false)));
   const qs = users[0]!.posts.or(Post.objects.filter(Post.published.eq(true)));
-  assert.ok(!(qs instanceof RelatedSet));
   assert.deepEqual((await qs).map((p) => p.title).sort(), ["bob", "draft", "hit", "quiet"]);
+});
+
+test("or() of a relation set is a plain query set", async () => {
+  await seed();
+  const users = await User.objects.orderBy("id").load(User.posts.objects.filter(Post.published.eq(false)));
+  const qs = users[0]!.posts.or(Post.objects.filter(Post.published.eq(true)));
+  assert.ok(!(qs instanceof RelatedSet));
+  assert.equal(qs.constructor, QuerySet);
+});
+
+test("or() with a relation set on the right reads the database", async () => {
+  await seed();
+  const users = await User.objects.orderBy("id").load(User.posts.objects.filter(Post.published.eq(false)));
   assert.deepEqual((await Post.objects.filter(Post.published.eq(true)).or(users[0]!.posts)).map((p) => p.title).sort(), ["bob", "draft", "hit", "quiet"]);
 });
 
@@ -388,14 +433,21 @@ test("one-row labels keep the custom query-set class", (t) => {
   assert.ok(User.posts.objects.at(0).label("best") instanceof PostQueries);
 });
 
-test("indexed labels store one row per parent or null", async () => {
+test("bound load one stores a row or none", async () => {
   await seed();
   await User.objects.insert({ email: "carol@example.com", name: "Carol" });
-  const users = await User.objects.orderBy("id").load(
+  const query = User.objects.orderBy("id").load(
     User.posts.objects.orderBy("-views").at(0).label("best"),
     User.posts.objects.orderBy("-views").at(1).label("second"),
     User.posts.objects.orderBy("-views").at(-1).label("lastPost"),
   );
+  const batched = statementInspection({ hasBatching: true, derivedUncorrelated: 1 });
+  assert.deepStrictEqual(query.inspect(), { statementCount: 4, hasBatching: true, statements: [statementInspection(), batched, batched, batched] });
+  let queries = 0;
+  const off = getDatabase().onQuery(() => { queries++; });
+  const users = await query;
+  off();
+  assert.equal(queries, 4);
   assert.deepEqual(users.map((u) => u.best?.title ?? null), ["hit", "bob", null]);
   assert.deepEqual(users.map((u) => u.second?.title ?? null), ["draft", null, null]);
   assert.deepEqual(users.map((u) => u.lastPost?.title ?? null), ["quiet", "bob", null]);
@@ -403,6 +455,8 @@ test("indexed labels store one row per parent or null", async () => {
   assert.throws(() => User.objects.load(User.posts.objects.at(0)), { name: "TypeError", message: /needs \.label\(name\)/ });
   await assert.rejects(async () => { await User.posts.objects.at(0); }, TypeError);
   await assert.rejects(async () => { await Post.objects.load(Post.author.objects.at(0).label("writer")); }, (e: Error) => /to-many/.test(e.message) && !/to_attr/.test(e.message));
+  assert.throws(() => User.objects.load(User.posts.objects.label("name")), QueryError);
+  assert.throws(() => User.posts.objects.label("_x"), /identifier/);
 });
 
 test("column() from a dotted path", async () => {
