@@ -75,6 +75,11 @@ export function hasFieldAdapters(meta: ModelMeta): boolean {
   return (ADAPTERS.get(meta)?.size ?? 0) > 0;
 }
 
+/** The field adapter of `meta.field`, if it has one. */
+export function fieldAdapter(meta: ModelMeta, field: string): FieldAdapter | undefined {
+  return ADAPTERS.get(meta)?.get(field);
+}
+
 /** Adapt `meta.field`: its writes run the pipeline and its loaded value reads through `decode`.
  * `methods` become instance methods; a name that a model member already uses throws `FieldAdapterError`. */
 export function registerFieldAdapter(meta: ModelMeta, field: string, adapter: FieldAdapter, methods: Readonly<Record<string, (this: Row, ...args: never[]) => unknown>> = {}): void {

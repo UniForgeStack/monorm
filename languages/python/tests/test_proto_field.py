@@ -305,6 +305,9 @@ async def test_the_admin_lists_reads_and_edits_a_row_but_refuses_bytes_for_a_mes
     # The form sends base64 bytes: the adapter refuses them, and the admin answers 422 with the reason, never 500.
     refused = await client.patch(f"{path}/1", json={"set": {"payload": stored}, "loaded": {"payload": stored}})
     assert refused.status == 422 and "takes acme.Note, not bytes" in refused.text
+    other = base64.b64encode(note_pb2.Note(title="other").SerializeToString()).decode()
+    conflict = await client.patch(f"{path}/1", json={"set": {"payload": stored}, "loaded": {"payload": other}})
+    assert conflict.status == 409
     created = await client.post(path, json={"set": {"id": 2, "payload": stored}})
     assert created.status == 422 and await model.objects.using(db).filter(model.id == 2).first() is None
     row = await model.objects.using(db).filter(model.id == 1).first()

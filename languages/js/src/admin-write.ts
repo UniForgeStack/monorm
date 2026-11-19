@@ -7,7 +7,7 @@
  */
 import type { HostFunction } from "./admin-host.js";
 import type { Database } from "./db.js";
-import { FieldAdapterError } from "./adapters.js";
+import { fieldAdapter, FieldAdapterError } from "./adapters.js";
 import { Decimal } from "./decimal.js";
 import { DoesNotExist, ValidationError, VersionConflict } from "./errors.js";
 import { asCondition, Condition, Expression, IRContext, resolveNullRule, Slot, SlotParams } from "./expr.js";
@@ -443,6 +443,17 @@ function same(type: string, stored: unknown, loaded: unknown): boolean {
   return String(stored) === String(loaded);
 }
 
+/** The stored bytes of a decoded adapter value, or `undefined` when the adapter stores something else. */
+function storedBytes(adapter: { validate(value: unknown): unknown }, value: unknown): Uint8Array | undefined {
+  try {
+    const stored = adapter.validate(value);
+    return stored instanceof Uint8Array ? stored : undefined;
+  } catch (e) {
+    if (e instanceof FieldAdapterError) return undefined;
+    throw e;
+  }
+}
+
 /**
  * Reads the row under a lock and compares the loaded values of the `compare` fields with it. `false` when the row is gone.
  * The compare runs in the write transaction, so a concurrent edit between the load and the save is a `VersionConflict`.
@@ -456,7 +467,16 @@ async function checkLoaded(meta: ModelMeta, qs: Loose, args: Loose): Promise<boo
   for (const n of names) {
     const field = meta.fieldByIr.get(n);
     const name = field?.name ?? n;
-    if (!same(field?.type ?? "", row[name], loaded[name])) throw new VersionConflict(`${meta.name} ${JSON.stringify(args.key)} was changed since the form loaded`);
+    let current = row[name];
+    let wanted = loaded[name];
+    // An adapted field shows a decoded value; the form loaded its stored bytes (base64), so compare those.
+    const adapter = fieldAdapter(meta, name);
+    const stored = adapter ? storedBytes(adapter, current) : undefined;
+    if (stored !== undefined) {
+      current = stored;
+      if (typeof wanted === "string") wanted = Buffer.from(wanted, "base64");
+    }
+    if (!same(field?.type ?? "", current, wanted)) throw new VersionConflict(`${meta.name} ${JSON.stringify(args.key)} was changed since the form loaded`);
   }
   return true;
 }

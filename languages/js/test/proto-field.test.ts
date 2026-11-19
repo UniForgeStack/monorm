@@ -15,6 +15,7 @@ import { InvoiceSchema } from "./proto/gen/acme/billing/invoice_pb.js";
 import { NoteSchema, NoteV2Schema, OtherSchema, Outer_InnerSchema, OuterSchema } from "./proto/gen/acme/note_pb.js";
 import { Note as TsNote, NoteV2 as TsNoteV2 } from "./proto/gen-ts-proto/acme/note.js";
 import { Plain, Served } from "./proto/custom/thing.js";
+import { defaultWriter } from "../src/admin-write.js";
 import { scratch } from "./scratch.js";
 
 const FIXTURES = join(import.meta.dirname, "..", "..", "test", "proto");
@@ -71,6 +72,21 @@ for (const provider of [PROVIDER]) {
       assert.equal(loaded.bill?.cents, 250n);
       assert.equal(loaded.raw, null);
       assert.deepEqual(await stored(db), encode(note("first", 3, ["a", "b"], "deep")));
+    });
+  });
+
+  test(`the admin lists reads and edits a row but refuses bytes for a message field (${provider})`, async (t) => {
+    await withDatabase(t, async (db) => {
+      await ProtoEvent.objects.using(db).insert({ id: 1, payload: note("hi") });
+      const write = defaultWriter(ProtoEvent as never, {});
+      const base64 = Buffer.from(encode(note("hi"))).toString("base64");
+      const args = (loaded: string) => ({ op: "update", key: { id: 1 }, values: { payload: base64 }, loaded: { payload: loaded }, compare: ["payload"], user: {} });
+      // The loaded text matches the row, so the adapter refuses the bytes of the form: 422, not a conflict.
+      const refused = (await write(db, args(base64))) as { ok: boolean; kind: string; form: string[] };
+      assert.equal(refused.kind, "invalid");
+      assert.match(refused.form[0] ?? "", /takes acme\.Note, not/);
+      const changed = Buffer.from(encode(note("other"))).toString("base64");
+      assert.deepEqual(await write(db, args(changed)), { ok: false, kind: "conflict" });
     });
   });
 

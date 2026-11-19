@@ -508,7 +508,6 @@
 # languages/python/tests/test_proto_field.py
 "proto_field::the_generated_stub_types_the_field_as_the_message_class" = "one-language: reads the generated Python stub; the TypeScript types are checked by `npm run typecheck`"
 "proto_field::a_class_without_a_codec_names_proto_codec" = "one-language: the TypeScript twin asserts the same error inside `a registered codec serves a class without a protobuf api`"
-"proto_field::the_admin_lists_reads_and_edits_a_row_but_refuses_bytes_for_a_message_field" = "one-language: the TypeScript host writer maps the same error (admin-write.ts, failure); no TypeScript fixture imports the admin tables"
 
 [typescript-only.files]
 "languages/js/test/sync-require.test.ts" = "TypeScript-only: a synchronous require() of the ESM package"

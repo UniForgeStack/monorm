@@ -19,6 +19,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, TypeVar
 
+from .adapters import _ADAPTERS as _adapters
 from .adapters import FieldAdapterError
 from .errors import DoesNotExist, ValidationError, VersionConflict
 from .expr import Condition, IRContext, SlotParams, _Slot, resolve_null_rule
@@ -439,9 +440,26 @@ async def _check_loaded(model: Any, qs: Any, args: Mapping[str, Any]) -> bool:
         return False
     loaded = decode_values(model, {n: args["loaded"][n] for n in names})
     fields = model._meta.fields
-    if any(not _same(fields[n].type_name if n in fields else "", getattr(row, n), loaded[n]) for n in names):
-        raise VersionConflict(f"{model.__name__} {args.get('key')!r} was changed since the form loaded")
+    adapters = _adapters.get(model) or {}
+    for n in names:
+        # An adapted field shows a decoded value; the form loaded its stored bytes (base64), so compare those.
+        current = getattr(row, n)
+        if n in adapters and (stored := _stored_bytes(adapters[n], current)) is not None:
+            current = stored
+            if isinstance(loaded[n], str):
+                loaded[n] = base64.b64decode(loaded[n], validate=True)
+        if not _same(fields[n].type_name if n in fields else "", current, loaded[n]):
+            raise VersionConflict(f"{model.__name__} {args.get('key')!r} was changed since the form loaded")
     return True
+
+
+def _stored_bytes(adapter: Any, value: Any) -> bytes | None:
+    """The stored bytes of a decoded adapter value, or None when the adapter stores something else."""
+    try:
+        stored = adapter.validate(value)
+    except FieldAdapterError:
+        return None
+    return bytes(stored) if isinstance(stored, (bytes, bytearray, memoryview)) else None
 
 
 async def _write_audit(database: Any, model: Any, args: Mapping[str, Any]) -> int:
