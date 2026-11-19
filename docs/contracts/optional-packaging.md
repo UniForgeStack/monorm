@@ -207,9 +207,12 @@ A pass declares `id`, `phase`, `after`, owned `effects` paths, and `additive` pa
 An effect in `effects` is exclusive: one pass owns it.
 An effect in `additive` adds entries to a per-model list, for example `behavior.read_defaults`: any number of passes may claim it, and the pass order sets the entry order.
 An additive claim still conflicts with an exclusive claim of the same, a parent or a child path.
-Phases run declaration, logical, storage, behavior, validation, generation.
-Ordering is stable;
-cycles, missing pass dependencies, duplicate IDs and overlapping effect ownership fail.
+Phases run in this order: `expansion` (a pass that creates models or fields that the later passes read, such as the expansion of abstract models), `declaration` (adds fields and attributes to the models), `logical` (lowers models to other models), `storage` (adds the models that hold stored data), `behavior` (prepares the behavior records of a model), `late_behavior` (a pass that reads what the `behavior` passes of every manifest wrote), `validation` and `generation`.
+`after` names passes of the same manifest only.
+To run before or after a pass of another manifest, choose the phase: `resolve` refuses an `after` id that a pass of another manifest owns, and the message names the phase to use.
+`resolve` also refuses any other `after` id that is not a pass of the same manifest, whether or not another extension is installed, so a manifest loads the same way in every set of extensions.
+Ordering is stable: by phase, then `after`, then pass id.
+Cycles, an `after` id in a later phase, duplicate IDs and overlapping effect ownership fail.
 The library function of a pass takes `&mut monorm::ir::SchemaIr` and returns `Result<(), String>`.
 Namespaced model declarations may derive their primary key during selected passes.
 Ordinary models require `@id` before lowering; annotated models must have one after preparation.
@@ -342,6 +345,10 @@ A `ResultCheck` (`model`, `field`, `non_null`, `allowed`, `code`) makes the engi
 An attribute with `view_source = true` declares the source model of a view. The DSL lowering finds views through this key, not through an attribute name.
 An attribute with `no_table = true` marks a model that has no table. `monorm identities` gives such a model no model identity. Only a model attribute takes `view_source` and `no_table`.
 `define()` checks each binding: the model, the field and the dependency. When the manifest of the source is in the build, it also checks the point, and that the `input` and `output` types match the field type. When the build has no manifest of the source, the source must be in `Requirements.packages`; if it is in neither, the binding is an error that names the source.
+Schema contract 5.4 adds the pass phases `expansion` (before `declaration`) and `late_behavior` (after `behavior`), and `resolve` refuses an `after` id that is not a pass of the same manifest.
+An older host fails to parse a manifest that uses a new phase name, so a manifest that needs them declares 5.4. The IR is unchanged.
+`inherit`, `locking`, `timestamps`, `soft-delete`, `history` and `query-defaults` declare 5.4. The order of the first-party passes does not change.
+A manifest of an outside extension that lists a pass of another manifest, or an unknown id, in `after` must use a phase instead: an earlier phase for the pass that runs first, or `late_behavior` for the pass that runs last.
 A version fits when its major equals the engine major and its minor is at most the engine minor.
 This holds for `schema_contract` and for `abi`, and for the `abi` that the library reports.
 Another major, or a newer minor, gives an error that names both versions and says what to install, even when the manifest has fields that this release does not know.

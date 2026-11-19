@@ -2,7 +2,7 @@
 
 The `monorm.inherit` extension (crate `monorm-inherit`, `extensions/inherit`) lets one schema share model shape and lets a consumer replace an app model.
 It asks the host for two capabilities, `schema-transformations` and `physical-schema`, and for no host feature.
-Its pass runs in the `declaration` phase, so the host and the other extensions see only ordinary models.
+Its pass runs in the `expansion` phase, before the `declaration` phase, so the host and the other extensions see only ordinary models.
 
 **Enable:** nothing to install. The extension is built into the `monorm` Python wheel (module `monorm_inherit`) and the `monorm` npm package (`monorm/extensions/inherit`); see [optional-packaging.md](../contracts/optional-packaging.md#extension-contracts).
 How it works and where the code is: [extensions/inherit/README.md](../../extensions/inherit/README.md).

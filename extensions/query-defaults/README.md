@@ -38,7 +38,7 @@ await Article.objects.withoutDefaults().all();    // every row, every field
 
 ### Schema pass
 
-`query.defaults.lower` (behavior phase) lowers each declaration to the effect `query-defaults`.
+`query.defaults.lower` (`late_behavior` phase) lowers each declaration to the effect `query-defaults`.
 
 | Attribute | Argument | Default |
 | --- | --- | --- |

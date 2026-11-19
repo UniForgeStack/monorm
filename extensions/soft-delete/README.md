@@ -38,8 +38,8 @@ await Author.objects.allWithDeleted();                         // the row is bac
 ### Schema pass
 
 * `monorm.soft-delete.fields` (declaration phase) adds the field before the logical passes, so a proxy copies it.
-* `monorm.soft-delete.prepare` (behavior phase) adds the read default `deleted`, the delete rewrite and the triggers.
-  It runs after the locking and timestamps passes.
+* `monorm.soft-delete.prepare` (`late_behavior` phase) adds the read default `deleted`, the delete rewrite and the triggers.
+  It runs after the `behavior` passes of the other extensions, such as the locking and timestamps passes.
 * `monorm.soft-delete.check` (validation phase) runs after every behavior pass.
   It rejects a filter of another extension that repeats the default: `` `<Model>` already hides soft-deleted rows by default; remove this filter``.
 * The checks fail the schema with these errors:
