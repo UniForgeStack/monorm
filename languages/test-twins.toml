@@ -282,23 +282,11 @@
 "sql::query_defaults_filter_never_merges_with_user_conditions" = "duplicate: kept test sql::to_many_filter_is_exists"
 "sql::unknown_relation_attribute" = "one-language: Python attribute lookup on a relation path; TypeScript rejects it at compile time"
 # languages/python/tests/test_sqlite.py
-"sqlite::aggregates_windows_ctes_sliced_prefetch_and_bulk_updates" = "change: split those TS asserts into a TS test of this name and add that check."
-"sqlite::array_agg_is_postgres_only" = "change: twin sqlite::sqlite_has_no_array_agg_and_no_lateral_join; TS adds that;"
-"sqlite::case_expression" = "change: twin sqlite::sqlite_case; TS adds it and renames to 'CASE expression';"
-"sqlite::crud_relations_defaults_and_upserts" = "change: split TS into this name and the aggregates name."
 "sqlite::cyclic_fks_table_rename_and_empty_sequence" = "engine-covered: crates/engine/tests/sqlite.rs::cyclic_fks_table_rename_and_empty_sequence"
 "sqlite::failed_rebuild_rolls_back_schema_rows_and_history" = "engine-covered: crates/engine/tests/sqlite.rs::failed_rebuild_rolls_back_schema_rows_and_history"
-"sqlite::file_database_and_target_mismatch" = "change: Python also matches 'schema targets postgres, connection uses sqlite' (TS adds the message);"
 "sqlite::finished_nested_transaction_and_cancellation_release_connection" = "one-language: Python-only: asyncio task cancellation releases the SQLite connection"
-"sqlite::indexed_relation_labels" = "change: twin sqlite::sqlite_indexed_relation_labels; TS adds that (runtime error or @ts-expect-error) and renames to 'indexed relation labels'."
-"sqlite::like_helpers_match_the_escaped_text" = "change: twin sqlite::sqlite_like_helpers_send_the_escape_character; Split the TS test;"
 "sqlite::migration_refuses_unmanaged_objects" = "engine-covered: crates/engine/tests/sqlite.rs::rebuild_refuses_unmanaged_objects"
 "sqlite::migrations_rebuild_preserve_rows_and_sequences" = "engine-covered: crates/engine/tests/sqlite.rs::rebuilds_preserve_cascading_relations_and_autoincrement"
-"sqlite::on_conflict_index_matches_a_boolean_predicate_and_takes_one_index" = "change: TS adds an explicit index= on a raw('active') index that sends `ON CONFLICT ('name') WHERE active DO NOTHING` with count 1, and 'matches 2 unique indexes'"
-"sqlite::related_sets_use_the_database_of_their_instance" = "change: Python also asserts ann.following.add(bob) and the read on a second SQLite database (self many-to-many);"
-"sqlite::sql_shape_sends_escape_on_sqlite_only" = "change: twin sqlite::sqlite_like_helpers_send_the_escape_character; TS checks only contains/icontains/like (and not startsWith/endsWith)."
-"sqlite::transactions_concurrency_and_abandonment" = "change: TS adds them (gc as in driver.test.ts) and takes this name, and moves its lock asserts to 'unsupported queries'."
-"sqlite::unsupported_queries" = "change: give TS an 'unsupported queries' test with all three asserts."
 # languages/python/tests/test_tracking.py
 "tracking::a_stale_instance_write_raises_version_conflict" = "change: TS must add both."
 # languages/python/tests/test_transaction_failures.py
@@ -414,7 +402,6 @@
 # languages/js/test/on-conflict-index.test.ts
 "on_conflict_index::model_indexes_offers_the_unique_indexes" = "change: twin writes::model_indexes_offer_the_unique_indexes; TS add `.name`;"
 "on_conflict_index::on_conflict_index_errors_name_the_problem" = "change: twin writes::on_conflict_index_errors_name_the_problem; Align the binding message, run Python on SQLite too (TS runs both providers), and add"
-"on_conflict_index::on_conflict_index_list_is_an_error_on_sqlite" = "change: TS add those and `// case: sqlite::on_conflict_index_matches_a_boolean_predicate_and_takes_one_index`."
 "on_conflict_index::on_conflict_index_picks_a_partial_index" = "change: twin writes::on_conflict_index_picks_a_partial_index; TS runs on SQLite and PostgreSQL, Python only on PostgreSQL: parametrize the `notes` fixture over both"
 "on_conflict_index::on_conflict_index_takes_a_boolean_column_and_a_list_of_one" = "change: twin writes::on_conflict_index_with_a_boolean_column; Python runs only on PostgreSQL (TS both);"
 # languages/js/test/pagination.test.ts
@@ -495,15 +482,7 @@
 # languages/js/test/sqlite.test.ts
 "sqlite::load_reload_reads_the_row_again" = "keep: The kept queries.test.ts test asserts both reload forms read the changed name, and also that load without reload does not read again."
 "sqlite::relation_comparison_rejects_null_prototype_objects_clearly" = "duplicate: kept test queries::relation_comparison_rejects_null_prototype_objects_clearly"
-"sqlite::sqlite_case" = "change: twin sqlite::case_expression; Add sum(case(n >= 5 -> 1, default 0)) == 2 and rename to 'CASE expression';"
-"sqlite::sqlite_crud_relations_enums_json_bulk_defaults_and_case_updates" = "change: Split it into the two Python names and add what each Python test asserts (23505, invalid enum, update expression, delete, exists, dialect;"
-"sqlite::sqlite_has_no_array_agg_and_no_lateral_join" = "change: twin sqlite::array_agg_is_postgres_only; Add the unpaged inspect() == {statementCount 1, hasBatching false, scalarCorrelated 2};"
-"sqlite::sqlite_indexed_relation_labels" = "change: twin sqlite::indexed_relation_labels; Add the rejection of an unlabeled at(0) in load() and rename to 'indexed relation labels'."
-"sqlite::sqlite_like_helpers_send_the_escape_character" = "change: Split it into the two Python names;"
-"sqlite::sqlite_migrations_target_checks_and_file_persistence" = "change: twin sqlite::file_database_and_target_mismatch; Add the 'schema targets postgres, connection uses sqlite' message;"
-"sqlite::sqlite_nested_transactions_rollback_and_unsupported_locks" = "change: Split it: 'transactions concurrency and abandonment' adds the outer rollback, the gc'd abandoned tx and the 'closed' error;"
 "sqlite::sqlite_related_lazy_inserts_join_the_transaction_at_await" = "keep: The kept writes.test.ts test asserts the same on Postgres plus an m2m tags insert;"
-"sqlite::sqlite_related_sets_use_the_database_of_their_instance" = "change: twin sqlite::related_sets_use_the_database_of_their_instance; Add the self many-to-many part (following.add and read on a second SQLite database) and rename to"
 # languages/js/test/tracking.test.ts
 "tracking::a_stale_instance_write_throws_version_conflict" = "change: Must add first.title and stored title 'b' checks;"
 # languages/js/test/transaction-failures.test.ts

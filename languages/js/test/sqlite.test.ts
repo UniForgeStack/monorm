@@ -4,14 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { connect, DoesNotExist, func, IntegrityError, MultipleObjectsReturned, loads, Migrations, MigrationError, Migrator, outer, QueryError, Registry, SchemaError, statementInspection } from "../src/index.js";
+import { connect, DatabaseError, DoesNotExist, func, IntegrityError, MultipleObjectsReturned, loads, Migrations, MigrationError, Migrator, outer, QueryError, Registry, SchemaError, statementInspection } from "../src/index.js";
 import { User } from "./blog/models.js";
 import { Author, Book, Status, sqliteRegistry } from "./sqlite/models.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
 
-test("SQLite has no array_agg and no LATERAL join", async () => {
+test("array_agg is Postgres only", async () => {
   const db = await connect("sqlite://:memory:", { registry: sqliteRegistry, default: false });
   try {
     await db.createTables();
@@ -24,6 +24,8 @@ test("SQLite has no array_agg and no LATERAL join", async () => {
     ]);
     const rows = await Author.objects.using(db).select({ name: Author.name, n: func.count(Author.books), p: func.max(Author.books.pages) }).orderBy(Author.name).all();
     assert.deepEqual(rows.map((r) => [r.name, Number(r.n), r.p]), [["A", 2, 7], ["B", 1, 3], ["C", 0, null]]);
+    const unpaged = Author.objects.using(db).select({ id: Author.id, n: func.count(Author.books), p: func.max(Author.books.pages) });
+    assert.deepStrictEqual(unpaged.inspect(), { statementCount: 1, hasBatching: false, statements: [statementInspection({ scalarCorrelated: 2 })] });
     const page = Author.objects.using(db).select({ id: Author.id, n: func.count(Author.books), p: func.max(Author.books.pages) })
       .orderBy(Author.name).limit(10).offset(1);
     assert.deepStrictEqual(page.inspect().statements, [statementInspection({ scalarCorrelated: 2 })]);
@@ -34,70 +36,126 @@ test("SQLite has no array_agg and no LATERAL join", async () => {
   }
 });
 
-test("SQLite CRUD, relations, enums, JSON, bulk defaults and CASE updates", async () => {
+test("crud relations defaults and upserts", async () => {
   const db = await connect("sqlite://:memory:", { registry: sqliteRegistry, default: false });
   try {
     await db.createTables();
-    const a = await Author.objects.using(db).insert({ email: "a", name: "Alice" });
+    const a = await Author.objects.using(db).insert({ email: "a@example.com", name: "Alice" });
     assert.equal(typeof a.id, "bigint");
-    assert.equal(a.active, true);
-    assert.ok(a.createdAt instanceof Date);
+    assert.ok(a.active && a.createdAt instanceof Date);
+    const b = await Author.objects.using(db).insert({ email: "b@example.com", name: "Bob" });
     const books = await Book.objects.using(db).insertMany([
       { authorId: a.id, title: "one" },
-      { authorId: a.id, title: "two", pages: 7, metadata: { labels: [1, true] } },
+      { authorId: a.id, title: "two", pages: 7, metadata: { tags: [1, true] } },
+      { authorId: b.id, title: "three", status: Status.published },
     ]).returning();
-    assert.deepEqual(books.map((b) => b.pages), [0, 7]);
+    assert.deepEqual(books.map((x) => x.pages), [0, 7, 0]);
     assert.equal(books[0]!.status, Status.draft);
-    assert.deepEqual(books[1]!.metadata, { labels: [1, true] });
+    assert.deepEqual(books[1]!.metadata, { tags: [1, true] });
     const joined = await Book.objects.using(db).load(Book.author).orderBy(Book.id).all();
-    assert.equal(joined[0]!.author.name, "Alice");
-    const prefetched = await Author.objects.using(db).load(Author.books).all();
-    assert.equal(prefetched[0]!.books.cached.length, 2);
-    assert.equal(await Author.objects.using(db).filter(Author.name.icontains("ALI")).count(), 1);
-    assert.equal(await Author.objects.using(db).filter(Author.name.contains("ali")).count(), 0);
+    assert.deepEqual(joined.map((x) => x.author.name), ["Alice", "Alice", "Bob"]);
+    const prefetched = await Author.objects.using(db).load(Author.books).orderBy(Author.id).all();
+    assert.deepEqual(prefetched.map((x) => x.books.cached.length), [2, 1]);
     assert.equal(await Author.objects.using(db).filter(Author.books.pages.gt(0)).count(), 1);
-    assert.equal(await Book.objects.using(db).select({ total: func.sum(Book.pages) }).scalar(), 7n);
-    const ranked = await Book.objects.using(db).select({
-      title: Book.title,
-      rank: func.rowNumber().over({ partitionBy: Book.authorId, orderBy: Book.pages.desc() }),
-    }).orderBy(Book.id).all();
-    assert.deepEqual(ranked.map((b) => b.rank), [2n, 1n]);
-    const totals = Book.objects.using(db).select({ authorId: Book.authorId, pages: func.sum(Book.pages) }).groupBy(Book.authorId).cte("totals");
-    assert.equal(await Author.objects.using(db).join(totals, totals.c.authorId.eq(Author.id)).select({ pages: totals.c.pages }).scalar(), 7n);
-    const sliced = await Author.objects.using(db).load(Author.books.objects.orderBy(Book.pages.desc()).slice(1, 2)).all();
-    assert.deepEqual(sliced[0]!.books.cached.map((b) => b.title), ["one"]);
-    const updated = await Book.objects.using(db).updateMany(books.map((b) => ({ id: b.id, pages: b.pages + 2 }))).returning();
-    assert.deepEqual(updated.map((b) => b.pages), [2, 9]);
-    const same = await Author.objects.using(db).insert({ email: "a", name: "Updated" }).onConflict(Author.email, { update: true }).returning();
-    assert.equal(same!.id, a.id);
+    assert.ok(await Book.objects.using(db).exists());
+    assert.equal(await Author.objects.using(db).filter(Author.name.icontains("ali")).count(), 1);
+    const same = await Author.objects.using(db).insert({ email: a.email, name: "Updated" }).onConflict(Author.email, { update: true }).returning();
+    assert.ok(same!.id === a.id && same!.name === "Updated");
+    const rows = await Book.objects.using(db).filter(Book.pages.gt(0)).update({ pages: Book.pages.add(1) }).returning();
+    assert.equal(rows[0]!.pages, 8);
     await assert.rejects(Book.objects.using(db).insert({ authorId: 999n, title: "orphan" }), (e: unknown) => {
       assert.ok(e instanceof IntegrityError);
       assert.deepEqual([e.sqlstate, e.constraint], ["23503", null]);
       return true;
     });
-    await db.dropTables();
+    await assert.rejects(Author.objects.using(db).insert({ email: a.email, name: "dup" }), (e: unknown) => e instanceof IntegrityError && e.sqlstate === "23505");
+    await assert.rejects(Book.objects.using(db).insert({ authorId: a.id, title: "bad", status: "invalid" as never }), IntegrityError);
+    assert.equal(await Book.objects.using(db).filter(Book.id.eq(books[0]!.id)).delete(), 1);
+    assert.equal((sqliteRegistry.ir() as Any)["dialect"], "sqlite");
   } finally { await db.close(); }
 });
 
-test("SQLite nested transactions, rollback, and unsupported locks", async () => {
+test("aggregates windows ctes sliced prefetch and bulk updates", async () => {
+  const db = await connect("sqlite://:memory:", { registry: sqliteRegistry, default: false });
+  try {
+    await db.createTables();
+    const authors = await Author.objects.using(db).insertMany([{ email: "a", name: "A" }, { email: "b", name: "B" }]).returning();
+    const books = await Book.objects.using(db).insertMany(
+      authors.flatMap((a) => [3, 7, 11].map((pages) => ({ authorId: a.id, title: `${a.name}${pages}`, pages }))),
+    ).returning();
+    assert.equal(await Book.objects.using(db).select({ total: func.sum(Book.pages) }).scalar(), 42n);
+    const ranked = await Book.objects.using(db).select({
+      title: Book.title,
+      rank: func.rowNumber().over({ partitionBy: Book.authorId, orderBy: Book.pages.desc() }),
+    }).orderBy(Book.title).all();
+    assert.deepEqual(ranked.map((r) => [r.title, r.rank]), [["A11", 1n], ["A3", 3n], ["A7", 2n], ["B11", 1n], ["B3", 3n], ["B7", 2n]]);
+    const totals = Book.objects.using(db).select({ authorId: Book.authorId, pages: func.sum(Book.pages) }).groupBy(Book.authorId).cte("totals");
+    const joined = await Author.objects.using(db).join(totals, totals.c.authorId.eq(Author.id)).select({ name: Author.name, pages: totals.c.pages }).orderBy(Author.id).all();
+    assert.deepEqual(joined.map((r) => [r.name, r.pages]), [["A", 21n], ["B", 21n]]);
+    const sliced = await Author.objects.using(db).load(Author.books.objects.orderBy(Book.pages.desc()).slice(1, 2)).orderBy(Author.id).all();
+    assert.deepEqual(sliced.map((a) => a.books.cached.map((b) => b.title)), [["A7"], ["B7"]]);
+    const updated = await Book.objects.using(db).updateMany(books.map((b) => ({ id: b.id, pages: b.pages + 1 }))).returning();
+    assert.deepEqual(updated.map((b) => b.pages).sort((x, y) => x - y), [4, 4, 8, 8, 12, 12]);
+    await assert.rejects(
+      Book.objects.using(db).updateMany(books.map((b, i) => ({ id: b.id, pages: i === 1 ? -1 : 99 })), { batchSize: 1 }),
+      IntegrityError,
+    );
+    assert.equal(await Book.objects.using(db).select({ total: func.sum(Book.pages) }).scalar(), 48n);
+  } finally { await db.close(); }
+});
+
+test("transactions concurrency and abandonment", async (t) => {
+  const g = globalThis as { gc?: () => void; Bun?: { gc(sync: boolean): void } };
+  const gc = g.gc ?? (g.Bun ? () => g.Bun!.gc(true) : undefined);
+  if (!gc) {
+    t.skip("needs node --expose-gc");
+    return;
+  }
   const db = await connect("sqlite://:memory:", { registry: sqliteRegistry, default: false });
   try {
     await db.createTables();
     await db.transaction(async () => {
-      await Author.objects.using(db).insert({ email: "kept", name: "Kept" });
+      await Author.objects.using(db).insert({ email: "outer", name: "outer" });
       await assert.rejects(db.transaction(async () => {
-        await Author.objects.using(db).insert({ email: "rolled", name: "Rolled" });
-        throw new Error("rollback inner");
-      }), /rollback inner/);
-      await assert.rejects(async () => Author.objects.using(db).lock().all(), QueryError);
-      await assert.rejects(db.lock("example"), /sqlite does not support advisory locks/);
+        await Author.objects.using(db).insert({ email: "inner", name: "inner" });
+        throw new Error("rollback savepoint");
+      }), /rollback savepoint/);
     });
     assert.equal(await Author.objects.using(db).count(), 1);
+    await assert.rejects(db.transaction(async () => {
+      await Author.objects.using(db).insert({ email: "rolled", name: "rolled" });
+      throw new Error("rollback");
+    }), /rollback/);
+    await (async () => {
+      const tx = await db.engine.begin(null);
+      await db.engine.execute("INSERT INTO author (email, name) VALUES ('abandoned', 'abandoned')", tx);
+    })();
+    for (let i = 0; i < 5; i++) {
+      gc();
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    assert.equal(await Author.objects.using(db).count(), 1);
     assert.deepEqual(await Promise.all(Array.from({ length: 20 }, () => Author.objects.using(db).count())), Array(20).fill(1));
+    const { wait } = await import("../src/native.js");
+    const tx = await db.engine.begin(null);
+    await tx.commit();
+    await assert.rejects(wait(() => db.engine.execute("SELECT 1", tx)), (e: unknown) => e instanceof DatabaseError && /closed|already committed/.test(e.message));
   } finally { await db.close(); }
 });
 
-test("SQLite migrations, target checks and file persistence", async () => {
+test("unsupported queries", async () => {
+  const db = await connect("sqlite://:memory:", { registry: sqliteRegistry, default: false });
+  try {
+    await db.createTables();
+    await assert.rejects(async () => Author.objects.using(db).select({ n: Author.name }).distinct(Author.name).all(), /does not support/);
+    await db.transaction(async () => {
+      await assert.rejects(async () => Author.objects.using(db).lock().all(), (e: unknown) => e instanceof QueryError && /does not support/.test(e.message));
+      await assert.rejects(db.lock("example"), /advisory locks/);
+    });
+  } finally { await db.close(); }
+});
+
+test("file database and target mismatch", async () => {
   const root = [join(import.meta.dirname, "..", "..", ".."), join(import.meta.dirname, "..", "..", "..", "..")].find((d) => {
     try { readFileSync(join(d, "examples/sqlite/schema.prisma")); return true; } catch { return false; }
   })!;
@@ -120,7 +178,7 @@ test("SQLite migrations, target checks and file persistence", async () => {
       assert.equal((await reopened.fetchText("SELECT name FROM author"))[0]![0], "Persisted");
       await new Migrator(reopened, migrations).downgrade({ target: "zero", allowDestructive: true });
     } finally { await reopened.close(); }
-    await assert.rejects(connect("sqlite://:memory:", { registry: new Registry(), default: false }), SchemaError);
+    await assert.rejects(connect("sqlite://:memory:", { registry: new Registry(), default: false }), (e: unknown) => e instanceof SchemaError && /schema targets postgres, connection uses sqlite/.test(e.message));
     assert.throws(() => loads(source.replace("provider = \"sqlite\"", "provider = \"postgresql\""), { registry: reg }), /same database/);
   } finally {
     await db.close();
@@ -174,7 +232,7 @@ test("outer() through a relation path", async () => {
   } finally { await db.close(); }
 });
 
-test("SQLite related sets use the database of their instance", async () => {
+test("related sets use the database of their instance", async () => {
   const db = await connect("sqlite://:memory:", { registry: sqliteRegistry, default: false });
   try {
     await db.createTables();
@@ -182,7 +240,16 @@ test("SQLite related sets use the database of their instance", async () => {
     await alice.books.insert({ title: "one" });
     assert.deepEqual((await alice.books.all()).map((b) => b.title), ["one"]);
     assert.equal(await alice.books.filter(Book.pages.eq(0)).count(), 1);
-  } finally { await db.close(); }
+    const registry = new Registry();
+    const { Person } = loads(FOLLOW, { registry }) as Record<string, Any>;
+    const followDb = await connect("sqlite://:memory:", { registry, default: false });
+    try {
+      await followDb.createTables();
+      const [ann, bob] = await Person.objects.using(followDb).insertMany([{ name: "ann" }, { name: "bob" }]).returning();
+      await ann.following.add(bob);
+      assert.deepEqual((await ann.following.all()).map((p: Any) => p.name), ["bob"]);
+    } finally { await followDb.close(); }
+  } finally { await db.dropTables(); await db.close(); }
 });
 
 test("string functions and concatenation", async () => {
@@ -254,7 +321,7 @@ test("onConflict infers the partial unique index", async () => {
   } finally { await db.close(); }
 });
 
-test("SQLite CASE", async () => {
+test("CASE expression", async () => {
   const registry = new Registry();
   const Note = loads(`
     datasource db { provider = "sqlite" }
@@ -268,6 +335,7 @@ test("SQLite CASE", async () => {
     await Note.objects.using(db).insertMany([{ n: 1 }, { n: 5 }, { n: 10 }]);
     const size = func.case([Note.n.gte(10), "big"], [Note.n.gte(5), "mid"], { default: "small" });
     assert.deepEqual((await Note.objects.using(db).orderBy(Note.id).select({ s: size }).all()).map((r: any) => r.s), ["small", "mid", "big"]);
+    assert.equal(await Note.objects.using(db).select({ t: func.sum(func.case([Note.n.gte(5), 1], { default: 0 })) }).scalar(), 2n);
     await Note.objects.using(db).all().update({ n: func.case([Note.n.eq(1), 100], { default: Note.n }) });
     assert.deepEqual((await Note.objects.using(db).orderBy(Note.id).all()).map((r: any) => r.n), [100, 5, 10]);
   } finally { await db.close(); }
@@ -419,7 +487,7 @@ test("bound load guards and withoutRelated", async () => {
 });
 
 
-test("SQLite indexed relation labels", async () => {
+test("indexed relation labels", async () => {
   const db = await connect("sqlite://:memory:", { registry: sqliteRegistry, default: false });
   try {
     await db.createTables();
@@ -440,17 +508,22 @@ test("SQLite indexed relation labels", async () => {
     ]);
     const empty = await Author.objects.using(db).load(Author.books.objects.at(5).label("outside"));
     assert.ok(empty.every((a) => a.outside === null));
+    assert.throws(() => Author.objects.using(db).load(Author.books.objects.at(0) as never), TypeError);
     await assert.rejects(async () => { await Book.objects.using(db).load(Book.author.objects.at(0).label("person")); }, /to-many/);
   } finally { await db.close(); }
 });
 
-test("SQLite LIKE helpers send the escape character", async () => {
-  for (const cond of [Author.name.contains("a%"), Author.name.icontains("a"), Author.name.like("a_")]) {
-    assert.ok(Author.objects.filter(cond).sql().includes("ESCAPE '\\'"));
+test("sql shape sends ESCAPE on SQLite only", () => {
+  for (const build of [(M: Any) => M.name.contains("a%"), (M: Any) => M.name.startsWith("a"), (M: Any) => M.name.endsWith("a")]) {
+    assert.ok(Author.objects.filter(build(Author)).sql().includes("ESCAPE '\\'"));
+    assert.ok(!User.objects.filter(build(User)).sql().includes("ESCAPE"));
   }
-  for (const cond of [User.name.contains("a%"), User.name.icontains("a")]) {
-    assert.ok(!User.objects.filter(cond).sql().includes("ESCAPE"));
-  }
+  assert.ok(Author.objects.filter(Author.name.icontains("a")).sql().includes("ESCAPE '\\'"));
+  assert.ok(!User.objects.filter(User.name.icontains("a")).sql().includes("ESCAPE"));
+  assert.ok(Author.objects.filter(Author.name.like("a_")).sql().includes("ESCAPE '\\'"));
+});
+
+test("like helpers match the escaped text", async () => {
   const db = await connect("sqlite://:memory:", { registry: sqliteRegistry, default: false });
   try {
     await db.createTables();

@@ -142,12 +142,35 @@ test("onConflict index list sends the AND of the predicates (postgresql)", { ski
   }
 });
 
-test("onConflict index list is an error on sqlite", async () => {
-  const { db, Note } = await setup("sqlite");
+const people = `datasource db { provider = "sqlite" }
+model Person {
+  id     BigInt  @id @default(autoincrement())
+  name   String
+  active Boolean @default(true)
+  shown  Boolean @default(true)
+  @@index([name], unique: true, where: raw("active"), map: "person_name_active")
+  @@index([name], unique: true, where: raw("shown"), map: "person_name_shown")
+}`;
+
+// case: sqlite::on_conflict_index_matches_a_boolean_predicate_and_takes_one_index
+test("onConflict index matches a boolean predicate and takes one index (sqlite)", async () => {
+  const registry = new Registry();
+  const { Person } = loads(people, { registry }) as Record<string, Any>;
+  const db = await connect("sqlite://:memory:", { registry, default: false, maxConnections: 1 });
   try {
-    const notes = Note.objects.using(db);
+    await db.createTables();
+    const events: QueryEvent[] = [];
+    db.onQuery((e) => events.push(e));
+    const objects = Person.objects.using(db);
+    // SQLite matches a boolean partial-index predicate only as written in the schema.
+    for (let i = 0; i < 2; i++) {
+      await objects.insert({ name: "U0" }).onConflict(Person.name, { index: Person.indexes.person_name_active, update: false });
+    }
+    assert.ok(events.find((e) => e.sql.includes("ON CONFLICT"))!.sql.includes('ON CONFLICT ("name") WHERE active DO NOTHING'));
+    assert.equal(await objects.count(), 1);
+    await assert.rejects(objects.insert({ name: "U1" }).onConflict(Person.name, { update: false }), (e) => e instanceof QueryError && /matches 2 unique indexes of Person/.test(e.message));
     await assert.rejects(
-      notes.insert({ slug: "a" }).onConflict(Note.slug, { index: [Note.indexes.notes_slug_live, Note.indexes.notes_slug_shown], update: false }),
+      objects.insert({ name: "U1" }).onConflict(Person.name, { index: [Person.indexes.person_name_active, Person.indexes.person_name_shown], update: false }),
       (e) => e instanceof QueryError && /SQLite takes one index/.test(e.message),
     );
   } finally {
