@@ -1358,7 +1358,7 @@ pub async fn materialize(conn: &dyn Executor, db: &DbSchema) -> Result<Introspec
 
 /// The steps that turn the live database `live` into `target`, ignoring extensions
 /// that only one of them lists.
-pub fn differences(live: &DbSchema, target: &DbSchema) -> Vec<Step> {
+pub fn differences(live: &DbSchema, target: &DbSchema) -> Result<Vec<Step>> {
     differences_of(live, target, Kind::All)
 }
 
@@ -1372,13 +1372,13 @@ pub enum Kind {
     Security,
 }
 
-pub fn differences_of(live: &DbSchema, target: &DbSchema, kind: Kind) -> Vec<Step> {
+/// An `Err` is a change that a migration refuses too, such as an identity beside a foreign sequence.
+pub fn differences_of(live: &DbSchema, target: &DbSchema, kind: Kind) -> Result<Vec<Step>> {
     let mut a = live.clone();
     let mut b = target.clone();
     a.extensions.clear();
     b.extensions.clear();
-    // introspected schemas carry no nested links, so no storage change copies a column
-    let mut ops = diff::diff(&a, &b, &Default::default()).expect("a diff of introspected schemas copies no column");
+    let mut ops = diff::diff(&a, &b, &Default::default()).map_err(Error::Migration)?;
     ops.retain(|op| match kind { Kind::All => true, Kind::Schema => !op.is_security(), Kind::Security => op.is_security() });
     let mut steps: Vec<Step> = if live.dialect == Dialect::Sqlite && !ops.is_empty() {
         // SQLite rebuilds tables: one step with SQLite's SQL that names every change
@@ -1401,7 +1401,7 @@ pub fn differences_of(live: &DbSchema, target: &DbSchema, kind: Kind) -> Vec<Ste
             steps.insert(0, Step::new(monorm_core::migrate::pg::summary(&op), monorm_core::migrate::pg::render(&op, false), None, vec![]));
         }
     }
-    steps
+    Ok(steps)
 }
 
 /// `live` with each expression-bearing object (column type and default, check, index,
@@ -1597,12 +1597,29 @@ pub async fn compare_with(conn: &dyn Executor, target: &DbSchema, kind: Kind) ->
         Err(_) => live.schema,
     };
     monorm_core::migrate::reconcile_introspection(&shadow, &mut live_schema);
-    Ok((differences_of(&live_schema, &shadow, kind), live.gaps))
+    Ok((differences_of(&live_schema, &shadow, kind)?, live.gaps))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_difference_that_a_migration_refuses_is_an_error_not_a_panic() {
+        let schema = |identity: bool, default: Option<&str>| DbSchema {
+            tables: vec![Table {
+                name: "t".into(),
+                columns: vec![Column { name: "id".into(), ty: "bigint".into(), identity, default: default.map(String::from), nullable: false, generated: None, comment: None, nested: Default::default() }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let live = schema(false, Some("nextval('other_seq'::regclass)"));
+        let target = schema(true, None);
+        let Err(Error::Migration(e)) = differences(&live, &target) else { panic!("the refusal is an error") };
+        assert!(e.contains("t.id: the column takes its values from a sequence it does not own"), "{e}");
+        assert!(differences(&live, &live).unwrap().is_empty());
+    }
 
     #[test]
     fn parentheses() {

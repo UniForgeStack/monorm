@@ -221,7 +221,7 @@ fn postgres_expression_indexes_serve_subfield_filters_and_round_trip() {
         // the expression text reads back without a difference
         let live = introspect::introspect(&*conn).await.unwrap();
         let shadow = introspect::materialize(&*conn, &snapshot).await.unwrap();
-        let drift = introspect::differences(&live.schema, &shadow.schema);
+        let drift = introspect::differences(&live.schema, &shadow.schema).unwrap();
         assert!(drift.is_empty(), "{drift:?}");
         assert!(migrate::plan(&s, &snapshot).unwrap().up.is_empty());
         conn.batch("SET search_path TO public; DROP SCHEMA nested_json_index CASCADE".into()).await.unwrap();

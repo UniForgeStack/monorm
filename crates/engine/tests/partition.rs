@@ -56,13 +56,13 @@ fn postgres_partition_routing_constraints_migrations_pull_and_shadow() {
         let live = introspect::introspect(&*conn).await.unwrap();
         assert!(live.gaps.is_empty(), "{:?}", live.gaps);
         let shadow = introspect::materialize(&*conn, &snapshot).await.unwrap();
-        let drift = introspect::differences(&live.schema, &shadow.schema);
+        let drift = introspect::differences(&live.schema, &shadow.schema).unwrap();
         assert!(drift.is_empty(), "{drift:?}");
         let pulled = migrate::pull::pull(&live.schema, &live.gaps);
         assert!(pulled.gaps.is_empty(), "{:?}", pulled.gaps);
         let pulled_snapshot = migrate::snapshot(&schema(&pulled.schema)).unwrap();
         let roundtrip = introspect::materialize(&*conn, &pulled_snapshot).await.unwrap();
-        let drift = introspect::differences(&live.schema, &roundtrip.schema);
+        let drift = introspect::differences(&live.schema, &roundtrip.schema).unwrap();
         assert!(drift.is_empty(), "{drift:?}\n{}", pulled.schema);
 
         // Rebound preserves the table and its local objects. Existing rows must satisfy the new bound.
@@ -98,7 +98,7 @@ partition event_rest { of = Event default = true }
         let live = introspect::introspect(&*conn).await.unwrap();
         let pulled = migrate::pull::pull(&live.schema, &live.gaps);
         let roundtrip = introspect::materialize(&*conn, &migrate::snapshot(&schema(&pulled.schema)).unwrap()).await.unwrap();
-        assert!(introspect::differences(&live.schema, &roundtrip.schema).is_empty());
+        assert!(introspect::differences(&live.schema, &roundtrip.schema).unwrap().is_empty());
         // Hash subpartitions and expression partition keys (without a parent unique key).
         let hash = schema("model H {\n id Int @id\n @@partition(range: [id])\n}\npartition h_r { of = H from = [MINVALUE] to = [MAXVALUE] @@partition(hash: [id]) }\npartition h_0 { of = h_r modulus = 1 remainder = 0 }");
         let snapshot = migrate::snapshot(&hash).unwrap();
@@ -106,7 +106,7 @@ partition event_rest { of = Event default = true }
         assert!(shadow.gaps.is_empty(), "{:?}", shadow.gaps);
         let pulled = migrate::pull::pull(&shadow.schema, &[]);
         let roundtrip = introspect::materialize(&*conn, &migrate::snapshot(&schema(&pulled.schema)).unwrap()).await.unwrap();
-        assert!(introspect::differences(&shadow.schema, &roundtrip.schema).is_empty());
+        assert!(introspect::differences(&shadow.schema, &roundtrip.schema).unwrap().is_empty());
         conn.batch("SET search_path TO public; DROP SCHEMA partition_acceptance CASCADE".into()).await.unwrap();
         conn.close().await;
     });

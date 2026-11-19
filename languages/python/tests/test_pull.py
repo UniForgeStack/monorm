@@ -272,14 +272,8 @@ async def test_add_identity_refuses_a_column_that_owns_a_sequence_but_defaults_t
         )
         migrator = Migrator(db, Migrations(tmp_path / "migrations", schema))
         await migrator.baseline()
-        add = next(s for s in (await migrator.drift()).steps if s.summary == "make t_owns.id an identity column")
-        with pytest.raises(
-            monorm.DatabaseError, match="cannot make t_owns.id an identity column: it still owns the sequence"
-        ):
-            await db.execute(add.sql)
-        assert await db._fetch_text(
-            "SELECT attidentity::text FROM pg_attribute WHERE attrelid = 't_owns'::regclass AND attname = 'id'"
-        ) == [("",)]
+        with pytest.raises(monorm.migrations.MigrationError, match="t_owns.id: the column takes its values from a sequence it does not own"):
+            await migrator.drift()
     finally:
         await db.close()
 
