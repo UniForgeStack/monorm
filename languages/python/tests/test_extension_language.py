@@ -146,6 +146,55 @@ def test_two_mixins_chain_through_super_in_dependency_order(project, monkeypatch
     assert [c.__name__ for c in type(Post.objects).__mro__[:3]] == ["PostQuerySet", "BQuerySet", "AQuerySet"]
 
 
+@pytest.mark.parametrize("members", [{"Post": ("ext.a",)}, {"Tag": ("ext.a",)}, {"Post": ("ext.a",), "Tag": ("ext.a", "ext.b")}])
+def test_a_shared_user_query_set_keeps_each_model_s_extensions(project, monkeypatch, members):
+    modules, _ = install(
+        project,
+        monkeypatch,
+        ("ext.a", "ext_a", {"__init__.py": BASE}, {}),
+        (
+            "ext.b",
+            "ext_b",
+            {"__init__.py": SECOND},
+            {"query_set": "BQuerySet", "instance": "BInstance", "query_set_members": ["chain"], "instance_members": [], "overrides": ["chain"]},
+        ),
+    )
+
+    class Parent(monorm.QuerySet):
+        def chain(self):
+            return ["user", *getattr(super(), "chain", lambda: [])()]
+
+    class Queries(Parent):
+        pass
+
+    out = build(modules, members)
+    Post, Tag = out["Post"], out["Tag"]
+    monorm.use_query_set(Post, Queries)
+    monorm.use_query_set(Tag, Queries)
+
+    def expected(ids=()):
+        return ["user", *(["b"] if "ext.b" in ids else []), *(["a"] if "ext.a" in ids else [])]
+
+    for Model in (Post, Tag, Post, Tag):
+        ids = members.get(Model.__name__, ())
+        assert Model.objects.chain() == expected(ids)
+        assert Model.objects.filter(Model.id == 1).chain() == expected(ids)
+        assert hasattr(Model.objects, "everything") == bool(ids)
+        assert isinstance(Model.objects, Queries)
+
+
+def test_an_extension_with_only_field_adapters_adds_no_query_set_or_instance_members(project, monkeypatch):
+    modules, _ = install(
+        project,
+        monkeypatch,
+        ("ext.files", "ext_files", {"__init__.py": ""}, {"query_set": "", "instance": "", "query_set_members": [], "instance_members": []}),
+        ("ext.a", "ext_a", {"__init__.py": BASE}, {}),
+    )
+    Post = build(modules, {"Post": ("ext.files", "ext.a")})["Post"]
+    assert Post.objects.chain() == ["a"]
+    assert "label" in dir(Post)
+
+
 def test_an_instance_override_calls_super_down_the_chain_to_the_host_member(project, monkeypatch):
     def instance_source(tag):
         return f'''from monorm import QuerySet

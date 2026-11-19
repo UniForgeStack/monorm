@@ -3,6 +3,7 @@
 from dataclasses import FrozenInstanceError
 import gc
 import warnings
+from pathlib import Path
 
 import pytest
 from blog.models import Comment, Post, Tag, User
@@ -169,3 +170,34 @@ def test_subquery_shapes_are_reported_per_use():
     assert User.objects.select(User.id, scalar).inspect().statements[0] == monorm.StatementInspection(scalar_correlated=1)
     lateral = User.objects.select(User.id, monorm.func.count(User.posts), monorm.func.max(User.posts.views))
     assert lateral.inspect().statements[0] == monorm.StatementInspection(joins_count=1, derived_correlated=1)
+
+
+async def test_sqlite_inspection_and_actual_batched_writes_share_the_same_planner():
+    source = Path(__file__).resolve().parents[3].joinpath("examples/sqlite/schema.prisma").read_text()
+    registry = monorm.Registry()
+    models = monorm.loads(source, registry=registry)
+    Author, Book = models["Author"], models["Book"]
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
+    try:
+        await db.create_tables()
+        events: list[monorm.QueryEvent] = []
+        remove = db.on_query(events.append)
+        try:
+            insert = Author.objects.using(db).insert_many([{"email": f"a{i}", "name": f"A{i}"} for i in range(5)], batch_size=2).returning()
+            assert insert.inspect().statement_count == 3
+            assert events == []
+            authors = await insert
+            assert len(events) == 3
+            events.clear()
+            update = Author.objects.using(db).update_many([{"id": a.id, "name": f"{a.name}!"} for a in authors], batch_size=2).returning()
+            assert update.inspect().statement_count == 3
+            assert len(await update) == 5
+            assert len(events) == 3
+            assert Book.objects.using(db).load(Book.author).inspect().statements == (monorm.StatementInspection(joins_count=1),)
+            query = Author.objects.using(db).load(Author.books)
+            assert query.inspect().statement_count == 2
+            assert len(await query) == 5
+        finally:
+            remove()
+    finally:
+        await db.close()

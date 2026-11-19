@@ -82,6 +82,17 @@ def test_two_packages_with_one_id_name_both_paths(site: Path) -> None:
     assert str(first) in str(error.value) and str(second) in str(error.value)
 
 
+def test_the_extensions_bundled_with_monorm_need_no_dependency() -> None:
+    found = resolve_extensions()
+    assert sorted(found) == [
+        "monorm.composition", "monorm.file-storage", "monorm.generic", "monorm.history", "monorm.inherit", "monorm.locking",
+        "monorm.proto", "monorm.proxy", "monorm.query-defaults", "monorm.scope", "monorm.soft-delete", "monorm.timestamps",
+    ]
+    for manifest in found.values():
+        assert Path(manifest).exists(), manifest
+    assert resolve_extensions() == found
+
+
 def test_an_outside_package_with_a_built_in_id_names_the_built_in_copy(site: Path) -> None:
     built_in = install(site, "monorm-fixture", "monorm_fixture", ident="monorm.fixture", owner="monorm")
     outside = install(site, "acme-fixture-two", "acme_fixture_two", ident="monorm.fixture")

@@ -11,6 +11,7 @@ import pytest
 import monorm
 from monorm import Registry, _native
 from monorm._apps import resolve_apps
+from monorm._packages import resolve_extensions
 from monorm._native import SchemaError
 
 PROJECT = 'datasource db {\n  provider = "sqlite"\n}\nimport "app:monorm-fixture-auth" (prefix: "auth_")\nmodel Post {\n  id Int @id\n}\n'
@@ -116,3 +117,16 @@ def test_load_resolves_an_installed_app_and_loads_names_the_way_out(site: Path, 
     assert sorted(models) == ["Invoice", "Post", "User"]
     with pytest.raises(SchemaError, match=r'app:monorm-fixture-auth.*use `load\(path\)` or generate'):
         monorm.loads(PROJECT, registry=Registry())
+
+
+BUILTIN = 'datasource db {\n  provider = "sqlite"\n}\nimport "app:monorm-auth" (prefix: "auth_")\nmodel Post {\n  id Int @id\n}\n'
+
+
+# Python names the app like its distribution: `monorm-auth`; the TypeScript package names it `auth`.
+def test_the_auth_app_comes_with_monorm_and_needs_no_install(tmp_path: Path) -> None:
+    schema = project(tmp_path, BUILTIN)
+    apps = resolve_apps(schema)
+    assert list(apps) == ["monorm-auth"]
+    assert apps["monorm-auth"].endswith(str(Path("monorm_auth") / "schema.prisma"))
+    ir = json.loads(_native.compile_schema_file(str(schema), apps, resolve_extensions()))
+    assert "auth_user" in [m["table"] for m in ir["models"]]

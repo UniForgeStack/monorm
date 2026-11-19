@@ -4,6 +4,7 @@ import asyncio
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
@@ -293,3 +294,38 @@ def test_cli_migrate_needs_no_schema_file_and_skips_applied_data_steps(tmp_path)
     done = subprocess.run([*base, "migrate"], cwd=tmp_path, env=env, capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
     assert done.stdout.splitlines() == ["Applied 0003_new"]
+
+
+async def test_an_edited_data_step_loads_again_in_the_same_process(tmp_path):
+    db, migrations = await fresh(tmp_path)
+    try:
+
+        def step(v: str) -> str:
+            return f"async def run(db):\n    await db.execute(\"INSERT INTO author (name) VALUES ('{v}')\")\n"
+
+        folder = data_migration(migrations, "0002_edit", "data.py", step("v1"))
+        (folder / "down.sql").write_text("SELECT 1;\n")
+        migrator = Migrator(db, migrations)
+        await migrator.upgrade()
+        await migrator.downgrade()
+        (folder / "data.py").write_text(step("v2"))
+        later = time.time() + 5  # the bytecode cache compares whole seconds and the size
+        os.utime(folder / "data.py", (later, later))
+        await migrator.upgrade()
+        assert await db._fetch_text("SELECT name FROM author ORDER BY id") == [("v1",), ("v2",)]
+    finally:
+        await db.close()
+
+
+@pytest.mark.case("data_migrations::npx_monorm_migrate_with_a_data_step_and_no_database_is_a_usage_error")
+def test_cli_migrate_with_a_data_step_and_no_database_is_a_usage_error(tmp_path):
+    schema = tmp_path / "schema.prisma"
+    migrations = Migrations(tmp_path / "migrations", schema)
+    schema.write_text(V1)
+    migrations.make()
+    data_migration(migrations, "0002_step", "data.py", "async def run(db):\n    pass\n")
+    env = {**os.environ, "MONORM_DATABASE_URL": ""}
+    base = [sys.executable, "-m", "monorm", "--schema", "schema.prisma", "--dir", "migrations", "migrate"]
+    done = subprocess.run(base, cwd=tmp_path, env=env, capture_output=True, text=True)
+    assert done.returncode == 2, done.stderr
+    assert "no database" in done.stderr, done.stderr
