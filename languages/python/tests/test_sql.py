@@ -241,6 +241,8 @@ def test_writes_validate_when_built():
         User.objects.insert(email="a", name="b").on_conflict(
             User.email, update=True, update_fields=[User.name], update_values={"name": "x"}
         )
+    with pytest.raises(TypeError, match="needs the column"):
+        User.objects.insert(email="a", name="b").on_conflict(update=False)
 
 
 def native():

@@ -47,12 +47,19 @@ test("to-many filter is EXISTS", () => {
   );
 });
 
-test("one path is one related row for the whole query: in one filter() call or across calls", () => {
-  const same = where(User.objects.filter(User.posts.views.gt(10), User.posts.published.eq(true)));
-  assert.equal(count(same, "EXISTS"), 1);
-  assert.ok(same.includes('"t1"."views" > 10 AND "t1"."published" = TRUE'));
-  const split = where(User.objects.filter(User.posts.views.gt(10)).filter(User.posts.published.eq(true)));
-  assert.equal(split, same);
+// case: sql::same_filter_call_means_same_related_row
+test("same filter() call means the same related row", () => {
+  const query = User.objects.filter(User.posts.views.gt(10), User.posts.published.eq(true));
+  assert.deepStrictEqual(query.inspect().statements[0], statementInspection({ setCorrelated: 1 }));
+  assert.ok(where(query).includes('"t1"."views" > 10 AND "t1"."published" = TRUE'));
+});
+
+// case: sql::separate_filter_calls_mean_the_same_related_row
+test("separate filter() calls mean the same related row", () => {
+  const split = User.objects.filter(User.posts.views.gt(10)).filter(User.posts.published.eq(true));
+  const together = User.objects.filter(User.posts.views.gt(10), User.posts.published.eq(true));
+  assert.deepStrictEqual(split.inspect().statements[0], statementInspection({ setCorrelated: 1 }));
+  assert.equal(split.sql(), together.sql());
 });
 
 test("alias() asks for another related row", () => {
@@ -88,18 +95,32 @@ test("alias() works in filter conditions only", () => {
   assert.throws(() => sqlOf(User.objects.filter(other.views.gt(User.posts.alias().views as never))), /two aliases/);
 });
 
-test("or inside one relation shares the subquery; with a local column it keeps rows", () => {
-  const w = where(User.objects.filter(User.posts.views.gt(10).or(User.posts.title.eq("x"))));
-  assert.equal(count(w, "EXISTS"), 1);
-  assert.ok(w.includes(" OR "));
-  assert.ok(where(User.objects.filter(or(User.email.eq("a"), User.posts.views.gt(10)))).startsWith('"users"."email" = \'a\' OR EXISTS('));
+// case: sql::or_inside_one_relation_shares_subquery
+test("or inside one relation shares the subquery", () => {
+  const query = User.objects.filter(User.posts.views.gt(10).or(User.posts.title.eq("x")));
+  assert.deepStrictEqual(query.inspect().statements[0], statementInspection({ setCorrelated: 1 }));
+  assert.ok(where(query).includes(" OR "));
 });
 
-test("exclude is NOT EXISTS; negation stays outside the subquery", () => {
-  assert.ok(where(User.objects.exclude(User.posts.published.eq(false))).startsWith("NOT EXISTS("));
-  const w = where(User.objects.filter(and(User.posts.views.gt(10), User.posts.published.eq(true).not())));
-  assert.equal(count(w, "EXISTS"), 2);
-  assert.ok(w.includes("NOT EXISTS"));
+// case: sql::or_with_local_column_keeps_rows_without_related
+test("or with a local column keeps rows without a related row", () => {
+  const query = User.objects.filter(or(User.email.eq("a"), User.posts.views.gt(10)));
+  assert.deepStrictEqual(query.inspect().statements[0], statementInspection({ setCorrelated: 1 }));
+  assert.ok(where(query).startsWith('"users"."email" = \'a\' OR EXISTS('));
+});
+
+// case: sql::exclude_is_not_exists
+test("exclude is NOT EXISTS", () => {
+  const query = User.objects.exclude(User.posts.published.eq(false));
+  assert.deepStrictEqual(query.inspect().statements[0], statementInspection({ setCorrelated: 1 }));
+  assert.ok(where(query).startsWith("NOT EXISTS("));
+});
+
+// case: sql::negation_stays_outside_subquery
+test("negation stays outside the subquery", () => {
+  const query = User.objects.filter(and(User.posts.views.gt(10), User.posts.published.eq(true).not()));
+  assert.deepStrictEqual(query.inspect().statements[0], statementInspection({ setCorrelated: 2 }));
+  assert.ok(where(query).includes("NOT EXISTS"));
 });
 
 test("nested relations nest subqueries; LIKE patterns are escaped", () => {
@@ -109,17 +130,29 @@ test("nested relations nest subqueries; LIKE patterns are escaped", () => {
   assert.ok(w.includes("LIKE E'%50\\\\%%'"));
 });
 
-test("to-one filters and columns compared across a relation", () => {
+// case: sql::to_one_filter
+test("to-one filter", () => {
+  const query = Post.objects.filter(Post.author.email.eq("a@b.c"));
+  assert.deepStrictEqual(query.inspect().statements[0], statementInspection({ setCorrelated: 1 }));
   assert.equal(
-    where(Post.objects.filter(Post.author.email.eq("a@b.c"))),
+    where(query),
     'EXISTS(SELECT 1 FROM "users" AS "t1" WHERE "t1"."id" = "posts"."author_id" AND "t1"."email" = \'a@b.c\')',
   );
-  assert.ok(where(Post.objects.filter(Post.comments.createdAt.lt(Post.createdAt))).includes('"t1"."created_at" < "posts"."created_at"'));
 });
 
-test("aggregates over the same relation share one LATERAL join", () => {
+// case: sql::column_to_column_across_relation
+test("column to column across a relation", () => {
+  const query = Post.objects.filter(Post.comments.createdAt.lt(Post.createdAt));
+  assert.deepStrictEqual(query.inspect().statements[0], statementInspection({ setCorrelated: 1 }));
+  assert.ok(where(query).includes('"t1"."created_at" < "posts"."created_at"'));
+});
+
+// case: sql::same_relation_aggregates_share_one_lateral_join
+test("same-relation aggregates share one LATERAL join", () => {
+  const shared = User.objects.select({ id: User.id, posts: func.count(User.posts), top: func.max(User.posts.views) });
+  assert.deepStrictEqual(shared.inspect().statements, [statementInspection({ joinsCount: 1, derivedCorrelated: 1 })]);
   assert.equal(
-    User.objects.select({ id: User.id, posts: func.count(User.posts), top: func.max(User.posts.views) }).sql(),
+    shared.sql(),
     'SELECT "users"."id", "l1"."c1", "l1"."c2" FROM "users" LEFT JOIN LATERAL ' +
       '(SELECT COUNT(*) AS "c1", MAX("a2"."views") AS "c2" FROM "posts" AS "a2" WHERE "a2"."author_id" = "users"."id") AS "l1" ON TRUE',
   );
@@ -129,8 +162,13 @@ test("aggregates over the same relation share one LATERAL join", () => {
   const structure = User.objects.select({ n: func.count(User.posts, { filter: User.posts.views.gt(10) }), s: func.sum(User.posts.views, { distinct: true }), c: func.count(User.comments) }).inspect().statements;
   assert.deepStrictEqual(structure, [statementInspection({ joinsCount: 1, scalarCorrelated: 1, derivedCorrelated: 1 })]);
   assert.ok(sql.includes('COUNT(*) FILTER (WHERE "a2"."views" > 10) AS "c1"') && sql.includes('SUM(DISTINCT "a2"."views")'));
+  assert.ok(sql.includes('(SELECT COUNT(*) FROM "comments"'));
   const filtered = User.objects.filter(func.count(User.posts).gt(1), func.sum(User.posts.views).gt(1)).select({ id: User.id }).inspect().statements;
   assert.deepStrictEqual(filtered, [statementInspection({ scalarCorrelated: 2 })]);
+  const grouped = User.objects
+    .select({ id: User.id, posts: func.count(User.posts), total: func.sum(User.posts.views), all: func.count() })
+    .groupBy(User.id).inspect().statements;
+  assert.deepStrictEqual(grouped, [statementInspection({ scalarCorrelated: 2 })]);
 });
 
 test("LATERAL join comes after the to-one joins", () => {
@@ -187,15 +225,25 @@ test("slicing", () => {
   assert.throws(() => Post.objects.slice(-1), RangeError);
 });
 
-test("null comparisons, in() and empty in()", () => {
+// case: sql::null_comparisons
+test("null comparisons", () => {
   assert.equal(where(Comment.objects.filter(Comment.authorId.eq(null))), '"comments"."author_id" IS NULL');
   assert.equal(where(Comment.objects.filter(Comment.authorId.ne(null))), '"comments"."author_id" IS NOT NULL');
+});
+
+// case: sql::in_and_empty_in
+test("in() and empty in()", () => {
   assert.equal(where(User.objects.filter(User.id.in([1, 2]))), '"users"."id" IN (1, 2)');
   assert.equal(where(User.objects.filter(User.id.in([]))), "FALSE");
 });
 
-test("rejected queries", () => {
+// case: sql::order_by_to_many_is_rejected
+test("orderBy to-many is rejected", () => {
   assert.throws(() => User.objects.orderBy(User.posts.views as never).sql(), (e: unknown) => e instanceof QueryError && /to-one/.test(e.message));
+});
+
+// case: sql::column_from_other_model_is_rejected
+test("column from another model is rejected", () => {
   assert.throws(() => Post.objects.filter(User.email.eq("x") as never).sql(), /belongs to User/);
 });
 
@@ -214,14 +262,19 @@ test("lock refuses a filtered aggregate", () => {
   assert.throws(() => Post.objects.lock().select({ s: func.sum(Post.views, { filter: Post.author.name.eq("A") }) }).sql(), (e: Error) => e instanceof QueryError && /aggregates/.test(e.message));
 });
 
-test("writes validate before any SQL", async () => {
+// case: sql::lock_rejected_where_meaningless
+test("lock is rejected where it means nothing", async () => {
   await assert.rejects(User.objects.lock().update({ name: "x" }), QueryError);
   await assert.rejects(User.objects.lock().delete(), QueryError);
+});
+
+// case: sql::writes_validate_when_built
+test("writes validate when built", async () => {
   await assert.rejects(User.objects.all().update({ nope: 1 } as never), TypeError);
   await assert.rejects(User.objects.slice(0, 3).delete(), QueryError);
   assert.throws(() => excluded(User.posts.views), TypeError);
   await assert.rejects(User.objects.insert({ email: "a", name: "b" }).onConflict(User.email, { update: true, updateFields: [User.name], updateValues: { name: "x" } }), /in both/);
-  await assert.rejects(User.objects.insert({ email: "a", name: "b" }).onConflict([], { update: false }), /onConflict needs/);
+  await assert.rejects(User.objects.insert({ email: "a", name: "b" }).onConflict([], { update: false }), /needs the column/);
 });
 
 test("updateMany joins a VALUES list", () => {
@@ -408,6 +461,7 @@ test("CASE expression SQL", () => {
   assert.throws(() => (func.case as (...a: unknown[]) => unknown)(Post.published), /pairs/);
 });
 
+// case: sql::aggregate_filter
 test("aggregate FILTER SQL", () => {
   const sql = Post.objects.select({ a: Post.authorId, p: func.count({ filter: Post.published }), v: func.sum(Post.views, { filter: Post.views.gt(10) }) }).groupBy(Post.authorId).sql();
   assert.equal(sql, 'SELECT "posts"."author_id", COUNT(*) FILTER (WHERE "posts"."published" = TRUE), CAST(SUM("posts"."views") FILTER (WHERE "posts"."views" > 10) AS BIGINT) FROM "posts" GROUP BY "posts"."author_id"');
@@ -415,8 +469,10 @@ test("aggregate FILTER SQL", () => {
     User.objects.select({ id: User.id, n: func.count(User.posts, { filter: User.posts.published }) }).sql(),
     'SELECT "users"."id", (SELECT COUNT(*) FILTER (WHERE "a1"."published" = TRUE) FROM "posts" AS "a1" WHERE "a1"."author_id" = "users"."id") FROM "users"',
   );
+  assert.ok(User.objects.select({ n: func.count({ filter: User.posts.views.gt(3) }) }).sql().includes('COUNT(*) FILTER (WHERE "a1"."views" > 3) FROM "posts" AS "a1"'));
   assert.ok(Post.objects.select({ s: func.sum(Post.views, { filter: Post.published }).over({ partitionBy: Post.authorId }) }).sql()
     .includes('SUM("posts"."views") FILTER (WHERE "posts"."published" = TRUE) OVER (PARTITION BY "posts"."author_id")'));
+  assert.throws(() => User.objects.select({ n: func.count(User.posts, { filter: User.comments.body.eq("x") }) }).sql(), (e: unknown) => e instanceof QueryError && /one relation path/.test(e.message));
 });
 
 test("JSON path, containment and merge SQL", () => {
