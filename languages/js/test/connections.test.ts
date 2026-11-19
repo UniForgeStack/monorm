@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
-import { connect, define, getDatabase, loads, of, param, Registry, scope, type Database, type QueryEvent } from '../src/index.js';
+import { connect, define, getDatabase, loads, of, param, Registry, scope, TransactionRequired, type Database, type QueryEvent } from '../src/index.js';
 import { hasExtension } from './artifact-caps.js';
 import { Post, User } from './blog/models.js';
 import { useDatabase, otherDatabase, DATABASE_URL } from './helpers.js';
@@ -77,7 +77,7 @@ test('transactions and onCommit are kept per database', async () => {
   }
 });
 
-test('onCommit after the transaction ended throws', async () => {
+test('onCommit after the transaction ended raises', async () => {
   const { a, b } = await twoSqliteFiles();
   let end!: () => void;
   const ended = new Promise<void>((resolve) => { end = resolve; });
@@ -87,7 +87,7 @@ test('onCommit after the transaction ended throws', async () => {
       late = (async () => { await ended; await a.onCommit(() => undefined); })();
     });
     end();
-    await assert.rejects(late, /has ended/);
+    await assert.rejects(late, (e: unknown) => e instanceof TransactionRequired && /has ended/.test((e as Error).message));
   } finally {
     await a.close();
     await b.close();
@@ -171,11 +171,33 @@ test('a session lock is released on error, and shared locks share', async () => 
   }
 });
 
-test('a session lock keeps the error of its function when the unlock fails, and checks its options', async () => {
+const RLS_ROLE = `DO $$ BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'monorm_s6_app') THEN
+    CREATE ROLE monorm_s6_app LOGIN PASSWORD 'app';
+  END IF;
+END $$;`;
+
+test('session lock keeps the error of its block when the unlock fails', async () => {
   const db = getDatabase();
   const kill = "SELECT pg_terminate_backend(pid) FROM pg_locks WHERE locktype = 'advisory' AND objid = 4243 AND granted";
   await assert.rejects(db.lock(4243, { session: true }, async () => { await db.execute(kill); throw new Error('mine'); }), /mine/);
   assert.equal(await db.lock(4243, { session: true }, async () => { await db.execute(kill); return 1; }), 1);
+  // A failed unlock on a live connection closes it, so the server drops the lock.
+  await db.execute(RLS_ROLE);
+  const app = await connect('postgres://monorm_s6_app:app@' + db.url.split('@', 2)[1], { default: false, maxConnections: 1 });
+  try {
+    await app.lock(4244, { session: true }, async () => {
+      await db.execute('REVOKE EXECUTE ON FUNCTION pg_advisory_unlock(bigint) FROM PUBLIC');
+    });
+    await db.lock(4244, { session: true, nowait: true }, async () => undefined);
+  } finally {
+    await db.execute('GRANT EXECUTE ON FUNCTION pg_advisory_unlock(bigint) TO PUBLIC');
+    await app.close();
+  }
+});
+
+test('session lock timeout bounds', async () => {
+  const db = getDatabase();
   assert.equal(await db.lock(5, { session: true, timeout: Infinity }, async () => 2), 2);
   for (const timeout of [-1, 3e6, NaN]) {
     await assert.rejects(db.lock(5, { session: true, timeout }, async () => 3), /lock timeout/);
@@ -267,7 +289,7 @@ async function assertBackends(url: string, expected: number): Promise<void> {
   assert.equal(actual, expected, 'PostgreSQL replica sessions after pool closure');
 }
 
-test('replicas answer reads outside a transaction; writes and transactions use the primary', { timeout: 30_000 }, async () => {
+test('replicas answer reads outside a transaction, writes and transactions use the primary', { timeout: 30_000 }, async () => {
   const db = getDatabase(), url = await replicaUrl(), url2 = await replicaUrl(2);
   const routed = await connect(db.url, { replicas: [url, url2], default: false, maxConnections: 2 });
   try {
@@ -303,7 +325,7 @@ test('replicas answer reads outside a transaction; writes and transactions use t
   await assertBackends(url, before);
 });
 
-test('load reload reads the primary on a database with replicas', async () => {
+test('reload reads the primary on a database with replicas', async () => {
   const db = getDatabase(), url = await replicaUrl();
   const routed = await connect(db.url, { replicas: [url], default: false, maxConnections: 2 });
   try {
@@ -314,16 +336,12 @@ test('load reload reads the primary on a database with replicas', async () => {
     await User.objects.using(routed).filter(User.id.eq(user.id)).update({ name: 'P2' });
     await user.load(User.name, { reload: true });
     assert.equal(user.name, 'P2');
-    // the to-many read of a reload goes to the primary too: the replica holds no post
-    await Post.objects.using(routed).insert({ author: user, title: 't', body: 'b' });
-    const loaded = await user.load(User.posts, { reload: true });
-    assert.equal(loaded.posts.cached.length, 1);
   } finally {
     await routed.close();
   }
 });
 
-test('a to-one reload reads the primary on a database with replicas', async () => {
+test('instance reload reads the primary for to-one and to-many', async () => {
   const db = getDatabase(), url = await replicaUrl();
   const routed = await connect(db.url, { replicas: [url], default: false, maxConnections: 2 });
   try {
@@ -332,6 +350,9 @@ test('a to-one reload reads the primary on a database with replicas', async () =
     // The replica holds user 1 as "Replica": a replica read gives the wrong row.
     const loaded = await post.load(Post.author, { reload: true });
     assert.equal(loaded.author.name, 'Primary');
+    // The to-many read of a reload goes to the primary too: the replica holds no post.
+    const withPosts = await user.load(User.posts, { reload: true });
+    assert.deepEqual(withPosts.posts.cached.map((p: { title: string }) => p.title), ['t']);
   } finally {
     await routed.close();
   }
@@ -480,10 +501,10 @@ test('query hooks see replica reads and session locks', async () => {
     assert.equal(await User.objects.using(routed.primary).count(), 0); // the primary view shares the hooks
     assert.deepEqual(events.map((e) => [e.sql.split(' ')[0], e.rows]), [['SELECT', 1], ['SELECT', 1]]);
     events.length = 0;
-    await routed.lock(4242, { session: true, timeout: 5 }, async () => {});
+    await routed.lock(4244, { session: true, timeout: 5 }, async () => {});
     assert.deepEqual(events.map((e) => [e.sql, e.rows]), [
-      ['SELECT pg_advisory_lock(4242)::text', 1],
-      ['SELECT pg_advisory_unlock(4242)::text', 1],
+      ['SELECT pg_advisory_lock(4244)::text', 1],
+      ['SELECT pg_advisory_unlock(4244)::text', 1],
     ]);
   } finally {
     off();

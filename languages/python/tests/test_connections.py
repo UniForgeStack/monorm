@@ -339,7 +339,7 @@ async def test_replica_disconnect_observation_rejects_a_leaked_session(monkeypat
         await assert_backends(None, "replica", 0, timeout=0)
 
 
-async def test_replicas_answer_reads_outside_a_transaction(clean):
+async def test_replicas_answer_reads_outside_a_transaction_writes_and_transactions_use_the_primary(clean):
     db = clean
     url, url2 = await replica_url(db), await replica_url(db, 2)
     routed = await monorm.connect(db.url, replicas=[url, url2], default=False, max_connections=2)
@@ -370,6 +370,11 @@ async def test_replicas_answer_reads_outside_a_transaction(clean):
         await routed.primary.close()
     await assert_backends(db, url, 0)
     await assert_backends(db, url2, 0)
+    # A replica that fails to open closes the pools opened before it.
+    before = await backends(db, url)
+    with pytest.raises(monorm.DatabaseError):
+        await monorm.connect(db.url, replicas=[url, url.rsplit("/", 1)[0] + "/monorm_s6_missing"], default=False)
+    await assert_backends(db, url, before)
 
 
 async def test_instance_reload_reads_the_primary_in_one_statement(clean, observe_queries):
@@ -426,7 +431,7 @@ DO $$ BEGIN
 END $$;
 """
 
-async def test_refresh_reads_the_primary_on_a_database_with_replicas(clean):
+async def test_reload_reads_the_primary_on_a_database_with_replicas(clean):
     db = clean
     url = await replica_url(db)
     routed = await monorm.connect(db.url, replicas=[url], default=False, max_connections=2)

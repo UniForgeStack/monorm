@@ -1,11 +1,38 @@
 """The host surface for extension language code."""
 
+import pytest
+from artifact_caps import has_extension
 from blog.models import Post, User
 
+import monorm
 from monorm import Delete, ext
 
 
-def test_the_hard_delete_statement_is_a_hard_delete_of_the_query_set():
+SOFT = (
+    'datasource db {\n  provider = "sqlite"\n}\n'
+    'model Doc {\n  id Int @id\n  title String\n  @@soft_delete.deleted_at("deleted", mode: "application")\n  @@map("ext_doc")\n}\n'
+)
+
+
+@pytest.mark.skipif(not has_extension("monorm.soft-delete"), reason="requires a selected soft-delete native artifact")
+async def test_the_hard_delete_statement_is_a_hard_delete_of_the_query_set():
+    registry = monorm.Registry()
+    Doc = monorm.loads(SOFT, registry=registry)["Doc"]
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
+    try:
+        await db.create_tables()
+        docs = Doc.objects.using(db)
+        await docs.insert_many([{"id": n, "title": f"d{n}"} for n in range(1, 5)])
+        # The plain delete is the soft delete: the row stays.
+        await docs.filter(Doc.id == 4).delete()
+        assert [d.id for d in await docs.all_with_deleted().order_by(Doc.id)] == [1, 2, 3, 4]
+        assert await ext.hard_delete_statement(docs.filter(Doc.id == 1)) == 1
+        [gone] = await ext.hard_delete_statement(docs.filter(Doc.id == 2)).returning()
+        assert gone.id == 2
+        assert [d.id for d in await docs.all_with_deleted().order_by(Doc.id)] == [3, 4]
+        assert [d.id for d in await docs] == [3]
+    finally:
+        await db.close()
     qs = User.objects.filter(User.id == 1)
     assert ext.hard_delete_statement(qs).inspect() == Delete.build(qs, hard=True).inspect()
 
@@ -26,7 +53,8 @@ def test_behavior_lookup_is_empty_without_records():
     assert ext.LANGUAGE_CONTRACT == 1
 
 
-def test_behavior_value_is_none_without_a_record():
+def test_a_behavior_value_is_absent_without_a_record():
+    assert ext.behavior_value("model_overrides", monorm.Registry()) is None
     assert ext.behavior_value("model_overrides") is None
 
 

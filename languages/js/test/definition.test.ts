@@ -7,7 +7,7 @@ const good = `model User {
   name String
 }`;
 
-test("definition prepares atomically and old models retain their snapshot", () => {
+test("definition is eager and failure is atomic", () => {
   const registry = new Registry();
   const User = loads(good, { registry })["User"]!;
   const prepared = registry.native();
@@ -17,9 +17,16 @@ test("definition prepares atomically and old models retain their snapshot", () =
   ], relations: [{ name: "missing", kind: "one", target: "Missing", from: "id", to: "id" }] }] }, { registry }), SchemaError);
   assert.deepEqual(registry.ir(), before);
   assert.equal(registry.native(), prepared);
+  assert.equal(registry.get("User").model, User);
+});
+
+test("existing models keep their prepared snapshot", () => {
+  const registry = new Registry();
+  const User = loads(good, { registry })["User"]!;
+  const snapshot = User._meta.registry.native();
   loads(`model Other {\n id Int @id\n}`, { registry });
-  assert.equal(User._meta.registry.native(), prepared);
-  assert.notEqual(registry.native(), prepared);
+  assert.equal(User._meta.registry.native(), snapshot);
+  assert.notEqual(registry.native(), snapshot);
 });
 
 test("definition owns input schema", () => {

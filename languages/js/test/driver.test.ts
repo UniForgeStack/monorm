@@ -32,8 +32,8 @@ test("unknown URL scheme", async () => {
   await assert.rejects(connect("mysql://root@localhost/x", { default: false }), (e: unknown) => e instanceof DatabaseError && /unsupported database URL scheme/.test(e.message));
 });
 
-test("an unknown sslmode", async () => {
-  await assert.rejects(connect(`${BASE}?sslmode=sometimes`, { default: false }), /unknown sslmode/);
+test("unknown sslmode", async () => {
+  await assert.rejects(connect(`${BASE}?sslmode=sometimes`, { default: false }), (e: unknown) => e instanceof DatabaseError && /unknown sslmode/.test((e as Error).message));
 });
 
 test("bad password fails at connect", async (t) => {

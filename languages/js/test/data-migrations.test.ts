@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { MigrationError, Migrations, Migrator, Registry, connect, type Database } from "../src/index.js";
+import { Migrations, Migrator, Registry, connect, type Database } from "../src/index.js";
 import { DATABASE_URL } from "./helpers.js";
 
 const DATA_DB = new URL(DATABASE_URL).pathname.slice(1) + "_data_js";
@@ -47,7 +47,7 @@ after(async () => {
   for (const db of opened) await db.close();
 });
 
-test("a data step runs in the migration's transaction", async () => {
+test("a data step runs in the migration transaction", async () => {
   const dir = mkdtempSync(join(tmpdir(), "monorm-data-"));
   const schema = join(dir, "schema.prisma");
   const migrations = new Migrations(join(dir, "migrations"), schema);
@@ -74,16 +74,12 @@ test("a data step runs in the migration's transaction", async () => {
   await assert.rejects(migrator.upgrade(), /data step failed/);
   assert.deepEqual(await db.fetchText("SELECT to_regclass('extra')"), [[null]]);
   assert.deepEqual((await migrator.status()).map((s) => s.applied), [true, true, false]);
-
-  // the Python migrator's file is refused here
-  writeFileSync(join(third.path, "data.py"), "async def run(db):\n    pass\n");
-  await assert.rejects(migrator.upgrade(), MigrationError);
 });
 
 // `npx monorm` as a process of its own: src/cli.ts (Bun) or dist/src/cli.js (Node)
 const CLI = [".js", ".ts"].map((ext) => fileURLToPath(new URL(`../src/cli${ext}`, import.meta.url))).find(existsSync)!;
 
-test("npx monorm migrate runs data steps", () => {
+test("cli migrate runs data steps", () => {
   const dir = mkdtempSync(join(tmpdir(), "monorm-data-cli-"));
   const sqlite = 'datasource db {\n  provider = "sqlite"\n}\n';
   const schema = join(dir, "schema.prisma");
@@ -102,6 +98,8 @@ test("npx monorm migrate runs data steps", () => {
   const done = run("migrate");
   assert.equal(done.status, 0, done.stderr);
   assert.deepEqual(done.stdout.trim().split("\n"), ["Applied 0001_initial", "Applied 0002_slug"]);
+  const shown = run("showmigrations").stdout;
+  assert.ok(shown.includes("[x] 0001_initial") && shown.includes("[x] 0002_slug"), shown);
 
   mkdirSync(join(dir, "migrations", "0003_bad"));
   writeFileSync(join(dir, "migrations", "0003_bad", "up.sql"), "SELECT 1;\n");

@@ -1,27 +1,43 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { connect } from "../src/index.js";
+import { connect, loads, Registry } from "../src/index.js";
+import { hasExtension } from "./artifact-caps.js";
 import { behaviorField, behaviorRecords, behaviorValue, canonicalHash, databaseOf, hardDeleteStatement, jsonDiff, LANGUAGE_CONTRACT } from "../src/ext.js";
 import { Author, sqliteRegistry } from "./sqlite/models.js";
 import { Post, User } from "./blog/models.js";
 
-test("the hard-delete statement is a delete of the query set", async () => {
-  const db = await connect("sqlite://:memory:", { registry: sqliteRegistry, default: false });
+const soft = { skip: !hasExtension("monorm.soft-delete") };
+const SOFT = `datasource db { provider = "sqlite" }
+model Doc {
+  id Int @id
+  title String
+  @@soft_delete.deleted_at("deleted", mode: "application")
+  @@map("ext_doc")
+}`;
+
+test("the hard-delete statement is a hard delete of the query set", soft, async () => {
+  const registry = new Registry();
+  const { Doc } = loads(SOFT, { registry }) as any;
+  const db = await connect("sqlite://:memory:", { registry, default: false });
   try {
     await db.createTables();
-    const authors = Author.objects.using(db);
-    await authors.insertMany([1, 2, 3].map((n) => ({ email: `a${n}`, name: `A${n}` })));
-    assert.equal(await hardDeleteStatement(authors.filter(Author.email.eq("a1"))), 1);
-    const [gone] = (await hardDeleteStatement(authors.filter(Author.email.eq("a2"))).returning()) as { email: string }[];
-    assert.equal(gone!.email, "a2");
-    assert.deepEqual((await authors.all()).map((a) => a.email), ["a3"]);
+    const docs = Doc.objects.using(db);
+    await docs.insertMany([1, 2, 3, 4].map((n) => ({ id: n, title: `d${n}` })));
+    // The plain delete is the soft delete: the row stays.
+    await docs.filter(Doc.id.eq(4)).delete();
+    assert.deepEqual((await docs.allWithDeleted().orderBy(Doc.id)).map((d: any) => d.id), [1, 2, 3, 4]);
+    assert.equal(await hardDeleteStatement(docs.filter(Doc.id.eq(1))), 1);
+    const [gone] = (await hardDeleteStatement(docs.filter(Doc.id.eq(2))).returning()) as { id: number }[];
+    assert.equal(gone!.id, 2);
+    assert.deepEqual((await docs.allWithDeleted().orderBy(Doc.id)).map((d: any) => d.id), [3, 4]);
+    assert.deepEqual((await docs.all()).map((d: any) => d.id), [3]);
   } finally {
     await db.close();
   }
   assert.equal(LANGUAGE_CONTRACT, 1);
 });
 
-test("a behavior value is undefined without a record", () => {
+test("a behavior value is absent without a record", () => {
   assert.equal(behaviorValue("model_overrides", sqliteRegistry), undefined);
   assert.equal(behaviorValue("model_overrides"), undefined);
 });

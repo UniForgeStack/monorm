@@ -62,13 +62,13 @@ async def test_sqlite_fetch_parameters_of_bool_float_date_and_list(lite):
     assert row == {"b": 1, "f": 1.5, "d": "2026-01-02", "l": '[1,"x"]'}
 
 
-async def test_sqlite_not_null_check_and_unique_have_a_sqlstate(lite):
+async def test_sqlite_not_null_and_check_give_a_sqlstate_a_unique_error_has_no_constraint(lite):
     await lite.execute(
         "CREATE TABLE fx (id integer PRIMARY KEY, n text NOT NULL, c integer CHECK (c > 0), u text UNIQUE)"
     )
     with pytest.raises(monorm.IntegrityError) as e:
         await lite.execute("INSERT INTO fx (id, n) VALUES (1, NULL)")
-    assert e.value.sqlstate == "23502"
+    assert (e.value.sqlstate, e.value.constraint) == ("23502", None)
     with pytest.raises(monorm.IntegrityError) as e:
         await lite.execute("INSERT INTO fx (id, n, c) VALUES (1, 'a', 0)")
     assert e.value.sqlstate == "23514"

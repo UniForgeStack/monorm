@@ -5,7 +5,7 @@ import { test } from "node:test";
 
 import { connect, loads, Registry } from "../src/index.js";
 
-test("like on a char column compares the text: postgres", async () => {
+test("like compares the text", async () => {
   const registry = new Registry();
   const { Padded } = loads('model Padded {\n  id Int @id\n  k String @db.Char(6)\n  @@map("char_like_js_padded")\n}', { registry }) as any;
   const db = await connect(process.env["ORM_TEST_DATABASE_URL"] ?? "postgres://postgres:postgres@localhost/orm_test", { registry, default: false });
@@ -20,7 +20,11 @@ test("like on a char column compares the text: postgres", async () => {
     assert.deepEqual(await ids(k.ilike("%B")), [1]);
     assert.deepEqual(await ids(k.contains(" ")), [3]);
     assert.deepEqual(await ids(k.startsWith("ab")), [1, 2]);
+    assert.deepEqual(await ids(k.icontains("C")), [2, 3]);
     assert.deepEqual(await ids(k.like("ab").not()), [2, 3]);
+    assert.deepEqual(await ids(k.ilike("%B").not()), [2, 3]);
+    const sql = qs.filter(k.like("ab")).sql();
+    assert.ok(sql.includes("CAST(") && sql.includes("AS text"));
   } finally {
     await db.dropTables(); await db.close();
   }

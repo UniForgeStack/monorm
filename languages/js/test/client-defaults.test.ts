@@ -28,6 +28,8 @@ test("client defaults make fields optional but are not database defaults", () =>
   const fields = Item._meta.fieldList;
   assert.ok(fields.every((f) => f.hasInsertDefault));
   assert.deepEqual(fields.filter((f) => f.hasServerValue).map((f) => f.name), ["status"]);
+  const id = (Item._meta.ir as { fields: { name: string; client_default?: unknown }[] }).fields.find((f) => f.name === "id")!;
+  assert.deepEqual(id.client_default, { call: "uuid7" });
 });
 
 for (const dialect of ["sqlite", "postgres"]) {

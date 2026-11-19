@@ -93,7 +93,7 @@ def test_the_extensions_bundled_with_monorm_need_no_dependency() -> None:
     assert resolve_extensions() == found
 
 
-def test_an_outside_package_with_a_built_in_id_names_the_built_in_copy(site: Path) -> None:
+def test_an_outside_package_with_a_bundled_id_fails_and_names_the_bundled_copy(site: Path) -> None:
     built_in = install(site, "monorm-fixture", "monorm_fixture", ident="monorm.fixture", owner="monorm")
     outside = install(site, "acme-fixture-two", "acme_fixture_two", ident="monorm.fixture")
     with pytest.raises(SchemaError) as error:
@@ -253,6 +253,10 @@ async def test_packaged_generated_models_use_runtime_without_the_pass_library(si
         monorm.define(schema, registry=monorm.Registry(), extensions={"acme.outside": acme_outside})
     schema["behavior"]["packages"]["acme.outside"]["languages"] = ["typescript"]
     with pytest.raises(SchemaError, match="does not support this language binding"):
+        monorm.define(schema, registry=monorm.Registry(), extensions={"acme.outside": acme_outside})
+    schema["behavior"]["packages"]["acme.outside"]["languages"] = ["python"]
+    schema["behavior"]["packages"]["acme.outside"]["databases"] = ["postgres"]
+    with pytest.raises(SchemaError, match="does not support sqlite"):
         monorm.define(schema, registry=monorm.Registry(), extensions={"acme.outside": acme_outside})
 
 

@@ -30,7 +30,7 @@ model Item {
 URL = os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
 
 
-def test_client_defaults_make_fields_optional_but_stay_out_of_the_database_default():
+def test_client_defaults_make_fields_optional_but_are_not_database_defaults():
     Item = monorm.loads(SOURCE, registry=monorm.Registry())["Item"]
     for name in ("id", "token", "status", "at", "meta", "n", "note", "prisma"):
         assert Item._meta.fields[name].has_insert_default

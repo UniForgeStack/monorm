@@ -8,9 +8,9 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, type TestContext } from "node:test";
-import { connect, define, IntegrityError, load, loads, param, QueryError, Registry, SchemaError, scope, type SchemaIR } from "../src/index.js";
+import { connect, define, IntegrityError, load, loads, Migrations, param, QueryError, Registry, SchemaError, scope, type SchemaIR } from "../src/index.js";
 import { native } from "../src/native.js";
-import { resolveExtensions } from "../src/packages.js";
+import { hookPackages, resolveExtensions } from "../src/packages.js";
 import { hasExtension } from "./artifact-caps.js";
 
 // `npx monorm` as a process of its own: src/cli.ts (Bun) or dist/src/cli.js (Node)
@@ -128,47 +128,56 @@ test("an outside package with a bundled id fails and names the bundled copy", (t
   const clash = pkg(root, "acme-locking", "monorm.locking");
   project(root, { "acme-locking": "1.0.0" });
   assert.throws(() => resolveExtensions(join(root, "schema.prisma")), (e: unknown) => e instanceof SchemaError
-    && e.message.includes("installed twice") && e.message.includes(`${bundled} (bundled with monorm)`) && e.message.includes(clash) && e.message.includes("acme-locking"));
+    && e.message.includes("installed twice") && e.message.includes(`${bundled} (bundled with monorm)`) && e.message.includes(clash) && e.message.includes("uninstall the package `acme-locking`"));
 });
 
 const OUTSIDE = resolve(process.cwd(), "../../tests/outside-extension");
 
-/** The library of `tests/outside-extension`, built in its own workspace. */
-function outsideLibrary(t: TestContext): string {
+let builtLibrary: string | undefined;
+
+/** The library of `tests/outside-extension`, built once in its own workspace. */
+function outsideLibrary(_t: TestContext): string {
+  if (builtLibrary !== undefined) return builtLibrary;
   const target = realpathSync(mkdtempSync(join(tmpdir(), "monorm-outside-")));
-  t.after(() => rmSync(target, { recursive: true, force: true }));
+  process.on("exit", () => rmSync(target, { recursive: true, force: true }));
   execFileSync("cargo", ["build", "--offline", "--quiet", "--manifest-path", join(OUTSIDE, "Cargo.toml"), "--target-dir", target], { stdio: "inherit" });
   const file = readdirSync(join(target, "debug")).find((f) => /^liboutside_extension\.(dylib|so|dll)$/.test(f));
   assert.ok(file, "the outside library is built");
-  return join(target, "debug", file);
+  return (builtLibrary = join(target, "debug", file));
 }
 
-test("an installed outside library lowers the schema through load(), loads() and the command line", { timeout: 300_000 }, async (t) => {
-  const root = directory(t);
-  const manifest = pkg(root, "acme-outside", "acme.outside", false) + "/monorm-extension.toml";
-  write(manifest, readFileSync(join(OUTSIDE, "monorm-extension.toml"), "utf8"));
-  const library = outsideLibrary(t);
-  copyFileSync(library, join(dirname(manifest), library.slice(library.lastIndexOf("/") + 1)));
-  project(root, { "acme-outside": "1.0.0" });
-  const schema = write(join(root, "schema.prisma"), 'datasource db { provider = "sqlite" }\nmodel Post {\n id Int @id\n @@outside.tag("blue")\n}\n');
-  const { Post } = load(schema, { registry: new Registry() }) as Record<string, any>;
+const TAGGED = 'datasource db { provider = "sqlite" }\nmodel Post {\n id Int @id\n @@outside.tag("blue")\n}\n';
+const toModule = (code: string) => ts.transpileModule(code, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
+
+test("an installed outside library lowers the schema through load and loads", { timeout: 300_000 }, async (t) => {
+  const { root, manifest } = installOutside(t);
+  const schema = write(join(root, "schema.prisma"), TAGGED);
+  // `loads()` has no file, so the extensions come from the working directory.
+  const cwd = process.cwd();
+  process.chdir(root);
+  t.after(() => process.chdir(cwd));
+  const loaded = loads(TAGGED, { registry: new Registry() });
+  assert.ok(loaded.Post?._meta.fields.has("tag"), "loads() finds the library from the working directory");
+  assert.match((loaded.Post as any).objects.tagged().sql(), /LIMIT 7/);
+  const registry = new Registry();
+  const { Post } = load(schema, { registry }) as Record<string, any>;
   assert.ok(Post?._meta.fields.has("tag"), "the pass adds the field");
   assert.match(Post.objects.tagged().sql(), /LIMIT 7/);
-  const db = await connect("sqlite://:memory:", { default: false, registry: Post._meta.registry });
+  const db = await connect("sqlite://:memory:", { default: false, registry });
   try {
     await db.createTables();
     const row = await Post.objects.using(db).insert({ id: 1, tag: "blue" });
     assert.equal(row.tagLabel(), "blue");
   } finally { await db.close(); }
 
-  // `loads()` has no file, so the extensions come from the working directory.
-  const cwd = process.cwd();
-  process.chdir(root);
-  t.after(() => process.chdir(cwd));
-  const loaded = loads('datasource db { provider = "sqlite" }\nmodel Post {\n id Int @id\n @@outside.tag("blue")\n}\n', { registry: new Registry() });
-  assert.ok(loaded.Post?._meta.fields.has("tag"), "loads() finds the library from the working directory");
-  assert.match((loaded.Post as any).objects.tagged().sql(), /LIMIT 7/);
+  const original = readFileSync(manifest, "utf8");
+  writeFileSync(manifest, original.replace('languages = ["python", "typescript"]', 'languages = ["python"]'));
+  assert.throws(() => load(schema, { registry: new Registry() }), /does not support this language binding/);
+});
 
+test("the command line lowers the schema with an installed outside library", { timeout: 300_000 }, (t) => {
+  const { root, manifest } = installOutside(t);
+  write(join(root, "schema.prisma"), TAGGED);
   // The command line resolves the extensions from the schema file, in a process of its own.
   const run = (...args: string[]) => {
     const done = spawnSync(process.execPath, [CLI, ...args], { cwd: root, encoding: "utf8", env: { ...process.env, MONORM_DATABASE_URL: "" } });
@@ -180,17 +189,31 @@ test("an installed outside library lowers the schema through load(), loads() and
   assert.ok(run("sqlmigrate", "1").includes('"tag"'), "the migration adds the column of the pass");
   const runtime = new URL(`../src/index.${CLI.endsWith(".ts") ? "ts" : "js"}`, import.meta.url).href;
   run("generate", "--import", runtime);
+  run("check");
+  const original = readFileSync(manifest, "utf8");
+  writeFileSync(manifest, original + "\n# changed after generation\n");
+  const stale = spawnSync(process.execPath, [CLI, "check"], { cwd: root, encoding: "utf8" });
+  assert.equal(stale.status, 1, stale.stderr);
+  assert.match(stale.stderr, /acme.outside/);
+  assert.match(stale.stderr, /run `monorm generate`/);
+  assert.match(stale.stderr, /locked/);
+  assert.match(stale.stderr, /installed/);
+  writeFileSync(manifest, original);
+  run("check");
+});
+
+test("packaged generated models use runtime without the pass library", { timeout: 300_000 }, async (t) => {
+  const { root, manifest, library } = installOutside(t);
+  write(join(root, "schema.prisma"), TAGGED);
+  const runtime = new URL(`../src/index.${CLI.endsWith(".ts") ? "ts" : "js"}`, import.meta.url).href;
+  const generate = spawnSync(process.execPath, [CLI, "generate", "--import", runtime], { cwd: root, encoding: "utf8", env: process.env });
+  assert.equal(generate.status, 0, generate.stderr);
   // Compiled static extensions can write sources here; packaged extensions cannot.
   assert.equal(existsSync(join(root, "monorm-ext", "acme-outside")), false);
   const generated = readFileSync(join(root, "models.ts"), "utf8");
-  write(join(root, "models.mjs"), ts.transpileModule(generated, { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText);
+  write(join(root, "models.mjs"), toModule(generated));
   const embedded = JSON.parse(generated.match(/const SCHEMA: SchemaIR = ([\s\S]+?);\n/)![1]!) as SchemaIR;
   const stamped = embedded.behavior as { packages: Record<string, { languages: string[]; databases: string[] }> };
-  stamped.packages["acme.outside"]!.languages = ["python"];
-  assert.throws(() => define(embedded, { registry: new Registry() }), /does not support this language binding/);
-  stamped.packages["acme.outside"]!.languages = ["typescript"];
-  stamped.packages["acme.outside"]!.databases = ["postgres"];
-  assert.throws(() => define(embedded, { registry: new Registry() }), /does not support sqlite/);
   const execute = () => spawnSync(process.execPath, ["--input-type=module", "-e", `import { Post } from './models.mjs'; if (!Post.objects.tagged().sql().includes('LIMIT 7')) throw Error('missing runtime method');`], { cwd: root, encoding: "utf8", env: process.env });
   const equal = execute();
   assert.equal(equal.status, 0, equal.stderr);
@@ -200,8 +223,7 @@ test("an installed outside library lowers the schema through load(), loads() and
   const hash = createHash("sha256").update(readFileSync(manifest)).digest("hex");
   assert.ok(originalRuntime.includes(hash), "the hand-written runtime constant hashes the raw manifest");
   // Starting generated models must work even with no pass library installed.
-  const installedLibrary = join(dirname(manifest), library.slice(library.lastIndexOf("/") + 1));
-  rmSync(installedLibrary);
+  rmSync(library);
   for (const code of [originalRuntime.replace(hash, "changed"), originalRuntime.replace(/exports\.manifestHash = "[a-f0-9]+";/, "delete exports.manifestHash;")]) {
     writeFileSync(runtimeFile, code);
     const staleRuntime = execute();
@@ -210,28 +232,27 @@ test("an installed outside library lowers the schema through load(), loads() and
     assert.match(staleRuntime.stderr, /run `monorm generate`/);
   }
   writeFileSync(runtimeFile, originalRuntime);
-  copyFileSync(library, installedLibrary);
-  run("check");
-  const original = readFileSync(manifest, "utf8");
-  writeFileSync(manifest, original + "\n# changed after generation\n");
-  const stale = spawnSync(process.execPath, [CLI, "check"], { cwd: root, encoding: "utf8" });
-  assert.equal(stale.status, 1, stale.stderr);
-  assert.match(stale.stderr, /acme.outside/);
-  assert.match(stale.stderr, /run `monorm generate`/);
-  writeFileSync(manifest, original);
-  run("check");
+  assert.throws(() => define(embedded, { registry: new Registry(), extensions: { "acme.outside": { module: {} } } }), /extension acme\.outside has no OutsideQuerySet; run `monorm generate`/);
+  stamped.packages["acme.outside"]!.languages = ["python"];
+  assert.throws(() => define(embedded, { registry: new Registry() }), /does not support this language binding/);
+  stamped.packages["acme.outside"]!.languages = ["typescript"];
+  stamped.packages["acme.outside"]!.databases = ["postgres"];
+  assert.throws(() => define(embedded, { registry: new Registry() }), /does not support sqlite/);
+});
 
-  writeFileSync(manifest, original.replace('languages = ["python", "typescript"]', 'languages = ["python"]'));
-  assert.throws(() => load(schema, { registry: new Registry() }), /does not support this language binding/);
-  writeFileSync(manifest, original);
-
+test("hash-only package is imported by generated models", { timeout: 300_000 }, (t) => {
+  const { root, manifest } = installOutside(t);
+  write(join(root, "schema.prisma"), TAGGED);
+  const runtime = new URL(`../src/index.${CLI.endsWith(".ts") ? "ts" : "js"}`, import.meta.url).href;
   // Even a package with no runtime classes is imported for its manifest hash.
-  writeFileSync(manifest, original.split("\n[python]")[0]!);
+  writeFileSync(manifest, readFileSync(manifest, "utf8").split("\n[python]")[0]!);
   const hashOnly = createHash("sha256").update(readFileSync(manifest)).digest("hex");
-  writeFileSync(runtimeFile, `exports.manifestHash = "${hashOnly}";\n`);
-  run("generate", "--import", runtime);
-  write(join(root, "models.mjs"), ts.transpileModule(readFileSync(join(root, "models.ts"), "utf8"), { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText);
-  rmSync(installedLibrary);
+  writeFileSync(join(dirname(manifest), "index.cjs"), `exports.manifestHash = "${hashOnly}";\n`);
+  const generate = spawnSync(process.execPath, [CLI, "generate", "--import", runtime], { cwd: root, encoding: "utf8", env: process.env });
+  assert.equal(generate.status, 0, generate.stderr);
+  write(join(root, "models.mjs"), toModule(readFileSync(join(root, "models.ts"), "utf8")));
+  const library = readdirSync(dirname(manifest)).find((f) => /^liboutside_extension\.(dylib|so|dll)$/.test(f));
+  rmSync(join(dirname(manifest), library!));
   const noClasses = spawnSync(process.execPath, ["--input-type=module", "-e", `import { Post } from './models.mjs'; if (typeof Post.objects.tagged !== 'undefined') throw Error('unexpected mixin');`], { cwd: root, encoding: "utf8", env: process.env });
   assert.equal(noClasses.status, 0, noClasses.stderr);
   assert.doesNotMatch(noClasses.stderr, /OrmStaleModelsWarning/);
@@ -283,19 +304,18 @@ test("a prepared insert is refused for a model with change-set hooks", { timeout
   } finally { await db.close(); }
 });
 
-test("hooks of an outside library: one error prefix, a caller value for a hook 4 field, and the unbound native schema", { timeout: 300_000 }, async (t) => {
-  const root = directory(t);
-  const manifest = pkg(root, "acme-outside", "acme.outside", false) + "/monorm-extension.toml";
-  write(manifest, readFileSync(join(OUTSIDE, "monorm-extension.toml"), "utf8"));
-  const library = outsideLibrary(t);
-  copyFileSync(library, join(dirname(manifest), library.slice(library.lastIndexOf("/") + 1)));
-  project(root, { "acme-outside": "1.0.0" });
+async function guardedNotes(t: TestContext) {
+  const { root } = installOutside(t);
   const schema = write(join(root, "schema.prisma"), GUARDED);
   const { Note } = load(schema, { registry: new Registry() }) as Record<string, any>;
   const db = await connect("sqlite://:memory:", { default: false, registry: Note._meta.registry });
+  await db.createTables();
+  return { Note, db, notes: Note.objects.using(db) };
+}
+
+test("a hook error names the model and field once", { timeout: 300_000 }, async (t) => {
+  const { db, notes } = await guardedNotes(t);
   try {
-    await db.createTables();
-    const notes = Note.objects.using(db);
     await scope({ shop: 1, user: "ann" }, async () => {
       const failure = async (row: Record<string, unknown>) => {
         try { await notes.insert(row); } catch (error) { return error as Error; }
@@ -307,6 +327,14 @@ test("hooks of an outside library: one error prefix, a caller value for a hook 4
       assert.ok(empty.message.endsWith("Note.text: must not be empty"), empty.message);
       assert.ok(ordered.message.endsWith("Note: start 3 must be before end 1"), ordered.message);
       assert.doesNotMatch(`${empty.message}${ordered.message}`, /extension/);
+    });
+  } finally { await db.close(); }
+});
+
+test("a value that the caller sets goes through the hook that assigns the field", { timeout: 300_000 }, async (t) => {
+  const { Note, db, notes } = await guardedNotes(t);
+  try {
+    await scope({ shop: 1, user: "ann" }, async () => {
       // An insert keeps the value that the caller supplies; the hook assigns on update only.
       await notes.insertMany([1, 2, 3].map((id) => ({ id, text: "a", start: 1, end: 2, shopId: 1, updatedBy: "mallory" })));
       assert.deepEqual((await notes.all()).map((n: any) => n.updatedBy), ["mallory", "mallory", "mallory"]);
@@ -319,12 +347,18 @@ test("hooks of an outside library: one error prefix, a caller value for a hook 4
       await assert.rejects(notes.filter(Note.id.eq(1)).update({ updatedBy: "eve" }), /no user in the request scope/);
     });
   } finally { await db.close(); }
+});
 
+test("a native schema without package directories leaves the hook bindings unresolved", { timeout: 300_000 }, (t) => {
+  const { root } = installOutside(t);
+  const schema = write(join(root, "schema.prisma"), GUARDED);
   // Migrations and code generation bind no hook, so the native schema needs no package directory; `define()` passes them.
-  const ir = native().compileSchemaFile(schema, {}, resolveExtensions(schema));
+  const ir = native().compileSchemaFile(schema, {}, resolveExtensions(schema)) as string;
   const Schema = native().Schema;
   assert.doesNotThrow(() => new Schema(ir));
   assert.throws(() => new Schema(ir, {}), /acme\.outside: the schema binds its hooks, but no package directory was given/);
+  assert.ok(new Schema(ir, hookPackages((JSON.parse(ir) as SchemaIR).behavior as Parameters<typeof hookPackages>[0], schema)));
+  assert.ok(new Migrations(join(root, "migrations"), schema).make().length > 0);
 });
 
 test("ESM-only and dual packages share runtime identity across generated models, load and loads", { timeout: 300_000 }, async (t) => {

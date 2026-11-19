@@ -101,7 +101,7 @@ test("fromNative keeps the stack frames and not the lines of a multi-line messag
   assert.equal(lines.filter((l) => l.includes("second line")).length, 1);
 });
 
-test("sqlite: NOT NULL and CHECK give a sqlstate, a unique error has no constraint", async () => {
+test("sqlite: NOT NULL and CHECK give a sqlstate, a UNIQUE error has no constraint", async () => {
   const db = await lite();
   try {
     await db.execute("CREATE TABLE fx (id integer PRIMARY KEY, n text NOT NULL, c integer CHECK (c > 0), u text UNIQUE)");
@@ -136,7 +136,8 @@ test("postgres: NOT NULL and CHECK give a sqlstate", async () => {
   }
 });
 
-test("fetch parameters of the types bool, float, date and list", async () => {
+test("postgres: fetch parameters of bool, float, date and list", async () => {
+  // JS has no date-only type: a Date binds as timestamptz.
   const day = new Date("2026-01-02T00:00:00Z");
   const pg = await single();
   try {
@@ -145,10 +146,14 @@ test("fetch parameters of the types bool, float, date and list", async () => {
   } finally {
     await pg.close();
   }
+});
+
+test("sqlite: fetch parameters of bool, float, date and list", async () => {
+  const day = new Date("2026-01-02T00:00:00Z");
   const db = await lite();
   try {
-    const [row] = await db.fetch("SELECT ? AS b, ? AS f, ? AS l", true, 1.5, [1, "x"]);
-    assert.deepEqual(row, { b: 1n, f: 1.5, l: '[1,"x"]' });
+    const [row] = await db.fetch("SELECT ? AS b, ? AS f, ? AS d, ? AS l", true, 1.5, day, [1, "x"]);
+    assert.deepEqual(row, { b: 1n, f: 1.5, d: "2026-01-02 00:00:00", l: '[1,"x"]' });
   } finally {
     await db.close();
   }

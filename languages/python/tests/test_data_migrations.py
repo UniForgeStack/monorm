@@ -73,7 +73,7 @@ def write_versions(tmp_path: Path) -> Migrations:
     return migrations
 
 
-async def test_data_step_runs_in_the_migration_transaction(tmp_path):
+async def test_a_data_step_runs_in_the_migration_transaction(tmp_path):
     migrations = write_versions(tmp_path)
     db = await monorm.connect(DATA_URL, max_connections=2, default=False, registry=Registry())
     try:
@@ -98,10 +98,18 @@ async def test_data_step_runs_in_the_migration_transaction(tmp_path):
             await migrator.upgrade()
         assert await db._fetch_text("SELECT to_regclass('extra')") == [(None,)]
         assert [s.applied for s in await migrator.status()] == [True, True, False]
+    finally:
+        await db.close()
 
-        (third.path / "data.py").write_text("def run(db):\n    pass\n")
+
+async def test_a_data_step_with_a_sync_run_is_refused(tmp_path):
+    migrations = write_versions(tmp_path)
+    (migrations.directory / "0002_slug" / "data.py").write_text("def run(db):\n    pass\n")
+    db = await monorm.connect(DATA_URL, max_connections=2, default=False, registry=Registry())
+    try:
+        await db.execute("DROP TABLE IF EXISTS author, extra, monorm_migrations CASCADE")
         with pytest.raises(MigrationError, match="needs `async def run"):
-            await migrator.upgrade()
+            await Migrator(db, migrations).upgrade()
     finally:
         await db.close()
 
@@ -115,7 +123,7 @@ async def run(db):
 """
 
 
-def test_python_m_orm_migrate_runs_data_steps(tmp_path):
+def test_cli_migrate_runs_data_steps(tmp_path):
     schema = tmp_path / "schema.prisma"
     migrations = Migrations(tmp_path / "migrations", schema)
     schema.write_text(SQLITE + V1)

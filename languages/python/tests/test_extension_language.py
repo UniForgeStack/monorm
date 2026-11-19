@@ -223,16 +223,33 @@ class AInstance:
     assert tag.to_dict() == {"id": 2, "calls": ["a"]}
 
 
-def test_user_query_set_comes_first(project, monkeypatch):
-    modules, _ = install(project, monkeypatch, ("ext.a", "ext_a", {"__init__.py": BASE}, {}))
+def test_the_user_query_set_class_comes_first_then_the_extension_classes(project, monkeypatch):
+    modules, _ = install(
+        project,
+        monkeypatch,
+        ("ext.a", "ext_a", {"__init__.py": BASE}, {}),
+        (
+            "ext.b",
+            "ext_b",
+            {"__init__.py": SECOND},
+            {
+                "query_set": "BQuerySet",
+                "instance": "BInstance",
+                "query_set_members": ["chain"],
+                "instance_members": ["label"],
+                "overrides": ["chain", "label"],
+            },
+        ),
+    )
 
     class Mine(monorm.QuerySet):
         def chain(self):
             return ["mine", *super().chain()]
 
-    Post = build(modules, {"Post": ("ext.a",)})["Post"]
+    Post = build(modules, {"Post": ("ext.a", "ext.b")})["Post"]
     monorm.use_query_set(Post, Mine)
-    assert Post.objects.chain() == ["mine", "a"]
+    assert Post.objects.chain() == ["mine", "b", "a"]
+    assert isinstance(Post.objects, Mine)
 
 
 def test_an_undeclared_collision_fails_at_define(project, monkeypatch):
