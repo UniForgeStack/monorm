@@ -5,7 +5,9 @@ import { test } from "node:test";
 
 import { connect, DecodeError, loads, NotLoaded, Registry, type Database } from "../src/index.js";
 import { extraMicros, keepMicros } from "../src/date-micros.js";
+import { Decimal } from "../src/decimal.js";
 import { DATABASE_URL } from "./helpers.js";
+import { Address as ExampleAddress, Geo as ExampleGeo, Shop as ExampleShop } from "./nested/models.js";
 
 const SCHEMA = `
 type Geo {
@@ -298,3 +300,58 @@ for (const kind of ["postgres", "sqlite"] as const) {
     }
   });
 }
+
+test("JSON values keep decimal, bigint and datetime exact", () => {
+  // Value conversion needs no database: BigInt above 2**53 and Decimal go as text, DateTime as UTC text.
+  const registry = new Registry();
+  loads(
+    SQLITE +
+      `
+type Money {
+  amount Decimal
+  big    BigInt
+  at     DateTime
+}
+model Wallet {
+  id    Int   @id
+  money Money @storage(json)
+}
+`,
+    { registry },
+  );
+  const nt = registry.nestedType("Money");
+  const out = nt.toJson({ amount: new Decimal("12345678901234567890.123456789"), big: 2n ** 62n, at: WHEN }, "Wallet.money");
+  assert.deepEqual(out, { amount: "12345678901234567890.123456789", big: String(2n ** 62n), at: "2024-01-02T03:04:05.000000Z" });
+  const back = nt.fromJson(out, "Wallet", "money") as Any;
+  assert.ok(back.amount.equals(new Decimal("12345678901234567890.123456789")));
+  assert.equal(back.big, 2n ** 62n);
+  assert.equal(back.at.getTime(), WHEN.getTime());
+  // the stored text of either storage decodes: PostgreSQL adds fraction digits, SQLite keeps what was written
+  assert.equal((nt.fromJson({ ...out, at: "2024-01-02T03:04:05Z" }, "Wallet", "money") as Any).at.getTime(), WHEN.getTime());
+  assert.throws(() => nt.fromJson({ ...out, amount: "abc" }, "Wallet", "money"), (e: unknown) => e instanceof DecodeError && /amount/.test(e.message));
+});
+
+test("generated value classes", () => {
+  const address = new ExampleAddress({ city: "Oslo", big: 1n, opened: WHEN, geo: new ExampleGeo({ lat: 1.5 }) });
+  assert.equal(address.floor, 7);
+  assert.equal(address.geo?.lat, 1.5);
+  assert.equal(address.geo?.lng, null);
+  assert.deepEqual(address.toJSON()["city"], "Oslo");
+  assert.equal(typeof ExampleShop.address.geo.lat.eq, "function");
+});
+
+test("nested types in a non-empty registry", async () => {
+  const registry = new Registry();
+  loads(SQLITE + "model Plain { id Int @id }", { registry });
+  const classes = loads(SQLITE + SCHEMA, { registry }) as Any;
+  assert.equal(typeof classes["CShop"].address.city.eq, "function");
+  assert.ok(registry.nestedType("Address"));
+  const db = await connect("sqlite://:memory:", { registry, default: false });
+  try {
+    await db.createTables();
+    await classes["CShop"].objects.using(db).insert({ id: 1, address: { city: "Oslo", big: 1n, open: true, opened: WHEN } });
+    assert.equal((await classes["CShop"].objects.using(db).get(classes["CShop"].id.eq(1))).address.city, "Oslo");
+  } finally {
+    await db.close();
+  }
+});
