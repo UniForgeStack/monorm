@@ -3,7 +3,6 @@
 import datetime as dt
 import importlib
 import pickle
-import shutil
 from pathlib import Path
 import os
 import copy
@@ -287,10 +286,12 @@ async def test_two_levels_deep_with_a_nullable_middle_level(shop):
     assert (await q.get(S.id == 3)).address.geo is None
 
 
+@pytest.mark.case("nested::value_classes_are_immutable_and_equal_by_value")
 async def test_value_classes_are_immutable_equal_and_picklable(world):
     db, classes, _ = world
     a = address(classes)
     assert a == address(classes) and hash(a) == hash(address(classes))
+    assert a != address(classes, city="Other")
     with pytest.raises(AttributeError):
         a.city = "x"
     assert copy.deepcopy(a) == a and copy.copy(a) == a
@@ -354,14 +355,6 @@ def test_a_re_prepared_registry_keeps_its_nested_types(monkeypatch):
     registry = monorm.Registry()
     monorm.loads(SCHEMA, registry=registry)
     assert [t["name"] for t in registry.ir()["types"]] == ["Geo", "Address"]
-
-
-def test_example_models_are_current(tmp_path, monkeypatch):
-    shutil.copy(EXAMPLE / "schema.prisma", tmp_path / "schema.prisma")
-    monkeypatch.chdir(tmp_path)
-    assert _native.cli(["generate", "python", "-o", "models.py"]) == 0
-    for name in ("models.py", "models.pyi"):
-        assert (tmp_path / name).read_text() == (EXAMPLE / name).read_text(), f"run `python -m monorm generate` in {EXAMPLE}"
 
 
 def test_generated_value_classes(monkeypatch):

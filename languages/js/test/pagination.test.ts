@@ -114,7 +114,7 @@ for (const dialect of ["sqlite", "postgres"] as const) {
     }
   });
 
-  test(`page shape, related rows and new rows: ${dialect}`, async () => {
+  test(`page shape and related rows: ${dialect}`, async () => {
     const { db, Item, qs } = await open(dialect);
     try {
       const page = await qs.load(Item.owner).load(Item.name).orderBy("-at").paginate({ first: 5 });
@@ -126,6 +126,14 @@ for (const dialect of ["sqlite", "postgres"] as const) {
       assert.ok(rest.items.length === 18 && !rest.hasNext && rest.hasPrevious);
       const empty = await qs.orderBy("-at").paginate({ first: 5, after: rest.nextCursor });
       assert.deepEqual([empty.items, empty.nextCursor, empty.previousCursor], [[], null, null]);
+    } finally {
+      await db.dropTables(); await db.close();
+    }
+  });
+
+  test(`rows added between pages are not repeated: ${dialect}`, async () => {
+    const { db, Item, qs } = await open(dialect);
+    try {
       const first = await qs.orderBy("-score").paginate({ first: 10 });
       await qs.insert({ ownerId: first.items[0].ownerId, score: 99, name: "new", code: "new", at: new Date(T0) });
       const next = await qs.orderBy("-score").paginate({ first: 100, after: first.nextCursor });
@@ -181,18 +189,14 @@ for (const dialect of ["sqlite", "postgres"] as const) {
     }
   });
 
-  test(`microsecond DateTime cursors and reading back: ${dialect}`, async () => {
+  // case: pagination::cursor_of_a_microsecond_datetime
+  test(`cursor of a microsecond DateTime: ${dialect}`, async () => {
     const { db, Item, qs } = await open(dialect);
     try {
       const page = await qs.orderBy("-at").paginate({ first: 2 });
       assert.equal(page.nextCursor, "eyJvIjoiNzNhMGQ4YWEwZWEzMWQwOSIsInYiOlsiMjAyNi0xMC0wMVQwMDowMDowMC4wMDAxNDcrMDA6MDAiLCIyMiJdfQ", "the same cursor as languages/python/tests/test_pagination.py");
       assert.equal((await qs.filter(Item.at.eq(page.items[1].at)).get()).pk, page.items[1].pk);
-      const second = (await qs.paginate({ first: 2 })).nextCursor;
-      const back = await qs.paginate({ last: 1, before: second });
-      assert.deepEqual(back.items.map((x: any) => x.pk), [1n]);
-      assert.ok(back.hasNext && !back.hasPrevious);
-      assert.deepEqual((await qs.paginate({ first: 1, before: null })).items.map((x: any) => x.pk), [1n]);
-      assert.deepEqual((await qs.paginate({ last: 1, after: null })).items.map((x: any) => x.pk), [23n]);
+      assert.deepEqual(await walk(qs.orderBy("name", "-at"), 1), (await qs.orderBy("name", "-at")).map((x: any) => x.pk));
       // More than one millisecond past T0: the hidden part holds only the microseconds below it.
       await qs.filter(Item.id.eq(1n)).update({ at: at(1147) });
       const late = (await qs.orderBy("-at").paginate({ first: 1 })).items[0];
@@ -212,6 +216,20 @@ for (const dialect of ["sqlite", "postgres"] as const) {
       Object.defineProperty(bad, "monorm:micros", { value: 1500 });
       Object.defineProperty(bad, "monorm:micros-ms", { value: T0 });
       await assert.rejects(qs.filter(Item.at.eq(bad)).fetch(), /invalid monorm:micros 1500/);
+    } finally {
+      await db.dropTables(); await db.close();
+    }
+  });
+
+  test(`reading back from the second row: ${dialect}`, async () => {
+    const { db, qs } = await open(dialect);
+    try {
+      const second = (await qs.paginate({ first: 2 })).nextCursor;
+      const back = await qs.paginate({ last: 1, before: second });
+      assert.deepEqual(back.items.map((x: any) => x.pk), [1n]);
+      assert.ok(back.hasNext && !back.hasPrevious);
+      assert.deepEqual((await qs.paginate({ first: 1, before: null })).items.map((x: any) => x.pk), [1n]);
+      assert.deepEqual((await qs.paginate({ last: 1, after: null })).items.map((x: any) => x.pk), [23n]);
     } finally {
       await db.dropTables(); await db.close();
     }

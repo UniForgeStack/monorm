@@ -38,9 +38,6 @@ def test_limit_and_offset_are_parameters():
     b, pb = _ir(Post.objects.order_by(Post.id)[30:35])
     assert a == b  # one IR document (and one SQL text) for every page
     assert pa == [10, 10] and pb == [5, 30]
-
-
-def test_limit_offset_sql():
     assert Post.objects.all()[5:15].sql().endswith("LIMIT 10 OFFSET 5")
 
 

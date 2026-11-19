@@ -133,6 +133,7 @@ async def test_owned_serials_pull_as_identity_and_shared_sequences_stay_defaults
             "column c_empty.id defaults to nextval('shared_seq'::regclass), a sequence the column does not own" in gaps
         )
         assert "@default(dbgenerated(\"nextval('shared_seq'::regclass)\"))" in text
+        assert pulled.differences == []
         # the next migration leaves the column on the shared sequence
         schema = tmp_path / "schema.prisma"
         pulled.write(schema)

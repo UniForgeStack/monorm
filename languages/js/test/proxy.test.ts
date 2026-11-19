@@ -1,24 +1,64 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { connect, loads, NotLoaded, Registry } from "../src/index.js";
 import { hasExtension } from "./artifact-caps.js";
+import { scratch } from "./scratch.js";
 
 const source = readFileSync(resolve(process.cwd(), "../../fixtures/proxy.prisma"), "utf8").replaceAll("proxy_05_", "proxy_05_node_");
+type Dynamic = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 const enabled = hasExtension("monorm.proxy");
+// The engine prints the shape warnings to fd 2, so a child process runs the reads and the parent reads its stderr.
+const warningChild = (dialect: string) => `
+import { readFileSync } from "node:fs";
+import { connect, loads, Registry } from ${JSON.stringify(pathToFileURL(join(import.meta.dirname, "..", "src", "index.js")).href)};
+const registry = new Registry();
+const models = loads((${JSON.stringify(dialect)} === "sqlite" ? 'datasource db { provider = "sqlite" }\\n' : "") + readFileSync(process.argv[2], "utf8"), { registry });
+const { User, Active, Post } = models;
+const db = await connect(process.env.CHILD_URL, { registry, default: false });
+await db.createTables();
+try {
+  await User.objects.using(db).insertMany([{ id: 1, name: null, status: "old" }, { id: 2, name: null, status: "old" }, { id: 3, name: "ok", status: "active" }]);
+  process.stderr.write("@@read\\n");
+  await Active.objects.using(db).all();
+  process.stderr.write("@@count\\n");
+  await Active.objects.using(db).count();
+  process.stderr.write("@@load\\n");
+  await Post.objects.using(db).insert({ id: 1, userId: 1 });
+  process.stderr.write("@@load2\\n");
+  await Post.objects.using(db).load(Post.user).all();
+  process.stderr.write("@@end\\n");
+} finally { await db.dropTables(); await db.close(); }
+`;
 for (const dialect of ["sqlite", "postgres"]) {
+  // case: proxy::proxy_warning_rows_defaults_writes_and_relation_targets
   test(`proxy rows, client defaults, writes and relation targets (${dialect})`, { skip: !enabled }, async () => {
     const registry = new Registry();
     const models = loads((dialect === "sqlite" ? 'datasource db { provider = "sqlite" }\n' : "") + source, { registry });
     assert.throws(() => loads(source.replace("references: [id]", "references: [missing]"), { registry: new Registry() }), /:\d+:\d+: relation \w+\.\w+: \w+ has no field missing after extension lowering/);
-    const User = models.User!, Active = models.Active!, Post = models.Post!;
+    const User = models.User as Dynamic, Active = models.Active as Dynamic, Post = models.Post as Dynamic;
+    const name = Active._meta.fields.get("name")!;
+    assert.ok(!name.hasServerValue && name.hasInsertDefault);
     const url = dialect === "sqlite" ? "sqlite://:memory:" : process.env.ORM_TEST_DATABASE_URL ?? "postgres://postgres:postgres@localhost/orm_test";
+    const dir = scratch("monorm-proxy-warnings-");
+    writeFileSync(join(dir, "child.mjs"), warningChild(dialect));
+    writeFileSync(join(dir, "proxy.prisma"), source.replaceAll("proxy_05_node_", "proxy_05_node_warn_"));
+    const ran = spawnSync(process.execPath, [join(dir, "child.mjs"), join(dir, "proxy.prisma")], { encoding: "utf8", env: { ...process.env, CHILD_URL: dialect === "sqlite" ? `sqlite://${join(dir, "w.db")}` : url } });
+    assert.equal(ran.status, 0, ran.stderr);
+    const segment = (from: string, to: string) => ran.stderr.slice(ran.stderr.indexOf(from) + from.length, ran.stderr.indexOf(to));
+    const shape = (text: string) => text.split("\n").filter((l) => l.startsWith('{"code":"monorm.proxy.shape"')).map((l) => JSON.parse(l));
+    const warnings = shape(segment("@@read\n", "@@count\n"));
+    assert.ok(warnings.length === 2 && warnings.every((w) => w.occurrence_count === 2 && w.model === "Active"));
+    assert.equal(segment("@@count\n", "@@load\n"), "");
+    assert.equal(shape(segment("@@load2\n", "@@end\n")).length, 2);
     const db = await connect(url, { registry, default: false });
     await db.createTables();
     try {
       await User.objects.using(db).insertMany([{ id: 1, name: null, status: "old" }, { id: 2, name: null, status: "old" }, { id: 3, name: "ok", status: "active" }]);
-      const rows = await Active.objects.using(db).all() as { name: string | null; status: string }[];
+      const rows = await Active.objects.using(db).orderBy(Active.id).all() as { name: string | null; status: string }[];
       assert.equal(rows.length, 3);
       assert.equal(rows[0]!.name, null);
       assert.equal(rows[0]!.status, "old");
@@ -29,11 +69,14 @@ for (const dialect of ["sqlite", "postgres"]) {
       assert.equal(created.active, true); assert.equal(created.volume, 7);
       const root = await User.objects.using(db).insert({ id: 5 }) as { name: null; status: string };
       assert.equal(root.name, null); assert.equal(root.status, "old");
-      const changed = await Active.objects.using(db).all().update({ name: null, status: "old" }).returning() as { name: null; status: string }[];
-      assert.ok(changed.every((r) => r.name === null && r.status === "old"));
+      const changed = await Active.objects.using(db).filter(Active.id.eq(4)).update({ name: null, status: "old" }).returning() as { name: null; status: string }[];
+      assert.ok(changed[0]!.name === null && changed[0]!.status === "old");
       await Post.objects.using(db).insert({ id: 1, userId: 1 });
       const posts = await Post.objects.using(db).load(Post["user"] as never).all() as { user: { name: null; status: string } }[];
       assert.equal(posts[0]!.user.name, null); assert.equal(posts[0]!.user.status, "old");
+      assert.equal((posts[0]!.user as { constructor: { name: string } }).constructor.name, "Active");
+      await Active.objects.using(db).filter(Active.id.eq(4)).delete();
+      assert.equal(await User.objects.using(db).filter(User.id.eq(4)).count(), 0);
     } finally { await db.dropTables(); await db.close(); }
   });
 }

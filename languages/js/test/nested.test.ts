@@ -147,7 +147,12 @@ for (const kind of ["postgres", "sqlite"] as const) {
       assert.deepEqual(await pks(S.address.eq(address(w))), [1]);
       assert.deepEqual(await pks(S.address.geo.eq({ lat: 1.5 })), [1]);
       assert.deepEqual(await pks(S.address.geo.eq(new w.Geo({ lat: 9.0, lng: 2.5 }))), [2]);
-      assert.deepEqual(await pks(S.address.ne(address(w)).andNotNull()), [2, 3]);
+    });
+
+    scenario("ne on a whole field is three-valued", async (w, S, q) => {
+      await seed(w, S);
+      // The null row matches neither eq nor ne.
+      assert.deepEqual(await ids(q.filter(S.address.ne(address(w)).andNotNull()).orderBy(S.id)), [2, 3]);
     });
 
     scenario("order by a subfield and never by a whole field", async (w, S, q) => {
@@ -261,7 +266,8 @@ for (const kind of ["postgres", "sqlite"] as const) {
     });
   }
 
-  test(`nested value classes are immutable and equal by value (${kind})`, async () => {
+  // case: nested::value_classes_are_immutable_and_equal_by_value
+  test(`value classes are immutable and equal by value (${kind})`, async () => {
     const w = await world(kind);
     try {
       const a = address(w);

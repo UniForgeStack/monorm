@@ -112,7 +112,7 @@ async def test_a_package_check_before_its_own_io_also_checks_protection(blog):
         assert prepare_update(Post.objects.using(db).filter(Post.id == 1), {"title": "b"}).unique
 
 
-async def test_tasks_started_in_the_scope_get_it_and_reads_and_raw_sql_are_unchanged(blog):
+async def test_the_scope_follows_async_work_and_reads_and_raw_sql_are_unchanged(blog):
     models, db = blog
     Post = models["Post"]
 
@@ -125,6 +125,11 @@ async def test_tasks_started_in_the_scope_get_it_and_reads_and_raw_sql_are_uncha
     later = asyncio.create_task(insert(2))
     with pytest.raises(monorm.WriteProtected):
         await later
+    # A lazy write reads the scope at await, not where it was built.
+    with monorm.allow_writes(Post):
+        lazy = Post.objects.using(db).insert(id=3, title="a")
+    with pytest.raises(monorm.WriteProtected):
+        await lazy
     assert await Post.objects.using(db).count() == 1
     assert await db.execute("UPDATE post SET title = 'raw'") == 1
     assert (await Post.objects.using(db).get()).title == "raw"

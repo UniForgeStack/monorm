@@ -110,6 +110,10 @@ test("a proxy gets the soft-delete members at run time through the record of the
     assert.equal(typeof models.Post!.objects[member], "function", member);
   }
   assert.equal(models.Note!.objects.deletedOnly, undefined);
+  const draft = models.Draft as unknown as { objects: { all(): { sql(): string }; allWithDeleted(): { sql(): string }; deletedOnly(): { sql(): string } } };
+  assert.ok(draft.objects.all().sql().includes("deleted"));
+  assert.ok(!draft.objects.allWithDeleted().sql().split("FROM")[1]!.includes("deleted"));
+  assert.ok(draft.objects.deletedOnly().sql().includes("IS NOT NULL"));
 });
 
 const url = process.env["ORM_TEST_DATABASE_URL"] ?? "";

@@ -14,7 +14,9 @@ from pathlib import Path
 
 import pytest
 
+import monorm
 from artifact_caps import has_extension
+from conftest import DATABASE_URL
 from monorm.__main__ import main as cli
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -96,6 +98,7 @@ def models(package: Path):
             del sys.modules[name]
 
 
+@pytest.mark.case("proxy_members::a_proxy_gets_the_soft_delete_members_at_run_time_through_the_record_of_the_extension")
 def test_proxy_has_the_soft_delete_members_of_its_root(models):
     for member in ("all_with_deleted", "deleted_only", "undelete", "hard_delete"):
         assert hasattr(models.PmDraft.objects, member)
@@ -114,10 +117,22 @@ def test_proxy_takes_the_query_set_class_of_its_root(models):
     assert not hasattr(models.PmNote.objects, "titled")
 
 
-def test_inherited_method_reads_a_root_column_on_a_proxy(models):
+async def test_an_inherited_query_set_method_returns_rows_of_the_proxy_at_run_time(models):
     sql = models.PmDraft.objects.titled("a").sql()
     assert "FROM \"proxy_members_post\"" in sql
     assert "\"title\" = 'a'" in sql
+    db = await monorm.connect(DATABASE_URL, default=False)
+    try:
+        await db.execute("DROP TABLE IF EXISTS proxy_members_post")
+        await db.execute("CREATE TABLE proxy_members_post (id INTEGER PRIMARY KEY, title TEXT NOT NULL, deleted TIMESTAMPTZ)")
+        await models.PmPost.objects.using(db).insert_many([{"id": 1, "title": "a"}, {"id": 2, "title": "b"}])
+        rows = await models.PmDraft.objects.titled("a").using(db).all()
+        assert len(rows) == 1
+        assert type(rows[0]).__name__ == "PmDraft"
+        assert type((await models.PmPost.objects.using(db).all())[0]).__name__ == "PmPost"
+    finally:
+        await db.execute("DROP TABLE IF EXISTS proxy_members_post")
+        await db.close()
 
 
 def error_lines(output: str, pattern: str) -> set[int]:

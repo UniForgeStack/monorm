@@ -35,6 +35,7 @@ test("partitions survive registry extension", () => {
 });
 
 const url = (process.env["ORM_TEST_DATABASE_URL"] ?? "postgres://postgres:postgres@localhost/orm_test");
+// case: partition::partition_routes_orm_inserts_and_checks_moves
 test("partition routes inserts and validates row moves", { skip: !url }, async () => {
   const registry = new Registry();
   const Row = loads(source, { registry })["PartitionRow"] as any;
@@ -45,8 +46,8 @@ test("partition routes inserts and validates row moves", { skip: !url }, async (
     const rows = await Row.objects.using(db).insertMany([
       { kind: "a", amount: 3 }, { kind: "b", amount: null }, { kind: "b", amount: 5 },
     ]).returning();
-    await assert.rejects(Row.objects.using(db).insert({ kind: "a", amount: null }));
-    await assert.rejects(rows[1].update({ kind: "a" }));
+    await assert.rejects(Row.objects.using(db).insert({ kind: "a", amount: null }), IntegrityError);
+    await assert.rejects(rows[1].update({ kind: "a" }), IntegrityError);
     await rows[2].update({ kind: "a" });
     await rows[2].load({ reload: true });
     assert.equal(rows[2].kind, "a");
@@ -60,6 +61,7 @@ test("partition routes inserts and validates row moves", { skip: !url }, async (
 import { readFileSync } from "node:fs";
 import { hasExtension } from "./artifact-caps.js";
 const proxyEnabled = hasExtension("monorm.proxy");
+// case: partition::proxy_partition_bound_is_storage_and_prunes_without_defaults
 test("proxy partition fills its key and keeps its predicate without defaults", { skip: !url || !proxyEnabled }, async () => {
   const registry = new Registry();
   const models = loads(readFileSync("../../fixtures/partition-proxy.prisma", "utf8").replaceAll("partition_proxy_", "partition_proxy_js_"), { registry });
@@ -67,17 +69,27 @@ test("proxy partition fills its key and keeps its predicate without defaults", {
   const db = await connect(url!, { registry, default: false });
   try {
     await db.dropTables(); await db.createTables();
-    const row = await Percent.objects.using(db).insert({ shop: 1, percent: 10 });
+    const row = await Percent.objects.using(db).insert({ shop: 1, percent: 10, contentHash: "same" });
     assert.deepEqual(row.pk, { id: row.id, kind: "percent" });
-    await Fixed.objects.using(db).insert({ shop: 1, amount: 20 });
-    assert.equal(await Reward.objects.using(db).count(), 2);
+    const fixed = await Fixed.objects.using(db).insert({ shop: 1, amount: 20, contentHash: "same" });
+    await Reward.objects.using(db).insert({ kind: "price", shop: 1, price: 5 });
+    assert.equal(await Reward.objects.using(db).count(), 3);
     assert.equal(await Percent.objects.using(db).withoutDefaults().count(), 1);
+    assert.ok((await Reward.objects.using(db).filter(Reward.id.eq(row.id)).first())!.constructor.name === "Reward");
     assert.match(Percent.objects.using(db).withoutDefaults().sql(), / IN \('percent'\)/);
-    await assert.rejects(Percent.objects.using(db).insert({ shop: 1, percent: null }));
-    await assert.rejects(Percent.objects.using(db).insert({ shop: 1, percent: 10, kind: "fixed" }));
+    const plan = String(await Percent.objects.using(db).withoutDefaults().explain());
+    assert.ok(plan.includes("partition_proxy_js_percent"));
+    assert.ok(!plan.includes("partition_proxy_js_fixed") && !plan.includes("partition_proxy_js_price"));
+    await assert.rejects(Percent.objects.using(db).insert({ shop: 1, percent: 10, contentHash: "same" }), IntegrityError);
+    await assert.rejects(Percent.objects.using(db).insert({ shop: 1, percent: null }), IntegrityError);
+    await assert.rejects(Percent.objects.using(db).insert({ shop: 1, percent: 10, kind: "fixed" }), IntegrityError);
     assert.equal(await Percent.objects.using(db).withoutDefaults().all().update({ percent: 15 }), 1);
+    await fixed.load({ reload: true });
+    assert.equal(fixed.amount, 20);
     assert.equal(await Percent.objects.using(db).withoutDefaults().all().delete(), 1);
-    assert.equal(await Reward.objects.using(db).count(), 1);
+    assert.equal(await Reward.objects.using(db).count(), 2);
+    assert.equal(await Percent.objects.using(db).insertMany([{ shop: 2, percent: 25 }], { copy: true }), 1);
+    assert.equal(await Percent.objects.using(db).withoutDefaults().count(), 1);
   } finally { await db.dropTables(); await db.close(); }
 });
 

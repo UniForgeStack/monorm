@@ -69,20 +69,38 @@ test("pull, baseline and drift of a Django-style database", async () => {
   await assert.rejects(migrator.baseline(), MigrationError);
 });
 
+// case: pull::owned_serials_pull_as_identity_and_shared_sequences_stay_defaults
 test("owned serials read as identity; a shared sequence stays a raw default", async () => {
   const db = await connect(PULL_URL, { maxConnections: 2, default: false, registry: new Registry() });
   opened.push(db);
   await db.execute(`DROP SCHEMA public CASCADE; CREATE SCHEMA public;
+    CREATE TABLE s_empty (id serial PRIMARY KEY);
     CREATE TABLE s_full (id serial PRIMARY KEY); INSERT INTO s_full (id) SELECT g FROM generate_series(1, 5) g;
     CREATE SEQUENCE shared_seq;
     CREATE TABLE c_empty (id integer PRIMARY KEY DEFAULT nextval('shared_seq'));
     CREATE TABLE c_full (id integer PRIMARY KEY DEFAULT nextval('shared_seq'));
     INSERT INTO c_full (id) SELECT g FROM generate_series(1, 5) g;`);
   const pulled = await pull(db);
+  assert.ok(pulled.gaps.some((g) => g.startsWith("column s_empty.id uses a sequence")));
   assert.ok(pulled.gaps.some((g) => g.startsWith("column s_full.id uses a sequence")));
+  assert.equal(pulled.schema.split("@default(autoincrement())").length - 1, 2);
   assert.ok(pulled.gaps.some((g) => g.startsWith("column c_empty.id defaults to nextval('shared_seq'::regclass), a sequence the column does not own")));
   assert.ok(pulled.schema.includes(`@default(dbgenerated("nextval('shared_seq'::regclass)"))`));
   assert.deepEqual(pulled.differences, []);
+  const dir = mkdtempSync(join(tmpdir(), "monorm-serials-"));
+  pulled.write(join(dir, "schema.prisma"));
+  const migrator = new Migrator(db, new Migrations(join(dir, "migrations"), join(dir, "schema.prisma")));
+  await migrator.baseline();
+  assert.deepEqual((await migrator.drift()).steps, []);
+  const rows = await db.fetchText(
+    "SELECT attrelid::regclass::text, attidentity::text, pg_get_expr(d.adbin, d.adrelid) FROM pg_attribute a " +
+      "JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum " +
+      "WHERE attrelid IN ('c_empty'::regclass, 'c_full'::regclass) ORDER BY 1",
+  );
+  assert.deepEqual(rows, [
+    ["c_empty", "", "nextval('shared_seq'::regclass)"],
+    ["c_full", "", "nextval('shared_seq'::regclass)"],
+  ]);
 });
 
 async function assertGeneratedPullIsClean(db: Database, dir: string, wanted: string): Promise<void> {

@@ -66,7 +66,7 @@ test("every write method fails outside allowWrites and works inside", async () =
   } finally { await db.close(); }
 });
 
-test("the check is on the model the SQL writes; scopes nest; lazy writes read the scope at await", async () => {
+test("the check is on the model the SQL writes", async () => {
   const { models, db } = await blog();
   const { Post, Tag, PostTag } = models;
   try {
@@ -75,23 +75,47 @@ test("the check is on the model the SQL writes; scopes nest; lazy writes read th
     await assert.rejects(allowWrites([Post], () => post.tags.add(tag)), (e: Error) => e instanceof WriteProtected && /PostTag/.test(e.message));
     await allowWrites([PostTag], () => post.tags.add(tag));
     assert.equal(await PostTag.objects.using(db).count(), 1);
+    // Scopes nest: an inner scope adds to the models of the outer one.
     await allowWrites([Post], () => allowWrites([Tag], () => Post.objects.using(db).filter(Post.id.eq(1)).update({ title: "b" })));
-    let started!: Promise<unknown>;
-    await allowWrites([Post], async () => { started = Post.objects.using(db).insert({ id: 2, title: "b" }); });
-    await assert.rejects(started, WriteProtected);
     await assert.rejects(allowWrites(["Post"] as never, async () => {}), TypeError);
+    await assert.rejects(allowWrites([post] as never, async () => {}), TypeError);
     await assert.rejects(allowWrites([] as never, undefined as never), TypeError);
     await assert.rejects(allowWrites(Post as never, async () => {}), /takes a list of models and a function/);
+  } finally { await db.close(); }
+});
+
+// case: protected_write::a_package_check_before_its_own_io_also_checks_protection
+test("a package check before its own I/O also checks protection", async () => {
+  const { models, db } = await blog();
+  const { Post } = models;
+  try {
     // A package checks its write with prepareInsert/prepareUpdate before its own I/O (file uploads).
-    assert.throws(() => Post.objects.using(db).prepareInsert({ id: 3, title: "c" }), WriteProtected);
-    assert.throws(() => Post.objects.using(db).filter(Post.id.eq(1)).prepareUpdate({ title: "c" }), WriteProtected);
+    assert.throws(() => Post.objects.using(db).prepareInsert({ id: 1, title: "a" }), (e: Error) => e instanceof WriteProtected && /Post/.test(e.message));
+    assert.throws(() => Post.objects.using(db).filter(Post.id.eq(1)).prepareUpdate({ title: "b" }), (e: Error) => e instanceof WriteProtected && /Post/.test(e.message));
     await allowWrites([Post], async () => {
-      Post.objects.using(db).prepareInsert({ id: 3, title: "c" });
-      Post.objects.using(db).filter(Post.id.eq(1)).prepareUpdate({ title: "c" });
+      Post.objects.using(db).prepareInsert({ id: 1, title: "a" });
+      Post.objects.using(db).filter(Post.id.eq(1)).prepareUpdate({ title: "b" });
     });
-    // Reads are unchanged, and raw SQL still writes.
+  } finally { await db.close(); }
+});
+
+// case: protected_write::the_scope_follows_async_work_and_reads_and_raw_sql_are_unchanged
+test("the scope follows async work and reads and raw SQL are unchanged", async () => {
+  const { models, db } = await blog();
+  const { Post } = models;
+  const insert = async (id: number) => Post.objects.using(db).insert({ id, title: "a" });
+  try {
+    let task!: Promise<unknown>;
+    await allowWrites([Post], async () => { task = insert(1); });
+    await task;
+    await assert.rejects(insert(2), WriteProtected);
+    // A lazy write reads the scope at await, not where it was built.
+    let lazy!: Promise<unknown>;
+    await allowWrites([Post], async () => { lazy = Post.objects.using(db).insert({ id: 3, title: "a" }); });
+    await assert.rejects(lazy, WriteProtected);
     assert.equal(await Post.objects.using(db).count(), 1);
     assert.equal(await db.execute("UPDATE post SET title = 'raw'"), 1);
+    assert.equal((await Post.objects.using(db).get()).title, "raw");
   } finally { await db.close(); }
 });
 

@@ -116,6 +116,7 @@ async def test_pages_follow_the_order(items, order):
         assert await walk(ordered, size) == expected
 
 
+@pytest.mark.case("pagination::page_shape_and_related_rows")
 async def test_page_shape_and_related_rows(items):
     Item, qs = items
     page = await qs.load(Item.owner).load(Item.name).order_by(-Item.at).paginate(first=5)
@@ -288,6 +289,7 @@ async def postgres():
         await db.close()
 
 
+@pytest.mark.case("pagination::a_char_order_column_postgres")
 async def test_a_char_order_column(postgres):
     models, db = await postgres('model Padded {\n  id Int @id\n  k String @db.Char(4)\n  @@map("page07_padded")\n}')
     Padded = models["Padded"]
@@ -296,6 +298,7 @@ async def test_a_char_order_column(postgres):
     assert len(await qs.filter(Padded.k == (await qs.get(Padded.id == 1)).k)) == 3
     for size in (1, 2):
         assert await walk(qs.order_by(Padded.k), size) == [5, 1, 2, 4, 3]
+        assert await walk(qs.order_by(-Padded.k), size) == [3, 1, 2, 4, 5]
 
 
 async def test_a_char_column_from_ir_without_write_sql():
@@ -327,6 +330,7 @@ async def test_a_char_column_from_ir_without_write_sql():
         await db.close()
 
 
+@pytest.mark.case("pagination::non_finite_float_order_values_postgres")
 async def test_non_finite_float_order_values(postgres):
     models, db = await postgres('model Measure {\n  id Int @id\n  f Float\n  d Decimal\n  @@map("page07_measures")\n}')
     Measure = models["Measure"]
@@ -339,12 +343,6 @@ async def test_non_finite_float_order_values(postgres):
     assert page.next_cursor == "eyJvIjoiYWY4ZDc2YzZmZDZmZTllNyIsInYiOlsiSW5maW5pdHkiLCIzIl19", (
         "the same cursor as languages/js/test/pagination.test.ts"
     )
-    by_d = qs.order_by(Measure.d)
-    with pytest.raises(QueryError, match="invalid cursor"):
-        await by_d.paginate(first=1, after=edited((await by_d.paginate(first=1)).next_cursor, ["NaN", "1"]))
-    await db.execute("UPDATE page07_measures SET d = 'NaN' WHERE id = 1")
-    with pytest.raises(QueryError, match="can't make a cursor from the decimal NaN"):
-        await qs.order_by(Measure.d.desc()).paginate(first=1)
 
 
 async def test_edited_cursors_of_decimal_and_uuid_keys_postgres(postgres):

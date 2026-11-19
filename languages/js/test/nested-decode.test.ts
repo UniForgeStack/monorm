@@ -121,13 +121,20 @@ for (const kind of ["postgres", "sqlite"] as const) {
   });
 }
 
-for (const model of ["TL", "TLC"]) {
-  test(`select of a list leaf (postgres, ${model})`, async () => {
-    await scenario("postgres", async (m, db) => {
-      const S = m[model];
-      await S.objects.using(db).insertMany([{ id: 1, item: { tags: ["x", "y"] } }]);
-      const [{ tags }] = await S.objects.using(db).select({ tags: S.item.tags });
-      assert.deepEqual([...tags], ["x", "y"]);
-    }, LISTS);
-  });
-}
+test("select of a list leaf on json storage", async () => {
+  await scenario("postgres", async (m, db) => {
+    const S = m.TL;
+    await S.objects.using(db).insertMany([{ id: 1, item: { tags: ["x", "y"] } }]);
+    const [{ tags }] = await S.objects.using(db).select({ tags: S.item.tags });
+    assert.deepEqual([...tags], ["x", "y"]);
+  }, LISTS);
+});
+
+test("select of a list leaf on columns storage", async () => {
+  await scenario("postgres", async (m, db) => {
+    const S = m.TLC;
+    await S.objects.using(db).insertMany([{ id: 1, item: { tags: ["x", "y"] } }]);
+    const [{ tags }] = await S.objects.using(db).select({ tags: S.item.tags });
+    assert.deepEqual([...tags], ["x", "y"]);
+  }, LISTS);
+});
