@@ -12,6 +12,7 @@ import { InlineSections, planInlines, startInlines, type InlineState } from "./I
 import { InputFields, inputBody, startInputs, type InputValues } from "./Inputs";
 import { ActionDialog, needsDialog, request, toast, useFinish } from "./Actions";
 import { Alert, Button, message } from "./ui";
+import { Collapsible } from "./components/ui/collapsible";
 import { Label } from "./components/ui/label";
 import { cn } from "./lib/utils";
 
@@ -91,6 +92,7 @@ function useCustom(meta: api.Resource, site: api.Site | undefined) {
 const sectionCard = "mb-4 rounded-xl border border-border bg-card p-5 text-card-foreground shadow-xs";
 const rowClass = "mb-4 grid gap-1.5 last:mb-0";
 const KEEP = "You have unsaved changes on this form. Leave without saving?";
+const KEEP_NEW = "You have unsaved changes in this new record. Discard them?";
 
 function Block({ section, fields, children }: { section: api.Section; fields: string[]; children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
@@ -102,10 +104,9 @@ function Block({ section, fields, children }: { section: api.Section; fields: st
   if (section.title === null) return <div className={sectionCard}>{children}</div>;
   if (section.collapsed) {
     return (
-      <details className={cn(sectionCard, "[&[open]>summary]:mb-4")} open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
-        <summary className="cursor-pointer text-base font-semibold">{section.title}</summary>
+      <Collapsible className={sectionCard} title={section.title} open={open} onOpenChange={setOpen}>
         {children}
-      </details>
+      </Collapsible>
     );
   }
   return (
@@ -132,9 +133,14 @@ async function named(target: api.Resource, relation: api.RelationInfo, key: stri
 /** The create form of a target record, in a modal over the open form. The open form keeps its values: nothing here touches them. */
 function CreateDialog({ target, relation, zone, site, done }: { target: api.Resource; relation: api.RelationInfo; zone: Zone; site: api.Site | undefined; done: (o: api.Option | null) => void }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const typed = useRef(false);
   useEffect(() => {
     ref.current?.showModal();
   }, []);
+  // Escape and Cancel discard typed values: they ask first, like the unsaved guard of a form.
+  const close = () => {
+    if (!typed.current || window.confirm(KEEP_NEW)) done(null);
+  };
   return createPortal(
     <dialog
       ref={ref}
@@ -142,7 +148,7 @@ function CreateDialog({ target, relation, zone, site, done }: { target: api.Reso
       aria-labelledby="dialog-title"
       onCancel={(e) => {
         e.preventDefault();
-        done(null);
+        close();
       }}
     >
       <h2 id="dialog-title" className="mb-4 mt-0 text-lg font-semibold normal-case tracking-normal text-foreground">New {target.title}</h2>
@@ -153,14 +159,15 @@ function CreateDialog({ target, relation, zone, site, done }: { target: api.Reso
         zone={zone}
         site={site}
         reload={() => {}}
-        modal={{ done: (key) => void named(target, relation, key).then(done), cancel: () => done(null) }}
+        modal={{ done: (key) => void named(target, relation, key).then(done), cancel: close, typed }}
       />
     </dialog>,
     document.body,
   );
 }
 
-type Modal = { done: (key: string) => void; cancel: () => void };
+/** `typed` is set by the form body: true while a field holds a value that the user changed. */
+type Modal = { done: (key: string) => void; cancel: () => void; typed: { current: boolean } };
 
 function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }: { meta: api.Resource; columns: api.Column[]; cells: Record<string, unknown>; rows?: Record<string, api.InlineRows>; id?: string; zone: Zone; site: api.Site | undefined; reload: () => void; modal?: Modal }) {
   const client = useQueryClient();
@@ -334,6 +341,7 @@ function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }:
   const snapshot = JSON.stringify([vals, raws, ins]);
   first.current ??= snapshot;
   const changed = !modal && (first.current !== snapshot || links() !== undefined || (inlined && planInlines(meta, inl, zone).body !== undefined));
+  if (modal) modal.typed.current = first.current !== snapshot;
   const leaving = useRef(false);
   const askRef = useRef<() => boolean>(() => true);
   askRef.current = () => leaving.current || !changed || window.confirm(KEEP);
@@ -388,7 +396,9 @@ function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }:
     const label = own_ ? own_.column.title : (inlineNames.find((p) => n.startsWith(p))?.slice(0, -1) ?? n);
     return [{ label, target: own_ ? `f-${modal ? "m-" : ""}${n}` : undefined }];
   }).filter((it, i, all) => all.findIndex((x) => x.label === it.label) === i);
-  const layout = (creating ? meta.sections?.create : meta.sections?.edit) ?? [{ title: null, fields: fields.map(({ column }) => column.label), collapsed: false }];
+  const configured = creating ? meta.sections?.create : meta.sections?.edit;
+  // The fields that no section names come last without a title: beside titled cards they get "Other", as on the detail page.
+  const layout = configured?.map((s) => (s.title === null && configured.length > 1 ? { ...s, title: "Other" } : s)) ?? [{ title: null, fields: fields.map(({ column }) => column.label), collapsed: false }];
 
   const input = ({ f, column: c, w }: (typeof fields)[number]) => {
     const name = c.label;

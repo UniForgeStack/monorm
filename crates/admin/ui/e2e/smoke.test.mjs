@@ -297,11 +297,22 @@ test("filter a list, keep the view in the URL, and open a tab", async () => {
   // A relation filter in the popover: pick the author from the options. A chip in the bar carries the author's name.
   const filtersButton = page.getByRole("button", { name: /^Filters/ });
   await filtersButton.click();
-  await page.getByText("Choose Author").click();
+  // The panel takes the focus on open, and the trigger reports the state.
+  const panel = page.getByRole("group", { name: "Filters" });
+  await panel.waitFor();
+  assert.equal(await filtersButton.getAttribute("aria-expanded"), "true");
+  assert.ok(await panel.evaluate((e) => e.contains(document.activeElement)), "the focus is in the panel");
+  // The keyboard reaches the collapsible picker.
+  const choose = page.getByRole("button", { name: "Choose Author" });
+  assert.equal(await choose.getAttribute("aria-expanded"), "false");
+  await choose.focus();
+  await page.keyboard.press("Enter");
   await page.getByRole("button", { name: "Ada", exact: true }).click();
   await page.waitForURL(`${base}/admin/Book?f.author=1`);
   await rowsAre(["First"]);
   await page.keyboard.press("Escape");
+  await panel.waitFor({ state: "detached" });
+  await filtersButton.evaluate((e) => new Promise((ok, no) => { const t = Date.now(); const tick = () => (e === document.activeElement ? ok() : Date.now() - t > 2000 ? no(new Error("Escape does not return the focus to the trigger")) : setTimeout(tick, 20)); tick(); }));
   const chips = page.getByRole("list", { name: "Active filters" });
   await chips.getByText("Author: Ada").waitFor();
   await chips.getByRole("button", { name: /^Remove filter Author/ }).click();
@@ -925,12 +936,22 @@ test("a section layout with a collapsed section, and a custom form", async () =>
   await page.goto(`${base}/admin/Book/-/new`);
   await page.getByRole("heading", { name: "Add Book" }).waitFor();
   await page.getByText("Basics", { exact: true }).waitFor();
-  const more = page.locator("form details");
-  assert.equal(await more.getAttribute("open"), null, "the collapsed section starts closed");
+  const more = page.getByRole("button", { name: "More", exact: true });
+  assert.equal(await more.getAttribute("aria-expanded"), "false", "the collapsed section starts closed");
   assert.equal(await page.getByLabel("Author id").isVisible(), false);
-  await more.locator("summary").click();
+  // The keyboard opens it and closes it again, and the focus stays on the button.
+  await more.focus();
+  await page.keyboard.press("Enter");
   await page.getByLabel("Author id").waitFor();
-  assert.equal(await page.locator("form fieldset").count(), 1);
+  assert.equal(await more.getAttribute("aria-expanded"), "true");
+  await page.keyboard.press("Space");
+  await page.getByLabel("Author id").waitFor({ state: "hidden" });
+  assert.ok(await more.evaluate((e) => e === document.activeElement));
+  await more.click();
+  await page.getByLabel("Author id").waitFor();
+  // The fields that no section names get a title beside the titled cards.
+  assert.equal(await page.locator("form fieldset").count(), 2);
+  assert.equal(await page.locator("form fieldset legend").last().innerText(), "Other");
 
   await idle();
   // The module of the resource replaces the form. The first save has no title, and the 422 comes back as `errors`.
@@ -986,6 +1007,44 @@ test("pick a record with the autocomplete, create one in a modal, and upload a f
   await page.waitForURL(`${base}/admin/Paper/2`);
   await page.getByText("26").first().waitFor();
 
+  // Escape and Cancel ask before they discard typed values; an untouched dialog closes at once.
+  await idle();
+  await page.goto(`${base}/admin/Paper/-/new`);
+  const asked = [];
+  let accept = false;
+  page.on("dialog", (d) => {
+    asked.push(d.message());
+    return accept ? d.accept() : d.dismiss();
+  });
+  const open = async () => {
+    await page.getByRole("combobox", { name: "Reviewer id" }).click();
+    await page.getByRole("button", { name: /^New Reviewer/ }).click();
+    const d = page.getByRole("dialog", { name: "New Reviewer" });
+    await d.waitFor();
+    return d;
+  };
+  let guarded = await open();
+  await page.keyboard.press("Escape");
+  await guarded.waitFor({ state: "detached" });
+  assert.deepEqual(asked, [], "an untouched dialog closes without a question");
+  guarded = await open();
+  await guarded.getByLabel("Name").fill("Draft");
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(200);
+  assert.equal(asked.length, 1);
+  assert.match(asked[0], /unsaved changes/);
+  assert.equal(await guarded.getByLabel("Name").inputValue(), "Draft", "a refused Escape keeps the typed value");
+  await guarded.getByRole("button", { name: "Cancel" }).click();
+  await page.waitForTimeout(200);
+  assert.equal(asked.length, 2, "Cancel asks too");
+  assert.equal(await guarded.isVisible(), true);
+  accept = true;
+  await guarded.getByRole("button", { name: "Cancel" }).click();
+  await guarded.waitFor({ state: "detached" });
+  assert.equal(asked.length, 3);
+  page.removeAllListeners("dialog");
+  await idle();
+
   // One upload through the multipart route, then the download as an attachment.
   await idle();
   await page.goto(`${base}/admin/Paper/2/edit`);
@@ -1007,7 +1066,7 @@ test("change an inline row and add another with the album, in one save", async (
   const { context, page, problems, idle } = await signedIn();
   await page.goto(`${base}/admin/Album/1/edit`);
   await page.getByRole("heading", { name: "Change Album" }).waitFor();
-  const tracks = page.locator("details.inline");
+  const tracks = page.locator(".inline");
   await tracks.getByText("Tracks", { exact: true }).waitFor();
   const titles = tracks.getByLabel("Title");
   assert.equal(await titles.first().inputValue(), "Intro");
@@ -1033,7 +1092,7 @@ test("a picker inside an inline table opens its whole list, not a clipped one", 
   const { context, page, problems, idle } = await signedIn();
   await page.goto(`${base}/admin/Album/1/edit`);
   await page.getByRole("heading", { name: "Change Album" }).waitFor();
-  const tracks = page.locator("details.inline");
+  const tracks = page.locator(".inline");
   await tracks.getByText("Tracks", { exact: true }).waitFor();
   await tracks.getByRole("combobox").first().click();
   const list = page.getByRole("listbox");

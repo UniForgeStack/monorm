@@ -4,6 +4,7 @@ import { useState } from "react";
 import * as api from "./api";
 import { Badge } from "./components/ui/badge";
 import { Input, Select } from "./components/ui/input";
+import { Collapsible } from "./components/ui/collapsible";
 import { Popover } from "./components/ui/popover";
 import { type Zone } from "./format";
 import { Button } from "./ui";
@@ -37,13 +38,13 @@ export function FilterPopover({ meta, params, change, zone }: { meta: api.Resour
   return (
     <Popover
       label="Filters"
-      trigger={({ open, toggle, id }) => (
-        <Button variant="plain" aria-expanded={open} aria-controls={id} onClick={toggle}>
+      trigger={
+        <Button variant="plain">
           <Filter aria-hidden="true" />
           Filters
           {active > 0 && <Badge variant="default" className="px-1.5 py-0">{active}</Badge>}
         </Button>
-      )}
+      }
     >
       <div className="grid gap-4 sm:grid-cols-2">
         {meta.named_filters.map((n) => (
@@ -430,8 +431,7 @@ function Relation({ filter, params, change }: { filter: api.Filter; params: Para
         ))}
       </span>
       {meta ? (
-        <details onToggle={(e) => setOpen(e.currentTarget.open)}>
-          <summary className="cursor-pointer text-sm">Choose {meta.title}</summary>
+        <Collapsible open={open} onOpenChange={setOpen} title={`Choose ${meta.title}`} titleClassName="text-sm">
           {searchable && <Input type="search" className="mt-2" aria-label={`Search ${meta.title}`} value={text} onChange={(e) => setText(e.target.value)} />}
           <ul className="m-0 my-1 max-h-40 list-none overflow-auto p-0">
             {rows.filter((r) => !chosen.includes(r.key)).map((r) => (
@@ -441,7 +441,7 @@ function Relation({ filter, params, change }: { filter: api.Filter; params: Para
           {options.hasNextPage && (
             <Button variant="plain" disabled={options.isFetchingNextPage} onClick={() => options.fetchNextPage()}>More</Button>
           )}
-        </details>
+        </Collapsible>
       ) : (
         // The target is no resource of this site: its key is the only thing to type.
         <Box label={`${filter.title} key`} value="" onValue={(v) => v && add(encodeURIComponent(v))} />

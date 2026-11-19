@@ -6,6 +6,7 @@ import { Picker } from "./relations";
 import { Link, detailUrl } from "./router";
 import { Alert, Button, message } from "./ui";
 import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
+import { Collapsible } from "./components/ui/collapsible";
 import { Label } from "./components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./components/ui/table";
 import { cn } from "./lib/utils";
@@ -288,10 +289,9 @@ function InlineBlock({ inline, meta, rows, setRows, errors, conflicts, zone, sit
     </>
   );
   return (
-    <details className="section inline mb-4 rounded-xl border border-border bg-card p-5 text-card-foreground shadow-xs [&[open]>summary]:mb-4" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
-      <summary className="cursor-pointer text-base font-semibold">{inline.label}</summary>
+    <Collapsible className="section inline mb-4 rounded-xl border border-border bg-card p-5 text-card-foreground shadow-xs" title={inline.label} open={open} onOpenChange={setOpen}>
       {body}
-    </details>
+    </Collapsible>
   );
 }
 
