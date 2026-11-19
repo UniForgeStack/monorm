@@ -44,6 +44,7 @@ model Reviewer {
   id     BigInt  @id @default(autoincrement())
   name   String
   papers Paper[]
+  tracks Track[]
   @@map("reviewers")
 }
 
@@ -117,7 +118,24 @@ model Track {
   plays    Int    @default(0)
   album_id BigInt
   album    Album  @relation(fields: [album_id], references: [id])
+  // A picker in an inline row: its list opens inside the table.
+  reviewer_id BigInt?
+  reviewer    Reviewer? @relation(fields: [reviewer_id], references: [id])
   @@map("tracks")
+}
+
+// A radio group: the widget map of its admin sets it.
+enum Tier {
+  free
+  pro
+  @@storage(text)
+}
+
+model Gadget {
+  id   BigInt @id @default(autoincrement())
+  name String
+  tier Tier
+  @@map("gadgets")
 }
 `;
 
@@ -185,6 +203,8 @@ async def main():
     await models.Movie.objects.insert_many([{"title": "Alpha", "stars": 4}, {"title": "Beta", "stars": 2}])
     await models.Shelf.objects.insert_many([{"title": "Oak", "qty": 1}, {"title": "Pine", "qty": 2}, {"title": "Elm", "qty": 3}])
     await models.Event.objects.insert_many([{"title": "Launch", "day": datetime.date(2026, 3, 4), "at": datetime.time(9, 30, 15), "starts": at, "live": True, "mood": "tense", "extra": {"a": 1}}])
+    await models.Event.objects.insert_many([{"title": "Whole minutes", "day": datetime.date(2026, 5, 6), "at": datetime.time(10, 0, 0), "starts": datetime.datetime(2026, 1, 2, 4, 0, 0, tzinfo=datetime.timezone.utc), "mood": "calm"}])
+    await models.Gadget.objects.insert_many([{"name": "Widget", "tier": "free"}])
     await models.Setting.objects.insert_many([{"name": "Welcome", "config": note_pb2.Note(title="hi", priority=3, tags=["a"])}])
     (debut,) = await models.Album.objects.insert_many([{"title": "Debut"}]).returning()
     await models.Track.objects.insert_many([{"title": "Intro", "plays": 1, "album_id": debut.id}])
@@ -220,7 +240,7 @@ export async function startProject() {
   assert.ok(module.includes("admin.register(Reviewer)") && module.includes("admin.register(Paper)"), "the generated admin.py registers Reviewer and Paper");
   assert.ok(module.includes("admin.register(Ticket)"), "the generated admin.py registers Ticket");
   assert.ok(module.includes("admin.register(Album)") && module.includes("admin.register(Track)"), "the generated admin.py registers Album and Track");
-  assert.ok(module.includes("admin.register(Event)"), "the generated admin.py registers Event");
+  assert.ok(module.includes("admin.register(Event)") && module.includes("admin.register(Gadget)"), "the generated admin.py registers Event and Gadget");
   assert.ok(module.includes("admin.register(Movie)"), "the generated admin.py registers Movie");
   assert.ok(module.includes("admin.register(Shelf)"), "the generated admin.py registers Shelf");
   // Movie: the example extension package (a stars widget, a Summary tab, a route and an action).
@@ -233,9 +253,11 @@ export async function startProject() {
     .replace("from monorm.admin import Admin, inline\n", "from monorm.admin import Admin, inline, action, message\n")
     .replace("admin.register(Ticket)", TICKET)
     .replace("admin.register(Movie)", "import sys\nsys.path.insert(0, str(__import__('pathlib').Path(__file__).parent / 'package'))\nfrom rating import install\n\ninstall(admin, Movie)")
+    .replace("admin.register(Gadget)", 'admin.register(Gadget, {"widgets": {"Tier": "radio"}})')
     // Shelf: its cells edit in the list.
     .replace("admin.register(Shelf)", 'admin.register(Shelf, {"list": {"columns": ["title", "qty"], "editable": ["title", "qty"], "order": [Shelf.id]}})')
     .replace("admin.register(Reviewer)", 'admin.register(Reviewer, {"list": {"search": [Reviewer.name]}})')
+    .replace("admin.register(Track)", 'admin.register(Track, {"relations": {"reviewer": {}}})')
     .replace("admin.register(Paper)", 'admin.register(Paper, {"relations": {"reviewer": {"create": True}}, "files": {"cover": "media"}})');
   writeFileSync(join(dir, "admin.py"), withStorage.replace("admin.register(Book)", book).replace("admin.register(Note)", 'admin.register(Note, {"form_component": "note-form.js"})'));
   run(dir, ["-m", "monorm", "generate"], env);

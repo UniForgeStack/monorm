@@ -5,6 +5,10 @@ import { ValueControl } from "./controls";
 import { Picker } from "./relations";
 import { Link, detailUrl } from "./router";
 import { Alert, Button, message } from "./ui";
+import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
+import { Label } from "./components/ui/label";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./components/ui/table";
+import { cn } from "./lib/utils";
 
 /** One row of an inline on the form. `key` is null for a row that the server does not have yet. */
 export interface Row {
@@ -225,16 +229,16 @@ function InlineBlock({ inline, meta, rows, setRows, errors, conflicts, zone, sit
   );
   const messages = (r: Row, label: string) => (
     <div id={`i-${inline.name}-${r.uid}-${label}-msg`}>
-      {errorsOf(r, label).map((m) => <p key={m} className="msg msg-error">{m}</p>)}
-      {(problemKey(r, label) in conflicts) && <p className="msg msg-error">Changed since you opened this record.</p>}
+      {errorsOf(r, label).map((m) => <p key={m} className="msg msg-error m-0 text-sm text-destructive">{m}</p>)}
+      {(problemKey(r, label) in conflicts) && <p className="msg msg-error m-0 text-sm text-destructive">Changed since you opened this record.</p>}
     </div>
   );
   const actions = (r: Row) => (
-    <div className="inline-actions">
-      {r.key !== null && inline.link && <Link href={detailUrl(inline.link, r.key)}>Open</Link>}
-      {row_mode && parentKey !== undefined && editable(r) && <Button type="button" variant="plain" disabled={r.busy || !dirty(r)} onClick={() => void saveRow(r)}>Save row</Button>}
+    <div className="flex items-center gap-2 whitespace-nowrap">
+      {r.key !== null && inline.link && <Link className="text-sm" href={detailUrl(inline.link, r.key)}>Open</Link>}
+      {row_mode && parentKey !== undefined && editable(r) && <Button type="button" variant="plain" size="sm" disabled={r.busy || !dirty(r)} onClick={() => void saveRow(r)}>Save row</Button>}
       {removable(r) && (
-        <Button type="button" variant="plain" disabled={r.busy} onClick={() => (row_mode && r.key !== null ? void deleteRow(r) : remove(r))}>
+        <Button type="button" variant="plain" size="sm" disabled={r.busy} onClick={() => (row_mode && r.key !== null ? void deleteRow(r) : remove(r))}>
           {r.removed ? "Keep" : r.key === null ? "Remove" : "Delete"}
         </Button>
       )}
@@ -244,28 +248,28 @@ function InlineBlock({ inline, meta, rows, setRows, errors, conflicts, zone, sit
 
   const body = (
     <>
-      {!writable && inline.read_only_reason && <p className="muted" role="note">Read-only here: {inline.read_only_reason}</p>}
-      {row_mode && parentKey === undefined && mayAdd && <p className="muted">Save the record first. Then add {inline.label.toLowerCase()} one row at a time.</p>}
+      {!writable && inline.read_only_reason && <p className="m-0 mb-3 text-sm text-muted-foreground" role="note">Read-only here: {inline.read_only_reason}</p>}
+      {row_mode && parentKey === undefined && mayAdd && <p className="m-0 mb-3 text-sm text-muted-foreground">Save the record first. Then add {inline.label.toLowerCase()} one row at a time.</p>}
       {inline.style === "table" && rows.length > 0 ? (
-        <table className="inline-table">
-          <thead>
-            <tr>{fields.map(({ column }) => <th key={column.label} scope="col">{column.title}</th>)}<th scope="col"><span className="sr-only">Row actions</span></th></tr>
-          </thead>
-          <tbody>
+        <Table>
+          <TableHeader>
+            <TableRow>{fields.map(({ column }) => <TableHead key={column.label} scope="col">{column.title}</TableHead>)}<TableHead scope="col"><span className="sr-only">Row actions</span></TableHead></TableRow>
+          </TableHeader>
+          <TableBody>
             {rows.map((r) => (
-              <tr key={r.uid} className={r.removed ? "inline-removed" : undefined}>
-                {fields.map((x) => <td key={x.column.label}>{control(r, x)}{messages(r, x.column.label)}</td>)}
-                <td>{actions(r)}{rowProblems(r)}</td>
-              </tr>
+              <TableRow key={r.uid} className={r.removed ? "inline-removed opacity-50" : undefined}>
+                {fields.map((x) => <TableCell key={x.column.label} className="min-w-40 align-top whitespace-normal">{control(r, x)}{messages(r, x.column.label)}</TableCell>)}
+                <TableCell className="align-top">{actions(r)}{rowProblems(r)}</TableCell>
+              </TableRow>
             ))}
-          </tbody>
-        </table>
+          </TableBody>
+        </Table>
       ) : (
         rows.map((r) => (
-          <fieldset key={r.uid} className={r.removed ? "section inline-removed" : "section"}>
+          <fieldset key={r.uid} className={cn("section mb-3 rounded-lg border border-border p-4", r.removed && "inline-removed opacity-50")}>
             {fields.map((x) => (
-              <div key={x.column.label} className="field">
-                <label htmlFor={`i-${inline.name}-${r.uid}-${x.column.label}`}>{x.column.title}</label>
+              <div key={x.column.label} className="mb-3 grid gap-1.5">
+                <Label htmlFor={`i-${inline.name}-${r.uid}-${x.column.label}`}>{x.column.title}</Label>
                 {control(r, x)}
                 {messages(r, x.column.label)}
               </div>
@@ -276,16 +280,16 @@ function InlineBlock({ inline, meta, rows, setRows, errors, conflicts, zone, sit
         ))
       )}
       {mayAdd && (!row_mode || parentKey !== undefined) && (
-        <p>
+        <p className="m-0 mt-3 flex items-center gap-2">
           <Button type="button" variant="plain" disabled={full} onClick={add}>Add row</Button>
-          {full && <span className="muted"> At most {inline.max} rows.</span>}
+          {full && <span className="text-sm text-muted-foreground">At most {inline.max} rows.</span>}
         </p>
       )}
     </>
   );
   return (
-    <details className="section inline" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
-      <summary>{inline.label}</summary>
+    <details className="section inline mb-4 rounded-xl border border-border bg-card p-5 text-card-foreground shadow-xs [&[open]>summary]:mb-4" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
+      <summary className="cursor-pointer text-base font-semibold">{inline.label}</summary>
       {body}
     </details>
   );
@@ -299,25 +303,29 @@ export function InlineRowsView({ meta, rows, zone }: { meta: api.Resource; rows:
         const got = rows?.[i.name];
         if (!got) return null;
         return (
-          <section key={i.name} className="inline-view">
-            <h2>{i.label}</h2>
-            {got.rows.length === 0 ? (
-              <p className="muted">None.</p>
-            ) : (
-              <table className="inline-table">
-                <thead><tr>{i.fields.map((c) => <th key={c.label} scope="col">{c.title}</th>)}{got.link && <th scope="col"><span className="sr-only">Open</span></th>}</tr></thead>
-                <tbody>
-                  {got.rows.map((r) => (
-                    <tr key={r.key}>
-                      {i.fields.map((c, n) => <td key={c.label}>{cell(r.values[n], c, zone) || <span className="muted">{c.empty ?? "—"}</span>}</td>)}
-                      {got.link && <td><Link href={detailUrl(got.link, r.key)}>Open</Link></td>}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-            {got.truncated && <p className="muted">Only the first {i.max} rows show.</p>}
-          </section>
+          <Card key={i.name} className="mt-4" role="region" aria-labelledby={`iv-${i.name}`}>
+            <CardHeader>
+              <CardTitle id={`iv-${i.name}`}>{i.label}</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {got.rows.length === 0 ? (
+                <p className="m-0 text-sm text-muted-foreground">None.</p>
+              ) : (
+                <Table>
+                  <TableHeader><TableRow>{i.fields.map((c) => <TableHead key={c.label} scope="col">{c.title}</TableHead>)}{got.link && <TableHead scope="col"><span className="sr-only">Open</span></TableHead>}</TableRow></TableHeader>
+                  <TableBody>
+                    {got.rows.map((r) => (
+                      <TableRow key={r.key}>
+                        {i.fields.map((c, n) => <TableCell key={c.label}>{cell(r.values[n], c, zone) || <span className="text-muted-foreground">{c.empty ?? "—"}</span>}</TableCell>)}
+                        {got.link && <TableCell><Link href={detailUrl(got.link, r.key)}>Open</Link></TableCell>}
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              )}
+              {got.truncated && <p className="m-0 mt-2 text-sm text-muted-foreground">Only the first {i.max} rows show.</p>}
+            </CardContent>
+          </Card>
         );
       })}
     </>

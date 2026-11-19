@@ -6,12 +6,17 @@ export const BASE = document.querySelector<HTMLMetaElement>('meta[name="monorm-a
 const listeners = new Set<() => void>();
 const subscribe = (fn: () => void) => {
   listeners.add(fn);
-  window.addEventListener("popstate", fn);
   return () => {
     listeners.delete(fn);
-    window.removeEventListener("popstate", fn);
   };
 };
+const here = () => window.location.pathname + window.location.search;
+let shown = here();
+/** The place of the shown entry in the stack: each entry that `navigate` makes holds its number in `history.state`. */
+let index: number = window.history.state?.i ?? 0;
+/** The `popstate` events that our own `history.go` will raise: they are no user move. */
+let undo = 0;
+window.history.replaceState({ i: index }, "", window.location.href);
 
 /** The path of the page, as the browser holds it (still percent-encoded). */
 export function usePath(): string {
@@ -35,10 +40,34 @@ export function blockNavigation(ask: () => boolean): () => void {
 
 export function navigate(to: string, replace = false) {
   if (blocker && !blocker()) return;
-  if (replace) window.history.replaceState(null, "", to);
-  else window.history.pushState(null, "", to);
+  if (replace) window.history.replaceState({ i: index }, "", to);
+  else window.history.pushState({ i: ++index }, "", to);
+  shown = here();
   listeners.forEach((fn) => fn());
 }
+
+// Back and Forward ask too. The browser has moved already: `history.go` undoes the move, so a refusal keeps the whole stack.
+// A move with no known distance (an entry that this code did not make) falls back to a new entry.
+window.addEventListener("popstate", () => {
+  if (undo > 0) {
+    undo--;
+    return;
+  }
+  const at: unknown = window.history.state?.i;
+  const to = typeof at === "number" ? at : index;
+  if (blocker && !blocker()) {
+    if (to === index) {
+      window.history.pushState({ i: ++index }, "", shown);
+    } else {
+      undo++;
+      window.history.go(index - to);
+    }
+    return;
+  }
+  index = to;
+  shown = here();
+  listeners.forEach((fn) => fn());
+});
 
 export type Route =
   | { page: "login" }

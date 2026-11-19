@@ -2,17 +2,18 @@ import * as React from "react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import * as Label from "@radix-ui/react-label";
 import * as api from "./api";
 import { PackageWidget, packageWidget, versionProblem, widgetCall, widgetStream } from "./Packages";
 import { cell, fromInput, toInput, widgetFor, type Input, type Zone } from "./format";
-import { Link, detailUrl, editUrl, listBack, navigate, newUrl, useSearch } from "./router";
+import { Link, blockNavigation, detailUrl, editUrl, listBack, navigate, newUrl, useSearch } from "./router";
 import { Chips, FileField, Picker } from "./relations";
 import { ValueControl } from "./controls";
 import { InlineSections, planInlines, startInlines, type InlineState } from "./Inlines";
 import { InputFields, inputBody, startInputs, type InputValues } from "./Inputs";
 import { ActionDialog, needsDialog, request, toast, useFinish } from "./Actions";
 import { Alert, Button, message } from "./ui";
+import { Label } from "./components/ui/label";
+import { cn } from "./lib/utils";
 
 type Problems = { fields: Record<string, string[]>; form: string[] };
 type Action = "save" | "continue" | "add";
@@ -86,6 +87,11 @@ function useCustom(meta: api.Resource, site: api.Site | undefined) {
   });
 }
 
+/** The card look of a section: the element differs (a div, a details or a fieldset), so the look sits in one constant. */
+const sectionCard = "mb-4 rounded-xl border border-border bg-card p-5 text-card-foreground shadow-xs";
+const rowClass = "mb-4 grid gap-1.5 last:mb-0";
+const KEEP = "You have unsaved changes on this form. Leave without saving?";
+
 function Block({ section, fields, children }: { section: api.Section; fields: string[]; children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   // A field error inside a collapsed section opens it.
@@ -93,18 +99,18 @@ function Block({ section, fields, children }: { section: api.Section; fields: st
   useEffect(() => {
     if (bad) setOpen(true);
   }, [bad]);
-  if (section.title === null) return <div className="section">{children}</div>;
+  if (section.title === null) return <div className={sectionCard}>{children}</div>;
   if (section.collapsed) {
     return (
-      <details className="section" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
-        <summary>{section.title}</summary>
+      <details className={cn(sectionCard, "[&[open]>summary]:mb-4")} open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
+        <summary className="cursor-pointer text-base font-semibold">{section.title}</summary>
         {children}
       </details>
     );
   }
   return (
-    <fieldset className="section">
-      <legend>{section.title}</legend>
+    <fieldset className={cn(sectionCard, "[&>legend+*]:clear-both")}>
+      <legend className="float-left mb-4 w-full p-0 text-base font-semibold">{section.title}</legend>
       {children}
     </fieldset>
   );
@@ -132,14 +138,14 @@ function CreateDialog({ target, relation, zone, site, done }: { target: api.Reso
   return createPortal(
     <dialog
       ref={ref}
-      className="dialog"
+      className="dialog m-auto max-h-[90vh] rounded-xl bg-background text-foreground"
       aria-labelledby="dialog-title"
       onCancel={(e) => {
         e.preventDefault();
         done(null);
       }}
     >
-      <h2 id="dialog-title">New {target.title}</h2>
+      <h2 id="dialog-title" className="mb-4 mt-0 text-lg font-semibold normal-case tracking-normal text-foreground">New {target.title}</h2>
       <FormBody
         meta={target}
         columns={target.fields}
@@ -253,7 +259,7 @@ function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }:
         // The action asks first: the dialog opens on the saved record and the page goes on from there.
         setAfterSave({ action: then, key: done.key });
       } else if (then) {
-        navigate(detailUrl(meta.name, done.key));
+        go(detailUrl(meta.name, done.key));
         try {
           await finish((await request(meta.name, then, { keys: [done.key], what: "this record" }, {}, false)).result);
         } catch (e) {
@@ -270,17 +276,20 @@ function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }:
           setChips(empty());
           setIns(startInputs(meta.inputs));
           setInl(startInlines(meta, undefined, zone));
-        } else navigate(newUrl(meta.name));
+        } else go(newUrl(meta.name));
       } else if (action === "continue") {
-        if (creating) navigate(editUrl(meta.name, done.key));
+        if (creating) go(editUrl(meta.name, done.key));
         else reload();
-      } else navigate(detailUrl(meta.name, done.key));
+      } else go(detailUrl(meta.name, done.key));
       return true;
     } catch (e) {
       if (!(e instanceof api.ApiError)) setProblems({ fields: {}, form: [message(e)] });
       else {
         if (e.status === 409) setConflicts(e.body.conflicts ?? {});
-        setProblems({ fields: e.body.fields ?? {}, form: e.body.form?.length ? e.body.form : e.status === 409 ? [] : [e.message] });
+        // A failure with field messages shows under the summary: the generic server message would repeat it.
+        const fields = e.body.fields ?? {};
+        const named = Object.values(fields).some((m) => m.length > 0);
+        setProblems({ fields, form: e.body.form?.length ? e.body.form : e.status === 409 || named ? [] : [e.message] });
       }
       return false;
     } finally {
@@ -320,6 +329,37 @@ function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }:
   };
   const set = (name: string, v: Input) => setVals((s) => ({ ...s, [name]: v }));
 
+  // Unsaved work: a page change asks first, and so does a reload or a close of the tab. The modal is inside a form that asks already.
+  const first = useRef<string | undefined>(undefined);
+  const snapshot = JSON.stringify([vals, raws, ins]);
+  first.current ??= snapshot;
+  const changed = !modal && (first.current !== snapshot || links() !== undefined || (inlined && planInlines(meta, inl, zone).body !== undefined));
+  const leaving = useRef(false);
+  const askRef = useRef<() => boolean>(() => true);
+  askRef.current = () => leaving.current || !changed || window.confirm(KEEP);
+  useEffect(() => {
+    if (!changed) return;
+    const warn = (e: BeforeUnloadEvent) => {
+      if (!leaving.current) e.preventDefault();
+    };
+    window.addEventListener("beforeunload", warn);
+    const unblock = blockNavigation(() => askRef.current());
+    return () => {
+      window.removeEventListener("beforeunload", warn);
+      unblock();
+    };
+  }, [changed]);
+  // The save already wrote the work: the guard would ask about values that are no longer unsaved.
+  const go = (to: string) => {
+    leaving.current = true;
+    navigate(to);
+    leaving.current = false;
+  };
+  const summary = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (Object.keys(problems.fields).length > 0) summary.current?.focus();
+  }, [problems]);
+
   if (meta.form_component) {
     if (custom.isError) return <Alert>The form of this resource did not load: {message(custom.error)}</Alert>;
     if (!custom.data) return <p className="muted">Loading…</p>;
@@ -342,6 +382,12 @@ function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }:
   const stale = Object.keys(conflicts).length > 0;
   const inlineNames = (meta.inlines ?? []).map((i) => `${i.name}.`);
   const unplaced = Object.keys(problems.fields).filter((n) => !inlineNames.some((p) => n.startsWith(p)) && !fields.some(({ column }) => column.label === n) && !(meta.inputs ?? []).some((d) => d.name === n));
+  // One line for each field that has a message: a link to the field, or only its name for an inline row or an input.
+  const sumItems = [...new Set([...Object.keys(problems.fields).filter((n) => (problems.fields[n]?.length ?? 0) > 0), ...Object.keys(conflicts)])].flatMap((n) => {
+    const own_ = fields.find(({ column }) => column.label === n);
+    const label = own_ ? own_.column.title : (inlineNames.find((p) => n.startsWith(p))?.slice(0, -1) ?? n);
+    return [{ label, target: own_ ? `f-${modal ? "m-" : ""}${n}` : undefined }];
+  }).filter((it, i, all) => all.findIndex((x) => x.label === it.label) === i);
   const layout = (creating ? meta.sections?.create : meta.sections?.edit) ?? [{ title: null, fields: fields.map(({ column }) => column.label), collapsed: false }];
 
   const input = ({ f, column: c, w }: (typeof fields)[number]) => {
@@ -353,13 +399,13 @@ function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }:
     const common = { id: id_, name, disabled: locked, "aria-invalid": errors.length > 0 || undefined, "aria-describedby": `${id_}-msg` };
     const value = vals[name] ?? "";
     return (
-      <div key={name} className={errors.length > 0 || conflict ? "field field-bad" : "field"}>
-        <Label.Root id={`${id_}-label`} htmlFor={id_}>
+      <div key={name} className={cn(rowClass, (errors.length > 0 || conflict) && "field-bad")}>
+        <Label id={`${id_}-label`} htmlFor={id_}>
           {c.title}
-          {f.required && creating && !f.readonly && <span className="req" title="Required"> *</span>}
-          {f.default && creating && <span className="muted"> (default)</span>}
-          {f.readonly && <span className="muted"> (read-only)</span>}
-        </Label.Root>
+          {f.required && creating && !f.readonly && <span className="text-destructive" title="Required"> *</span>}
+          {f.default && creating && <span className="font-normal text-muted-foreground"> (default)</span>}
+          {f.readonly && <span className="font-normal text-muted-foreground"> (read-only)</span>}
+        </Label>
         {own(w) && site ? (
           <PackageWidget
             site={site}
@@ -406,7 +452,7 @@ function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }:
             }}
           />
         ) : w === "radio" ? (
-          <div role="radiogroup" aria-labelledby={`${id_}-label`} aria-invalid={common["aria-invalid"]} aria-describedby={common["aria-describedby"]} className="flex flex-wrap gap-x-4 gap-y-1">
+          <div id={id_} role="radiogroup" tabIndex={-1} aria-labelledby={`${id_}-label`} aria-invalid={common["aria-invalid"]} aria-describedby={common["aria-describedby"]} className="flex flex-wrap gap-x-4 gap-y-1 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring">
             {(c.nullable || creating ? ["", ...(c.choices ?? [])] : (c.choices ?? [])).map((v) => (
               <label key={v} className="inline-flex items-center gap-1.5 text-sm">
                 <input type="radio" name={name} disabled={locked} value={v} checked={value === v} onChange={() => set(name, v)} /> {v === "" ? "—" : v}
@@ -417,9 +463,9 @@ function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }:
           <ValueControl w={w} column={c} value={value} set={(v) => set(name, v)} blank={c.nullable || creating ? "—" : "Choose…"} id={id_} name={name} disabled={locked} invalid={errors.length > 0} described={common["aria-describedby"]} maxLength={f.max_length} rows={w === "textarea" ? 4 : w === "json" ? 10 : 6} />
         )}
         <div id={`${id_}-msg`}>
-          {errors.map((m) => <p key={m} className="msg msg-error">{m}</p>)}
+          {errors.map((m) => <p key={m} className="msg msg-error m-0 text-sm text-destructive">{m}</p>)}
           {conflict && (
-            <p className="msg msg-error">
+            <p className="msg msg-error m-0 text-sm text-destructive">
               Changed to <code>{cell(conflict.current, c, zone) || "(empty)"}</code> since you opened this record.
             </p>
           )}
@@ -429,12 +475,30 @@ function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }:
   };
 
   return (
-    <form className="form" onSubmit={on("save")} noValidate>
+    <form className={modal ? "grid" : "grid max-w-2xl"} onSubmit={on("save")} noValidate>
       {stale && (
         <Alert>
           This record changed after you opened it. The current value shows under each field that changed.{" "}
-          <button type="button" className="linkish" onClick={reload}>Reload the record</button> (your edits are lost).
+          <button type="button" className="cursor-pointer text-link underline" onClick={reload}>Reload the record</button> (your edits are lost).
         </Alert>
+      )}
+      {sumItems.length > 0 && (
+        <div ref={summary} role="group" tabIndex={-1} aria-labelledby={`${modal ? "m" : "f"}-problems`} className="mb-4 rounded-xl border border-destructive bg-card p-4 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          <h2 id={`${modal ? "m" : "f"}-problems`} className="m-0 text-sm font-semibold tracking-normal text-destructive normal-case">
+            {sumItems.length === 1 ? "1 field needs attention" : `${sumItems.length} fields need attention`}
+          </h2>
+          <ul className="m-0 mt-1 list-disc pl-5">
+            {sumItems.map((it) => (
+              <li key={it.label}>
+                {it.target ? (
+                  <a href={`#${it.target}`} onClick={(e) => (e.preventDefault(), document.getElementById(it.target as string)?.focus())}>{it.label}</a>
+                ) : (
+                  it.label
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
       {problems.form.map((m) => <Alert key={m}>{m}</Alert>)}
       {unplaced.map((n) => <Alert key={n}>{n}: {(problems.fields[n] ?? []).join(" ")}</Alert>)}
@@ -446,8 +510,8 @@ function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }:
       })}
       {(meta.inputs?.length ?? 0) > 0 && <InputFields defs={meta.inputs ?? []} vals={ins} errors={problems.fields} onChange={(n, v) => setIns((s) => ({ ...s, [n]: v }))} scope={modal ? "m" : "f"} />}
       {chipRelations.map((r) => (
-        <div key={r.name} className="field">
-          <Label.Root htmlFor={`f-chips-${r.name}`}>{r.name}</Label.Root>
+        <div key={r.name} className={rowClass}>
+          <Label htmlFor={`f-chips-${r.name}`}>{r.name}</Label>
           <Chips
             id={`f-chips-${r.name}`}
             resource={meta.name}
@@ -456,11 +520,11 @@ function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }:
             onChange={(items) => setChips((s) => ({ ...s, [r.name]: items }))}
             onCreate={mayCreate(r)}
           />
-          {capped.includes(r.name) && <p className="muted">Only the first 200 links show. The others stay as they are.</p>}
+          {capped.includes(r.name) && <p className="m-0 text-sm text-muted-foreground">Only the first 200 links show. The others stay as they are.</p>}
         </div>
       ))}
       {inlined && <InlineSections meta={meta} state={inl} setState={setInl} errors={problems.fields} conflicts={conflicts} zone={zone} site={site} parentKey={id} />}
-      <div className="savebar">
+      <div className="savebar sticky bottom-0 z-10 mt-2 flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card/95 p-3 shadow-md backdrop-blur">
         <Button type="submit" disabled={busy}>Save</Button>
         {modal ? (
           <Button type="button" variant="plain" disabled={busy} onClick={modal.cancel}>Cancel</Button>
@@ -471,11 +535,11 @@ function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }:
             {submitActions.map((a) => (
               <Button key={a.name} type="button" variant="plain" disabled={busy} onClick={(e) => { e.preventDefault(); void submit("save", a); }}>Save and {a.label.toLowerCase()}</Button>
             ))}
-            <Link href={creating ? listBack(meta.name) : detailUrl(meta.name, id)} className="cancel">Cancel</Link>
+            <Link href={creating ? listBack(meta.name) : detailUrl(meta.name, id)} className="ml-auto text-sm">Cancel</Link>
           </>
         )}
       </div>
-      {afterSave && <ActionDialog key={afterSave.action.name} resource={meta.name} action={afterSave.action} target={{ keys: [afterSave.key], what: "this record" }} onClose={() => { const key = afterSave.key; setAfterSave(null); navigate(detailUrl(meta.name, key)); }} />}
+      {afterSave && <ActionDialog key={afterSave.action.name} resource={meta.name} action={afterSave.action} target={{ keys: [afterSave.key], what: "this record" }} onClose={() => { const key = afterSave.key; setAfterSave(null); go(detailUrl(meta.name, key)); }} />}
       {creator && (() => {
         const target = site?.resources.find((r) => r.name === creator.relation.target);
         return target ? <CreateDialog target={target} relation={creator.relation} zone={zone} site={site} done={creator.done} /> : null;

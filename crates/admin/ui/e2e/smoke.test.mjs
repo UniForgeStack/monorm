@@ -666,17 +666,271 @@ test("a date keeps its day and a date with a time keeps its moment in a zone wes
   await context.close();
 });
 
+test("an error summary links to the field, a sticky bar stays in view, and unsaved changes ask before the page changes", async () => {
+  const { context, page, problems, idle } = await signedIn();
+  const asked = [];
+  let accept = false;
+  page.on("dialog", (d) => {
+    asked.push(d.message());
+    return accept ? d.accept() : d.dismiss();
+  });
+  await page.goto(`${base}/admin/Event/1/edit`);
+  await page.getByRole("heading", { name: "Change Event" }).waitFor();
+  // A form nobody changed lets the user leave at once.
+  await page.getByRole("link", { name: "Cancel" }).click();
+  await page.waitForURL(`${base}/admin/Event/1`);
+  assert.deepEqual(asked, []);
+  await idle();
+
+  await page.goto(`${base}/admin/Event/1/edit`);
+  const bar = page.locator(".savebar");
+  assert.equal(await bar.evaluate((e) => getComputedStyle(e).position), "sticky");
+  const box = await bar.boundingBox();
+  assert.ok(box && box.y + box.height <= page.viewportSize().height + 1, "the save bar is in the viewport");
+
+  // A bad JSON is a field error: the summary names the field and its link moves the focus there.
+  const extra = page.getByLabel("Extra");
+  await extra.fill('{"a":');
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  const summary = page.getByRole("group", { name: "1 field needs attention" });
+  await summary.waitFor();
+  assert.ok(await summary.evaluate((e) => e === document.activeElement), "the summary takes the focus");
+  await page.getByRole("link", { name: "Extra" }).click();
+  assert.ok(await extra.evaluate((e) => e === document.activeElement), "the link focuses the field");
+
+  // The page asks before it goes away. Cancel keeps the page.
+  await page.getByRole("link", { name: "Cancel" }).click();
+  await page.waitForTimeout(200);
+  assert.equal(page.url(), `${base}/admin/Event/1/edit`);
+  assert.equal(asked.length, 1);
+  assert.match(asked[0], /unsaved changes/);
+  accept = true;
+  await page.getByRole("link", { name: "Cancel" }).click();
+  await page.waitForURL(`${base}/admin/Event/1`);
+  assert.equal(asked.length, 2);
+  await idle();
+
+  // After a save the page goes away with no question.
+  await page.goto(`${base}/admin/Event/1/edit`);
+  await page.getByLabel("Title").fill("Launch again");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.waitForURL(`${base}/admin/Event/1`);
+  assert.equal(asked.length, 2);
+  await idle();
+
+  // A save that keeps the form open makes the saved values the new start: Cancel asks nothing.
+  await page.goto(`${base}/admin/Event/1/edit`);
+  await page.getByLabel("Title").fill("Launch once more");
+  const saved = page.waitForResponse((r) => r.request().method() !== "GET" && r.url().includes("/Event/1"));
+  await page.getByRole("button", { name: "Save and continue" }).click();
+  await saved;
+  await idle();
+  await page.getByRole("link", { name: "Cancel" }).click();
+  await page.waitForURL(`${base}/admin/Event/1`);
+  assert.equal(asked.length, 2, "no question after Save and continue");
+  await idle();
+
+  // The same for an empty form that a save clears for the next record.
+  await page.goto(`${base}/admin/Author/-/new`);
+  await page.getByLabel("Name").fill("Next Author");
+  const added = page.waitForResponse((r) => r.request().method() === "POST" && r.url().includes("/Author"));
+  await page.getByRole("button", { name: "Save and add another" }).click();
+  await added;
+  await idle();
+  await page.getByRole("link", { name: "Cancel" }).click();
+  await page.waitForURL(`${base}/admin/Author`);
+  assert.equal(asked.length, 2, "no question after Save and add another");
+  await idle();
+
+  // Browser Back is a page change inside the app: it asks as well, and a refusal keeps the page.
+  accept = false;
+  await page.goto(`${base}/admin/Event/1`);
+  await page.getByRole("link", { name: "Edit" }).click();
+  await page.waitForURL(`${base}/admin/Event/1/edit`);
+  await page.getByLabel("Title").fill("Back test");
+  await page.evaluate(() => history.back());
+  await page.waitForTimeout(300);
+  assert.equal(page.url(), `${base}/admin/Event/1/edit`);
+  assert.equal(asked.length, 3);
+  assert.match(asked[2], /unsaved changes/);
+  assert.equal(await page.getByLabel("Title").inputValue(), "Back test", "the form keeps its edit");
+  accept = true;
+  await page.evaluate(() => history.back());
+  // The browser changes the URL before popstate runs, so wait for the question itself.
+  await page.waitForFunction(() => document.querySelector("h1")?.textContent?.includes("Event") && location.pathname.endsWith("/Event/1"));
+  for (let i = 0; i < 50 && asked.length < 4; i++) await page.waitForTimeout(50);
+  assert.equal(asked.length, 4);
+  assert.equal(new URL(page.url()).pathname, "/admin/Event/1");
+  await idle();
+  assert.deepEqual(problems, []);
+  await context.close();
+});
+
+/** Wait until the page has asked `n` questions: a browser Back changes the URL before `popstate` runs. */
+async function asks(asked, n, page) {
+  for (let i = 0; i < 60 && asked.length < n; i++) await page.waitForTimeout(50);
+  assert.equal(asked.length, n);
+}
+
+/** A stack of four entries on Event 1 — list, detail, edit, detail — and a dirty edit form one step back from the end. */
+async function dirtyEditBeforeForward(page, idle) {
+  await page.goto(`${base}/admin/Event`);
+  await page.getByRole("link", { name: "1", exact: true }).click();
+  await page.waitForURL(`${base}/admin/Event/1`);
+  await page.getByRole("link", { name: "Edit" }).click();
+  await page.waitForURL(`${base}/admin/Event/1/edit`);
+  await page.getByRole("link", { name: "Cancel" }).click();
+  await page.waitForURL(`${base}/admin/Event/1`);
+  await idle();
+  await page.evaluate(() => history.back());
+  await page.waitForURL(`${base}/admin/Event/1/edit`);
+  await page.getByLabel("Title").fill("Forward test");
+}
+
+test("a refused Forward keeps the stack: the page stays, Forward still works, and Back lands one entry back", async () => {
+  const { context, page, problems, idle } = await signedIn();
+  const asked = [];
+  let accept = false;
+  page.on("dialog", (d) => (asked.push(d.message()), accept ? d.accept() : d.dismiss()));
+  await dirtyEditBeforeForward(page, idle);
+  await page.evaluate(() => history.forward());
+  await asks(asked, 1, page);
+  await page.waitForTimeout(200);
+  assert.equal(new URL(page.url()).pathname, "/admin/Event/1/edit", "the refused Forward leaves the page");
+  assert.equal(await page.getByLabel("Title").inputValue(), "Forward test", "the form keeps its edit");
+  // The entry after the page is still there: an accepted Forward reaches it.
+  accept = true;
+  await page.evaluate(() => history.forward());
+  await asks(asked, 2, page);
+  await page.waitForURL(`${base}/admin/Event/1`);
+  await idle();
+  assert.deepEqual(problems, []);
+  await context.close();
+});
+
+test("Back after a refused Forward goes to the entry before the page, not to the page again", async () => {
+  const { context, page, problems, idle } = await signedIn();
+  const asked = [];
+  let accept = false;
+  page.on("dialog", (d) => (asked.push(d.message()), accept ? d.accept() : d.dismiss()));
+  await dirtyEditBeforeForward(page, idle);
+  await page.evaluate(() => history.forward());
+  await asks(asked, 1, page);
+  await page.waitForTimeout(200);
+  accept = true;
+  await page.evaluate(() => history.back());
+  await asks(asked, 2, page);
+  await page.waitForURL(`${base}/admin/Event/1`);
+  await idle();
+  // One more Back reaches the list: the stack holds no copy of the edit page.
+  await page.evaluate(() => history.back());
+  await page.waitForURL(`${base}/admin/Event`);
+  assert.equal(asked.length, 2, "a clean page asks nothing");
+  await idle();
+  assert.deepEqual(problems, []);
+  await context.close();
+});
+
+test("a radio group takes the focus from the error summary, and a datetime that is edited and set back asks nothing", async () => {
+  const { context, page, problems, idle } = await signedIn();
+  const asked = [];
+  page.on("dialog", (d) => (asked.push(d.message()), d.dismiss()));
+  // A radio group with no value: the server refuses the save and the summary links to the group.
+  await page.goto(`${base}/admin/Gadget/-/new`);
+  await page.getByLabel("Name").fill("Gizmo");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.getByRole("group", { name: "1 field needs attention" }).waitFor();
+  assert.equal(await page.locator("form [role=alert]").count(), 0, "the failure shows under the summary only, not again as a message");
+  const group = page.getByRole("radiogroup", { name: "Tier" });
+  await page.getByRole("link", { name: "Tier" }).click();
+  assert.ok(await group.evaluate((e) => e === document.activeElement), "the link focuses the radio group");
+  await group.getByLabel("pro").check();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.waitForURL(/\/admin\/Gadget\/\d+$/);
+  assert.equal(asked.length, 0);
+  await idle();
+
+  // Event 2 stores whole minutes: the browser drops the zero seconds, so a value that goes out and back must still equal the start.
+  await page.goto(`${base}/admin/Event/2/edit`);
+  const starts = page.getByLabel("Starts");
+  const at = page.getByLabel("At", { exact: true });
+  assert.equal(await starts.inputValue(), "2026-01-02T07:30");
+  assert.equal(await at.inputValue(), "10:00");
+  await starts.fill("2026-01-02T07:45");
+  await at.fill("10:15");
+  await starts.fill("2026-01-02T07:30");
+  await at.fill("10:00");
+  await page.getByRole("link", { name: "Cancel" }).click();
+  await page.waitForURL(`${base}/admin/Event/2`);
+  assert.equal(asked.length, 0, "no question for a value that is back at the start");
+  await idle();
+  assert.deepEqual(problems, [`HTTP 422: ${base}/admin/api/resources/Gadget`, "console: Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)"]);
+  await context.close();
+});
+
+test("a new record saved with Save and continue opens its edit page, and the form there asks about its own changes", async () => {
+  const { context, page, problems, idle } = await signedIn();
+  const asked = [];
+  page.on("dialog", (d) => (asked.push(d.message()), d.dismiss()));
+  await page.goto(`${base}/admin/Gadget/-/new`);
+  await page.getByLabel("Name").fill("Continued");
+  await page.getByRole("radiogroup", { name: "Tier" }).getByLabel("pro").check();
+  await page.getByRole("button", { name: "Save and continue" }).click();
+  await page.waitForURL(/\/admin\/Gadget\/\d+\/edit$/);
+  await page.getByRole("heading", { name: "Change Gadget" }).waitFor();
+  assert.equal(await page.getByLabel("Name").inputValue(), "Continued");
+  assert.equal(asked.length, 0, "the save leaves with no question");
+  await idle();
+  // The edit page starts clean: Cancel asks nothing. A change makes it ask.
+  await page.getByRole("link", { name: "Cancel" }).click();
+  await page.waitForURL(/\/admin\/Gadget\/\d+$/);
+  assert.equal(asked.length, 0, "a clean edit page asks nothing");
+  await page.getByRole("link", { name: "Edit" }).click();
+  await page.waitForURL(/\/admin\/Gadget\/\d+\/edit$/);
+  await page.getByLabel("Name").fill("Changed");
+  await page.getByRole("link", { name: "Cancel" }).click();
+  await page.waitForTimeout(200);
+  assert.equal(asked.length, 1);
+  assert.match(page.url(), /\/edit$/);
+  await idle();
+  assert.deepEqual(problems, []);
+  await context.close();
+});
+
+test("closing the tab asks while the form has unsaved changes, and not after a save", async () => {
+  const { context, page, idle } = await signedIn();
+  const kinds = [];
+  page.on("dialog", (d) => (kinds.push(d.type()), d.dismiss()));
+  await page.goto(`${base}/admin/Event/1/edit`);
+  await page.getByRole("heading", { name: "Change Event" }).waitFor();
+  // A clean form closes with no question.
+  const other = await context.newPage();
+  await other.goto(`${base}/admin/Event/1/edit`);
+  await other.getByRole("heading", { name: "Change Event" }).waitFor();
+  await other.close({ runBeforeUnload: true });
+  assert.deepEqual(kinds, []);
+  // A user gesture is needed before the browser shows the question.
+  await page.getByLabel("Title").click();
+  await page.keyboard.type("x");
+  await page.close({ runBeforeUnload: true });
+  for (let i = 0; i < 40 && kinds.length < 1; i++) await new Promise((r) => setTimeout(r, 50));
+  assert.deepEqual(kinds, ["beforeunload"]);
+  assert.equal(page.isClosed(), false, "the user stayed");
+  await page.close();
+  await context.close();
+});
+
 test("a section layout with a collapsed section, and a custom form", async () => {
   const { context, page, problems, idle } = await signedIn();
   await page.goto(`${base}/admin/Book/-/new`);
   await page.getByRole("heading", { name: "Add Book" }).waitFor();
   await page.getByText("Basics", { exact: true }).waitFor();
-  const more = page.locator("details.section");
+  const more = page.locator("form details");
   assert.equal(await more.getAttribute("open"), null, "the collapsed section starts closed");
   assert.equal(await page.getByLabel("Author id").isVisible(), false);
   await more.locator("summary").click();
   await page.getByLabel("Author id").waitFor();
-  assert.equal(await page.locator("fieldset.section").count(), 1);
+  assert.equal(await page.locator("form fieldset").count(), 1);
 
   await idle();
   // The module of the resource replaces the form. The first save has no title, and the 422 comes back as `errors`.
@@ -770,6 +1024,43 @@ test("change an inline row and add another with the album, in one save", async (
   const rows = stored.inlines.tracks.rows.map((r) => JSON.stringify(r.values));
   assert.equal(rows.length, 2);
   assert.ok(rows[0].includes("Intro, revised") && rows[1].includes("Outro") && rows[1].includes("7"), rows.join(" | "));
+  await idle();
+  assert.deepEqual(problems, []);
+  await context.close();
+});
+
+test("a picker inside an inline table opens its whole list, not a clipped one", async () => {
+  const { context, page, problems, idle } = await signedIn();
+  await page.goto(`${base}/admin/Album/1/edit`);
+  await page.getByRole("heading", { name: "Change Album" }).waitFor();
+  const tracks = page.locator("details.inline");
+  await tracks.getByText("Tracks", { exact: true }).waitFor();
+  await tracks.getByRole("combobox").first().click();
+  const list = page.getByRole("listbox");
+  await list.getByRole("option").nth(5).waitFor();
+  // The point at the bottom edge of the list must hit the list: a table wrapper with `overflow-x: auto` would cut it off.
+  const hit = await list.evaluate((e) => {
+    const r = e.parentElement.getBoundingClientRect();
+    const el = document.elementFromPoint(r.left + r.width / 2, r.bottom - 3);
+    return el !== null && e.parentElement.contains(el);
+  });
+  assert.ok(hit, "the bottom of the list is on top of the page");
+  await idle();
+  assert.deepEqual(problems, []);
+  await context.close();
+});
+
+test("a detail page shows a card for each section of the resource, and one Details card when it has none", async () => {
+  const { context, page, problems, idle } = await signedIn();
+  await page.goto(`${base}/admin/Book/1`);
+  await page.getByRole("region", { name: "Basics" }).waitFor();
+  await page.getByRole("region", { name: "More" }).waitFor();
+  await page.getByRole("region", { name: "Other" }).waitFor();
+  assert.equal(await page.getByRole("region", { name: "Details" }).count(), 0, "a resource with sections has no Details card");
+  await page.getByRole("region", { name: "Basics" }).getByText("Title", { exact: true }).waitFor();
+  await page.goto(`${base}/admin/Event/1`);
+  await page.getByRole("region", { name: "Details" }).waitFor();
+  assert.equal(await page.getByRole("region").count(), 1, "one card holds every field");
   await idle();
   assert.deepEqual(problems, []);
   await context.close();

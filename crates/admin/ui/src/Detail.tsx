@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import * as api from "./api";
 import { cell, type Zone } from "./format";
@@ -10,6 +10,7 @@ import { ActionDialog, needsDialog, useQuick, type Target } from "./Actions";
 import { PackageTab, widgetCall, widgetStream } from "./Packages";
 import { ConfirmDialog } from "./components/confirm-dialog";
 import { buttonVariants } from "./components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
 import { Tabs, TabsList, TabsTrigger } from "./components/ui/tabs";
 import { Alert, Bypass, Button, message } from "./ui";
 
@@ -44,20 +45,7 @@ export function DetailPage({ resource, id, zone, site }: { resource: string; id:
         // One list per tab: the key resets the state of the list when the tab changes.
         <ListView key={tab.name} resource={tab.target} zone={zone} meta={target} params={params} change={change} scope={{ resource, key: id, rel: tab.name }} />
       ) : (
-        <dl className="fields">
-          {d.fields.map((f, i) => (
-            <div key={f.label}>
-              <dt>{f.title}</dt>
-              <dd>{f.widget === "json" && d.values[i] !== null && typeof d.values[i] === "object" ? <pre className="json-value">{JSON.stringify(d.values[i], null, 2)}</pre> : (cell(d.values[i], f, zone) || <span className="muted">{f.empty ?? "—"}</span>)}</dd>
-            </div>
-          ))}
-          {d.links.map((l) => (
-            <div key={l.name}>
-              <dt>{l.title}</dt>
-              <dd><Link href={detailUrl(l.resource, l.key)}>{l.resource} {decodeURIComponent(l.key)}</Link></dd>
-            </div>
-          ))}
-        </dl>
+        <DetailCards detail={d} sections={meta?.sections?.edit} zone={zone} />
       )}
       {!tab && !packageTab && meta && <InlineRowsView meta={meta} rows={d.inlines} zone={zone} />}
     </section>
@@ -170,3 +158,48 @@ function DetailTabs({ tabs, current, base }: { tabs: { name: string; title: stri
   );
 }
 const DETAILS = "__details__";
+
+const rowClass = "grid items-baseline gap-1 border-b border-border py-2.5 last:border-b-0 sm:grid-cols-[12rem_1fr] sm:gap-4";
+
+/** The fields of a record as cards: one per section of the resource, or one "Details" card when it has none. What no section names, and the links, go in the last card without a title (or a new "Other" card). */
+function DetailCards({ detail: d, sections, zone }: { detail: api.Detail; sections: api.Section[] | undefined; zone: Zone }) {
+  const row = (f: api.Column, i: number) => (
+    <div key={f.label} className={rowClass}>
+      <dt className="text-sm text-muted-foreground">{f.title}</dt>
+      <dd className="m-0 break-words">{f.widget === "json" && d.values[i] !== null && typeof d.values[i] === "object" ? <pre className="json-value rounded-md bg-muted p-3">{JSON.stringify(d.values[i], null, 2)}</pre> : (cell(d.values[i], f, zone) || <span className="text-muted-foreground">{f.empty ?? "—"}</span>)}</dd>
+    </div>
+  );
+  const links = d.links.map((l) => (
+    <div key={`link:${l.name}`} className={rowClass}>
+      <dt className="text-sm text-muted-foreground">{l.title}</dt>
+      <dd className="m-0 break-words"><Link href={detailUrl(l.resource, l.key)}>{l.resource} {decodeURIComponent(l.key)}</Link></dd>
+    </div>
+  ));
+  const named = new Set((sections ?? []).flatMap((s) => s.fields));
+  const titled = (sections ?? []).some((s) => s.title);
+  const cards: { title: string; rows: ReactNode[]; plain: boolean }[] = (sections ?? []).map((s) => ({
+    title: s.title ?? (titled ? "Other" : "Details"),
+    plain: !s.title,
+    rows: s.fields.flatMap((n) => { const i = d.fields.findIndex((f) => f.label === n); return i < 0 ? [] : [row(d.fields[i] as api.Column, i)]; }),
+  }));
+  const rest = [...d.fields.flatMap((f, i) => (named.has(f.label) ? [] : [row(f, i)])), ...links];
+  const last = [...cards].reverse().find((c) => c.plain);
+  if (rest.length > 0) {
+    if (last) last.rows.push(...rest);
+    else cards.push({ title: cards.length === 0 ? "Details" : "Other", plain: true, rows: rest });
+  }
+  return (
+    <>
+      {cards.filter((c) => c.rows.length > 0).map((c, i) => (
+        <Card key={i} className="mb-4" role="region" aria-labelledby={`detail-card-${i}`}>
+          <CardHeader>
+            <CardTitle id={`detail-card-${i}`}>{c.title}</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <dl className="m-0">{c.rows}</dl>
+          </CardContent>
+        </Card>
+      ))}
+    </>
+  );
+}

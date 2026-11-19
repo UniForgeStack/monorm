@@ -100,71 +100,25 @@
 @layer components {
   .muted { color: var(--muted-foreground); font-weight: normal; }
   .center { min-height: 100vh; display: grid; place-items: center; padding: 1rem; }
-  .fields { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: .5rem 1rem; }
-  .fields > div { display: grid; grid-template-columns: 12rem 1fr; padding: .5rem 0; border-bottom: 1px solid var(--border); }
-  .fields > div:last-child { border-bottom: 0; }
-  .fields dt { color: var(--muted-foreground); }
-  .fields dd { margin: 0; overflow-wrap: anywhere; }
   .field { display: flex; flex-direction: column; gap: .25rem; margin-bottom: 1rem; }
   .field input { padding: .5rem; border: 1px solid var(--input); border-radius: 4px; font: inherit; }
   .toolbar { display: flex; gap: 1rem; align-items: center; justify-content: space-between; margin-bottom: 1rem; flex-wrap: wrap; }
-
-  .chips { display: flex; flex-wrap: wrap; gap: .25rem; }
-  .chip { display: inline-flex; gap: .25rem; align-items: center; padding: .1rem .4rem; border: 1px solid var(--border); border-radius: 999px; }
-  .chip button { border: 0; background: none; cursor: pointer; font: inherit; }
-  .tabs { display: flex; gap: .25rem; border-bottom: 1px solid var(--border); margin-bottom: 1rem; }
-  .tab { border: 0; border-bottom: 2px solid transparent; background: none; padding: .4rem .75rem; font: inherit; cursor: pointer; color: var(--muted-foreground); }
-  .tab-on { border-bottom-color: var(--primary); color: inherit; }
   .actions { display: flex; gap: .5rem; margin-bottom: 1rem; }
 
-  .form { max-width: 40rem; padding-bottom: 4.5rem; }
-  .field textarea, .field select { padding: .5rem; border: 1px solid var(--border); border-radius: 4px; font: inherit; }
+  .chips { list-style: none; margin: 0 0 .5rem; padding: 0; display: flex; flex-wrap: wrap; gap: .4rem; }
+  .chip { display: inline-flex; align-items: center; gap: .35rem; padding: .15rem .25rem .15rem .6rem; border: 1px solid var(--border); border-radius: 999px; background: var(--card); }
+  .chip button { border: 0; background: none; cursor: pointer; font: inherit; line-height: 1; padding: .1rem .35rem; color: var(--muted-foreground); }
+
   .json-value { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .85rem; white-space: pre-wrap; overflow-wrap: anywhere; }
-  .field textarea.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .85rem; }
-  .field input[type="checkbox"] { align-self: flex-start; padding: 0; }
-  .field input[type="radio"] { padding: 0; }
-  .radios { display: flex; flex-wrap: wrap; gap: .25rem 1rem; }
-  .radio { display: inline-flex; gap: .35rem; align-items: center; }
-  fieldset.section, details.section { border: 1px solid var(--border); border-radius: 4px; padding: .75rem 1rem 0; margin: 0 0 1rem; }
-  .section legend, .section summary { font-weight: 600; padding: 0 .25rem; }
-  details.section[open] summary { margin-bottom: .75rem; }
   .field-bad input, .field-bad textarea, .field-bad select { border-color: var(--destructive); }
   .msg { margin: 0; font-size: .9rem; }
   .msg-error { color: var(--destructive); }
   .req { color: var(--destructive); }
-  .linkish { font: inherit; color: var(--primary); background: none; border: 0; padding: 0; text-decoration: underline; cursor: pointer; }
-  .savebar { position: sticky; bottom: 0; display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; padding: .75rem; background: var(--accent); border-top: 1px solid var(--border); }
-  .cancel { margin-left: auto; }
 
-  /* Relation fields: the picker, the chips, the create modal and the file field. */
-  .combo { position: relative; }
-  .combo input { width: 100%; box-sizing: border-box; }
-  .combo-pop { position: absolute; z-index: 5; left: 0; right: 0; top: 100%; margin-top: 2px; background: var(--card); border: 1px solid var(--border); border-radius: 4px; box-shadow: 0 4px 12px rgb(0 0 0 / 15%); max-height: 18rem; overflow-y: auto; }
-  .combo-list { list-style: none; margin: 0; padding: 0; }
-  .combo-opt { padding: .4rem .6rem; cursor: pointer; }
-  .combo-on, .combo-opt:hover { background: var(--accent); }
-  .combo-note { margin: 0; padding: .4rem .6rem; }
-  .combo-foot { display: flex; gap: 1rem; padding: .4rem .6rem; border-top: 1px solid var(--border); }
-  .combo-foot:empty { display: none; }
-  .picker { display: flex; align-items: center; gap: .75rem; }
-  .picker .combo { flex: 1; }
-  .chips { list-style: none; margin: 0 0 .5rem; padding: 0; display: flex; flex-wrap: wrap; gap: .4rem; }
-  .chip { display: inline-flex; align-items: center; gap: .35rem; padding: .15rem .25rem .15rem .6rem; border: 1px solid var(--border); border-radius: 999px; background: var(--card); }
-  .chip button { border: 0; background: none; cursor: pointer; font: inherit; line-height: 1; padding: .1rem .35rem; color: var(--muted-foreground); }
   .dialog { width: min(36rem, 92vw); border: 1px solid var(--border); border-radius: 6px; padding: 1rem 1.25rem; }
   .dialog::backdrop { background: rgb(0 0 0 / 50%); }
-  .dialog .form { padding-bottom: 0; }
-  .file-now { margin: 0 0 .5rem; }
 
-  /* Inlines: the rows of a child model on the form of the parent */
-  .inline-table { border-collapse: collapse; width: 100%; margin-bottom: .75rem; }
-  .inline-table th, .inline-table td { text-align: left; vertical-align: top; padding: .25rem .5rem .25rem 0; }
-  .inline-table th { font-size: .8rem; color: var(--muted-foreground); }
-  .inline-table input:not([type="checkbox"]), .inline-table select, .inline-table textarea { width: 100%; box-sizing: border-box; padding: .35rem; border: 1px solid var(--input); border-radius: 4px; font: inherit; }
-  .inline-removed { opacity: .5; text-decoration: line-through; }
-  .inline-actions { display: flex; gap: .5rem; align-items: center; white-space: nowrap; }
-  .inline-view { margin-top: 1.5rem; }
-  fieldset.section.inline-removed { opacity: .5; }
+  .inline-removed { text-decoration: line-through; }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
   tr[aria-selected="true"] { background: var(--accent); }
