@@ -1,5 +1,6 @@
 //! Shared-primary-key writes of the composition package on SQLite, and on PostgreSQL when `ORM_TEST_DATABASE_URL` is set.
 use monorm::ir::SchemaIr;
+use std::sync::Arc;
 use monorm_core::{
     dialect::{Dialect, Target},
     migrate,
@@ -330,11 +331,13 @@ fn composed_models_write_read_and_roll_back_together() {
         check("sqlite://:memory:").await;
         check_missing_cascade("sqlite://:memory:").await;
         check_cascade_cache("sqlite://:memory:").await;
+        check_root_delete("sqlite://:memory:").await;
         check_sqlite_cascade_names("sqlite://:memory:").await;
         if let Ok(url) = std::env::var("ORM_TEST_DATABASE_URL") {
             check(&url).await;
             check_missing_cascade(&url).await;
             check_cascade_cache(&url).await;
+            check_root_delete(&url).await;
         }
     });
 }
@@ -442,5 +445,32 @@ async fn check_sqlite_cascade_names(url: &str) {
     let failed = delete_all(off.as_ref(), &schema, target, "Manager").await;
     assert!(failed.is_err_and(|e| e.to_string().contains("PRAGMA foreign_keys = ON")));
     off.close().await;
+    db.close().await;
+}
+
+/// A delete of the root model checks the level keys too, on the plain path and on the prepared one.
+async fn check_root_delete(url: &str) {
+    let dialect = if url.starts_with("sqlite:") { Dialect::Sqlite } else { Dialect::Postgres };
+    let schema = Schema::from_ir(composed(dialect)).unwrap();
+    let target = Target::new(dialect);
+    let db = db::connect(url, 1).await.unwrap();
+    let op = monorm_engine::parse_op(r#"{"op":"delete","model":"Person"}"#).unwrap();
+    let prepared = monorm_engine::prepared_write::PreparedWrite::prepare(&schema, target, &op, 0, &[]).unwrap();
+    let run_prepared = |db: &Arc<dyn db::Driver>| {
+        let (db, prepared) = (db.clone(), &prepared);
+        async move { prepared.run(db.as_ref(), prepared.call(&NoParams).unwrap()).await }
+    };
+    make_tables(db.as_ref(), &schema, dialect, "").await;
+    let failed = delete_all(db.as_ref(), &schema, target, "Person").await;
+    assert!(failed.is_err_and(|e| e.to_string().contains("manager.id") && !e.to_string().contains("employee.id")));
+    let failed = run_prepared(&db).await;
+    assert!(failed.is_err_and(|e| e.to_string().contains("manager.id")));
+    make_tables(db.as_ref(), &schema, dialect, " ON DELETE CASCADE").await;
+    delete_all(db.as_ref(), &schema, target, "Person").await.unwrap();
+    run_prepared(&db).await.unwrap();
+    for statement in migrate::drop_all(&schema).unwrap() {
+        db.batch(statement).await.unwrap();
+    }
+    db.batch("DROP TABLE IF EXISTS manager; DROP TABLE IF EXISTS employee; DROP TABLE IF EXISTS customer; DROP TABLE IF EXISTS person".into()).await.unwrap();
     db.close().await;
 }

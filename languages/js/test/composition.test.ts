@@ -1,7 +1,7 @@
 /** Model composition through the public API; needs the monorm/extensions/model-composition package. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { connect, IntegrityError, TransactionAborted, loads, Registry, scope, statementInspection, type InspectedStatement } from "../src/index.js";
+import { connect, IntegrityError, TransactionAborted, loads, param, Registry, scope, statementInspection, type InspectedStatement } from "../src/index.js";
 import { hasExtension } from "./artifact-caps.js";
 
 const enabled = hasExtension("monorm.composition");
@@ -158,6 +158,30 @@ for (const provider of ["sqlite", "postgresql"]) {
       assert.deepEqual(await Promise.all([Person, Employee, Manager].map((model) => objects(model).count())), [1, 1, 1]);
     } finally {
       for (const table of ["managers", "employees", "customers", "people"]) await db.execute(`DROP TABLE composition06_node_${table}`);
+      await db.close();
+    }
+  });
+  test(`a delete of the root model over tables without a cascade fails and deletes nothing (${provider})`, { skip: !enabled || !url }, async () => {
+    const registry = new Registry();
+    const models = loads(`datasource db {\n provider = "${provider}"\n}\n${source}`, { registry });
+    const [Person, Employee, Manager] = ["Person", "Employee", "Manager"].map((name) => models[name]!);
+    const field = (model: unknown, name: string) => (model as Record<string, { eq(value: unknown): unknown }>)[name]!;
+    const db = await connect(url!, { registry, default: false });
+    const objects = (model: unknown) => (model as { objects: { using(db: unknown): Objects } }).objects.using(db);
+    try {
+      await handMadeTables(db, "id INTEGER PRIMARY KEY REFERENCES composition06_node_employees (id)");
+      for (const statement of [
+        "INSERT INTO composition06_node_people (id, name) VALUES (1, 'Alice')",
+        "INSERT INTO composition06_node_employees (id, salary) VALUES (1, 5)",
+        "INSERT INTO composition06_node_managers (id, level) VALUES (1, 1)",
+      ]) await db.execute(statement);
+      const message = /ON DELETE CASCADE.*composition06_node_managers\.id/;
+      await assert.rejects(async () => { await objects(Person).filter(field(Person, "name").eq("Alice")).delete(); }, message);
+      const drop = (objects(Person).filter(field(Person, "name").eq(param("n"))) as unknown as { delete(): { prepare(): { run(args: Row): Promise<number> } } }).delete().prepare();
+      await assert.rejects(drop.run({ n: "Alice" }), message);
+      assert.deepEqual(await Promise.all([Person, Employee, Manager].map((model) => objects(model).count())), [1, 1, 1]);
+    } finally {
+      await dropHandMadeTables(db);
       await db.close();
     }
   });

@@ -171,6 +171,34 @@ async def _drop_hand_made_tables(db):
 
 
 @pytest.mark.parametrize("provider", ["sqlite", "postgresql"])
+async def test_a_delete_of_the_root_model_over_tables_without_a_cascade_fails_and_deletes_nothing(provider):
+    url = "sqlite://:memory:" if provider == "sqlite" else os.environ.get("ORM_TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("set ORM_TEST_DATABASE_URL for PostgreSQL")
+    registry = monorm.Registry()
+    models = monorm.loads(f'datasource db {{\n provider = "{provider}"\n}}\n' + SOURCE, registry=registry)
+    Person, Employee, Manager = (models[k] for k in ("Person", "Employee", "Manager"))
+    db = await monorm.connect(url, registry=registry, default=False)
+    try:
+        await _hand_made_tables(db, "id INTEGER PRIMARY KEY REFERENCES composition06_employees (id)")
+        for statement in (
+            "INSERT INTO composition06_people (id, name) VALUES (1, 'Alice')",
+            "INSERT INTO composition06_employees (id, salary) VALUES (1, 5)",
+            "INSERT INTO composition06_managers (id, level) VALUES (1, 1)",
+        ):
+            await db.execute(statement)
+        with pytest.raises(monorm.QueryError, match="ON DELETE CASCADE.*composition06_managers.id"):
+            await Person.objects.using(db).filter(Person.name == "Alice").delete()
+        drop = Person.objects.using(db).filter(Person.name == monorm.param("n")).delete().prepare()
+        with pytest.raises(monorm.QueryError, match="ON DELETE CASCADE.*composition06_managers.id"):
+            await drop(n="Alice")
+        assert [await m.objects.using(db).count() for m in (Person, Employee, Manager)] == [1, 1, 1]
+    finally:
+        await _drop_hand_made_tables(db)
+        await db.close()
+
+
+@pytest.mark.parametrize("provider", ["sqlite", "postgresql"])
 async def test_a_composed_delete_checks_the_cascades_again_after_a_script_changes_them(provider):
     url = "sqlite://:memory:" if provider == "sqlite" else os.environ.get("ORM_TEST_DATABASE_URL")
     if not url:

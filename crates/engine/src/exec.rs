@@ -72,7 +72,8 @@ pub async fn run_in(conn: &dyn Executor, target: Target, plan: Plan, own_tx: boo
             let (sql, args) = db::build(d, &s);
             count_or_rows(conn, sql, args, returning).await?
         }
-        Plan::Delete(s, returning) => {
+        Plan::Delete(s, returning, cascades) => {
+            if let Some(cascades) = cascades { cascades.check(conn, conn).await?; }
             let (sql, args) = db::build(d, &s);
             count_or_rows(conn, sql, args, returning).await?
         }
@@ -96,7 +97,7 @@ pub fn sql(target: Target, plan: &Plan) -> String {
         Plan::Count(s) | Plan::Exists(s) => db::to_string(d, s),
         Plan::Update(s, _) => db::to_string(d, s),
         Plan::RowUpdate(s, _) => db::to_string(d, s),
-        Plan::Delete(s, _) => db::to_string(d, s),
+        Plan::Delete(s, ..) => db::to_string(d, s),
         Plan::Insert(s, _) => db::to_string(d, s),
         Plan::MultiTableInsert(_) => "-- Multi-table insert executes ancestor inserts and a final read in one transaction".into(),
         Plan::MultiTableMutation(_) => "-- Multi-table mutation captures identities and writes owners in one transaction".into(),
@@ -111,7 +112,7 @@ pub fn statement(target: Target, plan: &Plan) -> String {
         Plan::Count(s) | Plan::Exists(s) => db::build(d, s).0,
         Plan::Update(s, _) => db::build(d, s).0,
         Plan::RowUpdate(s, _) => db::build(d, s).0,
-        Plan::Delete(s, _) => db::build(d, s).0,
+        Plan::Delete(s, ..) => db::build(d, s).0,
         Plan::Insert(s, _) => db::build(d, s).0,
         Plan::MultiTableInsert(_) | Plan::MultiTableMutation(_) => sql(target, plan),
     }

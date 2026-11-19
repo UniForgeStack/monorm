@@ -478,9 +478,8 @@ pub struct Mutation {
     assignments: Vec<Assignment>,
     returning: bool,
     delete: bool,
-    /// The level keys that the root delete removes through `ON DELETE CASCADE`, and the key of the check in the cascade cache.
-    cascades: Vec<crate::introspect::LevelKey>,
-    cascade_key: String,
+    /// The level keys that the root delete removes through `ON DELETE CASCADE`.
+    cascades: Cascades,
     /// A hard delete: the root trigger of database mode can soft-delete a live row, so the delete may affect no row.
     hard: bool,
 }
@@ -593,8 +592,7 @@ fn mutation(
         assignments: vec![],
         returning,
         delete,
-        cascades: vec![],
-        cascade_key: String::new(),
+        cascades: Cascades::default(),
         hard: false,
     })
 }
@@ -630,14 +628,7 @@ pub fn prepare_delete(
         let root = owner_chain(schema, logical.owner).last().map_or(logical.owner, |link| link.parent);
         plan.delete_table = owners[root.0].table().into();
         plan.delete_key = owners[root.0].pk_field().clone();
-        // Every level under the root, sibling levels included, goes with the root row.
-        let under_root = |link: &&PreparedOwnerLink| owner_chain(schema, link.child).last().map_or(link.parent, |top| top.parent) == root;
-        plan.cascades = schema.owner_links.iter().filter(under_root).map(|link| crate::introspect::LevelKey {
-            table: owners[link.child.0].table().into(),
-            column: owners[link.child.0].fields()[link.child_key].column.clone(),
-            parent: owners[link.parent.0].table().into(),
-        }).collect();
-        plan.cascade_key = plan.cascades.iter().map(|k| format!("{}.{}.{}", k.table, k.column, k.parent)).collect::<Vec<_>>().join(",");
+        plan.cascades = Cascades::under(schema, root);
     }
     if let Some(rewrite) = rewrite {
         let owners = &schema.physical().models;
@@ -739,20 +730,51 @@ async fn read_rows(exec: &dyn Executor, target: Target, plan: &Mutation, keys: &
     Ok(rows)
 }
 
-/// A root delete removes the other levels only through `ON DELETE CASCADE`: tables made by hand or by
-/// Django have none, so the delete fails with a raw error or leaves rows behind.
-async fn check_cascades(conn: &dyn Executor, exec: &dyn Executor, plan: &Mutation) -> Result<()> {
-    if plan.cascades.is_empty() { return Ok(()); }
-    let cache = conn.cascade_cache();
-    if cache.is_some_and(|c| c.contains(&plan.cascade_key)) { return Ok(()); }
-    let missing = crate::introspect::missing_cascades(exec, &plan.cascades).await?;
-    if !missing.is_empty() {
-        return Err(Error::query(format!(
-            "a composed delete needs ON DELETE CASCADE on each level key, and none is in force on {}; add it, for example ALTER TABLE <table> DROP CONSTRAINT <fkey>, ADD FOREIGN KEY (<column>) REFERENCES <parent> (<key>) ON DELETE CASCADE (on SQLite, PRAGMA foreign_keys = ON)",
-            missing.join(", "))));
+/// The level keys that a delete of a chain root removes through `ON DELETE CASCADE`.
+#[derive(Default)]
+pub struct Cascades {
+    keys: Vec<crate::introspect::LevelKey>,
+    /// The entry of the check in the cascade cache.
+    id: String,
+}
+
+impl Cascades {
+    /// Every level under `root`, sibling levels included, goes with the root row.
+    pub fn under(schema: &Schema, root: OwnerId) -> Self {
+        let owners = &schema.physical().models;
+        let under_root = |link: &&PreparedOwnerLink| owner_chain(schema, link.child).last().map_or(link.parent, |top| top.parent) == root;
+        let keys: Vec<_> = schema.owner_links.iter().filter(under_root).map(|link| crate::introspect::LevelKey {
+            table: owners[link.child.0].table().into(),
+            column: owners[link.child.0].fields()[link.child_key].column.clone(),
+            parent: owners[link.parent.0].table().into(),
+        }).collect();
+        let id = keys.iter().map(|k| format!("{}.{}.{}", k.table, k.column, k.parent)).collect::<Vec<_>>().join(",");
+        Cascades { keys, id }
     }
-    if let Some(cache) = cache { cache.insert(plan.cascade_key.clone()); }
-    Ok(())
+
+    /// The cascades of a delete of `model`: none unless it is the root of a composition.
+    pub fn of_model(schema: &Schema, model: &str) -> Result<Option<Self>> {
+        let logical = schema.model(schema.model_idx(model).map_err(query_err)?);
+        let root = owner_chain(schema, logical.owner).last().map_or(logical.owner, |link| link.parent);
+        Ok(Some(Self::under(schema, root)).filter(|c| !c.keys.is_empty()))
+    }
+
+    /// A delete removes the other levels only through `ON DELETE CASCADE`: tables made by hand or by
+    /// Django have none, so the delete fails with a raw error or leaves rows behind.
+    /// `conn` holds the cache of passed checks; `exec` runs the reads.
+    pub async fn check(&self, conn: &dyn Executor, exec: &dyn Executor) -> Result<()> {
+        if self.keys.is_empty() { return Ok(()); }
+        let cache = conn.cascade_cache();
+        if cache.is_some_and(|c| c.contains(&self.id)) { return Ok(()); }
+        let missing = crate::introspect::missing_cascades(exec, &self.keys).await?;
+        if !missing.is_empty() {
+            return Err(Error::query(format!(
+                "a composed delete needs ON DELETE CASCADE on each level key, and none is in force on {}; add it, for example ALTER TABLE <table> DROP CONSTRAINT <fkey>, ADD FOREIGN KEY (<column>) REFERENCES <parent> (<key>) ON DELETE CASCADE (on SQLite, PRAGMA foreign_keys = ON)",
+                missing.join(", "))));
+        }
+        if let Some(cache) = cache { cache.insert(self.id.clone()); }
+        Ok(())
+    }
 }
 
 pub async fn run_mutation(conn: &dyn Executor, target: Target, plan: Mutation, own_tx: bool) -> Result<Outcome> {
@@ -762,7 +784,7 @@ pub async fn run_mutation(conn: &dyn Executor, target: Target, plan: Mutation, o
         None => conn,
     };
     let result = async {
-        if plan.delete { check_cascades(conn, exec, &plan).await?; }
+        if plan.delete { plan.cascades.check(conn, exec).await?; }
         let (sql, args) = db::build(target.dialect, &plan.matched);
         let matched = exec.query(sql, args).await?;
         let mut keys = vec![];

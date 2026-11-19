@@ -169,7 +169,7 @@ mod read_flags {
                     "set":[{"field":"active","value":{"t":"int","value":0}}]})).unwrap();
                 match Planner::plan(&schema, Target::new(Dialect::Postgres), &operation, &NoParams).unwrap() {
                     Plan::Update(stmt, _) => monorm_engine::db::build(Dialect::Postgres, &stmt).0,
-                    Plan::Delete(stmt, _) => monorm_engine::db::build(Dialect::Postgres, &stmt).0,
+                    Plan::Delete(stmt, ..) => monorm_engine::db::build(Dialect::Postgres, &stmt).0,
                     _ => panic!("write"),
                 }
             };
@@ -430,7 +430,7 @@ fn neutral_defaults_apply_to_reads_writes_and_returned_shapes() {
                 let plan = Planner::plan(&schema, Target::new(dialect), &operation, &NoParams).unwrap();
                 let (sql, shaped) = match plan {
                     Plan::Update(stmt, returned) => (db::build(dialect, &stmt).0, returned.unwrap().2.is_some()),
-                    Plan::Delete(stmt, returned) => (db::build(dialect, &stmt).0, returned.unwrap().2.is_some()),
+                    Plan::Delete(stmt, returned, _) => (db::build(dialect, &stmt).0, returned.unwrap().2.is_some()),
                     _ => panic!("write"),
                 };
                 assert_eq!(sql.contains(" WHERE "), !bypass, "{sql}");
@@ -704,7 +704,7 @@ fn bypass_by_name_reaches_updates_deletes_and_joins() {
         let operation: Operation = serde_json::from_value(raw).unwrap();
         let sql = match Planner::plan(&schema, Target::new(Dialect::Postgres), &operation, &NoParams).unwrap() {
             Plan::Update(stmt, _) => monorm_engine::db::build(Dialect::Postgres, &stmt).0,
-            Plan::Delete(stmt, _) => monorm_engine::db::build(Dialect::Postgres, &stmt).0,
+            Plan::Delete(stmt, ..) => monorm_engine::db::build(Dialect::Postgres, &stmt).0,
             _ => panic!("write"),
         };
         assert!(sql.contains("\"active\"") && !sql.contains("\"tenant\" ="), "{sql}");
@@ -785,7 +785,7 @@ fn a_default_filter_may_use_a_to_one_path_in_like_arith_and_functions() {
                 let operation = serde_json::from_value(json!({"op":op,"model":"Selected","set":[{"field":"title","value":{"t":"text","value":"u"}}]})).unwrap();
                 let sql = match Planner::plan(&schema, Target::new(dialect), &operation, &NoParams).unwrap() {
                     Plan::Update(stmt, _) => db::build(dialect, &stmt).0,
-                    Plan::Delete(stmt, _) => db::build(dialect, &stmt).0,
+                    Plan::Delete(stmt, ..) => db::build(dialect, &stmt).0,
                     _ => panic!("write"),
                 };
                 assert!(sql.contains(needle) && sql.contains(" WHERE "), "{op} {filter}: {sql}");

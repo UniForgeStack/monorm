@@ -286,7 +286,7 @@ pub(crate) fn statements(plan: &Plan, target: Target) -> Vec<(String, Vec<Value>
         Plan::Count(s) | Plan::Exists(s) => vec![db::build(d, s)],
         Plan::Update(s, _) => vec![db::build(d, s)],
         Plan::RowUpdate(s, _) => vec![db::build(d, s)],
-        Plan::Delete(s, _) => vec![db::build(d, s)],
+        Plan::Delete(s, ..) => vec![db::build(d, s)],
         Plan::Insert(s, _) => vec![db::build(d, s)],
         _ => vec![],
     }

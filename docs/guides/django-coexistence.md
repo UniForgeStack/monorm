@@ -73,7 +73,7 @@ On an update, Django writes back the stored `updated_at`. The database trigger s
 ### Composed models over Django multi-table tables
 
 A Django multi-table model (a child with a `OneToOneField` parent link) matches a `@@composition.model` of monorm.
-`delete()` and `hard_delete()` through a composed model send one `DELETE` to the root row and rely on `ON DELETE CASCADE` of each level key.
+`delete()` and `hard_delete()` through a composed model, and a delete of its root model that removes the row, send one `DELETE` to the root row and rely on `ON DELETE CASCADE` of each level key.
 Django creates that key without a database cascade, so monorm raises `QueryError` that names the level key and deletes nothing.
 Add the cascade once for each level key (PostgreSQL; the constraint name comes from `\d <table>`).
 Keep `DEFERRABLE INITIALLY DEFERRED`, the way Django creates the key:

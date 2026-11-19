@@ -94,6 +94,8 @@ pub struct PreparedWrite {
     returned: Option<Returned>,
     inspection: String,
     context: bool,
+    /// The level keys of a composition root that a delete removes through `ON DELETE CASCADE`.
+    cascades: Option<crate::multi_table::Cascades>,
 }
 
 impl PreparedWrite {
@@ -128,15 +130,15 @@ impl PreparedWrite {
             s.nullable = sets.contains(&needle) && !filters.contains(&needle);
         }
         let inspection = serde_json::to_string(&crate::inspect::Inspection::plans(std::slice::from_ref(&base.plan), false)).map_err(|e| Error::query(e.to_string()))?;
-        let returned = match base.plan {
-            Plan::Update(_, r) | Plan::Delete(_, r) => r,
-            Plan::RowUpdate(_, r) => r,
-            _ => None,
+        let (returned, cascades) = match base.plan {
+            Plan::Update(_, r) | Plan::RowUpdate(_, r) => (r, None),
+            Plan::Delete(_, r, c) => (r, c),
+            _ => (None, None),
         };
         let (sql, _) = texts.into_iter().next().expect("a statement");
         let main = Template { sql, args: args.remove(0) };
         let context = computed_of(&returned);
-        Ok(Self { target, main, slots, scope, returned, inspection, context })
+        Ok(Self { target, main, slots, scope, returned, inspection, context, cascades })
     }
 
     /// Converts the call's parameters: the slot values, and the context a hook reads.
@@ -164,6 +166,7 @@ impl PreparedWrite {
     }
 
     pub async fn run(&self, conn: &dyn Executor, call: Call) -> Result<Outcome> {
+        if let Some(cascades) = &self.cascades { cascades.check(conn, conn).await?; }
         let (sql, args) = self.statement(&call);
         Ok(match &self.returned {
             None => Outcome::Affected(conn.execute(sql, args).await?),

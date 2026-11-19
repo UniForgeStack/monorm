@@ -183,8 +183,9 @@ pub enum Plan {
     Update(UpdateStatement, Option<Returned>),
     /// A row-assignment update and the model and column types of its returned rows.
     RowUpdate(RowUpdate, Option<Returned>),
-    /// The model and column types of the returned rows when the delete has `RETURNING`.
-    Delete(DeleteStatement, Option<Returned>),
+    /// The model and column types of the returned rows when the delete has `RETURNING`, and the level keys
+    /// of a composition root that the delete removes through `ON DELETE CASCADE`.
+    Delete(DeleteStatement, Option<Returned>, Option<crate::multi_table::Cascades>),
     /// The model and column types of the returned rows when the insert has `RETURNING`.
     Insert(InsertStatement, Option<Returned>),
     MultiTableInsert(Box<crate::multi_table::Insert>),
@@ -1077,7 +1078,7 @@ impl<'s> Planner<'s> {
                     stmt.with_cte(w);
                 }
                 within_param_cap(target, &stmt, "write")?;
-                Plan::Delete(stmt, p.returned(types)?)
+                Plan::Delete(stmt, p.returned(types)?, crate::multi_table::Cascades::of_model(schema, &q.model)?)
             }
             Operation::Compound(_) => unreachable!("planned above"),
         })
