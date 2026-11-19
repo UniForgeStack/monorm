@@ -691,10 +691,13 @@ mod reference_tests {
     #[test]
     fn python_query_sets_reject_hard_keywords() {
         let (ir, schema) = schema();
-        for target in ["None:Q", "app.class:Q", "app:class", "app:False", "async:Q"] {
+        for (target, message) in [("None:Q", "absolute module name"), ("app.class:Q", "absolute module name"), ("app:class", "module:Class"), ("app:False", "module:Class"), ("async:Q", "absolute module name"), ("./queries.js#PostQueries", "module:Class")] {
             let options = Options { query_sets: [("Post".into(), target.into())].into(), ..Options::default() };
-            assert!(python::generate_with(&ir, &schema, "s", &options).is_err(), "{target}");
+            let error = python::generate_with(&ir, &schema, "s", &options).err().unwrap();
+            assert!(error.contains(message), "{target}: {error}");
         }
+        let options = Options { query_sets: [("Missing".into(), "app.queries:PostQueries".into())].into(), ..Options::default() };
+        assert!(python::generate_with(&ir, &schema, "s", &options).err().unwrap().contains("no model Missing"));
     }
 
     #[test]

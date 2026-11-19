@@ -88,6 +88,10 @@ fn a_char_n_parameter_compares_as_bpchar() {
     assert!(sql.ends_with(r#"WHERE "notes"."code" = (CAST($1 AS bpchar))"#), "{sql}");
     let sql = plan(Dialect::Postgres, vec![col("id")], vec![eq("codes")]).unwrap();
     assert!(!sql.contains("bpchar"), "{sql}");
+    // The schema has no `write_sql` on the column, as an IR from a generated module has none.
+    let member = json!({"t":"in","item":col("code"),"values":[text("ab")],"neg":false});
+    let sql = plan(Dialect::Postgres, vec![col("id")], vec![member]).unwrap();
+    assert!(sql.contains("bpchar"), "{sql}");
 }
 
 #[test]
@@ -204,4 +208,39 @@ fn split_part_random_and_substr_with_expressions() {
     assert!(sqlite.contains("RANDOM() / 18446744073709551616.0"), "{sqlite}");
     let substr = func("substr", vec![col("title"), func("length", vec![col("title")])]);
     assert_eq!(plan(Dialect::Postgres, vec![substr], vec![]).unwrap(), r#"SELECT SUBSTR("notes"."title", LENGTH("notes"."title")) FROM "notes""#);
+}
+
+#[test]
+fn array_agg_plan_errors() {
+    let schema = Schema::from_ir(serde_json::from_value(json!({"dialect":"postgres","models":[
+        {"name":"User","table":"users","fields":[
+            {"name":"id","column":"id","type":"int","primary_key":true}],
+         "relations":[{"name":"posts","kind":"many","target":"Post","from":"id","to":"user_id"},
+                      {"name":"comments","kind":"many","target":"Comment","from":"id","to":"user_id"}]},
+        {"name":"Post","table":"posts","fields":[
+            {"name":"id","column":"id","type":"int","primary_key":true},
+            {"name":"user_id","column":"user_id","type":"int"},
+            {"name":"title","column":"title","type":"text"},
+            {"name":"views","column":"views","type":"int"}]},
+        {"name":"Comment","table":"comments","fields":[
+            {"name":"id","column":"id","type":"int","primary_key":true},
+            {"name":"user_id","column":"user_id","type":"int"},
+            {"name":"body","column":"body","type":"text"}]}
+    ]})).unwrap()).unwrap();
+    let plan = |model: &str, column: Value| -> String {
+        let columns = json!([{"t":"expr","expr":column}]);
+        let op: Operation = serde_json::from_value(json!({"op":"select","model":model,"columns":columns})).unwrap();
+        Planner::plan(&schema, Target::new(Dialect::Postgres), &op, &NoParams).err().expect("the plan must fail").to_string()
+    };
+    let path = |rel: &[&str], name: &str| json!({"t":"col","path":rel,"name":name});
+    let order = |expr: Value| json!([{"expr":expr}]);
+    let agg = |name: &str, arg: Value, order_by: Value| json!({"t":"func","name":name,"args":[arg],"order_by":order_by});
+    let error = plan("Post", agg("sum", path(&[], "views"), order(path(&[], "views"))));
+    assert!(error.contains("takes no order_by"), "{error}");
+    let window = json!({"t":"window","func":agg("array_agg", path(&[], "title"), order(path(&[], "views"))),"partition_by":[path(&[], "user_id")]});
+    let error = plan("Post", window);
+    assert!(error.contains("can't be a window function"), "{error}");
+    let mixed = agg("array_agg", path(&["posts"], "title"), order(path(&["comments"], "body")));
+    let error = plan("User", mixed);
+    assert!(error.contains("over relations needs all its columns on one relation path"), "{error}");
 }

@@ -225,6 +225,18 @@ mod tests {
     }
 
     #[test]
+    fn python_without_an_import_root_explicit_targets_need_no_lookup() {
+        let root = dir("py-explicit");
+        let ir = crate::dsl::compile("model User {\n id Int @id\n @@query_set(\"UserQueries\")\n @@model_methods(\"UserMethods\")\n}", None).unwrap();
+        let units = [SchemaUnit { app: None, path: root.join("schema.prisma"), models: vec!["User".into()], enums: vec![], types: vec![] }];
+        let mut options = crate::codegen::Options::default();
+        options.with_schema_classes(&ir, &units, Language::Python, &root).unwrap_err();
+        let mut options = crate::codegen::Options { query_sets: [("User".into(), "monorm_auth.queries:UserQueries".into())].into(), model_methods: [("User".into(), "monorm_auth.methods:UserMethods".into())].into(), ..Default::default() };
+        options.with_schema_classes(&ir, &units, Language::Python, &root).unwrap();
+        assert_eq!(options.model_methods["User"], "monorm_auth.methods:UserMethods");
+    }
+
+    #[test]
     fn python_directory_that_is_not_a_module_name_is_an_error() {
         let root = dir("py-bad-name");
         touch(&root.join("pyproject.toml"), "");
@@ -267,6 +279,20 @@ mod tests {
         touch(&root.join("lib/package.json"), "{}");
         let error = target(Language::TypeScript, &root.join("lib/schema.prisma"), &root.join("app"), Q, "UserQueries").unwrap_err();
         assert!(error.contains("no \"name\"") && error.contains("--query-set"), "{error}");
+    }
+
+    #[test]
+    fn typescript_package_without_a_name_explicit_targets_need_no_lookup() {
+        let root = dir("ts-nameless-explicit");
+        touch(&root.join("lib/package.json"), "{}");
+        let ir = crate::dsl::compile("model User {\n id Int @id\n @@query_set(\"UserQueries\")\n @@model_methods(\"UserMethods\")\n}", None).unwrap();
+        let units = [SchemaUnit { app: None, path: root.join("lib/schema.prisma"), models: vec!["User".into()], enums: vec![], types: vec![] }];
+        let out = root.join("app");
+        let error = crate::codegen::Options::default().with_schema_classes(&ir, &units, Language::TypeScript, &out).unwrap_err();
+        assert!(error.contains("no \"name\""), "{error}");
+        let mut options = crate::codegen::Options { query_sets: [("User".into(), "pkg/queries.js#UserQueries".into())].into(), model_methods: [("User".into(), "pkg/methods.js#UserMethods".into())].into(), ..Default::default() };
+        options.with_schema_classes(&ir, &units, Language::TypeScript, &out).unwrap();
+        assert_eq!(options.query_sets["User"], "pkg/queries.js#UserQueries");
     }
 
     #[test]

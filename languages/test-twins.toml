@@ -64,7 +64,7 @@
 "client_defaults::client_defaults_make_fields_optional_but_stay_out_of_the_database_default" = "change: Python asserts that exact list, TS adds the `_meta.ir.fields` id `client_default` deepEqual `{call: 'uuid7'}`, and Python renames to"
 "client_defaults::python_callable_defaults_fill_the_same_omitted_values" = "one-language: Python-only: class-defined models with callable defaults"
 # languages/python/tests/test_composite_keys.py
-"composite_keys::generated_key_types" = "move-to-engine: crates/core/tests/codegen_keys.rs::composite_primary_key_types (new)"
+"composite_keys::generated_key_types" = "engine-covered: crates/core/tests/codegen_keys.rs::composite_primary_key_types"
 # languages/python/tests/test_composition.py
 # languages/python/tests/test_connections.py
 "connections::instance_reload_reads_the_primary_for_to_one_and_to_many" = "change: TS checks only the to-one half here."
@@ -170,7 +170,7 @@
 "model_classes::a_methods_class_may_define_the_display_members" = "change: Python must also assert that another object member still collides;"
 "model_classes::a_namespace_package_gives_the_path_from_src" = "keep: The Python lookup ignores out_dir, and the kept no-import-root test proves generate_python runs the lookup."
 "model_classes::a_schema_in_a_plain_subdirectory_gives_the_path_from_the_project_root" = "keep: The Python lookup ignores out_dir, and the kept no-import-root test proves generate_python runs the lookup."
-"model_classes::a_schema_with_no_import_root_asks_for_the_full_path" = "move-to-engine: crates/core/src/codegen/lookup.rs::tests::python_without_an_import_root_explicit_targets_need_no_lookup"
+"model_classes::a_schema_with_no_import_root_asks_for_the_full_path" = "engine-covered: crates/core/src/codegen/lookup.rs::tests::python_without_an_import_root_explicit_targets_need_no_lookup"
 "model_classes::load_and_loads_take_the_model_methods" = "one-language: TypeScript load() and loads() take no model_methods argument; useModelMethods names the class"
 "model_classes::module_lookup_goes_up_through_the_package" = "keep: The Python lookup ignores out_dir, and the kept no-import-root test proves generate_python runs the lookup."
 "model_classes::schema_outside_a_package_gives_the_top_level_module" = "keep: The Python lookup ignores out_dir, and the kept no-import-root test proves generate_python runs the lookup."
@@ -184,7 +184,7 @@
 "n_plus_one::the_pytest_fixture_counts_the_test" = "one-language: Python-only: the n_plus_one pytest fixture of monorm.testing"
 "n_plus_one::the_pytest_fixture_fails_a_test_with_an_n_plus_one" = "one-language: Python-only: the n_plus_one pytest fixture of monorm.testing"
 # languages/python/tests/test_native_codegen.py
-"native_codegen::generate_python_checks_query_sets" = "move-to-engine: crates/core/src/codegen/mod.rs::reference_tests::python_query_sets_reject_hard_keywords (extend)"
+"native_codegen::generate_python_checks_query_sets" = "engine-covered: crates/core/src/codegen/mod.rs::reference_tests::python_query_sets_reject_hard_keywords"
 "native_codegen::generate_python_query_sets" = "change: Python must add the two error asserts that TS has (no model Missing;"
 # languages/python/tests/test_nested.py
 "nested::a_re_prepared_registry_keeps_its_nested_types" = "one-language: Python artifact re-prepare path (_REPREPARE)"
@@ -232,7 +232,7 @@
 "null_strict::a_nested_column_keeps_its_own_value_key" = "one-language: Python-only: tests the private expr._ckey"
 "null_strict::the_method_on_the_comparison_is_accepted" = "change: twin null_strict::on_the_comparison_is_accepted; TS adds `m(Comment.author.ne(alice))` and `not(m(Comment.author.eq(alice)))`, and a `// case: the method on"
 # languages/python/tests/test_pagination.py
-"pagination::a_char_column_from_ir_without_write_sql" = "move-to-engine: crates/engine/tests/functions.rs::a_char_n_parameter_compares_as_bpchar (extend)"
+"pagination::a_char_column_from_ir_without_write_sql" = "engine-covered: crates/engine/tests/functions.rs::a_char_n_parameter_compares_as_bpchar"
 "pagination::a_char_order_column" = "change: twin pagination::a_char_order_column_postgres; TS also walks -k → [3, 1, 2, 4, 5]: Python must add the descending walk and rename to"
 "pagination::cursor_of_a_microsecond_datetime" = "change: TS asserts the same cursor and an eq filter on a microsecond `at`, but no walk: split TS out under this name with the walk;"
 "pagination::non_finite_float_order_values" = "change: twin pagination::non_finite_float_order_values_postgres; TS has the Decimal part in edited_cursors_of_decimal_and_uuid_keys_postgres: move that part to a new"
@@ -299,7 +299,7 @@
 # languages/python/tests/test_query_features.py
 "query_features::aggregate_over_a_to_one_key_joins_at_the_root" = "change: twin queries::aggregates_over_to_one_paths_join_at_the_root; TS adds the grouped and two-hop cases."
 "query_features::array_agg" = "change: TS covers the relation, distinct, NULL and empty cases but not the grouped `groupBy(authorId)` arrays: TS adds them."
-"query_features::array_agg_errors" = "move-to-engine: crates/engine/tests/functions.rs::array_agg_plan_errors"
+"query_features::array_agg_errors" = "engine-covered: crates/engine/tests/functions.rs::array_agg_plan_errors"
 "query_features::array_agg_over_a_to_one_tail_keeps_null_elements" = "change: TS adds the filtered count."
 "query_features::array_agg_rejects_invalid_order_keys" = "change: TS checks only the QueryError class, lacks the window key and the valid shapes except one: TS adds them."
 "query_features::case_expression" = "change: twin query_features::case_expressions; TS adds the order_by, the model-with-CASE annotate and the float case."
@@ -373,11 +373,11 @@
 "sql::aggregate_filter" = "change: twin sql::aggregate_filter_sql; Both assert exact FILTER SQL for a grouped count/sum, the FILTER inside the 'a1' relation subquery and FILTER before OVER;"
 "sql::column_from_other_model_is_rejected" = "change: twin sql::rejected_queries; TS asserts the same message."
 "sql::column_to_column_across_relation" = "change: Asserts `'t1'.'created_at' < 'posts'.'created_at'` in WHERE and set_correlated=1."
-"sql::cte_reads_each_column_once" = "move-to-engine: crates/engine/tests/cte_read_sql.rs::a_cte_column_applies_read_sql_once"
+"sql::cte_reads_each_column_once" = "engine-covered: crates/engine/tests/cte_read_sql.rs::a_cte_column_applies_read_sql_once"
 "sql::exclude_is_not_exists" = "change: Asserts exclude(posts.published == False) gives a WHERE that starts with `NOT EXISTS(` and set_correlated=1."
 "sql::in_and_empty_in" = "change: twin sql::null_comparisons_in_and_empty_in; Asserts `'users'.'id' IN (1, 2)` and `FALSE` for in_([])."
-"sql::lateral_guards_keep_scalar_subqueries" = "move-to-engine: crates/engine/tests/lateral.rs::lateral_guards_keep_scalar_subqueries"
-"sql::lock_guard_keeps_for_update" = "move-to-engine: crates/engine/tests/lateral.rs::a_locked_select_with_relation_aggregates_keeps_for_update"
+"sql::lateral_guards_keep_scalar_subqueries" = "engine-covered: crates/engine/tests/lateral.rs::lateral_guards_keep_scalar_subqueries"
+"sql::lock_guard_keeps_for_update" = "engine-covered: crates/engine/tests/lateral.rs::a_locked_select_with_relation_aggregates_keeps_for_update"
 "sql::lock_rejected_where_meaningless" = "change: twin sql::writes_validate_before_any_sql; Asserts QueryError for lock().update(name='x') and lock().delete()."
 "sql::minus_column_is_a_descending_order" = "one-language: Python unary minus on a column; TypeScript has no operator overloading"
 "sql::negation_stays_outside_subquery" = "change: Asserts and_(views > 10, ~(published == True)) gives set_correlated=2 and NOT EXISTS."
@@ -551,7 +551,7 @@
 "model_classes::a_methods_class_may_override_to_string_other_object_members_still_collide" = "change: Rename to 'a methods class may define the display members;"
 "model_classes::a_schema_in_the_package_of_the_output_keeps_relative_paths" = "keep: lookup.rs::typescript_own_schema_in_a_named_package_is_relative_to_the_models_file covers the lookup with an explicit out_dir, but the binding picks out_dir = the schema"
 "model_classes::a_schema_outside_a_package_gives_paths_relative_to_the_models_file" = "keep: lookup.rs::typescript_schema_outside_a_package_is_relative_to_the_models_file covers the lookup with an explicit out_dir, but the relative path depends on the binding's"
-"model_classes::an_installed_package_without_a_name_asks_for_the_full_path" = "move-to-engine: crates/core/src/codegen/lookup.rs::tests::typescript_package_without_a_name_explicit_targets_need_no_lookup"
+"model_classes::an_installed_package_without_a_name_asks_for_the_full_path" = "engine-covered: crates/core/src/codegen/lookup.rs::tests::typescript_package_without_a_name_explicit_targets_need_no_lookup"
 "model_classes::model_methods_load_on_the_first_instance_not_at_registration" = "one-language: TypeScript-only: useModelMethods takes a lazy class factory to break the ESM import cycle"
 "model_classes::the_module_lookup_reads_the_name_of_the_nearest_package_json_of_an_installed_schema" = "keep: the binding picks out_dir = the schema directory (languages/python/native/src/lib.rs:1078, languages/js/native/src/lib.rs:1298) and no Rust test covers that choice, as"
 # languages/js/test/n-plus-one.test.ts
