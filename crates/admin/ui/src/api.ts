@@ -309,12 +309,21 @@ export class ApiError extends Error {
 const base = document.querySelector<HTMLMetaElement>('meta[name="monorm-admin-api"]')?.content ?? `${BASE}/api`;
 let csrf = "";
 
+/** The token of the shared cookie at this moment: another tab may have renewed it since this tab loaded. The last `/me` answer is the fallback for a cookie that script cannot read. */
+function csrfToken(): string {
+  for (const part of document.cookie.split(";")) {
+    const [name, ...value] = part.trim().split("=");
+    if (name === "__Secure-monorm-csrf") return value.join("=");
+  }
+  return csrf;
+}
+
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = {};
   // A `FormData` body is the upload: the browser sets the multipart content type with its boundary.
   const upload = body instanceof FormData;
   if (body !== undefined && !upload) headers["content-type"] = "application/json";
-  if (method !== "GET") headers["x-csrf-token"] = csrf;
+  if (method !== "GET") headers["x-csrf-token"] = csrfToken();
   const response = await fetch(`${base}${path}`, {
     method,
     headers,
@@ -360,7 +369,7 @@ export const packageUrl = (path: string) => `${base}/${path}`;
 export async function routeFetch(method: string, path: string, body?: unknown): Promise<Response> {
   const headers: Record<string, string> = {};
   if (body !== undefined) headers["content-type"] = "application/json";
-  if (method !== "GET") headers["x-csrf-token"] = csrf;
+  if (method !== "GET") headers["x-csrf-token"] = csrfToken();
   return fetch(`${base}/routes/${path.replace(/^\/+/, "")}`, { method, headers, credentials: "same-origin", body: body === undefined ? undefined : JSON.stringify(body) });
 }
 

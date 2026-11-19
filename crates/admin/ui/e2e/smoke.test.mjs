@@ -386,6 +386,26 @@ test("edit two cells on two rows of a list and save them in one request", async 
   await context.close();
 });
 
+test("a tab that loaded first still saves after another tab renews the CSRF token", async () => {
+  const { context, page, problems, idle } = await signedIn();
+  await page.goto(`${base}/admin/Shelf`);
+  await page.getByLabel("Title of 1").waitFor();
+  await idle();
+  // The second tab asks `/me`, which writes a new token to the shared cookie.
+  const second = await context.newPage();
+  await second.goto(`${base}/admin/Shelf`);
+  await second.getByLabel("Title of 1").waitFor();
+  const statuses = [];
+  page.on("response", (r) => r.request().method() === "PATCH" && statuses.push(r.status()));
+  await page.getByLabel("Title of 1").fill("Cedar");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.getByRole("group", { name: "Unsaved changes" }).waitFor({ state: "detached" });
+  await idle();
+  assert.deepEqual(statuses, [200]);
+  assert.deepEqual(problems, []);
+  await context.close();
+});
+
 test("a refused cell shows its error on the cell, keeps every change, and saves after the fix", async () => {
   const { context, page, problems, idle } = await signedIn();
   await page.goto(`${base}/admin/Shelf`);
