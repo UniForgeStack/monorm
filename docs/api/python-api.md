@@ -265,7 +265,9 @@ Expressions: `== != < <= > >=` (with `== None` meaning `IS NULL`), `.in_()`,
 `.not_in()`, `.is_null()` / `.is_not_null()`, `.between()`, `.like()` / `.ilike()` / `.contains()` /
 `.icontains()` / `.startswith()` / `.endswith()` (only on string columns; wildcards in
 the argument are escaped; in a raw `.like()` / `.ilike()` pattern `\` escapes `%` and `_` on both
-PostgreSQL and SQLite), `+ - * /`. Combine with `& | ~` or `and_() / or_() / not_()`.
+PostgreSQL and SQLite), `+ - * /`.
+`.like()`, `.contains()`, `.startswith()` and `.endswith()` match case-sensitively on both databases (SQLite runs with `PRAGMA case_sensitive_like = ON`); `.icontains()` ignores case.
+Combine with `& | ~` or `and_() / or_() / not_()`.
 A boolean column is a condition by itself: `filter(Post.published)`. Using Python's
 `and` / `or` / `not` on expressions raises `TypeError` instead of silently doing the
 wrong thing.
@@ -1551,6 +1553,7 @@ An `monorm.DatabaseError` (and its subclasses `IntegrityError`, `LockNotAvailabl
 * `sqlstate`: the five-character SQLSTATE, for example `"23505"` (unique), `"23503"` (foreign key), `"23502"` (not null), `"23514"` (check).
   SQLite constraint failures get the same Postgres codes; other SQLite errors give `None`.
 * `constraint`: the name of the violated constraint (Postgres only), for example `"users_email_key"`.
+  A SQLite database error has no constraint name: `constraint` is `None`.
 * `detail`: the database's DETAIL line (Postgres only), for example `"Key (email)=(a@example.com) already exists."`.
 
 Each is `None` when the database did not give it.

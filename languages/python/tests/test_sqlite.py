@@ -55,6 +55,7 @@ async def test_crud_relations_defaults_and_upserts(sqlite):
     assert await Author.objects.using(db).filter(Author.books.pages > 0).count() == 1
     assert await Book.objects.using(db).exists()
     assert await Author.objects.using(db).filter(Author.name.icontains("ali")).count() == 1
+    assert await Author.objects.using(db).filter(Author.name.contains("ali")).count() == 0
     same = (
         await Author.objects.using(db)
         .insert(email=a.email, name="Updated")

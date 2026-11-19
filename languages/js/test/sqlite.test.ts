@@ -59,6 +59,7 @@ test("crud relations defaults and upserts", async () => {
     assert.equal(await Author.objects.using(db).filter(Author.books.pages.gt(0)).count(), 1);
     assert.ok(await Book.objects.using(db).exists());
     assert.equal(await Author.objects.using(db).filter(Author.name.icontains("ali")).count(), 1);
+    assert.equal(await Author.objects.using(db).filter(Author.name.contains("ali")).count(), 0);
     const same = await Author.objects.using(db).insert({ email: a.email, name: "Updated" }).onConflict(Author.email, { update: true }).returning();
     assert.ok(same!.id === a.id && same!.name === "Updated");
     const rows = await Book.objects.using(db).filter(Book.pages.gt(0)).update({ pages: Book.pages.add(1) }).returning();
