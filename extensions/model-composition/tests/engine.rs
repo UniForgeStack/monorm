@@ -270,16 +270,25 @@ async fn check(url: &str) {
         panic!()
     };
     assert_eq!(rows.len(), 2);
+    // delete() removes every level: the root rows go, and the other children of those rows cascade.
     assert_eq!(
         db.query("SELECT COUNT(*) FROM person".into(), vec![])
             .await
             .unwrap()
             .get_i64(0, 0)
             .unwrap(),
-        2
+        0
     );
     assert_eq!(
         db.query("SELECT COUNT(*) FROM manager".into(), vec![])
+            .await
+            .unwrap()
+            .get_i64(0, 0)
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        db.query("SELECT COUNT(*) FROM employee".into(), vec![])
             .await
             .unwrap()
             .get_i64(0, 0)
@@ -292,8 +301,10 @@ async fn check(url: &str) {
             .unwrap()
             .get_i64(0, 0)
             .unwrap(),
-        1
+        0
     );
+    db.batch("INSERT INTO person (id, name) VALUES (100, 'A'), (101, 'B')".into()).await.unwrap();
+    db.batch("INSERT INTO customer (id, points) VALUES (100, 1)".into()).await.unwrap();
     let parent_delete = monorm_engine::parse_op(r#"{"op":"delete","model":"Person"}"#).unwrap();
     let plan = monorm_engine::plan::Planner::plan(&schema, target, &parent_delete, &NoParams).unwrap();
     let Outcome::Affected(count) = exec::run(db.as_ref(), target, plan).await.unwrap() else {
