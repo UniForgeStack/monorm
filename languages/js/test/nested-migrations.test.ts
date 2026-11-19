@@ -254,7 +254,9 @@ for (const dialect of DIALECTS) {
       const text = (await db.fetchText("SELECT address FROM shop"))[0]![0]!;
       const got = JSON.parse(text);
       assert.deepEqual(got[0].geos, [{ lat: 1 }]);
-      assert.ok(text.includes("18446744073709551615") && text.includes("9007199254740993"), text);
+      assert.equal(got.length, 4);
+      // Elements 1 and 2 by text, in order: a JavaScript number cannot hold them.
+      assert.match(text, /18446744073709551615,\s*9007199254740993,\s*1\.5\]$/, text);
       assert.equal(got[3], 1.5);
     });
   });

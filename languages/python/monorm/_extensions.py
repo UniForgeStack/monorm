@@ -20,6 +20,8 @@ def members(
     ``extensions`` are in chain order. A declared override may repeat a host member or an
     earlier extension's member, never a field or a relation.
     """
+    from .query import BoundQuerySet
+
     given: dict[str, str] = {}
     for extension, record in extensions:
         overrides = set(record["overrides"])
@@ -32,6 +34,11 @@ def members(
                 if name in taken:
                     raise TypeError(
                         f"{model}.{name}: extension {extension} {kind} member collides with a field or a relation"
+                    )
+                if kind == "bound query set" and name in BoundQuerySet.__slots__:
+                    # The slot descriptor of the base class would be shadowed, override or not.
+                    raise TypeError(
+                        f"{model}.{name}: extension {extension} bound query set member is an internal attribute of the bound query set; rename it"
                     )
                 if name in overrides:
                     continue

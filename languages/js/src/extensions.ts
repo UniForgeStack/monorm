@@ -66,6 +66,9 @@ function installInstance(meta: ModelMeta, prototype: object): void {
   }
 }
 
+// Own properties that the `BoundQuerySet` constructor assigns: a mixin member of the same name is shadowed, override or not.
+const BOUND_INTERNAL: ReadonlySet<string> = new Set(["meta", "objs", "inner", "items", "guarded"]);
+
 /**
  * Gives `meta` the members of the extensions `ids` (dependencies first): the query-set
  * mixins go to `meta.extensionMixins`, the instance members onto the row prototype.
@@ -100,6 +103,8 @@ export function applyExtensions(meta: ModelMeta, ids: readonly string[], extensi
       }
     }
     for (const name of record.bound_query_set_members ?? []) {
+      if (meta.fields.has(name) || meta.relations.has(name)) throw new TypeError(`${meta.name}.${name}: extension ${id} bound query set member collides with a field or a relation`);
+      if (BOUND_INTERNAL.has(name)) throw new TypeError(`${meta.name}.${name}: extension ${id} bound query set member is an internal property of the bound query set; rename it`);
       if (!overrides.has(name) && hostBoundMember(name)) throw new TypeError(`${meta.name}.${name}: extension ${id} bound query set member collides with a host member; declare it as an override`);
     }
     for (const name of [...record.query_set_members, ...record.instance_members]) if (!given.has(name)) given.set(name, id);

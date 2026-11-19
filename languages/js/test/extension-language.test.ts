@@ -169,6 +169,19 @@ test("a bound member collides with a host member unless overridden", () => {
   assert.doesNotThrow(() => build([record("ext.a", { bound: true, overrides: ["filter"] })], boundCode(filter), { Post: ["ext.a"] }));
 });
 
+test("a bound member that collides with a field or an internal attribute is an error", () => {
+  for (const name of ["title", "meta", "objs", "inner", "items", "guarded"]) {
+    const bound = (Base: BoundCtor) => class BBound extends Base {
+      [name]() { return this; }
+    };
+    assert.throws(
+      () => build([record("ext.a", { bound: true, overrides: [name] })], boundCode(bound), { Post: ["ext.a"] }),
+      new RegExp(`Post\\.${name}: extension ext\\.a bound query set member (collides with|is an internal)`),
+      name,
+    );
+  }
+});
+
 test("a bound class is composed from the extensions", () => {
   const { Post, Tag } = build([record("ext.a", { bound: true, overrides: [] })], boundCode(boundA), { Post: ["ext.a"], Tag: [] }) as Record<string, any>;
   const post = Object.assign(new Post._meta.Row(), { id: 1, title: "hello" });

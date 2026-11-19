@@ -279,6 +279,18 @@ def test_a_bound_member_collides_with_a_host_member_unless_overridden(project, m
         TypeError, match=r"Post\.update: extension ext\.a bound query set member collides with a host member"
     ):
         build(modules, {"Post": ("ext.a",)})
+    changes["overrides"] = ["update"]
+    modules, _ = install(project, monkeypatch, ("ext.a", "ext_a", {"__init__.py": BOUND}, changes))
+    build(modules, {"Post": ("ext.a",)})
+
+
+@pytest.mark.parametrize("name", ["title", "_objs", "_qs", "_explicit_db", "_guarded"])
+def test_a_bound_member_that_collides_with_a_field_or_an_internal_attribute_is_an_error(project, monkeypatch, name):
+    source = BOUND + f"\n\nclass BBound(BoundQuerySet[ModelT]):\n    def {name}(self):\n        return self\n"
+    changes = {"bound_query_set": "BBound", "bound_query_set_members": [name], "overrides": [name]}
+    modules, _ = install(project, monkeypatch, ("ext.a", "ext_a", {"__init__.py": source}, changes))
+    with pytest.raises(TypeError, match=rf"Post\.{name}: extension ext\.a bound query set member (collides with|is an internal)"):
+        build(modules, {"Post": ("ext.a",)})
 
 
 def test_a_bound_class_is_composed_from_the_extensions(project, monkeypatch):
