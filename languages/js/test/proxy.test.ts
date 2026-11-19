@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { test } from "node:test";
-import { connect, loads, Registry } from "../src/index.js";
+import { connect, loads, NotLoaded, Registry } from "../src/index.js";
 import { hasExtension } from "./artifact-caps.js";
 
 const source = readFileSync(resolve(process.cwd(), "../../fixtures/proxy.prisma"), "utf8").replaceAll("proxy_05_", "proxy_05_node_");
@@ -128,3 +128,53 @@ test("a proxy must keep the soft-delete field", { skip: !hasExtension("monorm.pr
   const bad = rolesSource.replace("@@proxy.of(Doc)", '@@proxy.of(Doc)\n  @@proxy.fields(exclude: ["deleted"])');
   assert.throws(() => loads(bad, { registry: new Registry() }), /proxy must keep the soft-delete field deleted/);
 });
+
+const defaultsSource = `
+model Member {
+  id     Int     @id
+  name   String
+  status String
+  bio    String?
+  @@map("proxy_defaults_members_node")
+}
+model ActiveMember {
+  status String @client_default("active")
+  @@proxy.of(Member)
+  @@query.defaults(filter: status == "active", fields: ["id", "name"])
+}
+`;
+for (const dialect of ["sqlite", "postgres"]) {
+  // case: proxy::proxy_with_query_defaults_is_a_filtered_view
+  test(`a proxy with query defaults is a filtered view (${dialect})`, { skip: !hasExtension("monorm.proxy", "monorm.query-defaults") }, async () => {
+    const registry = new Registry();
+    const models = loads((dialect === "sqlite" ? 'datasource db { provider = "sqlite" }\n' : "") + defaultsSource, { registry });
+    const Member = models.Member! as any, Active = models.ActiveMember! as any;
+    const url = dialect === "sqlite" ? "sqlite://:memory:" : process.env.ORM_TEST_DATABASE_URL ?? "postgres://postgres:postgres@localhost/orm_test";
+    const db = await connect(url, { registry, default: false });
+    await db.dropTables();
+    await db.createTables();
+    try {
+      await Member.objects.using(db).insertMany([{ id: 1, name: "ann", status: "active", bio: "a" }, { id: 2, name: "bob", status: "old", bio: "b" }]);
+      // the proxy policy filters and narrows; the parent model is unchanged
+      const rows = await Active.objects.using(db).orderBy(Active.id).all();
+      assert.deepEqual(rows.map((r: { constructor: { name: string } }) => r.constructor.name), ["ActiveMember"]);
+      assert.deepEqual(rows[0].toJSON(), { id: 1, name: "ann" });
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].id, 1);
+      assert.equal(rows[0].name, "ann");
+      assert.throws(() => rows[0].bio, NotLoaded);
+      assert.equal(await Active.objects.using(db).count(), 1);
+      assert.equal(await Member.objects.using(db).count(), 2);
+      assert.equal((await Member.objects.using(db).get(Member.id.eq(2)) as { bio: string }).bio, "b");
+      assert.equal(await Active.objects.using(db).withoutDefaults().count(), 2);
+      // an insert through the proxy uses its client default and is in its view
+      await Active.objects.using(db).insert({ id: 3, name: "cat" });
+      assert.deepEqual((await Active.objects.using(db).orderBy(Active.id).all()).map((r: { name: string }) => r.name), ["ann", "cat"]);
+      // query set writes select through the policy filter
+      assert.equal(await Active.objects.using(db).all().update({ bio: "x" }), 2);
+      assert.equal((await Member.objects.using(db).get(Member.id.eq(2)) as { bio: string }).bio, "b");
+      assert.equal(await Active.objects.using(db).all().delete(), 2);
+      assert.deepEqual((await Member.objects.using(db).all()).map((m: { id: number }) => m.id), [2]);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+}

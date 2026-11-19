@@ -6,7 +6,8 @@ import { test } from "node:test";
 
 import { ManyRelatedSet, NotLoaded, QueryError, QuerySet, RelatedSet, Registry, connect, getDatabase, loads, column, describe, of, useQuerySet, type ModelClass, type ModelSpec } from "../src/index.js";
 import { Comment, Post, PostTag, Profile, Tag, User, type PostSpec, type TagSpec } from "./blog/models.js";
-import { useDatabase } from "./helpers.js";
+import { Decimal } from "../src/decimal.js";
+import { DATABASE_URL, useDatabase } from "./helpers.js";
 
 useDatabase();
 
@@ -496,4 +497,96 @@ test("describe marks has-many relations nullable", () => {
 test("describe marks an optional belongs-to nullable", () => {
   assert.equal(describe(Comment).relations.find((r) => r.name === "author")!.nullable, true);
   assert.equal(describe(Comment).relations.find((r) => r.name === "post")!.nullable, false);
+});
+
+// -- twins of the Python query-api tests -----------------------------------------------------------
+
+const DECIMAL_KEYS = `datasource db { provider = "postgres" }
+model DecParent {
+  id Decimal @id @db.Decimal(10, 2)
+  kids DecKid[]
+  @@map("g6_dec_parents_js")
+}
+model DecKid {
+  id Int @id @default(autoincrement())
+  dec_id Decimal @db.Decimal(12, 4)
+  dec DecParent @relation(fields: [dec_id], references: [id])
+  @@map("g6_dec_kids_js")
+}
+`;
+
+async function withDecimalKeys(body: (parent: any, kid: any, db: Awaited<ReturnType<typeof connect>>) => Promise<void>): Promise<void> {
+  const registry = new Registry();
+  const models = loads(DECIMAL_KEYS, { registry });
+  const db = await connect(DATABASE_URL, { registry, default: false });
+  try {
+    await db.dropTables();
+    await db.createTables();
+    const parent = models["DecParent"] as any, kid = models["DecKid"] as any;
+    await parent.objects.using(db).insertMany([{ id: new Decimal("1.50") }, { id: new Decimal("2.00") }]);
+    await kid.objects.using(db).insertMany([{ decId: new Decimal("1.50") }, { decId: new Decimal("1.50") }]);
+    await body(parent, kid, db);
+  } finally {
+    await db.dropTables();
+    await db.close();
+  }
+}
+
+// case: query_api::bound_load_decimal_key_to_many
+test("bound load decimal key to many", async () => {
+  await withDecimalKeys(async (parent, _kid, db) => {
+    const decs = await parent.objects.using(db).orderBy(parent.id);
+    await of(decs).using(db).load(parent.kids);
+    assert.deepEqual(decs.map((d: any) => d.kids.cached.length), [2, 0]); // the child column has scale 4
+  });
+});
+
+// case: query_api::bound_load_decimal_key_to_one
+test("bound load decimal key to one", async () => {
+  await withDecimalKeys(async (_parent, kid, db) => {
+    const kids = await kid.objects.using(db).orderBy(kid.id);
+    await of(kids).using(db).load(kid.dec);
+    assert.deepEqual(kids.map((k: any) => Number(k.dec.id.toString())), [1.5, 1.5]);
+  });
+});
+
+for (const [klass, relation] of [["Post", "posts"], ["Tag", "tags"]] as const) {
+  // case: query_api::changing_query_set_class_discards_cached_relation_class
+  test(`changing the query-set class discards the cached relation class (${klass})`, async () => {
+    class Before extends QuerySet<any> { marker() { return "before"; } }
+    class After extends QuerySet<any> { marker() { return "after"; } }
+    const model = klass === "Post" ? Post : Tag;
+    const { alice, posts: rows } = await seed();
+    const owner = (relation === "posts" ? alice : rows[0]!) as any;
+    try {
+      useQuerySet(model as never, Before as never);
+      assert.equal(owner[relation].marker(), "before");
+      useQuerySet(model as never, After as never);
+      assert.equal(owner[relation].marker(), "after");
+    } finally {
+      useQuerySet(model as never, QuerySet);
+    }
+  });
+}
+
+// case: query_api::class_path_is_imported_on_first_use
+test("a query-set class factory runs on first use", () => {
+  let calls = 0;
+  useQuerySet(Post, () => { calls += 1; return PostQueries; });
+  try {
+    assert.equal(calls, 0);
+    assert.equal(Post.objects.constructor.name, "PostQueries");
+    assert.equal(calls, 1);
+    assert.equal(Post.objects, Post.objects); // the root query set replaces the lazy one
+  } finally {
+    useQuerySet(Post, QuerySet);
+  }
+  assert.equal(Post.objects.constructor, QuerySet);
+});
+
+// case: query_api::or_of_two_via_query_sets_raises_query_error
+test("or() of two via query sets raises a query error", () => {
+  const a = User.posts.objects.filter(Post.views.gt(1));
+  const b = User.posts.objects.filter(Post.views.lt(100));
+  assert.throws(() => a.or(b as never), (e: unknown) => e instanceof QueryError && /via/.test(e.message));
 });

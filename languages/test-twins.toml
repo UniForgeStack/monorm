@@ -240,11 +240,8 @@
 "pagination::reading_back_from_the_second_row" = "change: TS has the same lines inside the microsecond test: split them into a TS test of this name."
 "pagination::rows_added_between_pages_are_not_repeated" = "change: twin pagination::page_shape_related_rows_and_new_rows; TS has the same lines inside the combined test: split them into a TS test of this name."
 # languages/python/tests/test_partition.py
-"partition::multi_value_proxy_partition_requires_a_key_and_owns_only_its_values" = "add-ts: multi value proxy partition requires a key and owns only its values"
 "partition::partition_routes_orm_inserts_and_checks_moves" = "change: TS uses a bare `assert.rejects` and must add `IntegrityError`;"
 "partition::proxy_partition_bound_is_storage_and_prunes_without_defaults" = "change: TS must add those checks and IntegrityError on its rejects;"
-"partition::rewards_proxy_partition_inherits_scope_and_soft_delete" = "add-ts: rewards proxy partition inherits scope and soft delete"
-"partition::spec_rewards_example_with_decimals_local_uniqueness_and_soft_delete" = "add-ts: spec rewards example with decimals local uniqueness and soft delete"
 # languages/python/tests/test_prepared.py
 "prepared::limit_offset_sql" = "change: twin prepared::limit_and_offset_are_parameters; Fold this assertion into the renamed Python test_limit_and_offset_are_parameters and drop this test."
 # languages/python/tests/test_protected_write.py
@@ -253,12 +250,10 @@
 "protected_write::the_check_is_on_the_model_the_sql_writes" = "change: TS keeps this part under 'the check is on the model the SQL writes'."
 # languages/python/tests/test_proxy.py
 "proxy::proxy_warning_rows_defaults_writes_and_relation_targets" = "change: The engine prints the warnings with `eprintln!` (crates/engine/src/result_check.rs `emit`), so Node gets them too but only on fd 2: TS must read them from a"
-"proxy::proxy_with_query_defaults_is_a_filtered_view" = "add-ts: proxy with query defaults is a filtered view"
 # languages/python/tests/test_proxy_members.py
 "proxy_members::inherited_method_reads_a_root_column_on_a_proxy" = "change: Python must add a database run that returns one PmDraft row;"
 "proxy_members::mypy" = "one-language: Python type test: mypy over the generated proxy models; the TypeScript twin is the tsc test in proxy-members.test.ts"
 "proxy_members::proxy_has_the_soft_delete_members_of_its_root" = "change: TS must add the SQL checks;"
-"proxy_members::proxy_takes_the_query_set_class_of_its_root" = "add-ts: a proxy takes the query set class of its root"
 "proxy_members::pyright" = "one-language: Python type test: pyright over the generated proxy models; the TypeScript twin is the tsc test in proxy-members.test.ts"
 # languages/python/tests/test_pull.py
 "pull::a_database_made_by_the_orm_pulls_back_without_differences" = "move-to-engine: crates/engine/tests/pull.rs::a_database_made_by_the_orm_pulls_back_without_differences"
@@ -271,7 +266,6 @@
 "pull::owned_serials_pull_as_identity_and_shared_sequences_stay_defaults" = "change: TS adds the baseline and pg_attribute checks, Python adds differences == [];"
 "pull::pull_reports_what_it_cannot_write" = "move-to-engine: crates/engine/tests/pull.rs::pull_reports_what_it_cannot_write"
 "pull::pull_without_create_writes_the_schema" = "move-to-engine: crates/cli/tests/binary.rs::pull_and_baseline_without_create_privilege"
-"pull::sqlite_pull_reads_column_clauses" = "add-ts: pull::sqlite_pull_reads_column_clauses"
 # languages/python/tests/test_queries.py
 "queries::bound_lock_replaces_refresh_lock" = "change: twin queries::a_bound_set_locks_the_row_of_an_object; Python adds ValueError on `nowait`+`skip_locked` and `load(reload=True) is alice`;"
 "queries::instances_are_read_only" = "one-language: Python runtime guard; TypeScript checks read-only instances in"
@@ -285,14 +279,10 @@
 "queries::unawaited_insert_warns" = "one-language: Python-only: RuntimeWarning for a never-awaited statement"
 "queries::update_and_delete_returning" = "change: twin queries::update_and_delete_returning_rows; Python also has a 'never awaited' RuntimeWarning block: move it into a Python-only test (beside"
 # languages/python/tests/test_query_api.py
-"query_api::bound_load_decimal_key_to_many" = "add-ts: bound load decimal key to-many"
-"query_api::bound_load_decimal_key_to_one" = "add-ts: bound load decimal key to-one"
 "query_api::bound_load_one_stores_a_row_or_none" = "change: TS must add the `inspect()` assertion (4 statements, 3 batched with derived_uncorrelated 1), the 4-query count, the label('name') collision error (QueryError;"
 "query_api::bound_load_reads_keys_from_the_instances" = "change: The first half of the TS test asserts exactly this: split it into `test('bound load reads keys from the instances')`, which normalizes to this ID."
 "query_api::bound_load_rejects_a_model_subclass" = "one-language: Python-only: a Model subclass with its own registry"
 "query_api::bound_load_to_one_and_many_to_many" = "change: The second half of the TS test loads only `Post.tags`: split it into `test('bound load to-one and many-to-many')` and add the `Post.author` load, the"
-"query_api::changing_query_set_class_discards_cached_relation_class" = "add-ts: changing query-set class discards cached relation class (${relation})"
-"query_api::class_path_is_imported_on_first_use" = "add-ts: a lazy query-set class resolves on first use"
 "query_api::cli_query_set_flag_overrides_config" = "move-to-engine: crates/cli/tests/binary.rs::a_query_set_flag_overrides_the_project_config"
 "query_api::cli_reads_query_sets_from_pyproject" = "move-to-engine: crates/cli/tests/binary.rs::generate_reads_query_sets_from_the_project_config"
 "query_api::cli_rejects_duplicate_query_set_flags" = "move-to-engine: crates/cli/tests/binary.rs::duplicate_query_set_flags_fail_before_writing"
@@ -304,7 +294,6 @@
 "query_api::one_row_repr" = "one-language: Python-only: __repr__ text"
 "query_api::only_through_a_to_one_path" = "change: twin query_api::load_through_a_to_one_path; TS adds the `inspect()`, 'published', `post.pk` and `createdAt` NotLoaded checks, and Python renames to"
 "query_api::or_of_a_relation_set_is_a_plain_query_set" = "change: twin query_api::or_of_a_relation_set_ignores_the_loaded_rows; The matched TS test asserts `!(qs instanceof RelatedSet)` at line 310: split it into `test('or()"
-"query_api::or_of_two_via_query_sets_raises_query_error" = "add-ts: or() of two via query sets raises QueryError"
 "query_api::or_with_a_relation_set_on_the_right_reads_the_database" = "change: twin query_api::or_of_a_relation_set_ignores_the_loaded_rows; The matched TS test asserts this at line 312: split it into `test('or() with a relation set on"
 "query_api::query_set_class_is_checked" = "change: twin query_api::a_query_set_class_is_checked; Python adds a lazy path to a non-QuerySet class (for example 'builtins:dict') that raises on first access, and"
 # languages/python/tests/test_query_features.py

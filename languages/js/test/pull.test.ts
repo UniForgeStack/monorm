@@ -502,3 +502,45 @@ CREATE RULE soft_delete AS ON DELETE TO sdm_x
   assert.ok(!pulled.schema.includes("@@history.track"), pulled.schema);
   assert.deepEqual(pulled.differences.map((s) => s.summary), []);
 });
+
+const DJANGO_SQLITE = `
+CREATE TABLE "auth_user" ("id" integer NOT NULL PRIMARY KEY AUTOINCREMENT, "is_staff" bool NOT NULL,
+    "joined" datetime NOT NULL, "age" integer unsigned NOT NULL CHECK ("age" >= 0), "price" decimal NOT NULL,
+    CHECK (price > 0));
+CREATE TABLE "app_item" ("id" integer NOT NULL PRIMARY KEY AUTOINCREMENT,
+    "user_id" integer NOT NULL REFERENCES "auth_user" ("id") DEFERRABLE INITIALLY DEFERRED,
+    "owner_id" integer NULL REFERENCES auth_user);
+INSERT INTO auth_user (is_staff, joined, age, price) VALUES (1, '2024-01-02 03:04:05', 3, 1.5);
+`;
+
+test("sqlite pull reads column clauses", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "monorm-pull-django-"));
+  const url = `sqlite://${join(dir, "django.db")}`;
+  const bare = new Registry();
+  loads('datasource db { provider = "sqlite" }\nmodel Keep { id Int @id }', { registry: bare });
+  let db = await connect(url, { default: false, registry: bare });
+  let text: string;
+  try {
+    await db.execute(DJANGO_SQLITE);
+    text = (await pull(db)).schema;
+  } finally {
+    await db.close();
+  }
+  assert.ok(text.includes('@@check((age >= 0), name: "auth_user_age_check")'), text);
+  assert.ok(text.includes('@@check((price > 0), name: "auth_user_check")'));
+  assert.ok(text.includes("is_staff Boolean") && text.includes("joined DateTime") && text.includes("price Float"));
+  assert.ok(text.includes('user AuthUser @relation("AppItem_user", fields: [user_id], references: [id], deferrable: deferred)'));
+  assert.ok(text.includes('owner AuthUser? @relation("AppItem_owner", fields: [owner_id], references: [id])'));
+
+  // the pulled models read the rows another tool wrote
+  const registry = new Registry();
+  const User = loads(text, { registry })["AuthUser"] as any;
+  db = await connect(url, { default: false, registry });
+  try {
+    const user = await User.objects.using(db).get();
+    assert.equal(user.isStaff, true);
+    assert.equal(user.price, 1.5);
+  } finally {
+    await db.close();
+  }
+});

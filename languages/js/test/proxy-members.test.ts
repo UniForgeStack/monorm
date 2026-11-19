@@ -152,3 +152,29 @@ test("an inherited query-set method returns rows of the proxy at run time", { sk
     await db.close();
   }
 });
+
+// case: proxy_members::proxy_takes_the_query_set_class_of_its_root
+test("a proxy takes the query-set class of its root", { skip }, async () => {
+  const root = scratch("monorm-proxy-members-class-");
+  writeFileSync(join(root, "schema.prisma"), SCHEMA);
+  writeFileSync(join(root, "queries.ts"), QUERIES);
+  const args = ["--schema", join(root, "schema.prisma"), "generate", "typescript", "-o", join(root, "models.ts"), "--import", "monorm", "--query-set", "Post=./queries.js#PostQueries"];
+  assert.equal(await cli(args), 0);
+  const src = join(import.meta.dirname, "..", "src");
+  const imports: Record<string, string> = { '"monorm"': JSON.stringify(pathToFileURL(join(src, "index.js")).href), '"monorm/ext"': JSON.stringify(pathToFileURL(join(src, "ext.js")).href) };
+  const out = join(root, "js");
+  mkdirSync(out, { recursive: true });
+  for (const name of readdirSync(root).filter((n) => n.endsWith(".ts") && !n.endsWith(".d.ts") && n !== "use.ts")) {
+    let { outputText } = ts.transpileModule(readFileSync(join(root, name), "utf8"), { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } });
+    for (const [from, to] of Object.entries(imports)) outputText = outputText.replaceAll(` from ${from}`, ` from ${to}`);
+    writeFileSync(join(out, name.replace(/\.ts$/, ".js")), outputText);
+  }
+  const modelsFile = join(out, "models.js");
+  const isolated = readFileSync(modelsFile, "utf8").replace(/define\(SCHEMA(\)|, \{)/, (_, tail: string) => `define(SCHEMA, { registry: __registry${tail === ")" ? " })" : ","}`);
+  writeFileSync(modelsFile, `import { Registry as __Registry } from ${imports['"monorm"']};\nexport const __registry = new __Registry();\n${isolated}`);
+  const { Draft, Note, Post } = (await import(pathToFileURL(modelsFile).href)) as Record<string, any>;
+  const { PostQueries } = (await import(pathToFileURL(join(out, "queries.js")).href)) as Record<string, any>;
+  assert.ok(Post.objects.titled("a") instanceof PostQueries);
+  assert.ok(Draft.objects.titled("a") instanceof PostQueries);
+  assert.equal(Note.objects.titled, undefined);
+});
