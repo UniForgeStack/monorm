@@ -353,16 +353,11 @@ pub fn render_with(op: &Op, idempotent: bool, online: Online) -> String {
             let sets = sets.iter().map(|(c, e)| format!("{} = {e}", ident(c))).collect::<Vec<_>>().join(", ");
             format!("UPDATE {} SET {sets}", ident(table))
         }
-        Op::BackfillJson { table, column, path, value } => {
-            let key = |p: &[String]| format!("ARRAY[{}]", p.iter().map(|k| quote_literal(k)).collect::<Vec<_>>().join(", "));
-            let (parent, last) = path.split_at(path.len() - 1);
-            let c = ident(column);
-            let holder = if parent.is_empty() { c.clone() } else { format!("{c} #> {}", key(parent)) };
-            format!(
-                "UPDATE {} SET {c} = jsonb_set({c}, {}, {}::jsonb) WHERE jsonb_typeof({holder}) = 'object' AND COALESCE(jsonb_typeof(({holder}) -> {}), 'null') = 'null'",
-                ident(table), key(path), quote_literal(&value.to_string()), quote_literal(&last[0])
-            )
+        Op::BackfillJson { table, column, path, lists, value } => {
+            let (holder, last) = path.split_at(path.len() - 1);
+            super::json_sql::pg(table, column, holder, lists, &super::json_sql::Act::Fill { key: &last[0], value })
         }
+        Op::RenameJsonKey { table, column, holder, lists, from, to } => super::json_sql::pg(table, column, holder, lists, &super::json_sql::Act::Rename { from, to }),
         Op::DropColumn { table, column, .. } => format!("{} DROP COLUMN {}", alter(table), ident(column)),
         Op::AlterColumnType { table, column, to, .. } => {
             let c = ident(column);
@@ -456,6 +451,7 @@ pub fn summary(op: &Op) -> String {
         Op::AddColumn { table, column } => format!("add column {table}.{}", column.name),
         Op::BackfillColumn { table, column, .. } => format!("fill {table}.{column} where its group is set"),
         Op::BackfillJson { table, column, path, .. } => format!("fill {table}.{column}.{} where it is missing", path.join(".")),
+        Op::RenameJsonKey { table, column, holder, from, to, .. } => format!("rename key {from} to {to} in {table}.{column}{}", holder.iter().map(|k| format!(".{k}")).collect::<String>()),
         Op::CopyColumns { table, sets } => format!("copy {table}.{} to the new nested storage", sets.iter().map(|(c, _)| c.as_str()).collect::<Vec<_>>().join(", ")),
         Op::DropColumn { table, column, .. } => format!("drop column {table}.{column}"),
         Op::AlterColumnType { table, column, to, .. } => format!("change type of {table}.{column} to {to}"),

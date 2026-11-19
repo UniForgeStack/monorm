@@ -579,7 +579,7 @@ fn a_required_subfield_of_a_top_level_list_is_filled() {
 
 #[test]
 fn a_json_fill_stores_a_default_the_way_the_writers_do() {
-    let src = "type A {\n  city String\n  price Decimal @default(1.5)\n  big BigInt @default(9007199254740993)\n  at DateTime @default(\"2026-01-02T03:04:05Z\")\n  n Int @default(3)\n}\n\nmodel S {\n  id Int @id\n  a A @storage(json)\n}\n";
+    let src = "type A {\n  city String\n  price Decimal @default(1.5)\n  big BigInt @default(9007199254740993)\n  at DateTime @default(\"2026-01-02T03:04:05Z\")\n  n Int @default(3)\n  exact Decimal @default(1.50)\n  neg Decimal @default(-2.50)\n  many Decimal[] @default([1.50, 2])\n}\n\nmodel S {\n  id Int @id\n  a A @storage(json)\n}\n";
     let snap = super::plan(&json_source("postgresql", src), &DbSchema::default()).unwrap().snapshot;
     let shape = &snap.tables[0].column("a").unwrap().nested.0.as_ref().unwrap().shape;
     let default = |name: &str| shape.iter().find(|e| e.path == [name]).unwrap().default.clone().unwrap();
@@ -587,6 +587,10 @@ fn a_json_fill_stores_a_default_the_way_the_writers_do() {
     assert_eq!(default("big"), json!("9007199254740993"));
     assert_eq!(default("at"), json!("2026-01-02T03:04:05.000000Z"));
     assert_eq!(default("n"), json!(3));
+    // a Decimal keeps the digits as written, so the trailing zero stays
+    assert_eq!(default("exact"), json!("1.50"));
+    assert_eq!(default("neg"), json!("-2.50"));
+    assert_eq!(default("many"), json!(["1.50", "2"]));
 }
 
 #[test]
@@ -2148,4 +2152,110 @@ fn truncate_all_empties_every_table_and_restarts_identities() {
     assert_eq!(truncate_all(&pg).unwrap(), ["TRUNCATE \"posts\" RESTART IDENTITY CASCADE"]);
     let lite = with_views("sqlite", "text", vec![]);
     assert_eq!(truncate_all(&lite).unwrap(), ["DELETE FROM \"posts\"", "DELETE FROM sqlite_sequence"]);
+}
+
+fn rename_types(old: bool) -> String {
+    let (key, group) = if old { ("y", "geo") } else { ("lat", "pos") };
+    let hint = |h: &str| if old { String::new() } else { format!(" @renamed_from(\"{h}\")") };
+    format!(
+        "type G {{\n  {key} Float{}\n}}\n\ntype A {{\n  city String\n  {group} G{}\n}}\n\nmodel S {{\n  id Int @id\n  a A @storage(json)\n}}\n",
+        hint("y"), hint("geo")
+    )
+}
+
+#[test]
+fn a_json_subfield_rename_hint_renames_the_key_outer_first() {
+    for dialect in DIALECTS {
+        let q = |k: &str| if dialect == "sqlite" { format!("\"{k}\"") } else { format!("'{k}'") };
+        let p1 = super::plan(&json_source(dialect, &rename_types(true)), &DbSchema::default()).unwrap();
+        let p2 = super::plan(&json_source(dialect, &rename_types(false)), &stored(&p1.snapshot)).unwrap();
+        let up = sql(&p2.up).join("\n");
+        let (outer, inner) = (up.find(&q("geo")).expect(&up), up.find(&q("y")).expect(&up));
+        assert!(outer < inner && up.contains(&q("pos")) && up.contains(&q("lat")), "{dialect}: {up}");
+        // the inner rename runs under the new parent key
+        let inner_sql = up.lines().find(|l| l.contains(&q("y"))).unwrap();
+        assert!(inner_sql.contains(&q("pos")) && !inner_sql.contains(&q("geo")), "{dialect}: {inner_sql}");
+        let down = sql(&p2.down).join("\n");
+        let (outer, inner) = (down.find(&q("pos")).expect(&down), down.find(&q("lat")).expect(&down));
+        assert!(outer < inner && down.contains(&q("geo")) && down.contains(&q("y")), "{dialect}: {down}");
+        let inner_down = down.lines().find(|l| l.contains(&q("lat"))).unwrap();
+        assert!(inner_down.contains(&q("geo")) && !inner_down.contains(&q("pos")), "{dialect}: {inner_down}");
+        // a stored snapshot already holds the new keys: the hint stays and renames nothing
+        let p3 = super::plan(&json_source(dialect, &rename_types(false)), &stored(&p2.snapshot)).unwrap();
+        assert!(p3.up.is_empty(), "{dialect}: {:?}", sql(&p3.up));
+    }
+}
+
+#[test]
+fn a_json_key_rename_runs_for_every_element_of_a_list() {
+    let types = |old: bool| {
+        let (k, h) = if old { ("y", "") } else { ("lat", " @renamed_from(\"y\")") };
+        format!("type G {{\n  {k} Float{h}\n}}\n\ntype A {{\n  city String\n  gs G[]\n}}\n\nmodel S {{\n  id Int @id\n  a A[] @storage(json)\n}}\n")
+    };
+    for dialect in DIALECTS {
+        let p1 = super::plan(&json_source(dialect, &types(true)), &DbSchema::default()).unwrap();
+        let p2 = super::plan(&json_source(dialect, &types(false)), &stored(&p1.snapshot)).unwrap();
+        let up = sql(&p2.up).join("\n");
+        let (each, ordered) = if dialect == "sqlite" { ("json_each", "ORDER BY key") } else { ("jsonb_array_elements", "ORDER BY o") };
+        assert!(up.matches(each).count() >= 2 && up.contains(ordered), "{dialect}: {up}");
+        // only a row that the rename changes is written
+        let guard = if dialect == "sqlite" { " IS NOT json(" } else { " IS DISTINCT FROM " };
+        assert!(up.contains(guard), "{dialect}: {up}");
+    }
+}
+
+#[test]
+fn a_json_key_rename_hint_without_the_old_shape_is_refused() {
+    for dialect in DIALECTS {
+        let mut old = super::plan(&json_source(dialect, &rename_types(true)), &DbSchema::default()).unwrap().snapshot;
+        for t in &mut old.tables {
+            for c in &mut t.columns {
+                c.nested = Default::default();
+            }
+        }
+        let e = super::plan(&json_source(dialect, &rename_types(false)), &stored(&old)).unwrap_err();
+        // the outer key is named first: the old snapshot cannot tell it from a new one
+        assert!(e.contains("s.a: `@renamed_from(\"geo\")` on `pos` needs the shape of the json column"), "{dialect}: {e}");
+        assert!(e.contains("Rename the key in the rows by hand"), "{dialect}: {e}");
+        // no hint, no refusal: the guarded fill of a snapshot without a shape stays as it is
+        let types = rename_types(true);
+        assert!(super::plan(&json_source(dialect, &types), &stored(&old)).is_ok(), "{dialect}");
+    }
+}
+
+#[test]
+fn two_json_subfields_claiming_one_old_key_are_refused() {
+    let src = "type A {\n  p String @renamed_from(\"x\")\n  q String @renamed_from(\"x\")\n}\n\nmodel S {\n  id Int @id\n  a A @storage(json)\n}\n";
+    let err = crate::dsl::compile(&format!("datasource db {{\n  provider = \"postgresql\"\n}}\n{src}"), None).and_then(crate::dsl::check).err().expect("refused");
+    assert!(err.contains("both have the rename hint"), "{err}");
+}
+
+#[test]
+fn a_required_list_group_added_to_a_json_field_is_filled_with_an_empty_list() {
+    let types = |extra: &str| format!("type T {{\n  label String @default(\"x\")\n}}\n\ntype A {{\n  city String\n{extra}}}\n\nmodel S {{\n  id Int @id\n  a A @storage(json)\n}}\n");
+    for dialect in DIALECTS {
+        let p1 = super::plan(&json_source(dialect, &types("")), &DbSchema::default()).unwrap();
+        let p2 = super::plan(&json_source(dialect, &types("  ts T[]\n")), &stored(&p1.snapshot)).unwrap();
+        let all = sql(&p2.up).join("\n");
+        let first = all.lines().next().unwrap();
+        assert!(first.contains("ts") && first.contains("[]") && !first.contains("label"), "{dialect}: {all}");
+        // a single group still gets an object holding the defaults of its subfields
+        let p3 = super::plan(&json_source(dialect, &types("  t T\n")), &stored(&p1.snapshot)).unwrap();
+        assert!(sql(&p3.up).join("\n").contains("label"), "{dialect}");
+    }
+}
+
+#[test]
+fn a_required_subfield_of_a_list_is_filled_for_every_element() {
+    let types = |extra: &str| format!("type A {{\n  city String\n{extra}}}\n\nmodel S {{\n  id Int @id\n  a A[] @storage(json)\n}}\n");
+    for dialect in DIALECTS {
+        let p1 = super::plan(&json_source(dialect, &types("")), &DbSchema::default()).unwrap();
+        let p2 = super::plan(&json_source(dialect, &types("  zip String @default(\"z\")\n")), &stored(&p1.snapshot)).unwrap();
+        let all = sql(&p2.up).join("\n");
+        let (each, ordered) = if dialect == "sqlite" { ("json_each", "ORDER BY key") } else { ("jsonb_array_elements", "ORDER BY o0") };
+        assert!(all.contains(each) && all.contains(ordered) && all.contains("zip"), "{dialect}: {all}");
+        // a second plan on the stored snapshot has nothing left to fill
+        let p3 = super::plan(&json_source(dialect, &types("  zip String @default(\"z\")\n")), &stored(&p2.snapshot)).unwrap();
+        assert!(p3.up.is_empty(), "{dialect}");
+    }
 }

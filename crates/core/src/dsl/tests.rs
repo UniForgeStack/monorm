@@ -1217,12 +1217,15 @@ fn a_rename_hint_names_the_old_column_through_parent_and_field_renames() {
 }
 
 #[test]
-fn a_rename_hint_on_a_json_subfield_is_refused() {
+fn a_rename_hint_on_a_json_subfield_is_kept_for_the_migration() {
     let leaf = "type Geo {\n  lat Float @renamed_from(\"y\")\n}\n\nmodel S {\n  id Int @id\n  g Geo @storage(json)\n}\n";
-    assert!(fails(leaf).contains("S.g: Geo.lat has a @renamed_from, which a json subfield can't use"), "{}", fails(leaf));
+    let schema = ok(leaf);
+    let geo = schema.types.iter().find(|t| t.name == "Geo").unwrap();
+    assert_eq!(geo.fields[0].leaf.as_ref().unwrap().renamed_from.as_deref(), Some("y"));
     let group = "type Geo {\n  lat Float\n}\n\ntype A {\n  pos Geo @renamed_from(\"geo\")\n}\n\nmodel S {\n  id Int @id\n  a A @storage(json)\n}\n";
-    assert!(fails(group).contains("A.pos has a @renamed_from"), "{}", fails(group));
-    // the same hints rename columns under columns storage, and the field hint renames a json column
+    let schema = ok(group);
+    let a = schema.types.iter().find(|t| t.name == "A").unwrap();
+    assert_eq!(a.fields[0].renamed_from.as_deref(), Some("geo"));
     assert!(ok(&leaf.replace("@storage(json)", "@storage(columns)")).models[0].fields.len() == 2);
 }
 

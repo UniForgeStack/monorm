@@ -182,6 +182,15 @@ fn literal(pos: Pos, v: &Value, f: &FieldIr, enum_ir: Option<&EnumIr>, what: &st
     }
 }
 
+/// The digits of a Decimal literal, or of each element of a list, as the DSL wrote them.
+fn decimal_text(v: &Value) -> Option<serde_json::Value> {
+    match v {
+        Value::Num(n) => Some(serde_json::Value::String(n.clone())),
+        Value::List(items) => items.iter().map(|(_, v)| decimal_text(v)).collect::<Option<Vec<_>>>().map(serde_json::Value::Array),
+        _ => None,
+    }
+}
+
 fn json_of(pos: Pos, v: &Value) -> Result<serde_json::Value> {
     Ok(match v {
         Value::Str(s) => serde_json::Value::String(s.clone()),
@@ -883,6 +892,7 @@ fn field(m: &ModelDecl, member: &Member, ctx: &Ctx<'_>, pending: Option<&Pending
         index: false,
         max_length: None,
         default: None,
+        default_decimal: None,
         default_now: false,
         default_sql: None,
         client_default: None,
@@ -1154,7 +1164,12 @@ fn field(m: &ModelDecl, member: &Member, ctx: &Ctx<'_>, pending: Option<&Pending
                                     msg: format!("{what}: @default on a Json field is JSON text: {e}"),
                                 })?)
                             }
-                            v => f.default = Some(json_of(a.pos, v)?),
+                            v => {
+                                f.default = Some(json_of(a.pos, v)?);
+                                if f.ty == ColType::Decimal {
+                                    f.default_decimal = decimal_text(v);
+                                }
+                            }
                         },
                     },
                 }

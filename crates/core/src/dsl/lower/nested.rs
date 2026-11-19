@@ -90,8 +90,8 @@ pub(super) fn declare(items: &[Item], models: &HashMap<&str, &ModelDecl>, ctx: &
                         _ => return err(a.pos, format!("{what}: a nested type takes only @map and @renamed_from; put @@storage on {name}")),
                     }
                 }
-                ctx.members.insert((t.name.clone(), member.name.clone()), TypeMember { pos: member.pos, map, renamed_from });
-                fields.push(TypeFieldIr { name: member.name.clone(), nullable: *optional, list: *list, type_name: Some(name.clone()), leaf: None });
+                ctx.members.insert((t.name.clone(), member.name.clone()), TypeMember { pos: member.pos, map, renamed_from: renamed_from.clone() });
+                fields.push(TypeFieldIr { name: member.name.clone(), nullable: *optional, list: *list, type_name: Some(name.clone()), leaf: None, renamed_from });
                 continue;
             }
             ctx.members.insert((t.name.clone(), member.name.clone()), TypeMember { pos: member.pos, map: None, renamed_from: None });
@@ -108,7 +108,7 @@ pub(super) fn declare(items: &[Item], models: &HashMap<&str, &ModelDecl>, ctx: &
             if leaf.auto_increment {
                 return err(member.pos, format!("{what}: a type holds no @default(autoincrement())"));
             }
-            fields.push(TypeFieldIr { name: member.name.clone(), nullable: *optional, list: *list, type_name: None, leaf: Some(leaf) });
+            fields.push(TypeFieldIr { name: member.name.clone(), nullable: *optional, list: *list, type_name: None, leaf: Some(leaf), renamed_from: None });
         }
         out.push(TypeIr { name: t.name.clone(), storage, fields, comment });
     }
@@ -224,13 +224,6 @@ pub(super) fn expand(m: &ModelDecl, member: &Member, items: &[Item], ctx: &Ctx<'
 
 fn json_checks(ty: &TypeIr, ctx: &Ctx<'_>, what: &str, pos: Pos) -> Result<()> {
     for f in &ty.fields {
-        let hinted = match &f.leaf {
-            Some(l) => l.renamed_from.is_some(),
-            None => ctx.members[&(ty.name.clone(), f.name.clone())].renamed_from.is_some(),
-        };
-        if hinted {
-            return err(pos, format!("{what}: {}.{} has a @renamed_from, which a json subfield can't use: a migration can't rename a key yet", ty.name, f.name));
-        }
         match (&f.type_name, &f.leaf) {
             (Some(n), _) => json_checks(&ctx.nested[n], ctx, what, pos)?,
             (None, Some(l)) if l.check.is_some() || l.unique || l.index => {

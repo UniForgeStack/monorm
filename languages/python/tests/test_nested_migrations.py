@@ -208,11 +208,11 @@ def test_a_new_nullable_json_subfield_changes_no_rows(tmp_path):
     assert up(tmp_path, JSON_V1.replace("  city String\n", "  city String\n  zip  String?\n")) == []
 
 
-def test_a_new_required_subfield_in_a_json_list_is_an_error(tmp_path):
+def test_a_new_required_subfield_in_a_json_list_is_filled_per_element(tmp_path):
     source = JSON_V1.replace("Address @storage", "Address[] @storage")
     Migrations(tmp_path, models(source)).make()
-    with pytest.raises(SchemaError, match="added inside a list can't be filled by a migration"):
-        up(tmp_path, source.replace("  city String\n", '  city String\n  zip  String @default("0")\n'))
+    [fill] = up(tmp_path, source.replace("  city String\n", '  city String\n  zip  String @default("0")\n'))
+    assert "jsonb_array_elements" in fill and "ORDER BY o0" in fill and "'zip'" in fill
 
 
 def test_a_second_make_after_a_json_backfill_finds_nothing(tmp_path):
@@ -618,3 +618,184 @@ async def test_a_new_subfield_with_a_default_is_filled_by_a_storage_change_throu
                 assert {i: r["code"] for i, r in rows.items() if r is not None} == {i: "z" for i, *_ in STAMPS}
             finally:
                 await db.execute(DROP)
+
+
+KEYS_V1 = """
+type Meta {
+  size Int
+}
+
+type Item {
+  flag  Boolean
+  n     Int
+  tags  String[]
+  meta  Meta
+  maybe String?
+}
+
+model Shop {
+  id      Int  @id
+  address Item @storage(json)
+}
+"""
+KEYS_V2 = (
+    KEYS_V1.replace("flag  Boolean", 'on Boolean @renamed_from("flag")')
+    .replace("  n     Int", '  count Int @renamed_from("n")')
+    .replace("  tags  String[]", '  labels String[] @renamed_from("tags")')
+    .replace("  meta  Meta", '  info Meta @renamed_from("meta")')
+    .replace("  size Int", '  size Int @renamed_from("size")')
+    .replace("  maybe String?", '  perhaps String? @renamed_from("maybe")')
+)
+OLD_ITEM = {"flag": True, "n": 3, "tags": ["a", "b"], "meta": {"size": 7}, "maybe": None}
+NEW_ITEM = {"on": True, "count": 3, "labels": ["a", "b"], "info": {"size": 7}, "perhaps": None}
+
+
+@pytest.mark.parametrize("dialect", DIALECTS)
+async def test_a_renamed_json_subfield_moves_its_value_and_down_moves_it_back(tmp_path, dialect):
+    prefix = SQLITE if dialect == "sqlite" else ""
+    async with database(dialect, models(prefix + KEYS_V1)) as db:
+        await migrate(db, tmp_path, prefix + KEYS_V1)
+        await insert_addresses(db, [(1, OLD_ITEM), (2, {"flag": False, "n": 0, "tags": [], "meta": {"size": 1}})])
+        await migrate(db, tmp_path, prefix + KEYS_V2)
+        got = await addresses(db)
+        assert got[1] == NEW_ITEM and got[1]["on"] is True and "perhaps" in got[1]
+        assert got[2] == {"on": False, "count": 0, "labels": [], "info": {"size": 1}} and got[2]["on"] is False
+        await Migrator(db, Migrations(tmp_path, models(prefix + KEYS_V2))).downgrade(allow_destructive=True)
+        back = await addresses(db)
+        assert back[1] == OLD_ITEM and back[1]["flag"] is True
+
+
+GROUP_V1 = """
+type Geo {
+  y Float
+}
+
+type Place {
+  city String
+  geo  Geo
+}
+
+model Shop {
+  id      Int   @id
+  address Place @storage(json)
+}
+"""
+GROUP_V2 = GROUP_V1.replace("  y Float", '  lat Float @renamed_from("y")').replace(
+    "  geo  Geo", '  pos Geo @renamed_from("geo")'
+)
+
+
+@pytest.mark.parametrize("dialect", DIALECTS)
+async def test_a_renamed_json_group_and_its_renamed_child_move_together(tmp_path, dialect):
+    prefix = SQLITE if dialect == "sqlite" else ""
+    async with database(dialect, models(prefix + GROUP_V1)) as db:
+        await migrate(db, tmp_path, prefix + GROUP_V1)
+        await insert_addresses(
+            db,
+            [
+                (1, {"city": "A", "geo": {"y": 1.5}}),
+                (2, {"city": "B", "pos": {"lat": 2}}),  # already the new shape: left alone
+                (3, {"city": "C", "geo": None}),
+            ],
+        )
+        await migrate(db, tmp_path, prefix + GROUP_V2)
+        assert await addresses(db) == {
+            1: {"city": "A", "pos": {"lat": 1.5}},
+            2: {"city": "B", "pos": {"lat": 2}},
+            3: {"city": "C", "pos": None},
+        }
+        await Migrator(db, Migrations(tmp_path, models(prefix + GROUP_V2))).downgrade(allow_destructive=True)
+        assert (await addresses(db))[1] == {"city": "A", "geo": {"y": 1.5}}
+
+
+LIST_V1 = """
+type Geo {
+  y Float
+}
+
+type Place {
+  city String
+  geos Geo[]
+}
+
+model Shop {
+  id      Int     @id
+  address Place[] @storage(json)
+}
+"""
+LIST_V2 = LIST_V1.replace("  y Float", '  lat Float @renamed_from("y")')
+
+
+@pytest.mark.parametrize("dialect", DIALECTS)
+async def test_a_renamed_json_subfield_inside_lists_renames_every_element_in_order(tmp_path, dialect):
+    prefix = SQLITE if dialect == "sqlite" else ""
+    async with database(dialect, models(prefix + LIST_V1)) as db:
+        await migrate(db, tmp_path, prefix + LIST_V1)
+        old = [
+            {"city": "A", "geos": [{"y": 1}, {"y": 2}, {"y": 3}]},
+            {"city": "B", "geos": []},
+            {"city": "C", "geos": [{"y": 4}]},
+        ]
+        await insert_addresses(db, [(1, old), (2, []), (3, [{"city": "D", "geos": None}])])
+        await migrate(db, tmp_path, prefix + LIST_V2)
+        got = await addresses(db)
+        assert [g["lat"] for g in got[1][0]["geos"]] == [1, 2, 3]
+        assert got[1][1]["geos"] == [] and got[1][2]["geos"] == [{"lat": 4}]
+        assert got[2] == [] and got[3] == [{"city": "D", "geos": None}]
+        await Migrator(db, Migrations(tmp_path, models(prefix + LIST_V2))).downgrade(allow_destructive=True)
+        assert (await addresses(db))[1] == old
+
+
+FILL_V1 = """
+type Geo {
+  lat Float
+}
+
+type Place {
+  city String
+  geos Geo[]
+}
+
+model Shop {
+  id      Int     @id
+  address Place[] @storage(json)
+}
+"""
+FILL_V2 = FILL_V1.replace("  lat Float", '  lat Float\n  alt Float @default(0)').replace(
+    "  city String", '  city String\n  zip  String @default("0")'
+)
+
+
+@pytest.mark.parametrize("dialect", DIALECTS)
+async def test_applying_a_fill_inside_lists_reaches_every_element_and_keeps_the_order(tmp_path, dialect):
+    prefix = SQLITE if dialect == "sqlite" else ""
+    async with database(dialect, models(prefix + FILL_V1)) as db:
+        await migrate(db, tmp_path, prefix + FILL_V1)
+        await insert_addresses(
+            db,
+            [
+                (1, [{"city": "A", "geos": [{"lat": 1}, {"lat": 2, "alt": 9}]}, {"city": "B", "zip": "q", "geos": []}]),
+                (2, []),
+                (3, [{"city": "C", "geos": None}, None]),
+            ],
+        )
+        await migrate(db, tmp_path, prefix + FILL_V2)
+        got = await addresses(db)
+        assert got[1] == [
+            {"city": "A", "zip": "0", "geos": [{"lat": 1, "alt": 0}, {"lat": 2, "alt": 9}]},
+            {"city": "B", "zip": "q", "geos": []},
+        ]
+        assert got[2] == [] and got[3] == [{"city": "C", "zip": "0", "geos": None}, None]
+
+
+@pytest.mark.parametrize("dialect", DIALECTS)
+async def test_a_list_element_that_is_not_an_object_keeps_its_exact_number_through_a_rename(tmp_path, dialect):
+    prefix = SQLITE if dialect == "sqlite" else ""
+    async with database(dialect, models(prefix + LIST_V1)) as db:
+        await migrate(db, tmp_path, prefix + LIST_V1)
+        odd = [{"city": "A", "geos": [{"y": 1}]}, 18446744073709551615, 9007199254740993, 1.5]
+        await insert_addresses(db, [(1, odd)])
+        await migrate(db, tmp_path, prefix + LIST_V2)
+        got = (await addresses(db))[1]
+        assert got[0]["geos"] == [{"lat": 1}]
+        assert got[1:] == odd[1:]

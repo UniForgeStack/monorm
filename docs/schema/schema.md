@@ -498,10 +498,12 @@ model Shop {
 * `makemigrations` handles a change of a nested type:
   * A new required subfield of a `columns` type adds a column. Under a nullable field it adds the column without `DEFAULT`, fills the `@default` in the rows where the field is set, and then extends the `CHECK`.
   * A new required subfield of a `json` type runs one `UPDATE` that sets the `@default` where the key is missing or holds a JSON `null`, and its parent object exists. A subfield that changes from nullable to required runs the same `UPDATE`. Without a `@default`, `makemigrations` fails: add one, or make the subfield nullable.
-    A new required subfield inside a list of a type fails too: update those rows by hand.
+    A new required subfield inside a list of a type fills every element of the list, in order. A `T[]` group that is new and required is filled with `[]`.
   * The snapshot keeps the shape of each `json` field for this. A snapshot from an older version has none: then every required subfield with a `@default` gets the same guarded `UPDATE`, which changes no row that already has the key.
   * `down` does not remove the key from the rows.
-  * `@renamed_from("old")` on a model field of a type, or on a subfield, renames the columns of a `columns` field. On a model field with `@storage(json)` it renames the one column. A subfield of a `json` type takes no `@renamed_from`: a migration cannot rename a key yet, so the schema is refused.
+  * `@renamed_from("old")` on a model field of a type, or on a subfield, renames the columns of a `columns` field. On a model field with `@storage(json)` it renames the one column. A subfield of a `json` type renames the key in the stored value, at every level and in every element of a list (`up` and `down`). A row that holds both the old and the new key is skipped, so no value is lost, and the migration prints no warning. A snapshot from an older version has no shape for the column: then `makemigrations` fails, because it cannot tell the old key from a new one. Rename the key in the rows by hand and remove the `@renamed_from`; the next migration records the shape.
+  * A `@default` of a `Decimal` subfield in a `json` type keeps the digits as written (`@default(1.50)` fills `"1.50"`).
+  * A change that only alters the shape of a `json` field (a subfield that becomes optional, a new `@default` text) runs no SQL, and `makemigrations` writes a migration that records the shape in the snapshot.
   * The snapshot keeps the `@default` fills of a `columns` type, so `down` fills a required subfield that it adds back.
 * `@@index([address.city])` and `@@unique([address.street, address.city])` name a subfield by its dotted path.
 

@@ -307,11 +307,26 @@ fn shape_of(types: &[crate::ir::TypeIr], ty: &str, path: &mut Vec<String>, out: 
             nullable: f.nullable,
             list: f.list,
             group: f.type_name.is_some(),
-            default: f.leaf.as_ref().and_then(|l| l.default.as_ref().map(|v| json_default(l.ty, v))),
+            default: f.leaf.as_ref().and_then(|l| l.default_decimal.clone().or_else(|| l.default.as_ref().map(|v| json_default(l.ty, v)))),
             ty: f.leaf.as_ref().map(|l| l.ty),
         });
         if let Some(n) = &f.type_name {
             shape_of(types, n, path, out);
+        }
+        path.pop();
+    }
+}
+
+/// The `@renamed_from` hints inside a nested type: (path of the subfield, old key).
+fn key_hints(types: &[crate::ir::TypeIr], ty: &str, path: &mut Vec<String>, out: &mut Vec<(Vec<String>, String)>) {
+    let Some(ty) = types.iter().find(|t| t.name == ty) else { return };
+    for f in &ty.fields {
+        path.push(f.name.clone());
+        if let Some(old) = f.leaf.as_ref().and_then(|l| l.renamed_from.clone()).or_else(|| f.renamed_from.clone()) {
+            out.push((path.clone(), old));
+        }
+        if let Some(n) = &f.type_name {
+            key_hints(types, n, path, out);
         }
         path.pop();
     }
@@ -450,9 +465,27 @@ pub struct Renames {
     pub tables: HashMap<String, String>,
     /// (new table, new column) -> old column
     pub columns: HashMap<(String, String), String>,
+    /// (new table, new column, new path of a subfield of a `json` column) -> old key
+    pub keys: HashMap<(String, String, Vec<String>), String>,
 }
 
 impl Renames {
+    /// The path of the subfield `path` in the shape `from`, which is the source of the change: each
+    /// key that a hint renames has its old name when `from` holds that name and not the new one.
+    pub fn source_path(&self, table: &str, column: &str, path: &[String], from: Option<&NestedShape>) -> Vec<String> {
+        let mut out: Vec<String> = Vec::with_capacity(path.len());
+        for i in 0..path.len() {
+            let hint = self.keys.get(&(table.to_owned(), column.to_owned(), path[..=i].to_vec()));
+            let held = |name: &str| from.is_some_and(|s| s.shape.iter().any(|e| e.path.len() == i + 1 && e.path[..i] == out[..] && e.path[i] == name));
+            let name = match hint {
+                Some(old) if held(old) && !held(&path[i]) => old.clone(),
+                _ => path[i].clone(),
+            };
+            out.push(name);
+        }
+        out
+    }
+
     /// The old column of `column` in `old` when a hint renames it: `old` has the hinted
     /// column and `new` no longer does.
     pub fn renamed_column(&self, new: &Table, old: &Table, column: &str) -> Option<&String> {
@@ -471,7 +504,17 @@ impl Renames {
                 ((old_table, old.clone()), new.clone())
             })
             .collect();
-        Renames { tables, columns }
+        let keys = self
+            .keys
+            .iter()
+            .map(|((table, column, path), _)| {
+                let old_table = self.tables.get(table).cloned().unwrap_or_else(|| table.clone());
+                let old_column = self.columns.get(&(table.clone(), column.clone())).cloned().unwrap_or_else(|| column.clone());
+                let old_path = (0..path.len()).map(|i| self.keys.get(&(table.clone(), column.clone(), path[..=i].to_vec())).unwrap_or(&path[i]).clone()).collect();
+                ((old_table, old_column, old_path), path[path.len() - 1].clone())
+            })
+            .collect();
+        Renames { tables, columns, keys }
     }
 }
 
@@ -1053,6 +1096,17 @@ pub fn build_with(schema: &Schema, baseline: bool) -> Result<(DbSchema, Renames)
                     return Err(format!("{}: columns {other:?} and {:?} both have the rename hint {old:?}; keep it on one", table.name, f.column));
                 }
                 renames.columns.insert((table.name.clone(), f.column.clone()), old.clone());
+            }
+            if let Some(n) = f.nested.as_ref().filter(|n| n.storage == crate::ir::NestedStorage::Json) {
+                let mut hints = vec![];
+                key_hints(&schema.types, &n.ty, &mut vec![], &mut hints);
+                for (path, old) in hints {
+                    let parent = path[..path.len() - 1].to_vec();
+                    if let Some(((_, _, other), _)) = renames.keys.iter().find(|((t, c, p), o)| *t == table.name && *c == f.column && p[..p.len() - 1] == parent[..] && **o == old) {
+                        return Err(format!("{}.{}: subfields {:?} and {:?} both have the rename hint {old:?}; keep it on one", table.name, f.column, other.join("."), path.join(".")));
+                    }
+                    renames.keys.insert((table.name.clone(), f.column.clone(), path), old);
+                }
             }
         }
         db.tables.push(table);

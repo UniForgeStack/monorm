@@ -9,6 +9,7 @@
 
 pub mod diff;
 pub mod files;
+pub mod json_sql;
 pub mod model;
 pub mod nested_copy;
 pub mod online;
@@ -118,8 +119,10 @@ struct Prepared {
     current: DbSchema,
     renames: model::Renames,
     identity_changed: bool,
-    /// The ops that fill new nested subfields; they follow the diff in `up`.
+    /// The data ops on json columns that follow the diff in `up`: the key renames, then the fills of new subfields.
     fills: Vec<Op>,
+    /// The key renames that follow the diff in `down`.
+    down_fills: Vec<Op>,
 }
 
 fn prepare(schema: &Schema, previous: &DbSchema, baseline: bool) -> Result<Prepared> {
@@ -134,18 +137,26 @@ fn prepare(schema: &Schema, previous: &DbSchema, baseline: bool) -> Result<Prepa
         return Err(format!("migration snapshot targets {}, schema targets {}; use a separate migrations directory", previous.dialect.name(), current.dialect.name()));
     }
     let identity_changed = previous.identities != current.identities;
-    let fills = diff::json_backfills(previous, &current, &renames)?;
+    let (fills, down_fills) = json_ops(previous, &current, &renames)?;
     diff::check_copies(previous, &current, &renames)?;
     diff::check_generated_to_plain(previous, &current, &renames)?;
     diff::check_copies(&current, previous, &renames.reversed())?;
-    Ok(Prepared { current, renames, identity_changed, fills })
+    Ok(Prepared { current, renames, identity_changed, fills, down_fills })
+}
+
+/// The data ops on json columns of the change (key renames, then fills) and of its reverse (key renames).
+fn json_ops(previous: &DbSchema, next: &DbSchema, renames: &model::Renames) -> Result<(Vec<Op>, Vec<Op>)> {
+    let mut up = diff::json_key_renames(previous, next, renames)?;
+    up.extend(diff::json_backfills(previous, next, renames)?);
+    Ok((up, diff::json_key_renames(next, previous, &renames.reversed())?))
 }
 
 /// The PostgreSQL ops of the change and of its reverse.
 fn pg_ops(previous: &DbSchema, p: &Prepared) -> Result<(Vec<Op>, Vec<Op>)> {
     let mut up = diff::diff(previous, &p.current, &p.renames)?;
     up.extend(p.fills.iter().cloned());
-    let down = diff::diff(&p.current, previous, &p.renames.reversed())?;
+    let mut down = diff::diff(&p.current, previous, &p.renames.reversed())?;
+    down.extend(p.down_fills.iter().cloned());
     Ok((up, down))
 }
 
@@ -167,7 +178,7 @@ pub fn plan_with(schema: &Schema, previous: &DbSchema, baseline: bool) -> Result
 
 fn sqlite_plan(previous: &DbSchema, p: Prepared) -> Result<MigrationPlan> {
     let mut up = sqlite::steps_with(previous, &p.current, &p.renames, &p.fills)?;
-    let mut down = sqlite::steps(&p.current, previous, &p.renames.reversed())?;
+    let mut down = sqlite::steps_with(&p.current, previous, &p.renames.reversed(), &p.down_fills)?;
     if p.identity_changed { identity_step(&mut up); identity_step(&mut down); }
     Ok(MigrationPlan { up, down, snapshot: p.current, kind: FolderKind::Main })
 }
@@ -184,13 +195,14 @@ fn pg_plan(previous: &DbSchema, p: Prepared, up: &[Op], down: &[Op]) -> Migratio
 pub fn plan_between(previous: &DbSchema, next: &DbSchema, renames: &model::Renames) -> Result<MigrationPlan> {
     let dialect = if previous.version != 0 { previous.dialect } else { next.dialect };
     let identity_changed = previous.identities != next.identities;
-    let fills = diff::json_backfills(previous, next, renames)?;
+    let (fills, down_fills) = json_ops(previous, next, renames)?;
     let (mut up, mut down) = if dialect == crate::dialect::Dialect::Sqlite {
-        (sqlite::steps_with(previous, next, renames, &fills)?, sqlite::steps(next, previous, &renames.reversed())?)
+        (sqlite::steps_with(previous, next, renames, &fills)?, sqlite::steps_with(next, previous, &renames.reversed(), &down_fills)?)
     } else {
         let mut up = diff::diff(previous, next, renames)?;
         up.extend(fills);
-        let down = diff::diff(next, previous, &renames.reversed())?;
+        let mut down = diff::diff(next, previous, &renames.reversed())?;
+        down.extend(down_fills);
         (steps(&up, next), steps(&down, previous))
     };
     if identity_changed { identity_step(&mut up); identity_step(&mut down); }

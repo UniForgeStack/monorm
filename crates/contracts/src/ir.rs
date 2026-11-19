@@ -164,6 +164,9 @@ pub struct TypeFieldIr {
     /// A scalar subfield: its column template (`column` is the name segment).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub leaf: Option<FieldIr>,
+    /// The old name of a nested-type subfield (`@renamed_from`); a scalar subfield keeps it in `leaf`.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub renamed_from: Option<String>,
 }
 
 /// Where a lowered field sits in a nested value.
@@ -490,6 +493,9 @@ pub struct FieldIr {
     /// Literal server-side default (number, bool or string).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub default: Option<serde_json::Value>,
+    /// A Decimal `@default` with every digit as written (`"1.50"`, or a list of such texts); `default` holds the JSON number.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub default_decimal: Option<serde_json::Value>,
     /// Server-side `DEFAULT now()`.
     #[serde(skip_serializing_if = "crate::ir::is_false", default)]
     pub default_now: bool,
@@ -663,6 +669,7 @@ impl FieldIr {
             index: false,
             max_length: None,
             default: None,
+            default_decimal: None,
             default_now: false,
             default_sql: None,
             client_default: None,

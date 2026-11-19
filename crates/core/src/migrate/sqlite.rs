@@ -85,22 +85,22 @@ pub fn create_all(db: &DbSchema, idempotent: bool) -> Vec<String> {
 }
 
 fn json_fill_sql(op: &diff::Op) -> String {
-    let diff::Op::BackfillJson { table, column, path, value } = op else { unreachable!("json_backfills yields only BackfillJson") };
-    let at = |p: &[String]| super::model::quote_literal(&format!("${}", p.iter().map(|k| format!(".\"{k}\"")).collect::<String>()));
-    let c = ident(column);
-    let (parent, _) = path.split_at(path.len() - 1);
-    let holder = if parent.is_empty() { format!("json_type({c})") } else { format!("json_type({c}, {})", at(parent)) };
-    format!(
-        "UPDATE {} SET {c} = json_set({c}, {}, json({})) WHERE {holder} = 'object' AND COALESCE(json_type({c}, {}), 'null') = 'null'",
-        ident(table), at(path), super::model::quote_literal(&value.to_string()), at(path)
-    )
+    use super::json_sql::{sqlite, Act};
+    match op {
+        diff::Op::BackfillJson { table, column, path, lists, value } => {
+            let (holder, last) = path.split_at(path.len() - 1);
+            sqlite(table, column, holder, lists, &Act::Fill { key: &last[0], value })
+        }
+        diff::Op::RenameJsonKey { table, column, holder, lists, from, to } => sqlite(table, column, holder, lists, &Act::Rename { from, to }),
+        _ => unreachable!("json_backfills and json_key_renames yield only these two"),
+    }
 }
 
 pub fn steps(from: &DbSchema, to: &DbSchema, renames: &Renames) -> Result<Vec<Step>> {
     steps_with(from, to, renames, &[])
 }
 
-/// `fills` are the `Op::BackfillJson` data fills (`diff::json_backfills`), run after the rebuild.
+/// `fills` are the data ops on json columns (`diff::json_key_renames`, `diff::json_backfills`), run after the rebuild.
 pub fn steps_with(from: &DbSchema, to: &DbSchema, renames: &Renames, fills: &[diff::Op]) -> Result<Vec<Step>> {
     let fills = fills.iter().map(json_fill_sql).collect::<Vec<_>>();
     if from.tables == to.tables {
@@ -113,7 +113,7 @@ pub fn steps_with(from: &DbSchema, to: &DbSchema, renames: &Renames, fills: &[di
                 _ => unreachable!("with_views adds only view operations to an empty plan; SQLite has no materialized view index"),
             }
         }
-        if !fills.is_empty() { steps.push(Step::new("Fill new subfields of json columns".into(), fills.join(";\n"), None, vec![])); }
+        if !fills.is_empty() { steps.push(Step::new("Rename and fill subfields of json columns".into(), fills.join(";\n"), None, vec![])); }
         return Ok(steps);
     }
     let mut sql = vec![];

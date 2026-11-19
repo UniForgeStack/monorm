@@ -14,7 +14,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use super::model::{
     Check, Column, DbSchema, EnumType, Exclusion, Extension, ForeignKey, Function, Index, PrimaryKey, Renames, SqlView, Table,
-    Policy, Trigger, Unique, ShapeEntry,
+    Policy, Trigger, Unique, ShapeEntry, NestedShape,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -88,7 +88,11 @@ pub enum Op {
     BackfillColumn { table: String, column: String, value: String, others: Vec<String> },
     /// Sets `path` of the JSON object in `column` to `value` in each row where its parent object
     /// exists and the key is missing: a subfield of a `json` nested type that rows lack.
-    BackfillJson { table: String, column: String, path: Vec<String>, value: serde_json::Value },
+    /// `lists` marks the levels of the path that hold an array of objects (see `json_sql`).
+    BackfillJson { table: String, column: String, path: Vec<String>, lists: Vec<bool>, value: serde_json::Value },
+    /// Renames the key `from` to `to` in the JSON objects at `holder` in `column`, where `from` exists
+    /// and `to` does not: a subfield of a `json` nested type with a `@renamed_from`.
+    RenameJsonKey { table: String, column: String, holder: Vec<String>, lists: Vec<bool>, from: String, to: String },
     /// `UPDATE <table> SET <column> = <expression over the old columns>, ...`: the data of a nested
     /// type whose storage changed between `columns` and `json`.
     CopyColumns { table: String, sets: Vec<(String, String)> },
@@ -589,6 +593,10 @@ fn rename_partition_column(sql: &str, from: &str, to: &str) -> String {
 
 /// The default a new subfield (and, for a group, its required subfields) gives a row that lacks it.
 fn default_fill(shape: &[ShapeEntry], e: &ShapeEntry, at: &str) -> Result<Option<serde_json::Value>, String> {
+    if e.group && e.list {
+        // An empty list holds no element, so no element needs a default.
+        return Ok(Some(serde_json::Value::Array(vec![])));
+    }
     if e.group {
         let mut object = serde_json::Map::new();
         for child in shape.iter().filter(|c| c.path.len() == e.path.len() + 1 && c.path.starts_with(&e.path)) {
@@ -605,39 +613,78 @@ fn default_fill(shape: &[ShapeEntry], e: &ShapeEntry, at: &str) -> Result<Option
     }
 }
 
+/// Which levels of a path under a `json` column hold an array: the column itself, then each key of `holder`.
+fn lists_of(shape: &NestedShape, holder: &[String]) -> Vec<bool> {
+    let mut lists = vec![shape.list];
+    lists.extend((1..=holder.len()).map(|i| shape.shape.iter().any(|e| e.path == holder[..i] && e.list)));
+    lists
+}
+
+/// The `json` column of `new` that `old` has under the same (or a renamed) table and column, with the shape of each.
+fn json_columns<'a>(old: &'a DbSchema, new: &'a DbSchema, renames: &'a Renames) -> impl Iterator<Item = (&'a Table, &'a Column, &'a NestedShape, Option<&'a NestedShape>)> {
+    new.tables.iter().flat_map(move |n| {
+        let previous = renames.tables.get(&n.name).unwrap_or(&n.name);
+        let o = old.tables.iter().find(|o| o.name == n.name || &o.name == previous);
+        n.columns.iter().filter_map(move |nc| {
+            let shape = nc.nested.0.as_ref()?;
+            let oc = o?.column(renames.renamed_column(n, o?, &nc.name).unwrap_or(&nc.name))?;
+            Some((n, nc, shape, oc.nested.0.as_ref()))
+        })
+    })
+}
+
+/// The key renames of `json` nested types: a subfield with a `@renamed_from` whose old key the old shape
+/// holds and whose new key it lacks. An outer key goes first, so an inner key renames under its new parent.
+/// They run before the fills, and in the down plan after the diff, on the names of the target.
+/// A hint on a column whose old snapshot has no shape is an error: the old key cannot be told from a new one,
+/// and a fill would leave the old key in the data.
+pub fn json_key_renames(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<Vec<Op>, String> {
+    let mut ops = vec![];
+    for (n, nc, shape, before) in json_columns(old, new, renames) {
+        for e in &shape.shape {
+            if before.is_none() {
+                let hinted = (0..e.path.len()).find_map(|i| renames.keys.get(&(n.name.clone(), nc.name.clone(), e.path[..=i].to_vec())).map(|old| (i, old)));
+                if let Some((i, old_key)) = hinted {
+                    return Err(format!(
+                        "{}.{}: `@renamed_from(\"{old_key}\")` on `{}` needs the shape of the json column in the previous snapshot, and that snapshot has none (it is older than the shape). Rename the key in the rows by hand in SQL and remove the `@renamed_from`; the next migration records the shape",
+                        n.name, nc.name, e.path[..=i].join(".")
+                    ));
+                }
+            }
+            let source = renames.source_path(&n.name, &nc.name, &e.path, before);
+            let last = e.path.len() - 1;
+            if source[last] != e.path[last] {
+                let holder = e.path[..last].to_vec();
+                ops.push(Op::RenameJsonKey { table: n.name.clone(), column: nc.name.clone(), lists: lists_of(shape, &holder), holder, from: source[last].clone(), to: e.path[last].clone() });
+            }
+        }
+    }
+    Ok(ops)
+}
+
 /// The data fills for a `json` nested type that gained a required subfield. Rows that
 /// lack the key, or hold a JSON `null` there, get the `@default`. A snapshot without the old
 /// shape proves no key new, so it fills every required subfield that has a `@default`.
 pub fn json_backfills(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<Vec<Op>, String> {
     let mut ops = vec![];
-    for n in &new.tables {
-        let previous = renames.tables.get(&n.name).unwrap_or(&n.name);
-        let Some(o) = old.tables.iter().find(|o| o.name == n.name || &o.name == previous) else { continue };
-        for nc in &n.columns {
-            let Some(shape) = &nc.nested.0 else { continue };
-            let Some(oc) = o.column(renames.renamed_column(n, o, &nc.name).unwrap_or(&nc.name)) else { continue };
-            let before = oc.nested.0.as_ref();
-            let at = format!("{}.{}", n.name, nc.name);
-            for e in shape.shape.iter().filter(|e| !e.nullable) {
-                let was = before.and_then(|b| b.shape.iter().find(|b| b.path == e.path));
-                if was.is_some_and(|b| !b.nullable) {
-                    continue;
-                }
-                // an entry the old shape does not prove new (no shape, or no parent entry) gets only a guarded fill
-                let proven = before.is_some_and(|b| e.path.len() == 1 || b.shape.iter().any(|p| p.path == e.path[..e.path.len() - 1]));
-                let value = match proven {
-                    true => {
-                        let ancestors = (1..e.path.len()).any(|k| shape.shape.iter().any(|a| a.path == e.path[..k] && a.list));
-                        if shape.list || ancestors {
-                            return Err(format!("{at}.{}: a required subfield added inside a list can't be filled by a migration; make it nullable, or update the rows by hand", e.path.join(".")));
-                        }
-                        default_fill(&shape.shape, e, &at)?
-                    }
-                    false => default_fill(&shape.shape, e, &at).ok().flatten(),
-                };
-                if let Some(value) = value {
-                    ops.push(Op::BackfillJson { table: n.name.clone(), column: nc.name.clone(), path: e.path.clone(), value });
-                }
+    for (n, nc, shape, before) in json_columns(old, new, renames) {
+        let at = format!("{}.{}", n.name, nc.name);
+        for e in shape.shape.iter().filter(|e| !e.nullable) {
+            // the old shape holds a renamed key under its old name
+            let source = renames.source_path(&n.name, &nc.name, &e.path, before);
+            let was = before.and_then(|b| b.shape.iter().find(|b| b.path == source));
+            if was.is_some_and(|b| !b.nullable) {
+                continue;
+            }
+            // an entry the old shape does not prove new (no shape, or no parent entry) gets only a guarded fill
+            let proven = before.is_some_and(|b| e.path.len() == 1 || b.shape.iter().any(|p| p.path == source[..source.len() - 1]));
+            let value = match proven {
+                true => default_fill(&shape.shape, e, &at)?,
+                false => default_fill(&shape.shape, e, &at).ok().flatten(),
+            };
+            if let Some(value) = value {
+                let holder = &e.path[..e.path.len() - 1];
+                ops.push(Op::BackfillJson { table: n.name.clone(), column: nc.name.clone(), lists: lists_of(shape, holder), path: e.path.clone(), value });
             }
         }
     }
@@ -670,7 +717,7 @@ fn affects_views(op: &Op) -> bool {
         op,
         Op::CreateExtension(_) | Op::CreateFunction(_) | Op::CreateEnum(_) | Op::AddEnumValue { .. } | Op::CommentOnType { .. }
             | Op::CreateTable { .. } | Op::SetNotNull { .. } | Op::DropNotNull { .. } | Op::SetDefault { .. } | Op::DropDefault { .. }
-            | Op::AddIdentity { .. } | Op::DropIdentity { .. } | Op::BackfillColumn { .. } | Op::BackfillJson { .. } | Op::CopyColumns { .. }
+            | Op::AddIdentity { .. } | Op::DropIdentity { .. } | Op::BackfillColumn { .. } | Op::BackfillJson { .. } | Op::RenameJsonKey { .. } | Op::CopyColumns { .. }
             | Op::AddConstraint { .. } | Op::DropConstraint { .. } | Op::RenameConstraint { .. }
             | Op::CreateIndex { .. } | Op::DropIndex { .. } | Op::RenameIndex { .. } | Op::CreateTrigger { .. } | Op::DropTrigger { .. }
             | Op::DropRule { .. } | Op::RuleNotRestored { .. }
