@@ -472,17 +472,17 @@ test("add and set with every link present run no prepare", async () => {
 test("a copy prepares the pending values, then loads the stored ones", async () => {
   const url = process.env["ORM_TEST_DATABASE_URL"] ?? "postgres://postgres:postgres@localhost/orm_test";
   const registry = new Registry();
-  const models = loads(source.replace('"sqlite"', '"postgresql"').replaceAll("Doc", "CopyDoc").replaceAll("Locked", "CopyLocked"), { registry }) as Record<string, any>;
+  const models = loads(source.replace('"sqlite"', '"postgresql"').replaceAll("Doc", "JsCopyDoc").replaceAll("Locked", "JsCopyLocked"), { registry }) as Record<string, any>;
   const db = await connect(url, { registry, default: false });
   try {
     await db.dropTables();
     await db.createTables();
     const body = new Counting("body");
-    registerFieldAdapter(models.CopyDoc._meta, "body", body);
-    const objects = models.CopyDoc.objects.using(db) as any;
+    registerFieldAdapter(models.JsCopyDoc._meta, "body", body);
+    const objects = models.JsCopyDoc.objects.using(db) as any;
     assert.equal(await objects.insertMany([{ id: 1, title: "a", body: "one" }, { id: 2, title: "b", body: { x: 1 } }], { copy: true }), 2);
     assert.deepEqual(body.calls, ["one"]);
-    assert.deepEqual(((await objects.filter(models.CopyDoc.id.eq(1)).get()) as Row)["body"], ["body", { tag: "body", value: "one" }]);
+    assert.deepEqual(((await objects.filter(models.JsCopyDoc.id.eq(1)).get()) as Row)["body"], ["body", { tag: "body", value: "one" }]);
   } finally {
     await db.dropTables();
     await db.close();

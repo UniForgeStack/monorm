@@ -188,6 +188,7 @@ class AdminSite:
 
 @final
 class AdminRouter:
+    def advance_clock(self, secs: int) -> None: ...
     def request(
         self, method: str, path: str, headers: list[tuple[str, str]], body: str | None, ip: str
     ) -> Awaitable[tuple[int, list[tuple[str, str]], str]]: ...

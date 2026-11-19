@@ -608,21 +608,19 @@ async def test_add_and_set_with_every_link_present_run_no_prepare():
 async def test_a_copy_prepares_the_pending_values_then_loads_the_stored_ones():
     url = os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
     registry = monorm.Registry()
-    models = monorm.loads(SCHEMA.replace('"sqlite"', '"postgresql"').replace("Doc", "CopyDoc").replace("Locked", "CopyLocked"), registry=registry)
+    models = monorm.loads(SCHEMA.replace('"sqlite"', '"postgresql"').replace("Doc", "PyCopyDoc").replace("Locked", "PyCopyLocked"), registry=registry)
     db = await monorm.connect(url, registry=registry, default=False)
     try:
-        await db.execute('DROP TABLE IF EXISTS "CopyDoc"')
-        await db.execute('DROP TABLE IF EXISTS "CopyLocked"')
+        await db.drop_tables()
         await db.create_tables()
         body = Counting("body")
-        register_field_adapter(models["CopyDoc"], "body", body)
-        objects = models["CopyDoc"].objects.using(db)
+        register_field_adapter(models["PyCopyDoc"], "body", body)
+        objects = models["PyCopyDoc"].objects.using(db)
         assert await objects.insert_many([{"id": 1, "title": "a", "body": "one"}, {"id": 2, "title": "b", "body": {"x": 1}}], copy=True) == 2
         assert body.calls == ["one"]
-        assert (await objects.get(models["CopyDoc"].id == 1)).body == ("body", {"tag": "body", "value": "one"})
+        assert (await objects.get(models["PyCopyDoc"].id == 1)).body == ("body", {"tag": "body", "value": "one"})
     finally:
-        await db.execute('DROP TABLE IF EXISTS "CopyDoc"')
-        await db.execute('DROP TABLE IF EXISTS "CopyLocked"')
+        await db.drop_tables()
         await db.close()
 
 

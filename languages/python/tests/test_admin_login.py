@@ -1,6 +1,5 @@
 """Password login, sessions and HTTP security of the admin, through `admin.test_client(secret=...)`."""
 
-import asyncio
 import os
 
 import pytest
@@ -239,7 +238,7 @@ async def test_the_idle_timeout_ends_a_session(world):
     client = site.test_client(db, secret=SECRET, settings={"idle_timeout": 1})
     await client.login("ann", "pw")
     assert (await client.get(ME)).status == 200
-    await asyncio.sleep(2.1)
+    client.advance_clock(3)
     assert (await client.get(ME)).status == 401
 
 
@@ -249,8 +248,8 @@ async def test_the_absolute_timeout_ends_a_session_that_is_in_use(world):
     await client.login("ann", "pw")
     for _ in range(2):
         assert (await client.get(ME)).status == 200
-        await asyncio.sleep(0.8)
-    await asyncio.sleep(0.8)
+        client.advance_clock(1)
+    client.advance_clock(1)
     assert (await client.get(ME)).status == 401
 
 
@@ -280,7 +279,7 @@ async def test_a_deactivated_user_loses_the_session_at_the_next_renewal(world):
     await client.login("ann", "pw")
     await change_ann(db, models, is_active=False)
     assert (await client.get(ME)).status == 200, "the change shows at the renewal, not before"
-    await asyncio.sleep(1.1)
+    client.advance_clock(2)
     assert (await client.get(ME)).status == 401
     assert (await client.get(ME)).status == 401
 
@@ -290,7 +289,7 @@ async def test_a_demoted_superuser_loses_the_session_at_the_next_renewal(world):
     client = site.test_client(db, secret=SECRET, settings=RENEWS)
     await client.login("ann", "pw")
     await change_ann(db, models, is_superuser=False)
-    await asyncio.sleep(1.1)
+    client.advance_clock(2)
     assert (await client.get(ME)).status == 401
 
 
@@ -299,7 +298,7 @@ async def test_a_password_changed_outside_the_service_ends_the_session_at_the_ne
     client = site.test_client(db, secret=SECRET, settings=RENEWS)
     await client.login("ann", "pw")
     await change_ann(db, models, password=make_password("changed-elsewhere"))
-    await asyncio.sleep(1.1)
+    client.advance_clock(2)
     assert (await client.get(ME)).status == 401
 
 
@@ -312,7 +311,7 @@ async def test_a_logout_in_one_client_ends_the_copy_of_the_cookie_in_another_cli
     assert (await second.get(ME)).status == 200
     assert (await first.logout()).status == 200
     assert (await second.get(ME)).status == 200, "the second client learns of the logout at its next renewal"
-    await asyncio.sleep(1.1)
+    second.advance_clock(2)
     assert (await second.get(ME)).status == 401
 
 
@@ -330,7 +329,8 @@ async def test_a_password_change_ends_the_other_sessions_and_keeps_the_changed_o
     client.cookies.update(old)
     assert (await client.get(ME)).status == 401, "the old cookie is dead at once"
     await client.login("ann", "new-password")
-    await asyncio.sleep(1.1)
+    client.advance_clock(2)
+    elsewhere.advance_clock(2)
     assert (await client.get(ME)).status == 200, "the new session knows the new hash"
     assert (await elsewhere.get(ME)).status == 401
 

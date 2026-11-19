@@ -194,6 +194,7 @@ export type NativeHostDispatch = (name: string, tx: NativeTransaction | null, pa
 
 /** The served router with login, called in memory. `headers` are `[name, value]` pairs; every `set-cookie` stays. */
 export interface NativeAdminRouter {
+  advanceClock(secs: number): void;
   request(method: string, path: string, headers: string[][], body: string | null, ip: string): Promise<{ status: number; headers: string[][]; body: string }>;
 }
 

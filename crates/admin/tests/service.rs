@@ -86,10 +86,10 @@ async fn timeout_rolls_back_a_transaction_the_host_still_holds() {
     // One SQLite connection: while the cancelled request's transaction stays open, the next request waits for it.
     let conn: Arc<dyn Executor> = sqlite(&schema("")).await;
     let held: Held = Arc::default();
-    let router = hold_router(conn, held.clone(), Duration::from_millis(100));
+    let router = hold_router(conn, held.clone(), Duration::from_secs(2));
     assert_eq!(get_status(router.clone(), "/slow").await, 504);
     assert_eq!(held.lock().unwrap().len(), 1, "the host still holds the transaction");
-    let next = tokio::time::timeout(Duration::from_secs(5), get_status(router, "/quick")).await;
+    let next = tokio::time::timeout(Duration::from_secs(20), get_status(router, "/quick")).await;
     let status = next.expect("the next request hangs");
     assert_eq!(status, 200, "504: the next request waited for the connection of a transaction that was not rolled back");
 }

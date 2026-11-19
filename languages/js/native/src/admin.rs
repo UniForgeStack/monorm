@@ -193,9 +193,10 @@ impl AdminSite {
     ) -> napi::Result<AdminRouter> {
         let options = monorm_admin::security_options(&options_json).map_err(napi::Error::from_reason)?;
         let auth = auth_config(dispatch, monorm_admin::security_with(secret.as_deref(), options))?;
+        let security = auth.security.clone();
         let driver: Arc<dyn Executor> = engine.driver.clone();
         let conn = monorm_engine::trace::wrap(driver, trace.map(|t| &t.0));
-        Ok(AdminRouter { routed: Routed::new(self.site.clone(), conn, auth, None) })
+        Ok(AdminRouter { routed: Routed::new(self.site.clone(), conn, auth, None), security })
     }
 
     /// Binds the socket and serves this site: `settings_json` is the text that `adminSettings` gave.
@@ -235,10 +236,17 @@ pub struct RouterReply {
 #[napi]
 pub struct AdminRouter {
     routed: Routed,
+    security: Arc<monorm_admin::Security>,
 }
 
 #[napi]
 impl AdminRouter {
+    /// Moves the clock of this router forward by `secs` seconds: a test ends a session without a wait.
+    #[napi]
+    pub fn advance_clock(&self, secs: i64) {
+        self.security.advance(secs);
+    }
+
     /// `headers` is a list of `[name, value]` pairs.
     #[napi]
     pub fn request<'env>(

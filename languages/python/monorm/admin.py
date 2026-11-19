@@ -829,6 +829,12 @@ class AdminTestClient:
                     self.cookies[key] = val
         return AdminResponse(status, text, 0, tuple(reply_headers), content=text.encode())
 
+    def advance_clock(self, seconds: int) -> None:
+        """Moves the clock of the login router forward: a test ends a session or a renewal without a wait. Send a request first."""
+        if self._router is None:
+            raise RuntimeError("advance_clock needs a login-mode client that has sent a request")
+        self._router.advance_clock(seconds)
+
     async def get(self, path: str, **kwargs: Any) -> AdminResponse:
         return await self.request("GET", path, **kwargs)
 

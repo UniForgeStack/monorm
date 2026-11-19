@@ -5,7 +5,6 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { setTimeout as sleep } from "node:timers/promises";
 
 import { Admin, type AdminResponse, type AdminTestClient } from "../src/admin.js";
 import { UserMethods, UserQueries, makePassword } from "../src/auth/index.js";
@@ -226,7 +225,7 @@ for (const provider of PROVIDERS) {
     const client = site.testClient(db, { secret: SECRET, settings: { idle_timeout: 1 } });
     await client.login("ann", "pw");
     assert.equal((await client.get(ME)).status, 200);
-    await sleep(2100);
+    client.advanceClock(3);
     assert.equal((await client.get(ME)).status, 401);
   }));
 
@@ -235,9 +234,9 @@ for (const provider of PROVIDERS) {
     await client.login("ann", "pw");
     for (let i = 0; i < 2; i++) {
       assert.equal((await client.get(ME)).status, 200);
-      await sleep(800);
+      client.advanceClock(1);
     }
-    await sleep(800);
+    client.advanceClock(1);
     assert.equal((await client.get(ME)).status, 401);
   }));
 
@@ -264,7 +263,7 @@ for (const provider of PROVIDERS) {
     await client.login("ann", "pw");
     await changeAnn(w, { isActive: false });
     assert.equal((await client.get(ME)).status, 200, "the change shows at the renewal, not before");
-    await sleep(1100);
+    client.advanceClock(2);
     assert.equal((await client.get(ME)).status, 401);
     assert.equal((await client.get(ME)).status, 401);
   }));
@@ -273,7 +272,7 @@ for (const provider of PROVIDERS) {
     const client = w.site.testClient(w.db, { secret: SECRET, settings: RENEWS });
     await client.login("ann", "pw");
     await changeAnn(w, { isSuperuser: false });
-    await sleep(1100);
+    client.advanceClock(2);
     assert.equal((await client.get(ME)).status, 401);
   }));
 
@@ -281,7 +280,7 @@ for (const provider of PROVIDERS) {
     const client = w.site.testClient(w.db, { secret: SECRET, settings: RENEWS });
     await client.login("ann", "pw");
     await changeAnn(w, { password: makePassword("changed-elsewhere") });
-    await sleep(1100);
+    client.advanceClock(2);
     assert.equal((await client.get(ME)).status, 401);
   }));
 
@@ -293,7 +292,7 @@ for (const provider of PROVIDERS) {
     assert.equal((await second.get(ME)).status, 200);
     assert.equal((await first.logout()).status, 200);
     assert.equal((await second.get(ME)).status, 200, "the second client learns of the logout at its next renewal");
-    await sleep(1100);
+    second.advanceClock(2);
     assert.equal((await second.get(ME)).status, 401);
   }));
 
@@ -310,7 +309,8 @@ for (const provider of PROVIDERS) {
     for (const [k, v] of old) client.cookies.set(k, v);
     assert.equal((await client.get(ME)).status, 401, "the old cookie is dead at once");
     await client.login("ann", "new-password");
-    await sleep(1100);
+    client.advanceClock(2);
+    elsewhere.advanceClock(2);
     assert.equal((await client.get(ME)).status, 200, "the new session knows the new hash");
     assert.equal((await elsewhere.get(ME)).status, 401);
   }));

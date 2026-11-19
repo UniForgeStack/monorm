@@ -784,6 +784,12 @@ export class AdminTestClient {
     return this.site.prefix;
   }
 
+  /** Moves the clock of the login router forward: a test ends a session or a renewal without a wait. Send a request first. */
+  advanceClock(seconds: number): void {
+    if (this.#router === null) throw new Error("advanceClock needs a login-mode client that has sent a request");
+    this.#router.advanceClock(seconds);
+  }
+
   async request(method: string, path: string, options: RequestOptions = {}): Promise<AdminResponse> {
     const login = this.#login;
     if (login === null) {
