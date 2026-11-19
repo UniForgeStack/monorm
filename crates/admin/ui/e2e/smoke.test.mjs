@@ -572,6 +572,34 @@ test("a form shows the field error of the server, and the edit of an author is s
   await context.close();
 });
 
+test("a protobuf message shows as JSON, a bad JSON is a field error, and the edit is saved", async () => {
+  const { context, page, problems, idle } = await signedIn();
+  await page.goto(`${base}/admin/Setting`);
+  // The server sorts the keys of the JSON.
+  await page.getByText('{"priority":3,"tags":["a"],"title":"hi"}').waitFor();
+  await page.goto(`${base}/admin/Setting/1`);
+  assert.deepEqual(JSON.parse(await page.locator("pre.json-value").innerText()), { title: "hi", priority: 3, tags: ["a"] });
+  await page.goto(`${base}/admin/Setting/1/edit`);
+  const config = page.getByLabel("Config");
+  assert.match(await config.evaluate((e) => getComputedStyle(e).fontFamily), /mono/i, "the JSON field is monospace");
+  assert.deepEqual(JSON.parse(await config.inputValue()), { title: "hi", priority: 3, tags: ["a"] });
+  // The browser refuses the text that is not JSON; the server refuses JSON that is not the message.
+  await config.fill("{");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.getByText("Must be valid JSON").waitFor();
+  await config.fill('{"nope": 1}');
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.locator("#field-config-msg, .field-bad .msg-error").first().waitFor();
+  assert.equal(await config.getAttribute("aria-invalid"), "true");
+  await config.fill('{"title": "new", "priority": 4}');
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.waitForURL(`${base}/admin/Setting/1`);
+  await page.locator("pre.json-value").getByText('"new"').waitFor();
+  await idle();
+  assert.deepEqual(problems, [`HTTP 422: ${base}/admin/api/resources/Setting/1`, "console: Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)"]);
+  await context.close();
+});
+
 test("a section layout with a collapsed section, and a custom form", async () => {
   const { context, page, problems, idle } = await signedIn();
   await page.goto(`${base}/admin/Book/-/new`);

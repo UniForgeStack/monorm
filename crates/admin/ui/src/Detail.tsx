@@ -48,7 +48,7 @@ export function DetailPage({ resource, id, zone, site }: { resource: string; id:
           {d.fields.map((f, i) => (
             <div key={f.label}>
               <dt>{f.title}</dt>
-              <dd>{cell(d.values[i], f, zone) || <span className="muted">{f.empty ?? "—"}</span>}</dd>
+              <dd>{f.widget === "json" && d.values[i] !== null && typeof d.values[i] === "object" ? <pre className="json-value">{JSON.stringify(d.values[i], null, 2)}</pre> : (cell(d.values[i], f, zone) || <span className="muted">{f.empty ?? "—"}</span>)}</dd>
             </div>
           ))}
           {d.links.map((l) => (

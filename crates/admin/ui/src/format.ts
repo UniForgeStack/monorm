@@ -37,7 +37,8 @@ const pad = (n: number) => String(n).padStart(2, "0");
 export function toInput(value: unknown, w: string, zone: Zone): Input {
   if (w === "checkbox") return value === true;
   if (value === null || value === undefined) return "";
-  if (w === "json" || w === "list") return JSON.stringify(value);
+  if (w === "json") return JSON.stringify(value, null, 2);
+  if (w === "list") return JSON.stringify(value);
   if (w === "datetime" && typeof value === "string") {
     const d = new Date(/(Z|[+-]\d\d:?\d\d)$/i.test(value) ? value : `${value}Z`);
     if (Number.isNaN(d.getTime())) return value;

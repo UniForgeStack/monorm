@@ -95,6 +95,12 @@ try {
     await page.goto(`${base}/admin/Book`);
     await page.getByText("2 records").waitFor();
     await shot(page, scheme, "06-list-book");
+    await page.goto(`${base}/admin/Setting/1`);
+    await page.locator("pre.json-value").waitFor();
+    await shot(page, scheme, "06b-detail-proto-json");
+    await page.goto(`${base}/admin/Setting/1/edit`);
+    await page.getByLabel("Config").waitFor();
+    await shot(page, scheme, "06c-form-proto-json");
     await page.goto(`${base}/admin/Reviewer`);
     await page.getByText("25 records").waitFor();
     await shot(page, scheme, "07-list-reviewer-paged");

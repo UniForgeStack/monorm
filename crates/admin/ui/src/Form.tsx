@@ -420,7 +420,7 @@ function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }:
             {c.choices?.map((v) => <option key={v} value={v}>{v}</option>)}
           </select>
         ) : w === "textarea" || w === "json" || w === "list" ? (
-          <textarea {...common} rows={w === "textarea" ? 4 : 6} value={String(value)} maxLength={f.max_length ?? undefined} onChange={(e) => set(name, e.target.value)} spellCheck={w === "textarea"} />
+          <textarea {...common} className={w === "json" ? "mono" : undefined} rows={w === "textarea" ? 4 : w === "json" ? 10 : 6} value={String(value)} maxLength={f.max_length ?? undefined} onChange={(e) => set(name, e.target.value)} spellCheck={w === "textarea"} />
         ) : (
           <input {...common} type={inputType(w)} step={w === "datetime" ? 1 : undefined} inputMode={w === "number" ? "decimal" : undefined} value={String(value)} maxLength={f.max_length ?? undefined} onChange={(e) => set(name, e.target.value)} />
         )}

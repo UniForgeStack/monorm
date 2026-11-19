@@ -84,6 +84,14 @@ model Album {
   @@map("albums")
 }
 
+// A protobuf message in a Bytes field: the admin shows and edits it as JSON.
+model Setting {
+  id     BigInt @id @default(autoincrement())
+  name   String
+  config Bytes? @proto.message("acme.Note")
+  @@map("settings")
+}
+
 model Track {
   id       BigInt @id @default(autoincrement())
   title    String
@@ -141,6 +149,7 @@ import asyncio, datetime, os
 import monorm
 from monorm_auth import make_password
 import models
+from acme import note_pb2
 
 async def main():
     db = await monorm.connect(os.environ["MONORM_DATABASE_URL"])
@@ -156,6 +165,7 @@ async def main():
     await models.Ticket.objects.insert_many([{"title": f"Ticket {n}"} for n in range(1, 4)])
     await models.Movie.objects.insert_many([{"title": "Alpha", "stars": 4}, {"title": "Beta", "stars": 2}])
     await models.Shelf.objects.insert_many([{"title": "Oak", "qty": 1}, {"title": "Pine", "qty": 2}, {"title": "Elm", "qty": 3}])
+    await models.Setting.objects.insert_many([{"name": "Welcome", "config": note_pb2.Note(title="hi", priority=3, tags=["a"])}])
     (debut,) = await models.Album.objects.insert_many([{"title": "Debut"}]).returning()
     await models.Track.objects.insert_many([{"title": "Intro", "plays": 1, "album_id": debut.id}])
     await db.close()
@@ -175,6 +185,9 @@ export async function startProject() {
   const env = { ...process.env, PYTHONPATH: ROOT, MONORM_DATABASE_URL: `sqlite://${dir}/app.db`, MONORM_ADMIN_SECRET: SECRET, MONORM_ADMIN_PORT: "0" };
   writeFileSync(join(dir, "schema.prisma"), SCHEMA);
   writeFileSync(join(dir, "seed.py"), SEED);
+  // The generated message classes of the proto field, and the map from the package to its module.
+  cpSync(join(ROOT, "languages", "python", "tests", "proto_gen", "acme"), join(dir, "acme"), { recursive: true, filter: (f) => !f.includes("__pycache__") });
+  writeFileSync(join(dir, "monorm.toml"), '[proto.python]\n"acme" = "acme.note_pb2"\n');
   run(dir, ["-m", "monorm", "admin", "init", "--models", "models"], env);
   // A search box on Book: the title is a plain column, so the search is "contains". A filter on its author.
   const module = readFileSync(join(dir, "admin.py"), "utf8");
