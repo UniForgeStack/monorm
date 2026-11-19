@@ -477,7 +477,7 @@ test("aggregate FILTER SQL", () => {
 
 test("JSON path, containment and merge SQL", () => {
   const registry = new Registry();
-  const Doc = loads(`model Doc {\n id BigInt @id\n meta Json\n title String\n @@map("docs")\n}`, { registry })["Doc"] as any;
+  const Doc = loads(`model Doc {\n id BigInt @id\n meta Json\n title String\n tags String[] @default([])\n @@map("docs")\n}`, { registry })["Doc"] as any;
   const w = (c: unknown) => where(Doc.objects.filter(c));
   assert.equal(w(Doc.meta.get("author", "name").eq("Ann")), `((("docs"."meta" -> E'author') -> E'name')) = '"Ann"'`);
   assert.equal(w(Doc.meta.get("tags").get(0).asText().eq("x")), `((("docs"."meta" -> E'tags') ->> 0)) = 'x'`);
@@ -485,6 +485,10 @@ test("JSON path, containment and merge SQL", () => {
   assert.equal(w(Doc.meta.hasKey("tags")), `"docs"."meta" ? 'tags'`);
   assert.equal(w(Doc.meta.hasKeys(["a", "b"])), `("docs"."meta" ? 'a') AND ("docs"."meta" ? 'b')`);
   assert.equal(w(Doc.meta.hasAnyKeys(["a", "b"])), `("docs"."meta" ? 'a') OR ("docs"."meta" ? 'b')`);
+  // On an array column, an int index stays SQL's array element access.
+  assert.ok(Doc.objects.select({ t: Doc.tags.element(1) }).sql().includes(`("docs"."tags")[1]`));
+  // TypeScript rejects a path on a non-JSON column when it builds the SQL, Python when it subscripts.
+  assert.throws(() => Doc.objects.filter(Doc.title.get("a").eq("x")).sql(), /needs a Json column/);
   assert.throws(() => Doc.meta.get("a").asText().get("b"), /ends a JSON path/);
   assert.throws(() => Doc.meta.get(), /at least one/);
 });

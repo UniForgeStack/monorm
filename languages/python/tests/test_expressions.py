@@ -46,6 +46,7 @@ async def docs():
     await db.close()
 
 
+@pytest.mark.case("sql::json_path_containment_and_merge_sql")
 def test_json_path_sql():
     _, Doc = load()
     assert (
@@ -82,6 +83,7 @@ def test_json_path_sql():
         Doc.meta["a"].as_text()["b"]  # type: ignore[index]
 
 
+@pytest.mark.case("json_paths_compare_as_json_and_as_text")
 async def test_json_paths(docs):
     Doc, objects = docs
     assert await objects.filter(Doc.meta["author"]["name"] == "Ann").select(Doc.title).scalars() == ["a"]
@@ -300,6 +302,7 @@ def load_articles(source: str = ARTICLES):
     return registry, monorm.loads(source, registry=registry)["Article"]
 
 
+@pytest.mark.case("sql::full_text_search_sql")
 def test_full_text_search_sql():
     from monorm import func
 
@@ -388,6 +391,7 @@ async def test_matches_forms():
         # a vector that is not to_tsvector(config, ...) is searched with the server's default config
         wrapped = func.coalesce(vector, func.to_tsvector("english", ""))
         assert await objects.filter(wrapped.matches("fox")).select(Article.id).scalars() == [1]
+        assert await objects.filter(func.to_tsvector(Article.body).matches("lazy")).select(Article.id).scalars() == [2]
     finally:
         await db.drop_tables()
         await db.close()

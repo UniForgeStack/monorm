@@ -59,11 +59,13 @@ async def test_a_loader_in_a_loop_throws_with_the_shape_the_call_site_and_the_fi
 async def test_a_related_query_in_a_loop_names_load(shop):
     Person, Customer, db = shop
     people = await Person.objects.using(db).order_by(Person.id)
-    with pytest.warns(debug.NPlusOneWarning, match=r"use load\(Person.customers\)"):
+    with pytest.warns(debug.NPlusOneWarning, match=r"use load\(Person.customers\)") as warned:
         with debug.n_plus_one(threshold=3) as report:
             for p in people:
                 await p.customers.using(db)
+    assert len(warned) == 1
     assert report.repeated[0].count == 8
+    assert "8 queries" in str(warned[0].message)
 
 
 def line() -> int:
@@ -123,7 +125,7 @@ model PersonTag {
         await db.close()
 
 
-async def test_queries_under_the_threshold_tasks_and_distinct_shapes(shop):
+async def test_counts_by_shape_inside_the_scope_only_with_started_work_and_inserts(shop):
     Person, Customer, db = shop
     with warnings.catch_warnings():
         warnings.simplefilter("error")
@@ -192,7 +194,7 @@ async def test_the_pages_of_one_orm_loop_count_once_and_long_sql_is_cut(shop):
     assert "..." not in debug.Report(1, {"k": debug.Shape("k", "x" * 500, count=2)}).message()
 
 
-async def test_nested_scopes_prepared_update_many_and_a_filtered_related_set(shop):
+async def test_nested_scopes_count_in_the_outer_scope_update_many_counts_a_changed_related_set_names_no_fix(shop):
     Person, Customer, db = shop
     people = await Person.objects.using(db).order_by(Person.id)
     by_id = Person.objects.using(db).filter(Person.id == monorm.param("id")).prepare()

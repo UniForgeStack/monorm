@@ -40,13 +40,14 @@ after(async () => {
   await db.close();
 });
 
-test("JSON paths compare as JSON, asText() as text", async () => {
+test("JSON paths compare as JSON and as text", async () => {
   assert.deepEqual(await titles(objects().filter(Doc.meta.get("author", "name").eq("Ann"))), ["a"]);
   assert.deepEqual(await titles(objects().filter(Doc.meta.get("n").gt(3))), ["a", "c"]);
   assert.deepEqual(await titles(objects().filter(Doc.meta.get("tags", 0).asText().eq("y"))), ["b"]);
   assert.deepEqual(await titles(objects().filter(Doc.meta.get("author", "name").asText().startsWith("B"))), ["b"]);
   const rows = await objects().orderBy(Doc.id).select({ author: Doc.meta.get("author"), kind: Doc.meta.get("kind").asText() }).all();
   assert.deepEqual(rows, [{ author: { name: "Ann" }, kind: "post" }, { author: { name: "Bob" }, kind: "page" }, { author: null, kind: "post" }]);
+  assert.deepEqual((await objects().orderBy(Doc.meta.get("n").desc()).all()).map((d: { title: string }) => d.title), ["c", "a", "b"]);
 });
 
 test("JSON containment and keys", async () => {
@@ -255,33 +256,56 @@ test("a JSON index outside the 32-bit range is an error", async () => {
   }
 });
 
-test("full-text search: config names, a param() query and a vector without a config", async () => {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Any = any;
+async function withArticles(run: (articles: Any, Article: Any) => Promise<void>): Promise<void> {
   const fts = new Registry();
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const Article = loads(`model Article {
   id   BigInt @id @default(autoincrement())
   body String
   @@map("expr_articles_js2")
-}`, { registry: fts })["Article"] as any;
+}`, { registry: fts })["Article"] as Any;
   const pg = await connect(DATABASE_URL, { default: false, registry: fts, maxConnections: 1 });
   try {
     await pg.dropTables();
     await pg.createTables();
     const articles = Article.objects.using(pg);
-    await articles.insertMany([{ body: "The quick brown fox jumps" }, { body: "A lazy dog sleeps" }]);
-    const ids = (q: unknown) => (q as any).select({ id: Article.id }).scalars();
-    const byQuery = articles.filter(func.toTsvector("english", Article.body).matches(param("q"))).prepare();
-    assert.equal(await byQuery.count({ q: "lazy dogs" }), 1);
-    assert.equal(await byQuery.count({ q: "fox dogs" }), 0);
-    assert.deepEqual(await ids(articles.filter(func.toTsvector(Article.body).matches("lazy"))), [2n]);
-    for (const name of ["a'b", "a b", "a.b.c", "1a", ""]) {
-      await assert.rejects(articles.filter(func.toTsvector(name, Article.body).matches("x")).count(), /text search configuration/);
-    }
+    await articles.insertMany([{ body: "The quick brown fox" }, { body: "A lazy dog sleeps" }, { body: "Dogs are running" }]);
+    await run(articles, Article);
   } finally {
     await pg.dropTables();
     await pg.close();
   }
+}
+
+test("full-text search config names", () => {
+  const fts = new Registry();
+  const Article = loads(`model Article {
+  id   BigInt @id @default(autoincrement())
+  body String
+  @@map("expr_articles_js2")
+}`, { registry: fts })["Article"] as Any;
+  assert.ok(Article.objects.filter(func.toTsvector("español", Article.body).matches("x")).sql().includes("'español'::regconfig"));
+  for (const name of ["a'b", "a b", "a.b.c", "1a", ""]) {
+    assert.throws(() => Article.objects.filter(func.toTsvector(name, Article.body).matches("x")).sql(), (e: unknown) => e instanceof QueryError && /text search configuration/.test(String(e)));
+  }
 });
+
+test("matches prepared param", () => withArticles(async (articles, Article) => {
+  const found = articles.filter(func.toTsvector("english", Article.body).matches(param("q"))).orderBy(Article.id).prepare();
+  assert.deepEqual((await found.all({ q: "dogs" })).map((a: { id: bigint }) => a.id), [2n, 3n]);
+  assert.deepEqual((await found.all({ q: "fox" })).map((a: { id: bigint }) => a.id), [1n]);
+}));
+
+test("matches forms", () => withArticles(async (articles, Article) => {
+  const ids = (q: Any) => q.select({ id: Article.id }).scalars();
+  const vector = func.toTsvector("english", Article.body);
+  assert.deepEqual(await ids(articles.filter(vector.matches(func.plaintoTsquery("english", "lazy dog")))), [2n]);
+  // A vector that is not toTsvector(config, ...) is searched with the server's default config.
+  const wrapped = func.coalesce(vector, func.toTsvector("english", ""));
+  assert.deepEqual(await ids(articles.filter(wrapped.matches("fox"))), [1n]);
+  assert.deepEqual(await ids(articles.filter(func.toTsvector(Article.body).matches("lazy"))), [2n]);
+}));
 
 test("CASE of plain strings takes the enum type of the column it is assigned to", async () => {
   const lite = new Registry();

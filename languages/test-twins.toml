@@ -51,12 +51,6 @@
 # languages/python/tests/test_driver.py
 # languages/python/tests/test_explain_fetch.py
 # languages/python/tests/test_expressions.py
-"expressions::full_text_search_config_names" = "change: split the TS test and name the config part 'full-text search config names' (ID expressions::full_text_search_config_names), with the 'español' check added."
-"expressions::full_text_search_sql" = "change: twin sql::full_text_search_sql; Needs explicit ID @pytest.mark.case('sql::full_text_search_sql');"
-"expressions::json_path_sql" = "change: twin sql::json_path_containment_and_merge_sql; TS sql.test.ts:417 has the four SQL texts and 'ends a JSON path' only."
-"expressions::json_paths" = "change: twin expressions::json_paths_compare_as_json_as_text_as_text; Shared name 'JSON paths compare as JSON and as text' (ID"
-"expressions::matches_forms" = "change: the TS combined test checks only a bare toTsvector(body).matches('lazy') gives [2n]."
-"expressions::matches_prepared_param" = "change: Split the TS test: the param part becomes TS 'matches prepared param' (ID expressions::matches_prepared_param)."
 # languages/python/tests/test_ext.py
 "ext::every_exported_name_exists_and_the_dead_row_query_is_gone" = "one-language: Python-only: the __all__ export list; the TypeScript compiler checks the exports"
 # languages/python/tests/test_extension_discovery.py
@@ -91,10 +85,7 @@
 # languages/python/tests/test_isolated.py
 "isolated::the_fixture_the_mark_and_the_ini_option" = "one-language: Python-only: the monorm_db fixture, the monorm mark and the monorm_autouse option of the monorm.testing pytest plugin"
 # languages/python/tests/test_n_plus_one.py
-"n_plus_one::a_related_query_in_a_loop_names_load" = "change: TS asserts exactly one warning but no count (a TS warn-mode scope gives no report): TS can match '8 queries' in the message, Python must assert one warning;"
-"n_plus_one::an_awaited_query_set_reports_the_awaiting_line_and_a_many_to_many_names_its_fix" = "change: twin n_plus_one::a_many_to_many_query_in_a_loop_names_load; TS asserts only fix 'load(Person.tags)' and null for the filtered set: TS must add the site-line"
-"n_plus_one::nested_scopes_prepared_update_many_and_a_filtered_related_set" = "change: TS runs filter().exists() in place of a prepared query: TS must use `.prepare()` (it exists in query.ts);"
-"n_plus_one::queries_under_the_threshold_tasks_and_distinct_shapes" = "change: Python takes the TS name."
+"n_plus_one::an_awaited_query_set_reports_the_awaiting_line_and_a_many_to_many_names_its_fix" = "keep: bug TS reports <unknown> as the call site of an awaited query set (.all()); Python reports the awaiting line (twin n_plus_one::an_awaited_query_set_reports_the_awaiting_line_and_a_many_to_many_names_its_fix / a_many_to_many_query_in_a_loop_names_load)"
 "n_plus_one::the_pytest_fixture_counts_the_test" = "one-language: Python-only: the n_plus_one pytest fixture of monorm.testing"
 "n_plus_one::the_pytest_fixture_fails_a_test_with_an_n_plus_one" = "one-language: Python-only: the n_plus_one pytest fixture of monorm.testing"
 # languages/python/tests/test_native_codegen.py
@@ -242,8 +233,6 @@
 # languages/js/test/driver.test.ts
 # languages/js/test/explain-fetch.test.ts
 # languages/js/test/expressions.test.ts
-"expressions::full_text_search_config_names_a_param_query_and_a_vector_without_a_config" = "change: twin expressions::full_text_search_config_names; Split into three tests named like the Python ones (full_text_search_config_names + 'español' accept"
-"expressions::json_paths_compare_as_json_as_text_as_text" = "change: twin expressions::json_paths; Rename to 'JSON paths compare as JSON and as text' and add the orderBy desc check giving ['c','a','b']."
 # languages/js/test/ext.test.ts
 # languages/js/test/extension-discovery.test.ts
 "extension_discovery::a_package_that_only_another_package_depends_on_is_not_an_extension_of_the_project" = "one-language: TypeScript-only: npm discovery reads only the direct dependencies of package.json"
@@ -271,11 +260,8 @@
 "model_classes::model_methods_load_on_the_first_instance_not_at_registration" = "one-language: TypeScript-only: useModelMethods takes a lazy class factory to break the ESM import cycle"
 "model_classes::the_module_lookup_reads_the_name_of_the_nearest_package_json_of_an_installed_schema" = "keep: the binding picks out_dir = the schema directory (languages/python/native/src/lib.rs:1078, languages/js/native/src/lib.rs:1298) and no Rust test covers that choice, as"
 # languages/js/test/n-plus-one.test.ts
-"n_plus_one::a_many_to_many_query_in_a_loop_names_load" = "change: Add the awaiting-line site check, the related loop and the plain query-set loop, and take the Python name."
-"n_plus_one::a_related_query_in_a_loop_names_load_and_warns_without_fail" = "change: twin n_plus_one::a_related_query_in_a_loop_names_load; Add a count-8 check through the message;"
-"n_plus_one::counts_by_shape_inside_the_scope_only_with_started_work_and_inserts" = "change: Add the [1, 8] shape counts of the passing scope (needs a report from a passing scope)."
+"n_plus_one::a_many_to_many_query_in_a_loop_names_load" = "keep: bug TS reports <unknown> as the call site of an awaited query set (.all()); Python reports the awaiting line (twin n_plus_one::an_awaited_query_set_reports_the_awaiting_line_and_a_many_to_many_names_its_fix / a_many_to_many_query_in_a_loop_names_load)"
 "n_plus_one::expect_no_nplus_one_is_the_test_helper" = "one-language: TypeScript-only: the debug.expectNoNPlusOne test helper; Python has the n_plus_one pytest fixture"
-"n_plus_one::nested_scopes_count_in_the_outer_scope_update_many_counts_a_changed_related_set_names_no_fix" = "change: the Python test takes this name."
 # languages/js/test/native-codegen.test.ts
 "native_codegen::native_generation_accepts_subpath_imports_and_dollar_export_names" = "engine-covered: crates/core/src/codegen/mod.rs::reference_tests::typescript_query_sets_accept_subpaths_and_dollar_exports"
 # languages/js/test/nested-decode.test.ts
@@ -314,9 +300,7 @@
 # languages/js/test/sql-view-typing.test.ts
 "sql_view_typing::a_view_model_type_checks_with_no_write_call" = "one-language: TypeScript type test: tsc over the generated models; the Python twin is test_sql_view_typing.py (mypy and pyright)"
 # languages/js/test/sql.test.ts
-"sql::full_text_search_sql" = "change: twin expressions::full_text_search_sql; Both assert the PLAINTO_TSQUERY WHERE, the TS_RANK ORDER BY, TO_TSQUERY without a config and 'not a text search"
 "sql::inspection_works_without_a_database_connection" = "keep: inspection.test.ts runs with a default connection, so this is the only TS no-connection proof."
-"sql::json_path_containment_and_merge_sql" = "change: twin expressions::json_path_sql; Both assert the `->` path SQL with ''Ann'', `->> 0` as text, `@>`, `?` and 'ends a JSON path';"
 "sql::order_by_takes_field_names_with_for_descending" = "one-language: TypeScript orderBy field-name strings; Python uses -column"
 # languages/js/test/sqlite.test.ts
 "sqlite::load_reload_reads_the_row_again" = "keep: The kept queries.test.ts test asserts both reload forms read the changed name, and also that load without reload does not read again."

@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { connect, debug, loads, Registry, type Database } from "../src/index.js";
+import { connect, debug, loads, param, Registry, type Database } from "../src/index.js";
 
 const source = `datasource db {
   provider = "sqlite"
@@ -51,7 +51,7 @@ test("a loader in a loop throws with the shape, the call site and the fix", asyn
   } finally { await db.close(); }
 });
 
-test("a related query in a loop names load and warns without fail", async () => {
+test("a related query in a loop names load", async () => {
   const { Person, db } = await shop();
   const warnings: Error[] = [];
   const listener = (w: Error) => { if (w.name === "NPlusOneWarning") warnings.push(w); };
@@ -62,6 +62,7 @@ test("a related query in a loop names load and warns without fail", async () => 
     await new Promise((r) => setImmediate(r));
     assert.equal(warnings.length, 1);
     assert.match(warnings[0]!.message, /use load\(Person.customers\)/);
+    assert.match(warnings[0]!.message, /8 queries/);
   } finally { process.off("warning", listener); await db.close(); }
 });
 
@@ -81,18 +82,26 @@ model PersonTag {
   const db = await connect("sqlite://:memory:", { registry, default: false });
   try {
     await db.createTables();
-    const { Person } = models;
+    const { Person, Tag } = models;
     await Person.objects.using(db).insertMany([...Array(6).keys()].map((i) => ({ id: i, name: `p${i}` })));
     const people = await Person.objects.using(db).orderBy(Person.id).all();
-    const error = await debug.nPlusOne(async () => { for (const p of people) await p.tags.using(db).all(); }, { threshold: 3, fail: true })
-      .then(() => null, (e: unknown) => e);
-    assert.ok(error instanceof debug.NPlusOne);
-    assert.equal(error.report.repeated[0]!.fix, "load(Person.tags)");
-    // A changed many-to-many query set is not a plain relation load, so it names no fix.
-    const filtered = await debug.nPlusOne(async () => { for (const p of people) await p.tags.using(db).filter(models.Tag.id.gte(0)).all(); }, { threshold: 3, fail: true })
-      .then(() => null, (e: unknown) => e);
-    assert.ok(filtered instanceof debug.NPlusOne);
-    assert.equal(filtered.report.repeated[0]!.fix, null);
+    const loops: Record<string, [(p: Any) => Promise<unknown>, string | null]> = {
+      related: [async (p) => await p.customers.using(db).all(), "load(Person.customers)"], // the awaiting line
+      many: [async (p) => await p.tags.using(db).all(), "load(Person.tags)"], // the awaiting line
+      "filtered many": [async (p) => await p.tags.using(db).filter(Tag.id.gte(0)).all(), null], // the awaiting line
+      "query set": [async (p) => await Person.objects.using(db).filter(Person.id.eq(p.id)).all(), null], // the awaiting line
+    };
+    for (const [name, [run, fix]] of Object.entries(loops)) {
+      const error = await debug.nPlusOne(async () => { for (const p of people) await run(p); }, { threshold: 3, fail: true })
+        .then(() => null, (e: unknown) => e);
+      assert.ok(error instanceof debug.NPlusOne, name);
+      const [shape] = error.report.repeated;
+      assert.equal(shape!.fix, fix, name);
+      // An awaited query set (`.all()`) reports `<unknown>` as its site (binding bug, see test-twins.toml).
+      if (shape!.site === "<unknown>") continue;
+      const [, file, line] = /^(.*):(\d+)$/.exec(shape!.site)!;
+      assert.match(readFileSync(file!, "utf8").split("\n")[Number(line) - 1]!, /the awaiting line/, name);
+    }
   } finally { await db.close(); }
 });
 
@@ -101,10 +110,15 @@ test("counts by shape, inside the scope only, with started work and inserts", as
   try {
     let report!: debug.Report;
     const spy = async (fn: () => Promise<void>, threshold: number) => debug.nPlusOne(async () => { await fn(); }, { threshold, fail: true });
-    await spy(async () => {
-      for (let i = 0; i < 8; i++) await Person.objects.using(db).get(Person.id.eq(i));
-      await Person.objects.using(db).count();
-    }, 8);
+    // A passing scope gives no report: an enclosing scope with threshold 1 reports the same shapes.
+    const passing = await spy(async () => {
+      await spy(async () => {
+        for (let i = 0; i < 8; i++) await Person.objects.using(db).get(Person.id.eq(i));
+        await Person.objects.using(db).count();
+      }, 8);
+    }, 1).then(() => null, (e: unknown) => e);
+    assert.ok(passing instanceof debug.NPlusOne);
+    assert.deepEqual([...passing.report.shapes.values()].map((s) => s.count).sort((a, b) => a - b), [1, 8]);
     await assert.rejects(spy(async () => {
       await Promise.all([0, 1, 2].map((i) => Person.objects.using(db).filter(Person.id.eq(i)).exists()));
       for (let i = 0; i < 3; i++) await Person.objects.using(db).insert({ id: 100 + i, name: "n" });
@@ -155,11 +169,12 @@ test("nested scopes count in the outer scope; updateMany counts; a changed relat
   const { Person, Customer, db } = await shop();
   try {
     const people = await Person.objects.using(db).orderBy(Person.id).all();
+    const byId = Person.objects.using(db).filter(Person.id.eq(param("id"))).prepare();
     const counted: debug.Report[] = [];
     await debug.nPlusOne(async () => {
       // The innermost scope's queries count in every enclosing scope.
       await debug.nPlusOne(() => debug.nPlusOne(async () => {
-        for (const p of people.slice(0, 3)) await Person.objects.using(db).filter(Person.id.eq(p.id)).exists();
+        for (const p of people.slice(0, 3)) await byId.all({ id: p.id });
       }, { threshold: 10 }), { threshold: 2, fail: true }).catch((e: debug.NPlusOne) => { counted.push(e.report); });
       for (const p of people.slice(0, 3)) await Person.objects.using(db).updateMany([{ id: p.id, name: "x" }]);
       for (const p of people.slice(0, 3)) await p.customers.using(db).filter(Customer.id.gte(0)).all();
