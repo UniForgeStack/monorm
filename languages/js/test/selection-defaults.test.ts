@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { connect, define, func, IntegrityError, loads, NotLoaded, of, Registry } from "../src/index.js";
+import { connect, define, func, IntegrityError, loads, NotLoaded, of, param, Registry } from "../src/index.js";
 import { hasExtension } from "./artifact-caps.js";
 
 const queryDefaults = hasExtension("monorm.query-defaults");
@@ -89,6 +89,7 @@ for (const dialect of ["sqlite", "postgres"] as const) {
     } finally { await db.dropTables(); await db.close(); }
   });
 
+  // case: selection_defaults::schema_query_defaults
   test(`schema query defaults: ${dialect}`, async (t) => {
     if (!queryDefaults) {
       t.skip("needs the monorm.query-defaults package");
@@ -114,7 +115,10 @@ for (const dialect of ["sqlite", "postgres"] as const) {
       assert.equal(await a.withoutDefaults("query").withoutDefaults().count(), 2);
       await assert.rejects(a.withoutDefaults("nope").count(), /unknown default "nope"; available defaults: \["query"\]/);
       assert.equal((await a.load().get()).bio, "large");
-      const explicit = await a.load(Author.note, Author.name).get();
+      let explicit = await a.load(Author.note, Author.name).get();
+      assert.deepEqual(explicit.toJSON(), { name: "visible", note: null });
+      await explicit.load({ reload: true }); assert.deepEqual(explicit.toJSON(), { id: visible.pk, name: "visible", note: null, bio: "large", visible: true });
+      explicit = await a.load(Author.note, Author.name).get();
       await explicit.load(Author.note, Author.name, { reload: true }); assert.deepEqual(explicit.toJSON(), { note: null, name: "visible" });
       await explicit.load(Author.bio, { reload: true }); assert.deepEqual(explicit.toJSON(), { name: "visible", note: null, bio: "large" });
       await partial.update({ name: "changed" }); assert.deepEqual(partial.toJSON(), { name: "changed", note: null });
@@ -126,7 +130,9 @@ for (const dialect of ["sqlite", "postgres"] as const) {
       await joined[1].update({ authorId: visible.pk });
       assert.throws(() => joined[1].author, NotLoaded);
       await joined[1].update({ authorId: hidden.pk });
+      assert.equal(await b.filter(Book.author.name.eq("hidden")).updateMany([{ id: joined[1].pk, title: "t" }]), 0);
       const bypassed = await b.withoutDefaults().load(Book.author).orderBy(Book.id).all();
+      assert.equal(bypassed[0].author.name, "changed"); assert.equal(bypassed[0].author.visible, true);
       assert.equal(bypassed[1].author.name, "hidden"); assert.equal(bypassed[1].author.visible, false);
       for (const named of [false, true]) {
         for (const filtered of [false, true]) {
@@ -142,11 +148,14 @@ for (const dialect of ["sqlite", "postgres"] as const) {
       assert.equal(hiddenBooks[0].author.name, "changed"); assert.equal(hiddenBooks[1].author, null);
       const partialReturn = await a.all().update({ name: "again" }).returning(Author.name);
       assert.deepEqual(partialReturn[0].toJSON(), { name: "again" });
+      const defaultReturn = await a.filter(Author.id.eq(visible.pk)).update({ note: "n" }).returning();
+      assert.deepEqual(defaultReturn[0].toJSON(), { name: "again", note: "n" });
       const cleared = await b.withoutRelated().first(); assert.throws(() => cleared.author, NotLoaded);
       const prefetched = await a.load(Author.books).get(); assert.equal(prefetched.books.cached[0].title, "one");
       const unfiltered = await a.withoutDefaults().load(Author.books).filter(Author.id.eq(visible.pk)).get();
       assert.equal(unfiltered.books.cached[0].authorId, visible.pk);
       assert.equal((await a.inBulk()).get(visible.pk).name, "again");
+      assert.equal(await a.filter(Author.books.title.eq("one")).count(), 1);
       const written = await a.all().update({ visible: false }).returning(Author.visible);
       assert.equal(written.length, 1); assert.equal(written[0].visible, false); assert.equal(await a.count(), 0);
       assert.equal(await a.withoutDefaults().updateMany([{ id: hidden.pk, name: "bulk" }]), 1);
@@ -180,6 +189,7 @@ model Note {
 `;
 
 for (const dialect of ["sqlite", "postgres"] as const) {
+  // case: selection_defaults::schema_default_order
   test(`schema default order: ${dialect}`, async (t) => {
     if (!queryDefaults) {
       t.skip("needs the monorm.query-defaults package");
@@ -199,11 +209,14 @@ for (const dialect of ["sqlite", "postgres"] as const) {
       assert.equal((await tq.first()).name, "c");
       assert.equal((await tq.last()).name, "b");
       assert.equal((await tq.prepare().first()).name, "c");
+      assert.equal((await tq.at(1)).name, "d");
+      assert.equal((await tq.at(-1)).name, "b");
       assert.deepEqual(names(await tq.orderBy(Topic.name.desc())), ["d", "c", "b", "a"]);
       assert.deepEqual(names(await tq.orderBy(Topic.rank.asc({ nulls: "first" }), Topic.id)), ["b", "a", "c", "d"]);
       assert.ok(!tq.withoutDefaults().sql().includes("ORDER BY"));
+      assert.ok(!tq.filter(Topic.id.gt(0)).withoutDefaults().sql().includes("ORDER BY"));
       assert.equal((await tq.withoutDefaults().first()).name, "a");
-      assert.equal(await tq.count(), 4);
+      assert.equal(await tq.count(), 4); assert.equal(await tq.exists(), true);
       const batches: string[][] = [];
       for await (const batch of tq.batches(2)) batches.push(names(batch));
       assert.deepEqual(batches, [["a", "b"], ["c", "d"]]);
@@ -211,6 +224,10 @@ for (const dialect of ["sqlite", "postgres"] as const) {
       assert.deepEqual(names(page.items), ["c", "d", "a"]);
       assert.deepEqual(names((await tq.paginate({ first: 3, after: page.nextCursor })).items), ["b"]);
       assert.deepEqual(names((await tq.withoutDefaults().paginate({ first: 3 })).items), ["a", "b", "c"]);
+      assert.equal((await tq.from(tq.cte("all_topics")).first()).name, "a");
+      // Postgres rejects UPDATE ... ORDER BY, so these also show that writes take no default order.
+      assert.equal(await tq.filter(Topic.name.eq("none")).update({ name: "x" }), 0);
+      assert.equal(await tq.filter(Topic.name.eq("none")).delete(), 0);
       const c = await tq.get(Topic.name.eq("c"));
       for (const body of ["x", "z", "y"]) await nq.insert({ topicId: c.pk, body });
       assert.deepEqual((await nq.all()).map((x: any) => x.body), ["z", "y", "x"]);
@@ -228,6 +245,7 @@ for (const dialect of ["sqlite", "postgres"] as const) {
 }
 
 for (const dialect of ["sqlite", "postgres"] as const) {
+  // case: selection_defaults::default_annotation_keeps_model_instances
   test(`a default annotation stays an instance read: ${dialect}`, async (t) => {
     if (!queryDefaults) {
       t.skip("needs the monorm.query-defaults package");
@@ -241,15 +259,36 @@ for (const dialect of ["sqlite", "postgres"] as const) {
       await b.insert({ title: "two", authorId: ann.pk });
       const rows = await a.orderBy(Author.name).all();
       assert.deepEqual(rows.map((r: any) => Number(r.bookCount)), [2, 0]);
+      // A TypeScript row has no class: the instance methods tell a model row from a projection row.
+      assert.deepEqual(rows.map((r: any) => typeof r.update), ["function", "function"]);
+      assert.equal(rows[0].pk, ann.pk);
       assert.deepEqual(rows[0].toJSON(), { name: "ann", note: null });
       assert.throws(() => rows[0].bio, NotLoaded);
       const prefetched = await a.load(Author.books).orderBy(Author.name).first();
       assert.equal(Number(prefetched.bookCount), 2);
+      assert.deepEqual((await a.withoutDefaults().orderBy(Author.name).all()).map((r: any) => r.name), ["ann", "bob"]);
       assert.equal((await a.withoutDefaults().orderBy(Author.name).first()).bookCount, undefined);
+      const explicit = await a.load(func.count(Author.books).label("bookCount")).orderBy(Author.name).first();
+      assert.equal(Number(explicit.bookCount), 2);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
+  test(`a default annotation stays out of projections: ${dialect}`, async (t) => {
+    if (!queryDefaults) {
+      t.skip("needs the monorm.query-defaults package");
+      return;
+    }
+    const { db, Author, a, b } = await open(dialect, true, true);
+    try {
+      const ann = await a.insert({ name: "ann", bio: "large", note: null });
+      await b.insert({ title: "one", authorId: ann.pk });
+      await b.insert({ title: "two", authorId: ann.pk });
+      const grouped = await a.select({ id: Author.id, n: func.count() }).groupBy(Author.id).all();
+      assert.deepEqual(grouped.map((r: any) => [r.id, Number(r.n)]), [[ann.pk, 1]]);
+      assert.equal(await a.count(), 1);
+      const distinct = await a.select({ name: Author.name }).distinct().all();
+      assert.deepEqual(distinct.map((r: any) => r.name), ["ann"]);
       assert.equal(a.select({ name: Author.name }).sql().includes("COUNT"), false);
-      const grouped = await a.select({ id: Author.id, n: func.count() }).groupBy(Author.id).orderBy(Author.id).all();
-      assert.deepEqual(grouped.map((r: any) => Number(r.n)), [1, 1]);
-      assert.equal(await a.count(), 2);
     } finally { await db.dropTables(); await db.close(); }
   });
 }
@@ -275,6 +314,7 @@ for (const dialect of ["sqlite", "postgres"] as const) {
   });
 }
 
+// case: selection_defaults::schema_default_order_one_source_per_option
 test("schema default order: one source per option", (t) => {
   if (!queryDefaults) {
     t.skip("needs the monorm.query-defaults package");
@@ -283,6 +323,9 @@ test("schema default order: one source per option", (t) => {
   const both = ordered.replace('@@query.defaults(order: ["-body"])', '@@query.defaults(order: ["-body"])\n  @@query.order("id")');
   assert.throws(() => loads(both, { registry: new Registry() }), /Note: order is set by both @@query\.defaults\(order:\) at .* and @@query\.order at/);
   assert.throws(() => loads(ordered.replace('"-body"', '"nope"'), { registry: new Registry() }), /order column "nope" is not a field/);
+  assert.throws(() => loads(ordered.replace('"-rank nulls last"', '"-rank"'), { registry: new Registry() }), /Topic: order column "rank" can be NULL: write "-rank nulls first" or "-rank nulls last"/);
+  assert.throws(() => loads(ordered.replace('"-rank nulls last", "id"', "-name"), { registry: new Registry() }), /elsewhere quote it: "-name"/);
+  assert.throws(() => loads(ordered.replace("  rank Int?\n", "  rank Int?\n  k Json @db.Json\n").replace('"-rank nulls last", "id"', '"k"').replace('"sqlite"', '"postgresql"'), { registry: new Registry() }), /order column "k" is json, which the database can't order/);
 });
 
 
@@ -523,10 +566,36 @@ for (const dialect of ["sqlite", "postgres"] as const) for (const composite of [
   });
 }
 
-test("withoutDefaults names reach the engine", async () => {
-  const { db, a } = await open("sqlite", false);
+for (const dialect of ["sqlite", "postgres"] as const) {
+  test(`one row missing and required: ${dialect}`, async () => {
+    const registry = new Registry();
+    const models = loads(ordered.replace('@@query.defaults(order: ["-body"])', "").replace('@@query.order("-rank nulls last", "id")', "").replace('"sqlite"', dialect === "postgres" ? '"postgresql"' : '"sqlite"'), { registry }) as any;
+    const { Topic } = models;
+    const url = dialect === "sqlite" ? "sqlite://:memory:" : process.env["ORM_TEST_DATABASE_URL"] ?? "postgres://postgres:postgres@localhost/orm_test";
+    const db = await connect(url, { registry, default: false });
+    try {
+      await db.dropTables(); await db.createTables();
+      const t = Topic.objects.using(db);
+      await t.insertMany([["c", 3], ["b", 2], ["a", 1]].map(([name, rank]) => ({ name, rank })));
+      assert.equal(await t.at(param("i")).prepare().run({ i: 99 }), null);
+      assert.equal(await t.at(99), null);
+      assert.equal(await t.filter(Topic.name.eq("missing")).first(), null);
+      await assert.rejects(t.require().at(99), Topic.DoesNotExist);
+      await assert.rejects(t.filter(Topic.name.eq("missing")).require().last(), Topic.DoesNotExist);
+      const lazy = t.require().at(5);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      await assert.rejects(lazy, Topic.DoesNotExist);
+      await assert.rejects(t.require().filter(Topic.name.eq(param("name"))).first().prepare().run({ name: "missing" }), Topic.DoesNotExist);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+}
+
+test("unknown bypass name lists the defaults of the model", async () => {
+  const { db, Author, a } = await open("sqlite", false);
   try {
-    await assert.rejects(a.withoutDefaults("nope").count(), /unknown default "nope"/);
+    await assert.rejects(a.withoutDefaults("nope").count(), /unknown default "nope"; available defaults: \[\]/);
+    await assert.rejects(a.withoutDefaults("nope").filter(Author.name.eq("x")).update({ name: "y" }), /unknown default "nope"/);
+    await assert.rejects(a.withoutDefaults("nope").filter(Author.name.eq("x")).delete(), /unknown default "nope"/);
     assert.equal(await a.withoutDefaults("nope").withoutDefaults().count(), 0);
   } finally { await db.dropTables(); await db.close(); }
 });

@@ -145,6 +145,7 @@ async def test_an_update_of_a_hidden_key_drops_the_cached_relation(dialect):
         await db.close()
 
 
+@pytest.mark.case("schema_query_defaults")
 @pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the monorm.query-defaults package")
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_selection_defaults(dialect):
@@ -167,6 +168,11 @@ async def test_selection_defaults(dialect):
         assert await a.count() == 1 and await a.exists()
         assert await a.without_defaults().count() == 2
         assert await a.without_defaults().filter(Author.name == "visible").count() == 1
+        assert await a.without_defaults("query").count() == 2
+        assert await a.without_defaults("query").without_defaults("query").count() == 2
+        assert await a.without_defaults("query").without_defaults().count() == 2
+        with pytest.raises(monorm.QueryError, match=r'unknown default "nope"; available defaults: \["query"\]'):
+            await a.without_defaults("nope").count()
         full = await a.load().get()
         assert full.bio == "large"
         explicit = await a.load(Author.note, Author.name).get()
@@ -174,6 +180,8 @@ async def test_selection_defaults(dialect):
         await explicit.load(reload=True)
         assert explicit.to_dict() == {"id": 1, "name": "visible", "note": None, "bio": "large", "visible": True}
         explicit = await a.load(Author.note, Author.name).get()
+        await explicit.load(Author.note, Author.name, reload=True)
+        assert explicit.to_dict() == {"note": None, "name": "visible"}
         await explicit.load(Author.bio, reload=True)
         assert explicit.to_dict() == {"name": "visible", "note": None, "bio": "large"}
         await partial.update(name="changed")
@@ -302,6 +310,7 @@ async def test_a_default_annotation_applies_to_prefetched_rows(dialect):
         await db.close()
 
 
+@pytest.mark.case("a_default_annotation_stays_out_of_projections")
 @pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the monorm.query-defaults package")
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_default_annotation_stays_out_of_projections(dialect):
@@ -359,6 +368,7 @@ model Note {
 """
 
 
+@pytest.mark.case("schema_default_order")
 @pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the monorm.query-defaults package")
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_default_order(dialect):
@@ -385,6 +395,7 @@ async def test_default_order(dialect):
             await t.insert(name=name, rank=rank)
         assert names(await t.all()) == ["c", "d", "a", "b"]
         assert (await t.first()).name == "c" and (await t.last()).name == "b"
+        assert (await t.first().prepare()()).name == "c"
         assert (await t[1]).name == "d"
         assert (await t[-1]).name == "b"
         assert names(await t.order_by(Topic.name.desc())) == ["d", "c", "b", "a"]
@@ -460,6 +471,12 @@ async def test_one_row_indices_and_default_order(one_row_topics):
 
 async def test_one_row_missing_and_required(one_row_topics):
     _, Topic, t = one_row_topics
+    lazy = t.require()[5]
+    await asyncio.sleep(0.01)
+    with pytest.raises(Topic.DoesNotExist):
+        await lazy
+    with pytest.raises(Topic.DoesNotExist):
+        await t.require().filter(Topic.name == monorm.param("name")).first().prepare()(name="missing")
     assert await t[monorm.param("i")].prepare()(i=99) is None
     assert await t[99] is None
     assert await t.filter(Topic.name == "missing").first() is None
@@ -576,6 +593,7 @@ async def test_one_row_prepared(one_row_topics, observe_queries):
         await t.filter(Topic.name == "missing").require().first().prepare()()
 
 
+@pytest.mark.case("schema_default_order_one_source_per_option")
 @pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the monorm.query-defaults package")
 def test_default_order_options_have_one_source():
     both = ORDERED.replace(

@@ -203,15 +203,8 @@
 "schema_imports::generated_schema_modules" = "one-language: reason: 'Python-only: per-schema-file facade modules and .pyi stubs'."
 # languages/python/tests/test_selection_defaults.py
 "selection_defaults::base_getter_instance_load_of_an_unfiltered_dangling_key_is_not_loaded" = "one-language: Python-only: the base getter, swapped in at run time; TS fixes the reference adapter at import"
-"selection_defaults::default_annotation_keeps_model_instances" = "change: TS adds the instance-class check and the explicit label load, and moves its select/groupBy/count lines to a projections test;"
-"selection_defaults::default_annotation_stays_out_of_projections" = "change: split them into TS 'a default annotation stays out of projections' and add the distinct select."
-"selection_defaults::default_order" = "change: twin selection_defaults::schema_default_order; TS adds at(1)/at(-1), the `filter().withoutDefaults()` SQL check, exists(), the `from(cte)` read and the"
-"selection_defaults::default_order_options_have_one_source" = "change: TS checks only the first two and adds the other three;"
 "selection_defaults::one_row_create_task" = "one-language: Python-only: asyncio.create_task and cancel of a one-row query"
 "selection_defaults::one_row_laziness_and_fresh_awaits" = "keep: TS asserts the opposite for a second await (one run per query), so the owner must pick one rule before a shared test."
-"selection_defaults::one_row_missing_and_required" = "change: TS adds a lazy required `at(5)` and a prepared required first();"
-"selection_defaults::selection_defaults" = "change: twin selection_defaults::schema_query_defaults; TS adds: a field-less `load(reload=True)` gives every column, `update_many` through a relation filter returns"
-"selection_defaults::unknown_bypass_name_lists_the_defaults_of_the_model" = "change: TS adds the '[]' list and the update/delete errors;"
 # languages/python/tests/test_sync_iteration.py
 "sync_iteration::async_iteration_await_and_slices_still_work" = "one-language: guards the Python `__iter__` guard; TypeScript has no sync iterator on a query set"
 "sync_iteration::pydantic_from_attributes_raises_at_once" = "one-language: Pydantic is Python-only"
@@ -366,11 +359,6 @@
 # languages/js/test/select-reads.test.ts
 "select_reads::a_bound_join_count_and_exists_apply_the_one_row_per_object_rule" = "duplicate: Python covers it in test_load_annotations.py (a_bound_join_that_matches_twice_raises_on_count_and_exists_too and a_bound_join_counts_each_object_once); the load_annotations entries own that pair."
 # languages/js/test/selection-defaults.test.ts
-"selection_defaults::a_default_annotation_stays_an_instance_read" = "change: Add a prototype check and an explicit `load(func.count(...).label('bookCount'))`;"
-"selection_defaults::schema_default_order" = "change: twin selection_defaults::default_order; TS adds at(1)/at(-1), the `filter().withoutDefaults()` SQL check, exists(), a `from(cte)` read and filtered"
-"selection_defaults::schema_default_order_one_source_per_option" = "change: TS adds the nullable-column, bare `-name` and json-column errors;"
-"selection_defaults::schema_query_defaults" = "change: twin selection_defaults::selection_defaults; TS adds the field-less full reload, `updateMany` through a relation filter, the default returning {name, note} and"
-"selection_defaults::without_defaults_names_reach_the_engine" = "change: Add the 'available defaults: []' list and the update/delete errors, and rename to the Python name."
 # languages/js/test/soft-delete-typing.test.ts
 "soft_delete_typing::the_generated_soft_delete_members_type_check_on_the_soft_delete_model_only" = "one-language: TypeScript type test: tsc over the generated models; the Python twin is test_soft_delete_typing.py (mypy and pyright)"
 # languages/js/test/sql-view-typing.test.ts
