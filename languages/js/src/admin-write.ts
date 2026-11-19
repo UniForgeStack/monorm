@@ -170,7 +170,7 @@ export class Context {
    */
   async audit(record?: unknown, options: { readonly action?: string; readonly changes?: Readonly<Record<string, unknown>> } = {}): Promise<void> {
     let key: Record<string, unknown> | null = this.key;
-    const meta = this.meta ?? metaOf(record);
+    const meta = metaOf(record) ?? this.meta;
     if (record !== undefined && record !== null && meta !== null) key = keyOf(meta, record);
     if (key === null && this.op === "create") throw new Error("ctx.audit(record) on a create needs the new record: the row names it");
     const extra: Record<string, unknown> = { request_id: this.requestId, inputs: { ...this.auditInputs }, service: true };
@@ -178,7 +178,7 @@ export class Context {
     if (this.userAgent !== null) extra["user_agent"] = this.userAgent;
     Object.assign(extra, options.changes ?? {});
     const action = options.action ?? (this.op || "service");
-    const resource = this.resource || meta?.name || "";
+    const resource = meta !== null && meta.name !== this.meta?.name ? meta.name : this.resource || meta?.name || "";
     const scalars = key === null || Object.keys(key).length === 0 ? null : Object.values(meta === null ? key : keyScalars(meta, key)).map((v) => String(v));
     this.audits.push({ action, resource, key: scalars, changes: extra });
     this.audited = true;

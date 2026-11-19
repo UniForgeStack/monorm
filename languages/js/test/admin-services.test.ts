@@ -399,3 +399,25 @@ for (const provider of PROVIDERS) {
     assert.equal(calls, 0);
   }));
 }
+
+for (const provider of PROVIDERS) {
+  test(`ctx.audit of a record of another model writes the key of that model (${provider})`, () => world(provider, async (w) => {
+    const config: ResourceConfig = {
+      async create(ctx, values) {
+        const db = ctx.database!;
+        return await db.transaction(async () => {
+          const made = await w.models["SNote"].objects.using(db).insert(values);
+          const child = await w.models["SCode"].objects.using(db).insert({ code: "c-1" });
+          await ctx.audit(child);
+          return made;
+        });
+      },
+    };
+    const client = siteOf(w, config).testClient(w.db, { user: SU });
+    const r = await client.post(NOTES, { json: { set: { title: "Made" } } });
+    assert.equal(r.status, 201, r.text);
+    const [row, ...rest] = await audit(w);
+    assert.equal(rest.length, 0);
+    assert.deepEqual([row.resource, row.recordKey], ["SCode", "c-1"]);
+  }));
+}

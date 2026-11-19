@@ -462,3 +462,21 @@ async def test_a_bigint_value_that_is_not_a_number_is_a_422_that_names_the_field
     assert r.status == 422, r.text
     assert r.json()["fields"]["big"] == ["Must be a whole number"]
     assert calls == []
+
+
+async def test_ctx_audit_of_a_record_of_another_model_writes_the_key_of_that_model(world):
+    registry, db, models = world
+    code = models["SCode"]
+
+    async def create(ctx, values):
+        async with ctx.database.transaction():
+            made = await models["SNote"].objects.using(ctx.database).insert(**values)
+            child = await code.objects.using(ctx.database).insert(code="c-1")
+            await ctx.audit(child)
+        return made
+
+    client = site_of(registry, models, {"create": create}).test_client(db, user=SU)
+    r = await client.post(NOTES, json={"set": {"title": "Made"}})
+    assert r.status == 201, r.text
+    (row,) = await audit(db, models)
+    assert (row.resource, row.record_key) == ("SCode", "c-1")
