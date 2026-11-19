@@ -693,6 +693,32 @@ async def test_the_target_flag_does_not_depend_on_model_order(request, dialect):
         await db.close()
 
 
+@pytest.mark.parametrize("method", ["instance", "join", "prefetch"])
+@pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
+async def test_a_reference_target_declared_last_supports(request, dialect, method):
+    db, A, B, P = await open_unset(request, dialect, False, target_last=True)
+    try:
+        for Model in (B, P):
+            rows = Model.objects.using(db)
+            if method != "instance":
+                rows = rows.load(Model.author if method == "join" else Model.author.objects.as_prefetch())
+            row = await rows.get(Model.id == 1)
+            if method == "instance":
+                with pytest.raises(monorm.NotLoaded):
+                    row.author
+                await row.load(Model.author)
+            assert row.author.name == "ann"
+            # The getter must reject a cached target after the source key changes (an instance is read-only; update() writes the key).
+            await row.update(author_id=3)
+            with pytest.raises(monorm.NotLoaded):
+                row.author
+            await row.load(Model.author)
+            assert row.author.name == "cy"
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
 @pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the monorm.query-defaults package")
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
 async def test_load_of_a_path_with_columns_unites_the_default_selection(dialect):

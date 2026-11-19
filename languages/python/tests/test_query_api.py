@@ -589,6 +589,58 @@ async def test_or_keeps_the_custom_query_set_class(clean, custom):
     assert sorted(p.title for p in await qs.popular(60)) == ["bob", "hit"]
 
 
+async def test_a_custom_fetch_override_runs_on_a_relation_set(clean):
+    count = 0
+
+    class Hooked(QuerySet):
+        async def _fetch(self):
+            nonlocal count
+            count += 1
+            return await super()._fetch()
+
+    use_query_set(Post, Hooked)
+    try:
+        alice, _, _ = await seed()
+        await Post.objects.all()
+        assert count == 1
+        count = 0
+        await alice.posts.all()
+        assert count == 1
+        await alice.posts.filter(Post.views > 0).all()
+        assert count == 2
+    finally:
+        use_query_set(Post, QuerySet)
+
+
+async def test_a_custom_get_or_insert_override_runs_on_a_relation_set(clean):
+    count = 0
+
+    class Hooked(QuerySet):
+        async def get_or_insert(self, defaults=None, **lookup):
+            nonlocal count
+            count += 1
+            return None, False
+
+    use_query_set(Post, Hooked)
+    try:
+        alice, _, _ = await seed()
+        await alice.posts.get_or_insert(title="fresh", body="...")
+        assert count == 1
+    finally:
+        use_query_set(Post, QuerySet)
+
+
+def test_describe_marks_has_many_relations_nullable():
+    posts = {r["name"]: r for r in monorm.describe(User)["relations"]}["posts"]
+    assert posts["kind"] == "has_many"
+    assert posts["nullable"] is True
+    assert {r["name"]: r for r in monorm.describe(Post)["relations"]}["author"]["nullable"] is False
+
+
+def test_one_row_labels_keep_the_custom_query_set_class(custom):
+    assert type(User.posts.objects[0].label("best")).__name__ == "PostQueries"
+
+
 async def test_bound_load_one_stores_a_row_or_none(clean, observe_queries):
     await seed()
     await User.objects.insert(email="carol@example.com", name="Carol")

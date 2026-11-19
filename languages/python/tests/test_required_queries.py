@@ -1,5 +1,7 @@
 """Presence and uniqueness are independent constraints on query results."""
 
+import asyncio
+
 import pytest
 
 import monorm
@@ -108,3 +110,24 @@ async def test_required_prepared_queries(required_queries):
         with pytest.raises(Note.MultipleObjectsReturned):
             await query.get()
     assert await optional.get(id=-1) is None
+
+
+async def test_required_one_row_queries_at_lazy_and_prepared(required_queries):
+    db, Note = required_queries
+    qs = Note.objects.using(db)
+    required = qs.require()
+    assert (await required.order_by(Note.id)[1]).id == 2
+    assert (await required.order_by(Note.id)[-1]).id == 2
+    assert await qs.order_by(Note.id)[5] is None
+    with pytest.raises(Note.DoesNotExist):
+        await required[5]
+    with pytest.raises(Note.DoesNotExist):
+        await required.filter(Note.id == -1)[0]
+    lazy = required[5]
+    await asyncio.sleep(0.01)
+    with pytest.raises(Note.DoesNotExist):
+        await lazy
+    by_id = qs.filter(Note.id == monorm.param("id")).prepare()
+    assert await by_id.first(id=-1) is None
+    with pytest.raises(Note.DoesNotExist):
+        await qs.require().filter(Note.id == monorm.param("id")).prepare().first(id=-1)

@@ -290,6 +290,20 @@ async def test_aggregate_filter(clean):
     assert [tuple(r) for r in by_author] == [("b1", None), ("a1", 5), ("a2", 55), ("a3", 75)]
 
 
+async def test_min_and_avg_take_a_filter(clean):
+    await seed()
+    rows = (
+        await Post.objects.order_by(Post.author_id)
+        .select(
+            Post.author_id,
+            func.min(Post.views, filter=Post.views > 10).label("lo"),
+            func.avg(Post.views, filter=Post.views > 10).label("mean"),
+        )
+        .group_by(Post.author_id)
+    )
+    assert [(r.lo, Decimal(r.mean)) for r in rows] == [(20, 35), (100, 100)]
+
+
 async def test_aggregate_filter_through_a_to_one_hop(clean):
     _, _ = await seed()
     posts = Post.objects

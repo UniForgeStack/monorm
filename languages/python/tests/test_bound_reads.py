@@ -344,3 +344,25 @@ async def test_a_large_composite_key_bound_read_does_not_hang(db, observe_querie
     finally:
         await other.drop_tables()
         await other.close()
+
+
+async def test_a_composite_key_reads_the_objects_rows(db, observe_queries):
+    source = "model Part {\n  shop Int\n  id Int\n  label String\n  @@id([shop, id])\n}\n"
+    registry = monorm.Registry()
+    Part = monorm.loads(source, registry=registry)["Part"]
+    other = await monorm.connect(os.environ["ORM_TEST_DATABASE_URL"], registry=registry, default=False)
+    try:
+        await other.drop_tables()
+        await other.create_tables()
+        await Part.objects.using(other).insert_many(
+            [{"shop": 1, "id": 1, "label": "x"}, {"shop": 2, "id": 1, "label": "y"}, {"shop": 1, "id": 2, "label": "z"}]
+        )
+        held = await Part.objects.using(other).order_by(Part.shop, Part.id)
+        await Part.objects.using(other).filter(Part.shop == 1, Part.id == 2).update(label="zz")
+        with observe_queries(other) as events:
+            got = await Part.objects.of([held[2], held[1]]).using(other)
+        assert len(events) == 1
+        assert [p.label for p in got] == ["y", "zz"]
+    finally:
+        await other.drop_tables()
+        await other.close()

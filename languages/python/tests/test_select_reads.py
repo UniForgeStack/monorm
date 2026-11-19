@@ -203,6 +203,22 @@ async def test_join_and_from_a_cte_in_a_select(clean):
     assert await top.count() == 2
 
 
+async def test_join_after_select_orders_and_groups_by_the_cte_s_columns(clean):
+    await seed()
+    totals = per_author().cte("totals")
+    rows = await (
+        Post.objects.select(Post.id).join(totals, totals.c.author_id == Post.author_id).order_by(totals.c.n.desc(), Post.id)
+    )
+    assert [r[0] for r in rows] == [1, 2, 3]
+    grouped = (
+        Post.objects.select(func.count().label("n"))
+        .join(totals, totals.c.author_id == Post.author_id)
+        .group_by(totals.c.n)
+        .order_by(totals.c.n)
+    )
+    assert [r[0] for r in await grouped] == [1, 2]
+
+
 async def test_paginate_a_grouped_select(clean):
     await seed()
     q = per_author().order_by(Post.author_id)

@@ -756,6 +756,19 @@ async def test_bound_lock_replaces_refresh_lock(clean):
         await bob.load(reload=True)
 
 
+async def test_instance_update_delete_and_load_each_run_one_statement(clean, observe_queries):
+    alice, bob, _, _ = await seed()
+    with observe_queries(clean) as events:
+        await alice.update(name="Al")
+        assert len(events) == 1
+        events.clear()
+        await alice.load(reload=True)
+        assert len(events) == 1
+        events.clear()
+        await bob.delete()
+        assert len(events) == 1
+
+
 async def test_relation_equals_instance(clean):
     alice, bob, carol, (a1, a2, b1) = await seed()
     qs = Post.objects.filter(Post.author == alice).order_by(Post.id)

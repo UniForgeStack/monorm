@@ -347,6 +347,23 @@ async def test_non_finite_float_order_values(postgres):
         await qs.order_by(Measure.d.desc()).paginate(first=1)
 
 
+async def test_edited_cursors_of_decimal_and_uuid_keys_postgres(postgres):
+    models, db = await postgres('model Keyed {\n  id String @id @db.Uuid\n  d Decimal\n  @@map("page07_keyed")\n}')
+    Keyed = models["Keyed"]
+    qs = Keyed.objects.using(db)
+    ids = ["00000000-0000-0000-0000-000000000001", "00000000-0000-0000-0000-000000000002"]
+    await qs.insert_many([{"id": id, "d": i} for i, id in enumerate(ids)])
+    by_d = qs.order_by(Keyed.d)
+    cursor = (await by_d.paginate(first=1)).next_cursor
+    values = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)))["v"]
+    for bad in (["NaN", values[1]], ["0", "not-a-uuid"]):
+        with pytest.raises(QueryError, match="invalid cursor"):
+            await by_d.paginate(first=1, after=edited(cursor, bad))
+    await db.execute("UPDATE page07_keyed SET d = 'NaN'")
+    with pytest.raises(QueryError, match="can't make a cursor from the decimal NaN"):
+        await by_d.paginate(first=1)
+
+
 PROXY = """
 model User {
   id Int @id

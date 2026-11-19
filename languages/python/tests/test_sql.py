@@ -17,6 +17,24 @@ def where(qs) -> str:
     return sql.split(" WHERE ", 1)[1] if " WHERE " in sql else ""
 
 
+def test_inspection_has_flat_counters_and_counts_cte_definitions_separately():
+    recent = Post.objects.filter(Post.comments.body == "hi").cte("recent")
+    totals = (
+        Post.objects.from_(recent).select(Post.author_id, func.count().label("n")).group_by(Post.author_id).cte("totals")
+    )
+    query = User.objects.filter(User.id.in_(totals.select(totals.c.author_id)))
+    result = query.inspect()
+    assert result.statements == (monorm.StatementInspection(cte_count=2, set_correlated=1, set_uncorrelated=1),)
+    with pytest.raises(AttributeError):
+        result.statements[0].cte_count = 0  # type: ignore[misc]
+    reused = User.objects.filter(
+        User.id.in_(totals.select(totals.c.author_id)), User.id.in_(totals.select(totals.c.author_id))
+    ).inspect()
+    assert reused.statements == (monorm.StatementInspection(cte_count=2, set_correlated=1, set_uncorrelated=2),)
+    chain = User.objects.filter(User.id == 1).cte("chain", recursive=lambda c: User.objects.filter(User.id == c.c.id + 1))
+    assert User.objects.from_(chain).inspect().statements == (monorm.StatementInspection(cte_count=1),)
+
+
 def test_to_many_filter_is_exists():
     query = User.objects.filter(User.posts.created_at < Y)
     assert query.inspect() == monorm.QueryInspection(1, False, (monorm.StatementInspection(set_correlated=1),))

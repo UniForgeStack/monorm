@@ -5,7 +5,7 @@ import os
 import pytest
 
 import monorm
-from monorm import QueryError
+from monorm import QueryError, func
 
 SOURCE = """
 model Doc {
@@ -451,3 +451,25 @@ async def test_full_text_search_on_sqlite_is_an_error():
             await Article.objects.using(db).filter(func.to_tsvector(Article.body).matches("x")).count()
     finally:
         await db.close()
+
+
+async def test_case_of_plain_strings_takes_the_enum_type_of_the_column_it_is_assigned_to():
+    source = (
+        "enum Level {\n  basic\n  admin\n}\n"
+        "model Member {\n  id BigInt @id @default(autoincrement())\n  n Int\n  level Level @default(basic)\n  @@map(\"expr_members_py\")\n}"
+    )
+    registry = monorm.Registry()
+    Member = monorm.loads(source, registry=registry)["Member"]
+    pg = await monorm.connect(URL, default=False, registry=registry, max_connections=1)
+    try:
+        await pg.drop_tables()
+        await pg.create_tables()
+        members = Member.objects.using(pg)
+        await members.insert_many([{"n": 1}, {"n": 9}])
+        await members.all().update(level=func.case((Member.n > 5, "admin"), default="basic"))
+        assert await members.order_by(Member.id).select(Member.level).scalars() == ["basic", "admin"]
+        await members.all().update(level="basic")
+        assert await members.filter(Member.level == func.case((Member.n > 5, "admin"), default="basic")).count() == 1
+    finally:
+        await pg.drop_tables()
+        await pg.close()

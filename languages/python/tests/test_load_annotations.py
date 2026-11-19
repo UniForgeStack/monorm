@@ -282,3 +282,9 @@ async def test_sqlite_load_sets_the_label():
     finally:
         await db.drop_tables()
         await db.close()
+
+
+def test_label_rejects_a_name_that_is_not_an_identifier():
+    for name in ("_n", "a b"):
+        with pytest.raises(ValueError, match="must be an identifier"):
+            func.count(Post.comments).label(name)

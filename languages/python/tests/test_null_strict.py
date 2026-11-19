@@ -244,3 +244,17 @@ def test_a_nested_column_keeps_its_own_value_key():
     ref = shop.address.city
     assert expr._ckey(ref) == repr(ref) and expr._ckey(shop.address) == repr(shop.address)
     assert expr._ckey(ref) != expr._ckey(shop.address)
+
+
+def test_the_message_prints_the_comparison_then_the_nullable_column():
+    with pytest.raises(QueryError) as e:
+        not_(Comment.id.between(Comment.author_id, 5))
+    assert str(e.value).startswith("(Comment.id >= Comment.author_id) sits under ~ / not_() / exclude() and Comment.author_id is nullable")
+
+
+def test_a_single_key_relation_ne_never_raises_the_key_column_ne_keeps_the_column_rule():
+    assert Comment.objects.filter(Comment.author != ALICE).sql()
+    assert Comment.objects.get(Comment.author != ALICE)
+    with pytest.raises(QueryError, match=r"or_null\(\) keeps NULL rows, and_not_null\(\) drops them"):
+        Comment.objects.get(x != 1)
+    assert Comment.objects.get((x != 1).or_null())
