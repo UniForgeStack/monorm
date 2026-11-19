@@ -97,6 +97,8 @@ pub enum Cell<'a> {
     DateTime(DateTime<Utc>),
     Date(NaiveDate),
     Time(chrono::NaiveTime),
+    /// Whole microseconds.
+    Duration(i64),
     Uuid(uuid::Uuid),
     Json(serde_json::Value),
     /// A `numeric` as decimal text: `-12.50`, `NaN`.

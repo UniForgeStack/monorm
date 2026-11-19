@@ -66,8 +66,8 @@ fn json_param(d: Dialect, ty: ColType, sql: &str, expr: bool) -> String {
         ColType::BigInt => format!("({sql}::bigint)::text"),
         ColType::Decimal => format!("({sql}::numeric)::text"),
         ColType::Uuid => format!("({sql}::uuid)::text"),
-        // Lowering refuses Bytes in a nested type; the arm keeps the match total.
-        ColType::String | ColType::Text | ColType::DateTime | ColType::Date | ColType::Time | ColType::Bytes => format!("{sql}::text"),
+        // Lowering refuses Bytes and Duration in a nested type; the arm keeps the match total.
+        ColType::String | ColType::Text | ColType::DateTime | ColType::Date | ColType::Time | ColType::Duration | ColType::Bytes => format!("{sql}::text"),
     };
     format!("COALESCE(to_jsonb({value}), 'null'::jsonb)")
 }

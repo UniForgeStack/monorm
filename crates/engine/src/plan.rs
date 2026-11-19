@@ -2148,6 +2148,7 @@ impl<'s> Planner<'s> {
                     // AVG of decimals stays exact; of anything else it is a float
                     "avg" => match first()?.ty {
                         ColType::Decimal => scalar(ColType::Decimal),
+                        ColType::Duration => scalar(ColType::Duration),
                         _ => scalar(ColType::Float),
                     },
                     "array_agg" => match first()? {
@@ -2413,10 +2414,15 @@ impl<'s> Planner<'s> {
             }
             "avg" => {
                 let ty = args.first().map(|a| self.expr_type(a)).transpose()?;
-                if ty.map(|t| t.ty) != Some(ColType::Decimal) {
-                    cast = Some("DOUBLE PRECISION");
+                let mut avg = format!("AVG({d}$1)");
+                match ty.map(|t| t.ty) {
+                    Some(ColType::Decimal) => {}
+                    // An average of whole microseconds rounds to a whole microsecond. PostgreSQL's AVG of an interval is an interval.
+                    Some(ColType::Duration) if dialect == Dialect::Sqlite => avg = format!("CAST(ROUND({avg}) AS INTEGER)"),
+                    Some(ColType::Duration) => {}
+                    _ => cast = Some("DOUBLE PRECISION"),
                 }
-                one(&format!("AVG({d}$1)"), planned)?
+                one(&avg, planned)?
             }
             "array_agg" => {
                 let [arg] = <[SExpr; 1]>::try_from(planned).map_err(|_| Error::query("array_agg() takes one argument"))?;

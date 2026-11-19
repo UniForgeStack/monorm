@@ -255,3 +255,18 @@ fn a_hook_default_without_its_binding_fails_define() {
     let error = schema(json!({"hook":{"export":"x.y"}}), json!({})).err().unwrap();
     assert!(error.contains("Post.shop") && error.contains("no point-7 binding"), "{error}");
 }
+
+#[test]
+fn a_computed_duration_field_is_refused_on_a_read() {
+    let mut schema = Schema::from_ir(serde_json::from_value(json!({"models":[{"name":"Post","table":"posts","fields":[
+        {"name":"id","column":"id","type":"int","primary_key":true},
+        {"name":"name","column":"name","type":"string"},
+        {"name":"slug","column":"slug","type":"duration","nullable":true},
+    ]}]})).unwrap()).unwrap();
+    schema.models[0].hooks = HookPlan { computed: vec![(SLUG, HookRef::in_process("test.stand_in", stand_in, false), vec![NAME])], ..Default::default() }.finish();
+    for dialect in [Dialect::Postgres, Dialect::Sqlite] {
+        let op: Operation = serde_json::from_value(json!({"op":"select","model":"Post"})).unwrap();
+        let error = Planner::plan(&schema, Target::new(dialect), &op, &Ints(vec![])).err().unwrap();
+        assert!(error.to_string().contains("Post.slug") && error.to_string().contains("Duration"), "{error}");
+    }
+}

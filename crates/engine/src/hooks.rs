@@ -264,6 +264,9 @@ pub fn computations(model: &Model, start: usize, positions: &[usize], params: &d
     for (slot, &position) in positions.iter().enumerate() {
         let Some((hook, dependencies)) = plan.computed_at(position) else { continue };
         let field = &model.fields()[position];
+        if field.ty == monorm_core::ir::ColType::Duration {
+            return Err(Error::query(format!("{}.{}: a computed field cannot be a Duration (its hook value has no microsecond carrier yet)", model.ir.name, field.name)));
+        }
         let args = dependencies.iter().map(|d| {
             let at = positions.iter().position(|p| p == d).ok_or_else(|| Error::query(format!("{}.{}: the read does not select its dependency {}", model.ir.name, field.name, model.fields()[*d].name)))?;
             Ok((model.fields()[*d].name.clone(), start + at, model.fields()[*d].value_type()))

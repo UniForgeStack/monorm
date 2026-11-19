@@ -304,6 +304,7 @@ fn raw_type(name: &str, ty: &Type) -> DbResult<RawType> {
         Type::TIMESTAMPTZ => ColType::DateTime,
         Type::DATE => ColType::Date,
         Type::TIME | Type::TIMETZ => ColType::Time,
+        Type::INTERVAL => ColType::Duration,
         Type::UUID => ColType::Uuid,
         Type::JSON | Type::JSONB => ColType::Json,
         Type::NUMERIC => ColType::Decimal,
@@ -636,6 +637,24 @@ impl<'a> FromSql<'a> for PgTime {
     fn accepts(ty: &Type) -> bool { matches!(*ty, Type::TIME | Type::TIMETZ) }
 }
 
+/// An `interval` as whole microseconds: a day is 24 hours and a month is 30 days.
+struct PgInterval(i64);
+impl<'a> FromSql<'a> for PgInterval {
+    fn from_sql(_: &Type, raw: &'a [u8]) -> Result<Self, Box<dyn StdError + Sync + Send>> {
+        if raw.len() != 16 { return Err("invalid interval payload length".into()); }
+        let micros = i64::from_be_bytes(raw[..8].try_into()?);
+        let days = i32::from_be_bytes(raw[8..12].try_into()?) as i64;
+        let months = i32::from_be_bytes(raw[12..16].try_into()?) as i64;
+        const DAY: i64 = 86_400_000_000;
+        micros
+            .checked_add(days.checked_mul(DAY).ok_or("interval out of range for a Duration")?)
+            .and_then(|v| v.checked_add(months.checked_mul(30 * DAY)?))
+            .map(Self)
+            .ok_or_else(|| "interval out of range for a Duration".into())
+    }
+    fn accepts(ty: &Type) -> bool { *ty == Type::INTERVAL }
+}
+
 /// A `timestamp` has no zone: read it as UTC, like other DateTime fields.
 fn timestamp_cell<'a>(v: NaiveDateTime) -> Cell<'a> {
     Cell::DateTime(v.and_utc())
@@ -651,6 +670,7 @@ fn cell(row: &Row, idx: usize, ty: ValueType) -> DbResult<Cell<'_>> {
             ColType::String | ColType::Text => list(row, idx, |t: Text<'_>| Cell::Text(t.0)),
             ColType::DateTime => list(row, idx, Cell::DateTime),
             ColType::Time => list(row, idx, |t: PgTime| Cell::Time(t.0)),
+            ColType::Duration => list(row, idx, |d: PgInterval| Cell::Duration(d.0)),
             ColType::Date => list(row, idx, Cell::Date),
             ColType::Uuid => list(row, idx, Cell::Uuid),
             ColType::Json => list(row, idx, Cell::Json),
@@ -667,6 +687,7 @@ fn cell(row: &Row, idx: usize, ty: ValueType) -> DbResult<Cell<'_>> {
         // timestamptz is UTC on the wire.
         ColType::DateTime => opt(row, idx, Cell::DateTime),
         ColType::Time => opt(row, idx, |t: PgTime| Cell::Time(t.0)),
+        ColType::Duration => opt(row, idx, |d: PgInterval| Cell::Duration(d.0)),
         ColType::Date => opt(row, idx, Cell::Date),
         ColType::Uuid => opt(row, idx, Cell::Uuid),
         ColType::Json => opt(row, idx, Cell::Json),
@@ -719,6 +740,7 @@ impl RowSet for PgRows {
                 Value::ChronoDateTimeWithTimeZone(get::<DateTime<Utc>>(r, col)?.map(|d| d.fixed_offset()))
             }
             ColType::Time => Value::ChronoTime(get::<PgTime>(r, col)?.map(|t| t.0)),
+            ColType::Duration => Value::BigInt(get::<PgInterval>(r, col)?.map(|d| d.0)),
             ColType::Date => Value::ChronoDate(get(r, col)?),
             ColType::Uuid => Value::Uuid(get(r, col)?),
             ColType::Json => Value::Json(get::<serde_json::Value>(r, col)?.map(Box::new)),
@@ -2026,6 +2048,20 @@ mod native_time_tests {
             bytes.extend_from_slice(&west.to_be_bytes());
             assert_eq!(PgTime::from_sql(&Type::TIMETZ, &bytes).unwrap().0, chrono::NaiveTime::from_hms_opt(expected.0, expected.1, 0).unwrap());
         }
+    }
+
+    #[test]
+    fn interval_wire_sums_micros_days_and_30_day_months() {
+        let wire = |m: i64, d: i32, mo: i32| { let mut b = m.to_be_bytes().to_vec(); b.extend(d.to_be_bytes()); b.extend(mo.to_be_bytes()); b };
+        let read = |b: &[u8]| PgInterval::from_sql(&Type::INTERVAL, b).map(|v| v.0);
+        assert_eq!(read(&wire(-1, 0, 0)).unwrap(), -1);
+        assert_eq!(read(&wire(5, 2, 1)).unwrap(), 5 + 32 * 86_400_000_000);
+        assert_eq!(read(&wire(0, 0, 12)).unwrap(), 360 * 86_400_000_000);
+        assert!(read(&wire(i64::MAX, 1, 0)).is_err());
+        // A large day or month count must be an error, not an overflow.
+        assert!(read(&wire(0, i32::MAX, 0)).is_err());
+        assert!(read(&wire(0, 0, i32::MIN)).is_err());
+        assert!(read(&[0; 8]).is_err());
     }
 
     #[test]

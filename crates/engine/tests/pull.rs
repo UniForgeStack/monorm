@@ -167,6 +167,20 @@ fn drift_after_an_enum_value_recreates_the_columns() {
 }
 
 #[test]
+fn drift_after_pulling_an_interval_with_a_precision_is_a_step_not_a_refusal() {
+    with_database("CREATE TABLE jobs (id bigint PRIMARY KEY, timeout interval(3))", |conn, _, _| async move {
+        let dir = Dir::new("interval");
+        let pulled = pull(&*conn).await;
+        assert!(pulled.schema.contains("Duration"), "{}", pulled.schema);
+        let migrations = make(&dir, &pulled.schema);
+        migrate::baseline(&*conn, &migrations).await.unwrap();
+        let drift = introspect::drift(&*conn, &migrations).await.unwrap();
+        let sql: Vec<_> = drift.steps.iter().map(|s| s.sql.clone()).collect();
+        assert!(sql.join("\n").contains("ALTER COLUMN \"timeout\" TYPE"), "{sql:?}");
+    });
+}
+
+#[test]
 fn pull_reports_what_it_cannot_write() {
     with_database(LOSSY, |conn, _, _| async move {
         let dir = Dir::new("lossy");

@@ -187,7 +187,7 @@ pub(crate) fn scalar(ty: ColType, k: usize, flag: bool) -> Value {
     let k = if k == KEYS { 999_999 } else { k };
     let n = k as i64;
     match ty {
-        ColType::BigInt => Value::BigInt(Some(BASE + n)),
+        ColType::BigInt | ColType::Duration => Value::BigInt(Some(BASE + n)),
         ColType::Int => Value::Int(Some(1_900_000_000 + n as i32)),
         ColType::Float => Value::Double(Some(123_456_789.062_5 + n as f64)),
         ColType::Bool => Value::Bool(Some(flag)),

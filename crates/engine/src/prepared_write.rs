@@ -266,6 +266,7 @@ fn unnest_type(ty: ColType) -> &'static str {
         ColType::String | ColType::Text => "text",
         ColType::DateTime => "timestamp with time zone",
         ColType::Time => "time",
+        ColType::Duration => "interval",
         ColType::Date => "date",
         ColType::Uuid => "uuid",
         ColType::Json => "jsonb",
@@ -599,7 +600,7 @@ impl PreparedRows {
             types.push(f.ty);
         }
         let fits = |ty: ColType, v: &Value| match ty {
-            ColType::BigInt => matches!(v, Value::BigInt(_)),
+            ColType::BigInt | ColType::Duration => matches!(v, Value::BigInt(_)),
             ColType::Int => matches!(v, Value::Int(_)),
             ColType::Float => matches!(v, Value::Double(_)),
             ColType::Bool => matches!(v, Value::Bool(_)),
