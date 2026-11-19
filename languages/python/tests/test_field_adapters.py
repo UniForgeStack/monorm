@@ -172,7 +172,7 @@ async def test_an_instance_update_runs_the_pipeline():
         await db.close()
 
 
-async def test_two_adapted_fields_run_in_one_pipeline_in_value_order():
+async def test_two_adapted_fields_run_in_one_pipeline():
     extra = Counting("extra")
     db, models, body = await setup(extra=extra)
     try:
@@ -218,8 +218,16 @@ async def test_a_failed_sql_statement_retries_without_a_new_prepare():
 async def test_a_method_that_collides_with_a_model_member_is_rejected():
     db, models, _ = await setup()
     try:
-        with pytest.raises(FieldAdapterError, match="collides"):
-            register_field_adapter(models["Doc"], "extra", Counting("x"), {"title": lambda self: 1})
+        for name in ("title", "refresh", "_orm_internal"):
+            with pytest.raises(FieldAdapterError, match="collides"):
+                register_field_adapter(models["Doc"], "extra", Counting("x"), {name: lambda self: 1})
+    finally:
+        await db.close()
+
+
+async def test_adapter_methods_are_installed_on_the_model():
+    db, models, _ = await setup()
+    try:
         register_field_adapter(models["Doc"], "extra", Counting("x"), {"extra_open": lambda self: "ok"})
         assert (await models["Doc"].objects.using(db).insert(id=1, title="a")).extra_open() == "ok"
     finally:
@@ -661,14 +669,6 @@ async def test_prepare_system_exit_is_not_wrapped():
             await pending.operation.prepare()
     finally:
         await db.close()
-
-
-async def test_a_method_named_like_a_reserved_member_is_rejected():
-    registry = monorm.Registry()
-    models = monorm.loads(SCHEMA, registry=registry)
-    for name in ("refresh", "_orm_internal"):
-        with pytest.raises(FieldAdapterError, match="collides"):
-            register_field_adapter(models["Doc"], "body", Counting("body"), {name: lambda self: None})
 
 
 async def test_inspect_on_an_adapted_write_shows_the_placeholder_and_calls_no_prepare():

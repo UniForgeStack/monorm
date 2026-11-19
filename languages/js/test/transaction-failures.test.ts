@@ -7,8 +7,8 @@ import { join } from "node:path";
 import { Migration, Migrations, Migrator } from "../src/migrations.js";
 import { test } from "node:test";
 
-import { connect, DatabaseError, getDatabase, IntegrityError, QueryError, TransactionAborted, type Database } from "../src/index.js";
-import { User } from "./blog/models.js";
+import { connect, DatabaseError, getDatabase, IntegrityError, loads, QueryError, Registry, TransactionAborted, type Database } from "../src/index.js";
+import { Post, PostTag, Tag, User } from "./blog/models.js";
 import { Author, sqliteRegistry } from "./sqlite/models.js";
 import { useDatabase } from "./helpers.js";
 
@@ -41,7 +41,7 @@ async function run(body: (c: Case) => Promise<void>): Promise<void> {
   }
 }
 
-test("a caught error aborts the commit and drops the callbacks", () =>
+test("a caught error aborts the commit", () =>
   run(async (c) => {
     const seen: string[] = [];
     await c.insert("dup");
@@ -57,12 +57,14 @@ test("a caught error aborts the commit and drops the callbacks", () =>
       );
     assert.ok(err instanceof TransactionAborted && err instanceof DatabaseError);
     assert.ok(err.cause instanceof IntegrityError);
+    assert.equal(err.cause.sqlstate, "23505");
+    assert.ok(err.message.includes("earlier error"));
     assert.ok(err.message.includes(err.cause.message.split("\n")[0]!));
     assert.equal(await c.count(), 1);
     assert.deepEqual(seen, []);
   }));
 
-test("a later statement raises TransactionAborted chained to the first error", () =>
+test("a later statement raises TransactionAborted", () =>
   run(async (c) => {
     await c.insert("dup");
     await assert.rejects(
@@ -72,6 +74,7 @@ test("a later statement raises TransactionAborted chained to the first error", (
         await assert.rejects(c.db.transaction(async () => { throw new TypeError("a later application failure"); }, { savepoint: false }), TypeError);
         const later = await c.insert("later").catch((e: unknown) => e);
         assert.ok(later instanceof TransactionAborted && later.cause instanceof IntegrityError);
+        assert.notEqual(later.cause, first);
         await assert.rejects(c.count(), TransactionAborted);
         throw first;
       }),
@@ -228,6 +231,97 @@ for (const applicationError of [false, true]) {
       }
     }));
 }
+
+const followSource = `datasource db { provider = "sqlite" }
+model Person {
+  id Int @id @default(autoincrement())
+  name String
+  following Person[] @relation(through: Follow, through_fields: [follower, followee])
+}
+model Follow {
+  id Int @id @default(autoincrement())
+  follower_id Int
+  followee_id Int
+  follower Person @relation("follower", fields: [follower_id], references: [id])
+  followee Person @relation("followee", fields: [followee_id], references: [id])
+  @@unique([follower_id, followee_id])
+}`;
+
+interface Linked {
+  db: Database;
+  rel: { set(keys: unknown[]): Promise<unknown> };
+  bad: unknown;
+  kept: unknown;
+  count(): Promise<number>;
+  links(): Promise<unknown[]>;
+}
+
+// `body` gets a person that follows one other, a key that fails to link, and the follow count.
+async function runLinked(body: (c: Linked) => Promise<void>): Promise<void> {
+  const pg = getDatabase();
+  const alice = await User.objects.insert({ email: "a@x.io", name: "A" });
+  const post = await Post.objects.insert({ author: alice, title: "t", body: "b" });
+  const [t1, t2] = (await Tag.objects.insertMany([{ name: "a" }, { name: "b" }]).returning()) as [Tag, Tag];
+  await post.tags.add(t1);
+  await body({
+    db: pg,
+    rel: post.tags as never,
+    bad: t2.id + 10_000n,
+    kept: t1.id,
+    count: () => PostTag.objects.count(),
+    links: async () => (await PostTag.objects.all()).map((l) => l.tagId),
+  });
+  const registry = new Registry();
+  const models = loads(followSource, { registry }) as Record<string, any>;
+  const lite = await connect("sqlite://:memory:", { registry, default: false });
+  try {
+    await lite.createTables();
+    const { Person, Follow } = models;
+    const [ann, bob, cat] = await Person.objects.using(lite).insertMany([{ name: "a" }, { name: "b" }, { name: "c" }]).returning();
+    await ann.following.using(lite).add(bob);
+    await body({
+      db: lite,
+      rel: ann.following.using(lite),
+      bad: cat.id + 1000,
+      kept: bob.id,
+      count: () => Follow.objects.using(lite).count(),
+      links: async () => (await Follow.objects.using(lite).all()).map((l: any) => l.followeeId),
+    });
+  } finally {
+    await lite.close();
+  }
+}
+
+test("a failed related set marks the enclosing transaction", () =>
+  runLinked(async (c) => {
+    const err = await c.db
+      .transaction(async () => {
+        await assert.rejects(c.rel.set([c.bad]), DatabaseError);
+        await c.db.onCommit(() => undefined);
+      })
+      .then(
+        () => assert.fail("must throw"),
+        (e: unknown) => e,
+      );
+    assert.ok(err instanceof TransactionAborted);
+    assert.ok(err.cause instanceof DatabaseError);
+    assert.equal(await c.count(), 1);
+  }));
+
+test("a failed related set outside a transaction stays atomic", () =>
+  runLinked(async (c) => {
+    await assert.rejects(c.rel.set([c.bad]), DatabaseError);
+    assert.deepEqual(await c.links(), [c.kept]);
+  }));
+
+test("a nested transaction recovers a failed related set", () =>
+  runLinked(async (c) => {
+    await c.db.transaction(async () => {
+      await assert.rejects(c.db.transaction(() => c.rel.set([c.bad])), DatabaseError);
+      assert.equal(await c.count(), 1);
+    });
+    assert.deepEqual(await c.links(), [c.kept]);
+  }));
 
 test("concurrent nested transactions raise", { timeout: 10000 }, () =>
   run(async (c) => {

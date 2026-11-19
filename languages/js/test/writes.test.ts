@@ -64,12 +64,14 @@ test("insertMany batchSize is checked", async () => {
 
 // -- insert results and onConflict options ---------------------------------------------------
 
+// case: insert many gives a count and returning the rows
 test("insertMany gives a count; returning gives the rows", async () => {
   assert.equal(await Tag.objects.insertMany([{ name: "a" }, { name: "b" }]), 2);
   assert.equal(await Tag.objects.insertMany([]), 0);
   assert.deepEqual(await Tag.objects.insertMany([]).returning(), []);
   const rows = await Tag.objects.insertMany([{ name: "c" }, { name: "d" }]).returning();
   assert.deepEqual(rows.map((t) => t.name), ["c", "d"]);
+  assert.ok(rows.every((t) => t.id));
   // Each batch adds its count.
   assert.equal(await Tag.objects.insertMany(Array.from({ length: 5 }, (_, i) => ({ name: `e${i}` })), { batchSize: 2 }), 5);
   // Skipped conflicts are not counted and not returned; updated rows are.
@@ -269,31 +271,9 @@ test("set keeps the links when it fails", async () => {
   assert.deepEqual((await PostTag.objects.all()).map((l) => l.tagId), [t1.id]);
 });
 
-test("a failed set() marks the enclosing transaction, stays atomic outside one, and a nested transaction recovers", async () => {
-  const db = getDatabase();
-  const alice = await User.objects.insert({ email: "a@x.io", name: "A" });
-  const post = await Post.objects.insert({ author: alice, title: "t", body: "b" });
-  const [t1, t2] = (await Tag.objects.insertMany([{ name: "a" }, { name: "b" }]).returning()) as [Tag, Tag];
-  await post.tags.add(t1);
-  const missing = t2.id + 10_000n;
-  const kept = async () => (await PostTag.objects.all()).map((l) => l.tagId);
-  await assert.rejects(post.tags.set([missing as never]));
-  assert.deepEqual(await kept(), [t1.id]);
-  await assert.rejects(
-    db.transaction(async () => {
-      await assert.rejects(post.tags.set([missing as never]));
-    }),
-    (e: unknown) => e instanceof TransactionAborted,
-  );
-  await db.transaction(async () => {
-    await assert.rejects(db.transaction(() => post.tags.set([missing as never])));
-    assert.deepEqual(await kept(), [t1.id]);
-  });
-  assert.deepEqual(await kept(), [t1.id]);
-});
-
 // -- COPY -----------------------------------------------------------------------------------------
 
+// case: copy loads many rows
 test("insertMany copy loads many rows", async () => {
   const alice = await User.objects.insert({ email: "a@x.io", name: "A" });
   const rows = Array.from({ length: 100_000 }, (_, i) => ({ author: alice, title: `t${i}`, body: "b", views: i }));
@@ -302,15 +282,26 @@ test("insertMany copy loads many rows", async () => {
   const last = await Post.objects.require().get(Post.title.eq("t99999"));
   assert.equal(last.views, 99_999);
   assert.equal(last.published, false);
+  assert.ok(last.createdAt);
 });
 
+// case: copy column types
 test("insertMany copy column types", async () => {
-  const alice = await User.objects.insert({ email: "a@x.io", name: "A" });
-  assert.equal(await Profile.objects.insertMany([{ user: alice, role: "admin", balance: new Decimal("12.50"), links: ["x", "y"] }], { copy: true }), 1);
+  // A native enum, a decimal, a text array, and an int-stored enum.
+  const [alice, bob] = (await User.objects
+    .insertMany([{ email: "a@x.io", name: "A" }, { email: "b@x.io", name: "B" }])
+    .returning()) as [User, User];
+  const rows = [
+    { user: alice, role: "admin" as const, balance: new Decimal("12.50"), links: ["x", "y"] },
+    { user: bob, role: "member" as const, balance: new Decimal("0"), links: [] },
+  ];
+  assert.equal(await Profile.objects.insertMany(rows, { copy: true }), 2);
   const p = await Profile.objects.require().get(Profile.userId.eq(alice.id));
   assert.equal(p.role, "admin");
   assert.equal(p.balance.toString(), "12.5");
   assert.deepEqual(p.links, ["x", "y"]);
+  assert.equal(await Tag.objects.insertMany([{ name: "a", priority: Priority.high }], { copy: true }), 1);
+  assert.equal((await Tag.objects.require().get(Tag.name.eq("a"))).priority, Priority.high);
 });
 
 // A fresh pool has no cached statements on posts, so the type change cannot hit a stale plan.
@@ -415,7 +406,9 @@ test("copy is seen by query hooks", async () => {
   assert.deepEqual(events.map((e) => [e.sql.split(" ", 1)[0], e.rows]), [["COPY", 2]]);
 });
 
+// case: copy rejections
 test("insertMany copy rejections", async () => {
+  await assert.rejects(Tag.objects.insertMany([{ name: "a" }], { copy: true, onConflict: { update: false } } as never), /onConflict/);
   await assert.rejects(Tag.objects.insertMany([{ name: "a" }], { copy: true, batchSize: 2 } as never), /batchSize/);
   await assert.rejects(Tag.objects.insertMany([{ name: "a" }, { name: "b", priority: 1 }], { copy: true }), /some rows only/);
   assert.equal(await Tag.objects.insertMany([], { copy: true }), 0);

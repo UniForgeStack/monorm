@@ -53,11 +53,6 @@
 "bound_writes::a_bound_write_checks_the_database_and_the_input" = "change: TS asserts only hardDelete undefined;"
 "bound_writes::the_soft_delete_members_are_on_the_bound_set" = "change: TS asserts counts only;"
 # languages/python/tests/test_chain_alias.py
-"chain_alias::a_nested_column_behind_a_path_keeps_the_alias_the_rule_and_the_to_one_state" = "change: ID `chain_alias::a_nested_column_behind_a_path_keeps_the_alias_and_the_rule`."
-"chain_alias::alias_is_another_row" = "change: TS splits out `alias is another row (${provider})` -> ID `chain_alias::alias_is_another_row`."
-"chain_alias::one_path_is_one_row_in_one_call_or_across_calls" = "change: TS splits out `one path is one row in one call or across calls (${provider})` -> ID `chain_alias::one_path_is_one_row_in_one_call_or_across_calls`."
-"chain_alias::or_and_not_are_barriers" = "change: TS splits out `or and not are barriers (${provider})` -> ID `chain_alias::or_and_not_are_barriers`."
-"chain_alias::the_shared_row_holds_inside_a_deeper_path" = "change: TS splits out `the shared row holds inside a deeper path (${provider})` -> ID `chain_alias::the_shared_row_holds_inside_a_deeper_path`."
 # languages/python/tests/test_char_like.py
 "char_like::like_compares_the_text" = "change: TS lacks `icontains('C')`, `~ilike`, and the CAST check: TS adds them."
 # languages/python/tests/test_client_defaults.py
@@ -120,14 +115,8 @@
 "fetch_review::sqlite_fetch_parameters_of_bool_float_date_and_list" = "change: The SQLite part of the TS test binds no date: split it out under this name and add a Date parameter with its stored value."
 "fetch_review::sqlite_not_null_check_and_unique_have_a_sqlstate" = "change: TS also asserts that the NOT NULL error has constraint null: Python must add `constraint is None` for 23502 and use the TS name."
 # languages/python/tests/test_field_adapters.py
-"field_adapters::a_method_named_like_a_reserved_member_is_rejected" = "change: add refresh and _orm_internal to the Python collides test and drop this one."
 "field_adapters::a_prepare_call_that_raises_cancelled_leaves_no_call_running" = "one-language: asyncio cancellation; a JS promise has no cancel"
-"field_adapters::an_expression_for_an_adapted_field_is_rejected_before_prepare" = "change: split the TS test and give this half the Python name."
-"field_adapters::inspect_on_an_adapted_write_shows_the_placeholder_and_calls_no_prepare" = "change: TS must add update({ body }, { returning: true }).inspect()."
-"field_adapters::on_conflict_rejects_a_pending_value_without_a_prepare_call" = "change: Split the TS combined test;"
 "field_adapters::prepare_system_exit_is_not_wrapped" = "one-language: SystemExit is a Python BaseException"
-"field_adapters::through_defaults_prepare_once_before_the_transaction" = "change: TS must add both."
-"field_adapters::two_adapted_fields_run_in_one_pipeline_in_value_order" = "change: twin field_adapters::two_adapted_fields_run_in_one_pipeline; TS must add row['body']."
 # languages/python/tests/test_generic_identities.py
 "generic_identities::generic_field_form_creates_the_pair_and_the_reverse" = "change: TS lacks the relations entry and the insert/get, and adds a bare `Generic` error (Rust crates/core/src/dsl/tests.rs:245 covers it)."
 "generic_identities::runtime_and_generated_identities_roundtrip" = "change: TS lacks Tag=2 and the object_id read after delete (it only counts);"
@@ -401,18 +390,9 @@
 # languages/python/tests/test_tracking.py
 "tracking::a_stale_instance_write_raises_version_conflict" = "change: TS must add both."
 # languages/python/tests/test_transaction_failures.py
-"transaction_failures::a_caught_error_aborts_the_commit" = "change: TS adds the sqlstate and 'earlier error' checks;"
-"transaction_failures::a_failed_related_set_marks_the_enclosing_transaction" = "change: The TS twin is one merged Postgres-only test in writes.test.ts;"
-"transaction_failures::a_failed_related_set_outside_a_transaction_stays_atomic" = "change: split it out under this name and add SQLite."
-"transaction_failures::a_later_statement_raises_transaction_aborted" = "change: TS adds assert.notEqual(later.cause, first);"
-"transaction_failures::a_nested_transaction_recovers_a_failed_related_set" = "change: split it out under this name and add SQLite."
 # languages/python/tests/test_validation_error.py
 "validation_error::a_copy_keeps_the_paths_and_messages" = "one-language: Python pickle protocol; TypeScript has no copy protocol for errors"
 # languages/python/tests/test_writes.py
-"writes::copy_column_types" = "change: twin writes::insert_many_copy_column_types; TS COPYs one Profile row only: TS must add the second row with `links: []` and the Tag `priority` COPY;"
-"writes::copy_loads_many_rows" = "change: twin writes::insert_many_copy_loads_many_rows; TS must add the `createdAt` check;"
-"writes::copy_rejections" = "change: twin writes::insert_many_copy_rejections; TS has no onConflict case (TS `copyRows` checks `'onConflict' in options` but no test reaches it): TS must add `{"
-"writes::insert_many_gives_a_count_and_returning_the_rows" = "change: TS must add the id check;"
 "writes::model_indexes_offer_the_unique_indexes" = "change: Python must add an `IndexRef` type and `repr`/`str` check (TS asserts `String()`) and run on SQLite too;"
 "writes::on_conflict_index_errors_name_the_problem" = "change: TS says 'takes Note.indexes' for the other model's index: align the message, run Python on SQLite too, add explicit ID"
 "writes::on_conflict_index_picks_a_partial_index" = "change: The TS twin asserts the same on SQLite and Postgres: Python must run on both providers, and needs explicit ID"
@@ -457,8 +437,6 @@
 "bound_writes::bound_update_fills_the_objects_and_gives_them_in_input_order" = "change: TS adds a 1-statement count and an expression value;"
 "bound_writes::bound_update_skips_an_object_whose_row_the_filter_hides_and_an_empty_update_runs_nothing" = "change: TS adds a deleted row's object;"
 # languages/js/test/chain-alias.test.ts
-"chain_alias::a_nested_column_behind_a_path_keeps_the_alias_and_the_rule" = "change: Python renames to it and pins the same exact counts."
-"chain_alias::one_path_is_one_related_row_alias_is_another" = "change: Split it into four tests named like the Python tests with a `(${provider})` suffix;"
 # languages/js/test/char-like.test.ts
 "char_like::like_on_a_char_column_compares_the_text_postgres" = "change: twin char_like::like_compares_the_text; TS adds icontains, negated ilike and the `CAST(..."
 # languages/js/test/client-defaults.test.ts
@@ -504,12 +482,6 @@
 "fetch_review::raw_fetch_keeps_proto_as_an_own_key_in_json_on_sqlite" = "one-language: TypeScript-only: a __proto__ JSON key must stay an own key of a JS object"
 "fetch_review::sqlite_not_null_and_check_give_a_sqlstate_a_unique_error_has_no_constraint" = "change: The Python test must add constraint None for 23502 and take this name."
 # languages/js/test/field-adapters.test.ts
-"field_adapters::adapter_methods_are_installed_on_the_model" = "change: split that part into a Python test 'adapter methods are installed on the model'."
-"field_adapters::inspect_on_an_adapted_write_shows_the_placeholder_statement_and_calls_no_prepare" = "change: TS must add update({ body }, { returning: true }).inspect() with one statement;"
-"field_adapters::on_conflict_and_an_expression_are_rejected_before_any_prepare" = "change: Split into two tests with the two Python names;"
-"field_adapters::through_defaults_prepare_once_before_the_transaction_for_every_join_row" = "change: TS must add file.calls.length == 2 after add(4) and the tag 4 link value size 2."
-"field_adapters::two_adapted_fields_run_in_one_pipeline" = "change: TS must add the decoded body check;"
-"field_adapters::update_many_validates_every_row_before_any_prepare" = "change: move it into the TS twin with that message and drop this test."
 # languages/js/test/hooks.test.ts
 "hooks::add_row_decoder_runs_on_every_materialized_instance" = "change: Result ID `hooks::a_decoder_reads_the_loaded_value_and_a_filter_compares_the_stored_value` (both sides checked with normalize and TS_HOLE)."
 # languages/js/test/identities.test.ts
@@ -671,17 +643,10 @@
 # languages/js/test/tracking.test.ts
 "tracking::a_stale_instance_write_throws_version_conflict" = "change: Must add first.title and stored title 'b' checks;"
 # languages/js/test/transaction-failures.test.ts
-"transaction_failures::a_caught_error_aborts_the_commit_and_drops_the_callbacks" = "change: twin transaction_failures::a_caught_error_aborts_the_commit; Add cause.sqlstate === '23505' and /earlier error/ checks;"
-"transaction_failures::a_later_statement_raises_transaction_aborted_chained_to_the_first_error" = "change: Add a check that the cause is not the first error object (Python asserts this);"
 # languages/js/test/values.test.ts
 # languages/js/test/writes.test.ts
-"writes::a_failed_set_marks_the_enclosing_transaction_stays_atomic_outside_one_and_a_nested_transaction_recovers" = "change: Split TS into the three Python names in transaction-failures.test.ts and add the `cause` and SQLite checks Python has."
 "writes::add_rejects_an_unknown_option" = "one-language: TypeScript options object; Python keyword arguments reject an unknown name natively"
 "writes::get_or_insert_ignores_an_undefined_lookup_key" = "one-language: JavaScript undefined has no Python value"
-"writes::insert_many_copy_column_types" = "change: twin writes::copy_column_types; Must add a second row with empty `links` and a Tag COPY with `priority: Priority.high`, as Python does."
-"writes::insert_many_copy_loads_many_rows" = "change: twin writes::copy_loads_many_rows; Must add the `createdAt` set check that Python has;"
-"writes::insert_many_copy_rejections" = "change: twin writes::copy_rejections; Must add the onConflict rejection that Python asserts (`{ copy: true, onConflict } as never` rejects /onConflict/)."
-"writes::insert_many_gives_a_count_returning_gives_the_rows" = "change: Must add the check that every returned row has an id;"
 "writes::replica_database_names_are_relative_to_the_current_worker_database" = "one-language: checks the TypeScript test helper replicaUrl, not the API"
 # languages/js/test/proto-field.test.ts
 "proto_field::a_ts_proto_class_round_trips_and_refuses_nothing_it_cannot_check" = "one-language: ts-proto emits an interface and a const object; Python has no such class shape"

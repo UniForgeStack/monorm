@@ -121,12 +121,13 @@ model Stall {
 """
 
 
-def test_a_nested_column_behind_a_path_keeps_the_alias_the_rule_and_the_to_one_state():
+def test_a_nested_column_behind_a_path_keeps_the_alias_and_the_rule():
     m = monorm.loads('datasource db {\n  provider = "sqlite"\n}\n' + NESTED, registry=monorm.Registry())
     Stall = m["Stall"]
     same = Stall.objects.filter(Stall.shop.geo.city == "a", Stall.shop.geo.zip == "b").sql()
     other = Stall.objects.filter(Stall.shop.geo.city == "a", Stall.shop.alias().geo.zip == "b").sql()
-    assert same.count("EXISTS") == other.count("EXISTS") - 1
+    assert same.count("EXISTS") == 1, same
+    assert other.count("EXISTS") == 2, other
     ruled = Stall.objects.filter(Stall.shop.or_null().geo.zip != "b").sql()
     assert 'NOT EXISTS(SELECT 1 FROM "ca_shop"' in ruled
 

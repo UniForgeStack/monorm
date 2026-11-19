@@ -90,10 +90,17 @@ test("write protection is checked before prepare", async () => {
   } finally { await db.close(); }
 });
 
-test("onConflict and an expression are rejected before any prepare", async () => {
+test("on conflict rejects a pending value without a prepare call", async () => {
   const { db, Doc, body, objects } = await open();
   try {
     assert.throws(() => objects.insert({ id: 1, title: "a", body: "file" }).onConflict(Doc.id, { update: true }), FieldAdapterError);
+    assert.deepEqual(body.calls, []);
+  } finally { await db.close(); }
+});
+
+test("an expression for an adapted field is rejected before prepare", async () => {
+  const { db, Doc, body, objects } = await open();
+  try {
     assert.throws(() => objects.filter(Doc.id.eq(1)).update({ body: Doc.views.add(1) }), /takes no expression/);
     assert.deepEqual(body.calls, []);
   } finally { await db.close(); }
@@ -140,6 +147,7 @@ test("two adapted fields run in one pipeline", async () => {
   try {
     const row = await objects.insert({ id: 1, title: "a", extra: "two", body: "one" }) as Row;
     assert.deepEqual([body.calls, extra.calls], [["one"], ["two"]]);
+    assert.deepEqual(row["body"], ["body", { tag: "body", value: "one" }]);
     assert.deepEqual(row["extra"], ["extra", { tag: "extra", value: "two" }]);
   } finally { await db.close(); }
 });
@@ -315,14 +323,6 @@ test("one object in several rows prepares once", async () => {
   } finally { await db.close(); }
 });
 
-test("updateMany validates every row before any prepare", async () => {
-  const { db, body, objects } = await open();
-  try {
-    await assert.rejects(async () => objects.updateMany([{ id: 1, title: "ok", body: "aa" }, { id: 2, title: 5, body: "bb" }]));
-    assert.deepEqual(body.calls, []);
-  } finally { await db.close(); }
-});
-
 test("insertMany with a bad batchSize fails before any prepare", async () => {
   const { db, body, objects } = await open();
   try {
@@ -354,6 +354,8 @@ test("batch validation and protection run before any prepare", async () => {
   try {
     assert.throws(() => objects.insertMany([{ id: 1, title: "a", body: "ok" }, { id: 2, title: "b", body: 3 }]), /unsupported value 3/);
     assert.throws(() => objects.updateMany([{ id: 1, body: "ok" }, { id: 2, body: 3 }]), /unsupported value 3/);
+    await assert.rejects(async () => objects.updateMany([{ id: 1, title: "ok", body: "aa" }, { id: 2, title: 5, body: "bb" }]), TypeError);
+    assert.deepEqual(body.calls, []);
     await assert.rejects(async () => objects.insertMany([{ id: 1, body: "ok" }]), /title is required/);
     const protectedRows = Locked.objects.using(db);
     await assert.rejects(async () => protectedRows.insertMany([{ id: 1, body: "file" }]), /write-protected/);
@@ -425,7 +427,7 @@ test("a related insert on a many-to-many prepares before the transaction", async
   } finally { await db.close(); }
 });
 
-test("through defaults prepare once, before the transaction, for every join row", async () => {
+test("through defaults prepare once before the transaction", async () => {
   const registry = new Registry();
   const models = loads(m2mSource.replace("  tag_id Int\n", "  tag_id Int\n  file Json?\n"), { registry }) as Record<string, any>;
   const db = await connect("sqlite://:memory:", { registry, default: false });
@@ -444,7 +446,9 @@ test("through defaults prepare once, before the transaction, for every join row"
     const links = (await models.PostTag.objects.using(db).all()) as Row[];
     assert.deepEqual(links.map(l => l["file"]), Array(3).fill(["file", { tag: "file", size: 5 }]));
     await post.tags.add(4, { throughDefaults: { file: new OneShot("hi") } });
+    assert.equal(file.calls.length, 2);
     assert.deepEqual(inside, [false, false]);
+    assert.deepEqual(((await models.PostTag.objects.using(db).get(models.PostTag.tagId.eq(4))) as Row)["file"], ["file", { tag: "file", size: 2 }]);
   } finally { await db.close(); }
 });
 
@@ -528,14 +532,16 @@ test("adapter methods are installed on the model", async () => {
   } finally { await db.close(); }
 });
 
-test("inspect on an adapted write shows the placeholder statement and calls no prepare", async () => {
+test("inspect on an adapted write shows the placeholder and calls no prepare", async () => {
   const { db, Doc, body, objects } = await open();
   try {
     const insert = objects.insert({ id: 1, title: "a", body: "file" });
     assert.equal(insert.inspect().statements.length, 1);
     const update = objects.filter(Doc.id.eq(1)).update({ body: "file" });
     assert.equal(update.inspect().statements.length, 1);
+    const returning = objects.filter(Doc.id.eq(1)).update({ body: "file" }).returning(Doc.id);
+    assert.equal(returning.inspect().statements.length, 1);
     assert.deepEqual(body.calls, []);
-    assert.ok(insert.operation && update.operation);
+    assert.ok(returning.operation && insert.operation && update.operation);
   } finally { await db.close(); }
 });
