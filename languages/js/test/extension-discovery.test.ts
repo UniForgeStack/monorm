@@ -11,6 +11,7 @@ import { test, type TestContext } from "node:test";
 import { connect, define, IntegrityError, load, loads, param, QueryError, Registry, SchemaError, scope, type SchemaIR } from "../src/index.js";
 import { native } from "../src/native.js";
 import { resolveExtensions } from "../src/packages.js";
+import { hasExtension } from "./artifact-caps.js";
 
 // `npx monorm` as a process of its own: src/cli.ts (Bun) or dist/src/cli.js (Node)
 const CLI = [".js", ".ts"].map((ext) => fileURLToPath(new URL(`../src/cli${ext}`, import.meta.url))).find(existsSync)!;
@@ -401,4 +402,60 @@ test("an outside view reads and writes through the row filter and warns with its
   assert.equal(done.status, 0, done.stderr);
   const warnings = done.stderr.split("\n").filter((line) => line.startsWith('{"code":"acme.outside.shape"')).map((line) => JSON.parse(line) as { model: string; field: string; occurrence_count: number });
   assert.deepEqual(warnings.map((w) => [w.model, w.field, w.occurrence_count]), [["OpenTicket", "note", 1]]);
+});
+
+/** An outside library installed into a fresh project: the project root and the manifest path. */
+function installOutside(t: TestContext): { root: string; manifest: string; library: string } {
+  const root = directory(t);
+  const manifest = pkg(root, "acme-outside", "acme.outside", false) + "/monorm-extension.toml";
+  write(manifest, readFileSync(join(OUTSIDE, "monorm-extension.toml"), "utf8"));
+  const library = outsideLibrary(t);
+  copyFileSync(library, join(dirname(manifest), library.slice(library.lastIndexOf("/") + 1)));
+  project(root, { "acme-outside": "1.0.0" });
+  return { root, manifest, library: join(dirname(manifest), library.slice(library.lastIndexOf("/") + 1)) };
+}
+
+test("define needs the library of a package whose hooks the schema binds", { timeout: 300_000 }, (t) => {
+  const { root, library } = installOutside(t);
+  const schema = write(join(root, "schema.prisma"), GUARDED);
+  const ir = JSON.parse(native().compileSchemaFile(schema, {}, resolveExtensions(schema)) as string) as SchemaIR;
+  const cwd = process.cwd();
+  process.chdir(root);
+  t.after(() => process.chdir(cwd));
+  define(ir, { registry: new Registry() });
+  rmSync(library);
+  assert.throws(() => define(ir, { registry: new Registry() }), /extension acme\.outside: no library for platform .*No such file or directory/);
+});
+
+test("an outside attribute owns a field type and takes a field out of the model", { timeout: 300_000 }, async (t) => {
+  const { root } = installOutside(t);
+  const schema = write(join(root, "schema.prisma"), 'datasource db { provider = "sqlite" }\nmodel Order {\n id Int @id\n price Money @outside.money\n memo String @outside.note("remember")\n}\n');
+  const run = (...args: string[]) => spawnSync(process.execPath, [CLI, ...args], { cwd: root, encoding: "utf8", env: { ...process.env, MONORM_DATABASE_URL: "" } });
+  const checked = run("check");
+  assert.equal(checked.status, 1, checked.stderr);
+  assert.match(checked.stderr, /monorm identities/);
+  const identities = run("identities");
+  assert.equal(identities.status, 0, identities.stderr);
+  const runtime = new URL(`../src/index.${CLI.endsWith(".ts") ? "ts" : "js"}`, import.meta.url).href;
+  const generated = run("generate", "--import", runtime);
+  assert.equal(generated.status, 0, generated.stderr);
+  const entries = JSON.parse(readFileSync(join(root, "schema.identities.json"), "utf8")) as { entries: { model: string }[] };
+  assert.equal(entries.entries[0]!.model, "Order");
+  const registry = new Registry();
+  const { Order } = load(schema, { registry }) as Record<string, any>;
+  assert.deepEqual([...Order._meta.fields.keys()], ["id", "priceAmount", "priceCurrency"]);
+  const ir = registry.ir() as unknown as { behavior: { extension_data: Record<string, { notes: Record<string, string> }> } };
+  assert.equal(ir.behavior.extension_data["acme.outside"]!.notes["Order.memo"], "remember");
+  const db = await connect("sqlite://:memory:", { registry, default: false });
+  try {
+    await db.createTables();
+    await Order.objects.using(db).insertMany([{ id: 1, priceAmount: 250, priceCurrency: "EUR" }]);
+    const [row] = await Order.objects.using(db).all();
+    assert.deepEqual([row.priceAmount, row.priceCurrency], [250, "EUR"]);
+  } finally { await db.close(); }
+});
+
+test("a file field defines a model although file storage has no query set", { skip: !hasExtension("monorm.file-storage") }, () => {
+  const models = loads('datasource db { provider = "sqlite" }\nmodel Report {\n  id Int @id\n  file Json? @storage.file(storage: "reports")\n}\n', { registry: new Registry() });
+  assert.equal((models.Report as unknown as { _meta: { name: string } })._meta.name, "Report");
 });

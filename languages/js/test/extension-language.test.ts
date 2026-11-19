@@ -2,7 +2,7 @@
 // are added to the IR; the extension modules and `define()` are real.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { define, QuerySet, Registry, useQuerySet } from "../src/index.js";
+import { BoundQuerySet, define, QuerySet, Registry, useQuerySet } from "../src/index.js";
 import { InstanceBase } from "../src/ext.js";
 import { call, native } from "../src/native.js";
 
@@ -29,7 +29,7 @@ class AInstance { label() { return `a${String((this as never as { pk: unknown })
 const HASH = "0".repeat(64);
 
 // The lock stamp of a package; the members come from the real module.
-function record(extension: string, changes: { overrides?: string[]; dependencies?: Record<string, string>; fieldAdaptersOnly?: boolean } = {}) {
+function record(extension: string, changes: { overrides?: string[]; dependencies?: Record<string, string>; fieldAdaptersOnly?: boolean; bound?: boolean } = {}) {
   return { extension, ...changes };
 }
 
@@ -40,7 +40,7 @@ function build(records: ReturnType<typeof record>[], extensions: Record<string, 
     ...ir.behavior,
     packages: Object.fromEntries(records.map((r) => [r.extension, {
       manifest_hash: HASH, version: "1.0.0", attributes: [], languages: ["typescript"], databases: ["postgres", "sqlite"], dependencies: r.dependencies,
-      language_members: { typescript: r.fieldAdaptersOnly ? { overrides: [] } : { query_set: "queries", instance: "Instance", overrides: r.overrides ?? [] } },
+      language_members: { typescript: r.fieldAdaptersOnly ? { overrides: [] } : { query_set: "queries", instance: "Instance", ...(r.bound ? { bound_query_set: "bound" } : {}), overrides: r.overrides ?? [] } },
     }])),
   };
   const withHash = Object.fromEntries(Object.entries(extensions).map(([id, e]) => [id, { module: { manifestHash: HASH, ...e.module } }]));
@@ -149,4 +149,36 @@ test("an extension with only field adapters adds no query set or instance member
 test("no extension changes nothing", () => {
   const { Post } = define(call(() => native().compileSchema(source, null)), { registry: new Registry() }) as Record<string, any>;
   assert.equal(Object.getPrototypeOf(Post.objects).constructor, QuerySet);
+});
+
+type BoundCtor = new (...args: any[]) => BoundQuerySet<never, never>;
+const boundA = (Base: BoundCtor) => class ABound extends Base {
+  everything() { return this.withoutDefaults(); }
+};
+const boundCode = (bound: object) => ({ "ext.a": { module: { queries: mixinA, Instance: AInstance, bound } } });
+
+// A real binding gap: applyExtensions in src/extensions.ts does not check bound_query_set_members against the host members of BoundQuerySet.
+test("a bound member collides with a host member unless overridden", { skip: "the TypeScript binding does not check bound members for collisions; see plans/jobs/monorm-twins-add-ts.md" }, () => {
+  const filter = (Base: BoundCtor) => class ABound extends Base {
+    // @ts-expect-error the member collides with the host member on purpose
+    override filter() { return this; }
+  };
+  assert.throws(
+    () => build([record("ext.a", { bound: true })], boundCode(filter), { Post: ["ext.a"] }),
+    /Post\.filter: extension ext\.a bound query set member collides with a host member/,
+  );
+});
+
+test("a bound class is composed from the extensions", () => {
+  const { Post, Tag } = build([record("ext.a", { bound: true, overrides: [] })], boundCode(boundA), { Post: ["ext.a"], Tag: [] }) as Record<string, any>;
+  const post = Object.assign(new Post._meta.Row(), { id: 1, title: "hello" });
+  const bound = Post.objects.of([post]);
+  const names: string[] = [];
+  for (let proto = Object.getPrototypeOf(bound); proto !== null && names.length < 2; proto = Object.getPrototypeOf(proto)) names.push(proto.constructor.name);
+  assert.deepEqual(names, ["ABound", "BoundQuerySet"]);
+  assert.equal(Object.getPrototypeOf(bound.everything()), Object.getPrototypeOf(bound));
+  assert.equal(Object.getPrototypeOf(bound.filter()), Object.getPrototypeOf(bound));
+  const tag = Tag.objects.of([Object.assign(new Tag._meta.Row(), { id: 2 })]);
+  assert.equal(Object.getPrototypeOf(tag).constructor, BoundQuerySet);
+  assert.equal(tag.everything, undefined);
 });

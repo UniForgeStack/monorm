@@ -4,7 +4,8 @@ import { test } from "node:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { main as cli } from "../src/cli.js";
-import { connect, IntegrityError, load, Migrations, Registry, SchemaError } from "../src/index.js";
+import { connect, DatabaseError, IntegrityError, load, Migrations, Migrator, Registry, SchemaError } from "../src/index.js";
+import { hasExtension } from "./artifact-caps.js";
 import { native } from "../src/native.js";
 import { resolveExtensions } from "../src/packages.js";
 import { scratch as scratchDir } from "./scratch.js";
@@ -134,3 +135,73 @@ for (const behavior of ['{"schema_contract":2,"generic_relations":[{"model":"Tag
     assert.throws(() => native().prepareSchema(`{"models":[],"behavior":${behavior}}`), /regenerate/);
   });
 }
+
+for (const [provider, url] of [
+  ["sqlite", "sqlite://:memory:"],
+  ["postgresql", process.env["ORM_TEST_DATABASE_URL"]],
+] as const) {
+  // case: generic_identities::retirement_migration_requires_reference_cleanup
+  test(`retirement migration requires reference cleanup (${provider})`, { skip: !url }, async () => {
+    const dir = mkdtempSync(join(scratch, "retire-"));
+    const path = join(dir, "schema.prisma");
+    const header = `datasource db {\nprovider = "${provider}"\n}\n`;
+    const post = 'model Post {\nid Int @id\n@@map("identity08_migration_posts")\n}\n';
+    const tag = 'model Tag {\nid Int @id\nkind ContentType\nobject_id Int\n@@map("identity08_migration_tags")\n}';
+    writeFileSync(path, header + post + tag);
+    assert.equal(await cli(["--schema", path, "identities"]), 0);
+    const old = new Registry();
+    const models = load(path, { registry: old });
+    const migrations = join(dir, "migrations");
+    new Migrations(migrations, old).make("initial");
+    const db = await connect(url!, { registry: old, default: false });
+    const runner = new Migrator(db, new Migrations(migrations, old));
+    const Tag = models["Tag"]!;
+    try {
+      await db.dropTables();
+      // The migration ledger outlives dropTables on a shared database.
+      await db.execute("DROP TABLE IF EXISTS monorm_migrations");
+      await runner.upgrade("1");
+      await Tag.objects.using(db).insert({ id: 1, kind: old.getEnum("ContentType")["Post"], objectId: 9 });
+      writeFileSync(path, header + tag);
+      assert.equal(await cli(["--schema", path, "identities"]), 0);
+      const current = new Registry();
+      load(path, { registry: current });
+      new Migrations(migrations, current).make("retire_post");
+      await assert.rejects(runner.upgrade(), DatabaseError);
+      assert.equal(await Tag.objects.using(db).count(), 1);
+      await Tag.objects.using(db).all().delete();
+      await runner.upgrade();
+      await assert.rejects(db.execute("INSERT INTO identity08_migration_tags (id, kind, object_id) VALUES (2, 1, 9)"), IntegrityError);
+    } finally {
+      await db.dropTables();
+      await db.execute("DROP TABLE IF EXISTS monorm_migrations");
+      await db.close();
+      rmSync(dir, { recursive: true });
+    }
+  });
+}
+
+// case: generic_identities::a_proxy_that_keeps_a_generic_field_fails_and_one_without_it_loads
+test("a proxy that keeps a generic field fails and one without it loads", { skip: !hasExtension("monorm.generic", "monorm.proxy") }, async () => {
+  const dir = mkdtempSync(join(scratch, "generic-proxy-"));
+  const path = join(dir, "schema.prisma");
+  const tag = 'model Tag {\nid Int @id\ntarget Generic? @generic.relation(targets: ["Post"])\nnote String\n@@map("generic_field_node_tags")\n}\n';
+  try {
+    for (const fields of ['include: ["id", "note"]', 'exclude: ["target"]']) {
+      writeFileSync(path, genericHeader + tag + `model NotedTag {\n@@proxy.of(Tag)\n@@proxy.fields(${fields})\n}`);
+      assert.equal(await cli(["--schema", path, "identities"]), 0);
+      const registry = new Registry();
+      const models = load(path, { registry });
+      const db = await connect("sqlite://:memory:", { registry, default: false });
+      try {
+        await db.createTables();
+        await models["Tag"]!.objects.using(db).insert({ id: 1, targetType: registry.getEnum("ContentType")["Post"], targetId: 7, note: "n" });
+        const rows = await models["NotedTag"]!.objects.using(db) as unknown as { id: number; note: string }[];
+        assert.deepEqual(rows.map((t) => [t.id, t.note]), [[1, "n"]]);
+      } finally { await db.close(); }
+    }
+    // The identity manifest of the same models stays; a full proxy keeps the Generic field.
+    writeFileSync(path, genericHeader + tag + "model NotedTag {\n@@proxy.of(Tag)\n}");
+    assert.throws(() => load(path, { registry: new Registry() }), /Tag\.target: NotedTag keeps the Generic field/);
+  } finally { rmSync(dir, { recursive: true }); }
+});

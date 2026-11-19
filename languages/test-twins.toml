@@ -105,20 +105,15 @@
 "ext::the_hard_delete_statement_is_a_hard_delete_of_the_query_set" = "change: Python must run the statement on a database and assert the deleted and remaining rows;"
 # languages/python/tests/test_extension_discovery.py
 "extension_discovery::a_dotted_module_resolves_to_its_directory" = "one-language: Python-only: an entry point names a dotted module path"
-"extension_discovery::a_file_field_defines_a_model_although_file_storage_has_no_query_set" = "add-ts: extension_discovery::a_file_field_defines_a_model_although_file_storage_has_no_query_set"
 "extension_discovery::a_hook_error_names_the_model_and_field_once" = "change: TS must split that test into three with the Python names."
 "extension_discovery::a_native_schema_without_package_directories_leaves_the_hook_bindings_unresolved" = "change: The TS part checks only the first two;"
 "extension_discovery::a_value_that_the_caller_sets_goes_through_the_hook_that_assigns_the_field" = "change: TS must split it out under this name."
 "extension_discovery::an_installed_outside_library_lowers_the_schema_through_load_and_loads" = "change: TS covers this plus CLI, generated models and hash-only in one test;"
-"extension_discovery::an_outside_attribute_owns_a_field_type_and_takes_a_field_out_of_the_model" = "add-ts: extension_discovery::an_outside_attribute_owns_a_field_type_and_takes_a_field_out_of_the_model"
 "extension_discovery::an_outside_package_with_a_built_in_id_names_the_built_in_copy" = "change: Rename to the TS name (extension_discovery::an_outside_package_with_a_bundled_id_fails_and_names_the_bundled_copy);"
-"extension_discovery::define_needs_the_library_of_a_package_whose_hooks_the_schema_binds" = "add-ts: extension_discovery::define_needs_the_library_of_a_package_whose_hooks_the_schema_binds"
 "extension_discovery::hash_only_package_is_imported_by_generated_models" = "change: TS must split it out under this name."
 "extension_discovery::packaged_generated_models_use_runtime_without_the_pass_library" = "change: After the TS split, TS adds the missing-class error and Python adds the `databases` check ('does not support sqlite') that TS has."
 "extension_discovery::the_command_line_lowers_the_schema_with_an_installed_outside_library" = "change: TS must split its CLI block out under this name and add the 'locked'/'installed' asserts."
 # languages/python/tests/test_extension_language.py
-"extension_language::a_bound_class_is_composed_from_the_extensions" = "add-ts: extension_language::a_bound_class_is_composed_from_the_extensions"
-"extension_language::a_bound_member_collides_with_a_host_member_unless_overridden" = "add-ts: extension_language::a_bound_member_collides_with_a_host_member_unless_overridden"
 "extension_language::user_query_set_comes_first" = "change: Python must use two extensions and assert ['mine', 'b', 'a'] and that the query set is a Mine;"
 # languages/python/tests/test_fetch_review.py
 "fetch_review::postgres_fetch_parameters_of_bool_float_date_and_list" = "change: The TS test combines both databases and binds a JS Date as timestamptz (JS has no date-only type): split TS into postgres_/sqlite_ tests with the Python names"
@@ -134,18 +129,10 @@
 "field_adapters::through_defaults_prepare_once_before_the_transaction" = "change: TS must add both."
 "field_adapters::two_adapted_fields_run_in_one_pipeline_in_value_order" = "change: twin field_adapters::two_adapted_fields_run_in_one_pipeline; TS must add row['body']."
 # languages/python/tests/test_generic_identities.py
-"generic_identities::a_proxy_that_keeps_a_generic_field_fails_and_one_without_it_loads" = "add-ts: identities::a_proxy_that_keeps_a_generic_field_fails_and_one_without_it_loads"
 "generic_identities::generic_field_form_creates_the_pair_and_the_reverse" = "change: TS lacks the relations entry and the insert/get, and adds a bare `Generic` error (Rust crates/core/src/dsl/tests.rs:245 covers it)."
-"generic_identities::retirement_migration_requires_reference_cleanup" = "add-ts: identities::retirement_migration_requires_reference_cleanup"
 "generic_identities::runtime_and_generated_identities_roundtrip" = "change: TS lacks Tag=2 and the object_id read after delete (it only counts);"
 # languages/python/tests/test_grouped_expressions.py
-"grouped_expressions::case_in_distinct_and_order_by" = "add-ts: grouped_expressions::case_in_distinct_and_order_by"
-"grouped_expressions::case_in_group_by_having_and_order_by" = "add-ts: grouped_expressions::case_in_group_by_having_and_order_by"
-"grouped_expressions::case_in_having_matching_the_group" = "add-ts: grouped_expressions::case_in_having_matching_the_group"
 "grouped_expressions::equal_numeric_values_with_different_scale_keep_separate_binds" = "one-language: Python-only: a JS Decimal loses its scale before it binds; the float -0 twin is bind-merge.test.ts"
-"grouped_expressions::json_key_with_quote_backslash_and_dollar_reaches_postgres" = "add-ts: grouped_expressions::json_key_with_quote_backslash_and_dollar_reaches_postgres"
-"grouped_expressions::json_paths_in_group_by_having_order_by_distinct" = "add-ts: grouped_expressions::json_paths_in_group_by_having_order_by_distinct"
-"grouped_expressions::typed_read_of_a_real_column" = "add-ts: grouped_expressions::typed_read_of_a_real_column"
 "grouped_expressions::update_keeps_the_scale_with_a_distinct_subquery" = "one-language: Python-only: a JS Decimal loses its scale before it binds; the float -0 twin is bind-merge.test.ts"
 # languages/python/tests/test_hooks.py
 "hooks::decode_field_reads_the_loaded_value_through_the_decoder" = "change: Python must add a decoded insert result, and keeps its read-only and missing-field checks."
