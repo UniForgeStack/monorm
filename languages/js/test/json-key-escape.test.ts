@@ -52,13 +52,18 @@ for (const setting of ["on", "off"]) {
       stop();
       assert.deepEqual(await current(), [{ v: setting }]);
       assert.equal(await objects.count(), KEYS.length + 1);
-      await assert.rejects(objects.filter(Doc.meta.get("a\0b").asText().eq("x")).count(), (e: unknown) => e instanceof QueryError && /NUL/.test(e.message));
     } finally {
       await db.dropTables();
       await db.close();
     }
   });
 }
+
+test("NUL key is rejected", () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const Doc = loads(SCHEMA, { registry: new Registry() })["KeyDoc"] as any;
+  assert.throws(() => Doc.objects.filter(Doc.meta.get("a\0b").asText().eq("x")).sql(), (e: unknown) => e instanceof QueryError && /NUL/.test(e.message));
+});
 
 test("SQLite rejects JSON paths", async () => {
   const registry = new Registry();

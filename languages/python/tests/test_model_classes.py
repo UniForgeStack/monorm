@@ -131,8 +131,17 @@ async def test_the_methods_module_may_import_the_models_module(tmp_path, monkeyp
             del sys.modules[name]
 
 
-@pytest.mark.parametrize("name", ["password", "delete", "objects", "_meta", "__eq__", "__hash__"])
+@pytest.mark.case("model_classes::a_method_named_collides_with_a_model_member")
+@pytest.mark.parametrize("name", ["password", "update", "delete", "pk"])
 def test_a_method_named_like_a_model_member_is_an_error(name):
+    methods = type("UserMethods", (), {name: lambda self: None})
+    ir = _native.compile_schema(SCHEMA)
+    with pytest.raises(TypeError, match=f"User.{name}: model method collision"):
+        monorm.model.define(ir, registry=Registry(), model_methods={"User": methods})
+
+
+@pytest.mark.parametrize("name", ["objects", "_meta", "__eq__", "__hash__"])
+def test_a_method_named_like_an_internal_member_is_an_error(name):
     methods = type("UserMethods", (), {name: lambda self: None})
     ir = _native.compile_schema(SCHEMA)
     with pytest.raises(TypeError, match=f"User.{name}: model method collision"):
@@ -148,7 +157,7 @@ async def _insert_user(models, registry):
         await db.close()
 
 
-async def test_a_methods_class_may_define_the_display_members():
+async def test_a_methods_class_may_override_to_string_other_object_members_still_collide():
     class UserMethods:
         def __str__(self):
             return f"user {self.password}"
@@ -159,6 +168,9 @@ async def test_a_methods_class_may_define_the_display_members():
     registry = Registry()
     user = await _insert_user(monorm.loads(SCHEMA, registry=registry, model_methods={"User": UserMethods}), registry)
     assert str(user) == "user x" and repr(user) == "<User>"
+    other = type("UserMethods", (), {"__eq__": lambda self, o: True})
+    with pytest.raises(TypeError, match="User.__eq__: model method collision"):
+        monorm.model.define(_native.compile_schema(SCHEMA), registry=Registry(), model_methods={"User": other})
 
 
 async def test_load_and_loads_take_the_model_methods(tmp_path):

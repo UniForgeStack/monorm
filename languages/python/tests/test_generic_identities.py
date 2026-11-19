@@ -13,6 +13,7 @@ def generate(path):
     assert cli(["--schema", str(path), "identities"]) == 0
 
 
+@pytest.mark.case("identities::content_type_identity_roundtrip_and_frozen_generation")
 @pytest.mark.parametrize(
     "url,provider",
     [
@@ -160,8 +161,15 @@ async def test_a_generic_relation_schema_loads_and_round_trips(tmp_path):
 GENERIC_HEADER = 'datasource db {\nprovider = "sqlite"\n}\nmodel Post {\nid Int @id\ntags Tag[] @generic.reverse\n@@map("generic_field_posts")\n}\nmodel Photo {\nid Int @id\n@@map("generic_field_photos")\n}\n'
 
 
+@pytest.mark.case("identities::a_generic_field_creates_its_pair_its_index_and_the_reverse_field")
 async def test_generic_field_form_creates_the_pair_and_the_reverse(tmp_path):
     from monorm import _native
+    from monorm._packages import resolve_extensions
+
+    # A bare `Generic` type gets the plain error with a package hint.
+    with pytest.raises(Exception, match=r"unknown type Generic; expected a model or") as bare:
+        _native.compile_schema("model Tag {\n id Int @id\n target Generic?\n}", None, resolve_extensions())
+    assert "Generic belongs to the built-in generic extension and needs @generic.relation" in str(bare.value)
 
     schema = tmp_path / "schema.prisma"
     schema.write_text(

@@ -5,7 +5,7 @@ import pytest
 from monorm import _native
 
 
-def test_generate_python_query_sets(tmp_path):
+def test_native_generation_accepts_query_set_maps_and_matches_the_cli(tmp_path):
     schema = tmp_path / "schema.prisma"
     schema.write_text("model Post {\n id Int @id\n}\n")
     output = tmp_path / "models.py"
@@ -22,6 +22,11 @@ def test_generate_python_query_sets(tmp_path):
     assert 'use_query_set(Post, "app.queries:PostQueries")' in module
     assert "from app.queries import PostQueries as _PostObjects" in stub
     assert "objects: ClassVar[_PostObjects]" in stub
+
+    with pytest.raises(_native.SchemaError, match="no model Missing"):
+        _native.generate_python(str(schema), {"Missing": "app.queries:PostQueries"})
+    with pytest.raises(_native.SchemaError, match="module:Class"):
+        _native.generate_python(str(schema), {"Post": "./queries.js#PostQueries"})
 
 
 @pytest.mark.parametrize(

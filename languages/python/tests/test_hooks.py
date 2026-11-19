@@ -51,12 +51,14 @@ async def test_prepare_update_reports_a_unique_row_and_executes():
         await db.close()
 
 
+@pytest.mark.case("hooks::a_decoder_reads_the_loaded_value_and_a_filter_compares_the_stored_value")
 async def test_decode_field_reads_the_loaded_value_through_the_decoder():
     db, Report = await open_db()
     try:
         decode_field(Report, "code", str.upper)
         objects = Report.objects.using(db)
-        await objects.insert(id=1, code="a", size=1)
+        inserted = await objects.insert(id=1, code="a", size=1)
+        assert inserted.code == "A"
         row = await objects.get(Report.id == 1)
         assert row.code == "A"
         assert row.__dict__["code"] == "a"

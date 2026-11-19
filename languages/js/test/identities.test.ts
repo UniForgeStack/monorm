@@ -17,6 +17,7 @@ for (const [provider, url] of [
   ["sqlite", "sqlite://:memory:"],
   ["postgresql", process.env["ORM_TEST_DATABASE_URL"] ?? "postgres://postgres:postgres@localhost/orm_test"],
 ] as const) {
+  // case: identities::content_type_identity_roundtrip_and_frozen_generation
   test(`ContentType identity roundtrip and frozen generation (${provider})`, { skip: provider === "postgresql" && !url }, async () => {
     const dir = mkdtempSync(join(scratch, "schema-"));
     const path = join(dir, "schema.prisma");
@@ -29,6 +30,7 @@ for (const [provider, url] of [
     const Tag = models["Tag"]!;
     const types = registry.getEnum("ContentType");
     assert.equal(types["Post"], 1);
+    assert.equal(types["Tag"], 2);
     assert.deepEqual(registry.ir()["identities"], JSON.parse(frozen));
     const db = await connect(url, { registry, default: false });
     try {
@@ -40,7 +42,7 @@ for (const [provider, url] of [
       assert.equal((tag as unknown as Record<string, unknown>)["kind"], types["Post"]);
       await assert.rejects(db.execute("INSERT INTO identity08_node_tags (id, kind, object_id) VALUES (2, 99, 7)"), IntegrityError);
       await (post as { delete(): Promise<void> }).delete();
-      assert.equal(await Tag.objects.using(db).count(), 1);
+      assert.equal(((await Tag.objects.using(db).get()) as unknown as Record<string, unknown>)["objectId"], 7);
       assert.equal(await cli(["--schema", path, "generate", "typescript", "-o", join(dir, "models.ts")]), 0);
       assert.match(readFileSync(join(dir, "models.ts"), "utf8"), /Post: 1/);
       assert.equal(readFileSync(join(dir, "schema.identities.json"), "utf8"), frozen);
@@ -91,6 +93,7 @@ test("a generic relation schema loads and round-trips", async () => {
 
 const genericHeader = `datasource db {\nprovider = "sqlite"\n}\nmodel Post {\nid Int @id\ntags Tag[] @generic.reverse\n@@map("generic_field_node_posts")\n}\nmodel Photo {\nid Int @id\n@@map("generic_field_node_photos")\n}\n`;
 
+// case: identities::a_generic_field_creates_its_pair_its_index_and_the_reverse_field
 test("a Generic field creates its pair, its index and the reverse field", async () => {
   // A package compiles into a schema only when the schema uses its namespace, so a bare `Generic` type gets the plain error with a package hint.
   const bare = () => native().compileSchema("model Tag {\n id Int @id\n target Generic?\n}", null, resolveExtensions());
@@ -101,13 +104,23 @@ test("a Generic field creates its pair, its index and the reverse field", async 
     writeFileSync(path, genericHeader + `model Tag {\nid Int @id\ntarget Generic? @generic.relation(targets: ["Post", "Photo"])\nnote String\n@@map("generic_field_node_tags")\n}`);
     assert.equal(await cli(["--schema", path, "identities"]), 0);
     const registry = new Registry();
-    load(path, { registry });
+    const models = load(path, { registry });
     const ir = registry.ir() as unknown as { models: { name: string; fields: { name: string; nullable?: boolean; enum?: string }[]; indexes?: unknown[] }[]; behavior: Record<string, unknown> };
     const tag = ir.models.find((m) => m.name === "Tag")!;
     assert.deepEqual(tag.fields.map((f) => [f.name, f.nullable ?? false, f.enum ?? null]),
       [["id", false, null], ["target_type", true, "ContentType"], ["target_id", true, null], ["note", false, null]]);
     assert.deepEqual(tag.indexes, [{ columns: [{ field: "target_type" }, { field: "target_id" }] }]);
-    assert.deepEqual((ir.behavior["extension_data"] as Record<string, { reverse: unknown }>)["monorm.generic"]!.reverse, [{ model: "Post", name: "tags", source: "Tag", relation: "target" }]);
+    const data = (ir.behavior["extension_data"] as Record<string, { relations: unknown; reverse: unknown }>)["monorm.generic"]!;
+    assert.deepEqual(data.relations, [{ model: "Tag", name: "target", type_field: "target_type", key_field: "target_id", targets: ["Photo", "Post"] }]);
+    assert.deepEqual(data.reverse, [{ model: "Post", name: "tags", source: "Tag", relation: "target" }]);
+    const db = await connect("sqlite://:memory:", { registry, default: false });
+    try {
+      await db.createTables();
+      await models["Tag"]!.objects.using(db).insert({ id: 1, targetType: registry.getEnum("ContentType")["Post"], targetId: 7, note: "n" });
+      const row = await models["Tag"]!.objects.using(db).get() as unknown as Record<string, unknown>;
+      assert.equal(row["targetType"], registry.getEnum("ContentType")["Post"]);
+      assert.equal(row["targetId"], 7);
+    } finally { await db.close(); }
   } finally { rmSync(dir, { recursive: true }); }
 });
 

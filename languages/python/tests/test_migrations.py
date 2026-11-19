@@ -91,7 +91,7 @@ def test_schema_errors_name_the_line():
         monorm.loads('model Book {\n  id BigInt @id\n  @@index([id], wher: "x")\n}')
 
 
-def test_first_migration(tmp_path):
+def test_the_first_migration(tmp_path):
     migs = Migrations(tmp_path, models(V1))
     [m] = migs.make()
     assert m.name == "0001_initial"
@@ -108,7 +108,7 @@ def test_first_migration(tmp_path):
     assert migs.make() == []  # nothing changed
 
 
-def test_second_migration_alters_in_place(tmp_path):
+def test_the_second_migration_alters_in_place(tmp_path):
     Migrations(tmp_path, models(V1)).make()
     migs = Migrations(tmp_path, models(V2))
     plan = migs.plan()
@@ -184,6 +184,10 @@ def test_the_generated_models_are_current():
     committed = (ROOT / "examples/blog/models.py").read_text()
     assert committed == module, "run `python -m monorm generate`"
     assert (ROOT / "examples/blog/models.pyi").read_text() == stub, "run `python -m monorm generate`"
+    nested = ROOT / "examples/nested"
+    module, stub = monorm._native.generate_python(str(nested / "schema.prisma"))
+    assert (nested / "models.py").read_text() == module, f"run `python -m monorm generate` in {nested}"
+    assert (nested / "models.pyi").read_text() == stub, f"run `python -m monorm generate` in {nested}"
 
 
 def test_the_cli(tmp_path, capfd, monkeypatch):
@@ -302,3 +306,29 @@ def test_the_cli_online_setting(tmp_path, capfd, monkeypatch):
     assert "0002_create_index_shop_name_idx_on_shop_index_shop_name_idx" in capfd.readouterr().out
     assert cli(["makemigrations", "--check"]) == 0
     assert (tmp_path / "migrations/0002_create_index_shop_name_idx_on_shop_index_shop_name_idx/up.sql").read_text().startswith("-- monorm: no-transaction")
+
+
+@pytest.mark.case("migrations::node_launcher_converts_native_expressions_offline_and_preserves_pending_changes")
+def test_the_launcher_converts_native_expressions_offline_and_preserves_pending_changes(tmp_path):
+    import subprocess
+    import sys
+
+    path = tmp_path / "schema.prisma"
+    old = 'model Item {\n id Int @id\n qty Int @check(raw("qty > 0"))\n}\n'
+    path.write_text(old)
+
+    def run(*args):
+        return subprocess.run([sys.executable, "-m", "monorm", "--schema", str(path), "--dir", str(tmp_path / "migrations"), *args], capture_output=True, text=True)
+
+    assert run("makemigrations", "initial").returncode == 0
+    snapshot = (tmp_path / "migrations/0001_initial/snapshot.json").read_text()
+    path.write_text(old.replace(" qty Int", " note String?\n qty Int"))
+    result = run("fmt", "--native")
+    assert result.returncode == 0, result.stderr
+    converted = path.read_text()
+    assert "note String?" in converted
+    assert "@check((qty > 0))" in converted
+    assert run("makemigrations", "--check").returncode == 1
+    assert run("fmt", "--native").returncode == 0
+    assert path.read_text() == converted
+    assert (tmp_path / "migrations/0001_initial/snapshot.json").read_text() == snapshot

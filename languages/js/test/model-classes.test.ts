@@ -167,7 +167,8 @@ test("model methods load on the first instance, not at registration", async () =
 });
 
 for (const name of ["password", "update", "delete", "pk"]) {
-  test(`a method named ${name} collides with a model member`, async () => {
+  // case: model_classes::a_method_named_collides_with_a_model_member
+  test(`a method named ${String(name)} collides with a model member`, async () => {
     const { User } = user();
     const methods = class { };
     Object.defineProperty(methods.prototype, name, { value() { return 1; }, configurable: true });

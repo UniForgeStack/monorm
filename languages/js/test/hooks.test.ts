@@ -40,7 +40,7 @@ test("prepareUpdate reports a unique row and executes", async () => {
   } finally { await db.close(); }
 });
 
-test("addRowDecoder runs on every materialized instance", async () => {
+test("a decoder reads the loaded value and a filter compares the stored value", async () => {
   const { db, Report, objects } = await open();
   try {
     Report._meta.addRowDecoder((row: Row) => { if (Object.hasOwn(row, "code")) row["code"] = String(row["code"]).toUpperCase(); });

@@ -105,6 +105,7 @@ test("the first migration", () => {
   const up = m.upSql;
   assert.ok(up.indexOf('CREATE TABLE "authors"') < up.indexOf('CREATE TABLE "books"'));
   assert.ok(up.includes('CONSTRAINT "books_author_id_fkey" FOREIGN KEY ("author_id") REFERENCES "authors" ("id") ON DELETE CASCADE'));
+  assert.ok(up.includes('CREATE INDEX "books_author_id_idx" ON "books" ("author_id");'));
   assert.ok(m.downSql.includes('DROP TABLE "books";'));
   const snap = JSON.parse(readFileSync(join(m.path, "snapshot.json"), "utf8")) as { tables: { name: string }[] };
   assert.deepEqual(snap.tables.map((t) => t.name), ["authors", "books"]);
@@ -115,12 +116,25 @@ test("the second migration alters in place", () => {
   const dir = tmp();
   new Migrations(dir, models(V1)).make();
   const migs = new Migrations(dir, models(V2));
-  const sql = migs.plan().up.map((s) => s.sql);
+  const plan = migs.plan();
+  const sql = plan.up.map((s) => s.sql);
   assert.equal(sql[0], 'CREATE EXTENSION IF NOT EXISTS "citext"');
+  assert.equal(sql[1], 'CREATE EXTENSION IF NOT EXISTS "pg_trgm"');
+  assert.ok(sql[2]!.startsWith('CREATE OR REPLACE FUNCTION "books_touch"() RETURNS trigger'));
   assert.ok(sql.includes('ALTER TABLE "books" RENAME COLUMN "title" TO "name"'));
-  assert.ok(migs.plan().up.some((s) => s.warning?.includes("changes authors.email from varchar(254) to citext")));
+  assert.ok(sql.includes('ALTER TABLE "books" ADD COLUMN "updated_at" timestamp with time zone DEFAULT now() NOT NULL'));
+  assert.ok(sql.includes('ALTER TABLE "authors" ALTER COLUMN "email" TYPE citext USING "email"::citext'));
+  assert.ok(sql.includes('ALTER TABLE "books" ADD CONSTRAINT "books_pages_check" CHECK (pages >= 0)'));
+  assert.ok(sql.includes('CREATE INDEX "books_name_idx" ON "books" USING gin ("name" gin_trgm_ops)'));
+  assert.equal(sql.at(-2), 'CREATE TRIGGER "touch" BEFORE UPDATE ON "books" FOR EACH ROW EXECUTE FUNCTION "books_touch"()');
+  assert.equal(sql.at(-1), 'COMMENT ON COLUMN "books"."meta" IS \'free-form attributes\'');
+  assert.ok(plan.up.some((s) => s.warning?.includes("changes authors.email from varchar(254) to citext")));
+  const down = plan.down.map((s) => s.sql);
+  assert.ok(down.includes('ALTER TABLE "books" RENAME COLUMN "name" TO "title"'));
+  assert.deepEqual(down.slice(-3), ['DROP FUNCTION "books_touch"()', 'DROP EXTENSION IF EXISTS "citext"', 'DROP EXTENSION IF EXISTS "pg_trgm"']);
   const m = migs.make("catalog changes")[0]!;
   assert.equal(m.name, "0002_catalog_changes");
+  assert.ok(m.upSql.includes("-- WARNING: changes authors.email"));
   assert.deepEqual(migs.make(), []);
   // checksums are the Python package's: sha256 of up.sql
   assert.match(m.checksum, /^[0-9a-f]{64}$/);
