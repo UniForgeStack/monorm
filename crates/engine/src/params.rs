@@ -129,6 +129,35 @@ impl Params for NoParams {
     }
 }
 
+/// The SQL type name a Duration value carries.
+pub const INTERVAL: &str = "interval";
+
+/// A Duration of whole microseconds as a bind value. It is a typed text, `<n> microseconds`,
+/// because `sea_query::Value` has no interval variant: PostgreSQL binds it as text under
+/// `::"interval"`, SQLite binds the integer (see `duration_micros`).
+pub fn duration(micros: Option<i64>) -> Value {
+    match micros {
+        Some(n) => Value::Enum(sea_query::OptionEnum::Some(Box::new(sea_query::Enum { type_name: INTERVAL.into(), value: format!("{n} microseconds").into() }))),
+        None => Value::Enum(sea_query::OptionEnum::None(INTERVAL.into())),
+    }
+}
+
+/// The microseconds of a Duration bind value (`Some(None)`: a NULL one); `None`: not a Duration.
+pub fn duration_micros(v: &Value) -> Option<Option<i64>> {
+    match v {
+        Value::Enum(sea_query::OptionEnum::None(t)) if &**t == INTERVAL => Some(None),
+        Value::Enum(sea_query::OptionEnum::Some(e)) if &*e.type_name == INTERVAL => {
+            Some(Some(e.value.strip_suffix(" microseconds")?.parse().ok()?))
+        }
+        _ => None,
+    }
+}
+
+/// The same Duration after the PostgreSQL build: a text bound under an `::"interval"` cast.
+pub(crate) fn duration_text(micros: i64) -> Value {
+    Value::String(Some(format!("{micros} microseconds")))
+}
+
 fn scalar_null(ty: ColType) -> Value {
     match ty {
         ColType::BigInt => Value::BigInt(None),
@@ -138,7 +167,7 @@ fn scalar_null(ty: ColType) -> Value {
         ColType::String | ColType::Text => Value::String(None),
         ColType::DateTime => Value::ChronoDateTimeWithTimeZone(None),
         ColType::Time => Value::ChronoTime(None),
-        ColType::Duration => Value::BigInt(None),
+        ColType::Duration => duration(None),
         ColType::Date => Value::ChronoDate(None),
         ColType::Uuid => Value::Uuid(None),
         ColType::Json => Value::Json(None),
@@ -157,13 +186,21 @@ pub fn array_type(ty: ColType) -> ArrayType {
         ColType::String | ColType::Text => ArrayType::String,
         ColType::DateTime => ArrayType::ChronoDateTimeWithTimeZone,
         ColType::Time => ArrayType::ChronoTime,
-        ColType::Duration => ArrayType::BigInt,
+        ColType::Duration => ArrayType::Enum(Box::new(INTERVAL.into())),
         ColType::Date => ArrayType::ChronoDate,
         ColType::Uuid => ArrayType::Uuid,
         ColType::Json => ArrayType::Json,
         ColType::Decimal => ArrayType::BigDecimal,
         ColType::Bytes => ArrayType::Bytes,
     }
+}
+
+/// A list parameter of element type `ty`. A Duration list holds no NULL: the interval carrier has no NULL element.
+pub fn array_of(ty: ColType, items: Vec<Value>) -> std::result::Result<Value, &'static str> {
+    if ty == ColType::Duration && items.iter().any(|v| duration_micros(v) == Some(None)) {
+        return Err("a list of Durations cannot hold None (NULL)");
+    }
+    Ok(Value::Array(array_type(ty), Some(Box::new(items))))
 }
 
 /// SQL `NULL` of type `ty` (text when unknown).
@@ -191,6 +228,7 @@ pub fn type_of(v: &Value) -> Option<ValueType> {
         Value::Json(Some(_)) => ColType::Json,
         Value::BigDecimal(Some(_)) => ColType::Decimal,
         Value::Bytes(Some(_)) => ColType::Bytes,
+        v if matches!(duration_micros(v), Some(Some(_))) => ColType::Duration,
         _ => return None,
     };
     Some(ValueType::scalar(ty))

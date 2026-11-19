@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import { Admin, AdminConfigError } from "../src/admin.js";
+import { querySet } from "../src/admin-write.js";
 import { hasExtension } from "./artifact-caps.js";
 import { allowWrites, connect, Duration, load, param, Registry, type Database } from "../src/index.js";
 
@@ -314,6 +315,13 @@ for (const provider of PROVIDERS) {
     r = await client.patch(`${CHORE_URL}/k`, { json: { set: { every: "00:00:05" }, loaded: { every: "01:30:00" } } });
     assert.equal(r.status, 409, r.text);
     assert.deepEqual(Object.keys(JSON.parse(r.text).conflicts), ["every"]);
+  }));
+
+  test(`an action filter can bind a duration column (${provider})`, () => world(provider, async (w) => {
+    const Chore = w.models["WChore"]!;
+    await allowWrites([Chore], () => Chore.objects.using(w.db).insertMany([{ code: "a", every: Duration.fromParts({ hours: 1, minutes: 30 }) }, { code: "b", every: Duration.fromParts({ days: 1 }) }]));
+    const bound = { filters: [{ t: "cmp", op: "eq", l: { t: "col", path: [], name: "every" }, r: { t: "param", i: 0 } }], values: [{ $: "duration", v: "5400000000" }] };
+    assert.deepEqual((await querySet(Chore, w.db, bound)).map((c: Loose) => c.code), ["a"]);
   }));
 
   test(`a bulk delete through the host writer deletes the query set and writes one summary row (${provider})`, () => world(provider, async (w) => {

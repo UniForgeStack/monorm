@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { connect, loads, Registry, Duration, func, param, QueryError } from "../src/index.js";
+import { connect, loads, Registry, Duration, func, param } from "../src/index.js";
 import { native } from "../src/native.js";
 
 const SCHEMA = `
@@ -122,13 +122,18 @@ for (const kind of ["postgres", "sqlite"]) {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`postgres refuses a prepared in list and copy on a duration (${kind})`, async (t) => {
-    if (kind !== "postgres") return t.skip("the write template only exists on PostgreSQL");
+  test(`a prepared in list and a copy load take a duration (${kind})`, async () => {
     const { db, Job } = await world(kind);
     try {
       const q = Job.objects.using(db);
-      assert.throws(() => q.filter(Job.timeout.in(param("v"))).prepare(), (e: unknown) => e instanceof QueryError && /write_sql/.test(e.message));
-      await assert.rejects(q.insertMany([{ id: 1, timeout: us(0n) }], { copy: true }), (e: unknown) => e instanceof QueryError && /writes through SQL/.test(e.message));
+      await fill(q);
+      const found = await q.filter(Job.timeout.in(param("v"))).orderBy(Job.id).prepare().all({ v: [us(-1n), us(0n)] });
+      assert.deepEqual(found.map((r: any) => r.id), [1, 3]);
+      if (kind === "postgres") {
+        await q.filter(Job.id.lt(100)).delete();
+        await q.insertMany([{ id: 1, timeout: us(0n) }, { id: 2, timeout: us(-1n) }, { id: 3, timeout: null }], { copy: true });
+        assert.deepEqual((await q.orderBy(Job.id)).map((r: any) => r.timeout === null ? null : r.timeout.micros), [0n, -1n, null]);
+      }
     } finally { await db.dropTables(); await db.close(); }
   });
 }

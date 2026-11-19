@@ -50,11 +50,11 @@ impl Codec for chrono::DateTime<chrono::Utc> {
         self.fixed_offset().into()
     }
 }
-/// A Duration travels as whole microseconds (`Cell::Duration`, or `Cell::BigInt` from a stored row).
+/// A Duration travels as whole microseconds (`Cell::Duration`).
 impl Codec for chrono::TimeDelta {
     fn decode(cell: Cell<'_>) -> Result<Self> {
         match cell {
-            Cell::Duration(v) | Cell::BigInt(v) => Ok(chrono::TimeDelta::microseconds(v)),
+            Cell::Duration(v) => Ok(chrono::TimeDelta::microseconds(v)),
             other => Err(Error::Decode(format!("expected a duration, received {other:?}"))),
         }
     }
@@ -64,7 +64,7 @@ impl Codec for chrono::TimeDelta {
     }
     fn try_encode(self) -> std::result::Result<Value, String> {
         self.num_microseconds()
-            .map(|micros| Value::BigInt(Some(micros)))
+            .map(|micros| monorm_engine::params::duration(Some(micros)))
             .ok_or_else(|| format!("the duration {self} does not fit in 64-bit microseconds"))
     }
 }

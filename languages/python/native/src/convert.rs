@@ -4,7 +4,7 @@ use chrono::{DateTime, FixedOffset};
 use std::str::FromStr;
 
 use bigdecimal::BigDecimal;
-use pyo3::exceptions::PyTypeError;
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyByteArray, PyBytes, PyBool, PyDate, PyDateTime, PyDelta, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
@@ -14,7 +14,7 @@ use sea_query::Value;
 use crate::errors::binding;
 use monorm_core::ir::{ColType, ValueType};
 use monorm_engine::db::Cell;
-use monorm_engine::params::{array_type, null_of, Params};
+use monorm_engine::params::{null_of, Params};
 use monorm_engine::Error;
 
 static DECIMAL: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
@@ -182,7 +182,7 @@ pub fn py_to_value(obj: &Bound<'_, PyAny>, ty: Option<ValueType>) -> PyResult<Va
             )));
         }
         let items = obj.try_iter()?.map(|v| py_to_value(&v?, Some(t.element()))).collect::<PyResult<Vec<_>>>()?;
-        return Ok(Value::Array(array_type(t.ty), Some(Box::new(items))));
+        return monorm_engine::params::array_of(t.ty, items).map_err(PyValueError::new_err);
     }
     Ok(match ty.map(|t| t.ty) {
         Some(ColType::BigInt) => Value::BigInt(Some(obj.extract()?)),
@@ -193,7 +193,7 @@ pub fn py_to_value(obj: &Bound<'_, PyAny>, ty: Option<ValueType>) -> PyResult<Va
         Some(ColType::DateTime) => Value::ChronoDateTimeWithTimeZone(Some(extract_datetime(obj)?)),
         Some(ColType::Time) => Value::ChronoTime(Some(extract_time(obj)?)),
         Some(ColType::Date) => Value::ChronoDate(Some(obj.extract()?)),
-        Some(ColType::Duration) => Value::BigInt(Some(extract_duration(obj)?)),
+        Some(ColType::Duration) => monorm_engine::params::duration(Some(extract_duration(obj)?)),
         Some(ColType::Uuid) => Value::Uuid(Some(extract_uuid(obj)?)),
         Some(ColType::Json) => Value::Json(Some(Box::new(py_to_json(obj)?))),
         Some(ColType::Decimal) => Value::BigDecimal(Some(Box::new(extract_decimal(obj)?))),
@@ -216,7 +216,7 @@ pub fn py_to_value(obj: &Bound<'_, PyAny>, ty: Option<ValueType>) -> PyResult<Va
             } else if obj.is_instance_of::<PyDate>() {
                 Value::ChronoDate(Some(obj.extract()?))
             } else if obj.is_instance_of::<PyDelta>() {
-                Value::BigInt(Some(extract_duration(obj)?))
+                monorm_engine::params::duration(Some(extract_duration(obj)?))
             } else if obj.is_instance(decimal_class(obj.py())?)? {
                 Value::BigDecimal(Some(Box::new(extract_decimal(obj)?)))
             } else if let Ok(u) = obj.extract::<uuid::Uuid>() {

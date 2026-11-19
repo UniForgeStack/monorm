@@ -319,7 +319,8 @@ The admin shows and edits a `Duration` as that text, in a plain text input.
 A `Duration` takes `=`, `!=`, `<`, `<=`, `>`, `>=`, `between`, `in` and `order_by`, and `sum`, `avg`, `min` and `max` return a `Duration`.
 On SQLite `avg` is the mean rounded to the nearest microsecond, half away from zero.
 On PostgreSQL a write sends only microseconds, so the column never holds months or days. A value that another writer put in has a fixed length on read: a month is 30 days and a year is 360 days (`'1 year'` reads as 360 days).
-On PostgreSQL the parameter is built as `CAST(CAST($n AS text) || ' microseconds' AS interval)`, so `in_(param())` and `insert_many(copy=True)` on a `Duration` column are refused.
+On PostgreSQL a `Duration` parameter is an `interval` value (binary on the engine's own connection), so `in_(param())`, the `unnest` insert and `insert_many(copy=True)` take a `Duration` column. A list of `Duration` values cannot hold `None`.
+A hook cannot compute a `Duration` field: that read is an error.
 `pull` reads `interval` and `interval(p)` as `Duration`; the precision is dropped, and a gap note says so. It leaves out an `interval` whose field list holds `year` or `month`, because a month is not a fixed number of microseconds. A migration between `Duration` and another type is an error that asks for a manual migration.
 The schema contract is 5.5; the IR is stamped 5.5 only when it has a `Duration` field.
 

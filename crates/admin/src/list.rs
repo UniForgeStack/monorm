@@ -449,7 +449,7 @@ fn filter_bind(schema: &Schema, ty: ValueType, text: &str) -> Result<Bind, Strin
         }
         ColType::Time => Bind::ChronoTime(Some(chrono::NaiveTime::parse_from_str(t, "%H:%M:%S%.f").map_err(|_| parse_error(text, "a time (07:08:09)"))?)),
         ColType::Date => Bind::ChronoDate(Some(chrono::NaiveDate::parse_from_str(t, "%Y-%m-%d").map_err(|_| parse_error(text, "a date (2026-01-31)"))?)),
-        ColType::Duration => Bind::BigInt(Some(monorm_core::duration::parse_micros(t).map_err(|_| parse_error(text, "a duration (01:30:00, 1 02:03:04 or PT1H30M)"))?)),
+        ColType::Duration => monorm_engine::params::duration(Some(monorm_core::duration::parse_micros(t).map_err(|_| parse_error(text, "a duration (01:30:00, 1 02:03:04 or PT1H30M)"))?)),
         ColType::Uuid => Bind::Uuid(Some(t.parse().map_err(|_| parse_error(text, "a UUID"))?)),
         ColType::Json | ColType::Decimal | ColType::Bytes => return Err(format!("a filter does not take a {:?} field", ty.ty)),
     })

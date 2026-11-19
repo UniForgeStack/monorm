@@ -346,10 +346,6 @@ impl Schema {
                             "CASE WHEN {} IS NULL THEN NULL ELSE ARRAY(SELECT (t::time::text || '+00')::timetz FROM unnest({}) AS t) END"
                         } else { "({}::time::text || '+00')::timetz" }.into());
                     }
-                    // A Duration parameter is a whole number of microseconds. No cast links INT8 to interval, so the template builds the interval from its text.
-                    if f.ty == crate::ir::ColType::Duration && f.write_sql.is_none() {
-                        f.write_sql = Some("CAST(CAST({} AS text) || ' microseconds' AS interval)".into());
-                    }
                 }
             }
             for f in &mut m.fields {

@@ -321,6 +321,7 @@ pub(crate) fn json_list(list: sea_query::Value) -> Result<sea_query::Value> {
             V::Bool(Some(b)) => serde_json::Value::from(i64::from(b)),
             V::Int(Some(n)) => n.into(),
             V::BigInt(Some(n)) => n.into(),
+            v if matches!(crate::params::duration_micros(&v), Some(Some(_))) => crate::params::duration_micros(&v).flatten().expect("a duration").into(),
             V::Double(Some(n)) => serde_json::Number::from_f64(n).map(Into::into).ok_or_else(|| query_err("in_(param()) cannot take a NaN or infinite float".to_string()))?,
             V::String(Some(s)) => serde_json::Value::String(s.to_string()),
             V::Uuid(Some(u)) => serde_json::Value::String(u.to_string()),

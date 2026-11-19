@@ -840,6 +840,8 @@ def _untag(value: Any) -> Any:
     tag, raw = value["$"], value["v"]
     if tag == "bigint":
         return int(raw)
+    if tag == "duration":
+        return datetime.timedelta(microseconds=int(raw))
     if tag == "datetime":
         return _decode("date_time", raw)
     if tag == "date":
@@ -862,11 +864,9 @@ class _IrFilter(Condition):
 
     __slots__ = ("ir", "values")
 
-    def __init__(self, ir: Any, values: list[Any], model: Any = None) -> None:
+    def __init__(self, ir: Any, values: list[Any]) -> None:
         self.ir = ir
         self.values = values
-        if model is not None:
-            _refuse_duration_bind(ir, model)
 
     def _ir(self, ctx: IRContext) -> Any:
         return self._remap(self.ir, ctx.params)
@@ -885,37 +885,11 @@ class _IrFilter(Condition):
         return f"filter({self.ir!r})"
 
 
-def _binds_param(ir: Any) -> bool:
-    if isinstance(ir, list):
-        return any(_binds_param(i) for i in ir)
-    if not isinstance(ir, dict):
-        return False
-    return ir.get("t") in ("param", "in_param") or any(_binds_param(v) for v in ir.values())
-
-
-def _refuse_duration_bind(ir: Any, model: Any) -> None:
-    """A Duration bind reaches the host as a ``bigint`` tag, which a ``timedelta`` column does not accept; refuse it by name."""
-    if isinstance(ir, list):
-        for i in ir:
-            _refuse_duration_bind(i, model)
-    elif isinstance(ir, dict):
-        left = ir.get("l")
-        if isinstance(left, dict) and left.get("t") == "col" and not left.get("path"):
-            field = model._meta.fields.get(left.get("name"))
-            if field is not None and field.type_name == "duration" and any(_binds_param(v) for k, v in ir.items() if k != "l"):
-                raise QueryError(
-                    f"{model.__name__}.{left['name']}: an admin action cannot filter a Duration column with a bound value yet. "
-                    "Filter on another column, or write the filter in the action"
-                )
-        for v in ir.values():
-            _refuse_duration_bind(v, model)
-
-
 def _query_set(model: Any, db: Any, args: Mapping[str, Any]) -> Any:
     """The query set of an action call: the filters of the payload, on the database of the request."""
     values = [_untag(v) for v in args.get("values") or []]
     qs = model.objects.using(db)
-    filters = [_IrFilter(f, values, model) for f in args.get("filters") or []]
+    filters = [_IrFilter(f, values) for f in args.get("filters") or []]
     # An action on every row, with no filter, is a write the staff asked for: `.all()` lets `qs.update(...)` run.
     qs = qs.filter(*filters) if filters else qs.all()
     if args.get("without"):
