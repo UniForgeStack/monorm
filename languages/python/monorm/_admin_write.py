@@ -474,6 +474,38 @@ async def _write_audit(database: Any, model: Any, args: Mapping[str, Any]) -> in
     return int(entry.id)
 
 
+class _RowFailed(Exception):
+    """A row of an ``update_rows`` call answered a failure: it ends the loop and rolls the transaction back."""
+
+    def __init__(self, index: int, envelope: dict[str, Any]) -> None:
+        self.index = index
+        self.envelope = envelope
+
+
+def per_row(fn: Callable[[Any, dict[str, Any]], Awaitable[Any]]) -> Callable[[Any, dict[str, Any]], Awaitable[Any]]:
+    """Lets a host write function answer an ``update_rows`` call: one transaction, ``fn`` once per row in the order of ``rows`` (key order).
+
+    The first failure ends the loop and rolls back every row; the answer names the row by its ``index``.
+    A failure envelope that returns inside ``transaction()`` would commit, so the loop raises to roll back."""
+
+    async def call(database: Any, args: dict[str, Any]) -> Any:
+        if args.get("op") != "update_rows":
+            return await fn(database, args)
+        results: list[Any] = []
+        try:
+            async with database.transaction():
+                for index, row in enumerate(args["rows"]):
+                    out = await fn(database, row)
+                    if not out.get("ok"):
+                        raise _RowFailed(index, out)
+                    results.append(out)
+        except _RowFailed as failed:
+            return {**failed.envelope, "index": failed.index}
+        return {"ok": True, "results": results}
+
+    return call
+
+
 def default_writer(model: Any, config: Mapping[str, Any]) -> Callable[[Any, dict[str, Any]], Awaitable[Any]]:
     """The host function ``admin.write``'s share for one model: a query-set write with the filters of the resource.
 
@@ -516,7 +548,7 @@ def default_writer(model: Any, config: Mapping[str, Any]) -> Callable[[Any, dict
         except DoesNotExist:
             return {"ok": False, "kind": "not_found"}
 
-    return write
+    return per_row(write)
 
 
 def service_function(model: Any, config: Mapping[str, Any], op: str, fn: Callable[..., Any], models: Mapping[str, Any] | None = None) -> Callable[[Any, dict[str, Any]], Awaitable[Any]]:
@@ -567,7 +599,7 @@ def service_function(model: Any, config: Mapping[str, Any], op: str, fn: Callabl
             out["key"] = _key_json(model, result)
         return out
 
-    return call
+    return per_row(call)
 
 
 def writer_host(resources: Mapping[str, tuple[Any, Mapping[str, Any]]], models: Mapping[str, Any] | None = None) -> Callable[[Any, dict[str, Any]], Awaitable[Any]]:

@@ -490,6 +490,42 @@ async function writeAudit(database: Database, meta: ModelMeta, args: Loose): Pro
   return entry.id;
 }
 
+/** A row of an `update_rows` call answered a failure: it ends the loop and rolls the transaction back. */
+class RowFailed extends Error {
+  constructor(
+    readonly index: number,
+    readonly envelope: Loose,
+  ) {
+    super("a row of the list save failed");
+  }
+}
+
+/**
+ * Lets a host write function answer an `update_rows` call: one transaction, `fn` once per row in the order of `rows` (key order).
+ * The first failure ends the loop and rolls back every row; the answer names the row by its `index`.
+ * A failure envelope that returns inside `transaction()` would commit, so the loop throws to roll back.
+ */
+function perRow(fn: HostFunction): HostFunction {
+  return async (database, args) => {
+    if (args.op !== "update_rows") return await fn(database, args);
+    try {
+      const results = await database.transaction(async () => {
+        const out: unknown[] = [];
+        for (const [index, row] of (args.rows as Loose[]).entries()) {
+          const answer = (await fn(database, row)) as Loose;
+          if (!answer.ok) throw new RowFailed(index, answer);
+          out.push(answer);
+        }
+        return out;
+      });
+      return { ok: true, results };
+    } catch (e) {
+      if (e instanceof RowFailed) return { ...e.envelope, index: e.index };
+      throw e;
+    }
+  };
+}
+
 /**
  * The host function `admin.write`'s share for one model: a query-set write with the filters of the resource.
  *
@@ -497,7 +533,7 @@ async function writeAudit(database: Database, meta: ModelMeta, args: Loose): Pro
  */
 export function defaultWriter(model: AnyModel, config: Loose): HostFunction {
   const meta = model._meta;
-  return async (database, args) => {
+  return perRow(async (database, args) => {
     // A bulk delete sends a query set: `values` are the binds of its filters, not field values.
     const bulk = Array.isArray(args.filters);
     const values = bulk ? {} : decodeValues(meta, args.values ?? {});
@@ -527,13 +563,13 @@ export function defaultWriter(model: AnyModel, config: Loose): HostFunction {
       if (envelope === undefined) throw e;
       return envelope;
     }
-  };
+  });
 }
 
 /** The host function of one service function (`service.<Resource>.<op>`). */
 export function serviceFunction(model: AnyModel, config: Loose, op: string, fn: (...args: any[]) => unknown, models: ReadonlyMap<string, AnyModel> = new Map()): HostFunction {
   const meta = model._meta;
-  return async (database, args) => {
+  return perRow(async (database, args) => {
     const ctx = contextOf(database, args, meta, models);
     // A bulk delete sends the filters of its query set and a list of binds in `values`.
     const bulk = Array.isArray(args.filters);
@@ -556,7 +592,7 @@ export function serviceFunction(model: AnyModel, config: Loose, op: string, fn: 
       out["key"] = keyJson(meta, result);
     }
     return out;
-  };
+  });
 }
 
 /**

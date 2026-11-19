@@ -114,6 +114,8 @@ export interface ListConfig {
   readonly pageSize?: number;
   /** The list columns that a sort header may use. Without it every list column that can sort. */
   readonly sortable?: readonly AnyColumn[];
+  /** List columns that a user edits in place and saves for several rows at once. Each is a plain field of the model that the update form may write. */
+  readonly editable?: readonly AnyColumn[];
   /** Fields of the model that the search box matches. The strategy comes from the indexes of each field. */
   readonly search?: readonly AnyColumn[];
   /**
@@ -302,7 +304,7 @@ export interface AdminUser {
   readonly [key: string]: unknown;
 }
 
-const LIST_KEYS = new Set(["columns", "order", "pageSize", "sortable", "search", "searchWith", "filters", "namedFilters", "computed", "aggregates", "labels", "empty", "emptyFields", "tabs"]);
+const LIST_KEYS = new Set(["columns", "order", "pageSize", "sortable", "search", "searchWith", "filters", "namedFilters", "computed", "aggregates", "labels", "empty", "emptyFields", "tabs", "editable"]);
 const BRAND_KEYS = new Set(["name", "logo", "colors", "links", "environment"]);
 const THEME_KEYS = new Set(["title", "logo", "color"]);
 const RESOURCE_KEYS = new Set(["queryset", "can", "list", "title", "group", "allow", "perms", "label", "fieldPermissions", "see", "change", "actions", "checkMessages", "form", "readonly", "widgets", "formComponent", "detailTabs", "relations", "files", "create", "update", "delete", "inputs", "allowProtectedWrites", "inlines", "bulkDelete"]);
@@ -637,6 +639,7 @@ function listJson(model: AnyModel, config: ListConfig, tag = ""): Record<string,
   if (config.columns !== undefined) out["columns"] = config.columns.map((c) => refName(model, c));
   if (config.filters !== undefined) out["filters"] = config.filters.map((c) => refName(model, c));
   if (config.tabs !== undefined) out["tabs"] = config.tabs.map((c) => refName(model, c));
+  if (config.editable !== undefined) out["editable"] = config.editable.map((c) => refName(model, c));
   if (config.namedFilters !== undefined) out["named_filters"] = namedJson(model, config.namedFilters);
   if (config.computed !== undefined) out["computed"] = computedJson(model, config.computed, tag);
   if (config.aggregates !== undefined) out["aggregates"] = aggregatesJson(model, config.aggregates);

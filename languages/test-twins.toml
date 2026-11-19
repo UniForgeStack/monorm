@@ -23,6 +23,8 @@
 "admin_services::a_threaded_service_that_returns_an_async_call_is_a_500_that_names_ctx_run" = "one-language: Python-only: the thread rule of sync services; a TypeScript service is always async"
 "admin_services::a_threaded_service_on_an_opted_in_protected_model_writes_like_an_async_one" = "one-language: Python-only: the thread rule of sync services; a TypeScript service is always async"
 "admin_services::a_service_object_with_an_async_call_is_not_sync_and_the_log_reads_one_key_rule_of_a_user" = "one-language: Python-only: the sync test of a service function; a TypeScript service is always async"
+# languages/python/tests/test_admin_list_edit.py
+"admin_list_edit::a_threaded_sync_service_writes_in_the_save_transaction_and_a_later_failure_rolls_it_back" = "one-language: Python-only: a sync service runs in a thread; a TypeScript service is always async"
 # languages/python/tests/test_app_imports.py
 "app_imports::an_import_cycle_across_directories_is_scanned_once" = "add-ts: app_imports::an_import_cycle_across_directories_is_scanned_once"
 # languages/python/tests/test_bound_reads.py

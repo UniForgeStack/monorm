@@ -112,6 +112,8 @@ class ListConfig(TypedDict, total=False):
     """Rows per page, 1 to 200 (25 by default)."""
     sortable: Sequence[ColumnRef[Any]]
     """The list columns that a sort header may use. Without it every list column that can sort."""
+    editable: Sequence[ColumnRef[Any] | str]
+    """List columns that a user edits in place and saves for several rows at once. Each is a plain field of the model that the update form may write."""
     search: Sequence[ColumnRef[Any]]
     """Fields of the model that the search box matches. The strategy comes from the indexes of each field."""
     search_with: Any
@@ -335,7 +337,7 @@ def _form(name: str, form: Any) -> Any:
     raise AdminConfigError(f"{name}: form is a list of sections, or a mapping with create and edit")
 
 
-_LIST_KEYS = {"columns", "order", "page_size", "sortable", "search", "search_with", "filters", "named_filters", "computed", "aggregates", "labels", "empty", "empty_fields", "tabs"}
+_LIST_KEYS = {"columns", "order", "page_size", "sortable", "search", "search_with", "filters", "named_filters", "computed", "aggregates", "labels", "empty", "empty_fields", "tabs", "editable"}
 _RESOURCE_KEYS = {"list", "title", "group", "allow", "perms", "label", "field_permissions", "see", "change", "actions", "queryset", "can", "check_messages", "form", "readonly", "widgets", "form_component", "detail_tabs", "relations", "files", "create", "update", "delete", "inputs", "allow_protected_writes", "inlines", "bulk_delete"}
 _BRAND_KEYS = {"name", "logo", "colors", "links", "environment"}
 _THEME_KEYS = {"title", "logo", "color"}
@@ -448,7 +450,7 @@ def _list(model: type[Model], config: Mapping[str, Any], tag: str = "") -> dict[
     out: dict[str, Any] = {}
     if "columns" in config:
         out["columns"] = [_name(model, c) for c in config["columns"]]
-    for key in ("filters", "tabs"):
+    for key in ("filters", "tabs", "editable"):
         if key in config:
             out[key] = [_name(model, c) for c in config[key]]
     if "named_filters" in config:
