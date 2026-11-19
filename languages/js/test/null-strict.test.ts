@@ -46,14 +46,18 @@ test("a having condition follows the same rule", () => {
 });
 
 for (const method of ["orNull", "andNotNull"] as const) {
+  // case: null_strict::the_method_on_the_comparison_is_accepted
   test(`${method}() on the comparison is accepted`, () => {
     const m = (c: any): any => c[method]();
+    const alice = Object.assign(new (User as any)._meta.Row(), { id: 1n }) as never;
     assert.ok(Comment.objects.filter(m(x.ne(1n))).sql());
     assert.ok(Comment.objects.filter(m(x.notIn([1n]))).sql());
     assert.ok(Comment.objects.filter(m(x.gt(20n)).not()).sql());
     assert.ok(Comment.objects.exclude(m(x.eq(1n))).sql());
     assert.ok(Comment.objects.exclude(m(x.eq(1n)), m(x.between(1n, 5n))).sql());
     assert.ok(Comment.objects.filter(not(m(x.gt(1n)).or(m(x.lt(0n)))) as never).sql());
+    assert.ok(Comment.objects.filter(m(Comment.author.ne(alice))).sql());
+    assert.ok(Comment.objects.filter(not(m(Comment.author.eq(alice))) as never).sql());
   });
 }
 
@@ -173,15 +177,22 @@ test("the message prints the comparison, then the nullable column", () => {
   );
 });
 
-test("a negated like on a nullable column throws, on a NOT NULL one it does not", () => {
+test("a negated like on a NOT NULL column needs nothing", () => {
+  assert.ok(User.objects.filter(User.email.like("a%").not()).sql());
+  assert.ok(Post.objects.filter(Post.title.like("a%").not()).sql());
+  assert.doesNotThrow(() => User.email.like("a%").not());
+  assert.doesNotThrow(() => Comment.body.contains("a").not());
+  assert.doesNotThrow(() => Post.title.ilike("a%").not());
+});
+
+// case: null_strict::a_negated_like_on_a_nullable_column_raises
+test("a negated like on a nullable column raises", () => {
   const { Reading } = loads(nested, { registry: new Registry() }) as any;
   for (const build of [() => Reading.name.like("a%").not(), () => Reading.name.contains("a").not(), () => Reading.name.ilike("a%").not()]) {
     assert.throws(build, underNegation);
   }
   assert.ok(Reading.objects.filter(Reading.name.like("a%").orNull().not()).sql());
   assert.ok(Reading.objects.filter(Reading.name.contains("a").andNotNull().not()).sql());
-  assert.ok(User.objects.filter(User.email.like("a%").not()).sql());
-  assert.ok(User.objects.filter(User.email.contains("a").not()).sql());
 });
 
 test("a single-key relation ne never raises; the key column ne keeps the column rule", () => {

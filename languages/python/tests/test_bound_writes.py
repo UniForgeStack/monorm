@@ -47,6 +47,7 @@ async def test_a_bound_update_leaves_out_an_object_with_no_row_and_keeps_the_fil
     assert held[0].title == "p0"
     assert await Post.objects.of(held).filter(Post.views >= 2).update(title="y") == held[2:]
     assert [p.title for p in held[1:]] == ["x", "y", "y"]
+    assert await Post.objects.of(held).update() == []
 
 
 async def test_a_bound_update_takes_the_instance_shortcut_and_a_duplicate(clean):

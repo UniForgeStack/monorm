@@ -1,7 +1,7 @@
 /** Bound query sets: `of()` writes and soft delete on SQLite and Postgres. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { connect, loads, of, Registry, type Database } from "../src/index.js";
+import { connect, loads, of, Registry, type Database, type QueryEvent } from "../src/index.js";
 import { hasExtension } from "./artifact-caps.js";
 
 const soft = { skip: !hasExtension("monorm.soft-delete") };
@@ -18,6 +18,12 @@ async function open(dialect: string, source: string): Promise<[Database, Models]
   await db.createTables();
   return [db, models];
 }
+
+const observe = (db: Database): QueryEvent[] => {
+  const events: QueryEvent[] = [];
+  db.onQuery((e) => events.push(e));
+  return events;
+};
 
 const plain = `
 model Note {
@@ -39,27 +45,34 @@ test("a bound write above the parameter cap is a QueryError", async () => {
 });
 
 for (const dialect of ["sqlite", "postgres"]) {
-  test(`bound update fills the objects and gives them in input order (${dialect})`, async () => {
+  // case: bound_writes::a_bound_update_writes_one_statement_and_fills_in_input_order
+  test(`bound update writes one statement and fills the objects in input order (${dialect})`, async () => {
     const [db, { Note }] = await open(dialect, plain);
     try {
-      const notes = await Note.objects.using(db).insertMany([1, 2, 3].map((id: number) => ({ id, title: `t${id}` }))).returning();
-      const held = [notes[2], notes[0]];
-      const done = await of(held).update({ views: 7 });
-      assert.deepEqual(done.map((n: any) => n.id), [3, 1]);
-      assert.equal(done[0], held[0]);
-      assert.deepEqual([notes[2].views, notes[0].views, notes[1].views], [7, 7, 0]);
-      assert.equal(await Note.objects.using(db).filter(Note.views.eq(7)).count(), 2);
+      const held = await Note.objects.using(db).insertMany([0, 1, 2, 3].map((i: number) => ({ id: i + 1, title: `p${i}`, views: i }))).returning();
+      const wanted = [held[2], held[0], held[3]];
+      const events = observe(db);
+      const result = await of(wanted).update({ title: "changed", views: Note.views.add(10) });
+      assert.equal(events.length, 1);
+      assert.deepEqual(result, wanted);
+      assert.ok(result.every((n: any, i: number) => n === wanted[i]));
+      assert.deepEqual(wanted.map((n: any) => [n.title, n.views]), [["changed", 12], ["changed", 10], ["changed", 13]]);
+      assert.deepEqual([held[1].title, held[1].views], ["p1", 1]);
+      assert.deepEqual((await Note.objects.using(db).orderBy(Note.id)).map((n: any) => n.title), ["changed", "p1", "changed", "changed"]);
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`bound update skips an object whose row the filter hides, and an empty update runs nothing (${dialect})`, async () => {
+  // case: bound_writes::a_bound_update_leaves_out_an_object_with_no_row_and_keeps_the_filters
+  test(`a bound update leaves out an object with no row and keeps the filters (${dialect})`, async () => {
     const [db, { Note }] = await open(dialect, plain);
     try {
-      const notes = await Note.objects.using(db).insertMany([{ id: 1, title: "a" }, { id: 2, title: "b" }]).returning();
-      const done = await of(notes).filter(Note.title.eq("b")).update({ views: 3 });
-      assert.deepEqual(done.map((n: any) => n.id), [2]);
-      assert.deepEqual(notes.map((n: any) => n.views), [0, 3]);
-      assert.deepEqual(await of(notes).update({}), []);
+      const held = await Note.objects.using(db).insertMany([0, 1, 2, 3].map((i: number) => ({ id: i + 1, title: `p${i}`, views: i }))).returning();
+      await Note.objects.using(db).filter(Note.id.eq(held[0].id)).delete();
+      assert.deepEqual(await of(held).update({ title: "x" }), held.slice(1));
+      assert.equal(held[0].title, "p0");
+      assert.deepEqual(await of(held).filter(Note.views.gte(2)).update({ title: "y" }), held.slice(2));
+      assert.deepEqual(held.slice(1).map((n: any) => n.title), ["x", "y", "y"]);
+      assert.deepEqual(await of(held).update({}), []);
     } finally { await db.dropTables(); await db.close(); }
   });
 
@@ -87,14 +100,17 @@ for (const dialect of ["sqlite", "postgres"]) {
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`bound delete gives the objects whose row was deleted (${dialect})`, async () => {
+  // case: bound_writes::a_bound_delete_gives_the_deleted_objects_and_leaves_the_others
+  test(`a bound delete gives the deleted objects and leaves the others (${dialect})`, async () => {
     const [db, { Note }] = await open(dialect, plain);
     try {
-      const notes = await Note.objects.using(db).insertMany([1, 2, 3].map((id: number) => ({ id, title: "x" }))).returning();
-      await Note.objects.using(db).filter(Note.id.eq(2)).delete();
-      const done = await of(notes).delete();
-      assert.deepEqual(done.map((n: any) => n.id), [1, 3]);
-      assert.equal(await Note.objects.using(db).count(), 0);
+      const held = await Note.objects.using(db).insertMany([0, 1, 2, 3].map((i: number) => ({ id: i + 1, title: `p${i}`, views: i }))).returning();
+      await Note.objects.using(db).filter(Note.id.eq(held[3].id)).delete();
+      const events = observe(db);
+      const result = await of([held[2], held[0], held[3]]).delete();
+      assert.equal(events.length, 1);
+      assert.deepEqual(result, [held[2], held[0]]);
+      assert.deepEqual((await Note.objects.using(db).orderBy(Note.id)).map((n: any) => n.id), [held[1].id]);
     } finally { await db.dropTables(); await db.close(); }
   });
 
@@ -125,49 +141,76 @@ for (const dialect of ["sqlite", "postgres"]) {
   });
 
   const softSource = `
-model Item {
+model Doc {
   id      Int       @id
-  name    String
+  title   String
   @@soft_delete.deleted_at("deleted", mode: "application")
-  @@map("bw_item")
+  @@map("bw_doc")
 }`;
+  const docs = async () => {
+    const [db, { Doc }] = await open(dialect, softSource);
+    const held = await Doc.objects.using(db).insertMany([1, 2, 3, 4].map((id: number) => ({ id, title: `d${id}` }))).returning();
+    return { db, Doc, held: held.sort((a: any, b: any) => a.id - b.id) };
+  };
 
-  test(`bound delete is a soft delete; undelete and hardDelete work on the bound set (${dialect})`, soft, async () => {
-    const [db, { Item }] = await open(dialect, softSource);
+  // case: bound_writes::a_bound_delete_soft_deletes_and_fills_the_objects
+  test(`a bound delete soft-deletes and fills the objects (${dialect})`, soft, async () => {
+    const { db, Doc, held } = await docs();
     try {
-      const items = Item.objects.using(db);
-      const held = await items.insertMany([1, 2, 3].map((id: number) => ({ id, name: `i${id}` }))).returning();
-      const gone = await of(held).delete();
-      assert.equal(gone.length, 3);
-      assert.ok(held.every((i: any) => i.deleted !== null));
-      assert.equal(await items.count(), 0);
-      const back = await bound(of([held[0], held[1]])).undelete();
-      assert.deepEqual(back.map((i: any) => i.id), [1, 2]);
-      assert.ok(back.every((i: any) => i.deleted === null));
-      assert.equal(await items.count(), 2);
-      const removed = await bound(of(held)).hardDelete();
-      assert.deepEqual(removed.map((i: any) => i.id), [1, 2, 3]);
-      assert.equal(await items.allWithDeleted().count(), 0);
+      const result = await of([held[1], held[0]]).delete();
+      assert.deepEqual(result, [held[1], held[0]]);
+      assert.ok(held[0].deleted !== null && held[1].deleted !== null && held[2].deleted === null);
+      assert.equal(await Doc.objects.using(db).count(), 2);
+      assert.deepEqual(await of(held), held);
     } finally { await db.dropTables(); await db.close(); }
   });
 
-  test(`bound allWithDeleted and deletedOnly read soft-deleted rows (${dialect})`, soft, async () => {
-    const [db, { Item }] = await open(dialect, softSource);
+  // case: bound_writes::the_soft_delete_members_are_on_the_bound_set
+  test(`the soft-delete members are on the bound set (${dialect})`, soft, async () => {
+    const { db, Doc, held } = await docs();
     try {
-      const items = Item.objects.using(db);
-      const held = await items.insertMany([1, 2].map((id: number) => ({ id, name: `i${id}` }))).returning();
-      await of(held[0]).delete();
-      assert.equal(await of(held).count(), 2);
-      assert.equal(await bound(of(held)).allWithDeleted().count(), 2);
-      assert.equal(await bound(of(held)).deletedOnly().count(), 1);
+      await of(held.slice(0, 2)).delete();
+      const set = bound(of(held));
+      assert.deepEqual(await set.deletedOnly(), held.slice(0, 2));
+      assert.deepEqual(await set.allWithDeleted(), held);
+      assert.equal(await set.allWithDeleted().deletedOnly().count(), 2);
+      assert.equal(await of(held).count(), 4);
+      assert.equal(await Doc.objects.using(db).count(), 2);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
+  // case: bound_writes::a_bound_undelete_restores_only_the_soft_deleted_rows
+  test(`a bound undelete restores only the soft-deleted rows (${dialect})`, soft, async () => {
+    const { db, Doc, held } = await docs();
+    try {
+      await of(held.slice(0, 2)).delete();
+      assert.deepEqual(await bound(of(held)).undelete(), held.slice(0, 2));
+      assert.ok(held.every((d: any) => d.deleted === null));
+      assert.equal(await Doc.objects.using(db).count(), 4);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
+  // case: bound_writes::a_bound_hard_delete_removes_the_rows_and_gives_the_objects
+  test(`a bound hard delete removes the rows and gives the objects (${dialect})`, soft, async () => {
+    const { db, Doc, held } = await docs();
+    try {
+      await of(held.slice(0, 2)).delete();
+      assert.deepEqual(await bound(of([held[2], held[0]])).hardDelete(), [held[2], held[0]]);
+      assert.ok(held[0].deleted !== null && held[2].deleted === null);
+      assert.deepEqual((await Doc.objects.using(db).allWithDeleted().orderBy(Doc.id)).map((d: any) => d.id), [2, 4]);
+      assert.deepEqual(await bound(of(held)).allWithDeleted(), [held[1], held[3]]);
     } finally { await db.dropTables(); await db.close(); }
   });
 }
 
-test("a model without the extension has no hardDelete on its bound set", async () => {
+// case: bound_writes::a_bound_write_checks_the_database_and_the_input
+test("a bound write checks the database and the input", async () => {
   const [db, { Note }] = await open("sqlite", plain);
   try {
-    const [note] = await Note.objects.using(db).insertMany([{ id: 1, title: "a" }]).returning();
-    assert.equal((of(note) as any).hardDelete, undefined);
+    const held = await Note.objects.using(db).insertMany([1, 2].map((id: number) => ({ id, title: `t${id}` }))).returning();
+    assert.throws(() => of([]), TypeError);
+    assert.deepEqual(await of(held).using("primary").update({ views: 3 }), held);
+    assert.equal((of(held) as any).hardDelete, undefined);
+    assert.equal((of(held) as any).undelete, undefined);
   } finally { await db.dropTables(); await db.close(); }
 });
