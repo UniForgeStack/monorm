@@ -1,7 +1,7 @@
 /** Bound query sets: `of()` / `post.qs()` reads on Postgres and SQLite. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { connect, define, loads, of, QueryError, Registry, type Database } from "../src/index.js";
+import { connect, define, loads, NotLoaded, of, QueryError, Registry, TransactionRequired, type Database } from "../src/index.js";
 import { hasExtension } from "./artifact-caps.js";
 
 const source = `
@@ -274,7 +274,83 @@ for (const provider of ["sqlite", "postgresql"]) {
       await db.close();
     }
   });
+  test(`a cached relation whose key changed is dropped (${provider})`, { skip: !url }, async () => {
+    const { db, Entry } = await setup();
+    try {
+      const entry = await Entry.objects.using(db).load(Entry.writer).get(Entry.id.eq(1));
+      assert.equal(entry.writer.name, "ann");
+      await Entry.objects.using(db).filter(Entry.id.eq(1)).update({ writerId: 2 });
+      await of(entry);
+      assert.throws(() => entry.writer, NotLoaded);
+    } finally {
+      await db.close();
+    }
+  });
+
+  test(`load selects only what it names plus the hidden keys (${provider})`, { skip: !url }, async () => {
+    const { db, Entry } = await setup();
+    try {
+      const held = await Entry.objects.using(db).orderBy("id");
+      await Entry.objects.using(db).all().update({ title: "changed", views: 100 });
+      const bare = [await Entry.objects.using(db).load(Entry.id).get(Entry.id.eq(1)), await Entry.objects.using(db).load(Entry.id).get(Entry.id.eq(2))];
+      await of(bare).load(Entry.title);
+      assert.deepEqual(bare.map((e: Any) => e.title), ["changed", "changed"]);
+      assert.throws(() => bare[0].views, NotLoaded);
+      assert.equal(held[0].title, "a");
+    } finally {
+      await db.close();
+    }
+  });
+
+  test(`a default query set filter stays on the bound set (${provider})`, { skip: !url }, async () => {
+    const { db, Entry } = await setup();
+    try {
+      const held = await Entry.objects.using(db).orderBy("id");
+      await Entry.objects.using(db).all().update({ title: "changed", views: 100 });
+      const published = Entry.objects.using(db).filter(Entry.views.gt(1000));
+      assert.deepEqual(await published.of(held), []);
+      assert.equal(held[0].title, "a");
+    } finally {
+      await db.close();
+    }
+  });
+
+  test(`lock needs a transaction and locks the rows (${provider})`, { skip: provider !== "postgresql" || !url }, async () => {
+    const { db, Entry } = await setup();
+    try {
+      const held = await Entry.objects.using(db).orderBy("id");
+      await assert.rejects(async () => { await of(held).lock(); }, TransactionRequired);
+      await db.transaction(async () => {
+        const query = of(held).lock({ exclusive: false, skipLocked: true });
+        const text = query.sql();
+        assert.ok(text.includes("FOR SHARE OF") && text.endsWith("SKIP LOCKED"), text);
+        assert.equal((await query).length, 3);
+      });
+      assert.throws(() => of(held).lock({ nowait: true, skipLocked: true } as never), TypeError);
+    } finally {
+      await db.close();
+    }
+  });
+
+  test(`a relation-only read with a lock reads the keys with FOR UPDATE (${provider})`, { skip: provider !== "postgresql" || !url }, async () => {
+    const { db, Writer } = await setup();
+    try {
+      const held = await Writer.objects.using(db).orderBy("id");
+      const seen: string[] = [];
+      db.onQuery((e: Any) => { seen.push(e.sql); });
+      await db.transaction(async () => {
+        await of(held).lock().load(Writer.entries);
+      });
+      assert.ok(seen.some((q) => q.includes("FOR UPDATE")));
+    } finally {
+      await db.close();
+    }
+  });
 }
+
+test("a column named qs is reserved", () => {
+  assert.throws(() => loads("model Q {\n  id Int @id\n  qs Int\n}\n", { registry: new Registry() }), /qs|reserved/);
+});
 
 const queryDefaults = hasExtension("monorm.query-defaults");
 

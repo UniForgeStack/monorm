@@ -5,7 +5,9 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, type TestContext } from "node:test";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
+import { mock, test, type TestContext } from "node:test";
 import { Registry, SchemaError, load, loads } from "../src/index.js";
 import { resolveApps } from "../src/apps.js";
 import { native } from "../src/native.js";
@@ -136,4 +138,23 @@ test("the bundled auth app wins over an installed package of the same name", (t)
   pkg(join(dir, "node_modules"), "auth", "model Other { id Int @id }\n");
   assert.ok(resolveApps(schema)["auth"]?.endsWith(join("auth", "schema.prisma")));
   assert.ok(!resolveApps(schema)["auth"]?.includes("node_modules"));
+});
+
+test("an import cycle across directories is scanned once", (t) => {
+  const dir = directory(t);
+  write(join(dir, "a/x.prisma"), 'import "../b/y.prisma"\n');
+  write(join(dir, "b/y.prisma"), 'import "../a/x.prisma"\n');
+  const reads: string[] = [];
+  const original = fs.readFileSync;
+  mock.method(fs, "readFileSync", ((file: fs.PathOrFileDescriptor, ...rest: unknown[]) => {
+    reads.push(String(file));
+    return (original as (...a: unknown[]) => unknown)(file, ...rest);
+  }) as typeof fs.readFileSync);
+  syncBuiltinESMExports();
+  t.after(() => {
+    mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  assert.deepEqual(resolveApps(join(dir, "a/x.prisma")), {});
+  assert.equal(reads.length, 2);
 });

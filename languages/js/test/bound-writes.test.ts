@@ -75,6 +75,18 @@ for (const dialect of ["sqlite", "postgres"]) {
     } finally { await db.dropTables(); await db.close(); }
   });
 
+  test(`a bound update takes the instance shortcut and a duplicate (${dialect})`, async () => {
+    const [db, { Note }] = await open(dialect, plain);
+    try {
+      const held = await Note.objects.using(db).insertMany([1, 2].map((id: number) => ({ id, title: `t${id}` }))).returning();
+      assert.deepEqual(await held[0].qs().update({ views: 7 }), [held[0]]);
+      assert.equal(held[0].views, 7);
+      const twice = await of([held[1], held[1]]).update({ views: 9 });
+      assert.ok(twice.length === 2 && twice[0] === held[1] && twice[1] === held[1]);
+      assert.equal(held[1].views, 9);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
   test(`bound delete gives the objects whose row was deleted (${dialect})`, async () => {
     const [db, { Note }] = await open(dialect, plain);
     try {
