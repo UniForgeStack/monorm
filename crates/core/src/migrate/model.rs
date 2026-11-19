@@ -764,7 +764,7 @@ impl Builder<'_> {
         for f in m.fields().iter() {
             let ty = if schema.dialect == crate::dialect::Dialect::Sqlite {
                 match f.ty {
-                    ColType::BigInt | ColType::Int | ColType::Bool => "INTEGER",
+                    ColType::BigInt | ColType::Int | ColType::Bool | ColType::Duration => "INTEGER",
                     ColType::Float => "REAL",
                     ColType::Bytes => "BLOB",
                     _ => "TEXT",

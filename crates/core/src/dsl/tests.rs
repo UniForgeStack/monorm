@@ -1839,6 +1839,35 @@ fn bytes_is_a_scalar_with_a_narrow_set_of_forms() {
 }
 
 #[test]
+fn duration_is_a_scalar_with_no_literal_default_and_no_array() {
+    let model = |field: &str| format!("model A {{\n  id BigInt @id\n  {field}\n}}");
+    let mut ir = ok(&model("timeout Duration?"));
+    assert_eq!(ir.models[0].fields[1].ty, crate::ir::ColType::Duration);
+    assert!(ir.models[0].fields[1].nullable);
+    assert!(fails(&model("timeout Duration[]")).contains("Duration[] is not supported"));
+    assert!(fails(&model("timeout Duration @default(\"1\")")).contains("takes no literal default"));
+    assert!(fails("type T {\n  d Duration\n}\nmodel A {\n  id BigInt @id\n  t T\n}").contains("a type holds no Duration field"));
+    assert!(ok(&model("timeout Duration @default(dbgenerated(\"'1 hour'\"))")).models[0].fields[1].default_sql.is_some());
+    // An engine of 5.4 cannot parse the type, so the IR carries the minor 5.
+    ir.stamp_expression_records();
+    assert_eq!((ir.behavior.schema_contract, ir.behavior.schema_contract_minor), (monorm::extension::SCHEMA_CONTRACT, 5));
+    let mut plain = ok(&model("n Int"));
+    plain.stamp_expression_records();
+    assert_eq!(plain.behavior.schema_contract_minor, 0);
+}
+
+#[test]
+fn a_duration_compares_and_orders_but_is_no_number() {
+    const MODELS: &str = "model Item {\n  id BigInt @id\n  t Duration\n  u Duration\n  n Int\n}\n";
+    for ok_filter in ["\"x\", t > u", "\"x\", t == u", "\"x\", t != u", "\"x\", t <= u"] {
+        resolved_in(MODELS, ok_filter).unwrap_or_else(|e| panic!("{ok_filter}: {e}"));
+    }
+    for bad in ["\"x\", t > n", "\"x\", t == n", "\"x\", t + u > t"] {
+        assert!(resolved_in(MODELS, bad).is_err(), "{bad}");
+    }
+}
+
+#[test]
 fn string_with_byte_a_still_compiles_with_a_deprecation_warning() {
     let project = compile_project("datasource db {\n provider = \"postgresql\"\n}\nmodel A {\n  id BigInt @id\n  raw String @db.ByteA\n}", None).unwrap();
     assert_eq!(project.ir.models[0].fields[1].ty, crate::ir::ColType::String);

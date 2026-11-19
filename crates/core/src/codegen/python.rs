@@ -49,6 +49,7 @@ fn field_class(f: &FieldIr) -> &'static str {
         ColType::Json => "Json",
         ColType::Decimal => "Decimal",
         ColType::Bytes => "Bytes",
+        ColType::Duration => "Duration",
     }
 }
 
@@ -80,6 +81,7 @@ fn element_type(f: &FieldIr) -> String {
         ColType::Json => "Any",
         ColType::Decimal => "Decimal",
         ColType::Bytes => "bytes",
+        ColType::Duration => "timedelta",
     }
     .to_owned()
 }
@@ -336,7 +338,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         for f in m.fields() {
             let t = base_type(f);
             for (word, import) in
-                [("datetime", "datetime"), ("date", "date"), ("time", "time"), ("UUID", "UUID"), ("Any", "Any"), ("Decimal", "Decimal")]
+                [("datetime", "datetime"), ("date", "date"), ("time", "time"), ("timedelta", "timedelta"), ("UUID", "UUID"), ("Any", "Any"), ("Decimal", "Decimal")]
             {
                 if t.split(|c: char| !c.is_alphanumeric() && c != '_').any(|w| w == word) {
                     used.insert(import);
@@ -346,7 +348,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     }
     for f in type_models.iter().flat_map(|t| &t.fields) {
         let t = base_type(f);
-        for (word, import) in [("datetime", "datetime"), ("date", "date"), ("time", "time"), ("UUID", "UUID"), ("Any", "Any"), ("Decimal", "Decimal")] {
+        for (word, import) in [("datetime", "datetime"), ("date", "date"), ("time", "time"), ("timedelta", "timedelta"), ("UUID", "UUID"), ("Any", "Any"), ("Decimal", "Decimal")] {
             if t.split(|c: char| !c.is_alphanumeric() && c != '_').any(|w| w == word) {
                 used.insert(import);
             }
@@ -355,7 +357,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
     for t in &ir.types {
         for sf in &t.fields {
             let word = sub_element(sf);
-            for (w, import) in [("datetime", "datetime"), ("date", "date"), ("time", "time"), ("UUID", "UUID"), ("Any", "Any"), ("Decimal", "Decimal")] {
+            for (w, import) in [("datetime", "datetime"), ("date", "date"), ("time", "time"), ("timedelta", "timedelta"), ("UUID", "UUID"), ("Any", "Any"), ("Decimal", "Decimal")] {
                 if word.split(|c: char| !c.is_alphanumeric() && c != '_').any(|x| x == w) {
                     used.insert(import);
                 }
@@ -649,7 +651,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
          from collections.abc import Iterable",
     );
     pyi.push_str(if body.contains("Sequence[") { ", Sequence\n" } else { "\n" });
-    let dt: Vec<&str> = ["date", "datetime", "time"].into_iter().filter(|d| used.contains(d)).collect();
+    let dt: Vec<&str> = ["date", "datetime", "time", "timedelta"].into_iter().filter(|d| used.contains(d)).collect();
     if !dt.is_empty() {
         writeln!(pyi, "from datetime import {}", dt.join(", ")).unwrap();
     }

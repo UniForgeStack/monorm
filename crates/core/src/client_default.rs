@@ -48,7 +48,7 @@ impl Literal {
                 Self::Decimal(text.parse::<bigdecimal::BigDecimal>().map_err(|e| e.to_string())?)
             }
             ColType::Json => Self::Json(value.clone()),
-            ColType::Bytes => return Err(SHAPE.into()),
+            ColType::Bytes | ColType::Duration => return Err(SHAPE.into()),
         })
     }
 }

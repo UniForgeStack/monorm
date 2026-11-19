@@ -31,6 +31,7 @@ pub fn column_type(ty: crate::ir::ColType, max_length: Option<u32>, array: bool)
         Json => "jsonb".into(),
         Decimal => "numeric".into(),
         Bytes => "bytea".into(),
+        Duration => "interval".into(),
     }
 }
 

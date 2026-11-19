@@ -240,6 +240,7 @@ fn builtin_type(name: &str) -> Option<ColType> {
         "Json" => ColType::Json,
         "Decimal" => ColType::Decimal,
         "Bytes" => ColType::Bytes,
+        "Duration" => ColType::Duration,
         _ => return None,
     })
 }
@@ -989,6 +990,9 @@ fn field(m: &ModelDecl, member: &Member, ctx: &Ctx<'_>, pending: Option<&Pending
         if ty == ColType::Bytes && *list {
             return err(*pos, format!("{what}: Bytes[] is not supported; use a Json array of base64 text or a related model"));
         }
+        if ty == ColType::Duration && *list {
+            return err(*pos, format!("{what}: Duration[] is not supported; use a related model"));
+        }
     } else if let Some(attribute) = ctx.owned_types.get(name) {
         return err(*pos, format!("{what}: unknown type {name}; a {name} field needs @{attribute}(...) (namespace {}.*)", crate::behavior::attribute_namespace(attribute)));
     } else {
@@ -1207,6 +1211,9 @@ fn field(m: &ModelDecl, member: &Member, ctx: &Ctx<'_>, pending: Option<&Pending
     }
     if f.ty == ColType::Bytes && (f.default.is_some() || f.client_default.is_some()) {
         return err(*pos, format!("{what}: a Bytes field takes no literal default; use @default(dbgenerated(\"...\"))"));
+    }
+    if f.ty == ColType::Duration && f.default.is_some() {
+        return err(*pos, format!("{what}: a Duration field takes no literal default; use @default(dbgenerated(\"...\")) or a client default"));
     }
     // parameters of other array types are cast to the column's (`varchar(20)[]`, ...)
     if f.array && f.write_sql.is_none() && (f.db_type.is_some() || f.max_length.is_some()) {

@@ -66,6 +66,8 @@ pub enum ColType {
     Decimal,
     /// `bytea` / `BLOB`; binary values (Python `bytes`, TypeScript `Uint8Array`).
     Bytes,
+    /// `interval` / `INTEGER`; a signed whole number of microseconds (Python `timedelta`, TypeScript `Duration`).
+    Duration,
 }
 
 /// How a column's values travel: the scalar type, whether the column is an array of
@@ -276,6 +278,12 @@ impl SchemaIr {
         if !self.behavior.scoped_fields.is_empty() || !self.behavior.extension_records.is_empty() || secured || !self.exempt_roles.is_empty() || self.behavior.field_adapters.iter().any(|a| a.null_only) {
             self.behavior.schema_contract = SCHEMA_CONTRACT;
             self.behavior.schema_contract_minor = self.behavior.schema_contract_minor.max(3);
+        }
+        // Contract 5.5 holds `ColType::Duration`. An engine of 5.4 cannot parse the column type.
+        let physical = self.behavior.storage.iter().flat_map(|s| &s.models);
+        if self.models.iter().chain(physical).flat_map(|m| &m.fields).any(|f| f.ty == ColType::Duration) {
+            self.behavior.schema_contract = SCHEMA_CONTRACT;
+            self.behavior.schema_contract_minor = self.behavior.schema_contract_minor.max(5);
         }
     }
 
@@ -577,6 +585,7 @@ pub enum ClientDefaultError {
     Text,
     TextOrNumber,
     BytesUnsupported,
+    DurationUnsupported,
 }
 
 impl std::fmt::Display for ClientDefaultError {
@@ -590,6 +599,7 @@ impl std::fmt::Display for ClientDefaultError {
             Self::Text => "requires text",
             Self::TextOrNumber => "requires text or a number",
             Self::BytesUnsupported => "is not supported on a Bytes field",
+            Self::DurationUnsupported => "is not supported on a Duration field",
         })
     }
 }
@@ -627,6 +637,7 @@ impl FieldIr {
             ColType::Decimal => value.is_string() || value.is_number(),
             ColType::Bytes => false,
             ColType::String | ColType::Text | ColType::DateTime | ColType::Date | ColType::Time | ColType::Uuid => value.is_string(),
+            ColType::Duration => false,
         };
         if fits { return Ok(()); }
         Err(match self.ty {
@@ -636,6 +647,7 @@ impl FieldIr {
             ColType::Bool => ClientDefaultError::Bool,
             ColType::Decimal => ClientDefaultError::TextOrNumber,
             ColType::Bytes => ClientDefaultError::BytesUnsupported,
+            ColType::Duration => ClientDefaultError::DurationUnsupported,
             _ => ClientDefaultError::Text,
         })
     }

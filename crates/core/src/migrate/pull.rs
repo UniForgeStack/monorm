@@ -288,9 +288,9 @@ fn expand_argument(template: &str, bound: &BTreeMap<String, String>, field: &dyn
 }
 
 /// Type names the schema language reserves.
-const RESERVED: [&str; 14] = [
+const RESERVED: [&str; 15] = [
     "BigInt", "Int", "Float", "Boolean", "String", "DateTime", "Json", "Decimal", "Unsupported", "Generic", "Bytes",
-    "model", "enum", "function",
+    "Duration", "model", "enum", "function",
 ];
 
 /// Extension types the built-in catalog knows (`Unsupported("...")`).
@@ -363,6 +363,23 @@ fn unique_name(base: String, used: &mut BTreeSet<String>) -> String {
     name
 }
 
+/// Whether an `interval` field list holds `year` or `month`, which have no fixed length in microseconds.
+fn has_month_field(ty: &str) -> bool {
+    ty.split(|c: char| !c.is_ascii_alphabetic()).any(|w| w.eq_ignore_ascii_case("year") || w.eq_ignore_ascii_case("month"))
+}
+
+/// The note for a PostgreSQL `interval` column whose precision or field list the `Duration` type drops.
+fn interval_note(ty: &str, dialect: Dialect, owner: &str, column: &str) -> Option<String> {
+    let base = ty.trim();
+    if dialect != Dialect::Postgres || base.ends_with("[]") || !super::diff::is_interval(base) || base == "interval" {
+        return None;
+    }
+    if has_month_field(base) {
+        return Some(format!("column {owner}.{column} has type {base}; a month or year is not a fixed number of microseconds, so the Duration type does not map it"));
+    }
+    Some(format!("column {owner}.{column} has type {base}; the Duration type keeps whole microseconds and drops the precision and the field list"))
+}
+
 /// The schema type of a column: `(type, @db attribute, array)`, or `None` when the
 /// schema language has no type for it.
 fn field_type(ty: &str, dialect: Dialect, enums: &HashMap<String, String>) -> Option<(String, Option<String>, bool)> {
@@ -429,6 +446,8 @@ fn field_type(ty: &str, dialect: Dialect, enums: &HashMap<String, String>) -> Op
         ("date", None) => ("DateTime", db("Date")),
         ("time without time zone", _) => ("DateTime", db("Time")),
         ("time with time zone", _) => ("DateTime", db("Timetz")),
+        // the precision and the field list are dropped; `interval_note` tells the user
+        (n, _) if super::diff::is_interval(n) && !has_month_field(n) => ("Duration", None),
         _ => {
             let ext = base.split('(').next().unwrap_or("").trim();
             if !array && EXTENSION_TYPES.contains(&ext) {
@@ -437,8 +456,8 @@ fn field_type(ty: &str, dialect: Dialect, enums: &HashMap<String, String>) -> Op
             return None;
         }
     };
-    // the schema language has no list of Bytes
-    if array && t == "Bytes" {
+    // the schema language has no list of Bytes or Durations
+    if array && (t == "Bytes" || t == "Duration") {
         return None;
     }
     if array && matches!(attr.as_deref(), Some("@db.Citext")) {
@@ -694,6 +713,7 @@ pub fn pull_claims(db: &DbSchema, gaps: &[String], claimed: &[ClaimedRule], obje
                 continue;
             }
             let field = m.field(&c.name);
+            gaps.extend(interval_note(&c.ty, dialect, &t.name, &c.name));
             let Some((ty, db_attr, array)) = field_type(&c.ty, dialect, &enums) else {
                 gaps.push(format!("column {}.{} has type {}, which the schema can't declare; it is left out", t.name, c.name, c.ty));
                 m.fields.remove(&c.name);
@@ -908,6 +928,7 @@ pub fn pull_claims(db: &DbSchema, gaps: &[String], claimed: &[ClaimedRule], obje
         let mut m = ModelOut { table: &table, name: name.clone(), fields: BTreeMap::new(), used: BTreeSet::new(), lines: vec![], attrs: vec![] };
         let mut typed = vec![];
         for c in &v.columns {
+            gaps.extend(interval_note(&c.ty, dialect, &v.name, &c.name));
             let Some((ty, db_attr, array)) = field_type(&c.ty, dialect, &enums) else {
                 gaps.push(format!("column {}.{} has type {}, which the schema can't declare; it is left out", v.name, c.name, c.ty));
                 continue;
@@ -1326,7 +1347,19 @@ mod tests {
         assert_eq!(t("numeric(10,2)"), Some(("Decimal".into(), Some("@db.Decimal(10, 2)".into()), false)));
         assert_eq!(t("text[]"), Some(("String".into(), Some("@db.Text".into()), true)));
         assert_eq!(t("timestamp(3) with time zone"), Some(("DateTime".into(), Some("@db.Timestamptz(3)".into()), false)));
-        assert_eq!(t("interval"), None);
+        assert_eq!(t("interval"), Some(("Duration".into(), None, false)));
+        assert_eq!(t("interval(3)"), Some(("Duration".into(), None, false)));
+        assert_eq!(t("interval day to second"), Some(("Duration".into(), None, false)));
+        assert_eq!(t("interval(3) day to second"), Some(("Duration".into(), None, false)));
+        assert_eq!(t("interval[]"), None);
+        assert_eq!(t("interval year to month"), None);
+        assert_eq!(t("interval(3) month"), None);
+        assert!(interval_note("interval year to month", Dialect::Postgres, "t", "c").is_some_and(|n| n.contains("not a fixed number of microseconds")));
+        assert!(interval_note("interval", Dialect::Postgres, "t", "c").is_none());
+        assert!(interval_note("interval(3)", Dialect::Postgres, "t", "c").is_some_and(|n| n.contains("drops the precision")));
+        assert!(interval_note("interval day to second", Dialect::Postgres, "t", "c").is_some());
+        assert!(interval_note("INTEGER", Dialect::Sqlite, "t", "c").is_none());
+        assert_eq!(field_type("INTEGER", Dialect::Sqlite, &enums), Some(("BigInt".into(), None, false)));
         assert_eq!(t("bytea"), Some(("Bytes".into(), None, false)));
         assert_eq!(t("bytea[]"), None);
         assert_eq!(field_type("BLOB", Dialect::Sqlite, &enums), Some(("Bytes".into(), None, false)));

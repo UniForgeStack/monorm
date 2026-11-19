@@ -302,6 +302,12 @@ fn type_shape(text: &str) -> TypeShape {
     }
 }
 
+/// Whether a PostgreSQL type name is in the `interval` family (`interval`, `interval(3)`, `interval day to second`).
+pub fn is_interval(ty: &str) -> bool {
+    let t = ty.trim().to_ascii_lowercase();
+    t == "interval" || t.starts_with("interval(") || t.starts_with("interval ")
+}
+
 /// Whether every value of type `from` converts to `to` unchanged:
 /// `int` to `bigint`, `varchar(n)` to `text` or `varchar`, `varchar(n)` to `varchar(m)` with
 /// m > n, and `numeric(p,s)` to `numeric(q,s)` with q > p. An unknown type is not widening.
@@ -1269,6 +1275,11 @@ fn diff_tables(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<Vec<
                         alters.push(Op::DropDefault { table: t(), column: column.clone() });
                     }
                     if oc.ty != nc.ty {
+                        if is_interval(&oc.ty) != is_interval(&nc.ty) {
+                            return Err(format!(
+                                "{table}.{column}: a column changes between Duration and another type. No automatic conversion exists (an interval and a number of microseconds differ). Write a manual migration"
+                            ));
+                        }
                         alters.push(Op::AlterColumnType {
                             table: t(),
                             column: column.clone(),

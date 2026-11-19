@@ -928,6 +928,7 @@ fn scalar_name(t: ColType) -> &'static str {
         ColType::Json => "Json",
         ColType::Decimal => "Decimal",
         ColType::Bytes => "Bytes",
+        ColType::Duration => "Duration",
     }
 }
 

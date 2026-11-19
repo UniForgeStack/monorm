@@ -2458,3 +2458,40 @@ fn a_second_plan_after_a_json_backfill_is_empty() {
         assert!(serde_json::to_string(&plan.snapshot).unwrap().contains("\"alt\""), "the shape records the new key");
     }
 }
+
+#[test]
+fn a_duration_column_is_an_interval_on_postgres_and_an_integer_on_sqlite() {
+    let ir = || blog(vec![field("timeout", "duration")], json!({}));
+    let pg = super::plan(&schema(ir()), &DbSchema::default()).unwrap();
+    assert!(sql(&pg.up).iter().any(|s| s.contains("\"timeout\" interval")), "{:?}", sql(&pg.up));
+    settled(&schema(ir()), &pg);
+    let mut lite = ir();
+    lite["dialect"] = json!("sqlite");
+    let lite = super::plan(&schema(lite), &DbSchema::default()).unwrap();
+    assert!(sql(&lite.up).iter().any(|s| s.contains("\"timeout\" INTEGER")), "{:?}", sql(&lite.up));
+}
+
+#[test]
+fn a_change_between_duration_and_a_number_asks_for_a_manual_migration() {
+    for (from, to) in [("duration", "big_int"), ("big_int", "duration"), ("duration", "int")] {
+        let v1 = schema(blog(vec![field("timeout", from)], json!({})));
+        let p1 = super::plan(&v1, &DbSchema::default()).unwrap();
+        let v2 = schema(blog(vec![field("timeout", to)], json!({})));
+        let e = super::plan(&v2, &p1.snapshot).unwrap_err();
+        assert!(e.to_string().contains("manual migration"), "{from} to {to}: {e}");
+    }
+}
+
+#[test]
+fn an_interval_precision_change_alters_the_type_and_is_not_a_duration_refusal() {
+    use super::diff::{diff, is_interval};
+    assert!(["interval", "INTERVAL", "interval(3)", "interval day to second"].into_iter().all(is_interval));
+    assert!(!["intervals", "int", "bigint"].into_iter().any(is_interval));
+    let v1 = super::plan(&schema(blog(vec![field("timeout", "duration")], json!({}))), &DbSchema::default()).unwrap();
+    let mut live = v1.snapshot.clone();
+    for t in live.tables.iter_mut() {
+        for c in t.columns.iter_mut().filter(|c| c.ty == "interval") { c.ty = "interval(3)".into(); }
+    }
+    let ops = diff(&live, &v1.snapshot, &Default::default()).unwrap();
+    assert!(ops.iter().any(|o| matches!(o, Op::AlterColumnType { from, to, .. } if from == "interval(3)" && to == "interval")), "{ops:?}");
+}

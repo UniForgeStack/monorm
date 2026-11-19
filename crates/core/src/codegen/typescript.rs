@@ -52,6 +52,7 @@ fn element_type(f: &FieldIr) -> String {
         ColType::Json => "JsonValue",
         ColType::Decimal => "Decimal",
         ColType::Bytes => "Uint8Array",
+        ColType::Duration => "Duration",
     }
     .to_owned()
 }
@@ -266,7 +267,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         write_type(&mut body, ir, t);
         writeln!(body, "export const {0} = nested[{1}] as unknown as {0}Class;\n", t.name, quote(&t.name)).unwrap();
         for sf in t.fields.iter().filter_map(|sf| sf.leaf.as_ref()) {
-            for (word, import) in [("Decimal", "Decimal"), ("JsonValue", "JsonValue")] {
+            for (word, import) in [("Decimal", "Decimal"), ("Duration", "Duration"), ("JsonValue", "JsonValue")] {
                 if element_type(sf) == word { used.insert(import); }
             }
         }
@@ -280,7 +281,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         writeln!(body, "export interface {name}Data {{").unwrap();
         for f in &fields {
             let ty = value_type(f);
-            for (word, import) in [("Decimal", "Decimal"), ("JsonValue", "JsonValue")] {
+            for (word, import) in [("Decimal", "Decimal"), ("Duration", "Duration"), ("JsonValue", "JsonValue")] {
                 if ty.split(|c: char| !c.is_alphanumeric()).any(|w| w == word) {
                     used.insert(import);
                 }
@@ -299,7 +300,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         writeln!(body, "{}\n", section(name)).unwrap();
         for f in m.fields() {
             let t = field_type(m, f);
-            for (word, import) in [("Decimal", "Decimal"), ("JsonValue", "JsonValue")] {
+            for (word, import) in [("Decimal", "Decimal"), ("Duration", "Duration"), ("JsonValue", "JsonValue")] {
                 if t.split(|c: char| !c.is_alphanumeric()).any(|w| w == word) {
                     used.insert(import);
                 }

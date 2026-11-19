@@ -753,6 +753,7 @@ fn ty(f: &FieldIr) -> String {
                 ColType::Json => "monorm_client::serde_json::Value",
                 ColType::Decimal => "monorm_client::bigdecimal::BigDecimal",
                 ColType::Bytes => "std::vec::Vec<u8>",
+                ColType::Duration => "monorm_client::chrono::TimeDelta",
             }
             .into()
         });
