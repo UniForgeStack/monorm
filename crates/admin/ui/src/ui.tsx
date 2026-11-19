@@ -56,8 +56,8 @@ export function Bypass({ names, params, change }: { names: string[]; params: URL
   return (
     <>
       {names.map((n) => (
-        <label key={n} className="bypass">
-          <input type="checkbox" checked={off.includes(n)} onChange={(e) => toggle(n, e.target.checked)} />
+        <label key={n} className="flex items-center gap-2 text-sm text-muted-foreground">
+          <input type="checkbox" className="size-4 accent-primary" checked={off.includes(n)} onChange={(e) => toggle(n, e.target.checked)} />
           Show {n}
         </label>
       ))}

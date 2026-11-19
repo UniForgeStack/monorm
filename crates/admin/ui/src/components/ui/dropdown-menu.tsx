@@ -24,6 +24,18 @@ export const DropdownMenuLabel = ({ className, ...props }: ComponentProps<typeof
 export const DropdownMenuSeparator = ({ className, ...props }: ComponentProps<typeof Menu.Separator>) => (
   <Menu.Separator className={cn("-mx-1 my-1 h-px bg-border", className)} {...props} />
 );
+export function DropdownMenuCheckboxItem({ className, children, ...props }: ComponentProps<typeof Menu.CheckboxItem>) {
+  return (
+    <Menu.CheckboxItem className={cn(item, "pl-8", className)} {...props}>
+      <span className="absolute left-2 flex size-4 items-center justify-center">
+        <Menu.ItemIndicator>
+          <Check className="size-4" aria-hidden />
+        </Menu.ItemIndicator>
+      </span>
+      {children}
+    </Menu.CheckboxItem>
+  );
+}
 export function DropdownMenuRadioItem({ className, children, ...props }: ComponentProps<typeof Menu.RadioItem>) {
   return (
     <Menu.RadioItem className={cn(item, "pl-8", className)} {...props}>

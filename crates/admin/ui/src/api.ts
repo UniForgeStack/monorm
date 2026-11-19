@@ -13,6 +13,8 @@ export interface Column {
   empty?: string;
   /** The value is computed: it has no field of its own. */
   computed?: boolean;
+  /** A foreign key: the resource that the value names. The page carries the row label in `labels`. */
+  ref?: { resource: string };
 }
 
 export interface Filter {
@@ -86,6 +88,8 @@ export interface Resource {
   columns: Column[];
   fields: Column[];
   key: string[];
+  /** The label of the column that names a record, or none when the resource has no text column for it. */
+  name_column: string | null;
   links: { name: string; title: string; target: string }[];
   page_size: number;
   max_page_size: number;
@@ -237,6 +241,8 @@ export interface Page {
   next: string | null;
   prev: string | null;
   flags?: Flags[];
+  /** For each row, the label of the related row of each foreign-key column (by column label). A missing entry shows the raw value. */
+  labels?: Record<string, unknown>[];
   /** Present when a custom search ran: the count of that one call, always exact. */
   count?: number;
   capped?: boolean;

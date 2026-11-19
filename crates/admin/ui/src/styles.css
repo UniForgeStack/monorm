@@ -100,11 +100,6 @@
 @layer components {
   .muted { color: var(--muted-foreground); font-weight: normal; }
   .center { min-height: 100vh; display: grid; place-items: center; padding: 1rem; }
-  .scroll { overflow-x: auto; background: var(--card); border: 1px solid var(--border); border-radius: 8px; }
-  .table { border-collapse: collapse; width: 100%; }
-  .table th, .table td { text-align: left; padding: .5rem .75rem; border-bottom: 1px solid var(--border); white-space: nowrap; }
-  .table th { font-size: .8rem; color: var(--muted-foreground); }
-  .pager { display: flex; gap: .5rem; margin-top: 1rem; }
   .fields { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: .5rem 1rem; }
   .fields > div { display: grid; grid-template-columns: 12rem 1fr; padding: .5rem 0; border-bottom: 1px solid var(--border); }
   .fields > div:last-child { border-bottom: 0; }
@@ -113,31 +108,14 @@
   .field { display: flex; flex-direction: column; gap: .25rem; margin-bottom: 1rem; }
   .field input { padding: .5rem; border: 1px solid var(--input); border-radius: 4px; font: inherit; }
   .toolbar { display: flex; gap: 1rem; align-items: center; justify-content: space-between; margin-bottom: 1rem; flex-wrap: wrap; }
-  .search { display: flex; gap: .5rem; }
-  .search input, .jump input, .size select { padding: .4rem .5rem; border: 1px solid var(--input); border-radius: 4px; font: inherit; }
-  .size { display: flex; gap: .5rem; align-items: center; color: var(--muted-foreground); font-size: .9rem; }
-  .pager { align-items: center; flex-wrap: wrap; }
-  .jump { display: flex; gap: .25rem; }
-  .jump input { width: 5.5rem; }
-  .count { margin-left: auto; color: var(--muted-foreground); display: flex; gap: .5rem; align-items: center; }
-  .sort { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
 
-  .filters { display: flex; flex-wrap: wrap; gap: .75rem 1rem; align-items: flex-start; margin-bottom: 1rem; }
-  .filter { display: flex; flex-direction: column; gap: .25rem; border: 0; padding: 0; margin: 0; color: var(--muted-foreground); font-size: .9rem; }
-  .filter legend { padding: 0; margin-bottom: .25rem; }
-  .filter input, .filter select { padding: .3rem .4rem; border: 1px solid var(--input); border-radius: 4px; font: inherit; }
-  .choices { display: flex; flex-wrap: wrap; gap: .5rem; }
-  .range { display: flex; flex-wrap: wrap; gap: .25rem; align-items: center; }
   .chips { display: flex; flex-wrap: wrap; gap: .25rem; }
   .chip { display: inline-flex; gap: .25rem; align-items: center; padding: .1rem .4rem; border: 1px solid var(--border); border-radius: 999px; }
   .chip button { border: 0; background: none; cursor: pointer; font: inherit; }
-  .options { list-style: none; margin: .25rem 0; padding: 0; max-height: 10rem; overflow: auto; }
-  .options button { border: 0; background: none; cursor: pointer; font: inherit; text-align: left; padding: .15rem 0; }
   .tabs { display: flex; gap: .25rem; border-bottom: 1px solid var(--border); margin-bottom: 1rem; }
   .tab { border: 0; border-bottom: 2px solid transparent; background: none; padding: .4rem .75rem; font: inherit; cursor: pointer; color: var(--muted-foreground); }
   .tab-on { border-bottom-color: var(--primary); color: inherit; }
   .actions { display: flex; gap: .5rem; margin-bottom: 1rem; }
-  .bypass { display: flex; gap: .4rem; align-items: center; color: var(--muted-foreground); font-size: .9rem; }
 
   .form { max-width: 40rem; padding-bottom: 4.5rem; }
   .field textarea, .field select { padding: .5rem; border: 1px solid var(--border); border-radius: 4px; font: inherit; }
@@ -187,9 +165,5 @@
   fieldset.section.inline-removed { opacity: .5; }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
-  .bulkbar { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; padding: .5rem .75rem; margin-bottom: .75rem; background: var(--accent); border: 1px solid var(--border); border-radius: 6px; }
-  .pick { width: 2rem; text-align: center; }
-  .row-actions { white-space: nowrap; text-align: right; }
-  .row-actions .btn { margin-left: .25rem; }
   tr[aria-selected="true"] { background: var(--accent); }
 }

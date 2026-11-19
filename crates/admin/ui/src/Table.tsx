@@ -1,76 +1,142 @@
 import { flexRender, getCoreRowModel, useReactTable, type ColumnDef } from "@tanstack/react-table";
+import { ArrowDown, ArrowUp } from "lucide-react";
 import { useMemo, type ReactNode } from "react";
 import type { Column } from "./api";
+import { Skeleton } from "./components/ui/skeleton";
+import { Table as KitTable, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./components/ui/table";
 import { cell, type Zone } from "./format";
 import { Link, detailUrl } from "./router";
+import { cn } from "./lib/utils";
 
 interface Row {
   cells: unknown[];
   key: string;
 }
 
-/** One column per meta column. The first one links to the detail of its row. */
-export function Table({ resource, columns, rows, keys, zone, sortable = [], unindexed = [], sort = "", onSort, select, rowActions }: { resource: string; columns: Column[]; rows: unknown[][]; keys: string[]; zone: Zone; sortable?: string[]; unindexed?: string[]; sort?: string; onSort?: (label: string) => void; select?: { chosen: Set<string>; toggle: (key: string) => void; toggleAll: () => void }; rowActions?: (index: number, key: string) => ReactNode }) {
+export interface TableProps {
+  resource: string;
+  columns: Column[];
+  rows: unknown[][];
+  keys: string[];
+  zone: Zone;
+  /** For each row, the label of the related row of each foreign-key column. */
+  labels?: Record<string, unknown>[];
+  /** The resources that this user may open: a foreign key links only to one of them. */
+  targets?: Set<string>;
+  /** Labels of the columns that the user hid. */
+  hidden?: Set<string>;
+  compact?: boolean;
+  busy?: boolean;
+  sortable?: string[];
+  unindexed?: string[];
+  sort?: string;
+  onSort?: (label: string) => void;
+  select?: { chosen: Set<string>; toggle: (key: string) => void; toggleAll: () => void };
+  rowActions?: (index: number, key: string) => ReactNode;
+}
+
+/** The text of a related row (its label), or the raw key when the page carries no label. */
+function related(value: unknown, label: unknown, column: Column, zone: Zone): string {
+  return label === undefined || label === null ? String(value) : cell(label, { ...column, widget: "text", array: false }, zone);
+}
+
+const NO_LABELS: Record<string, unknown>[] = [];
+
+/** One column per meta column. The first one links to the detail of its row; a foreign key shows the label of the related row and links to it. */
+export function Table({ resource, columns, rows, keys, zone, labels = NO_LABELS, targets, hidden, compact = false, busy = false, sortable = [], unindexed = [], sort = "", onSort, select, rowActions }: TableProps) {
   const defs = useMemo<ColumnDef<Row>[]>(
     () =>
       columns.map((c, i) => ({
         id: c.label,
         header: c.title,
         cell: ({ row }) => {
-          const text = cell(row.original.cells[i], c, zone);
+          const value = row.original.cells[i];
           const none = c.empty ?? "—";
+          if (c.ref && value !== null && value !== undefined && !Array.isArray(value) && typeof value !== "object") {
+            const text = related(value, labels[row.index]?.[c.label], c, zone);
+            if (i === 0) return <Link href={detailUrl(resource, row.original.key)}>{text}</Link>;
+            return targets?.has(c.ref.resource) ? <Link href={detailUrl(c.ref.resource, encodeURIComponent(String(value)))}>{text}</Link> : text;
+          }
+          const text = cell(value, c, zone);
           if (i === 0) return <Link href={detailUrl(resource, row.original.key)}>{text || none}</Link>;
-          return text || <span className="muted">{none}</span>;
+          return text || <span className="text-muted-foreground">{none}</span>;
         },
       })),
-    [columns, resource, zone],
+    [columns, resource, zone, labels, targets],
   );
   const data = useMemo<Row[]>(() => rows.map((cells, i) => ({ cells, key: keys[i] ?? "" })), [rows, keys]);
-  const table = useReactTable({ data, columns: defs, getCoreRowModel: getCoreRowModel() });
+  const columnVisibility = useMemo(() => Object.fromEntries([...(hidden ?? [])].map((h) => [h, false])), [hidden]);
+  const table = useReactTable({ data, columns: defs, getCoreRowModel: getCoreRowModel(), state: { columnVisibility } });
   const all = keys.length > 0 && !!select && keys.every((k) => select.chosen.has(k));
+  const pad = compact ? "py-1" : "py-3";
   return (
-    <div className="scroll">
-      <table className="table">
-        <thead>
+    <div aria-busy={busy || undefined} className={cn("transition-opacity", busy && "opacity-60")}>
+      <KitTable>
+        <TableHeader>
           {table.getHeaderGroups().map((g) => (
-            <tr key={g.id}>
+            <TableRow key={g.id} className="hover:bg-transparent">
               {select && (
-                <th scope="col" className="pick">
+                <TableHead scope="col" className="w-10">
                   <input type="checkbox" aria-label="Select all rows of this page" checked={all} onChange={select.toggleAll} />
-                </th>
+                </TableHead>
               )}
               {g.headers.map((h) => (
-                <th key={h.id} scope="col" aria-sort={ariaSort(sort, h.column.id)}>
+                <TableHead key={h.id} scope="col" aria-sort={ariaSort(sort, h.column.id)}>
                   {onSort && sortable.includes(h.column.id) ? (
-                    <button type="button" className="sort" title={unindexed.includes(h.column.id) ? "No index: a large table can refuse this sort" : undefined} onClick={() => onSort(h.column.id)}>
+                    <button type="button" className="inline-flex items-center gap-1 rounded-sm font-medium hover:text-foreground" title={unindexed.includes(h.column.id) ? "No index: a large table can refuse this sort" : undefined} onClick={() => onSort(h.column.id)}>
                       {flexRender(h.column.columnDef.header, h.getContext())}
-                      <span aria-hidden="true">{ariaSort(sort, h.column.id) === "ascending" ? " ▲" : ariaSort(sort, h.column.id) === "descending" ? " ▼" : ""}</span>
+                      {ariaSort(sort, h.column.id) === "ascending" && <ArrowUp className="size-3.5" aria-hidden="true" />}
+                      {ariaSort(sort, h.column.id) === "descending" && <ArrowDown className="size-3.5" aria-hidden="true" />}
                     </button>
                   ) : (
                     flexRender(h.column.columnDef.header, h.getContext())
                   )}
-                </th>
+                </TableHead>
               ))}
-              {rowActions && <th scope="col"><span className="sr-only">Actions</span></th>}
-            </tr>
+              {rowActions && (
+                <TableHead scope="col" className="w-10">
+                  <span className="sr-only">Actions</span>
+                </TableHead>
+              )}
+            </TableRow>
           ))}
-        </thead>
-        <tbody>
+        </TableHeader>
+        <TableBody>
           {table.getRowModel().rows.map((r) => (
-            <tr key={r.id} aria-selected={select?.chosen.has(r.original.key) || undefined}>
+            <TableRow key={r.id} aria-selected={select?.chosen.has(r.original.key) || undefined}>
               {select && (
-                <td className="pick">
+                <TableCell className={cn("w-10", pad)}>
                   <input type="checkbox" aria-label={`Select row ${decodeURIComponent(r.original.key)}`} checked={select.chosen.has(r.original.key)} onChange={() => select.toggle(r.original.key)} />
-                </td>
+                </TableCell>
               )}
               {r.getVisibleCells().map((c) => (
-                <td key={c.id}>{flexRender(c.column.columnDef.cell, c.getContext())}</td>
+                <TableCell key={c.id} className={pad}>{flexRender(c.column.columnDef.cell, c.getContext())}</TableCell>
               ))}
-              {rowActions && <td className="row-actions">{rowActions(r.index, r.original.key)}</td>}
-            </tr>
+              {rowActions && <TableCell className={cn("w-10 text-right", pad)}>{rowActions(r.index, r.original.key)}</TableCell>}
+            </TableRow>
           ))}
-        </tbody>
-      </table>
+        </TableBody>
+      </KitTable>
+    </div>
+  );
+}
+
+/** Grey rows while the first page loads. */
+export function TableSkeleton({ columns = 4, rows = 6, compact = false }: { columns?: number; rows?: number; compact?: boolean }) {
+  return (
+    <div role="status" aria-label="Loading the records" className="overflow-hidden rounded-lg border border-border bg-card">
+      <div className="flex gap-4 border-b border-border bg-muted/50 px-3 py-3">
+        {Array.from({ length: columns }, (_, i) => (
+          <Skeleton key={i} className="h-3 flex-1" />
+        ))}
+      </div>
+      {Array.from({ length: rows }, (_, r) => (
+        <div key={r} className={cn("flex gap-4 border-b border-border px-3 last:border-b-0", compact ? "py-2" : "py-3.5")}>
+          {Array.from({ length: columns }, (_, i) => (
+            <Skeleton key={i} className="h-4 flex-1" />
+          ))}
+        </div>
+      ))}
     </div>
   );
 }

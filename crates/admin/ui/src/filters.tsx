@@ -1,6 +1,10 @@
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { Filter, X } from "lucide-react";
 import { useState } from "react";
 import * as api from "./api";
+import { Badge } from "./components/ui/badge";
+import { Input, Select } from "./components/ui/input";
+import { Popover } from "./components/ui/popover";
 import { type Zone } from "./format";
 import { Button } from "./ui";
 
@@ -11,33 +15,144 @@ type Params = URLSearchParams;
 type Change = (edit: (p: Params) => void) => void;
 
 const key = (f: api.Filter, op = "") => `f.${f.name}${op ? `:${op}` : ""}`;
+const isFilterKey = (k: string) => k.startsWith("f.") || k.startsWith("n.");
+const legend = "mb-1 p-0 text-xs font-medium text-muted-foreground";
+const small = "h-8 w-auto min-w-0 px-2";
 
-/** The filter bar of a list: named filters first, then one control per filter. Every control writes to the URL parameters. */
-export function FilterBar({ meta, params, change, zone }: { meta: api.Resource; params: Params; change: Change; zone: Zone }) {
-  if (meta.filters.length === 0 && meta.named_filters.length === 0) return null;
-  const active = [...params.keys()].some((k) => k.startsWith("f.") || k.startsWith("n."));
+const safeDecode = (v: string) => {
+  try {
+    return decodeURIComponent(v);
+  } catch {
+    return v;
+  }
+};
+
+/** True when the list has at least one filter control. */
+export const hasFilters = (meta: api.Resource) => meta.filters.length > 0 || meta.named_filters.length > 0;
+
+/** The filters in a popover: named filters first, then one control per filter. Every control writes to the URL parameters. */
+export function FilterPopover({ meta, params, change, zone }: { meta: api.Resource; params: Params; change: Change; zone: Zone }) {
+  if (!hasFilters(meta)) return null;
+  const active = [...new Set([...params.keys()].filter(isFilterKey))].length;
   return (
-    <div className="filters" role="group" aria-label="Filters">
-      {meta.named_filters.map((n) => (
-        <Named key={n.name} filter={n} params={params} change={change} />
-      ))}
-      {meta.filters.map((f) => (
-        <Control key={f.name} filter={f} params={params} change={change} zone={zone} />
-      ))}
-      {active && (
-        <Button
-          variant="plain"
-          onClick={() =>
-            change((p) => {
-              for (const k of [...p.keys()]) if (k.startsWith("f.") || k.startsWith("n.")) p.delete(k);
-            })
-          }
-        >
-          Clear filters
+    <Popover
+      label="Filters"
+      trigger={({ open, toggle, id }) => (
+        <Button variant="plain" aria-expanded={open} aria-controls={id} onClick={toggle}>
+          <Filter aria-hidden="true" />
+          Filters
+          {active > 0 && <Badge variant="default" className="px-1.5 py-0">{active}</Badge>}
         </Button>
       )}
-    </div>
+    >
+      <div className="grid gap-4 sm:grid-cols-2">
+        {meta.named_filters.map((n) => (
+          <Named key={n.name} filter={n} params={params} change={change} />
+        ))}
+        {meta.filters.map((f) => (
+          <Control key={f.name} filter={f} params={params} change={change} zone={zone} />
+        ))}
+      </div>
+      {active > 0 && (
+        <div className="mt-4 border-t border-border pt-3">
+          <Button variant="plain" size="sm" onClick={() => change(clearFilters)}>
+            Clear filters
+          </Button>
+        </div>
+      )}
+    </Popover>
   );
+}
+
+const clearFilters = (p: Params) => {
+  for (const k of [...p.keys()]) if (isFilterKey(k)) p.delete(k);
+};
+
+interface Chip {
+  id: string;
+  label: string;
+  /** A relation value: the chip shows the name of the record. */
+  relation?: { target: string; value: string };
+  drop: (p: Params) => void;
+}
+
+/** The active filters as one chip each (a relation filter has one chip for each chosen record). */
+export function activeChips(meta: api.Resource, params: Params, zone: Zone): Chip[] {
+  const out: Chip[] = [];
+  for (const k of new Set(params.keys())) {
+    if (k.startsWith("n.")) {
+      const f = meta.named_filters.find((n) => `n.${n.name}` === k);
+      const choice = f?.choices.find((c) => c.name === params.get(k));
+      if (f) out.push({ id: k, label: `${f.title}: ${choice?.title ?? params.get(k)}`, drop: (p) => p.delete(k) });
+      continue;
+    }
+    if (!k.startsWith("f.")) continue;
+    const [name = "", op = ""] = k.slice(2).split(":");
+    const f = meta.filters.find((x) => x.name === name);
+    if (!f) continue;
+    const values = params.getAll(k);
+    if (op === "empty" || op === "notempty") {
+      out.push({ id: k, label: `${f.title} ${op === "empty" ? "is empty" : "is not empty"}`, drop: (p) => p.delete(k) });
+    } else if (f.kind === "relation" && op === "") {
+      for (const v of values) {
+        out.push({ id: `${k}=${v}`, label: `${f.title}: ${safeDecode(v)}`, relation: { target: f.target ?? "", value: v }, drop: (p) => withoutValue(p, k, v) });
+      }
+    } else {
+      out.push({ id: k, label: `${f.title} ${opText(f, op, values, zone)}`, drop: (p) => p.delete(k) });
+    }
+  }
+  return out;
+}
+
+function withoutValue(p: Params, name: string, value: string) {
+  const rest = p.getAll(name).filter((v) => v !== value);
+  p.delete(name);
+  for (const v of rest) p.append(name, v);
+}
+
+function opText(f: api.Filter, op: string, values: string[], zone: Zone): string {
+  const day = (v: string) => (f.kind === "datetime" ? dayOf(new Date(v), zone) : v);
+  const one = values[0] ?? "";
+  if (op === "gte") return f.kind === "date" || f.kind === "datetime" ? `from ${day(one)}` : `≥ ${one}`;
+  if (op === "lte") return f.kind === "date" ? `to ${one}` : `≤ ${one}`;
+  if (op === "lt") return f.kind === "datetime" ? `to ${plusDays(day(one), -1)}` : `< ${one}`;
+  if (op === "gt") return `> ${one}`;
+  return `${op ? `${op} ` : "is "}${values.join(", ")}`;
+}
+
+/** One chip for each active filter, each with a button that removes it, and a button that removes all. */
+export function FilterChips({ meta, params, change, zone }: { meta: api.Resource; params: Params; change: Change; zone: Zone }) {
+  const chips = activeChips(meta, params, zone);
+  if (chips.length === 0) return null;
+  return (
+    <ul aria-label="Active filters" className="m-0 mb-3 flex list-none flex-wrap items-center gap-2 p-0">
+      {chips.map((c) => (
+        <li key={c.id}>
+          <Badge variant="secondary" className="gap-1 py-1 pr-1 text-sm">
+            {c.relation ? <RecordName target={c.relation.target} value={c.relation.value} fallback={c.label} /> : c.label}
+            <button type="button" aria-label={`Remove filter ${c.label}`} className="rounded-full p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground" onClick={() => change(c.drop)}>
+              <X className="size-3.5" aria-hidden="true" />
+            </button>
+          </Badge>
+        </li>
+      ))}
+      {chips.length > 1 && (
+        <li>
+          <Button variant="ghost" size="sm" onClick={() => change(clearFilters)}>Clear all</Button>
+        </li>
+      )}
+    </ul>
+  );
+}
+
+/** The name of a record of a resource: the column that its meta names. It falls back to the decoded key. */
+function RecordName({ target, value, fallback }: { target: string; value: string; fallback: string }) {
+  const site = useQuery({ queryKey: ["site"], queryFn: api.site, staleTime: Infinity });
+  const d = useQuery({ queryKey: ["detail", target, value], queryFn: () => api.detail(target, value), retry: false });
+  const meta = site.data?.resources.find((r) => r.name === target);
+  const named = valueOf(d.data, meta?.name_column);
+  const title = meta?.title ?? target;
+  return <>{named !== undefined && named !== null ? `${title}: ${String(named)}` : fallback}</>;
 }
 
 /** A named filter is a select. Its default choice is the URL without the parameter; "All" is the choice `all`. */
@@ -45,9 +160,9 @@ function Named({ filter, params, change }: { filter: api.NamedFilter; params: Pa
   const name = `n.${filter.name}`;
   const value = params.get(name) ?? filter.default ?? "all";
   return (
-    <label className="filter">
+    <label className="grid content-start gap-1 text-xs font-medium text-muted-foreground">
       {filter.title}
-      <select
+      <Select
         value={value}
         onChange={(e) =>
           change((p) => {
@@ -60,7 +175,7 @@ function Named({ filter, params, change }: { filter: api.NamedFilter; params: Pa
         {filter.choices.map((c) => (
           <option key={c.name} value={c.name}>{c.title}</option>
         ))}
-      </select>
+      </Select>
     </label>
   );
 }
@@ -85,8 +200,8 @@ function Control({ filter, params, change, zone }: { filter: api.Filter; params:
     }
   };
   return (
-    <fieldset className="filter">
-      <legend>{filter.title}</legend>
+    <fieldset className="m-0 grid min-w-0 content-start gap-2 border-0 p-0">
+      <legend className={legend}>{filter.title}</legend>
       {body()}
       {nullable && <Empty filter={filter} params={params} change={change} />}
     </fieldset>
@@ -97,7 +212,7 @@ function Control({ filter, params, change, zone }: { filter: api.Filter; params:
 function Empty({ filter, params, change }: { filter: api.Filter; params: Params; change: Change }) {
   const on = params.has(key(filter, "empty")) ? "empty" : params.has(key(filter, "notempty")) ? "notempty" : "";
   return (
-    <select
+    <Select
       aria-label={`${filter.title}: empty`}
       value={on}
       onChange={(e) =>
@@ -111,16 +226,16 @@ function Empty({ filter, params, change }: { filter: api.Filter; params: Params;
       <option value="">Empty or not</option>
       <option value="empty">Is empty</option>
       <option value="notempty">Is not empty</option>
-    </select>
+    </Select>
   );
 }
 
 function Choices({ filter, params, change }: { filter: api.Filter; params: Params; change: Change }) {
   const chosen = params.getAll(key(filter));
   return (
-    <div className="choices">
+    <div className="flex flex-wrap gap-x-4 gap-y-1">
       {(filter.choices ?? []).map((c) => (
-        <label key={c}>
+        <label key={c} className="inline-flex items-center gap-1.5 text-sm">
           <input
             type="checkbox"
             checked={chosen.includes(c)}
@@ -141,7 +256,7 @@ function Choices({ filter, params, change }: { filter: api.Filter; params: Param
 
 function Bool({ filter, params, change }: { filter: api.Filter; params: Params; change: Change }) {
   return (
-    <select
+    <Select
       aria-label={filter.title}
       value={params.get(key(filter)) ?? ""}
       onChange={(e) =>
@@ -154,12 +269,12 @@ function Bool({ filter, params, change }: { filter: api.Filter; params: Params; 
       <option value="">Any</option>
       <option value="true">Yes</option>
       <option value="false">No</option>
-    </select>
+    </Select>
   );
 }
 
 /** A value box that writes on Enter or on leaving the box, not on each key: each write is a request. */
-function Box({ label, value, type = "text", onValue }: { label: string; value: string; type?: string; onValue: (v: string) => void }) {
+function Box({ label, value, type = "text", narrow = false, onValue }: { label: string; value: string; type?: string; narrow?: boolean; onValue: (v: string) => void }) {
   const [draft, setDraft] = useState(value);
   const [seen, setSeen] = useState(value);
   if (value !== seen) {
@@ -168,8 +283,9 @@ function Box({ label, value, type = "text", onValue }: { label: string; value: s
   }
   const commit = () => draft !== value && onValue(draft.trim());
   return (
-    <input
+    <Input
       type={type}
+      className={narrow ? small : undefined}
       aria-label={label}
       value={draft}
       onChange={(e) => setDraft(e.target.value)}
@@ -200,17 +316,20 @@ function Text({ filter, params, change }: { filter: api.Filter; params: Params; 
 function Range({ filter, params, change }: { filter: api.Filter; params: Params; change: Change }) {
   const bounds: [string, string][] = [["gte", "From"], ["lte", "To"]];
   return (
-    <div className="range">
+    <div className="flex flex-wrap items-center gap-2">
       <Text filter={filter} params={params} change={change} />
       {bounds.map(([op, label]) => (
-        <Box key={op} type="number" label={`${filter.title} ${label.toLowerCase()}`} value={params.get(key(filter, op)) ?? ""} onValue={(v) => change((p) => setOrDrop(p, key(filter, op), v))} />
+        <Box key={op} narrow type="number" label={`${filter.title} ${label.toLowerCase()}`} value={params.get(key(filter, op)) ?? ""} onValue={(v) => change((p) => setOrDrop(p, key(filter, op), v))} />
       ))}
     </div>
   );
 }
 
-/** The column that names a record: the first one that is not part of its key (an id says little), or the first. */
-const nameAt = (columns: api.Column[], key: string[]) => Math.max(0, columns.findIndex((c) => !key.includes(c.label)));
+/** The value of the column that names a record, from its detail. */
+const valueOf = (detail: api.Detail | undefined, name: string | null | undefined) => {
+  const at = detail && name ? detail.fields.findIndex((c) => c.label === name) : -1;
+  return at < 0 ? undefined : detail?.values[at];
+};
 
 const pad = (n: number) => String(n).padStart(2, "0");
 const dayOf = (d: Date, zone: Zone) =>
@@ -256,12 +375,12 @@ function Dates({ filter, params, change, zone }: { filter: api.Filter; params: P
       if (t) p.set(hi, date ? t : startOf(plusDays(t, 1), zone));
     });
   return (
-    <div className="range">
-      <input type="date" aria-label={`${filter.title} from`} value={from} onChange={(e) => set(e.target.value, to)} />
-      <input type="date" aria-label={`${filter.title} to`} value={to} onChange={(e) => set(from, e.target.value)} />
-      <span className="presets">
+    <div className="flex flex-wrap items-center gap-2">
+      <Input type="date" className={small} aria-label={`${filter.title} from`} value={from} onChange={(e) => set(e.target.value, to)} />
+      <Input type="date" className={small} aria-label={`${filter.title} to`} value={to} onChange={(e) => set(from, e.target.value)} />
+      <span className="flex flex-wrap gap-1">
         {presets(new Date(), zone).map((x) => (
-          <Button key={x.name} variant="plain" onClick={() => set(x.from, plusDays(x.to, -1))}>{x.name}</Button>
+          <Button key={x.name} variant="plain" size="sm" onClick={() => set(x.from, plusDays(x.to, -1))}>{x.name}</Button>
         ))}
       </span>
     </div>
@@ -299,12 +418,12 @@ function Relation({ filter, params, change }: { filter: api.Filter; params: Para
     });
   const rows =
     options.data?.pages.flatMap((pg) => {
-      const at = nameAt(pg.columns, meta?.key ?? []);
-      return pg.rows.map((cells, i) => ({ key: pg.keys[i] ?? "", name: String(cells[at] ?? pg.keys[i] ?? "") }));
+      const at = pg.columns.findIndex((c) => c.label === meta?.name_column);
+      return pg.rows.map((cells, i) => ({ key: pg.keys[i] ?? "", name: String((at < 0 ? null : cells[at]) ?? pg.keys[i] ?? "") }));
     }) ?? [];
   const searchable = !!meta && (meta.search.fields.length > 0 || meta.search.custom);
   return (
-    <div className="relation">
+    <div className="grid gap-2">
       <span className="chips">
         {chosen.map((k) => (
           <Chip key={k} target={target} value={k} onRemove={() => remove(k)} />
@@ -312,11 +431,11 @@ function Relation({ filter, params, change }: { filter: api.Filter; params: Para
       </span>
       {meta ? (
         <details onToggle={(e) => setOpen(e.currentTarget.open)}>
-          <summary>Pick a {meta.title}</summary>
-          {searchable && <input type="search" aria-label={`Search ${meta.title}`} value={text} onChange={(e) => setText(e.target.value)} />}
-          <ul className="options">
+          <summary className="cursor-pointer text-sm">Choose {meta.title}</summary>
+          {searchable && <Input type="search" className="mt-2" aria-label={`Search ${meta.title}`} value={text} onChange={(e) => setText(e.target.value)} />}
+          <ul className="m-0 my-1 max-h-40 list-none overflow-auto p-0">
             {rows.filter((r) => !chosen.includes(r.key)).map((r) => (
-              <li key={r.key}><button type="button" onClick={() => add(r.key)}>{r.name}</button></li>
+              <li key={r.key}><button type="button" className="w-full rounded-sm px-2 py-1 text-left text-sm hover:bg-accent" onClick={() => add(r.key)}>{r.name}</button></li>
             ))}
           </ul>
           {options.hasNextPage && (
@@ -335,9 +454,8 @@ function Relation({ filter, params, change }: { filter: api.Filter; params: Para
 function Chip({ target, value, onRemove }: { target: string; value: string; onRemove: () => void }) {
   const site = useQuery({ queryKey: ["site"], queryFn: api.site, staleTime: Infinity });
   const d = useQuery({ queryKey: ["detail", target, value], queryFn: () => api.detail(target, value), retry: false });
-  const at = d.data ? nameAt(d.data.fields, site.data?.resources.find((r) => r.name === target)?.key ?? []) : 0;
-  const named = d.data?.values[at];
-  const text = named !== undefined && named !== null ? String(named) : decodeURIComponent(value);
+  const named = valueOf(d.data, site.data?.resources.find((r) => r.name === target)?.name_column);
+  const text = named !== undefined && named !== null ? String(named) : safeDecode(value);
   return (
     <span className="chip">
       {text}

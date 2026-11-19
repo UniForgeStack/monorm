@@ -1,15 +1,55 @@
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useState, type FormEvent } from "react";
+import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Columns3, Ellipsis, Inbox, Plus, Rows3, SearchX, X } from "lucide-react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import * as api from "./api";
-import { FilterBar, POSITION } from "./filters";
+import { FilterChips, FilterPopover, POSITION } from "./filters";
 import { type Zone } from "./format";
 import { Link, navigate, newUrl, rememberList, useSearch } from "./router";
-import { Table } from "./Table";
+import { Table, TableSkeleton } from "./Table";
 import { ActionDialog, deleteAction, needsDialog, useQuick, type Target } from "./Actions";
 import { buttonVariants } from "./components/ui/button";
+import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "./components/ui/dropdown-menu";
+import { Input, Select } from "./components/ui/input";
 import { Alert, Bypass, Button, message } from "./ui";
 
 const SIZES = [10, 25, 50, 100, 200];
+
+const DENSITY = "monorm-admin-density";
+const HIDDEN = "monorm-admin-columns:";
+
+/** The density of every list (`compact` or `comfortable`) lives in the browser, like the time zone. */
+function useDensity(): [boolean, () => void] {
+  const [compact, setCompact] = useState(() => localStorage.getItem(DENSITY) === "compact");
+  return [
+    compact,
+    () => {
+      localStorage.setItem(DENSITY, compact ? "comfortable" : "compact");
+      setCompact(!compact);
+    },
+  ];
+}
+
+/** The labels of the columns that the user hid on one resource: they live in the browser. */
+function useHidden(resource: string): [Set<string>, (label: string, on: boolean) => void] {
+  const [hidden, setHidden] = useState<Set<string>>(() => {
+    try {
+      const saved: unknown = JSON.parse(localStorage.getItem(HIDDEN + resource) ?? "[]");
+      return new Set(Array.isArray(saved) ? saved.filter((x): x is string => typeof x === "string") : []);
+    } catch {
+      return new Set();
+    }
+  });
+  return [
+    hidden,
+    (label, on) => {
+      const next = new Set(hidden);
+      if (on) next.add(label);
+      else next.delete(label);
+      localStorage.setItem(HIDDEN + resource, JSON.stringify([...next]));
+      setHidden(next);
+    },
+  ];
+}
 
 /** The state of a list is the query string of the page: a copy of the URL parameters, and a way to write a new one. */
 export function useListState(): { params: URLSearchParams; change: (edit: (p: URLSearchParams) => void, keepPosition?: boolean) => void } {
@@ -88,9 +128,13 @@ export function ListView({ resource, zone, meta, params, change, scope }: { reso
     setAllMatching(false);
   };
   const quick = useQuick(resource, (action, target) => setPending({ action, target }), clearSelection);
+  const [compact, toggleDensity] = useDensity();
+  const [hidden, setHiddenColumn] = useHidden(resource);
+  const site = useQuery({ queryKey: ["site"], queryFn: api.site, staleTime: Infinity });
+  const targets = useMemo(() => new Set(site.data?.resources.map((r) => r.name) ?? []), [site.data]);
   const sort = params.get("sort") ?? "";
   const set = (name: string, value: string | null) => change((p) => (value ? p.set(name, value) : p.delete(name)));
-  const search_ = (e: FormEvent) => {
+  const onSearch = (e: FormEvent) => {
     e.preventDefault();
     set("q", draft.trim() || null);
   };
@@ -98,7 +142,6 @@ export function ListView({ resource, zone, meta, params, change, scope }: { reso
     const first = sort.split(",")[0] ?? "";
     set("sort", first === label ? `-${label}` : first === `-${label}` ? null : label);
   };
-  if (!rows.data && !rows.isError) return <p className="muted">Loading…</p>;
   const page = rows.data;
   const searchable = !!meta && (meta.search.fields.length > 0 || meta.search.custom);
   const pageSize = meta?.page_size ?? 25;
@@ -113,10 +156,10 @@ export function ListView({ resource, zone, meta, params, change, scope }: { reso
   const listActions = scope ? [] : actions.filter((a) => a.placement === "list");
   const filters = new URLSearchParams([...params].filter(([k]) => k === "q" || k === "without" || k.startsWith("f.") || k.startsWith("n.")));
   const filterSearch = filters.toString() ? `?${filters}` : "";
-  const countText_ = total.data ? `${total.data.count.toLocaleString("en-US")}${total.data.capped ? "+" : ""}` : "";
+  const matching = total.data ? `${total.data.count.toLocaleString("en-US")}${total.data.capped ? "+" : ""}` : "";
   const go = (action: api.ActionInfo, target: Target) => (needsDialog(action) ? setPending({ action, target }) : void quick(action, target));
   const selected: Target = allMatching
-    ? { all: true, ofSelection: true, search: filterSearch, scope, what: `all ${countText_} matching records`.replace("all  ", "all ") }
+    ? { all: true, ofSelection: true, search: filterSearch, scope, what: `all ${matching} matching records`.replace("all  ", "all ") }
     : { keys: [...chosen], ofSelection: true, scope, what: `${chosen.size} ${chosen.size === 1 ? "record" : "records"}` };
   const onPage = page?.keys ?? [];
   const pageChosen = onPage.length > 0 && onPage.every((k) => chosen.has(k));
@@ -144,99 +187,200 @@ export function ListView({ resource, zone, meta, params, change, scope }: { reso
     const n = Number(new FormData(e.currentTarget).get("page"));
     if (pages && Number.isInteger(n) && n >= 1 && n <= pages) position("page", String(n));
   };
+  const filtered = filters.size > 0;
+  const clearView = () =>
+    change((p) => {
+      p.delete("q");
+      for (const k of [...p.keys()]) if (k.startsWith("f.") || k.startsWith("n.")) p.delete(k);
+    });
   return (
     <>
-      <div className="toolbar">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
         {searchable && (
-          <form role="search" className="search" onSubmit={search_}>
-            <input type="search" aria-label="Search" placeholder="Search" value={draft} onChange={(e) => setDraft(e.target.value)} />
+          <form role="search" className="flex items-center gap-2" onSubmit={onSearch}>
+            <Input type="search" className="w-56" aria-label="Search" placeholder="Search" value={draft} onChange={(e) => setDraft(e.target.value)} />
             <Button type="submit" variant="plain">Search</Button>
           </form>
         )}
-        {!scope && api.may(meta, "create") && <Link className={buttonVariants()} href={newUrl(resource)}>Add</Link>}
-        {listActions.map((a) => (
-          <Button key={a.name} variant="plain" onClick={() => go(a, { search: filterSearch, what: "all the records that match the filters" })}>{a.label}</Button>
-        ))}
+        {meta && <FilterPopover meta={meta} params={params} change={change} zone={zone} />}
         {meta?.bypass && meta.bypass.length > 0 && <Bypass names={meta.bypass} params={params} change={change} />}
-        <label className="size">
-          Rows per page
-          <select value={limit} onChange={(e) => set("limit", e.target.value)}>
-            {sizes.map((n) => (
-              <option key={n} value={n}>{n}</option>
-            ))}
-          </select>
-        </label>
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          {page && <ColumnsMenu columns={page.columns} hidden={hidden} onChange={setHiddenColumn} />}
+          <Button variant="plain" aria-pressed={compact} title={compact ? "Switch to comfortable rows" : "Switch to compact rows"} onClick={toggleDensity}>
+            <Rows3 aria-hidden="true" />
+            Compact
+          </Button>
+          {listActions.map((a) => (
+            <Button key={a.name} variant="plain" onClick={() => go(a, { search: filterSearch, what: "all the records that match the filters" })}>{a.label}</Button>
+          ))}
+          {!scope && api.may(meta, "create") && (
+            <Link className={buttonVariants()} href={newUrl(resource)}>
+              <Plus aria-hidden="true" />
+              Add
+            </Link>
+          )}
+        </div>
       </div>
-      {meta && <FilterBar meta={meta} params={params} change={change} zone={zone} />}
-      {!page ? (
+      {meta && <FilterChips meta={meta} params={params} change={change} zone={zone} />}
+      {!page && rows.isError ? (
         // The toolbar stays: a refused sort, search or filter is undone from it.
-        <>
+        <div className="grid gap-3">
           <Alert>{message(rows.error)}</Alert>
-          {sort && <Button variant="plain" onClick={() => set("sort", null)}>Clear the sort</Button>}
-        </>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="plain" onClick={() => void rows.refetch()}>Try again</Button>
+            {sort && <Button variant="plain" onClick={() => set("sort", null)}>Clear the sort</Button>}
+          </div>
+        </div>
+      ) : !page ? (
+        <TableSkeleton columns={meta?.columns.length ?? 4} compact={compact} />
       ) : (
         <>
           {select && (chosen.size > 0 || allMatching) && (
-            <div className="bulkbar" role="group" aria-label="Bulk actions">
-              <span role="status">{allMatching ? `All ${countText_} matching records selected` : `${chosen.size} selected`}</span>
-              {!allMatching && pageChosen && moreMatching && <Button variant="plain" onClick={() => setAllMatching(true)}>Select all {countText_} matching records</Button>}
-              {allMatching && <Button variant="plain" onClick={() => { setAllMatching(false); setChosen(new Set()); }}>Clear the selection</Button>}
+            <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-accent px-3 py-2 text-sm" role="group" aria-label="Bulk actions">
+              <span role="status" className="mr-2 font-medium">{allMatching ? `All ${matching} matching records selected` : `${chosen.size} selected`}</span>
+              {!allMatching && pageChosen && moreMatching && <Button variant="plain" size="sm" onClick={() => setAllMatching(true)}>Select all {matching} matching records</Button>}
               {bulkActions.map((a) => (
-                <Button key={a.name} variant="plain" onClick={() => go(a, selected)}>{a.name === "bulk_delete" ? "Delete selected" : a.label}</Button>
+                <Button key={a.name} variant={a.name === "bulk_delete" ? "destructive" : "plain"} size="sm" onClick={() => go(a, selected)}>{a.name === "bulk_delete" ? "Delete selected" : a.label}</Button>
               ))}
+              <Button variant="ghost" size="sm" className="ml-auto" onClick={() => { setAllMatching(false); setChosen(new Set()); }}>
+                <X aria-hidden="true" />
+                Clear the selection
+              </Button>
             </div>
           )}
           {pending && <ActionDialog key={pending.action.name} resource={resource} action={pending.action} target={pending.target} onClose={() => setPending(null)} onDone={clearSelection} />}
-          <Table
-            select={select}
-            rowActions={
-              rowActions.length > 0
-                ? (i, key) => {
-                    const flags = page.flags?.[i] ?? {};
-                    const may = !(meta?.can ?? []).includes("change") || flags.change === true;
-                    return rowActions.map((a) => {
-                      const fits = !a.applies || flags[`applies:${a.name}`] === true;
-                      return (
-                        <Button key={a.name} variant="plain" disabled={!may || !fits} title={!may ? "This record does not allow change" : !fits ? "This action does not apply to this record" : undefined} onClick={() => go(a, { keys: [key], scope, what: "this record" })}>
-                          {a.label}
-                        </Button>
-                      );
-                    });
-                  }
-                : undefined
-            }
-            resource={resource}
-            columns={page.columns}
-            rows={page.rows}
-            keys={page.keys}
-            zone={zone}
-            sortable={meta?.sortable.map((s) => s.column) ?? []}
-            unindexed={meta?.sortable.filter((s) => !s.indexed).map((s) => s.column) ?? []}
-            sort={sort}
-            onSort={sortBy}
-          />
-          {page.rows.length === 0 && <p className="muted">No records.</p>}
-          <div className="pager">
-            <Button variant="plain" disabled={!page.prev} onClick={() => change(() => undefined)}>First</Button>
-            <Button variant="plain" disabled={!page.prev} onClick={() => page.prev && position("before", page.prev)}>Previous</Button>
-            <Button variant="plain" disabled={!page.next} onClick={() => page.next && position("cursor", page.next)}>Next</Button>
-            <Button variant="plain" disabled={!page.next} onClick={() => position("last", "1")}>Last</Button>
-            {pages && pages > 1 && (
-              <form className="jump" onSubmit={jump}>
-                <input name="page" type="number" min={1} max={pages} aria-label="Page number" placeholder={`1–${pages}`} />
-                <Button type="submit" variant="plain">Go</Button>
-              </form>
-            )}
-            <span className="count" role="status">
+          {page.rows.length === 0 ? (
+            <Empty searching={filtered || !!q} canAdd={!scope && api.may(meta, "create")} resource={resource} title={meta?.title ?? resource} onClear={clearView} />
+          ) : (
+            <Table
+              select={select}
+              rowActions={rowActions.length > 0 ? (i, key) => <RowMenu actions={rowActions} flags={page.flags?.[i] ?? {}} may={!(meta?.can ?? []).includes("change") || (page.flags?.[i] ?? {}).change === true} label={decodeURIComponent(key)} onRun={(a) => go(a, { keys: [key], scope, what: "this record" })} /> : undefined}
+              resource={resource}
+              columns={page.columns}
+              rows={page.rows}
+              keys={page.keys}
+              labels={page.labels}
+              targets={targets}
+              hidden={hidden}
+              compact={compact}
+              busy={rows.isPlaceholderData}
+              zone={zone}
+              sortable={meta?.sortable.map((s) => s.column) ?? []}
+              unindexed={meta?.sortable.filter((s) => !s.indexed).map((s) => s.column) ?? []}
+              sort={sort}
+              onSort={sortBy}
+            />
+          )}
+          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+            <span className="flex items-center gap-2 text-muted-foreground" role="status">
               {total.isError ? message(total.error) : total.data ? countText(total.data) : "Counting…"}
               {total.data?.capped && !exact && (
-                <Button variant="plain" onClick={() => setExact(true)}>Count exactly</Button>
+                <Button variant="plain" size="sm" onClick={() => setExact(true)}>Count exactly</Button>
               )}
             </span>
+            <div className="ml-auto flex flex-wrap items-center gap-3">
+              <label className="flex items-center gap-2 text-muted-foreground">
+                Rows per page
+                <Select className="h-8 w-auto py-0" value={limit} onChange={(e) => set("limit", e.target.value)}>
+                  {sizes.map((n) => (
+                    <option key={n} value={n}>{n}</option>
+                  ))}
+                </Select>
+              </label>
+              {pages && pages > 1 && (
+                <form className="flex items-center gap-1" onSubmit={jump}>
+                  <Input name="page" type="number" min={1} max={pages} className="h-8 w-24" aria-label="Page number" placeholder={`1–${pages}`} />
+                  <Button type="submit" variant="plain" size="sm">Go</Button>
+                </form>
+              )}
+              <nav aria-label="Pagination" className="flex items-center gap-1">
+                <Button variant="plain" size="icon" className="size-8" aria-label="First" disabled={!page.prev} onClick={() => change(() => undefined)}>
+                  <ChevronsLeft aria-hidden="true" />
+                </Button>
+                <Button variant="plain" size="sm" disabled={!page.prev} onClick={() => page.prev && position("before", page.prev)}>
+                  <ChevronLeft aria-hidden="true" />
+                  Previous
+                </Button>
+                <Button variant="plain" size="sm" disabled={!page.next} onClick={() => page.next && position("cursor", page.next)}>
+                  Next
+                  <ChevronRight aria-hidden="true" />
+                </Button>
+                <Button variant="plain" size="icon" className="size-8" aria-label="Last" disabled={!page.next} onClick={() => position("last", "1")}>
+                  <ChevronsRight aria-hidden="true" />
+                </Button>
+              </nav>
+            </div>
           </div>
         </>
       )}
     </>
+  );
+}
+
+/** The choice of the columns to show: the first one stays, it links to the record. */
+function ColumnsMenu({ columns, hidden, onChange }: { columns: api.Column[]; hidden: Set<string>; onChange: (label: string, on: boolean) => void }) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="plain">
+          <Columns3 aria-hidden="true" />
+          Columns
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuLabel>Show columns</DropdownMenuLabel>
+        {columns.map((c, i) => (
+          <DropdownMenuCheckboxItem key={c.label} checked={!hidden.has(c.label)} disabled={i === 0} onSelect={(e) => e.preventDefault()} onCheckedChange={(on) => onChange(c.label, !on)}>
+            {c.title}
+          </DropdownMenuCheckboxItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/** The actions of one row in a menu. An action that does not fit stays in the menu, off, with the reason. */
+function RowMenu({ actions, flags, may, label, onRun }: { actions: api.ActionInfo[]; flags: Record<string, unknown>; may: boolean; label: string; onRun: (a: api.ActionInfo) => void }) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="icon" className="size-8" aria-label={`Actions for row ${label}`}>
+          <Ellipsis aria-hidden="true" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        {actions.map((a) => {
+          const fits = !a.applies || flags[`applies:${a.name}`] === true;
+          return (
+            <DropdownMenuItem key={a.name} disabled={!may || !fits} title={!may ? "This record does not allow change" : !fits ? "This action does not apply to this record" : undefined} onSelect={() => onRun(a)}>
+              {a.label}
+            </DropdownMenuItem>
+          );
+        })}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/** No row: a view that matches nothing offers to clear itself; an empty resource offers to add a record. */
+function Empty({ searching, canAdd, resource, title, onClear }: { searching: boolean; canAdd: boolean; resource: string; title: string; onClear: () => void }) {
+  const Icon = searching ? SearchX : Inbox;
+  return (
+    <div className="grid justify-items-center gap-2 rounded-lg border border-dashed border-border bg-card px-6 py-14 text-center">
+      <Icon className="size-8 text-muted-foreground" aria-hidden="true" />
+      <p className="m-0 font-medium">{searching ? "No records match" : "No records yet"}</p>
+      <p className="m-0 text-sm text-muted-foreground">{searching ? "Change the search or the filters to see more records." : `There is no ${title} record to show.`}</p>
+      {searching ? (
+        <Button variant="plain" onClick={onClear}>Clear the search and filters</Button>
+      ) : (
+        canAdd && (
+          <Link className={buttonVariants()} href={newUrl(resource)}>
+            <Plus aria-hidden="true" />
+            Add
+          </Link>
+        )
+      )}
+    </div>
   );
 }
 
