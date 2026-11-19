@@ -443,8 +443,12 @@ async def one_row_topics(request):
         await db.close()
 
 
+@pytest.mark.case("queries::at_n_is_the_row_at_a_position_of_the_order_at_1_is_last")
 async def test_one_row_indices_and_default_order(one_row_topics):
     _, Topic, t = one_row_topics
+    assert await t[99] is None
+    with pytest.raises(ValueError):
+        t[-2]
     assert (await t[0]).name == "c"
     assert (await t[1]).name == "b"
     assert (await t[-1]).name == "a"
@@ -501,10 +505,9 @@ async def test_one_row_create_task(one_row_topics):
         await asyncio.create_task(t.filter(Topic.name == "missing").require().first())
 
 
+@pytest.mark.case("queries::first_last_at_and_get_throw_query_error_on_a_query_set_with_a_limit_offset_or_slice")
 async def test_one_row_index_errors(one_row_topics):
     _, _, t = one_row_topics
-    with pytest.raises(ValueError):
-        t[-2]
     limited = t.limit(monorm.param("limit"))
     for cut in [t[:2], t[1:], t.limit(0), t.offset(1), limited]:
         for one in [lambda q: q.first(), lambda q: q.last(), lambda q: q[0], lambda q: q[-1], lambda q: q.get()]:
@@ -526,6 +529,7 @@ async def test_one_row_param_index(one_row_topics):
     assert await prepared(n=9) is None
 
 
+@pytest.mark.case("queries::limit_offset_and_slice_combine_only_as_one_limit_and_one_offset_or_one_slice")
 def test_slice_combinations_raise(one_row_topics):
     _, _, t = one_row_topics
     p = monorm.param("n")
@@ -554,6 +558,7 @@ def test_slice_combinations_raise(one_row_topics):
         t.offset(1)[0:2]
 
 
+@pytest.mark.case("queries::a_one_row_query_inspects_prints_its_sql_and_prepares")
 async def test_one_row_prepared(one_row_topics, observe_queries):
     db, Topic, t = one_row_topics
     for make in [lambda q: q.first(), lambda q: q.last(), lambda q: q[0], lambda q: q.get()]:
@@ -902,6 +907,15 @@ def base_getter(monkeypatch):
     monkeypatch.setattr(monorm.model, "_reference_adapter", None)
 
 
+@pytest.fixture(params=["adapter", "base"])
+def getter(request, monkeypatch):
+    """The reference getter under test: the adapter, or the base getter that a build without reference loading uses."""
+    if request.param == "base":
+        import monorm.model
+
+        monkeypatch.setattr(monorm.model, "_reference_adapter", None)
+
+
 def state(book):
     try:
         return book.author
@@ -909,17 +923,16 @@ def state(book):
         return "unset"
 
 
-async def test_base_getter_prefetch_of_an_unfiltered_dangling_key_is_not_loaded(base_getter, unset):
-    db, A, B, P = unset
-    books = await B.objects.using(db).order_by(B.id).load(B.author.objects.as_prefetch()).all()
-    assert [state(b) for b in books[:3]] == [books[0].author, "unset", None]
-    assert books[0].author.name == "ann"
-
-
-async def test_base_getter_join_of_an_unfiltered_dangling_key_is_not_loaded(base_getter, unset):
+async def test_an_unfiltered_dangling_key_stays_not_loaded_after_a_join_a_prefetch_and_load(getter, unset):
     db, A, B, P = unset
     books = await B.objects.using(db).order_by(B.id).load(B.author).all()
     assert [state(b) for b in books][1:3] == ["unset", None]
+    books = await B.objects.using(db).order_by(B.id).load(B.author.objects.as_prefetch()).all()
+    assert [state(b) for b in books[:3]] == [books[0].author, "unset", None]
+    assert books[0].author.name == "ann"
+    book = await B.objects.using(db).get(B.id == 2)
+    await book.load(B.author.objects.as_prefetch())
+    assert state(book) == "unset"
 
 
 async def test_base_getter_instance_load_of_an_unfiltered_dangling_key_is_not_loaded(base_getter, unset):
@@ -932,7 +945,7 @@ async def test_base_getter_instance_load_of_an_unfiltered_dangling_key_is_not_lo
     assert state(book) == "unset"
 
 
-async def test_base_getter_keeps_none_for_has_one_and_label(base_getter, unset):
+async def test_a_labelled_prefetch_and_a_has_one_keep_null_for_no_row(getter, unset):
     db, A, B, P = unset
     ann = await A.objects.using(db).order_by(A.id).load(A.profile).get(A.id == 3)
     assert ann.profile is None
@@ -942,7 +955,7 @@ async def test_base_getter_keeps_none_for_has_one_and_label(base_getter, unset):
 
 @pytest.mark.skipif(not QUERY_DEFAULTS, reason="needs the monorm.query-defaults package")
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
-async def test_base_getter_filtered_target_is_none_and_bypassed_prefetch_is_not_loaded(base_getter, request, dialect):
+async def test_a_filtered_target_is_null_and_a_bypassed_prefetch_is_not_loaded(getter, request, dialect):
     db, A, B, P = await open_unset(request, dialect, True)
     try:
         books = await B.objects.using(db).order_by(B.id).load(B.author.objects.as_prefetch()).all()
@@ -955,41 +968,19 @@ async def test_base_getter_filtered_target_is_none_and_bypassed_prefetch_is_not_
         await db.close()
 
 
-async def test_prefetch_of_a_nullable_dangling_key_is_not_loaded(unset):
-    db, A, B, P = unset
-    books = await B.objects.using(db).order_by(B.id).load(B.author.objects.as_prefetch()).all()
-    assert [state(b) for b in books[:3]] == [books[0].author, "unset", None]
-
-
-async def test_load_as_prefetch_of_a_nullable_dangling_key_is_not_loaded(unset):
-    db, A, B, P = unset
-    book = await B.objects.using(db).get(B.id == 2)
-    await book.load(B.author.objects.as_prefetch())
-    assert state(book) == "unset"
-
-
-async def test_adapter_join_and_prefetch_of_required_and_nullable_dangling_keys(unset):
+async def test_adapter_guards_for_required_and_nullable_dangling_keys(unset):
     db, A, B, P = unset
     for Model in (B, P):
         for path in (Model.author, Model.author.objects.as_prefetch()):
             row = await Model.objects.using(db).load(path).get(Model.id == 2)
             with pytest.raises(monorm.NotLoaded):
                 row.author
-
-
-async def test_plain_load_of_a_required_dangling_key_raises_integrity_error(unset):
-    db, A, B, P = unset
-    row = await P.objects.using(db).get(P.id == 2)
+    required = await P.objects.using(db).get(P.id == 2)
     with pytest.raises(monorm.IntegrityError):
-        await row.load(P.author)
-
-
-async def test_plain_load_of_a_nullable_dangling_key_keeps_none(unset):
-    # F2: pin the current adapter behavior pending an owner decision.
-    db, A, B, P = unset
-    row = await B.objects.using(db).get(B.id == 2)
-    await row.load(B.author)
-    assert row.author is None
+        await required.load(P.author)
+    nullable = await B.objects.using(db).get(B.id == 2)
+    await nullable.load(B.author)
+    assert nullable.author is None  # F2: current behavior pending an owner decision.
 
 
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])

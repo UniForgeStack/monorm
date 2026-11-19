@@ -734,6 +734,8 @@ test("at(n) is the row at a position of the order; at(-1) is last()", async () =
   // no orderBy(): the default order, as first()
   assert.equal((await User.objects.at(0))!.name, "Alice");
   assert.equal((await User.objects.at(2))!.name, "Carol");
+  assert.equal((await User.objects.withoutDefaults().at(0))!.name, "Alice");
+  assert.deepEqual((await byName.slice(1, 3)).map((u) => u.name), ["Bob", "Carol"]);
   await assert.rejects(async () => byName.at(-2), RangeError);
   await assert.rejects(async () => byName.at(1.5), RangeError);
 });
@@ -765,13 +767,16 @@ test("first(), last(), at() and get() start no query until awaited", async () =>
   }
 });
 
-test("first(), last(), at() and get() throw QueryError on a query set with a limit, offset or slice", () => {
+test("first(), last(), at() and get() throw QueryError on a query set with a limit, offset or slice", async () => {
   const byName = User.objects.orderBy(User.name);
-  for (const cut of [byName.limit(2), byName.offset(1), byName.slice(1, 3)]) {
+  const limited = byName.limit(param("limit"));
+  for (const cut of [byName.slice(0, 2), byName.offset(1), byName.limit(0), byName.limit(2), byName.slice(1, 3), limited]) {
     for (const read of [() => cut.first(), () => cut.last(), () => cut.at(0), () => cut.at(-1), () => cut.get()]) {
       assert.throws(read, (e: unknown) => e instanceof QueryError && /limit, offset or slice; use at\(n\)/.test(e.message));
     }
   }
+  await assert.rejects(() => limited.prepare().first({ limit: 0 }), (e: unknown) => e instanceof QueryError && /use at\(n\)/.test(e.message));
+  await assert.rejects(() => limited.prepare().get({ limit: 0 }), (e: unknown) => e instanceof QueryError && /use at\(n\)/.test(e.message));
 });
 
 test("at(param) reads the row at a position bound at run time", async () => {
@@ -794,16 +799,6 @@ test("limit(), offset() and slice() combine only as one limit and one offset, or
   for (const build of repeated) assert.throws(build, (e: unknown) => e instanceof QueryError && /use one limit\(\) and one offset\(\), or a single slice\(\)/.test(e.message));
 });
 
-test("param() limits cannot be replaced by one-row queries", async () => {
-  const limited = User.objects.limit(param("n"));
-  assert.throws(() => limited.first(), QueryError);
-  assert.throws(() => limited.at(0), QueryError);
-  assert.throws(() => limited.get(), QueryError);
-  assert.throws(() => limited.last(), QueryError);
-  await assert.rejects(() => limited.prepare().first({ n: 0 }), QueryError);
-  await assert.rejects(() => limited.prepare().get({ n: 0 }), QueryError);
-});
-
 test("a one-row query inspects, prints its SQL and prepares", async () => {
   await seed();
   const one = User.objects.orderBy(User.name).at(1);
@@ -815,6 +810,30 @@ test("a one-row query inspects, prints its SQL and prepares", async () => {
   assert.equal(await byId.run({ id: 0n }), null);
   const only = User.objects.filter(User.name.eq(param("name"))).get().prepare();
   assert.equal((await only.run({ name: "Carol" }))!.name, "Carol");
+  const db = getDatabase();
+  const events: unknown[] = [];
+  const stop = db.onQuery((e) => events.push(e));
+  try {
+    const reads = [(q: typeof User.objects) => q.first(), (q: typeof User.objects) => q.last(), (q: typeof User.objects) => q.at(0), (q: typeof User.objects) => q.get()];
+    for (const make of reads) {
+      const prepared = make(User.objects.filter(User.name.eq(param("name")))).prepare() as unknown as {
+        sql(p: object): string;
+        inspect(p: object): { statements: unknown[] };
+        run(p: object): Promise<{ name: string } | null>;
+      };
+      events.length = 0;
+      assert.ok(prepared.sql({ name: "Bob" }));
+      assert.ok(prepared.inspect({ name: "Bob" }).statements.length);
+      assert.equal(events.length, 0);
+      assert.equal((await prepared.run({ name: "Bob" }))!.name, "Bob");
+      assert.equal(await prepared.run({ name: "missing" }), null);
+      assert.equal(events.length, 2);
+    }
+  } finally {
+    stop();
+  }
+  await assert.rejects(User.objects.get().prepare().run({}), MultipleObjectsReturned);
+  await assert.rejects(User.objects.filter(User.name.eq("missing")).require().first().prepare().run({}), User.DoesNotExist);
 });
 
 test("database error fields default to none", () => {
