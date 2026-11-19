@@ -238,15 +238,16 @@ for (const provider of PROVIDERS) {
     const site = new Admin(w.registry);
     site.register(Locked, { allowProtectedWrites: true } as never);
     const client = site.testClient(w.db, { user: SU });
-    let owner: Loose = Object.getPrototypeOf(Locked.objects);
-    while (!Object.prototype.hasOwnProperty.call(owner, "first")) owner = Object.getPrototypeOf(owner);
-    const original = Object.getOwnPropertyDescriptor(owner, "first") as PropertyDescriptor;
+    // The writer reads the compared columns with `select`, so the other edit hooks the `read` of that select.
+    let owner: Loose = Object.getPrototypeOf(Locked.objects.select({ id: Locked.id }));
+    while (!Object.prototype.hasOwnProperty.call(owner, "read")) owner = Object.getPrototypeOf(owner);
+    const original = Object.getOwnPropertyDescriptor(owner, "read") as PropertyDescriptor;
     // The other edit lands in the transaction, before the writer compares.
-    Object.defineProperty(owner, "first", {
+    Object.defineProperty(owner, "read", {
       ...original,
       value: async function (this: Loose, ...args: unknown[]) {
-        Object.defineProperty(owner, "first", original);
-        await Locked.objects.using(this.state.db).filter(Locked.id.eq(1)).update({ x: 9 });
+        Object.defineProperty(owner, "read", original);
+        await Locked.objects.using(this.qs.state.db).filter(Locked.id.eq(1)).update({ x: 9 });
         return original.value.apply(this, args);
       },
     });
@@ -254,7 +255,7 @@ for (const provider of PROVIDERS) {
       const r = await client.patch(`${LOCKED}/1`, { json: { set: { x: 2 }, loaded: { x: 1 } } });
       assert.equal(r.status, 409, r.text);
     } finally {
-      Object.defineProperty(owner, "first", original);
+      Object.defineProperty(owner, "read", original);
     }
     assert.equal((await Locked.objects.using(w.db).first()).x, 1, "the whole write rolled back, with the other edit");
     assert.deepEqual(await audit(w), []);

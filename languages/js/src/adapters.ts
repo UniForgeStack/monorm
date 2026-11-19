@@ -26,6 +26,12 @@ export interface FieldAdapter {
   prepare(value: unknown): Promise<unknown>;
   /** Turn a loaded stored value into the value the model shows. Sync, no I/O. */
   decode(stored: unknown): unknown;
+  /** Optional. A field of stored bytes that the admin shows as another value: `"json"` (the admin shows and edits the JSON of `adminToView`) or `"text"` (the admin shows "N bytes" and refuses an edit). */
+  adminMode?(): "json" | "text";
+  /** The JSON of the stored bytes. It throws when the bytes do not decode. */
+  adminToView?(stored: Uint8Array): unknown;
+  /** The value of the field (what `validate` takes) that a JSON value of the form stands for. It throws a {@link FieldAdapterError} for a bad value. */
+  adminFromView?(value: unknown): unknown;
 }
 
 /** An adapted value or statement that the pipeline rejects before any `prepare` call. */
@@ -73,6 +79,11 @@ const ADAPTERS = new WeakMap<ModelMeta, Map<string, FieldAdapter>>();
 /** True when a field of `meta` has a field adapter: its writes need host behavior. */
 export function hasFieldAdapters(meta: ModelMeta): boolean {
   return (ADAPTERS.get(meta)?.size ?? 0) > 0;
+}
+
+/** The field adapters of `meta`, by field name. */
+export function fieldAdapters(meta: ModelMeta): ReadonlyMap<string, FieldAdapter> {
+  return ADAPTERS.get(meta) ?? new Map();
 }
 
 /** The field adapter of `meta.field`, if it has one. */

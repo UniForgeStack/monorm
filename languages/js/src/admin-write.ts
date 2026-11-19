@@ -7,7 +7,7 @@
  */
 import type { HostFunction } from "./admin-host.js";
 import type { Database } from "./db.js";
-import { fieldAdapter, FieldAdapterError } from "./adapters.js";
+import { fieldAdapter, FieldAdapterError, type FieldAdapter } from "./adapters.js";
 import { Decimal } from "./decimal.js";
 import { DoesNotExist, ValidationError, VersionConflict } from "./errors.js";
 import { asCondition, Condition, Expression, IRContext, resolveNullRule, Slot, SlotParams } from "./expr.js";
@@ -287,13 +287,70 @@ function decodeOne(field: FieldMeta, value: unknown): unknown {
   return value;
 }
 
-/** The values of a request (JSON, by schema name) as the values of the model: by field name, with dates, big integers and decimals. */
-export function decodeValues(meta: ModelMeta, values: Readonly<Record<string, unknown>>): Record<string, unknown> {
+/** The JSON of a view field that its adapter refuses: the form shows it under the field. */
+export class ViewError extends Error {
+  constructor(readonly field: string, message: string) {
+    super(message);
+  }
+}
+
+/** The adapter of a field that the admin shows as JSON, or `undefined`. */
+function viewAdapter(meta: ModelMeta, name: string): FieldAdapter | undefined {
+  const adapter = fieldAdapter(meta, name);
+  return adapter?.adminMode?.() === "json" ? adapter : undefined;
+}
+
+function shownAsText(meta: ModelMeta, name: string): boolean {
+  return fieldAdapter(meta, name)?.adminMode?.() === "text";
+}
+
+/** What the admin shows for stored bytes: the JSON, or "N bytes" for bytes that do not decode or an adapter with no JSON. */
+export function viewOf(adapter: FieldAdapter, stored: Uint8Array | null | undefined): unknown {
+  if (stored === null || stored === undefined) return null;
+  if (adapter.adminMode?.() === "json" && adapter.adminToView !== undefined) {
+    try {
+      return adapter.adminToView(stored);
+    } catch (e) {
+      // The bytes do not decode: show the size. Any other error is a bug of the adapter.
+      if (!(e instanceof FieldAdapterError)) throw e;
+    }
+  }
+  return `${stored.byteLength} bytes`;
+}
+
+/** The compare of the Rust core (`json::same_json`): numbers compare by value, so `1` and `1.0` match. */
+export function sameJson(a: unknown, b: unknown): boolean {
+  if (Array.isArray(a) || Array.isArray(b)) return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((x, i) => sameJson(x, b[i]));
+  if (typeof a === "object" && a !== null && typeof b === "object" && b !== null) {
+    const ka = Object.keys(a);
+    return ka.length === Object.keys(b).length && ka.every((k) => k in b && sameJson((a as Loose)[k], (b as Loose)[k]));
+  }
+  return a === b;
+}
+
+/**
+ * The values of a request (JSON, by schema name) as the values of the model: by field name, with dates, big integers and decimals.
+ * A view field takes the value of its JSON. A JSON that the adapter refuses throws {@link ViewError} with `strict`, else stays JSON.
+ */
+export function decodeValues(meta: ModelMeta, values: Readonly<Record<string, unknown>>, strict = false): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [name, value] of Object.entries(values)) {
     const field = meta.fieldByIr.get(name);
-    if (field === undefined) out[name] = value;
-    else out[field.name] = field.array && Array.isArray(value) ? value.map((v) => decodeOne(field, v)) : decodeOne(field, value);
+    if (field === undefined) {
+      out[name] = value;
+      continue;
+    }
+    const adapter = value === null || value === undefined ? undefined : viewAdapter(meta, field.name);
+    if (shownAsText(meta, field.name)) out[field.name] = value;
+    else if (adapter?.adminFromView !== undefined) {
+      try {
+        out[field.name] = adapter.adminFromView(value);
+      } catch (e) {
+        if (!(e instanceof FieldAdapterError)) throw e;
+        if (strict) throw new ViewError(name, e.message);
+        out[field.name] = value;
+      }
+    } else out[field.name] = field.array && Array.isArray(value) ? value.map((v) => decodeOne(field, v)) : decodeOne(field, value);
   }
   return out;
 }
@@ -378,8 +435,13 @@ function invalid(meta: ModelMeta, e: ValidationError): Record<string, unknown> {
 }
 
 /** The envelope of an error that a write answers by status, or `undefined` for any other error. */
+function viewInvalid(e: ViewError): Record<string, unknown> {
+  return { ok: false, kind: "invalid", fields: { [e.field]: [e.message] }, form: [] };
+}
+
 function failure(meta: ModelMeta, e: unknown): Record<string, unknown> | undefined {
   if (e instanceof ValidationError) return invalid(meta, e);
+  if (e instanceof ViewError) return viewInvalid(e);
   // A field adapter refuses a value the form cannot build (for example base64 bytes for a message field).
   if (e instanceof FieldAdapterError) return { ok: false, kind: "invalid", fields: {}, form: [e.message] };
   if (e instanceof VersionConflict) return { ok: false, kind: "conflict" };
@@ -443,42 +505,74 @@ function same(type: string, stored: unknown, loaded: unknown): boolean {
   return String(stored) === String(loaded);
 }
 
-/** The stored bytes of a decoded adapter value, or `undefined` when the adapter stores something else. */
-function storedBytes(adapter: { validate(value: unknown): unknown }, value: unknown): Uint8Array | undefined {
-  try {
-    const stored = adapter.validate(value);
-    return stored instanceof Uint8Array ? stored : undefined;
-  } catch (e) {
-    if (e instanceof FieldAdapterError) return undefined;
-    throw e;
-  }
+/** The stored bytes of a loaded value, or `undefined` when the field stores something else. */
+function storedBytes(value: unknown): Uint8Array | undefined {
+  return value instanceof Uint8Array ? value : undefined;
 }
 
 /**
- * Reads the row under a lock and compares the loaded values of the `compare` fields with it. `false` when the row is gone.
+ * Reads the row under a lock and compares the loaded values of the `compare` fields with it. `null` when the row is gone, else the stored values of the compared fields and of `extra`.
  * The compare runs in the write transaction, so a concurrent edit between the load and the save is a `VersionConflict`.
+ * It selects the columns, so a field adapter does not decode them: a row with a value that does not decode still compares.
  */
-async function checkLoaded(meta: ModelMeta, qs: Loose, args: Loose): Promise<boolean> {
+async function checkLoaded(meta: ModelMeta, qs: Loose, args: Loose, extra: readonly string[]): Promise<Record<string, unknown> | null> {
   const loadedJson: Record<string, unknown> = args.loaded ?? {};
   const names: string[] = (args.compare ?? []).filter((n: string) => n in loadedJson);
-  const row = await (args.lock ? qs.lock() : qs).first();
-  if (row === null || row === undefined) return false;
-  const loaded = decodeValues(meta, Object.fromEntries(names.map((n) => [n, loadedJson[n]])));
+  const fieldOf = (n: string): FieldMeta | undefined => meta.fieldByIr.get(n);
+  const columns = new Map<string, FieldMeta>();
+  for (const f of meta.key) columns.set(f.name, f);
+  for (const n of [...names, ...extra]) {
+    const field = fieldOf(n);
+    if (field !== undefined) columns.set(field.name, field);
+  }
+  const items = Object.fromEntries([...columns].map(([name, field]) => [name, meta.column(field)]));
+  const row = await (args.lock ? qs.lock() : qs).select(items).first();
+  if (row === null || row === undefined) return null;
+  const viewOfName = (n: string): FieldAdapter | undefined => {
+    const field = fieldOf(n);
+    return field === undefined ? undefined : viewAdapter(meta, field.name);
+  };
+  const loaded = decodeValues(meta, Object.fromEntries(names.filter((n) => viewOfName(n) === undefined).map((n) => [n, loadedJson[n]])));
   for (const n of names) {
-    const field = meta.fieldByIr.get(n);
+    const field = fieldOf(n);
     const name = field?.name ?? n;
+    const view = viewOfName(n);
+    if (view !== undefined) {
+      // The form loaded the JSON view of the stored bytes: compare the view of the stored bytes now.
+      if (!sameJson(viewOf(view, storedBytes(row[name])), loadedJson[n])) throw new VersionConflict(`${meta.name} ${JSON.stringify(args.key)} was changed since the form loaded`);
+      continue;
+    }
     let current = row[name];
     let wanted = loaded[name];
     // An adapted field shows a decoded value; the form loaded its stored bytes (base64), so compare those.
-    const adapter = fieldAdapter(meta, name);
-    const stored = adapter ? storedBytes(adapter, current) : undefined;
-    if (stored !== undefined) {
-      current = stored;
-      if (typeof wanted === "string") wanted = Buffer.from(wanted, "base64");
-    }
+    if (fieldAdapter(meta, name) !== undefined && storedBytes(current) !== undefined && typeof wanted === "string") wanted = Buffer.from(wanted, "base64");
     if (!same(field?.type ?? "", current, wanted)) throw new VersionConflict(`${meta.name} ${JSON.stringify(args.key)} was changed since the form loaded`);
   }
-  return true;
+  return row;
+}
+
+/**
+ * Refuses a JSON edit that would drop data: a message field that the JSON view cannot show (an unknown field) would not survive the save.
+ * A stored value that does not decode has nothing to lose, so the repair goes through.
+ */
+function checkLossless(meta: ModelMeta, row: Record<string, unknown>, values: Record<string, unknown>): void {
+  for (const name of Object.keys(values)) {
+    const view = viewAdapter(meta, name);
+    const stored = storedBytes(row[name]);
+    if (view?.adminToView === undefined || view.adminFromView === undefined || stored === undefined) continue;
+    let kept: unknown;
+    let whole: unknown;
+    try {
+      kept = view.validate(view.adminFromView(view.adminToView(stored)));
+      whole = view.validate(view.decode(stored));
+    } catch (e) {
+      if (e instanceof FieldAdapterError) continue;
+      throw e;
+    }
+    if (kept instanceof Uint8Array && whole instanceof Uint8Array && !Buffer.from(kept).equals(Buffer.from(whole))) {
+      throw new ViewError(name, "the stored value has fields this version cannot show; edit it with a newer version");
+    }
+  }
 }
 
 /** The audit row of a default write, inside the write transaction. Answers its id. Rust sends the key text of an update and a delete; the admin sets the label, the key text of a create and the diff after it reads the record, by the id that this function answers. */
@@ -534,11 +628,11 @@ function perRow(fn: HostFunction): HostFunction {
 export function defaultWriter(model: AnyModel, config: Loose): HostFunction {
   const meta = model._meta;
   return perRow(async (database, args) => {
-    // A bulk delete sends a query set: `values` are the binds of its filters, not field values.
     const bulk = Array.isArray(args.filters);
-    const values = bulk ? {} : decodeValues(meta, args.values ?? {});
     const op: string = args.op;
     try {
+      // A bulk delete sends a query set: `values` are the binds of its filters, not field values.
+      const values = bulk ? {} : decodeValues(meta, args.values ?? {}, true);
       return await guarded(model, args, () =>
         database.transaction(async () => {
           if (bulk) {
@@ -552,7 +646,9 @@ export function defaultWriter(model: AnyModel, config: Loose): HostFunction {
             return { ok: true, key, audited: true, audit_id: await writeAudit(database, meta, args) };
           }
           const qs = oneRow(model, database, args.key, await resourceFilters(config, args.user, op));
-          if (!(await checkLoaded(meta, qs, args))) return { ok: false, kind: "not_found" };
+          const row = await checkLoaded(meta, qs, args, op === "update" ? Object.keys(values) : []);
+          if (row === null) return { ok: false, kind: "not_found" };
+          if (op === "update") checkLossless(meta, row, values);
           const done = op === "update" ? (Object.keys(values).length > 0 ? await qs.update(values) : await qs.exists()) : await qs.delete();
           if (!done) return { ok: false, kind: "not_found" };
           return { ok: true, key: args.key, audited: true, audit_id: await writeAudit(database, meta, args) };
@@ -571,11 +667,11 @@ export function serviceFunction(model: AnyModel, config: Loose, op: string, fn: 
   const meta = model._meta;
   return perRow(async (database, args) => {
     const ctx = contextOf(database, args, meta, models);
-    // A bulk delete sends the filters of its query set and a list of binds in `values`.
     const bulk = Array.isArray(args.filters);
-    const values = bulk ? {} : decodeValues(meta, args.values ?? {});
     let result: unknown;
     try {
+      // A bulk delete sends the filters of its query set and a list of binds in `values`.
+      const values = bulk ? {} : decodeValues(meta, args.values ?? {}, true);
       result = await guarded(model, args, async () => {
         if (op === "create") return await fn(ctx, values);
         const qs = bulk ? querySet(model, database, args) : oneRow(model, database, args.key, await resourceFilters(config, args.user, op));
@@ -606,6 +702,18 @@ export function writerHost(resources: ReadonlyMap<string, { readonly model: AnyM
     const writer = writers.get(args.model);
     if (writer === undefined) throw new Error(`no admin resource ${String(args.model)}`);
     return await writer(database, args);
+  };
+}
+
+/** The host function `admin.view`: the view of the stored bytes (base64 or null) of one field, for a page or a record. */
+export function viewHost(models: ReadonlyMap<string, AnyModel>): HostFunction {
+  return async (_database, args) => {
+    const model = models.get(args.model);
+    if (model === undefined) throw new Error(`no admin model ${String(args.model)}`);
+    const meta = model._meta;
+    const adapter = fieldAdapter(meta, meta.fieldByIr.get(args.field)?.name ?? args.field);
+    if (adapter === undefined) throw new Error(`${meta.name}.${String(args.field)} has no field adapter`);
+    return (args.values as (string | null)[]).map((v) => viewOf(adapter, v === null ? null : new Uint8Array(Buffer.from(v, "base64"))));
   };
 }
 

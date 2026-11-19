@@ -30,7 +30,7 @@ from . import _admin_permissions
 from ._admin_host import HOST as _HOST
 from . import _admin_routes
 from ._admin_routes import Reply, RouteFunction, RouteRequest, Stream
-from ._admin_write import _PLACEMENTS, ActionDef, Context, InputDef, action, action_def, action_function, download, input, is_sync, is_threaded, log, message, redirect, refresh, service_function, threaded, writer_host
+from ._admin_write import _PLACEMENTS, ActionDef, Context, InputDef, action, action_def, action_function, admin_mode_of, download, input, is_sync, is_threaded, log, message, redirect, refresh, service_function, threaded, view_host, writer_host
 from ._admin_permissions import RoleSeedReport, SyncReport
 from .adapters import _ADAPTERS as _adapters
 from .errors import QueryError
@@ -1100,6 +1100,9 @@ class Admin:
             resource["allow_protected_writes"] = True
         if _adapters.get(model):
             resource["host_behavior"] = True
+            views = {field: mode for field, adapter in _adapters[model].items() if (mode := admin_mode_of(adapter))}
+            if views:
+                resource["views"] = views
         if "actions" in config:
             resource["actions"] = _actions_json(name, model, config["actions"])
         if "bulk_delete" in config:
@@ -1179,6 +1182,7 @@ class Admin:
                     host[_batch_name(model, column.get("name", ""), tag)] = _batch_host(model, function)
         models = self._inline_models()
         host["admin.write"] = writer_host(self._resources, models)
+        host["admin.view"] = view_host({**models, **{m.__name__: m for m, _ in self._resources.values()}})
         for model, config in self._resources.values():
             for op in ("create", "update", "delete"):
                 if (fn := cast("Mapping[str, Any]", config).get(op)) is not None:

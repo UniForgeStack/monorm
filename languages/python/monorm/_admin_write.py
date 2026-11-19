@@ -17,7 +17,7 @@ import inspect
 import re
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from .adapters import _ADAPTERS as _adapters
 from .adapters import FieldAdapterError
@@ -289,14 +289,74 @@ def _field_type(field: Any) -> str:
     return str(getattr(field, "of", None) or field.type_name)
 
 
-def decode_values(model: Any, values: Mapping[str, Any]) -> dict[str, Any]:
-    """The values of a request (JSON, by field name) as Python values of the fields."""
+class ViewError(Exception):
+    """The JSON of a view field that its adapter refuses: the form shows it under the field."""
+
+    def __init__(self, field: str, message: str) -> None:
+        super().__init__(message)
+        self.field = field
+
+
+def admin_mode_of(adapter: Any) -> str | None:
+    """``"json"`` or ``"text"`` for an adapter with the admin view hooks, else None."""
+    return cast("str", adapter.admin_mode()) if callable(getattr(adapter, "admin_mode", None)) else None
+
+
+def _view_adapter(model: Any, name: str) -> Any:
+    """The adapter of a field that the admin shows as JSON, or None."""
+    adapter = (_adapters.get(model) or {}).get(name)
+    return adapter if admin_mode_of(adapter) == "json" else None
+
+
+def _shown_as_text(model: Any, name: str) -> bool:
+    return admin_mode_of((_adapters.get(model) or {}).get(name)) == "text"
+
+
+def view_of(adapter: Any, stored: Any) -> Any:
+    """What the admin shows for stored bytes: the JSON, or "N bytes" for bytes that do not decode or an adapter with no JSON."""
+    if stored is None:
+        return None
+    data = bytes(stored)
+    if adapter.admin_mode() == "json":
+        try:
+            return adapter.admin_to_view(data)
+        except FieldAdapterError:
+            pass
+    return f"{len(data)} bytes"
+
+
+def same_json(a: Any, b: Any) -> bool:
+    """The compare of the Rust core (`json::same_json`): numbers compare by value, so `1` and `1.0` match."""
+    if isinstance(a, bool) or isinstance(b, bool):
+        return isinstance(a, bool) and isinstance(b, bool) and a == b
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return bool(a == b)
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(same_json(a[k], b[k]) for k in a)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(same_json(x, y) for x, y in zip(a, b, strict=True))
+    return bool(a == b)
+
+
+def decode_values(model: Any, values: Mapping[str, Any], strict: bool = False) -> dict[str, Any]:
+    """The values of a request (JSON, by field name) as Python values of the fields.
+
+    A view field takes the value of its JSON. A JSON that the adapter refuses raises ``ViewError`` with ``strict``, else stays JSON."""
     fields = model._meta.fields
     out: dict[str, Any] = {}
     for name, value in values.items():
         field = fields.get(name)
         if field is None:
             out[name] = value
+        elif _shown_as_text(model, name):
+            out[name] = value
+        elif value is not None and (adapter := _view_adapter(model, name)) is not None:
+            try:
+                out[name] = adapter.admin_from_view(value)
+            except FieldAdapterError as error:
+                if strict:
+                    raise ViewError(name, str(error)) from error
+                out[name] = value
         elif hasattr(field, "of") and isinstance(value, list):
             out[name] = [_decode(_field_type(field), v) for v in value]
         else:
@@ -378,6 +438,10 @@ def _invalid(e: ValidationError) -> dict[str, Any]:
     return {"ok": False, "kind": "invalid", "fields": e.fields, "form": e.non_field_messages}
 
 
+def _view_invalid(e: ViewError) -> dict[str, Any]:
+    return {"ok": False, "kind": "invalid", "fields": {e.field: [str(e)]}, "form": []}
+
+
 def _decode_inlines(raw: Mapping[str, Any] | None, models: Mapping[str, Any]) -> dict[str, Any]:
     """The change set of the inlines with the values of each row decoded to the types of the child model."""
     out: dict[str, Any] = {}
@@ -430,36 +494,59 @@ def _same(type_name: str, stored: Any, loaded: Any) -> bool:
     return str(stored) == str(loaded)
 
 
-async def _check_loaded(model: Any, qs: Any, args: Mapping[str, Any]) -> bool:
-    """Reads the row (under a lock where the database has one) and compares the loaded values of the ``compare`` fields with it. False when the row is gone.
+def _raw(row: Any, name: str) -> Any:
+    """The stored value of a loaded field: a field adapter decodes on a read, and a value that does not decode must still compare."""
+    return row.__dict__[name] if name in row.__dict__ else getattr(row, name)
 
-    The compare runs in the write transaction, so a concurrent edit between the load and the save is a ``VersionConflict``."""
+
+async def _check_loaded(model: Any, qs: Any, args: Mapping[str, Any]) -> Any:
+    """Reads the row (under a lock where the database has one) and compares the loaded values of the ``compare`` fields with it. None when the row is gone, else the row.
+
+    The compare runs in the write transaction, so a concurrent edit between the load and the save is a ``VersionConflict``.
+    It reads the stored value of an adapted field, so a row with a value that does not decode still compares."""
     names = [n for n in args.get("compare") or [] if n in (args.get("loaded") or {})]
     row = await (qs.lock() if args.get("lock") else qs).first()
     if row is None:
-        return False
-    loaded = decode_values(model, {n: args["loaded"][n] for n in names})
+        return None
+    loaded = decode_values(model, {n: args["loaded"][n] for n in names if _view_adapter(model, n) is None})
     fields = model._meta.fields
     adapters = _adapters.get(model) or {}
     for n in names:
+        if (adapter := _view_adapter(model, n)) is not None:
+            # The form loaded the JSON view of the stored bytes: compare the view of the stored bytes now.
+            if not same_json(view_of(adapter, _stored_bytes(_raw(row, n))), args["loaded"][n]):
+                raise VersionConflict(f"{model.__name__} {args.get('key')!r} was changed since the form loaded")
+            continue
         # An adapted field shows a decoded value; the form loaded its stored bytes (base64), so compare those.
-        current = getattr(row, n)
-        if n in adapters and (stored := _stored_bytes(adapters[n], current)) is not None:
+        current = _raw(row, n)
+        if n in adapters and (stored := _stored_bytes(current)) is not None:
             current = stored
             if isinstance(loaded[n], str):
                 loaded[n] = base64.b64decode(loaded[n], validate=True)
         if not _same(fields[n].type_name if n in fields else "", current, loaded[n]):
             raise VersionConflict(f"{model.__name__} {args.get('key')!r} was changed since the form loaded")
-    return True
+    return row
 
 
-def _stored_bytes(adapter: Any, value: Any) -> bytes | None:
-    """The stored bytes of a decoded adapter value, or None when the adapter stores something else."""
-    try:
-        stored = adapter.validate(value)
-    except FieldAdapterError:
-        return None
-    return bytes(stored) if isinstance(stored, (bytes, bytearray, memoryview)) else None
+def _stored_bytes(value: Any) -> bytes | None:
+    """The stored bytes of a loaded value, or None when the field stores something else."""
+    return bytes(value) if isinstance(value, (bytes, bytearray, memoryview)) else None
+
+
+def _check_lossless(model: Any, row: Any, values: Mapping[str, Any]) -> None:
+    """Refuses a JSON edit that would drop data: a message field that the JSON view cannot show (an unknown field) would not survive the save.
+
+    A stored value that does not decode has nothing to lose, so the repair goes through."""
+    for n in values:
+        if (adapter := _view_adapter(model, n)) is None or (stored := _stored_bytes(_raw(row, n))) is None:
+            continue
+        try:
+            kept = adapter.validate(adapter.admin_from_view(adapter.admin_to_view(stored)))
+            whole = adapter.validate(adapter.decode(stored))
+        except FieldAdapterError:
+            continue
+        if kept != whole:
+            raise ViewError(n, "the stored value has fields this version cannot show; edit it with a newer version")
 
 
 async def _write_audit(database: Any, model: Any, args: Mapping[str, Any]) -> int:
@@ -514,11 +601,11 @@ def default_writer(model: Any, config: Mapping[str, Any]) -> Callable[[Any, dict
     async def write(database: Any, args: dict[str, Any]) -> Any:
         op = args["op"]
         bulk = "filters" in args
-        # A bulk delete sends a query set: `values` are the binds of its filters, not field values.
-        values = {} if bulk else decode_values(model, args.get("values") or {})
         user = args.get("user") or {}
         protect = allow_writes(model) if args.get("allow_protected") else contextlib.nullcontext()
         try:
+            # A bulk delete sends a query set: `values` are the binds of its filters, not field values.
+            values = {} if bulk else decode_values(model, args.get("values") or {}, strict=True)
             with protect:
                 async with database.transaction():
                     if bulk:
@@ -529,9 +616,11 @@ def default_writer(model: Any, config: Mapping[str, Any]) -> Callable[[Any, dict
                         created = await model.objects.using(database).insert(**values)
                         return {"ok": True, "key": _key_json(model, created), "audited": True, "audit_id": await _write_audit(database, model, args)}
                     qs = _one_row(model, database, args["key"], await _resource_filters(config, user, op))
-                    if not await _check_loaded(model, qs, args):
+                    row = await _check_loaded(model, qs, args)
+                    if row is None:
                         return {"ok": False, "kind": "not_found"}
                     if op == "update":
+                        _check_lossless(model, row, values)
                         done = await qs.update(**values) if values else await qs.exists()
                     else:
                         done = await qs.delete()
@@ -540,6 +629,8 @@ def default_writer(model: Any, config: Mapping[str, Any]) -> Callable[[Any, dict
                     return {"ok": True, "key": args["key"], "audited": True, "audit_id": await _write_audit(database, model, args)}
         except ValidationError as e:
             return _invalid(e)
+        except ViewError as e:
+            return _view_invalid(e)
         except FieldAdapterError as e:
             # A field adapter refuses a value the form cannot build (for example base64 bytes for a message field).
             return {"ok": False, "kind": "invalid", "fields": {}, "form": [str(e)]}
@@ -558,11 +649,11 @@ def service_function(model: Any, config: Mapping[str, Any], op: str, fn: Callabl
     async def call(database: Any, args: dict[str, Any]) -> Any:
         ctx = _context(database, args, model, models)
         ctx._loop = asyncio.get_running_loop()
-        # A bulk delete sends a query set: `values` are the binds of its filters, not field values.
-        values = {} if "filters" in args else decode_values(model, args.get("values") or {})
         user = args.get("user") or {}
         protect = allow_writes(model) if args.get("allow_protected") else contextlib.nullcontext()
         try:
+            # A bulk delete sends a query set: `values` are the binds of its filters, not field values.
+            values = {} if "filters" in args else decode_values(model, args.get("values") or {}, strict=True)
             with protect:
                 if op == "create":
                     arguments: tuple[Any, ...] = (ctx, values)
@@ -580,6 +671,8 @@ def service_function(model: Any, config: Mapping[str, Any], op: str, fn: Callabl
                     result = await fn(*arguments)
         except ValidationError as e:
             return _invalid(e)
+        except ViewError as e:
+            return _view_invalid(e)
         except VersionConflict:
             return {"ok": False, "kind": "conflict"}
         except DoesNotExist:
@@ -613,6 +706,17 @@ def writer_host(resources: Mapping[str, tuple[Any, Mapping[str, Any]]], models: 
         return await writers[args["model"]](database, args)
 
     return write
+
+
+def view_host(models: Mapping[str, Any]) -> Callable[[Any, dict[str, Any]], Awaitable[Any]]:
+    """The host function ``admin.view``: the view of the stored bytes (base64 or null) of one field, for a page or a record."""
+
+    async def view(database: Any, args: dict[str, Any]) -> Any:
+        model = models[args["model"]]
+        adapter = (_adapters.get(model) or {})[args["field"]]
+        return [view_of(adapter, None if v is None else base64.b64decode(v, validate=True)) for v in args["values"]]
+
+    return view
 
 
 # -- actions ---------------------------------------------------------------------------------------------------------

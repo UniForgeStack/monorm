@@ -22,8 +22,8 @@ import { pipeline } from "node:stream/promises";
 import { HOST, hostDispatch, type HostFunction } from "./admin-host.js";
 import * as grants from "./admin-permissions.js";
 import { Reply, routeHost, Stream, type RouteFunction, type RouteRequest } from "./admin-routes.js";
-import { action, actionDef, actionFunction, Context, download, InputDef, input, log, message, PLACEMENTS, redirect, refresh, serviceFunction, writerHost, type ActionDef, type ActionFunction, type ActionOptions, type ActionResult, type InlineChanges } from "./admin-write.js";
-import { hasFieldAdapters } from "./adapters.js";
+import { action, actionDef, actionFunction, Context, download, InputDef, input, log, message, PLACEMENTS, redirect, refresh, serviceFunction, viewHost, writerHost, type ActionDef, type ActionFunction, type ActionOptions, type ActionResult, type InlineChanges } from "./admin-write.js";
+import { fieldAdapters, hasFieldAdapters } from "./adapters.js";
 import type { RoleSeedReport, SyncReport } from "./admin-permissions.js";
 import type { Database } from "./db.js";
 import { ORMError } from "./errors.js";
@@ -1178,7 +1178,11 @@ export class Admin {
       out["inputs"] = config.inputs.map((d) => d.json());
     }
     if (config.allowProtectedWrites === true) out["allow_protected_writes"] = true;
-    if (hasFieldAdapters(cls._meta)) out["host_behavior"] = true;
+    if (hasFieldAdapters(cls._meta)) {
+      out["host_behavior"] = true;
+      const views = Object.fromEntries([...fieldAdapters(cls._meta)].flatMap(([field, adapter]) => (adapter.adminMode === undefined ? [] : [[cls._meta.fieldList.find((f) => f.name === field)?.ir ?? field, adapter.adminMode()] as const])));
+      if (Object.keys(views).length > 0) out["views"] = views;
+    }
     return out;
   }
 
@@ -1201,6 +1205,7 @@ export class Admin {
     }
     const models = this.#inlineModels();
     host["admin.write"] = writerHost(this.#resources, models);
+    host["admin.view"] = viewHost(new Map([...models, ...[...this.#resources.values()].map(({ model }) => [model._meta.name, model] as const)]));
     for (const [name, { model, config }] of this.#resources) {
       for (const item of config.actions ?? []) {
         const d = actionDef(item);

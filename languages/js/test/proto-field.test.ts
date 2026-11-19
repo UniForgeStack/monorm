@@ -1,12 +1,14 @@
 /** The `proto` extension: `@proto.message("pkg.Msg")` on a `Bytes` field, end to end on PostgreSQL and SQLite. */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { create, toBinary } from "@bufbuild/protobuf";
-import { connect, loads, QueryError, Registry, SchemaError, func } from "../src/index.js";
+import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
+import { Admin } from "../src/admin.js";
+import { connect, load, loads, QueryError, Registry, SchemaError, func } from "../src/index.js";
 import { ProtoError, protoCodec } from "monorm/extensions/proto";
 import type * as pgEs from "./proto/es/models.js";
 import type * as pgTs from "./proto/tsproto/models.js";
@@ -15,7 +17,8 @@ import { InvoiceSchema } from "./proto/gen/acme/billing/invoice_pb.js";
 import { NoteSchema, NoteV2Schema, OtherSchema, Outer_InnerSchema, OuterSchema } from "./proto/gen/acme/note_pb.js";
 import { Note as TsNote, NoteV2 as TsNoteV2 } from "./proto/gen-ts-proto/acme/note.js";
 import { Plain, Served } from "./proto/custom/thing.js";
-import { defaultWriter } from "../src/admin-write.js";
+import * as noteModule from "./proto/gen/acme/note_pb.js";
+import { install as installProto } from "monorm/extensions/proto/model";
 import { scratch } from "./scratch.js";
 
 const FIXTURES = join(import.meta.dirname, "..", "..", "test", "proto");
@@ -75,18 +78,170 @@ for (const provider of [PROVIDER]) {
     });
   });
 
-  test(`the admin lists reads and edits a row but refuses bytes for a message field (${provider})`, async (t) => {
-    await withDatabase(t, async (db) => {
-      await ProtoEvent.objects.using(db).insert({ id: 1, payload: note("hi") });
-      const write = defaultWriter(ProtoEvent as never, {});
-      const base64 = Buffer.from(encode(note("hi"))).toString("base64");
-      const args = (loaded: string) => ({ op: "update", key: { id: 1 }, values: { payload: base64 }, loaded: { payload: loaded }, compare: ["payload"], user: {} });
-      // The loaded text matches the row, so the adapter refuses the bytes of the form: 422, not a conflict.
-      const refused = (await write(db, args(base64))) as { ok: boolean; kind: string; form: string[] };
-      assert.equal(refused.kind, "invalid");
-      assert.match(refused.form[0] ?? "", /takes acme\.Note, not/);
-      const changed = Buffer.from(encode(note("other"))).toString("base64");
-      assert.deepEqual(await write(db, args(changed)), { ok: false, kind: "conflict" });
+  interface AdminWorld {
+    readonly client: ReturnType<Admin["testClient"]>;
+    readonly db: any;
+    readonly model: any;
+  }
+
+  /** The admin of a `ProtoEvent` model with the proto adapter on `payload`, on its own registry. `module` and `symbol` name the message type. */
+  async function withAdmin(t: { skip(why: string): void }, module: object, symbol: string, run: (w: AdminWorld) => Promise<void>): Promise<void> {
+    const dir = mkdtempSync(join(tmpdir(), "monorm-proto-admin-"));
+    writeFileSync(join(dir, "package.json"), "{}");
+    writeFileSync(
+      join(dir, "schema.prisma"),
+      `datasource db {\n  provider = "${provider === "sqlite" ? "sqlite" : "postgres"}"\n}\nimport "app:admin" (prefix: "admin_")\n\nmodel ProtoEvent {\n  id      Int    @id\n  payload Bytes?\n  inner   Bytes?\n  raw     Bytes?\n  @@map("proto_event")\n}\n`,
+    );
+    const registry = new Registry();
+    const models = load(join(dir, "schema.prisma"), { registry }) as unknown as Record<string, any>;
+    const model = models["ProtoEvent"];
+    installProto(model, new Map([["payload", { options: { message: "acme.Note", module, symbol }, nullable: true }]]));
+    let db: any;
+    try {
+      db = await connect(url, { registry, default: false });
+    } catch (error) {
+      rmSync(dir, { recursive: true, force: true });
+      if (process.env["ORM_TEST_DATABASE_URL"] !== undefined) throw error;
+      t.skip("no reachable database");
+      return;
+    }
+    try {
+      await db.dropTables();
+      await db.createTables();
+      await model.objects.using(db).insert({ id: 1, payload: note("hi", 3, ["a"]), raw: new Uint8Array([120]) });
+      const site = new Admin(registry);
+      site.register(model, {} as never);
+      await run({ client: site.testClient(db, { user: { key: 1, is_superuser: true } }), db, model });
+    } finally {
+      await db.dropTables();
+      await db.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  const PATH = "/admin/api/resources/ProtoEvent";
+  const HI = { title: "hi", priority: 3, tags: ["a"] };
+  /** The value of one field in a detail answer. */
+  const shown = (r: { json(): any }, name: string): unknown => {
+    const body = r.json();
+    return body.values[body.fields.findIndex((f: { label: string }) => f.label === name)];
+  };
+  const widgetOf = (r: { json(): any }, name: string): string => r.json().fields.find((f: { label: string }) => f.label === name).widget;
+  const payloadOf = async (w: AdminWorld, id: number): Promise<any> => (await w.model.objects.using(w.db).get(w.model.id.eq(id)))?.payload;
+
+  test(`the admin shows a message field as json on the detail and the list (${provider})`, async (t) => {
+    await withAdmin(t, noteModule, "Note", async (w) => {
+      const detail = await w.client.get(`${PATH}/1`);
+      assert.equal(detail.status, 200, detail.text);
+      assert.deepEqual(shown(detail, "payload"), HI);
+      assert.equal(shown(detail, "inner"), null);
+      assert.equal(widgetOf(detail, "payload"), "json");
+      const list = (await w.client.get(PATH)).json();
+      const at = list.columns.findIndex((c: { label: string }) => c.label === "payload");
+      assert.deepEqual(list.rows.map((row: unknown[]) => row[at]), [HI]);
+    });
+  });
+
+  test(`the admin saves the json of a message field (${provider})`, async (t) => {
+    await withAdmin(t, noteModule, "Note", async (w) => {
+      const saved = await w.client.patch(`${PATH}/1`, { json: { set: { payload: { title: "new", priority: 9 } }, loaded: { payload: HI } } });
+      assert.equal(saved.status, 200, saved.text);
+      assert.deepEqual(await payloadOf(w, 1), create(NoteSchema, { title: "new", priority: 9 }));
+      const created = await w.client.post(PATH, { json: { set: { id: 2, payload: { title: "made" } } } });
+      assert.equal(created.status, 201, created.text);
+      assert.deepEqual(await payloadOf(w, 2), create(NoteSchema, { title: "made" }));
+      const cleared = await w.client.patch(`${PATH}/2`, { json: { set: { payload: null }, loaded: { payload: { title: "made" } } } });
+      assert.equal(cleared.status, 200, cleared.text);
+      assert.equal(await payloadOf(w, 2), null);
+    });
+  });
+
+  for (const bad of [{ nope: 1 }, { priority: "many" }, "text", [1]]) {
+    test(`a json that is not the message is a field error ${JSON.stringify(bad)} (${provider})`, async (t) => {
+      await withAdmin(t, noteModule, "Note", async (w) => {
+        const refused = await w.client.patch(`${PATH}/1`, { json: { set: { payload: bad }, loaded: { payload: HI } } });
+        assert.equal(refused.status, 422, refused.text);
+        assert.ok("payload" in refused.json().fields, refused.text);
+        assert.deepEqual(await payloadOf(w, 1), note("hi", 3, ["a"]));
+        const created = await w.client.post(PATH, { json: { set: { id: 2, payload: bad } } });
+        assert.equal(created.status, 422, created.text);
+        assert.ok("payload" in created.json().fields, created.text);
+        assert.equal(await payloadOf(w, 2), undefined);
+      });
+    });
+  }
+
+  test(`a concurrent edit of a message field is a conflict (${provider})`, async (t) => {
+    await withAdmin(t, noteModule, "Note", async (w) => {
+      const conflict = await w.client.patch(`${PATH}/1`, { json: { set: { payload: { title: "mine" } }, loaded: { payload: { title: "old" } } } });
+      assert.equal(conflict.status, 409, conflict.text);
+      assert.equal((await payloadOf(w, 1)).title, "hi");
+      // The wire form of a number may differ (`3` or `3.0`): the compare is by value.
+      const same = await w.client.patch(`${PATH}/1`, { json: { set: { payload: { title: "mine" } }, loaded: { payload: { ...HI, priority: 3.0 } } } });
+      assert.equal(same.status, 200, same.text);
+    });
+  });
+
+  const LATER_VIEW = { title: "n", priority: 1, tags: ["x"] };
+  /** Rows 10, 11, ... whose `payload` holds the given stored bytes (the field adapter would refuse to write bytes that are no message). */
+  async function putPayloads(w: AdminWorld, payloads: Uint8Array[]): Promise<number[]> {
+    const rows = payloads.map((raw, i) => ({ id: 10 + i, raw }));
+    await w.model.objects.using(w.db).insertMany(rows);
+    await w.db.execute("UPDATE proto_event SET payload = raw WHERE id >= 10");
+    await w.model.objects.using(w.db).filter(w.model.id.gte(10)).update({ raw: new Uint8Array([114]) });
+    return rows.map((r) => r.id);
+  }
+
+  test(`an edit that would drop the unknown fields of a message is refused (${provider})`, async (t) => {
+    await withAdmin(t, noteModule, "Note", async (w) => {
+      const later = toBinary(NoteV2Schema, create(NoteV2Schema, { title: "n", priority: 1, tags: ["x"], addedLater: "kept" }));
+      const [kept] = (await putPayloads(w, [later])) as [number];
+      const refused = await w.client.patch(`${PATH}/${kept}`, { json: { set: { payload: { title: "edited" } }, loaded: { payload: LATER_VIEW } } });
+      assert.equal(refused.status, 422, refused.text);
+      assert.ok(refused.json().fields.payload[0].includes("newer version"), refused.text);
+      assert.deepEqual(await stored(w.db, kept), new Uint8Array(later));
+      // A save that leaves the field alone keeps its bytes.
+      const other = await w.client.patch(`${PATH}/${kept}`, { json: { set: { raw: "cQ==" }, loaded: { payload: LATER_VIEW, raw: "cg==" } } });
+      assert.equal(other.status, 200, other.text);
+      assert.deepEqual(await stored(w.db, kept), new Uint8Array(later));
+      // A message with no unknown field saves as before.
+      const saved = await w.client.patch(`${PATH}/1`, { json: { set: { payload: { title: "new" } }, loaded: { payload: HI } } });
+      assert.equal(saved.status, 200, saved.text);
+    });
+  });
+
+  test(`a row with a value that does not decode can be edited repaired and deleted (${provider})`, async (t) => {
+    await withAdmin(t, noteModule, "Note", async (w) => {
+      const [broken, other, doomed] = (await putPayloads(w, [new Uint8Array([255, 255]), new Uint8Array([255, 255]), new Uint8Array([255, 255])])) as [number, number, number];
+      assert.equal(shown(await w.client.get(`${PATH}/${broken}`), "payload"), "2 bytes");
+      // An edit of another column compares the stored bytes.
+      const edited = await w.client.patch(`${PATH}/${other}`, { json: { set: { raw: "cQ==" }, loaded: { payload: "2 bytes", raw: "cg==" } } });
+      assert.equal(edited.status, 200, edited.text);
+      // A concurrent change of the broken value is still a conflict.
+      const stale = await w.client.patch(`${PATH}/${broken}`, { json: { set: { payload: { title: "fixed" } }, loaded: { payload: "9 bytes" } } });
+      assert.equal(stale.status, 409, stale.text);
+      const repaired = await w.client.patch(`${PATH}/${broken}`, { json: { set: { payload: { title: "fixed" } }, loaded: { payload: "2 bytes" } } });
+      assert.equal(repaired.status, 200, repaired.text);
+      assert.deepEqual(await payloadOf(w, broken), create(NoteSchema, { title: "fixed" }));
+      const deleted = await w.client.delete(`${PATH}/${doomed}`, { json: { loaded: { payload: "2 bytes" } } });
+      assert.equal(deleted.status, 200, deleted.text);
+      assert.equal((await w.db.fetch(`SELECT id FROM proto_event WHERE id = ${doomed}`)).length, 0);
+    });
+  });
+
+  test(`a codec without json shows the size and is read only (${provider})`, async (t) => {
+    // A codec that has no JSON pair, on its own type, so no other test sees it.
+    const bytesOnly = { Blob: {} };
+    protoCodec(bytesOnly.Blob, { encode: (m) => toBinary(NoteSchema, m as never), decode: (b) => fromBinary(NoteSchema, b) });
+    await withAdmin(t, bytesOnly, "Blob", async (w) => {
+      const size = encode(note("hi", 3, ["a"])).length;
+      const detail = await w.client.get(`${PATH}/1`);
+      assert.equal(shown(detail, "payload"), `${size} bytes`);
+      assert.notEqual(widgetOf(detail, "payload"), "json");
+      assert.ok((await w.client.get(PATH)).text.includes(`${size} bytes`));
+      const refused = await w.client.patch(`${PATH}/1`, { json: { set: { payload: { title: "x" } }, loaded: { payload: `${size} bytes` } } });
+      assert.equal(refused.status, 422, refused.text);
+      assert.equal((await payloadOf(w, 1)).title, "hi");
     });
   });
 

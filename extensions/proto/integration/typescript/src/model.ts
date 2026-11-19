@@ -28,6 +28,23 @@ export class ProtoAdapter implements FieldAdapter {
       throw new ProtoError(`${this.model}.${this.field}: the stored bytes are not a ${this.message}: ${(error as Error).message}`, { cause: error });
     }
   }
+  adminMode(): "json" | "text" {
+    try { return this.codec.toJson && this.codec.fromJson ? "json" : "text"; }
+    catch { return "text"; }
+  }
+  adminToView(stored: Uint8Array): unknown {
+    const { codec } = this;
+    if (!codec.toJson) throw new ProtoError(`${this.model}.${this.field}: the codec has no JSON functions`);
+    const message = this.decode(stored);
+    try { return codec.toJson(message); }
+    catch (error) { throw new ProtoError(`${this.model}.${this.field}: not a JSON message: ${(error as Error).message}`, { cause: error }); }
+  }
+  adminFromView(value: unknown): unknown {
+    const { codec } = this;
+    if (!codec.fromJson) throw new ProtoError(`${this.model}.${this.field}: the codec has no JSON functions`);
+    try { return codec.fromJson(value); }
+    catch (error) { throw new ProtoError(`${this.model}.${this.field}: not a ${this.message}: ${(error as Error).message}`, { cause: error }); }
+  }
 }
 
 /** The generated-code entry for the `proto.message.v1` adapter: `fields` maps a name to its options and nullability. */

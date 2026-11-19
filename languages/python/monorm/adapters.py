@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 __all__ = [
     "AdapterWriteCancelled",
     "AdapterWriteError",
+    "AdminFieldView",
     "FieldAdapter",
     "FieldAdapterError",
     "Pending",
@@ -72,6 +73,23 @@ class FieldAdapter(Protocol[V_co, S]):
 
     def decode(self, stored: S) -> V_co:
         """Turn a loaded stored value into the value the model shows. Sync, no I/O."""
+        ...
+
+
+class AdminFieldView(Protocol):
+    """Optional hooks of an adapter that the admin shows as another value than its stored bytes.
+
+    The stored value is ``bytes``. ``admin_mode`` is ``"json"`` (the admin shows and edits the JSON that
+    ``admin_to_view`` gives) or ``"text"`` (the admin shows "N bytes" and refuses an edit)."""
+
+    def admin_mode(self) -> Literal["json", "text"]: ...
+
+    def admin_to_view(self, stored: bytes) -> Any:
+        """The JSON of the stored bytes. It raises when the bytes do not decode."""
+        ...
+
+    def admin_from_view(self, value: Any) -> Any:
+        """The value of the field (what ``validate`` takes) that a JSON value of the form stands for. It raises a ``FieldAdapterError`` for a bad value."""
         ...
 
 

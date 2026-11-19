@@ -55,6 +55,32 @@ class ProtoAdapter:
         except Exception as error:
             raise ProtoError(f"{self.model}.{self.field}: the stored bytes are not a {self.message}: {error}") from error
 
+    def admin_mode(self) -> str:
+        try:
+            codec = self.codec
+        except ProtoError:
+            return "text"
+        return "json" if codec.to_json is not None and codec.from_json is not None else "text"
+
+    def admin_to_view(self, stored: bytes) -> Any:
+        codec = self.codec
+        if codec.to_json is None:
+            raise ProtoError(f"{self.model}.{self.field}: the codec has no JSON functions")
+        message = self.decode(stored)
+        try:
+            return codec.to_json(message)
+        except Exception as error:
+            raise ProtoError(f"{self.model}.{self.field}: not a JSON message: {error}") from error
+
+    def admin_from_view(self, value: Any) -> Any:
+        codec = self.codec
+        if codec.from_json is None:
+            raise ProtoError(f"{self.model}.{self.field}: the codec has no JSON functions")
+        try:
+            return codec.from_json(value)
+        except Exception as error:
+            raise ProtoError(f"{self.model}.{self.field}: not a {self.message}: {error}") from error
+
 
 def install(model: type[Any], fields: Mapping[str, tuple[Mapping[str, Any], bool]]) -> None:
     """The generated-code entry for the `proto.message.v1` adapter: `fields` maps a name to its options and nullability."""

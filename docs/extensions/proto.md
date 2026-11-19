@@ -145,9 +145,33 @@ A change to the decoded message in place stays on that row object and does not r
 
 ## Admin
 
-The admin shows the stored bytes as base64 text and saves changes to the other fields of the row.
-A form value for the proto field is base64 bytes, which the adapter refuses: the admin answers `422` with the reason.
-Viewing and editing a message as JSON through the codec is planned for a later admin job.
+The admin shows a proto field as JSON and edits it as JSON, through the JSON functions of the codec.
+The detail page and the list show the JSON of the message. The form has a monospace box for the JSON.
+The host parses the JSON, builds the message and stores its bytes.
+Python uses `to_json` and `from_json` of the codec, and TypeScript uses `toJson` and `fromJson`.
+
+- Bad JSON, a field that the message does not have and a value of the wrong type answer `422` with the name of the field. They are never a `500`.
+- A codec with no JSON functions shows `N bytes` on the detail, the form and the list. The form field is read only, and a request that sets it answers `422`.
+- A stored value that does not decode shows as `N bytes`. Another column of that row saves, and the row can be deleted. A JSON value for the field replaces the bad bytes.
+- The version check (`409`) compares the stored bytes, so a change of the message by another user is a conflict.
+- A JSON key is sorted. The admin does not keep the order of the keys of the form.
+- The admin refuses an edit that would drop data: the host encodes the stored message again through its JSON view, and if the bytes change, the save answers `422` on the field with `the stored value has fields this version cannot show; edit it with a newer version`. An unknown field of a newer schema is the usual cause. Google `protobuf` and protobuf-es keep unknown fields, so they trigger this check. ts-proto and protobufjs drop unknown fields on decode, so they never do.
+- The check compares the bytes that the codec encodes for the message and for its JSON round trip. A codec that encodes the entries of a map in an unstable order could refuse a save that has no unknown field. Google `protobuf` did not differ in a test with a six-key map.
+- A message with `fromJSON` of ts-proto is lenient: `{"titel": "x"}` saves an empty message. protobuf-es and Google `protobuf` are strict and answer `422` for an unknown key. A typo reaches the database only with a lenient codec.
+- A model that the admin only shows as an inline has no `views` setting. Its proto field shows as base64 and a form value answers `422`, as before.
+- A sort on a proto column orders the stored bytes, which has no meaning for the user.
+- The `json` widget now pretty-prints every `json` field of every app, not only a proto field.
+
+A custom field adapter turns this on with three optional hooks:
+
+| Python (`AdminFieldView`) | TypeScript | Meaning |
+|---|---|---|
+| `admin_mode()` | `adminMode()` | `"json"` (show and edit the JSON) or `"text"` (show `N bytes`, refuse an edit). |
+| `admin_to_view(stored)` | `adminToView(stored)` | The JSON of the stored bytes. It raises an error when the bytes do not decode. |
+| `admin_from_view(value)` | `adminFromView(value)` | The field value that a JSON value stands for. It raises a `FieldAdapterError` for a bad value. |
+
+The adapter of a field with `admin_mode` makes the resource use `host_behavior`: the host function `admin.view` converts the cells, and `admin.write` writes the form.
+Only a `Bytes` field can have a view. See [the admin](../apps/admin.md#fields-with-a-view) for the settings.
 
 ## Limits
 
@@ -155,5 +179,5 @@ Viewing and editing a message as JSON through the codec is planned for a later a
 - A proto field has no key, index, unique, check, default or list.
 - A change to a decoded message in place does not reach the database. Assign the message back.
 - `monorm pull` reads the column as a plain `Bytes` field and writes no `@proto.message`.
-- The admin does not edit the field.
+- The admin edits the field as JSON only when the codec has JSON functions.
 - A message class with no known protobuf API needs a registered codec.

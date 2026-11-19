@@ -282,34 +282,150 @@ def test_the_generated_stub_types_the_field_as_the_message_class(tmp_path):
     assert textwrap.dedent(source)
 
 
-async def test_the_admin_lists_reads_and_edits_a_row_but_refuses_bytes_for_a_message_field(tmp_path):
-    import base64
-
+async def make_admin(tmp_path, name):
     from monorm import admin
 
-    built = build(tmp_path, 'import "app:monorm-admin" (prefix: "admin_")\n' + SCHEMA, SETTINGS, "sqlite", "admin")
+    built = build(tmp_path, 'import "app:monorm-admin" (prefix: "admin_")\n' + SCHEMA, SETTINGS, "sqlite", name)
     db = await monorm.connect("sqlite://:memory:", registry=built.registry, default=False)
     await db.create_tables()
     model = built.module.ProtoEvent
-    await model.objects.using(db).insert(id=1, payload=note_pb2.Note(title="hi"))
+    await model.objects.using(db).insert(id=1, payload=note(title="hi", priority=3, tags=("a",)), raw=b"x")
     site = admin.Admin(built.registry)
     site.register(model, {})
     client = site.test_client(db, user={"key": 1, "is_superuser": True})
-    path = "/admin/api/resources/ProtoEvent"
-    stored = base64.b64encode(note_pb2.Note(title="hi").SerializeToString()).decode()
-    assert (await client.get(f"{path}/1")).status == 200
-    listing = await client.get(path)
-    assert listing.status == 200 and stored in listing.text
-    edit = await client.patch(f"{path}/1", json={"set": {"raw": "eA=="}, "loaded": {"raw": None}})
-    assert edit.status == 200, edit.text
-    # The form sends base64 bytes: the adapter refuses them, and the admin answers 422 with the reason, never 500.
-    refused = await client.patch(f"{path}/1", json={"set": {"payload": stored}, "loaded": {"payload": stored}})
-    assert refused.status == 422 and "takes acme.Note, not bytes" in refused.text
-    other = base64.b64encode(note_pb2.Note(title="other").SerializeToString()).decode()
-    conflict = await client.patch(f"{path}/1", json={"set": {"payload": stored}, "loaded": {"payload": other}})
-    assert conflict.status == 409
-    created = await client.post(path, json={"set": {"id": 2, "payload": stored}})
-    assert created.status == 422 and await model.objects.using(db).filter(model.id == 2).first() is None
-    row = await model.objects.using(db).filter(model.id == 1).first()
-    assert row is not None and row.raw == b"x" and row.payload.title == "hi"
-    await db.close()
+    return SimpleNamespace(client=client, model=model, db=db, path="/admin/api/resources/ProtoEvent")
+
+
+@pytest.fixture
+async def admin_client(tmp_path):
+    c = await make_admin(tmp_path, "admin")
+    yield c
+    await c.db.close()
+
+
+def shown(response, name):
+    """The value of one field in a detail answer."""
+    body = response.json()
+    return body["values"][[f["label"] for f in body["fields"]].index(name)]
+
+
+HI = {"title": "hi", "priority": 3, "tags": ["a"]}
+
+
+async def test_the_admin_shows_a_message_field_as_json_on_the_detail_and_the_list(admin_client):
+    c = admin_client
+    detail = await c.client.get(f"{c.path}/1")
+    assert detail.status == 200 and shown(detail, "payload") == HI and shown(detail, "inner") is None
+    listing = (await c.client.get(c.path)).json()
+    at = [f["label"] for f in listing["columns"]].index("payload")
+    assert [row[at] for row in listing["rows"]] == [HI]
+    meta = {f["label"]: f for f in detail.json()["fields"]}
+    assert meta["payload"]["widget"] == "json" and not meta["payload"].get("readonly")
+
+
+async def test_the_admin_saves_the_json_of_a_message_field(admin_client):
+    c = admin_client
+    edited = {"title": "new", "priority": 9}
+    saved = await c.client.patch(f"{c.path}/1", json={"set": {"payload": edited}, "loaded": {"payload": HI}})
+    assert saved.status == 200, saved.text
+    row = await c.model.objects.using(c.db).filter(c.model.id == 1).first()
+    assert row is not None and row.payload == note_pb2.Note(title="new", priority=9) and row.raw == b"x"
+    created = await c.client.post(c.path, json={"set": {"id": 2, "payload": {"title": "made"}}})
+    assert created.status == 201, created.text
+    made = await c.model.objects.using(c.db).filter(c.model.id == 2).first()
+    assert made is not None and made.payload == note_pb2.Note(title="made")
+    cleared = await c.client.patch(f"{c.path}/2", json={"set": {"payload": None}, "loaded": {"payload": {"title": "made"}}})
+    assert cleared.status == 200 and (await c.model.objects.using(c.db).filter(c.model.id == 2).first()).payload is None
+
+
+@pytest.mark.parametrize("bad", [{"nope": 1}, {"priority": "many"}, "text", [1]])
+async def test_a_json_that_is_not_the_message_is_a_field_error(admin_client, bad):
+    c = admin_client
+    refused = await c.client.patch(f"{c.path}/1", json={"set": {"payload": bad}, "loaded": {"payload": HI}})
+    assert refused.status == 422, refused.text
+    assert "payload" in refused.json()["fields"]
+    row = await c.model.objects.using(c.db).filter(c.model.id == 1).first()
+    assert row is not None and row.payload == note(title="hi", priority=3, tags=("a",))
+    created = await c.client.post(c.path, json={"set": {"id": 2, "payload": bad}})
+    assert created.status == 422 and "payload" in created.json()["fields"]
+    assert await c.model.objects.using(c.db).filter(c.model.id == 2).first() is None
+
+
+async def test_a_concurrent_edit_of_a_message_field_is_a_conflict(admin_client):
+    c = admin_client
+    stale = {"title": "old"}
+    conflict = await c.client.patch(f"{c.path}/1", json={"set": {"payload": {"title": "mine"}}, "loaded": {"payload": stale}})
+    assert conflict.status == 409, conflict.text
+    row = await c.model.objects.using(c.db).filter(c.model.id == 1).first()
+    assert row is not None and row.payload.title == "hi"
+    # The wire form of a number may differ (`3` or `3.0`): the compare is by value.
+    same = await c.client.patch(f"{c.path}/1", json={"set": {"payload": {"title": "mine"}}, "loaded": {"payload": {**HI, "priority": 3.0}}})
+    assert same.status == 200, same.text
+
+
+async def test_a_codec_without_json_shows_the_size_and_is_read_only(tmp_path, monkeypatch):
+    import monorm_proto
+
+    monkeypatch.setitem(monorm_proto._REGISTRY, note_pb2.Note, monorm_proto.Codec(lambda m: m.SerializeToString(), note_pb2.Note.FromString))
+    c = await make_admin(tmp_path, "nojson")
+    try:
+        size = len(note(title="hi", priority=3, tags=("a",)).SerializeToString())
+        detail = await c.client.get(f"{c.path}/1")
+        assert shown(detail, "payload") == f"{size} bytes"
+        meta = {f["label"]: f for f in detail.json()["fields"]}
+        assert meta["payload"]["widget"] != "json"
+        assert f"{size} bytes" in (await c.client.get(c.path)).text
+        refused = await c.client.patch(f"{c.path}/1", json={"set": {"payload": {"title": "x"}}, "loaded": {"payload": f"{size} bytes"}})
+        assert refused.status == 422, refused.text
+        row = await c.model.objects.using(c.db).filter(c.model.id == 1).first()
+        assert row is not None and row.payload.title == "hi"
+    finally:
+        await c.db.close()
+
+
+LATER = note_pb2.NoteV2(title="n", priority=1, tags=["x"], added_later="kept").SerializeToString()
+LATER_VIEW = {"title": "n", "priority": 1, "tags": ["x"]}
+
+
+async def put_payloads(c, payloads):
+    """Rows 10, 11, ... whose `payload` holds the given stored bytes (the field adapter would refuse to write bytes that are no message)."""
+    rows = [{"id": 10 + i, "raw": data} for i, data in enumerate(payloads)]
+    await c.model.objects.using(c.db).insert_many(rows)
+    await c.db.execute("UPDATE proto_event SET payload = raw WHERE id >= 10")
+    await c.model.objects.using(c.db).filter(c.model.id >= 10).update(raw=b"r")
+    return [r["id"] for r in rows]
+
+
+async def test_an_edit_that_would_drop_the_unknown_fields_of_a_message_is_refused(admin_client):
+    c = admin_client
+    (kept,) = await put_payloads(c, [LATER])
+    refused = await c.client.patch(f"{c.path}/{kept}", json={"set": {"payload": {"title": "edited"}}, "loaded": {"payload": LATER_VIEW}})
+    assert refused.status == 422, refused.text
+    assert "payload" in refused.json()["fields"] and "newer version" in refused.json()["fields"]["payload"][0]
+    assert bytes(await stored(c.db, id=kept)) == LATER
+    # A save that leaves the field alone keeps its bytes.
+    other = await c.client.patch(f"{c.path}/{kept}", json={"set": {"raw": "cQ=="}, "loaded": {"payload": LATER_VIEW, "raw": "cg=="}})
+    assert other.status == 200, other.text
+    assert bytes(await stored(c.db, id=kept)) == LATER
+    # A message with no unknown field saves as before.
+    saved = await c.client.patch(f"{c.path}/1", json={"set": {"payload": {"title": "new"}}, "loaded": {"payload": HI}})
+    assert saved.status == 200, saved.text
+
+
+async def test_a_row_with_a_value_that_does_not_decode_can_be_edited_repaired_and_deleted(admin_client):
+    c = admin_client
+    broken, other, doomed = await put_payloads(c, [b"\xff\xff"] * 3)
+    assert shown(await c.client.get(f"{c.path}/{broken}"), "payload") == "2 bytes"
+    # An edit of another column compares the stored bytes.
+    edited = await c.client.patch(f"{c.path}/{other}", json={"set": {"raw": "cQ=="}, "loaded": {"payload": "2 bytes", "raw": "cg=="}})
+    assert edited.status == 200, edited.text
+    # A concurrent change of the broken value is still a conflict.
+    stale = await c.client.patch(f"{c.path}/{broken}", json={"set": {"payload": {"title": "fixed"}}, "loaded": {"payload": "9 bytes"}})
+    assert stale.status == 409, stale.text
+    repaired = await c.client.patch(f"{c.path}/{broken}", json={"set": {"payload": {"title": "fixed"}}, "loaded": {"payload": "2 bytes"}})
+    assert repaired.status == 200, repaired.text
+    row = await c.model.objects.using(c.db).filter(c.model.id == broken).first()
+    assert row is not None and row.payload == note_pb2.Note(title="fixed")
+    deleted = await c.client.delete(f"{c.path}/{doomed}", json={"loaded": {"payload": "2 bytes"}})
+    assert deleted.status == 200, deleted.text
+    assert await c.model.objects.using(c.db).filter(c.model.id == doomed).first() is None
