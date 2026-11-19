@@ -27,22 +27,7 @@
 "admin_list_edit::a_threaded_sync_service_writes_in_the_save_transaction_and_a_later_failure_rolls_it_back" = "one-language: Python-only: a sync service runs in a thread; a TypeScript service is always async"
 # languages/python/tests/test_app_imports.py
 # languages/python/tests/test_bound_reads.py
-"bound_reads::a_bound_query_set_has_no_shape_methods" = "change: twin bound_reads::input_errors (TS); TS checks only 7 names (orderBy, first, get, limit, select, prepare, batches) inside input_errors;"
-"bound_reads::a_bound_read_fills_the_objects_in_place_in_input_order" = "change: split TS into four tests named as the PY ones;"
-"bound_reads::a_bound_read_runs_one_statement_for_many_objects" = "change: TS asserts only count()-before == 1 inside of_fills;"
-"bound_reads::a_large_bound_read_runs_in_chunks_of_500_keys" = "change: TS keeps the single-key part under this name and adds the filter+load(relation) chunk count and the IN-placeholder count."
-"bound_reads::a_large_composite_key_bound_read_does_not_hang" = "change: PY renames to test_a_large_composite_key_bound_read_runs_in_chunks_of_250_keys."
-"bound_reads::a_load_with_columns_joins_a_to_one_relation_in_the_one_statement" = "change: twin bound_reads::a_mixed_load_fills_columns_and_relations; TS asserts only the writer names;"
-"bound_reads::a_query_set_with_shape_state_is_refused" = "change: twin bound_reads::input_errors (TS); TS checks orderBy, limit and both relation forms inside input_errors;"
-"bound_reads::a_relation_only_load_with_a_filter_reads_the_keys_first" = "change: TS adds an excluded object whose relation stays not loaded;"
-"bound_reads::a_soft_deleted_object_is_refreshed_because_of_applies_no_default" = "change: pick one extension for both (or both cases on both sides) and rename PY to test_of_applies_no_query_default_on_the_root_without_defaults_stays_accepted."
-"bound_reads::an_unmatched_object_stays_unchanged_and_is_left_out" = "change: split it out under this name."
-"bound_reads::count_and_exists_count_the_matching_bound_rows" = "change: TS asserts count/exists only under a filter;"
-"bound_reads::filter_narrows_the_bound_rows" = "change: TS keeps filter/exclude/sql IN under this name (count/exists move out) and adds 'an excluded object stays unchanged'."
-"bound_reads::one_object_and_the_instance_shortcut" = "change: twin bound_reads::post_qs_is_model_objects_of_post; TS asserts only qs() plus qs().filter(...).exists() false;"
-"bound_reads::the_merge_rule_keeps_other_loaded_fields" = "change: TS adds an unloaded field that stays not loaded and the full refresh;"
-"bound_reads::two_objects_with_one_key_are_both_filled_and_returned" = "change: split it out under this name."
-"bound_reads::using_names_the_database_to_read" = "change: TS asserts only using('primary') with 1 statement;"
+"bound_reads::a_query_set_with_shape_state_is_refused" = "keep: bug TS of() accepts a require() query set; Python raises TypeError."
 # languages/python/tests/test_bound_writes.py
 # languages/python/tests/test_chain_alias.py
 # languages/python/tests/test_char_like.py
@@ -357,21 +342,13 @@
 "languages/js/test/auth/password-breached.test.ts" = "The Python twin is in apps/auth/python/tests/test_password_breached.py"
 
 [typescript-only.ids]
+"bound_reads::a_query_set_with_shape_state_is_refused_without_require" = "keep: bug TS of() accepts a require() query set, so this case leaves require() out; the Python case a_query_set_with_shape_state_is_refused covers it."
 # languages/js/test/partial-instances.test.ts
 "partial_instances::delete_on_a_loaded_field_of_a_partial_instance_reads_undefined_like_a_whole_instance" = "one-language: TypeScript-only: Python has no `delete` of a property"
 # languages/js/test/app-imports.test.ts
 "app_imports::an_app_that_only_another_app_depends_on_resolves_in_pnpm_s_strict_layout" = "one-language: TypeScript-only: pnpm's strict node_modules layout"
 "app_imports::the_bundled_auth_app_wins_over_an_installed_package_of_the_same_name" = "one-language: TypeScript-only: the npm package bundles the auth app ahead of node_modules; Python ships it as an entry point"
 # languages/js/test/bound-reads.test.ts
-"bound_reads::a_filter_on_a_relation_only_load_reads_the_key_fields_and_keeps_a_partial_object_s_shape" = "change: Rename TS to 'a relation-only load with a filter reads the keys first (${provider})';"
-"bound_reads::a_large_read_runs_in_chunks_of_500_single_keys_or_250_composite_keys" = "change: Split TS: single-key part as 'a large bound read runs in chunks of 500 keys' (add filtered relation-load chunk count and IN-placeholder count), composite part"
-"bound_reads::a_mixed_load_fills_columns_and_relations" = "change: TS adds a 1-statement count and renames to 'a load with columns joins a to-one relation in the one statement (${provider})'."
-"bound_reads::filter_ands_with_the_key_filter_count_and_exists" = "change: twin bound_reads::filter_narrows_the_bound_rows; Split: filter/exclude/IN part renamed 'filter narrows the bound rows';"
-"bound_reads::load_column_refreshes_the_named_fields_and_keeps_the_others" = "change: twin bound_reads::the_merge_rule_keeps_other_loaded_fields; TS adds a not-loaded field that stays not loaded and a plain of() refresh;"
-"bound_reads::of_applies_no_query_default_on_the_root_without_defaults_stays_accepted" = "change: align the extension (query-defaults vs soft-delete) and the asserted members on both sides."
-"bound_reads::of_fills_the_objects_in_place_in_input_order_in_one_statement" = "change: Split into four TS tests named as PY a_bound_read_fills_..., a_bound_read_runs_one_statement_..., an_unmatched_object_stays_unchanged_..."
-"bound_reads::post_qs_is_model_objects_of_post" = "change: twin bound_reads::one_object_and_the_instance_shortcut; TS adds of(one object) and Model.objects.of(one object);"
-"bound_reads::using_primary_reads_the_primary_of_the_objects_database" = "change: twin bound_reads::using_names_the_database_to_read; TS adds using(otherDb) and the using('replica') error;"
 # languages/js/test/bound-writes.test.ts
 # languages/js/test/chain-alias.test.ts
 # languages/js/test/char-like.test.ts

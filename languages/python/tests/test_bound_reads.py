@@ -281,7 +281,7 @@ async def test_a_column_named_qs_is_reserved():
 
 
 @pytest.mark.skipif(not has_extension("monorm.soft-delete"), reason="requires a selected soft-delete native artifact")
-async def test_a_soft_deleted_object_is_refreshed_because_of_applies_no_default():
+async def test_of_applies_no_query_default_on_the_root_without_defaults_stays_accepted():
     source = 'model Doc {\n  id Int @id\n  title String\n  @@soft_delete.deleted_at("deleted", mode: "application")\n}\n'
     registry = monorm.Registry()
     Doc = monorm.loads(source, registry=registry)["Doc"]
@@ -325,7 +325,7 @@ async def test_a_large_bound_read_runs_in_chunks_of_500_keys(clean, db, observe_
     assert Post.objects.of(wanted).sql().rsplit("IN (", 1)[1].count(",") == 499
 
 
-async def test_a_large_composite_key_bound_read_does_not_hang(db, observe_queries):
+async def test_a_large_composite_key_bound_read_runs_in_chunks_of_250_keys(db, observe_queries):
     source = "model Cell {\n  a Int\n  b Int\n  v Int @default(0)\n  @@id([a, b])\n}\n"
     registry = monorm.Registry()
     Cell = monorm.loads(source, registry=registry)["Cell"]
