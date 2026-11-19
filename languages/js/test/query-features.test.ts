@@ -6,7 +6,8 @@ import { test } from "node:test";
 
 import { NotLoaded, QueryError, connect, exists, func, getDatabase, of, outer, statementInspection, window } from "../src/index.js";
 import { DB } from "../src/model.js";
-import { Comment, Post, User } from "./blog/models.js";
+import { Decimal } from "../src/decimal.js";
+import { Comment, Post, Profile, Role, User } from "./blog/models.js";
 import { DATABASE_URL, useDatabase } from "./helpers.js";
 
 useDatabase();
@@ -715,4 +716,125 @@ test("load combines plain paths and sets; withoutRelated keeps IN loads and root
   const users = await User.objects.orderBy(User.id);
   await of(users).load(User.posts, bound);
   assert.deepEqual(await Promise.all(users.map(async (u) => (await u.posts).length)), [3, 1, 0]);
+});
+
+// -- twins of the Python query-features tests ---
+
+async function seedProfiles() {
+  const seeded = await seed();
+  await Profile.objects.insertMany([{ user: seeded.alice, role: "admin" }, { user: seeded.bob }]);
+  return seeded;
+}
+
+test("aggregate over a to-one argument gives one value per group", async () => {
+  const { alice, bob } = await seed();
+  const a = Number(alice.id), b = Number(bob.id);
+  const num = (xs: unknown[]) => xs.map(Number);
+  assert.deepEqual(num(await Post.objects.select({ s: func.sum(Post.author.id) }).scalars()), [3 * a + b]);
+  const rows = await Post.objects.orderBy(Post.authorId).select({ a: Post.authorId, s: func.sum(Post.author.id) }).groupBy(Post.authorId).all();
+  assert.deepEqual(rows.map((r) => [Number(r.a), Number(r.s)]), [[a, 3 * a], [b, b]]);
+  const having = Post.objects.select({ a: Post.authorId }).groupBy(Post.authorId).having(func.sum(Post.author.id).gt(bob.id));
+  assert.deepEqual(num(await having.scalars()), [a]);
+  assert.deepEqual(await Comment.objects.select({ m: func.max(Comment.post.author.name) }).scalars(), ["Bob"]);
+  const filtered = func.sum(Post.author.id, { filter: Post.author.name.eq("Alice") });
+  assert.deepEqual(num(await Post.objects.select({ s: filtered }).scalars()), [3 * a]);
+});
+
+test("aggregate over a to-one path keeps its guards", async () => {
+  const { alice, bob } = await seed();
+  const a = Number(alice.id), b = Number(bob.id);
+  assert.deepEqual((await Post.objects.select({ c: func.count(Post.id, { filter: Post.author.name.eq("Alice") }) }).scalars()).map(Number), [3]);
+  assert.deepEqual((await Post.objects.orderBy(Post.id).select({ c: func.count(Post.author) }).scalars()).map(Number), [1, 1, 1, 1]);
+  const ordered = Post.objects.select({ a: Post.authorId }).groupBy(Post.authorId).orderBy(func.max(Post.author.name));
+  assert.deepEqual((await ordered.scalars()).map(Number), [a, b]);
+  const win = func.sum(Post.author.id).over({ partitionBy: Post.authorId });
+  const rows = await Post.objects.orderBy(Post.title).select({ t: Post.title, w: win }).all();
+  assert.deepEqual(rows.map((r) => [r.t, Number(r.w)]), [["a1", 3 * a], ["a2", 3 * a], ["a3", 3 * a], ["b1", b]]);
+  // An UPDATE applies no joins: its aggregate keeps the subquery.
+  await Post.objects.all().update({ views: func.max(Post.author.id) });
+  assert.deepEqual((await Post.objects.orderBy(Post.title).select({ v: Post.views }).scalars()).map(Number), [a, a, a, b]);
+});
+
+test("case enum branch", async () => {
+  await seedProfiles();
+  const roles = (op: "gt" | "lte") => Profile.objects.orderBy(Profile.id).select({ r: func.case([Profile.balance[op](5), Profile.role], { default: "editor" }) }).scalars();
+  assert.deepEqual(await roles("gt"), [Role.editor, Role.editor]);
+  assert.deepEqual(await roles("lte"), [Role.admin, Role.member]);
+});
+
+test("case value types", async () => {
+  await seedProfiles();
+  // a decimal among integers makes the case a decimal
+  const value = await Post.objects.filter(Post.title.eq("a1")).select({ v: func.case([Post.published, 1], { default: new Decimal("0.5") }) }).scalar();
+  assert.ok(value instanceof Decimal);
+  assert.equal(String(value), "0.5");
+  // the type the context expects wins over the case's own: an integer branch assigned to a decimal field
+  await Profile.objects.all().update({ balance: func.case([Profile.role.eq(Role.admin), 7], { default: 2 }) });
+  const balances = (await Profile.objects.select({ b: Profile.balance }).scalars()).map(String).sort();
+  assert.deepEqual(balances, ["2", "7"]);
+  assert.equal(await Profile.objects.filter(Profile.balance.gt(func.case([Profile.role.eq(Role.admin), 1], { default: 9 }))).count(), 1);
+});
+
+test("inBulk chunks", async () => {
+  const { alice, bob, carol } = await seed();
+  const db = getDatabase();
+  const events: string[] = [];
+  const off = db.onQuery((e) => { events.push(e.sql); });
+  // The chunk size is a constant of 10000 keys: 10001 keys take two statements.
+  const keys = [alice.id, bob.id, carol.id, ...Array.from({ length: 9_997 }, (_, i) => BigInt(1_000_000 + i))];
+  try {
+    const got = await User.objects.inBulk(keys);
+    assert.deepEqual([...got.keys()].map(Number).sort(), [alice.id, bob.id, carol.id].map(Number).sort());
+  } finally {
+    off();
+  }
+  assert.equal(events.length, 1);
+  events.length = 0;
+  const off2 = db.onQuery((e) => { events.push(e.sql); });
+  try {
+    const got = await User.objects.inBulk([...keys, 2_000_000n, 2_000_001n]);
+    assert.equal(got.size, 3);
+  } finally {
+    off2();
+  }
+  assert.equal(events.length, 2);
+});
+
+test("lateral disabled connection uses scalar subqueries", async () => {
+  await seed();
+  const db = await connect(DATABASE_URL, { maxConnections: 2, default: false, disable: ["lateral_join"] });
+  try {
+    const events: string[] = [];
+    db.onQuery((e) => { events.push(e.sql); });
+    const rows = await User.objects.using(db).orderBy(User.id).select({ n: User.name, c: func.count(User.posts), m: func.max(User.posts.views) }).all();
+    assert.deepEqual(rows.map((r) => [r.n, Number(r.c), r.m === null ? null : Number(r.m)]), [["Alice", 3, 50], ["Bob", 1, 100], ["Carol", 0, null]]);
+    assert.equal(events.length, 1);
+    assert.ok(!events[0]!.includes("LATERAL"));
+  } finally {
+    await db.close();
+  }
+});
+
+test("load set of another model raises", () => {
+  assert.throws(() => User.objects.load(Comment.objects.all() as never), TypeError);
+  assert.throws(() => User.objects.load(Post.comments.objects as never), /Post\.comments does not start at User/);
+});
+
+test("nested aggregate needs a deeper path", async () => {
+  await seed();
+  await assert.rejects(async () => { await User.objects.select({ s: func.sum(User.posts.views.add(func.count(User.posts))) }).all(); }, /constant for each group/);
+  await assert.rejects(async () => { await Post.objects.select({ s: func.arrayAgg(func.sum(Post.views)) }).all(); }, /constant for each group/);
+  await assert.rejects(async () => { await Post.objects.select({ s: func.sum(func.max(Post.author.id)) }).all(); }, /plain column per row/);
+  // An inner aggregate over a deeper relation path stays valid.
+  assert.equal(Number(await User.objects.select({ t: func.sum(func.count(User.posts)) }).scalar()), 4);
+});
+
+test("relation count with a to-one filter under another relation", async () => {
+  await seedProfiles();
+  const users = User.objects.orderBy(User.id);
+  // The filter keeps all the posts of an admin and none of the others.
+  let rows = await users.select({ n: User.name, c: func.count(User.posts, { filter: User.profile.role.eq(Role.admin) }) }).all();
+  assert.deepEqual(rows.map((r) => [r.n, Number(r.c)]), [["Alice", 3], ["Bob", 0], ["Carol", 0]]);
+  rows = await users.select({ n: User.name, c: func.count(User.posts, { filter: User.profile.role.eq(Role.member) }) }).all();
+  assert.deepEqual(rows.map((r) => [r.n, Number(r.c)]), [["Alice", 0], ["Bob", 1], ["Carol", 0]]);
 });

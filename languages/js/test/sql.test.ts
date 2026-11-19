@@ -209,6 +209,11 @@ test("lock", () => {
   assert.throws(() => User.objects.lock({ nowait: true, skipLocked: true } as never), TypeError);
 });
 
+
+test("lock refuses a filtered aggregate", () => {
+  assert.throws(() => Post.objects.lock().select({ s: func.sum(Post.views, { filter: Post.author.name.eq("A") }) }).sql(), (e: Error) => e instanceof QueryError && /aggregates/.test(e.message));
+});
+
 test("writes validate before any SQL", async () => {
   await assert.rejects(User.objects.lock().update({ name: "x" }), QueryError);
   await assert.rejects(User.objects.lock().delete(), QueryError);

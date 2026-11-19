@@ -4,9 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { connect, DoesNotExist, func, IntegrityError, MultipleObjectsReturned, loads, Migrations, Migrator, outer, QueryError, Registry, SchemaError, statementInspection } from "../src/index.js";
+import { connect, DoesNotExist, func, IntegrityError, MultipleObjectsReturned, loads, Migrations, MigrationError, Migrator, outer, QueryError, Registry, SchemaError, statementInspection } from "../src/index.js";
 import { User } from "./blog/models.js";
 import { Author, Book, Status, sqliteRegistry } from "./sqlite/models.js";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Any = any;
 
 test("SQLite has no array_agg and no LATERAL join", async () => {
   const db = await connect("sqlite://:memory:", { registry: sqliteRegistry, default: false });
@@ -460,6 +463,111 @@ test("SQLite LIKE helpers send the escape character", async () => {
     assert.deepEqual(await names(objects.filter(Author.name.endsWith("\\dir")).orderBy(Author.id)), ["C:\\dir"]);
     assert.deepEqual(await names(objects.filter(Author.name.like("50_ off")).orderBy(Author.id)), ["50% off", "50x off"]);
   } finally {
+    await db.close();
+  }
+});
+
+test("bulk writes", async () => {
+  const db = await connect("sqlite://:memory:", { registry: sqliteRegistry, default: false });
+  try {
+    await db.createTables();
+    await assert.rejects(Author.objects.using(db).insertMany([{ email: "a@x.io", name: "A" }], { copy: true }), (e: Error) => e instanceof QueryError && /needs Postgres/.test(e.message));
+    // 32 766 parameters at most: 20 000 rows of two fields go to two statements.
+    const rows = Array.from({ length: 20_000 }, (_, i) => ({ email: `u${i}@x.io`, name: `U${i}` }));
+    const statement = Author.objects.using(db).insertMany(rows).returning();
+    const result = statement.inspect();
+    assert.equal(result.statementCount, 2);
+    assert.ok(result.hasBatching && result.statements.every((s) => s.hasBatching));
+    const events: unknown[] = [];
+    const off = db.onQuery((e) => events.push(e));
+    assert.equal((await statement).length, 20_000);
+    off();
+    assert.equal(events.length, 2);
+    const [first, created] = await Author.objects.using(db).getOrInsert({ email: "u0@x.io" }, { defaults: { name: "x" } });
+    assert.ok(!created && first.name === "U0");
+    // A failed later batch rolls back the earlier ones.
+    await assert.rejects(
+      Author.objects.using(db).insertMany([{ email: "n1@x.io", name: "N" }, { email: "u1@x.io", name: "N" }], { batchSize: 1 }),
+      IntegrityError,
+    );
+    assert.equal(await Author.objects.using(db).filter(Author.email.eq("n1@x.io")).exists(), false);
+  } finally { await db.close(); }
+});
+
+test("cross dialect snapshots are rejected", async () => {
+  const root = [join(import.meta.dirname, "..", "..", ".."), join(import.meta.dirname, "..", "..", "..", "..")].find((d) => {
+    try { readFileSync(join(d, "examples/sqlite/schema.prisma")); return true; } catch { return false; }
+  })!;
+  const source = readFileSync(join(root, "examples/sqlite/schema.prisma"), "utf8");
+  const postgres = new Registry();
+  loads(source.replace("provider = \"sqlite\"", "provider = \"postgresql\""), { registry: postgres });
+  const sqlite = new Registry();
+  loads(source, { registry: sqlite });
+  const dir = mkdtempSync(join(tmpdir(), "monorm-sqlite-"));
+  const directory = join(dir, "migrations");
+  try {
+    const [initial] = new Migrations(directory, postgres).make("initial");
+    assert.ok(readFileSync(join(initial!.path, "snapshot.json"), "utf8").includes("\"version\": 1"));
+    assert.throws(() => new Migrations(directory, sqlite).make("wrong"), (e: Error) => e instanceof SchemaError && /snapshot targets postgres/.test(e.message));
+    const db = await connect("sqlite://:memory:", { registry: sqlite, default: false });
+    try {
+      await assert.rejects(new Migrator(db, new Migrations(directory, sqlite)).upgrade(), (e: Error) => e instanceof MigrationError && /targets postgres/.test(e.message));
+    } finally { await db.close(); }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+const FOLLOW = `
+datasource db {
+  provider = "sqlite"
+}
+
+model Person {
+  id        BigInt   @id @default(autoincrement())
+  name      String
+  following Person[] @relation(through: Follow, through_fields: [follower, followee])
+  followers Person[] @relation(through: Follow, through_fields: [followee, follower])
+}
+
+model Follow {
+  id          BigInt @id @default(autoincrement())
+  follower_id BigInt
+  followee_id BigInt
+  follower    Person @relation("follower", fields: [follower_id], references: [id])
+  followee    Person @relation("followee", fields: [followee_id], references: [id])
+
+  @@unique([follower_id, followee_id])
+}
+`;
+
+test("self many to many has both sides", async () => {
+  const registry = new Registry();
+  const { Person, Follow } = loads(FOLLOW, { registry }) as Record<string, Any>;
+  const db = await connect("sqlite://:memory:", { registry, default: false });
+  try {
+    await db.createTables();
+    const people = Person.objects.using(db);
+    const [ann, bob, cat] = await people.insertMany([{ name: "ann" }, { name: "bob" }, { name: "cat" }]).returning();
+    await ann.following.add(bob, cat);
+    await bob.following.add(cat);
+    assert.equal(await Follow.objects.using(db).count(), 3);
+    // each side reads the join rows in its own direction
+    assert.deepEqual((await ann.following.orderBy(Person.id).all()).map((p: Any) => p.name), ["bob", "cat"]);
+    assert.deepEqual((await cat.followers.orderBy(Person.id).all()).map((p: Any) => p.name), ["ann", "bob"]);
+    assert.equal(await ann.followers.count(), 0);
+    // a link removed from one side is gone from the other
+    await cat.followers.remove(ann);
+    assert.deepEqual((await ann.following.all()).map((p: Any) => p.name), ["bob"]);
+    assert.deepEqual((await people.filter(Person.followers.name.eq("bob")).all()).map((p: Any) => p.name), ["cat"]);
+    const rows = await people.select({ name: Person.name, n: func.count(Person.followers) }).orderBy(Person.id).all();
+    assert.deepEqual(rows.map((r: Any) => [r.name, Number(r.n)]), [["ann", 0], ["bob", 1], ["cat", 1]]);
+    const loaded = await people.load(Person.following, Person.followers).orderBy(Person.id).all();
+    assert.deepEqual(loaded.map((p: Any) => [p.following.cached.map((f: Any) => f.name), p.followers.cached.map((f: Any) => f.name)]), [
+      [["bob"], []],
+      [["cat"], ["ann"]],
+      [[], ["bob"]],
+    ]);
+  } finally {
+    await db.dropTables();
     await db.close();
   }
 });

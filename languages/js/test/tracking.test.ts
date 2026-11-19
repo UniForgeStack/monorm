@@ -281,6 +281,43 @@ model PostTag {
     });
   }
 
+  test(`a soft-deleted join row is hidden from loads and filters (${dialect})`, { skip: !hasExtension("monorm.soft-delete") || !hasExtension("monorm.query-defaults") }, async () => {
+    const [db, models] = await open(dialect, `
+model Post {
+  id   Int   @id
+  tags Tag[] @relation(through: PostTag, through_fields: [post, tag])
+  @@map("tracking_join_posts")
+}
+model Tag {
+  id    Int    @id
+  name  String
+  posts Post[] @relation(through: PostTag, through_fields: [tag, post])
+  @@map("tracking_join_tags")
+}
+model PostTag {
+  id      Int       @id
+  post_id Int
+  tag_id  Int
+  post    Post      @relation(fields: [post_id], references: [id])
+  tag     Tag       @relation(fields: [tag_id], references: [id])
+  @@soft_delete.deleted_at("deleted", mode: "application")
+  @@map("tracking_join_post_tags")
+}`);
+    const { Post, Tag, PostTag } = models as Models & Record<string, any>;
+    try {
+      await Post.objects.using(db).insertMany([{ id: 1 }]);
+      await Tag.objects.using(db).insertMany([{ id: 1, name: "a" }, { id: 2, name: "b" }]);
+      await PostTag.objects.using(db).insertMany([{ id: 1, postId: 1, tagId: 1 }, { id: 2, postId: 1, tagId: 2 }]);
+      assert.equal(await PostTag.objects.using(db).filter(PostTag.id.eq(2)).delete(), 1);
+      const posts = Post.objects.using(db);
+      const [post] = await posts.load(Post.tags).all();
+      assert.deepEqual(post.tags.cached.map((t: { name: string }) => t.name), ["a"]);
+      assert.equal(await posts.filter(Post.tags.name.eq("b")).count(), 0);
+      assert.equal(await posts.filter(Post.tags.name.eq("a")).count(), 1);
+      assert.equal(await posts.withoutDefaults().filter(Post.tags.name.eq("b")).count(), 1);
+    } finally { await db.dropTables(); await db.close(); }
+  });
+
   test(`a user default named deleted clashes with the soft-delete default (${dialect})`, { skip: !hasExtension("monorm.soft-delete") || !hasExtension("monorm.query-defaults") }, async () => {
     await assert.rejects(open(dialect, `
 model Doc {

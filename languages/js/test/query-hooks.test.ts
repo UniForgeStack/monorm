@@ -1,9 +1,11 @@
 /** `db.onQuery` hooks, `monorm/otel` spans, and the N+1 finder on the same events. */
 import assert from "node:assert/strict";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { test } from "node:test";
-import { connect, debug, IntegrityError, loads, param, Registry, type Database, type QueryEvent } from "../src/index.js";
+import { describe, test } from "node:test";
+import { connect, debug, getDatabase, IntegrityError, loads, param, Registry, type Database, type QueryEvent } from "../src/index.js";
 import { instrument, type Span, type Tracer } from "../src/otel.js";
+import { Comment, Post, User } from "./blog/models.js";
+import { useDatabase } from "./helpers.js";
 
 const source = `datasource db {
   provider = "sqlite"
@@ -346,4 +348,50 @@ test("raw SQL without parameters has the raw flag and no span text by default", 
     stopRaw();
     assert.match(String(opted.spans[0]!.options!.attributes!["db.query.text"]), /secret-literal/);
   } finally { await db.close(); }
+});
+
+// -- twins of the Python query-hooks tests ---
+
+test("otel without the package names it", async (t) => {
+  // The package is an optional peer: with it installed, the failure cannot happen.
+  const installed = await import("@opentelemetry/api" as string).then(() => true, () => false);
+  if (installed) return t.skip("@opentelemetry/api is installed");
+  const { db } = await shop();
+  try {
+    await assert.rejects(instrument(db), /@opentelemetry\/api/);
+  } finally { await db.close(); }
+});
+
+describe("hooks on the blog tables", () => {
+  useDatabase();
+
+  test("postgres: events and row counts", async () => {
+    const db = getDatabase();
+    const user = await User.objects.insert({ email: "hook@example.com", name: "H" });
+    const post = await Post.objects.insert({ authorId: user.id, title: "t", body: "b" });
+    await Comment.objects.insertMany([0, 1, 2].map((i) => ({ postId: post.id, body: String(i) })));
+    const events: QueryEvent[] = [];
+    const remove = db.onQuery((e) => { events.push(e); });
+    try {
+      await Post.objects.load(Post.comments).filter(Post.id.eq(post.id)).all();
+      assert.equal(await Comment.objects.filter(Comment.postId.eq(post.id)).update({ body: "x" }), 3);
+    } finally {
+      remove();
+    }
+    assert.deepEqual(events.map((e) => e.rows), [1, 3, 3]);
+    assert.ok(events[0]!.sql.endsWith('WHERE "posts"."id" = $1'));
+  });
+
+  test("postgres: raw SQL has the raw flag", async () => {
+    const db = getDatabase();
+    const events: QueryEvent[] = [];
+    const remove = db.onQuery((e) => { events.push(e); });
+    try {
+      await db.execute("SELECT 'secret-literal'");
+      await db.fetch("SELECT $1::text", "x");
+    } finally {
+      remove();
+    }
+    assert.deepEqual(events.map((e) => e.raw), [true, false]);
+  });
 });

@@ -5,7 +5,7 @@ import { hasExtension } from "./artifact-caps.js";
 
 const queryDefaults = hasExtension("monorm.query-defaults");
 
-async function open(dialect: "sqlite" | "postgres", defaults: boolean, annotated = false) {
+async function open(dialect: "sqlite" | "postgres", defaults: boolean, annotated = false, shelf = false) {
   const registry = new Registry();
   const field = (name: string, type = "string", flags = {}) => ({ name, column: name, type, ...flags });
   // Runtime define intentionally has no generated static model types.
@@ -14,8 +14,10 @@ async function open(dialect: "sqlite" | "postgres", defaults: boolean, annotated
         field("name"), field("id", "int", { primary_key: true, auto_increment: true }),
         field("visible", "bool", { default: true }), field("bio", "text"), field("note", "string", { nullable: true }),
       ], relations: [{ name: "books", kind: "many", target: "SelectedBook", from: "id", to: "author_id" }] },
-      { name: "SelectedBook", table: "selection03_js_books", fields: [field("title"), field("author_id", "int"), field("id", "int", { primary_key: true, auto_increment: true }), field("isbn", "string", { nullable: true })],
+      { name: "SelectedBook", table: "selection03_js_books", fields: [field("title"), field("author_id", "int"), field("id", "int", { primary_key: true, auto_increment: true }), field("isbn", "string", { nullable: true }), ...(shelf ? [field("shelf_id", "int", { nullable: true })] : [])],
         relations: [{ name: "author", kind: "one", target: "SelectedAuthor", from: "author_id", to: "id", foreign_key: true, on_delete: "cascade" }] },
+      ...(shelf ? [{ name: "SelectedShelf", table: "selection03_js_shelves", fields: [field("id", "int", { primary_key: true, auto_increment: true })],
+        relations: [{ name: "books", kind: "many", target: "SelectedBook", from: "id", to: "shelf_id" }] }] : []),
     ], behavior: defaults ? { schema_contract: 5, read_defaults: [
       { source: "monorm.query-defaults", name: "query", model: "SelectedAuthor", filter: { t: "col", path: [], name: "visible" }, fields: ["name", "note"] },
       { source: "monorm.query-defaults", name: "query", model: "SelectedBook", fields: ["title"], load: [["author"]] },
@@ -23,10 +25,11 @@ async function open(dialect: "sqlite" | "postgres", defaults: boolean, annotated
     ] } : {} } as never, { registry });
   const Author = models["SelectedAuthor"] as any;
   const Book = models["SelectedBook"] as any;
+  const Shelf = models["SelectedShelf"] as any;
   const url = dialect === "sqlite" ? "sqlite://:memory:" : process.env["ORM_TEST_DATABASE_URL"] ?? "postgres://postgres:postgres@localhost/orm_test";
   const db = await connect(url, { registry, default: false });
   await db.dropTables(); await db.createTables();
-  return { db, Author, Book, a: Author.objects.using(db), b: Book.objects.using(db) };
+  return { db, Author, Book, Shelf, a: Author.objects.using(db), b: Book.objects.using(db) };
 }
 
 test("currentFilter lists filters with their bypass state", async () => {
@@ -527,3 +530,58 @@ test("withoutDefaults names reach the engine", async () => {
     assert.equal(await a.withoutDefaults("nope").withoutDefaults().count(), 0);
   } finally { await db.dropTables(); await db.close(); }
 });
+
+// -- twins of the Python selection-defaults tests ---
+
+test("a joined model brings its related default", async (t) => {
+  if (!queryDefaults) return t.skip("needs the monorm.query-defaults package");
+  const registry = new Registry();
+  const field = (name: string, type = "string", flags = {}) => ({ name, column: name, type, ...flags });
+  const rel = (name: string, target: string, from: string) => ({ name, kind: "one", target, from, to: "id", foreign_key: true });
+  const models = define({ dialect: "sqlite", models: [
+    { name: "JAuthor", table: "j_authors", fields: [field("id", "int", { primary_key: true }), field("name")] },
+    { name: "JBook", table: "j_books", fields: [field("id", "int", { primary_key: true }), field("author_id", "int")], relations: [rel("author", "JAuthor", "author_id")] },
+    { name: "JShelf", table: "j_shelves", fields: [field("id", "int", { primary_key: true }), field("book_id", "int")], relations: [rel("book", "JBook", "book_id")] },
+  ], behavior: { schema_contract: 5, read_defaults: [{ source: "monorm.query-defaults", name: "query", model: "JBook", load: [["author"]] }] } } as never, { registry }) as Record<string, any>;
+  const { JAuthor: Author, JBook: Book, JShelf: Shelf } = models;
+  const db = await connect("sqlite://:memory:", { registry, default: false });
+  try {
+    await db.createTables();
+    await Author.objects.using(db).insert({ id: 1, name: "ann" });
+    await Book.objects.using(db).insert({ id: 1, authorId: 1 });
+    await Shelf.objects.using(db).insert({ id: 1, bookId: 1 });
+    // JBook's default joins its author also when JBook is itself joined.
+    const shelf = await Shelf.objects.using(db).load(Shelf.book).get();
+    assert.equal(shelf.book.author.name, "ann");
+  } finally { await db.close(); }
+});
+
+test("aggregate to-one tail applies the target default in the join", async (t) => {
+  if (!queryDefaults) return t.skip("needs the monorm.query-defaults package");
+  const { db, Shelf, a, b } = await open("postgres", true, false, true);
+  try {
+    const shelf = await Shelf.objects.using(db).insert({});
+    const [shown, hidden] = await a.withoutDefaults().insertMany([{ name: "shown", bio: "x" }, { name: "hidden", bio: "x", visible: false }]).returning();
+    await b.insertMany([{ title: "a", authorId: shown.pk, shelfId: shelf.pk }, { title: "b", authorId: hidden.pk, shelfId: shelf.pk }]);
+    // The hidden author is no row of the join, but its book stays an element: the default sits in the ON.
+    const row = await Shelf.objects.using(db).select({
+      names: func.arrayAgg(Shelf.books.author.name, { orderBy: Shelf.books.title }),
+      n: func.count(Shelf.books.author),
+    }).first();
+    assert.deepEqual([row.names, Number(row.n)], [["shown", null], 1]);
+  } finally { await db.dropTables(); await db.close(); }
+});
+
+for (const dialect of ["sqlite", "postgres"] as const) {
+  test(`bypass by name keeps the other defaults: ${dialect}`, async (t) => {
+    if (!queryDefaults) return t.skip("needs the monorm.query-defaults package");
+    const { db, Author, a } = await open(dialect, true);
+    try {
+      await a.insertMany([{ name: "visible", bio: "x" }, { name: "hidden", bio: "x", visible: false }]);
+      assert.equal(await a.withoutDefaults("query").count(), 2);
+      await assert.rejects(a.withoutDefaults("nope").count(), /unknown default "nope"; available defaults: \["query"\]/);
+      const full = await a.withoutDefaults("query").orderBy(Author.id).first();
+      assert.equal(full.bio, "x");
+    } finally { await db.dropTables(); await db.close(); }
+  });
+}
