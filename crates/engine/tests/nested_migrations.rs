@@ -20,7 +20,7 @@ impl Dir {
     fn new(label: &str) -> Dir {
         static NEXT: Mutex<u32> = Mutex::new(0);
         let n = { let mut n = NEXT.lock().unwrap(); *n += 1; *n };
-        let path = std::env::temp_dir().join(format!("orm-nested-migrations-{}-{label}-{n}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("monorm-nested-migrations-{}-{label}-{n}", std::process::id()));
         std::fs::create_dir_all(&path).unwrap();
         Dir(path)
     }

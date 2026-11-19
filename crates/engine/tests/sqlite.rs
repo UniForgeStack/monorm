@@ -94,7 +94,7 @@ fn schema(source: &str) -> monorm_core::schema::Schema { dsl::check(dsl::compile
 
 /// A migrations directory with one migration per source, and an in-memory database.
 async fn migrations(label: &str, sources: &[String]) -> (std::path::PathBuf, Arc<dyn Driver>) {
-    let dir = std::env::temp_dir().join(format!("orm-sqlite-{}-{label}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("monorm-sqlite-{}-{label}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     for (i, source) in sources.iter().enumerate() {

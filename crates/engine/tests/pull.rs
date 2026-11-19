@@ -33,7 +33,7 @@ struct Dir(PathBuf);
 
 impl Dir {
     fn new(label: &str) -> Dir {
-        let path = std::env::temp_dir().join(format!("orm-pull-{}-{label}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("monorm-pull-{}-{label}", std::process::id()));
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).unwrap();
         Dir(path)
