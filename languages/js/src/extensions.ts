@@ -72,7 +72,7 @@ function installInstance(meta: ModelMeta, prototype: object): void {
  * A member name that a host member, a field, a relation or an earlier extension has is an
  * error, unless the extension declares an override.
  */
-export function applyExtensions(meta: ModelMeta, ids: readonly string[], extensions: Readonly<Record<string, ExtensionCode>>, packaged: ReadonlyMap<string, LanguageRecord>, hostQuerySetMember: (name: string) => boolean): void {
+export function applyExtensions(meta: ModelMeta, ids: readonly string[], extensions: Readonly<Record<string, ExtensionCode>>, packaged: ReadonlyMap<string, LanguageRecord>, hostQuerySetMember: (name: string) => boolean, hostBoundMember: (name: string) => boolean): void {
   const given = new Map<string, string>();
   const mixins: Mixin[] = [];
   const bound: ((base: never) => unknown)[] = [];
@@ -98,6 +98,9 @@ export function applyExtensions(meta: ModelMeta, ids: readonly string[], extensi
         if (given.has(name)) throw new TypeError(`${meta.name}.${name}: extension ${id} ${kind} member collides with a member of extension ${given.get(name)}`);
         if (host(name)) throw new TypeError(`${meta.name}.${name}: extension ${id} ${kind} member collides with a host member; declare it as an override`);
       }
+    }
+    for (const name of record.bound_query_set_members ?? []) {
+      if (!overrides.has(name) && hostBoundMember(name)) throw new TypeError(`${meta.name}.${name}: extension ${id} bound query set member collides with a host member; declare it as an override`);
     }
     for (const name of [...record.query_set_members, ...record.instance_members]) if (!given.has(name)) given.set(name, id);
     mixins.push(mixin as Mixin);

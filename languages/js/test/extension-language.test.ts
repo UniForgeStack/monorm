@@ -157,8 +157,7 @@ const boundA = (Base: BoundCtor) => class ABound extends Base {
 };
 const boundCode = (bound: object) => ({ "ext.a": { module: { queries: mixinA, Instance: AInstance, bound } } });
 
-// A real binding gap: applyExtensions in src/extensions.ts does not check bound_query_set_members against the host members of BoundQuerySet.
-test("a bound member collides with a host member unless overridden", { skip: "the TypeScript binding does not check bound members for collisions; see plans/jobs/monorm-twins-add-ts.md" }, () => {
+test("a bound member collides with a host member unless overridden", () => {
   const filter = (Base: BoundCtor) => class ABound extends Base {
     // @ts-expect-error the member collides with the host member on purpose
     override filter() { return this; }
@@ -167,6 +166,7 @@ test("a bound member collides with a host member unless overridden", { skip: "th
     () => build([record("ext.a", { bound: true })], boundCode(filter), { Post: ["ext.a"] }),
     /Post\.filter: extension ext\.a bound query set member collides with a host member/,
   );
+  assert.doesNotThrow(() => build([record("ext.a", { bound: true, overrides: ["filter"] })], boundCode(filter), { Post: ["ext.a"] }));
 });
 
 test("a bound class is composed from the extensions", () => {

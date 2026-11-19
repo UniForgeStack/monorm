@@ -654,6 +654,10 @@ let relatedSet: (r: RelationMeta, instance: object) => RelatedSet<ModelSpec, nev
 let manyRelatedSet: (r: RelationMeta, instance: object) => ManyRelatedSet<ModelSpec>;
 let makeQuerySet: (meta: ModelMeta) => QuerySet<ModelSpec>;
 let hostQuerySetMember: (name: string) => boolean;
+let hostBoundMember: (name: string) => boolean;
+
+/** @internal bound.ts registers the host-member test (it imports this module, not the other way round). */
+export function registerBoundHost(has: typeof hostBoundMember): void { hostBoundMember = has; }
 
 /** @internal */
 export function registerQueries(
@@ -1083,7 +1087,7 @@ export function define(
       meta.inputFields = new Map(meta.inputFieldList.map((f) => [f.name, f]));
     }
     const ids = members[m.name];
-    if (ids?.length) applyExtensions(meta, ids, extensions, packaged, hostQuerySetMember);
+    if (ids?.length) applyExtensions(meta, ids, extensions, packaged, hostQuerySetMember, hostBoundMember);
     Object.defineProperty(meta.Row, "meta", { value: meta });
     reg.add(meta);
     out[m.name] = meta.model;

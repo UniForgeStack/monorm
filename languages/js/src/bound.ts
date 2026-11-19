@@ -3,7 +3,7 @@ import { Column, Labeled, or, type Expression } from "./expr.js";
 import { resolve, type Database } from "./db.js";
 import { QueryError } from "./errors.js";
 import { merge } from "./loading.js";
-import { DB, INTERNAL, fieldValue, invalidateReference, type Instance, type ModelMeta, type Row } from "./model.js";
+import { DB, INTERNAL, fieldValue, invalidateReference, registerBoundHost, type Instance, type ModelMeta, type Row } from "./model.js";
 import type { Cte } from "./cte.js";
 import { prefetch, registerBound, QuerySet, type WriteStatement, type Allowed, type LoadAll, type LoadItem, type LockOptions, type Narrow, type RootNames } from "./query.js";
 import type { QueryInspection } from "./inspection.js";
@@ -262,6 +262,8 @@ export class BoundQuerySet<M extends ModelSpec, R = Instance<M>, S extends strin
 export function rowKey(meta: ModelMeta, row: Row): string {
   return meta.key.map((f) => { const k = key(fieldValue(row, f.name)); return `${typeof k}:${String(k)}`; }).join("\0");
 }
+
+registerBoundHost((name) => name in BoundQuerySet.prototype);
 
 registerBound((qs, objs) => {
   const meta = qs.meta;
