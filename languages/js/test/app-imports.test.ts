@@ -140,7 +140,8 @@ test("the bundled auth app wins over an installed package of the same name", (t)
   assert.ok(!resolveApps(schema)["auth"]?.includes("node_modules"));
 });
 
-test("an import cycle across directories is scanned once", (t) => {
+// Bun does not route its own `fs` calls through a mocked `readFileSync`, so the read count is a Node-only check.
+test("an import cycle across directories is scanned once", { skip: (globalThis as { Bun?: unknown }).Bun ? "Bun: fs mock not seen" : false }, (t) => {
   const dir = directory(t);
   write(join(dir, "a/x.prisma"), 'import "../b/y.prisma"\n');
   write(join(dir, "b/y.prisma"), 'import "../a/x.prisma"\n');
