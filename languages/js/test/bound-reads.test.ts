@@ -334,13 +334,13 @@ for (const provider of ["sqlite", "postgresql"]) {
     }
   });
 
-  // case: bound_reads::a_query_set_with_shape_state_is_refused_without_require
+  // case: bound_reads::a_query_set_with_shape_state_is_refused
   test(`a query set with shape state is refused (${provider})`, { skip: !url }, async () => {
     const { db, Writer, Entry } = await setup();
     try {
       const [entry] = await Entry.objects.using(db).orderBy("id");
       const [writer] = await Writer.objects.using(db).orderBy("id");
-      for (const [label, shaped] of [["orderBy", Entry.objects.orderBy("id")], ["limit", Entry.objects.limit(1)], ["offset", Entry.objects.offset(1)]]) {
+      for (const [label, shaped] of [["orderBy", Entry.objects.orderBy("id")], ["limit", Entry.objects.limit(1)], ["offset", Entry.objects.offset(1)], ["require", Entry.objects.require()]]) {
         assert.throws(() => (shaped as Any).of([entry]), TypeError, label);
       }
       assert.throws(() => writer.entries.of(entry), TypeError);

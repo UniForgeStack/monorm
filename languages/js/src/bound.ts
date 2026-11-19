@@ -270,7 +270,7 @@ registerBound((qs, objs) => {
   const where = (qs as { relation?: unknown }).relation !== undefined || qs.state.via !== undefined ? "a relation query set" : undefined;
   if (where) throw new TypeError(`of() does not take ${where}; use ${meta.name}.objects.of()`);
   const s = qs.state;
-  const extra = s.order.length ? "ordering" : s.limit !== undefined || s.offset !== undefined ? "a slice" : s.joins.length ? "a join" : s.from !== undefined ? "a source other than the table" : undefined;
+  const extra = s.order.length ? "ordering" : s.limit !== undefined || s.offset !== undefined ? "a slice" : s.required ? "require()" : s.joins.length ? "a join" : s.from !== undefined ? "a source other than the table" : undefined;
   if (extra) throw new TypeError(`of() does not take a query set with ${extra}`);
   if (!objs.length) throw new TypeError("of() takes at least one object");
   for (const o of objs) {

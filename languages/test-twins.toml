@@ -29,7 +29,6 @@
 "admin_list_edit::a_threaded_sync_service_writes_in_the_save_transaction_and_a_later_failure_rolls_it_back" = "one-language: Python-only: a sync service runs in a thread; a TypeScript service is always async"
 # languages/python/tests/test_app_imports.py
 # languages/python/tests/test_bound_reads.py
-"bound_reads::a_query_set_with_shape_state_is_refused" = "keep: bug TS of() accepts a require() query set; Python raises TypeError."
 # languages/python/tests/test_bound_writes.py
 # languages/python/tests/test_chain_alias.py
 # languages/python/tests/test_char_like.py
@@ -85,7 +84,7 @@
 # languages/python/tests/test_isolated.py
 "isolated::the_fixture_the_mark_and_the_ini_option" = "one-language: Python-only: the monorm_db fixture, the monorm mark and the monorm_autouse option of the monorm.testing pytest plugin"
 # languages/python/tests/test_n_plus_one.py
-"n_plus_one::an_awaited_query_set_reports_the_awaiting_line_and_a_many_to_many_names_its_fix" = "keep: bug TS reports <unknown> as the call site of an awaited query set (.all()); Python reports the awaiting line (twin n_plus_one::an_awaited_query_set_reports_the_awaiting_line_and_a_many_to_many_names_its_fix / a_many_to_many_query_in_a_loop_names_load)"
+"n_plus_one::an_awaited_query_set_reports_the_awaiting_line_and_a_many_to_many_names_its_fix" = "one-language: JavaScript calls the then() of an awaited query set from a microtask, so the stack holds no line of the caller and the call site is `<unknown>`; Python reports the awaiting line"
 "n_plus_one::the_pytest_fixture_counts_the_test" = "one-language: Python-only: the n_plus_one pytest fixture of monorm.testing"
 "n_plus_one::the_pytest_fixture_fails_a_test_with_an_n_plus_one" = "one-language: Python-only: the n_plus_one pytest fixture of monorm.testing"
 # languages/python/tests/test_native_codegen.py
@@ -212,7 +211,6 @@
 "languages/js/test/auth/password-breached.test.ts" = "The Python twin is in apps/auth/python/tests/test_password_breached.py"
 
 [typescript-only.ids]
-"bound_reads::a_query_set_with_shape_state_is_refused_without_require" = "keep: bug TS of() accepts a require() query set, so this case leaves require() out; the Python case a_query_set_with_shape_state_is_refused covers it."
 # languages/js/test/partial-instances.test.ts
 "partial_instances::delete_on_a_loaded_field_of_a_partial_instance_reads_undefined_like_a_whole_instance" = "one-language: TypeScript-only: Python has no `delete` of a property"
 # languages/js/test/app-imports.test.ts
@@ -256,7 +254,7 @@
 "model_classes::model_methods_load_on_the_first_instance_not_at_registration" = "one-language: TypeScript-only: useModelMethods takes a lazy class factory to break the ESM import cycle"
 "model_classes::the_module_lookup_reads_the_name_of_the_nearest_package_json_of_an_installed_schema" = "keep: the binding picks out_dir = the schema directory (languages/python/native/src/lib.rs:1078, languages/js/native/src/lib.rs:1298) and no Rust test covers that choice, as"
 # languages/js/test/n-plus-one.test.ts
-"n_plus_one::a_many_to_many_query_in_a_loop_names_load" = "keep: bug TS reports <unknown> as the call site of an awaited query set (.all()); Python reports the awaiting line (twin n_plus_one::an_awaited_query_set_reports_the_awaiting_line_and_a_many_to_many_names_its_fix / a_many_to_many_query_in_a_loop_names_load)"
+"n_plus_one::a_many_to_many_query_in_a_loop_names_load" = "one-language: JavaScript calls the then() of an awaited query set from a microtask, so the stack holds no line of the caller and the call site is `<unknown>`; Python reports the awaiting line"
 "n_plus_one::expect_no_nplus_one_is_the_test_helper" = "one-language: TypeScript-only: the debug.expectNoNPlusOne test helper; Python has the n_plus_one pytest fixture"
 # languages/js/test/native-codegen.test.ts
 "native_codegen::native_generation_accepts_subpath_imports_and_dollar_export_names" = "engine-covered: crates/core/src/codegen/mod.rs::reference_tests::typescript_query_sets_accept_subpaths_and_dollar_exports"

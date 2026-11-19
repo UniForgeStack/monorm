@@ -88,8 +88,8 @@ model PersonTag {
     const loops: Record<string, [(p: Any) => Promise<unknown>, string | null]> = {
       related: [async (p) => await p.customers.using(db).all(), "load(Person.customers)"], // the awaiting line
       many: [async (p) => await p.tags.using(db).all(), "load(Person.tags)"], // the awaiting line
-      "filtered many": [async (p) => await p.tags.using(db).filter(Tag.id.gte(0)).all(), null], // the awaiting line
-      "query set": [async (p) => await Person.objects.using(db).filter(Person.id.eq(p.id)).all(), null], // the awaiting line
+      "filtered many": [async (p) => await p.tags.using(db).filter(Tag.id.gte(0)).all(), null], // awaited: no call site
+      "query set": [async (p) => await Person.objects.using(db).filter(Person.id.eq(p.id)).all(), null], // awaited: no call site
     };
     for (const [name, [run, fix]] of Object.entries(loops)) {
       const error = await debug.nPlusOne(async () => { for (const p of people) await run(p); }, { threshold: 3, fail: true })
@@ -97,11 +97,20 @@ model PersonTag {
       assert.ok(error instanceof debug.NPlusOne, name);
       const [shape] = error.report.repeated;
       assert.equal(shape!.fix, fix, name);
-      // An awaited query set (`.all()`) reports `<unknown>` as its site (binding bug, see test-twins.toml).
-      if (shape!.site === "<unknown>") continue;
+      if (fix === null) {
+        // JavaScript calls the then() of an awaited query set from a microtask: the stack holds no line of the caller.
+        assert.equal(shape!.site, "<unknown>", name);
+        continue;
+      }
       const [, file, line] = /^(.*):(\d+)$/.exec(shape!.site)!;
       assert.match(readFileSync(file!, "utf8").split("\n")[Number(line) - 1]!, /the awaiting line/, name);
     }
+    // A method that starts the query itself (`count()`) reports its line.
+    const got = await debug.nPlusOne(async () => { for (const p of people) await Person.objects.using(db).filter(Person.id.eq(p.id)).count(); }, { threshold: 3, fail: true }) // the calling line
+      .then(() => null, (e: unknown) => e);
+    assert.ok(got instanceof debug.NPlusOne);
+    const [, gotFile, gotLine] = /^(.*):(\d+)$/.exec(got.report.repeated[0]!.site)!;
+    assert.match(readFileSync(gotFile!, "utf8").split("\n")[Number(gotLine) - 1]!, /the calling line/);
   } finally { await db.close(); }
 });
 

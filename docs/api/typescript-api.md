@@ -1154,6 +1154,11 @@ await debug.nPlusOne(async () => {
   Outside it, each query pays one `AsyncLocalStorage` read (about 2 ns, measured).
 * In tests, `await debug.expectNoNPlusOne(fn, { threshold })` throws `NPlusOne` when `fn` sends an N+1.
   Without source maps (`node --enable-source-maps`), the call site is a line of the compiled JavaScript.
+* An awaited query set (`await qs`, `await qs.all()`) has `<unknown>` as its call site.
+  JavaScript calls its `then()` from a microtask, so the stack holds no line of your code.
+  A to-many relation query (`post.tags.all()`) is the exception: it reports its line.
+  Python reports the awaiting line for every query set.
+  A method that starts the query itself (`count()`, `exists()`) reports its line.
 
 ### Raw SQL and query plans
 
