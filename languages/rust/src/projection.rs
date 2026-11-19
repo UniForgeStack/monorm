@@ -596,6 +596,7 @@ nullable_codecs!(
     String,
     chrono::NaiveDate,
     chrono::NaiveTime,
+    chrono::TimeDelta,
     chrono::DateTime<chrono::Utc>,
     uuid::Uuid,
     serde_json::Value,

@@ -18,6 +18,8 @@
 # languages/python/tests/test_scope_rls.py
 "scope_rls::audit_names_a_missing_role_and_a_leftover_hand_written_policy" = "one-language: Python-only: runs `python -m monorm audit`, the Rust command both hosts share; crates/cli reaches the same code"
 "scope_rls::audit_names_a_dropped_policy_and_a_forced_flag_that_is_off" = "one-language: Python-only: runs `python -m monorm audit`, the Rust command both hosts share; crates/cli reaches the same code"
+# languages/python/tests/test_admin_writes.py
+"admin_writes::an_action_filter_that_binds_a_duration_column_is_refused_by_name" = "add-ts: the Python `_untag` turns a bigint tag into an int that a timedelta column refuses; the TypeScript host-action filter path was not checked for the same case; the Value::Duration carrier (duration-2) removes the refusal"
 # languages/python/tests/test_admin_services.py
 "admin_services::a_threaded_sync_service_gets_plain_values_and_runs_database_calls_through_ctx_run" = "one-language: Python-only: a sync service runs in a thread; a TypeScript service is always async"
 "admin_services::a_threaded_service_that_returns_an_async_call_is_a_500_that_names_ctx_run" = "one-language: Python-only: the thread rule of sync services; a TypeScript service is always async"

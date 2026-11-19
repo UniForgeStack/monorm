@@ -20,6 +20,7 @@
 //! | 13  | decimal                      | u32 length, ASCII text                   |
 //! | 14  | array                        | u32 count, the cells                     |
 //! | 15  | bytes                        | u32 length, bytes                        |
+//! | 16  | duration                     | i64 microseconds                         |
 
 use crate::convert::midnight_ms;
 use monorm_core::ir::ValueType;
@@ -42,6 +43,7 @@ mod tag {
     pub const DECIMAL: u8 = 13;
     pub const ARRAY: u8 = 14;
     pub const BYTES: u8 = 15;
+    pub const DURATION: u8 = 16;
 }
 
 fn len(out: &mut Vec<u8>, n: usize) {
@@ -84,6 +86,10 @@ fn cell(out: &mut Vec<u8>, c: Cell<'_>) {
         Cell::Date(d) => {
             out.push(tag::DATE);
             out.extend_from_slice(&midnight_ms(d).to_le_bytes());
+        }
+        Cell::Duration(n) => {
+            out.push(tag::DURATION);
+            out.extend_from_slice(&n.to_le_bytes());
         }
         Cell::Uuid(u) => {
             out.push(tag::UUID);

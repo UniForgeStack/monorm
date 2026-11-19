@@ -541,7 +541,7 @@ def _declared_type(name: str, tp: Any) -> str:
 
     names: dict[Any, str] = {
         int: "big_int", float: "float", str: "text", bool: "bool", datetime.datetime: "date_time",
-        datetime.date: "date", datetime.time: "time", uuid.UUID: "uuid", decimal.Decimal: "decimal", dict: "json", bytes: "bytes",
+        datetime.date: "date", datetime.time: "time", datetime.timedelta: "duration", uuid.UUID: "uuid", decimal.Decimal: "decimal", dict: "json", bytes: "bytes",
     }
     if typing.get_origin(tp) is list:
         (item,) = typing.get_args(tp)

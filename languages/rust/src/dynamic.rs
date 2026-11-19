@@ -118,10 +118,11 @@ impl<M: Model, R, L, D> Query<RuntimeRow<M>, R, L, D> {
             .position(|m| m.ir.name == M::NAME)
             .ok_or_else(|| Error::Compatibility("unknown model".into()))?;
         let (path, name) = path(&schema, root, name, false)?;
+        let value = value.try_encode().map_err(Error::Compatibility)?;
         self.filters.push(Tree::Compare(
             ir::Expr::Col { path, name, sub: vec![], alias: vec![] },
             ir::CmpOp::Eq,
-            value.encode(),
+            value,
         ));
         Ok(self)
     }

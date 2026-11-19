@@ -4,6 +4,7 @@
  */
 
 import { Decimal } from "./decimal.js";
+import { Duration } from "./duration.js";
 import type { NativeRows } from "./native.js";
 import { MICROS, MICROS_MS } from "./date-micros.js";
 
@@ -25,6 +26,7 @@ const Tag = {
   DECIMAL: 13,
   ARRAY: 14,
   BYTES: 15,
+  DURATION: 16,
 } as const;
 
 /** The cells of `rows`, row after row; decoded on first use. */
@@ -88,6 +90,11 @@ function decode(buf: Buffer, count: number): unknown[] {
         return text(36, 0, "latin1");
       case Tag.JSON:
         return JSON.parse(text(view.getUint32(pos, true), 4, "utf8"));
+      case Tag.DURATION: {
+        const micros = view.getBigInt64(pos, true);
+        pos += 8;
+        return Duration.fromMicros(micros);
+      }
       case Tag.DECIMAL:
         return new Decimal(text(view.getUint32(pos, true), 4, "latin1"));
       case Tag.BYTES: {

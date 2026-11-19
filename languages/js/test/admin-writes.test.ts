@@ -7,7 +7,7 @@ import { test } from "node:test";
 
 import { Admin, AdminConfigError } from "../src/admin.js";
 import { hasExtension } from "./artifact-caps.js";
-import { allowWrites, connect, load, param, Registry, type Database } from "../src/index.js";
+import { allowWrites, connect, Duration, load, param, Registry, type Database } from "../src/index.js";
 
 const PG_URL = process.env["ORM_TEST_DATABASE_URL"] ?? "postgres://postgres:postgres@localhost/orm_test";
 const PROVIDERS = ["sqlite", "postgres"] as const;
@@ -66,6 +66,13 @@ model WCoded {
   @@protected_write
   @@map("w_coded")
 }
+
+model WChore {
+  code  String    @id
+  every Duration?
+  @@protected_write
+  @@map("w_chores")
+}
 ${provider === "sqlite" ? "" : MONEY}`;
 
 const GUARDED = (provider: string) => `datasource db {
@@ -88,6 +95,7 @@ const SU = { key: 1, is_superuser: true };
 const LOCKED = "/admin/api/resources/WLocked";
 const CODED = "/admin/api/resources/WCoded";
 const MONEY_URL = "/admin/api/resources/WMoney";
+const CHORE_URL = "/admin/api/resources/WChore";
 
 type Loose = any;
 interface World {
@@ -291,6 +299,21 @@ for (const provider of PROVIDERS) {
     const r = await client.patch(`${MONEY_URL}/k`, { json: { set: { price: "7.50" }, loaded: { price: "5.01" } } });
     assert.equal(r.status, 409, r.text);
     assert.deepEqual(Object.keys(JSON.parse(r.text).conflicts), ["price"]);
+  }));
+
+  test(`a host write compares a duration by value and writes it as text (${provider})`, () => world(provider, async (w) => {
+    const Chore = w.models["WChore"]!;
+    await allowWrites([Chore], () => Chore.objects.using(w.db).insertMany([{ code: "k", every: Duration.fromParts({ hours: 1, minutes: 30 }) }]));
+    const site = new Admin(w.registry);
+    site.register(Chore, { allowProtectedWrites: true } as never);
+    const client = site.testClient(w.db, { user: SU });
+    let r = await client.patch(`${CHORE_URL}/k`, { json: { set: { every: "1 02:00:00" }, loaded: { every: "01:30:00" } } });
+    assert.equal(r.status, 200, r.text);
+    const row = await Chore.objects.using(w.db).filter(Chore.code.eq("k")).first();
+    assert.ok((row as { every: Duration }).every.equals(Duration.fromParts({ days: 1, hours: 2 })));
+    r = await client.patch(`${CHORE_URL}/k`, { json: { set: { every: "00:00:05" }, loaded: { every: "01:30:00" } } });
+    assert.equal(r.status, 409, r.text);
+    assert.deepEqual(Object.keys(JSON.parse(r.text).conflicts), ["every"]);
   }));
 
   test(`a bulk delete through the host writer deletes the query set and writes one summary row (${provider})`, () => world(provider, async (w) => {

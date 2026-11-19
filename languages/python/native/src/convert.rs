@@ -7,7 +7,7 @@ use bigdecimal::BigDecimal;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
-use pyo3::types::{PyByteArray, PyBytes, PyBool, PyDate, PyDateTime, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
+use pyo3::types::{PyByteArray, PyBytes, PyBool, PyDate, PyDateTime, PyDelta, PyDict, PyFloat, PyInt, PyList, PyString, PyTuple};
 use pyo3::IntoPyObjectExt;
 use sea_query::Value;
 
@@ -128,6 +128,32 @@ fn extract_time(obj: &Bound<'_, PyAny>) -> PyResult<chrono::NaiveTime> {
     Ok(time)
 }
 
+const MICROS_PER_SECOND: i64 = 1_000_000;
+const MICROS_PER_DAY: i64 = 86_400 * MICROS_PER_SECOND;
+
+/// The whole microseconds of a `datetime.timedelta`; a value outside the 64-bit range is an error.
+fn extract_duration(obj: &Bound<'_, PyAny>) -> PyResult<i64> {
+    if !obj.is_instance_of::<PyDelta>() {
+        return Err(PyTypeError::new_err(format!(
+            "expected a datetime.timedelta, got {}",
+            obj.repr().map(|r| r.to_string()).unwrap_or_default()
+        )));
+    }
+    let part = |name: &str| obj.getattr(name)?.extract::<i64>();
+    let (days, seconds, micros) = (part("days")?, part("seconds")?, part("microseconds")?);
+    days.checked_mul(MICROS_PER_DAY)
+        .and_then(|d| d.checked_add(seconds * MICROS_PER_SECOND + micros))
+        .ok_or_else(|| pyo3::exceptions::PyOverflowError::new_err("the duration is out of range for a 64-bit count of microseconds"))
+}
+
+/// A `datetime.timedelta` from whole microseconds.
+fn duration_to_py(py: Python<'_>, micros: i64) -> PyResult<Py<PyAny>> {
+    let days = micros.div_euclid(MICROS_PER_DAY);
+    let rest = micros.rem_euclid(MICROS_PER_DAY);
+    let delta = PyDelta::new(py, days as i32, (rest / MICROS_PER_SECOND) as i32, (rest % MICROS_PER_SECOND) as i32, false)?;
+    delta.into_py_any(py)
+}
+
 /// The bytes of a `bytes`, `bytearray` or `memoryview`; any other object is a type error.
 fn extract_bytes(obj: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
     if let Ok(b) = obj.cast::<PyBytes>() {
@@ -167,6 +193,7 @@ pub fn py_to_value(obj: &Bound<'_, PyAny>, ty: Option<ValueType>) -> PyResult<Va
         Some(ColType::DateTime) => Value::ChronoDateTimeWithTimeZone(Some(extract_datetime(obj)?)),
         Some(ColType::Time) => Value::ChronoTime(Some(extract_time(obj)?)),
         Some(ColType::Date) => Value::ChronoDate(Some(obj.extract()?)),
+        Some(ColType::Duration) => Value::BigInt(Some(extract_duration(obj)?)),
         Some(ColType::Uuid) => Value::Uuid(Some(extract_uuid(obj)?)),
         Some(ColType::Json) => Value::Json(Some(Box::new(py_to_json(obj)?))),
         Some(ColType::Decimal) => Value::BigDecimal(Some(Box::new(extract_decimal(obj)?))),
@@ -188,6 +215,8 @@ pub fn py_to_value(obj: &Bound<'_, PyAny>, ty: Option<ValueType>) -> PyResult<Va
                 Value::ChronoTime(Some(extract_time(obj)?))
             } else if obj.is_instance_of::<PyDate>() {
                 Value::ChronoDate(Some(obj.extract()?))
+            } else if obj.is_instance_of::<PyDelta>() {
+                Value::BigInt(Some(extract_duration(obj)?))
             } else if obj.is_instance(decimal_class(obj.py())?)? {
                 Value::BigDecimal(Some(Box::new(extract_decimal(obj)?)))
             } else if let Ok(u) = obj.extract::<uuid::Uuid>() {
@@ -240,6 +269,7 @@ pub fn cell_to_py(py: Python<'_>, cell: Cell<'_>) -> PyResult<Py<PyAny>> {
         Cell::DateTime(v) => v.into_py_any(py)?,
         Cell::Time(v) => v.into_py_any(py)?,
         Cell::Date(v) => v.into_py_any(py)?,
+        Cell::Duration(v) => duration_to_py(py, v)?,
         Cell::Uuid(v) => v.into_py_any(py)?,
         Cell::Json(v) => json_to_py(py, &v)?,
         Cell::Decimal(v) => decimal_to_py(py, &v)?,

@@ -8,6 +8,7 @@
 //! | `Decimal`   | `Decimal`, finite `number`, decimal text | `Decimal`                |
 //! | `DateTime`  | a valid `Date`                         | `Date` (+ `MICROS`)        |
 //! | `Date`      | a valid `Date` (its UTC day)           | `Date` at 00:00 UTC        |
+//! | `Duration`  | a `Duration` (its `micros`) or a `bigint` of microseconds | `bigint` (rows: `Duration`) |
 //! | `Uuid`      | `string`                               | `string`                   |
 //! | `Json`      | anything `JSON.stringify` takes        | parsed JSON                |
 //! | arrays      | JS arrays of the element type          | JS arrays                  |
@@ -164,6 +165,16 @@ impl Conv {
         Ok(d + chrono::Duration::microseconds(us as i64))
     }
 
+    /// A `Duration` parameter: a `bigint` of microseconds, or an object that holds one as `micros`.
+    fn duration(self, v: V, kind: Kind) -> Result<i64> {
+        let micros = if kind == Kind::Object { self.js.get(v, "micros").map_err(raw)? } else { v };
+        let inner = self.kind(micros).map_err(raw)?;
+        match self.i64_of(micros, inner)? {
+            Some(n) if inner == Kind::BigInt => Ok(n),
+            _ => Err(self.expected("a Duration or a bigint of microseconds", v)),
+        }
+    }
+
     fn decimal(self, v: V, kind: Kind) -> Result<BigDecimal> {
         let text = match kind {
             Kind::Decimal | Kind::BigInt => self.js.coerce_string(v).map_err(raw)?,
@@ -238,6 +249,7 @@ impl Conv {
                 Kind::Date => Value::ChronoDate(Some(self.datetime(v)?.date_naive())),
                 _ => return Err(self.expected("a Date", v)),
             },
+            ColType::Duration => Value::BigInt(Some(self.duration(v, kind)?)),
             ColType::Uuid => match kind {
                 Kind::String => {
                     let s = self.js.string(v).map_err(raw)?;
@@ -304,6 +316,7 @@ impl Conv {
             }
             Cell::Time(t) => self.cell(Cell::DateTime(chrono::NaiveDate::from_ymd_opt(1970, 1, 1).expect("epoch").and_time(t).and_utc())),
             Cell::Date(d) => js.date(midnight_ms(d)),
+            Cell::Duration(n) => js.bigint_from(n),
             Cell::Uuid(u) => js.str(u.hyphenated().encode_lower(&mut uuid::Uuid::encode_buffer())),
             Cell::Json(j) => self.json_out(&j),
             Cell::Decimal(s) => {

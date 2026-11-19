@@ -12,6 +12,7 @@
 pub mod codegen;
 pub mod dialect;
 pub mod dsl;
+pub mod duration;
 pub mod ext;
 pub mod ir;
 pub mod json_util;

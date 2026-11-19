@@ -177,6 +177,12 @@ class Time(Field[T]):
     type_name = "time"
 
 
+class Duration(Field[T]):
+    """A signed whole number of microseconds: ``datetime.timedelta``. PostgreSQL ``interval``, SQLite ``INTEGER``."""
+
+    type_name = "duration"
+
+
 class Date(Field[T]):
     type_name = "date"
 
@@ -265,7 +271,7 @@ class Enum(Field[T]):
 
 # IR column type -> descriptor class, for models built from a compiled schema.
 BY_TYPE: dict[str, type[Field[Any]]] = {
-    c.type_name: c for c in (BigInt, Integer, Float, Boolean, String, Text, DateTime, Date, Time, Uuid, Json, Decimal, Bytes)
+    c.type_name: c for c in (BigInt, Integer, Float, Boolean, String, Text, DateTime, Date, Time, Duration, Uuid, Json, Decimal, Bytes)
 }
 
 

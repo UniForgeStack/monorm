@@ -15,6 +15,7 @@
  */
 
 export { Decimal } from "./decimal.js";
+export { Duration, type DurationParts } from "./duration.js";
 export type { JsonValue, In, DeleteArgs, ModelSpec, Hop, HopKind, ColType, FieldMeta, RelationMeta } from "./meta.js";
 export { camel } from "./meta.js";
 export {

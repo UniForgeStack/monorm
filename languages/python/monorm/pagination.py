@@ -17,6 +17,7 @@ from hashlib import blake2b
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 from uuid import UUID
 
+from ._duration import format_duration, parse_duration
 from .errors import QueryError
 from .expr import ColumnRef, Condition, Ordering, and_, or_
 
@@ -29,7 +30,7 @@ T = TypeVar("T")
 __all__ = ["Page"]
 
 # Column types with a cursor value; JSON, arrays and enums have none.
-_CURSOR_TYPES = {"big_int", "int", "float", "bool", "string", "text", "date_time", "date", "time", "uuid", "decimal"}
+_CURSOR_TYPES = {"big_int", "int", "float", "bool", "string", "text", "date_time", "date", "time", "duration", "uuid", "decimal"}
 
 
 class Page(Generic[T]):
@@ -124,6 +125,8 @@ def _encode(f: Field[Any], v: Any) -> Any:
         return v if math.isfinite(v) else ("Infinity" if v > 0 else "-Infinity")
     if f.type_name in ("date_time", "date", "time"):
         return v.isoformat()
+    if f.type_name == "duration":
+        return format_duration(v)
     if f.type_name == "decimal" and not v.is_finite():
         raise QueryError(f"paginate() can't make a cursor from the decimal {v}")
     return str(v)
@@ -156,6 +159,8 @@ def _decode(f: Field[Any], nullable: bool, v: Any) -> Any:
                 return out
         elif t == "date" and isinstance(v, str):
             return date.fromisoformat(v)
+        elif t == "duration" and isinstance(v, str):
+            return parse_duration(v)
     except (ValueError, InvalidOperation):
         pass
     if (

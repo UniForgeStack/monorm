@@ -1,6 +1,7 @@
 """Admin plain writes: create, change and delete, the 409 and 422 answers, the read-only reason and the audit row, on PostgreSQL and SQLite."""
 
 import asyncio
+import datetime
 import os
 
 import pytest
@@ -54,6 +55,13 @@ model WCoded {
   note String @default("")
   @@protected_write
   @@map("w_coded")
+}
+
+model WChore {
+  code  String    @id
+  every Duration?
+  @@protected_write
+  @@map("w_chores")
 }
 %(money)s"""
 
@@ -226,6 +234,7 @@ async def test_a_concurrent_edit_between_the_load_and_the_save_is_a_409_with_the
 
 CODED = "/admin/api/resources/WCoded"
 MONEY_URL = "/admin/api/resources/WMoney"
+CHORE_URL = "/admin/api/resources/WChore"
 
 
 async def test_a_host_create_with_a_key_that_needs_escaping_writes_the_audit_row_under_the_rust_key_text(world):
@@ -260,6 +269,34 @@ async def test_a_host_write_compares_a_decimal_by_value_not_by_text(world):
             await Money.objects.using(db).filter(Money.code == "k").update(price="5.00")
     r = await client.patch(f"{MONEY_URL}/k", json={"set": {"price": "7.50"}, "loaded": {"price": "5.01"}})
     assert (r.status, list(r.json()["conflicts"])) == (409, ["price"])
+
+
+async def test_a_host_write_compares_a_duration_by_value_and_writes_it_as_text(world):
+    base, db, models = world
+    Chore = models["WChore"]
+    td = datetime.timedelta
+    with monorm.allow_writes(Chore):
+        await Chore.objects.using(db).insert_many([{"code": "k", "every": td(hours=1, minutes=30)}])
+    site = admin.Admin(base._registry)
+    site.register(Chore, {"allow_protected_writes": True})
+    client = site.test_client(db, user=SU)
+    r = await client.patch(f"{CHORE_URL}/k", json={"set": {"every": "1 02:00:00"}, "loaded": {"every": "01:30:00"}})
+    assert r.status == 200, r.text
+    assert (await Chore.objects.using(db).filter(Chore.code == "k").first()).every == td(days=1, hours=2)
+    r = await client.patch(f"{CHORE_URL}/k", json={"set": {"every": "00:00:05"}, "loaded": {"every": "01:30:00"}})
+    assert (r.status, list(r.json()["conflicts"])) == (409, ["every"])
+
+
+async def test_an_action_filter_that_binds_a_duration_column_is_refused_by_name(world):
+    from monorm._admin_write import _query_set
+
+    base, db, models = world
+    Chore = models["WChore"]
+    bound = {"filters": [{"t": "cmp", "op": "eq", "l": {"t": "col", "path": [], "name": "every"}, "r": {"t": "param", "i": 0}}], "values": [{"$": "bigint", "v": "5400000000"}]}
+    with pytest.raises(monorm.QueryError, match="WChore.every: an admin action cannot filter a Duration column"):
+        _query_set(Chore, db, bound)
+    other = {"filters": [{"t": "cmp", "op": "eq", "l": {"t": "col", "path": [], "name": "code"}, "r": {"t": "param", "i": 0}}], "values": ["k"]}
+    assert _query_set(Chore, db, other) is not None
 
 
 async def test_a_bulk_delete_through_the_host_writer_deletes_the_query_set_and_writes_one_summary_row(world):

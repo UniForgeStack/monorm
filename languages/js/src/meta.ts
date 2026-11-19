@@ -17,6 +17,7 @@ export type ColType =
   | "time"
   | "date_time"
   | "date"
+  | "duration"
   | "uuid"
   | "json"
   | "decimal"

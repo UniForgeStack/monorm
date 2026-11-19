@@ -104,7 +104,10 @@ impl<M, T, C> Column<M, T, C> {
         T: Codec,
     {
         Predicate {
-            tree: Tree::Compare(self.expr(), op, value.encode()),
+            tree: match value.try_encode() {
+                Ok(value) => Tree::Compare(self.expr(), op, value),
+                Err(message) => Tree::Invalid(message),
+            },
             _model: PhantomData,
         }
     }
@@ -177,7 +180,10 @@ impl<M, T, C> Column<M, T, C> {
         T: Codec,
     {
         Predicate {
-            tree: Tree::In(self.expr(), values.into_iter().map(T::encode).collect()),
+            tree: match values.into_iter().map(T::try_encode).collect() {
+                Ok(values) => Tree::In(self.expr(), values),
+                Err(message) => Tree::Invalid(message),
+            },
             _model: PhantomData,
         }
     }
@@ -253,6 +259,8 @@ pub enum Tree {
     InSub(Expr, bool, crate::subquery::BuildSelect),
     /// `EXISTS (SELECT ...)`.
     Exists(crate::subquery::BuildSelect),
+    /// A value that failed to encode; erasure turns it into an error.
+    Invalid(String),
 }
 /// State of one erasure: the bound values and the enclosing-query handles of the current subquery.
 #[doc(hidden)]
@@ -319,6 +327,10 @@ impl Tree {
             },
             Self::Param(_, _, slot) => {
                 unreachable!("placeholder {} is bound before planning", slot.name)
+            }
+            Self::Invalid(message) => {
+                erase.error.get_or_insert(message);
+                Expr::Const { value: false }
             }
             Self::Expr(e) => e,
             Self::Compare(l, op, v)
@@ -574,7 +586,10 @@ impl<M: Model, R, L, D> Query<M, R, L, D> {
     pub fn scope<T: Codec>(mut self, name: &str, value: T) -> Self {
         self.filters
             .retain(|t| !matches!(t, Tree::Scope(n, _) if n == name));
-        self.filters.push(Tree::Scope(name.into(), value.encode()));
+        self.filters.push(match value.try_encode() {
+            Ok(value) => Tree::Scope(name.into(), value),
+            Err(message) => Tree::Invalid(message),
+        });
         self
     }
     pub fn exclude(self, p: Predicate<M::Source>) -> Self {
@@ -985,4 +1000,28 @@ pub(crate) fn validate_views(schema: &Schema, q: &ir::Select) -> Result<()> {
         validate_views(schema, &p.query)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod duration_overflow_tests {
+    use super::*;
+    use chrono::TimeDelta;
+
+    struct M;
+
+    fn erased(p: Predicate<M>) -> Result<()> {
+        let mut values = Values(Vec::new());
+        let mut erase = Erase::new(&mut values);
+        p.tree.erase(&mut erase);
+        erase.finish()
+    }
+
+    #[test]
+    fn a_duration_beyond_64_bit_microseconds_fails_the_filter() {
+        let column = Column::<M, TimeDelta>::field("timeout");
+        assert!(erased(column.clone().eq(TimeDelta::microseconds(5))).is_ok());
+        let err = erased(column.clone().eq(TimeDelta::MAX)).unwrap_err();
+        assert!(err.to_string().contains("64-bit microseconds"), "{err}");
+        assert!(erased(column.in_values([TimeDelta::microseconds(1), TimeDelta::MIN])).is_err());
+    }
 }

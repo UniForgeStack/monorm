@@ -17,6 +17,7 @@
  */
 
 import { Decimal } from "./decimal.js";
+import { Duration } from "./duration.js";
 import { QueryError } from "./errors.js";
 import type { FieldMeta, Hop, In, JsonValue, ModelSpec } from "./meta.js";
 import type { ModelMeta } from "./model.js";
@@ -1328,7 +1329,7 @@ export interface ArrayAggOptions<S extends string, P, S2 extends string, P2> ext
   readonly orderBy?: Expression<unknown, S2, P2> | Ordering<S2, P2> | readonly (Expression<unknown, S2, P2> | Ordering<S2, P2>)[];
 }
 type AnyExpr<T, S extends string, P> = Expression<T, S, P>;
-/** `SUM` of integers is a `bigint` (cast so); of floats a number; of decimals a Decimal. */
+/** `SUM` of integers is a `bigint` (cast so); of floats a number; of decimals a Decimal; of durations a Duration. */
 type SumOf<T> = [NonNullable<T>] extends [number | bigint] ? (number extends NonNullable<T> ? number | bigint : bigint) : NonNullable<T>;
 
 /**
@@ -1358,18 +1359,18 @@ class Functions {
   }
 
   /** `SUM`; integer sums come back as `bigint` (cast to bigint). */
-  sum<T extends Num | null, S extends string, P, S2 extends string = never, P2 = {}>(
+  sum<T extends Num | Duration | null, S extends string, P, S2 extends string = never, P2 = {}>(
     expr: AnyExpr<T, S, P>,
     options?: AggregateOptions<S2, P2>,
   ): Func<SumOf<T> | null, Exclude<S | S2, Many>, P & P2> {
     return new Func("sum", [expr], undefined, options?.distinct ?? false, options?.filter);
   }
 
-  /** `AVG`: a number, or a `Decimal` for decimal columns (exact). */
-  avg<T extends Num | null, S extends string, P, S2 extends string = never, P2 = {}>(
+  /** `AVG`: a number, a `Decimal` for decimal columns (exact), a `Duration` (rounded to whole microseconds) for duration columns. */
+  avg<T extends Num | Duration | null, S extends string, P, S2 extends string = never, P2 = {}>(
     expr: AnyExpr<T, S, P>,
     options?: AggregateOptions<S2, P2>,
-  ): Func<([NonNullable<T>] extends [Decimal] ? Decimal : number) | null, Exclude<S | S2, Many>, P & P2> {
+  ): Func<([NonNullable<T>] extends [Decimal] ? Decimal : [NonNullable<T>] extends [Duration] ? Duration : number) | null, Exclude<S | S2, Many>, P & P2> {
     return new Func("avg", [expr], undefined, options?.distinct ?? false, options?.filter);
   }
 
@@ -2177,6 +2178,7 @@ function literalKey(value: unknown): string | undefined {
   }
   if (value instanceof Date) return `date(${value.getTime()})`;
   if (value instanceof Decimal) return `decimal(${JSON.stringify(value.toString())})`;
+  if (value instanceof Duration) return `duration(${value.micros}n)`;
   if (Array.isArray(value)) return keyOf("list", ...value.map((v) => literalKey(v)));
   return undefined;
 }

@@ -9,6 +9,7 @@ import type { HostFunction } from "./admin-host.js";
 import type { Database } from "./db.js";
 import { fieldAdapter, FieldAdapterError, type FieldAdapter } from "./adapters.js";
 import { Decimal } from "./decimal.js";
+import { Duration } from "./duration.js";
 import { DoesNotExist, ValidationError, VersionConflict } from "./errors.js";
 import { asCondition, Condition, Expression, IRContext, resolveNullRule, Slot, SlotParams } from "./expr.js";
 import type { FieldMeta, ModelSpec } from "./meta.js";
@@ -205,7 +206,7 @@ function userKey(user: Readonly<Record<string, unknown>>): string {
 /** One key value as the admin writes it in JSON and in the key text. */
 function scalarJson(field: FieldMeta, value: unknown): unknown {
   if (value instanceof Date) return field.type === "date" ? value.toISOString().slice(0, 10) : value.toISOString();
-  if (typeof value === "bigint" || value instanceof Decimal) return value.toString();
+  if (typeof value === "bigint" || value instanceof Decimal || value instanceof Duration) return value.toString();
   if (value instanceof Uint8Array) return Buffer.from(value).toString("base64");
   return value;
 }
@@ -225,7 +226,7 @@ function keyOf(meta: ModelMeta, record: unknown): Record<string, unknown> {
     if (record.length !== fields.length) throw new TypeError(`${meta.name}: cannot read a key from ${String(record)}`);
     return read((f) => record[fields.indexOf(f)]);
   }
-  if (typeof record === "object" && record !== null && !(record instanceof Date) && !(record instanceof Decimal)) {
+  if (typeof record === "object" && record !== null && !(record instanceof Date) && !(record instanceof Decimal) && !(record instanceof Duration)) {
     const r = record as Record<string, unknown>;
     if (fields.every((f) => f.name in r)) return read((f) => r[f.name]);
     if (fields.every((f) => f.ir in r)) return read((f) => r[f.ir]);
@@ -281,6 +282,7 @@ function decodeOne(field: FieldMeta, value: unknown): unknown {
       }
       case "big_int": return /^-?\d+$/.test(value) ? BigInt(value) : value;
       case "decimal": return new Decimal(value);
+      case "duration": return Duration.parse(value);
       case "bytes": return new Uint8Array(Buffer.from(value, "base64"));
     }
   }
@@ -498,6 +500,7 @@ function guarded<T>(model: AnyModel, args: Loose, run: () => Promise<T>): Promis
 function same(type: string, stored: unknown, loaded: unknown): boolean {
   if (type === "decimal" && stored instanceof Decimal && loaded instanceof Decimal) return stored.equals(loaded);
   if (stored instanceof Date && loaded instanceof Date) return stored.getTime() === loaded.getTime();
+  if (stored instanceof Duration && loaded instanceof Duration) return stored.equals(loaded);
   if (stored === loaded) return true;
   if (stored === null || stored === undefined || loaded === null || loaded === undefined) return false;
   if (stored instanceof Uint8Array && loaded instanceof Uint8Array) return Buffer.from(stored).equals(Buffer.from(loaded));

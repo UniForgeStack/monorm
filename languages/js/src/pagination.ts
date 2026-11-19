@@ -8,6 +8,7 @@
 import { blake2b } from "./blake2b.js";
 import { MICROS, MICROS_MS, parseTime, timeText } from "./date-micros.js";
 import { Decimal } from "./decimal.js";
+import { Duration } from "./duration.js";
 import { QueryError } from "./errors.js";
 import { Column, Ordering, and, or, type Condition } from "./expr.js";
 import type { FieldMeta } from "./meta.js";
@@ -37,7 +38,7 @@ export function storedNullable(meta: ModelMeta, f: FieldMeta): boolean {
 }
 
 // Column types with a cursor value; JSON, arrays and enums have none.
-const CURSOR_TYPES = new Set(["big_int", "int", "float", "bool", "string", "text", "time", "date_time", "date", "uuid", "decimal"]);
+const CURSOR_TYPES = new Set(["big_int", "int", "float", "bool", "string", "text", "time", "date_time", "date", "uuid", "decimal", "duration"]);
 
 /** @internal The order columns of a page, with the primary key last when the order is not unique and `addKey` is set. */
 export function keyset(meta: ModelMeta, order: readonly Ordering<string, unknown>[], addKey = true): Key[] {
@@ -155,6 +156,12 @@ function decode(f: FieldMeta, nullable: boolean, v: unknown): unknown {
       try {
         const d = text !== undefined ? new Decimal(text) : invalid();
         return d.isFinite() ? d : invalid();
+      } catch {
+        return invalid();
+      }
+    case "duration":
+      try {
+        return text !== undefined ? Duration.parse(text) : invalid();
       } catch {
         return invalid();
       }

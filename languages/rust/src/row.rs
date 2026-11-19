@@ -11,6 +11,8 @@ pub struct RowData {
     pub(crate) model: String,
     pub(crate) identity: Identity,
     pub(crate) values: BTreeMap<String, BindValue>,
+    /// Public fields of the Duration type: a stored value is a plain integer, so the text form needs the name.
+    pub(crate) durations: std::collections::BTreeSet<String>,
     pub(crate) helpers: BTreeMap<String, BindValue>,
     pub(crate) relations: BTreeMap<String, CacheData>,
 }
@@ -61,6 +63,7 @@ fn store(value: Cell<'_>, ty: ValueType) -> Result<BindValue> {
         Cell::DateTime(v) => v.fixed_offset().into(),
         Cell::Time(v) => v.into(),
         Cell::Date(v) => v.into(),
+        Cell::Duration(v) => v.into(),
         Cell::Uuid(v) => v.into(),
         Cell::Json(v) => v.into(),
         Cell::Decimal(v) => v
@@ -112,6 +115,7 @@ impl RowData {
                 self.values.insert(k, v);
             }
         }
+        self.durations.extend(other.durations);
         for (k, v) in other.helpers {
             if reload || !self.helpers.contains_key(&k) {
                 self.helpers.insert(k, v);
@@ -149,7 +153,9 @@ impl RowData {
     pub fn public_json(&self) -> Result<serde_json::Value> {
         let mut result = serde_json::Map::new();
         for (name, value) in &self.values {
-            result.insert(name.clone(), json_cell(cell(value)?));
+            let c = cell(value)?;
+            let c = if self.durations.contains(name) { as_duration(c) } else { c };
+            result.insert(name.clone(), json_cell(c));
         }
         for (name, cache) in &self.relations {
             let value = match cache {
@@ -166,6 +172,14 @@ impl RowData {
         Ok(result.into())
     }
 }
+/// A stored Duration is a `BigInt` cell; this restores the Duration kind for its text form.
+fn as_duration(c: Cell<'_>) -> Cell<'_> {
+    match c {
+        Cell::BigInt(v) => Cell::Duration(v),
+        Cell::Array(v) => Cell::Array(v.into_iter().map(as_duration).collect()),
+        other => other,
+    }
+}
 fn json_cell(c: Cell<'_>) -> serde_json::Value {
     match c {
         Cell::Null => serde_json::Value::Null,
@@ -177,6 +191,7 @@ fn json_cell(c: Cell<'_>) -> serde_json::Value {
         Cell::DateTime(v) => v.to_rfc3339().into(),
         Cell::Time(v) => v.to_string().into(),
         Cell::Date(v) => v.to_string().into(),
+        Cell::Duration(v) => monorm_core::duration::format_micros(v).into(),
         Cell::Uuid(v) => v.to_string().into(),
         Cell::Json(v) => v,
         Cell::Decimal(v) => v.into(),
@@ -211,6 +226,7 @@ pub(crate) fn instance(
         model: m.ir.name.clone(),
         identity: Identity { value: vec![] },
         values: BTreeMap::new(),
+        durations: Default::default(),
         helpers: BTreeMap::new(),
         relations: BTreeMap::new(),
     };
@@ -220,6 +236,9 @@ pub(crate) fn instance(
             types[start + slot],
         )?;
         if public {
+            if types[start + slot].ty == monorm_core::ir::ColType::Duration {
+                data.durations.insert(m.fields()[pos].name.clone());
+            }
             data.values.insert(m.fields()[pos].name.clone(), value);
         } else {
             data.helpers.insert(m.fields()[pos].name.clone(), value);
@@ -341,4 +360,28 @@ pub(crate) fn snapshot(
     let mut rows = instances(schema, &s.plan.output, s.rows.as_ref(), &s.plan.types)?;
     attach(schema, &mut rows, s.rows.as_ref(), &s.prefetched)?;
     Ok(rows)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn public_json_prints_a_duration_column_in_the_text_form() {
+        let row = |durations: &[&str]| RowData {
+            model: "Job".into(),
+            identity: Identity { value: vec![] },
+            values: BTreeMap::from([
+                ("timeout".to_string(), BindValue::BigInt(Some(90_000_000))),
+                ("retries".to_string(), BindValue::BigInt(Some(90_000_000))),
+            ]),
+            durations: durations.iter().map(|s| s.to_string()).collect(),
+            helpers: BTreeMap::new(),
+            relations: BTreeMap::new(),
+        };
+        let json = row(&["timeout"]).public_json().unwrap();
+        assert_eq!(json["timeout"], monorm_core::duration::format_micros(90_000_000));
+        assert_eq!(json["retries"], 90_000_000);
+        assert_ne!(json["timeout"], 90_000_000);
+    }
 }

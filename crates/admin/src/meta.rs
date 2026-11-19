@@ -147,7 +147,7 @@ pub(crate) fn widget(c: &Column) -> &'static str {
         ColType::Bool => "checkbox",
         ColType::Int | ColType::BigInt | ColType::Float | ColType::Decimal => "number",
         ColType::DateTime => "datetime",
-        ColType::Time => "text",
+        ColType::Time | ColType::Duration => "text",
         ColType::Date => "date",
         ColType::Text => "textarea",
         ColType::Json => "json",

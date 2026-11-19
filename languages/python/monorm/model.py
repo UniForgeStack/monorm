@@ -870,6 +870,7 @@ _PYTHON_TYPES: dict[str, type] = {
     "date_time": datetime.datetime,
     "date": datetime.date,
     "time": datetime.time,
+    "duration": datetime.timedelta,
     "uuid": uuid.UUID,
     "json": object,
     "decimal": decimal.Decimal,

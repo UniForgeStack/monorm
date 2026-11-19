@@ -30,6 +30,7 @@ from . import _admin_permissions
 from ._admin_host import HOST as _HOST
 from . import _admin_routes
 from ._admin_routes import Reply, RouteFunction, RouteRequest, Stream
+from ._duration import format_duration
 from ._admin_write import _PLACEMENTS, ActionDef, Context, InputDef, action, action_def, action_function, admin_mode_of, download, input, is_sync, is_threaded, log, message, redirect, refresh, service_function, threaded, view_host, writer_host
 from ._admin_permissions import RoleSeedReport, SyncReport
 from .adapters import _ADAPTERS as _adapters
@@ -613,12 +614,16 @@ def _cell_json(value: Any) -> Any:
         return [_cell_json(v) for v in value]
     if isinstance(value, Mapping):
         return {str(k): _cell_json(v) for k, v in value.items()}
+    if isinstance(value, datetime.timedelta):
+        return format_duration(value)
     return value.isoformat() if isinstance(value, (datetime.date, datetime.time)) else str(value)
 
 
 def _key_value(value: Any) -> Any:
     if isinstance(value, (str, int, float, bool)):
         return value
+    if isinstance(value, datetime.timedelta):
+        return format_duration(value)
     # `str(datetime)` has a space where the detail route wants `T`.
     return value.isoformat() if isinstance(value, (datetime.date, datetime.time)) else str(value)
 
