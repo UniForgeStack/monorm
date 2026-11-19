@@ -23,7 +23,18 @@ export function useSearch(): string {
   return useSyncExternalStore(subscribe, () => window.location.search);
 }
 
+let blocker: (() => boolean) | null = null;
+
+/** While a page holds unsaved work, `ask` runs before a page change and returns false to stay. One holder at a time. */
+export function blockNavigation(ask: () => boolean): () => void {
+  blocker = ask;
+  return () => {
+    if (blocker === ask) blocker = null;
+  };
+}
+
 export function navigate(to: string, replace = false) {
+  if (blocker && !blocker()) return;
   if (replace) window.history.replaceState(null, "", to);
   else window.history.pushState(null, "", to);
   listeners.forEach((fn) => fn());

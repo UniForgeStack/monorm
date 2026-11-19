@@ -107,6 +107,8 @@ export interface Resource {
   writable?: boolean;
   read_only_reason?: string | null;
   form?: FormField[];
+  /** The labels of the columns that the list edits in its cells (`list.editable`). Empty or missing: the list is read-only. */
+  editable?: string[];
   /** The many-to-many relations that the form edits as chips. */
   chips?: RelationInfo[];
   /** The layout of the create form and of the edit form. */
@@ -417,6 +419,22 @@ export const update = (resource: string, key: string, set: Values, loaded: Value
 
 export const destroy = (resource: string, key: string, loaded: Values, inputs?: Values) =>
   call<{ key: string }>("DELETE", recordPath(resource, key), inputs ? { loaded, inputs } : { loaded });
+
+/** The problems of one list save, by the index of the row in the request. */
+export interface ListProblems {
+  rows: Record<string, { fields?: Record<string, string[]>; form?: string[] }>;
+  conflicts: Record<string, Record<string, { loaded: unknown; current: unknown }>>;
+}
+
+/** The problems that an error of a list save carries: a 400 names the rows, a 409 the changed fields. */
+export function listProblems(e: unknown): ListProblems {
+  const body = (e instanceof ApiError ? e.body : {}) as { rows?: ListProblems["rows"]; conflicts?: ListProblems["conflicts"] };
+  return { rows: body.rows ?? {}, conflicts: body.conflicts ?? {} };
+}
+
+/** One request saves the edited cells of many rows of a list. `key` is the encoded key of the row. */
+export const saveRows = (resource: string, rows: { key: string; set: Values; loaded: Values }[]) =>
+  call<{ keys: string[]; changed: Record<string, string[]> }>("PATCH", `/resources/${encodeURIComponent(resource)}`, { rows });
 
 const rowPath = (resource: string, key: string, inline: string) => `${recordPath(resource, key)}/inlines/${encodeURIComponent(inline)}`;
 

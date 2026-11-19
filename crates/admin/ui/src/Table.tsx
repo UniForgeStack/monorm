@@ -1,6 +1,6 @@
 import { flexRender, getCoreRowModel, useReactTable, type ColumnDef } from "@tanstack/react-table";
-import { ArrowDown, ArrowUp } from "lucide-react";
-import { useMemo, type ReactNode } from "react";
+import { ArrowDown, ArrowUp, ArrowUpRight } from "lucide-react";
+import { useMemo, useRef, type KeyboardEvent, type ReactNode } from "react";
 import type { Column } from "./api";
 import { Skeleton } from "./components/ui/skeleton";
 import { Table as KitTable, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./components/ui/table";
@@ -33,6 +33,8 @@ export interface TableProps {
   onSort?: (label: string) => void;
   select?: { chosen: Set<string>; toggle: (key: string) => void; toggleAll: () => void };
   rowActions?: (index: number, key: string) => ReactNode;
+  /** The control of a cell that the user edits, or null for a plain cell. */
+  edit?: ((column: Column, row: number, key: string, value: unknown) => ReactNode) | null;
 }
 
 /** The text of a related row (its label), or the raw key when the page carries no label. */
@@ -43,7 +45,10 @@ function related(value: unknown, label: unknown, column: Column, zone: Zone): st
 const NO_LABELS: Record<string, unknown>[] = [];
 
 /** One column per meta column. The first one links to the detail of its row; a foreign key shows the label of the related row and links to it. */
-export function Table({ resource, columns, rows, keys, zone, labels = NO_LABELS, targets, hidden, compact = false, busy = false, sortable = [], unindexed = [], sort = "", onSort, select, rowActions }: TableProps) {
+export function Table({ resource, columns, rows, keys, zone, labels = NO_LABELS, targets, hidden, compact = false, busy = false, sortable = [], unindexed = [], sort = "", onSort, select, rowActions, edit }: TableProps) {
+  // The cell function must stay the same function: a new one remounts the cells and the focus leaves the input.
+  const editRef = useRef(edit);
+  editRef.current = edit;
   const defs = useMemo<ColumnDef<Row>[]>(
     () =>
       columns.map((c, i) => ({
@@ -52,6 +57,17 @@ export function Table({ resource, columns, rows, keys, zone, labels = NO_LABELS,
         cell: ({ row }) => {
           const value = row.original.cells[i];
           const none = c.empty ?? "—";
+          const control = editRef.current?.(c, row.index, row.original.key, value);
+          if (control) {
+            if (i !== 0) return control;
+            // The first column links to the record: the link stays next to the control.
+            return (
+              <div className="flex items-start gap-2">
+                <div className="grow">{control}</div>
+                <Link href={detailUrl(resource, row.original.key)} aria-label={`Open ${decodeURIComponent(row.original.key)}`} className="mt-1.5"><ArrowUpRight className="size-4" aria-hidden="true" /></Link>
+              </div>
+            );
+          }
           if (c.ref && value !== null && value !== undefined && !Array.isArray(value) && typeof value !== "object") {
             const text = related(value, labels[row.index]?.[c.label], c, zone);
             if (i === 0) return <Link href={detailUrl(resource, row.original.key)}>{text}</Link>;
@@ -69,8 +85,18 @@ export function Table({ resource, columns, rows, keys, zone, labels = NO_LABELS,
   const table = useReactTable({ data, columns: defs, getCoreRowModel: getCoreRowModel(), state: { columnVisibility } });
   const all = keys.length > 0 && !!select && keys.every((k) => select.chosen.has(k));
   const pad = compact ? "py-1" : "py-3";
+  // Tab and Shift+Tab move from one edited cell to the next, over the links and checkboxes between them.
+  const move = (e: KeyboardEvent<HTMLDivElement>) => {
+    const from = e.target as HTMLElement;
+    if (e.key !== "Tab" || !from.hasAttribute("data-edit")) return;
+    const cells = [...e.currentTarget.querySelectorAll<HTMLElement>("[data-edit]:not(:disabled)")];
+    const to = cells[cells.indexOf(from) + (e.shiftKey ? -1 : 1)];
+    if (!to) return;
+    e.preventDefault();
+    to.focus();
+  };
   return (
-    <div aria-busy={busy || undefined} className={cn("transition-opacity", busy && "opacity-60")}>
+    <div aria-busy={busy || undefined} className={cn("transition-opacity", busy && "opacity-60")} onKeyDown={edit ? move : undefined}>
       <KitTable>
         <TableHeader>
           {table.getHeaderGroups().map((g) => (

@@ -350,6 +350,120 @@ test("filter a list, keep the view in the URL, and open a tab", async () => {
   await context.close();
 });
 
+test("edit two cells on two rows of a list and save them in one request", async () => {
+  const { context, page, problems, idle } = await signedIn();
+  await page.goto(`${base}/admin/Shelf`);
+  await page.getByLabel("Title of 1").waitFor();
+  const saves = [];
+  page.on("request", (r) => r.method() === "PATCH" && saves.push(r.url()));
+  // Typing keeps the focus in the cell, and Tab moves to the next cell.
+  await page.getByLabel("Title of 1").fill("Birch");
+  await page.getByLabel("Title of 1").press("Tab");
+  assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Qty of 1");
+  await page.getByLabel("Qty of 3").fill("30");
+  await page.getByRole("status").filter({ hasText: "2 rows changed" }).waitFor();
+  assert.equal(await page.getByLabel("Title of 1").getAttribute("data-changed"), "true");
+  // A link to another page asks before it drops the changes; a dismissed question keeps them.
+  const asked = [];
+  page.once("dialog", (d) => { asked.push(d.message()); void d.dismiss(); });
+  await page.getByRole("navigation", { name: "Resources" }).getByRole("link", { name: "Home" }).click();
+  await idle();
+  assert.equal(asked.length, 1);
+  assert.match(asked[0], /^You have unsaved changes/);
+  assert.equal(page.url(), `${base}/admin/Shelf`);
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.getByRole("group", { name: "Unsaved changes" }).waitFor({ state: "detached" });
+  await idle();
+  assert.equal(saves.length, 1);
+  assert.equal(await page.getByLabel("Title of 1").inputValue(), "Birch");
+  assert.equal(await page.getByLabel("Qty of 3").inputValue(), "30");
+  // The stored values: a reload shows them.
+  await page.reload();
+  assert.equal(await page.getByLabel("Title of 1").inputValue(), "Birch");
+  assert.equal(await page.getByLabel("Title of 2").inputValue(), "Pine");
+  assert.equal(await page.getByLabel("Qty of 3").inputValue(), "30");
+  assert.deepEqual(problems, []);
+  await context.close();
+});
+
+test("a refused cell shows its error on the cell, keeps every change, and saves after the fix", async () => {
+  const { context, page, problems, idle } = await signedIn();
+  await page.goto(`${base}/admin/Shelf`);
+  await page.getByLabel("Title of 2").waitFor();
+  await page.getByLabel("Title of 2").fill("A title that is too long");
+  await page.getByLabel("Qty of 1").fill("11");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  const cell = page.getByLabel("Title of 2");
+  await page.locator("#e-2-title-msg .msg-error").waitFor();
+  assert.equal(await cell.getAttribute("aria-invalid"), "true");
+  await page.getByText("Nothing was saved").waitFor();
+  // Both changes stay, and nothing was written.
+  assert.equal(await page.getByLabel("Qty of 1").inputValue(), "11");
+  assert.equal(await page.getByRole("status").filter({ hasText: "2 rows changed" }).count(), 1);
+  await cell.fill("Short");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await page.getByRole("group", { name: "Unsaved changes" }).waitFor({ state: "detached" });
+  await idle();
+  await page.reload();
+  assert.equal(await page.getByLabel("Title of 2").inputValue(), "Short");
+  assert.equal(await page.getByLabel("Qty of 1").inputValue(), "11");
+  // The refused save is the only failed request.
+  assert.deepEqual(problems.filter((m) => !m.includes("400")), []);
+  assert.equal(problems.filter((m) => m.startsWith("HTTP 400")).length, 1);
+  await context.close();
+});
+
+test("a cell that another user changed shows the stored value, takes it on a click, or keeps the user's value on the next save", async () => {
+  const { context, page, problems, idle } = await signedIn();
+  // Another browser, so the CSRF token of each stays its own.
+  const second = await signedIn();
+  const other = second.page;
+  await page.goto(`${base}/admin/Shelf`);
+  await other.goto(`${base}/admin/Shelf`);
+  await page.getByLabel("Title of 2").waitFor();
+  await other.getByLabel("Title of 2").waitFor();
+  const save = (p) => p.getByRole("button", { name: "Save", exact: true }).click();
+  const gone = (p) => p.getByRole("group", { name: "Unsaved changes" }).waitFor({ state: "detached" });
+  // The other user saves first.
+  await other.getByLabel("Title of 2").fill("Beech");
+  await save(other);
+  await gone(other);
+  // This user saves the same cell from the old value: the answer is a conflict, and nothing is written.
+  const cell = page.getByLabel("Title of 2");
+  await cell.fill("Ash");
+  await save(page);
+  await page.locator("#e-2-title-msg").getByText("Changed to Beech by someone else.").waitFor();
+  assert.equal(await cell.getAttribute("aria-invalid"), "true");
+  assert.equal(await cell.inputValue(), "Ash");
+  await page.getByText("Another user changed some rows").waitFor();
+  // Taking the stored value settles the conflict: no message, no invalid mark, no change left.
+  await page.getByRole("button", { name: "Use that value" }).click();
+  await gone(page);
+  assert.equal(await cell.inputValue(), "Beech");
+  assert.equal(await cell.getAttribute("aria-invalid"), null);
+  assert.equal(await page.locator("#e-2-title-msg").count(), 1);
+  assert.equal(await page.locator("#e-2-title-msg .msg").count(), 0);
+  assert.equal(await page.getByText("Another user changed some rows").count(), 0);
+  // A second conflict: the next save keeps the value of this user.
+  await other.getByLabel("Title of 2").fill("Fir");
+  await save(other);
+  await gone(other);
+  await cell.fill("Ash");
+  await save(page);
+  await page.getByText("Changed to Fir by someone else.").waitFor();
+  await save(page);
+  await gone(page);
+  await idle();
+  await page.reload();
+  assert.equal(await page.getByLabel("Title of 2").inputValue(), "Ash");
+  // The two refused saves are the only failed requests.
+  assert.deepEqual(problems.filter((m) => !m.includes("409")), []);
+  assert.equal(problems.filter((m) => m.startsWith("HTTP 409")).length, 2);
+  assert.deepEqual(second.problems, []);
+  await second.context.close();
+  await context.close();
+});
+
 // `networkidle` fires once per document load, so a client-side navigation never waits on it. This counts the requests in flight.
 function trackRequests(page) {
   const open = new Set();

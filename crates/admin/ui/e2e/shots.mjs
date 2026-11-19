@@ -152,6 +152,44 @@ try {
     await page.unroute(slow);
     expected = false;
 
+    // The edit in the list: changed cells and the save bar, then a refused cell (nothing is written), then a discard.
+    await page.goto(`${base}/admin/Shelf`);
+    await page.getByLabel("Title of 1").waitFor();
+    await page.getByLabel("Title of 1").fill("Birch");
+    await page.getByLabel("Qty of 3").fill("30");
+    await page.getByRole("status").filter({ hasText: "2 rows changed" }).waitFor();
+    await shot(page, scheme, "09j-list-edit-changed");
+    await page.getByLabel("Title of 2").fill("A title that is too long");
+    expected = true;
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await page.getByText("Nothing was saved").waitFor();
+    await shot(page, scheme, "09k-list-edit-error");
+    expected = false;
+    await page.getByRole("button", { name: "Discard" }).click();
+    await page.getByRole("group", { name: "Unsaved changes" }).waitFor({ state: "detached" });
+
+    // A conflict: another user saved the same cell first. The cell shows the stored value next to the typed one.
+    const second = await session(scheme);
+    const other = second.page;
+    await signIn(other);
+    await other.getByLabel("Username").fill("ann");
+    await other.getByLabel("Password").fill("pw-of-ann");
+    await other.getByRole("button", { name: "Sign in" }).click();
+    await other.getByRole("navigation", { name: "Resources" }).waitFor();
+    await other.goto(`${base}/admin/Shelf`);
+    await other.getByLabel("Title of 3").fill(scheme === "light" ? "Beech" : "Cedar");
+    await other.getByRole("button", { name: "Save", exact: true }).click();
+    await other.getByRole("group", { name: "Unsaved changes" }).waitFor({ state: "detached" });
+    await second.context.close();
+    await page.getByLabel("Title of 3").fill("Ash");
+    expected = true;
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await page.getByText("by someone else.").waitFor();
+    await shot(page, scheme, "09l-list-edit-conflict");
+    expected = false;
+    await page.getByRole("button", { name: "Discard" }).click();
+    await page.getByRole("group", { name: "Unsaved changes" }).waitFor({ state: "detached" });
+
     await page.goto(`${base}/admin/Book/1`);
     await page.getByText("First").first().waitFor();
     await shot(page, scheme, "10-detail-book");

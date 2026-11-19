@@ -70,6 +70,13 @@ model Movie {
   @@map("movies")
 }
 
+model Shelf {
+  id    BigInt @id @default(autoincrement())
+  title String @db.VarChar(8)
+  qty   Int    @default(0)
+  @@map("shelves")
+}
+
 model Album {
   id     BigInt  @id @default(autoincrement())
   title  String
@@ -148,6 +155,7 @@ async def main():
     await models.Reviewer.objects.insert_many([{"name": f"Rev {n:02d}"} for n in range(1, 26)])
     await models.Ticket.objects.insert_many([{"title": f"Ticket {n}"} for n in range(1, 4)])
     await models.Movie.objects.insert_many([{"title": "Alpha", "stars": 4}, {"title": "Beta", "stars": 2}])
+    await models.Shelf.objects.insert_many([{"title": "Oak", "qty": 1}, {"title": "Pine", "qty": 2}, {"title": "Elm", "qty": 3}])
     (debut,) = await models.Album.objects.insert_many([{"title": "Debut"}]).returning()
     await models.Track.objects.insert_many([{"title": "Intro", "plays": 1, "album_id": debut.id}])
     await db.close()
@@ -180,6 +188,7 @@ export async function startProject() {
   assert.ok(module.includes("admin.register(Ticket)"), "the generated admin.py registers Ticket");
   assert.ok(module.includes("admin.register(Album)") && module.includes("admin.register(Track)"), "the generated admin.py registers Album and Track");
   assert.ok(module.includes("admin.register(Movie)"), "the generated admin.py registers Movie");
+  assert.ok(module.includes("admin.register(Shelf)"), "the generated admin.py registers Shelf");
   // Movie: the example extension package (a stars widget, a Summary tab, a route and an action).
   cpSync(join(ROOT, "examples", "admin-package"), join(dir, "package"), { recursive: true });
   const withStorage = module
@@ -190,6 +199,8 @@ export async function startProject() {
     .replace("from monorm.admin import Admin, inline\n", "from monorm.admin import Admin, inline, action, message\n")
     .replace("admin.register(Ticket)", TICKET)
     .replace("admin.register(Movie)", "import sys\nsys.path.insert(0, str(__import__('pathlib').Path(__file__).parent / 'package'))\nfrom rating import install\n\ninstall(admin, Movie)")
+    // Shelf: its cells edit in the list.
+    .replace("admin.register(Shelf)", 'admin.register(Shelf, {"list": {"columns": ["title", "qty"], "editable": ["title", "qty"], "order": [Shelf.id]}})')
     .replace("admin.register(Reviewer)", 'admin.register(Reviewer, {"list": {"search": [Reviewer.name]}})')
     .replace("admin.register(Paper)", 'admin.register(Paper, {"relations": {"reviewer": {"create": True}}, "files": {"cover": "media"}})');
   writeFileSync(join(dir, "admin.py"), withStorage.replace("admin.register(Book)", book).replace("admin.register(Note)", 'admin.register(Note, {"form_component": "note-form.js"})'));

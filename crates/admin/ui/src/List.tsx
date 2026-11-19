@@ -5,6 +5,7 @@ import * as api from "./api";
 import { FilterChips, FilterPopover, POSITION } from "./filters";
 import { type Zone } from "./format";
 import { Link, navigate, newUrl, rememberList, useSearch } from "./router";
+import { useListEdit } from "./ListEdit";
 import { Table, TableSkeleton } from "./Table";
 import { ActionDialog, deleteAction, needsDialog, useQuick, type Target } from "./Actions";
 import { buttonVariants } from "./components/ui/button";
@@ -143,6 +144,8 @@ export function ListView({ resource, zone, meta, params, change, scope }: { reso
     set("sort", first === label ? `-${label}` : first === `-${label}` ? null : label);
   };
   const page = rows.data;
+  // Only the main list edits in its cells: a tab shows the rows of a relation.
+  const listEdit = useListEdit({ resource, meta, page, zone, enabled: !scope });
   const searchable = !!meta && (meta.search.fields.length > 0 || meta.search.custom);
   const pageSize = meta?.page_size ?? 25;
   const limit = Number(params.get("limit")) || pageSize;
@@ -157,7 +160,12 @@ export function ListView({ resource, zone, meta, params, change, scope }: { reso
   const filters = new URLSearchParams([...params].filter(([k]) => k === "q" || k === "without" || k.startsWith("f.") || k.startsWith("n.")));
   const filterSearch = filters.toString() ? `?${filters}` : "";
   const matching = total.data ? `${total.data.count.toLocaleString("en-US")}${total.data.capped ? "+" : ""}` : "";
-  const go = (action: api.ActionInfo, target: Target) => (needsDialog(action) ? setPending({ action, target }) : void quick(action, target));
+  // Unsaved edits end with a bulk action as with a page change: the user confirms first.
+  const go = (action: api.ActionInfo, target: Target) => {
+    if (!listEdit.ask()) return;
+    if (needsDialog(action)) setPending({ action, target });
+    else void quick(action, target);
+  };
   const selected: Target = allMatching
     ? { all: true, ofSelection: true, search: filterSearch, scope, what: `all ${matching} matching records`.replace("all  ", "all ") }
     : { keys: [...chosen], ofSelection: true, scope, what: `${chosen.size} ${chosen.size === 1 ? "record" : "records"}` };
@@ -269,8 +277,10 @@ export function ListView({ resource, zone, meta, params, change, scope }: { reso
               unindexed={meta?.sortable.filter((s) => !s.indexed).map((s) => s.column) ?? []}
               sort={sort}
               onSort={sortBy}
+              edit={listEdit.edit}
             />
           )}
+          {listEdit.bar}
           <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
             <span className="flex items-center gap-2 text-muted-foreground" role="status">
               {total.isError ? message(total.error) : total.data ? countText(total.data) : "Counting…"}
