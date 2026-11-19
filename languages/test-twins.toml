@@ -281,21 +281,6 @@
 "query_hooks::postgres_a_cancelled_statement_gives_an_event_with_the_error_cancelled" = "one-language: asyncio cancellation; a JS promise has no cancel"
 "query_hooks::the_n_plus_one_finder_counts_the_traced_sql" = "change: twin query_hooks::the_n_1_finder_counts_the_traced_sql; TS must add the shape.site file:line check;"
 # languages/python/tests/test_reference_loading.py
-"reference_loading::cached_absence_refresh_reverse_and_null" = "change: TS lines 83-95 assert the same: split them into a TS test of this name."
-"reference_loading::cancelled_waiter_failure_and_inflight_refresh" = "change: TS lines 134-153 have the in-flight and the failure parts, but no cancel (a JS promise has none): split them out without the cancel part."
-"reference_loading::different_transaction_contexts_do_not_coalesce" = "change: TS lines 111-132 assert the same: split them into a TS test of this name."
-"reference_loading::hidden_dependency_keys_and_missing_key_fail_before_io" = "change: TS lines 154-159 have only the hidden source key: add the hidden target key and the before-I/O NotLoaded, and split."
-"reference_loading::identity_reload_fk_invalidation_and_counts" = "change: TS lines 64-82 assert the same: split them into a TS test of this name."
-"reference_loading::instance_load_is_additive_and_skips_loaded_fields" = "change: TS lines 212-227 and 271 assert the same: split them into a TS test of this name."
-"reference_loading::instance_load_nested_partial_and_collection_queries" = "change: TS lines 228-242 have no no-query checks: add them and split."
-"reference_loading::instance_load_validates_before_io_and_reload_invalidates_reference" = "change: TS lines 266-270 have only the invalidation: add a zero-query rejection of load(Required.owner, Owner.name) and split."
-"reference_loading::loading_a_key_and_its_reference_uses_the_new_key" = "change: TS lines 261-265 assert the same: split them into a TS test of this name."
-"reference_loading::named_shared_primary_key_references" = "change: TS lines 163-169 have no third check: add it and split."
-"reference_loading::nested_load_preserves_cached_collection_membership" = "change: TS lines 243-252 have no labeled-partial no-query check: add it and split."
-"reference_loading::nested_relation_queryset_labels_are_cached" = "change: TS lines 253-260 assert the same: split them into a TS test of this name."
-"reference_loading::required_integrity_optional_missing_and_retry" = "change: TS lines 96-103 do it with reload=true and no message check: add /required target/ and split."
-"reference_loading::transaction_and_separate_database_context" = "change: TS lines 104-109 assert the same: split them into a TS test of this name."
-"reference_loading::update_with_an_unloaded_reference_key" = "change: TS lines 160-162 do the same after a hidden-key delete: split them into a TS test of this name."
 # languages/python/tests/test_relation_set_lock_select.py
 "relation_set_lock_select::a_bound_read_and_prefetch_check_the_transaction" = "change: TS already asserts both lines inside the matched a_locked_relation_set_needs_a_transaction;"
 # languages/python/tests/test_schema_expressions.py
@@ -551,8 +536,6 @@
 # languages/js/test/query-hooks.test.ts
 "query_hooks::the_n_1_finder_counts_the_traced_sql" = "change: Must add the shape.site check;"
 # languages/js/test/reference-loading.test.ts
-"reference_loading::explicit_loads_identity_reload_absence_integrity_invalidation_context_and_races" = "change: Split it into the 9 Python names, and add the missing checks given on those lines."
-"reference_loading::instance_load_fills_partial_rows_and_accepts_nested_paths_and_relation_querysets" = "change: Split it into the 6 Python names, and add the no-query and the before-I/O checks given on those lines."
 # languages/js/test/required-queries.test.ts
 # languages/js/test/rows.test.ts
 "rows::packed_null_columns_and_nested_arrays_decode_once_per_row_set" = "one-language: TypeScript-only: the JS decoder of the packed row buffer (src/rows.ts)"
