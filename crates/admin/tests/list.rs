@@ -38,6 +38,34 @@ model Comment {
   author    Author?  @relation(fields: [author_id], references: [id])
   @@map("comments")
 }
+
+model Category {
+  id        Int        @id
+  weight    Int
+  name      String
+  parent_id Int?
+  parent    Category?  @relation("tree", fields: [parent_id], references: [id])
+  children  Category[] @relation("tree")
+  @@map("categories")
+}
+
+model Region {
+  country String
+  code    String
+  name    String
+  shops   Shop[]
+  @@id([country, code])
+  @@map("regions")
+}
+
+model Shop {
+  id          Int    @id
+  title       String
+  country     String
+  region_code String
+  region      Region @relation(fields: [country, region_code], references: [country, code])
+  @@map("shops")
+}
 "#;
 
 fn schema() -> Arc<Schema> {
@@ -54,7 +82,10 @@ async fn database() -> Arc<dyn Executor> {
          INSERT INTO comments (id, body, author_id, big, level, rank, at) VALUES
            (1, 'one', 1, 9007199254740993, 10, 1, '2026-01-02T03:04:05Z'),
            (2, 'two', NULL, 2, 1, 1, '2026-01-02T03:04:06Z'),
-           (3, 'three', 2, 3, 10, 2, '2026-01-02T03:04:07Z');"
+           (3, 'three', 2, 3, 10, 2, '2026-01-02T03:04:07Z');
+         INSERT INTO categories (id, weight, name, parent_id) VALUES (1, 5, 'Books', NULL), (2, 7, 'Novels', 1), (3, 9, 'Poems', 1);
+         INSERT INTO regions (country, code, name) VALUES ('DE', 'BE', 'Berlin'), ('FR', 'BE', 'Bretagne');
+         INSERT INTO shops (id, title, country, region_code) VALUES (1, 'Mitte', 'DE', 'BE'), (2, 'Brest', 'FR', 'BE');"
             .into(),
     )
     .await
@@ -79,6 +110,94 @@ async fn a_to_one_column_through_a_nullable_key_is_one_statement_and_keeps_the_r
     assert_eq!(status, 200, "{body}");
     assert_eq!(statements, 1);
     assert_eq!(body["rows"], json!([["one", "Ada", 1], ["two", null, 2], ["three", "Bo", 3]]));
+}
+
+#[tokio::test]
+async fn a_foreign_key_column_carries_the_label_of_the_related_row_in_the_same_statement() {
+    let conn = database().await;
+    let site = site(json!({"resources": [{"model": "Comment", "list": {"columns": ["body", "author_id"], "order": ["id"]}}, {"model": "Author", "list": {"columns": ["id", "name"]}}]}));
+    let (status, body, statements) = get(&site, conn.clone(), "/admin/api/resources/Comment").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(statements, 1);
+    assert_eq!(body["rows"], json!([["one", 1, 1], ["two", null, 2], ["three", 2, 3]]));
+    assert_eq!(body["labels"], json!([{"author_id": "Ada"}, {}, {"author_id": "Bo"}]));
+    let (_, last, statements) = get(&site, conn, "/admin/api/resources/Comment?last=1&limit=2").await;
+    assert_eq!(statements, 1);
+    assert_eq!(last["labels"], json!([{}, {"author_id": "Bo"}]));
+}
+
+#[tokio::test]
+async fn a_foreign_key_column_has_no_label_when_the_user_may_not_read_the_target() {
+    let conn = database().await;
+    let site = site(json!({"resources": [{"model": "Comment", "list": {"columns": ["body", "author_id"], "order": ["id"]}}, {"model": "Author", "allow": ["create"]}]}));
+    let (status, body, _) = get(&site, conn, "/admin/api/resources/Comment").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["labels"], json!([{}, {}, {}]));
+}
+
+#[tokio::test]
+async fn a_field_behind_a_see_permission_is_never_the_label() {
+    let conn = database().await;
+    let site = site(json!({"resources": [{"model": "Comment", "list": {"columns": ["body", "author_id"], "order": ["id"]}}, {"model": "Author", "list": {"columns": ["id", "name"]}, "see": {"name": "see_name"}}]}));
+    let (status, body, statements) = get(&site, conn, "/admin/api/resources/Comment").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(statements, 1);
+    assert_eq!(body["labels"], json!([{}, {}, {}]));
+}
+
+#[tokio::test]
+async fn labels_stay_with_their_rows_under_search_sort_and_a_filter() {
+    let conn = database().await;
+    let site = site(json!({"resources": [{"model": "Comment", "list": {"columns": ["body", "author_id", "rank"], "order": ["id"], "sortable": ["body", "rank"], "search": ["body"], "filters": ["rank"]}}, {"model": "Author", "list": {"columns": ["id", "name"]}}]}));
+    let (status, body, statements) = get(&site, conn.clone(), "/admin/api/resources/Comment?sort=-body").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(statements, 1);
+    assert_eq!(body["labels"], json!([{}, {"author_id": "Bo"}, {"author_id": "Ada"}]));
+    let (status, body, statements) = get(&site, conn.clone(), "/admin/api/resources/Comment?q=thr").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(statements, 1);
+    assert_eq!(body["labels"], json!([{"author_id": "Bo"}]));
+    let (status, body, statements) = get(&site, conn, "/admin/api/resources/Comment?f.rank=2").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(statements, 1);
+    assert_eq!(body["labels"], json!([{"author_id": "Bo"}]));
+}
+
+#[tokio::test]
+async fn a_foreign_key_column_is_titled_by_its_relation_unless_the_config_gives_a_title() {
+    let conn = database().await;
+    let site = site(json!({"resources": [{"model": "Comment", "list": {"columns": ["body", "author_id"], "order": ["id"]}}, {"model": "Author", "list": {"columns": ["id", "name"]}}]}));
+    let (_, body, _) = get(&site, conn.clone(), "/admin/api/resources/Comment").await;
+    let titles: Vec<&str> = body["columns"].as_array().unwrap().iter().map(|c| c["title"].as_str().unwrap()).collect();
+    assert_eq!(titles[..2], ["Body", "Author"]);
+    let site = self::site(json!({"resources": [{"model": "Comment", "list": {"columns": ["body", "author_id"], "order": ["id"], "labels": {"author_id": "Writer"}}}, {"model": "Author", "list": {"columns": ["id", "name"]}}]}));
+    let (_, body, _) = get(&site, conn, "/admin/api/resources/Comment").await;
+    assert_eq!(body["columns"][1]["title"], "Writer");
+}
+
+#[tokio::test]
+async fn the_label_is_the_first_text_column_and_the_meta_names_it() {
+    let conn = database().await;
+    let site = site(json!({"resources": [{"model": "Category", "list": {"columns": ["id", "weight", "name", "parent_id"], "order": ["id"]}}]}));
+    let (status, body, statements) = get(&site, conn.clone(), "/admin/api/resources/Category").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(statements, 1);
+    assert_eq!(body["labels"], json!([{}, {"parent_id": "Books"}, {"parent_id": "Books"}]));
+    assert_eq!(body["columns"][3]["title"], "Parent");
+    let (_, meta, _) = get(&site, conn, "/admin/api/resources").await;
+    assert_eq!(meta["resources"][0]["name_column"], "name");
+}
+
+#[tokio::test]
+async fn a_composite_foreign_key_has_no_label_and_keeps_its_column_titles() {
+    let conn = database().await;
+    let site = site(json!({"resources": [{"model": "Shop", "list": {"columns": ["title", "country", "region_code"], "order": ["id"]}}, {"model": "Region", "list": {"columns": ["country", "code", "name"]}}]}));
+    let (status, body, statements) = get(&site, conn, "/admin/api/resources/Shop").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(statements, 1);
+    assert_eq!(body["labels"], json!([{}, {}]));
+    assert_eq!(body["columns"][1]["title"], "Country");
+    assert_eq!(body["columns"][2]["title"], "Region code");
 }
 
 fn site(config: Value) -> Arc<Site> {
@@ -123,7 +242,7 @@ async fn with_no_config_every_concrete_model_is_a_resource() {
     let (status, body, _) = get(&site, conn, "/admin/api/resources").await;
     assert_eq!(status, 200, "{body}");
     let names: Vec<&str> = body["resources"].as_array().unwrap().iter().map(|r| r["name"].as_str().unwrap()).collect();
-    assert_eq!(names, ["Author", "Comment"]);
+    assert_eq!(names, ["Author", "Comment", "Category", "Region", "Shop"]);
     assert_eq!(body["resources"][0]["permissions"], json!(["read"]));
 }
 

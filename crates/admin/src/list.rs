@@ -40,6 +40,8 @@ pub struct Page {
     pub batch: Vec<usize>,
     /// The `can` rules of each row, as an object: `{"change": true, "delete": false}`.
     pub flags: Vec<Value>,
+    /// The labels of the related records of each row, as an object: `{"author_id": "Ada"}`.
+    pub labels: Vec<Value>,
 }
 
 /// What limits the rows of one request beyond the list itself: the `queryset` filter, bound to the
@@ -119,6 +121,8 @@ pub struct ListRequest {
     pub scope: RowScope,
     /// The most rows of one call, or `MAX_PAGE_SIZE` when none. An export batch sets `EXPORT_BATCH`.
     pub max_limit: Option<usize>,
+    /// The positions in `Resource::refs` whose labels this request reads: the user may read their targets.
+    pub labels: Vec<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -157,7 +161,7 @@ pub struct FilterClause {
 
 impl ListRequest {
     pub fn new(position: Position) -> ListRequest {
-        ListRequest { position, limit: None, sort: None, q: None, found: None, filters: Vec::new(), named: Vec::new(), pins: Vec::new(), scope: RowScope::default(), max_limit: None }
+        ListRequest { position, limit: None, sort: None, q: None, found: None, filters: Vec::new(), named: Vec::new(), pins: Vec::new(), scope: RowScope::default(), max_limit: None, labels: Vec::new() }
     }
 }
 
@@ -724,13 +728,14 @@ pub async fn list(site: &Site, resource: &Resource, conn: &dyn Executor, target:
     }
     let batch: Vec<usize> = resource.columns.iter().enumerate().filter(|(_, c)| matches!(c.source, Source::Batch(_))).map(|(i, _)| i).collect();
     let Some(search) = where_filters(site, resource, request, &mut binds)? else {
-        return Ok(Page { rows: vec![], keys: vec![], next: None, prev: None, batch, flags: vec![] });
+        return Ok(Page { rows: vec![], keys: vec![], next: None, prev: None, batch, flags: vec![], labels: vec![] });
     };
     filters.extend(search);
     let model = &site.schema.model(resource.model).ir.name;
     let selected: Vec<usize> = (0..resource.columns.len()).filter(|i| !batch.contains(i)).collect();
     let mut columns: Vec<Value> = selected.iter().map(|&i| json!({"t": "expr", "expr": col(&resource.columns[i])})).collect();
     columns.extend(resource.can.iter().map(|(_, expr)| json!({"t": "expr", "expr": expr})));
+    columns.extend(request.labels.iter().map(|&i| json!({"t": "expr", "expr": resource.refs[i].expr})));
     let mut op = json!({
         "op": "select",
         "model": model,
@@ -749,14 +754,22 @@ pub async fn list(site: &Site, resource: &Resource, conn: &dyn Executor, target:
     let more = total > limit;
     let mut rows = Vec::with_capacity(total.min(limit));
     let mut flags = Vec::with_capacity(total.min(limit));
+    let mut labels = Vec::with_capacity(total.min(limit));
+    let after_can = selected.len() + resource.can.len();
     for r in 0..total.min(limit) {
         let mut row = vec![Value::Null; resource.columns.len()];
         let mut rules = serde_json::Map::new();
+        let mut names = serde_json::Map::new();
         for (c, ty) in types.iter().enumerate() {
             let cell = fetched.rows.cell(r, c, *ty).map_err(|e| ListError::Engine(e.to_string()))?;
             let value = json::cell(&site.schema, *ty, cell);
             match selected.get(c) {
                 Some(&at) => row[at] = value,
+                None if c >= after_can => {
+                    if !value.is_null() {
+                        names.insert(resource.refs[request.labels[c - after_can]].column.clone(), value);
+                    }
+                }
                 None => {
                     rules.insert(resource.can[c - selected.len()].0.clone(), json!(value.as_bool().unwrap_or(false)));
                 }
@@ -764,10 +777,12 @@ pub async fn list(site: &Site, resource: &Resource, conn: &dyn Executor, target:
         }
         rows.push(Value::Array(row));
         flags.push(Value::Object(rules));
+        labels.push(Value::Object(names));
     }
     if flip {
         rows.reverse();
         flags.reverse();
+        labels.reverse();
     }
     let cursor_of = |row: Option<&Value>| {
         let row = row.and_then(Value::as_array)?;
@@ -784,7 +799,7 @@ pub async fn list(site: &Site, resource: &Resource, conn: &dyn Executor, target:
         Position::Last => (None, more.then_some(first_cursor).flatten()),
     };
     let keys = rows.iter().map(|r| key::encode(&resource.key_positions.iter().map(|&p| r[p].clone()).collect::<Vec<_>>())).collect();
-    Ok(Page { rows, keys, next, prev, batch, flags })
+    Ok(Page { rows, keys, next, prev, batch, flags, labels })
 }
 
 /// The values of the columns that a to-many relation joins on, in the record with this key, or none when no row has the key.

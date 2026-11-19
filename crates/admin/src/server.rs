@@ -195,6 +195,8 @@ pub(crate) fn user_key(user: &User) -> Value {
 /// What one request reads: the row scope of the resource.
 pub(crate) struct Reach {
     pub(crate) rows: RowScope,
+    /// The positions in `Resource::refs` that the user may read: a list shows the label of the related record there.
+    pub(crate) labels: Vec<usize>,
 }
 
 /// A JSON value from a slot as a bound value.
@@ -261,7 +263,8 @@ pub(crate) async fn reach(s: &State_, resource: &Resource, user: &User, grants: 
             return Err(Box::new(error_response(e)));
         }
     }
-    Ok((scope, Reach { rows }))
+    let labels = (0..resource.refs.len()).filter(|&i| s.site.resources.iter().find(|t| t.name == resource.refs[i].target).is_some_and(|t| s.site.allows(grants, t, Op::Read))).collect();
+    Ok((scope, Reach { rows, labels }))
 }
 
 pub(crate) async fn queryset_rows(s: &State_, resource: &Resource, q: &crate::site::Queryset, user: &User, scope: &Scoped, rows: &mut RowScope) -> Result<(), ListError> {
@@ -528,7 +531,7 @@ async fn run_rows(s: &State_, resource: &Resource, scope: Scoped, reach: Reach, 
             return error_response(e);
         }
     };
-    let mut request = ListRequest { limit: q.limit, sort: q.sort, q: q.q, filters, named, pins, scope: reach.rows, ..ListRequest::new(position) };
+    let mut request = ListRequest { limit: q.limit, sort: q.sort, q: q.q, filters, named, pins, scope: reach.rows, labels: reach.labels, ..ListRequest::new(position) };
     let out = async {
         list::check_request(&s.site, resource, &request)?;
         request.found = found_keys(s, resource, &scope, request.q.as_deref()).await?;
@@ -546,7 +549,7 @@ async fn run_rows(s: &State_, resource: &Resource, scope: Scoped, reach: Reach, 
     }
     .await;
     finish(scope, out, |(page, total)| {
-        let mut body = json!({"ok": true, "resource": resource.name, "columns": resource.meta["columns"], "rows": page.rows, "flags": page.flags, "keys": page.keys, "next": page.next, "prev": page.prev});
+        let mut body = json!({"ok": true, "resource": resource.name, "columns": resource.meta["columns"], "rows": page.rows, "flags": page.flags, "labels": page.labels, "keys": page.keys, "next": page.next, "prev": page.prev});
         if let Some(total) = total {
             body["count"] = json!(total.count);
             body["capped"] = json!(total.capped);

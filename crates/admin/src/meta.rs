@@ -176,6 +176,20 @@ fn list_column(schema: &Schema, r: &Resource, c: &Column) -> Value {
     if !matches!(c.source, Source::Field) {
         out["computed"] = json!(true);
     }
+    if let Some(f) = r.refs.iter().find(|f| f.column == c.label) {
+        out["ref"] = json!({"resource": f.target});
+    }
+    out
+}
+
+/// A column of the list: a foreign key shows the name of its relation ("Author") as the title, unless the config gives one.
+fn list_header(schema: &Schema, r: &Resource, c: &Column) -> Value {
+    let mut out = list_column(schema, r, c);
+    if !r.labels.contains_key(&c.label) && c.path.is_empty() && c.source == Source::Field {
+        if let Some(link) = r.links.iter().find(|l| l.from.len() == 1 && r.detail.get(l.from[0]).is_some_and(|d| d.label == c.label)) {
+            out["title"] = json!(humanize(&link.name));
+        }
+    }
     out
 }
 
@@ -273,7 +287,7 @@ pub fn resource(schema: &Schema, r: &Resource, builds: &AtomicUsize) -> Value {
         "name": r.name,
         "title": r.title,
         "group": r.group,
-        "columns": r.columns.iter().map(|c| list_column(schema, r, c)).collect::<Vec<_>>(),
+        "columns": r.columns.iter().map(|c| list_header(schema, r, c)).collect::<Vec<_>>(),
         "order": r.order.iter().map(|o| json!({"column": o.column.label, "desc": o.desc})).collect::<Vec<_>>(),
         "page_size": r.page_size,
         "max_page_size": crate::site::MAX_PAGE_SIZE,
@@ -283,6 +297,7 @@ pub fn resource(schema: &Schema, r: &Resource, builds: &AtomicUsize) -> Value {
         "permissions": ["read"],
         "table": schema.model(r.model).table(),
         "key": r.key_columns.iter().map(|c| c.label.clone()).collect::<Vec<_>>(),
+        "name_column": crate::site::name_of(r).map(|c| c.label.clone()),
         "fields": r.detail.iter().map(|c| list_column(schema, r, c)).collect::<Vec<_>>(),
         "links": r.links.iter().map(|l| json!({"name": l.name, "title": humanize(&l.name), "target": l.target})).collect::<Vec<_>>(),
         "filters": r.filters.iter().map(|f| filter(schema, r, f)).collect::<Vec<_>>(),

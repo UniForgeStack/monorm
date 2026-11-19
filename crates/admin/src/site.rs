@@ -437,6 +437,8 @@ pub struct Resource {
     pub detail: Vec<Column>,
     /// To-one relations that lead to the key of another resource.
     pub links: Vec<Link>,
+    /// Foreign-key columns of the list that show the label of the related record, read in the same statement.
+    pub refs: Vec<RefLabel>,
     /// The sections, read-only fields, widgets and module of the forms.
     pub form: crate::form::FormSpec,
     /// The metadata that does not depend on the user, built once by `Site::build`.
@@ -662,6 +664,16 @@ pub struct Link {
     pub from: Vec<usize>,
 }
 
+/// A foreign-key column of a list whose related record has a label: one more expression of the list statement, a join on the relation.
+#[derive(Debug, Clone)]
+pub struct RefLabel {
+    /// The label of the foreign-key column in the list.
+    pub column: String,
+    /// The name of the target resource.
+    pub target: String,
+    pub expr: Value,
+}
+
 pub struct Site {
     pub schema: Arc<Schema>,
     /// The path of the UI, without a trailing `/`. The cookies are scoped to `<base_path>/`.
@@ -767,6 +779,10 @@ impl Site {
         let links: Vec<Vec<Link>> = resources.iter().map(|r| links_of(&schema, &resources, r)).collect();
         for (r, l) in resources.iter_mut().zip(links) {
             r.links = l;
+        }
+        let refs: Vec<Vec<RefLabel>> = resources.iter().map(|r| refs_of(&schema, &resources, r)).collect();
+        for (r, f) in resources.iter_mut().zip(refs) {
+            r.refs = f;
         }
         let tabs: Vec<Vec<Tab>> = (0..resources.len()).map(|i| tabs_of(&schema, &resources, i)).collect::<Result<_, _>>()?;
         for (r, t) in resources.iter_mut().zip(tabs) {
@@ -1326,6 +1342,7 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
         key_positions,
         detail,
         links: Vec::new(),
+        refs: Vec::new(),
         form,
         meta: serde_json::Value::Null,
         search,
@@ -1421,6 +1438,32 @@ fn links_of(schema: &Schema, resources: &[Resource], r: &Resource) -> Vec<Link> 
         if from.len() == keys.len() {
             out.push(Link { name: rel.name.clone(), target: target.name.clone(), from });
         }
+    }
+    out
+}
+
+/// The column that names a record: the first plain text column of the list that is not part of the key and has no `see` permission.
+/// The list label of a foreign key and the filter chips of the UI use this one rule.
+pub(crate) fn name_of(r: &Resource) -> Option<&Column> {
+    r.columns.iter().find(|c| c.path.is_empty() && c.source == Source::Field && crate::list::is_text(c.ty) && !r.key_columns.iter().any(|k| k.label == c.label) && !r.see.contains_key(&c.label))
+}
+
+/// The foreign-key columns of the list that can show the name of the related record.
+fn refs_of(schema: &Schema, resources: &[Resource], r: &Resource) -> Vec<RefLabel> {
+    let model = schema.model(r.model);
+    let mut out = Vec::new();
+    for link in &r.links {
+        let [at] = link.from[..] else { continue };
+        let Some(fk) = r.detail.get(at).and_then(|d| r.columns.iter().find(|c| c.label == d.label && c.path.is_empty() && c.source == Source::Field)) else { continue };
+        let Some(target) = resources.iter().find(|t| t.name == link.target) else { continue };
+        if target.queryset.is_some() || !target.scope_defaults.is_empty() {
+            continue;
+        }
+        let Some(name) = name_of(target) else { continue };
+        if model.relation(&link.name).is_err() {
+            continue;
+        }
+        out.push(RefLabel { column: fk.label.clone(), target: target.name.clone(), expr: serde_json::json!({"t": "col", "path": [link.name], "name": name.field}) });
     }
     out
 }

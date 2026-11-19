@@ -55,6 +55,15 @@ It works only when the count is exact: if more than 10,000 rows match, the answe
 A `page` that is too large for the offset also answers `400`.
 A cursor page whose rows are gone is empty, and it keeps the cursor back (`prev` after `?cursor=`, `next` after `?before=`).
 
+A foreign key column has a label for each row: `labels[i]` is `{"author_id": "Ada"}` for row `i`.
+The same list statement reads the labels, so the statement count does not change.
+The label is the first plain text column (`String` or `Text`) of the target list that is not part of the key and has no `see` permission.
+A column has no label when the user may not read the target, when the target has a queryset or read defaults, when no column fits, or when the foreign key has more than one column.
+Then the UI shows the raw value.
+The `columns` of the resource carry `ref: {"resource": <target>}` for each column with a label, and the resource has `name_column`: the label of the column that names a record (or `null`).
+The filter chips of the UI use `name_column`, so a chip and a list label show the same name.
+The title of a foreign key column is the name of its relation (`Author`), unless `labels` gives one.
+
 ### Count
 
 The rows come first, and the count is a separate request: `GET {prefix}/counts/{name}?q=`.
@@ -1083,7 +1092,7 @@ The path prefix is a config value, and the default is `<base_path>/api` (`/admin
 | Route | Answer |
 |---|---|
 | `GET {prefix}/resources` | The `brand`, the navigation groups (`nav`), and the resources that the user may read. Each resource has a `title`, its `fields`, its `key` fields, its columns (with `title`, `widget` and `choices`), order, page size, sort columns and search fields. It also lists the permission names that the user holds. |
-| `GET {prefix}/resources/{name}?cursor=&before=&last=&page=&limit=&sort=&q=&f.*=&n.*=` | One page: `columns`, `rows`, `keys`, `next` and `prev`. See [Lists](#lists). |
+| `GET {prefix}/resources/{name}?cursor=&before=&last=&page=&limit=&sort=&q=&f.*=&n.*=` | One page: `columns`, `rows`, `keys`, `labels`, `next` and `prev`. See [Lists](#lists). |
 | `GET {prefix}/counts/{name}?q=&f.*=&n.*=&exact=` | `{"count", "capped"}`. See [Count](#count). |
 | `GET {prefix}/export/{name}?q=&f.*=&n.*=&sort=` | The list as a CSV file, streamed. See [CSV export](#csv-export). |
 | `GET {prefix}/resources/{name}/{key}/{relation}`, `GET {prefix}/counts/{name}/{key}/{relation}` | The list and the count of a to-many tab. See [To-many tabs](#to-many-tabs). |
@@ -1257,9 +1266,17 @@ The UI path is the `base_path` setting, and the page paths below show the defaul
 |---|---|
 | `/admin` | The home page: a card for each navigation group with its pages, and the last 10 audit-log rows that the user may see (only when the user may read `AdminLogEntry`). |
 | `/admin/-/login`, `/admin/-/password` | Sign in, and change the password. Sign out, the theme and the time zone are in the user menu of the header. |
-| `/admin/{resource}` | The list. The first column links to the record. Search, filters, sort, page and page size are in the query string, so a reload, a link and the back button return to the same view. |
+| `/admin/{resource}` | The list. The first column links to the record, and a foreign key column shows the label of the related record as a link. Search, filters, sort, page and page size are in the query string, so a reload, a link and the back button return to the same view. |
 | `/admin/{resource}/{key}` | The record: its fields, a link for each to-one relation, and a tab for each to-many relation (`?tab={relation}`). It has Edit and Delete. |
 | `/admin/{resource}/-/new`, `/admin/{resource}/{key}/edit` | The forms: see [Forms in the UI](#forms-in-the-ui). |
+
+The list page has these controls:
+- A Filters popover holds the filters, and each active filter shows as a chip that the user can remove.
+- A Columns menu hides a column, except the first. The choice stays in the browser, for each resource.
+- A density toggle (comfortable or compact) stays in the browser.
+- A row menu holds the row actions, and a bar over the table holds the bulk actions of the selected rows.
+- The footer has the page links and a page size choice (up to `max_page_size`).
+- A list shows a skeleton while it loads. An empty list offers to clear the search and filters, or to add a record. An error shows as an alert.
 
 A key is stable and easy to bookmark.
 Each key field is percent-encoded (only `A-Z a-z 0-9 - . _ ~` stay as they are), and a composite key joins the fields with `,` in key order.

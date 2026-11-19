@@ -170,6 +170,7 @@ impl Site {
                 l
             })
             .collect();
+        v.refs.retain(|f| !hidden.contains(&f.column));
         v.search.retain(|s| !hidden.contains(&s.column.label));
         v.sortable.retain(|s| !hidden.contains(&s.column.label));
         v.filters.retain(|f| match &f.kind {
