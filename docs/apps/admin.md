@@ -1179,7 +1179,7 @@ The path prefix is a config value, and the default is `<base_path>/api` (`/admin
 
 A row is an array that follows `columns`.
 `next` is a cursor for the next page, or `null` on the last page.
-BigInt and Decimal are JSON strings.
+BigInt and Decimal are JSON strings. A Duration is a JSON string, `[-][D ]HH:MM:SS[.ffffff]`.
 A date and a time are ISO 8601 with an offset.
 
 | Status | When |

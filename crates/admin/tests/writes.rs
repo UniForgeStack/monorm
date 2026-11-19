@@ -36,6 +36,11 @@ model Book {
   @@check("title <> 'banned'", name: "no_banned_title")
 }
 
+model Chore {
+  id    Int       @id @default(autoincrement())
+  every Duration?
+}
+
 model Locked {
   id Int @id @default(autoincrement())
   x  Int
@@ -70,7 +75,7 @@ async fn world(config: Value) -> World {
 }
 
 fn config() -> Value {
-    json!({"resources": [{"model": "Author"}, {"model": "Book", "check_messages": {"no_banned_title": "That title is not allowed."}}, {"model": "Locked"}]})
+    json!({"resources": [{"model": "Author"}, {"model": "Book", "check_messages": {"no_banned_title": "That title is not allowed."}}, {"model": "Locked"}, {"model": "Chore"}]})
 }
 
 impl World {
@@ -243,4 +248,55 @@ fn a_check_message_for_a_missing_check_fails_the_build() {
     let config = json!({"resources": [{"model": "Book", "check_messages": {"no_such_check": "x"}}]});
     let e = Site::build(schema(), &config.to_string()).err().expect("the build fails");
     assert!(e.to_string().contains("no_such_check"), "{e}");
+}
+
+#[tokio::test]
+async fn a_duration_is_written_as_text_and_read_back_as_the_same_text() {
+    let w = world(config()).await;
+    let meta = w.send("GET", "/resources", None).await.1;
+    let chore = meta["resources"].as_array().unwrap().iter().find(|r| r["name"] == "Chore").unwrap();
+    let every = chore["fields"].as_array().unwrap().iter().find(|f| f["label"] == "every").unwrap();
+    assert_eq!(every["widget"], "text", "{meta}");
+    for (given, micros) in [("01:30:00", "5400000000"), ("1 02:03:04.5", "93784500000"), ("PT1H30M", "5400000000"), ("-00:00:01", "-1000000")] {
+        let (status, body) = w.send("POST", "/resources/Chore", Some(json!({"set": {"every": given}}))).await;
+        assert_eq!(status, 201, "{given}: {body}");
+        let stored = w.rows(&format!("SELECT every FROM \"Chore\" WHERE id = {}", body["key"].as_str().unwrap())).await;
+        assert_eq!(text(&stored[0][0]), micros, "{given}");
+    }
+    let (status, body) = w.send("GET", "/resources/Chore/1", None).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["values"][1], "01:30:00", "{body}");
+    let (status, body) = w.send("POST", "/resources/Chore", Some(json!({"set": {"every": "soon"}}))).await;
+    assert_eq!((status, &body["fields"]["every"]), (422, &json!(["Must be a duration (HH:MM:SS, 1 02:03:04 or PT1H30M)"])), "{body}");
+}
+
+/// On PostgreSQL the `interval` column takes its text through the `write_sql` template: create, a stale-checked update and a range filter.
+#[tokio::test]
+async fn a_duration_writes_and_filters_on_postgres() {
+    let Ok(url) = std::env::var("ORM_RUST_TEST_POSTGRES_URL") else {
+        eprintln!("skipped: ORM_RUST_TEST_POSTGRES_URL is not set");
+        return;
+    };
+    let models = "datasource db {\n  provider = \"postgresql\"\n}\n\nmodel PChore {\n  id Int @id @default(autoincrement())\n  every Duration?\n  @@map(\"p_chores\")\n}\n";
+    let schema = Arc::new(dsl::check(dsl::compile(&format!("{models}\n{ADMIN}"), None).unwrap()).unwrap().1);
+    let conn = db::connect(&url, 2).await.unwrap();
+    conn.batch("DROP TABLE IF EXISTS p_chores; DROP TABLE IF EXISTS adminlogentry, userpreference, adminsessionrevocation".into()).await.unwrap();
+    for step in migrate::plan(&schema, &Default::default()).unwrap().up {
+        conn.batch(step.sql).await.unwrap();
+    }
+    let site = Arc::new(Site::build(schema, &json!({"resources": [{"model": "PChore", "list": {"columns": ["every"], "order": ["id"], "filters": ["every"]}}]}).to_string()).unwrap());
+    let w = World { site, conn };
+    for given in ["00:00:01", "01:30:00", "2 00:00:00"] {
+        let (status, body) = w.send("POST", "/resources/PChore", Some(json!({"set": {"every": given}}))).await;
+        assert_eq!(status, 201, "{given}: {body}");
+    }
+    let stored = w.rows("SELECT CAST(EXTRACT(EPOCH FROM every) AS bigint) FROM p_chores ORDER BY id").await;
+    assert_eq!(stored.iter().map(|r| text(&r[0]).to_string()).collect::<Vec<_>>(), ["1", "5400", "172800"]);
+    let (status, out) = w.send("PATCH", "/resources/PChore/1", Some(json!({"set": {"every": "00:00:02"}, "loaded": {"every": "00:00:01"}}))).await;
+    assert_eq!((status, &out["changed"]), (200, &json!(["every"])), "{out}");
+    let (status, out) = w.send("PATCH", "/resources/PChore/1", Some(json!({"set": {"every": "00:00:03"}, "loaded": {"every": "00:00:01"}}))).await;
+    assert_eq!(status, 409, "{out}");
+    let (status, out) = w.send("GET", "/resources/PChore?f.every:gte=00:01:00&f.every:lt=1%2000:00:00", None).await;
+    assert_eq!(status, 200, "{out}");
+    assert_eq!(out["rows"], json!([["01:30:00", 2]]), "{out}");
 }

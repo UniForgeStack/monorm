@@ -349,6 +349,7 @@ Schema contract 5.4 adds the pass phases `expansion` (before `declaration`) and 
 An older host fails to parse a manifest that uses a new phase name, so a manifest that needs them declares 5.4. The IR is unchanged.
 `inherit`, `locking`, `timestamps`, `soft-delete`, `history` and `query-defaults` declare 5.4. The order of the first-party passes does not change.
 A manifest of an outside extension that lists a pass of another manifest, or an unknown id, in `after` must use a phase instead: an earlier phase for the pass that runs first, or `late_behavior` for the pass that runs last.
+Schema contract 5.5 adds `ColType::Duration` to the IR (an IR with a `Duration` field is stamped 5.5). The manifest format does not change, and no extension declares 5.5.
 A version fits when its major equals the engine major and its minor is at most the engine minor.
 This holds for `schema_contract` and for `abi`, and for the `abi` that the library reports.
 Another major, or a newer minor, gives an error that names both versions and says what to install, even when the manifest has fields that this release does not know.

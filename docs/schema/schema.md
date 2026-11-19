@@ -289,6 +289,7 @@ The first app is [`monorm-auth`](../apps/auth.md): users, roles, permissions and
 | `DateTime`, `DateTime @db.Date` | `timestamp with time zone`, `date` | `datetime` (aware), `date` |
 | `DateTime @db.Timestamp(p)` | `timestamp(p)` (UTC wall clock) | `datetime` (aware, UTC) |
 | `DateTime @db.Time`, `DateTime @db.Timetz` | `time`, `timetz` | naive `datetime.time` |
+| `Duration` | `interval` (SQLite: `INTEGER`, whole microseconds) | `datetime.timedelta` |
 | `Json` | `jsonb` | dicts, lists, scalars |
 | `Decimal`, `Decimal @db.Decimal(p, s)` | `numeric`, `numeric(p, s)` | `decimal.Decimal` (exact; `int`, `float`, `"12.50"` accepted) |
 | `Bytes` | `bytea` (SQLite: `BLOB`) | `bytes` (`bytearray` and `memoryview` accepted) |
@@ -308,6 +309,19 @@ clock; `Timetz` normalizes offsets to UTC modulo 24 hours and writes an explicit
 zero offset, independent of the session timezone. PostgreSQL `24:00:00` raises a
 range error because the native values cannot represent it. SQLite stores time text
 (`HH:MM:SS[.ffffff]`); nested JSON uses the same time-only text.
+
+A `Duration` field holds a signed whole number of microseconds, from -2^63 to 2^63 - 1.
+It has no `@db.*` variant and no literal `@default`; a `Duration[]` field and a `Duration` field in a `type` block are errors.
+Python uses `datetime.timedelta`; a value that does not fit in 64 bits of microseconds raises `OverflowError`.
+TypeScript uses the immutable `Duration` class (a `bigint` of microseconds), with the text form `[-][D ]HH:MM:SS[.ffffff]`; `Duration.parse` also reads `PT1H30M`.
+Rust uses `chrono::TimeDelta`; an out-of-range value saturates.
+The admin shows and edits a `Duration` as that text, in a plain text input.
+A `Duration` takes `=`, `!=`, `<`, `<=`, `>`, `>=`, `between`, `in` and `order_by`, and `sum`, `avg`, `min` and `max` return a `Duration`.
+On SQLite `avg` is the mean rounded to the nearest microsecond, half away from zero.
+On PostgreSQL a write sends only microseconds, so the column never holds months or days. A value that another writer put in has a fixed length on read: a month is 30 days and a year is 360 days (`'1 year'` reads as 360 days).
+On PostgreSQL the parameter is built as `CAST(CAST($n AS text) || ' microseconds' AS interval)`, so `in_(param())` and `insert_many(copy=True)` on a `Duration` column are refused.
+`pull` reads `interval` and `interval(p)` as `Duration`; the precision is dropped, and a gap note says so. It leaves out an `interval` whose field list holds `year` or `month`, because a month is not a fixed number of microseconds. A migration between `Duration` and another type is an error that asks for a manual migration.
+The schema contract is 5.5; the IR is stamped 5.5 only when it has a `Duration` field.
 
 A `@db.Timestamp` column stores the UTC wall clock. Every write and filter binds the value typed `timestamp`, so the session `TimeZone` has no effect. Reads return the same UTC instant. Raw `db.fetch` parameters have no column type and stay `timestamptz`.
 

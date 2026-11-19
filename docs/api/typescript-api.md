@@ -84,6 +84,7 @@ Scalar types follow Prisma's choices:
 | `DateTime` | `Date`, with millisecond precision; the microseconds below it stay in a hidden property (see below) |
 | `Date` | `Date` at 00:00 UTC |
 | `Bytes` | `Uint8Array` (a `Buffer` is accepted, and read back as a `Uint8Array`) |
+| `Duration` | `Duration` (an immutable class on a `bigint` of microseconds; `toString()` is `[-][D ]HH:MM:SS[.ffffff]`, `Duration.parse` also reads `PT1H30M`) |
 | `Json` | `JsonValue` |
 | `Uuid` | `string` |
 | `String[]`, ... | `string[]`, ... |
