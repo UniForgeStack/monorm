@@ -12,6 +12,7 @@ model AbstractUser {
   email String @unique
   roles Role[] @relation("{model}_roles")
   teams Team[] @relation(through: "{model}Team")
+  squads Team[] @relation(path: [teams])
   @@inherit.abstract
 }
 
