@@ -171,7 +171,6 @@
 # languages/python/tests/test_selection_defaults.py
 "selection_defaults::base_getter_instance_load_of_an_unfiltered_dangling_key_is_not_loaded" = "one-language: Python-only: the base getter, swapped in at run time; TS fixes the reference adapter at import"
 "selection_defaults::one_row_create_task" = "one-language: Python-only: asyncio.create_task and cancel of a one-row query"
-"selection_defaults::one_row_laziness_and_fresh_awaits" = "keep: TS asserts the opposite for a second await (one run per query), so the owner must pick one rule before a shared test."
 # languages/python/tests/test_sync_iteration.py
 "sync_iteration::async_iteration_await_and_slices_still_work" = "one-language: guards the Python `__iter__` guard; TypeScript has no sync iterator on a query set"
 "sync_iteration::pydantic_from_attributes_raises_at_once" = "one-language: Pydantic is Python-only"
@@ -272,7 +271,6 @@
 # languages/js/test/proxy.test.ts
 # languages/js/test/pull.test.ts
 # languages/js/test/queries.test.ts
-"queries::first_last_at_and_get_start_no_query_until_awaited" = "change: twin selection_defaults::one_row_laziness_and_fresh_awaits; The bindings disagree: the owner picks one behavior, then both assert it."
 "queries::relation_comparison_rejects_null_prototype_objects_clearly" = "one-language: TypeScript-only: null-prototype objects"
 "queries::string_lock_keys_hash_like_the_python_package_s" = "one-language: TypeScript-only: unit test of the JS blake2b port"
 # languages/js/test/query-api.test.ts

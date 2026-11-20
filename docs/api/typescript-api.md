@@ -204,10 +204,9 @@ one runs it (a query set is a *thenable*, like Prisma's and Drizzle's queries, a
 | `.paginate({ first, after })` / `.paginate({ last, before })` | one page by keyset: `{ items, hasNext, hasPrevious, nextCursor, previousCursor }` |
 | `.sql()` / `.toString()` | the SQL with values inlined, for reading |
 
-A `OneRowQuery` is lazy: `qs.first()` starts no query until `then`, `catch` or `finally` (an `await`) runs on it, and it runs once.
+A `OneRowQuery` is a query, not a result: `qs.first()` starts no query until `then`, `catch` or `finally` (an `await`) runs on it, and each await runs the SQL again, as in Python. The object caches no row.
 Before this, `first()`, `last()` and `get()` started the query at the call; code that calls one and never awaits it no longer queries.
 It has `.prepare()` (the prepared query's `.run(values)` gives the row), `.inspect()` and `.sql()`.
-Awaiting the same `OneRowQuery` again reuses its first result; Python runs afresh on each await.
 `first()`, `last()`, `at(n)`, `get()` and prepared `first()` / `get()` throw `QueryError` at the call on a query set with any `limit()`, `offset()` or `slice()`, literal or `param()`: read the n-th row with `at(n)`. `at(param("n"))` gives `OFFSET $n LIMIT 1`.
 A query set takes one `slice()`, or one `limit()` and one `offset()` in either order; any other combination throws `QueryError`.
 A one-row relation load needs `.at(n).label(name)`; `.get().label(name)` throws `TypeError`.
@@ -690,7 +689,7 @@ Other `Select` methods:
 * `await sel.explain()`, `sel.join(cte, on, { outer })` and `sel.from(cte)`. The columns of a CTE
   (`cte.c.n`) work in `groupBy()`, `having()` and `orderBy()`; to select them, call `join()` on the
   query set before `select()`.
-* `first()`, `get()`, `last()` and `at(n)` are lazy one-row queries (`at(-1)` is `last()`).
+* `first()`, `get()`, `last()` and `at(n)` are lazy one-row queries that run again on each await (`at(-1)` is `last()`).
   `last()` and `at(n)` need `orderBy()` on a grouped or distinct select (else `TypeError`).
 * `paginate()`, `batches()` and `iterate()`: the order must be unique. The `groupBy()` columns (or the
   `distinct(on)` columns) are added to the key; otherwise the primary key is. Every key column must be a
