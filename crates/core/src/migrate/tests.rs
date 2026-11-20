@@ -2495,3 +2495,157 @@ fn an_interval_precision_change_alters_the_type_and_is_not_a_duration_refusal() 
     let ops = diff(&live, &v1.snapshot, &Default::default()).unwrap();
     assert!(ops.iter().any(|o| matches!(o, Op::AlterColumnType { from, to, .. } if from == "interval(3)" && to == "interval")), "{ops:?}");
 }
+
+fn owning(dialect: &str, extra: Vec<Value>) -> Value {
+    let mut models = vec![
+        json!({"name": "Spec", "table": "specs", "fields": [id(), field("body", "text")]}),
+        json!({"name": "Guitar", "table": "guitars", "fields": [id(), field("spec_id", "big_int", )],
+               "relations": [{"name": "spec", "kind": "one", "target": "Spec", "from": "spec_id", "to": "id",
+                              "foreign_key": true, "on_delete": "no_action", "owns": true}]}),
+    ];
+    models.extend(extra);
+    json!({"dialect": dialect, "models": models})
+}
+
+fn owning_up(ir: Value) -> Vec<String> {
+    let s = schema(ir);
+    let plan = super::plan(&s, &DbSchema::default()).unwrap();
+    settled(&s, &plan);
+    plan.up.iter().map(|s| s.sql.clone()).collect()
+}
+
+#[test]
+fn an_owning_relation_gets_an_index_and_a_delete_trigger_on_postgresql() {
+    let up = owning_up(owning("postgres", vec![])).join("\n");
+    assert!(up.contains("CREATE INDEX \"guitars_spec_id_idx\" ON \"guitars\" (\"spec_id\")"), "{up}");
+    assert!(up.contains("CREATE OR REPLACE FUNCTION \"guitars_A_owns\"() RETURNS trigger LANGUAGE plpgsql"), "{up}");
+    assert!(up.contains("DELETE FROM \"specs\" WHERE \"specs\".\"id\" = OLD.\"spec_id\" AND NOT EXISTS (SELECT 1 FROM \"guitars\" AS x WHERE x.\"spec_id\" = \"specs\".\"id\");"), "{up}");
+    assert!(up.contains("RETURN NULL;"), "{up}");
+    assert!(up.contains("CREATE TRIGGER \"A_owns\" AFTER DELETE ON \"guitars\" FOR EACH ROW EXECUTE FUNCTION \"guitars_A_owns\"()"), "{up}");
+}
+
+#[test]
+fn an_owning_relation_gets_the_same_trigger_on_sqlite() {
+    let up = owning_up(owning("sqlite", vec![])).join("\n");
+    assert!(up.contains("CREATE INDEX \"guitars_spec_id_idx\" ON \"guitars\" (\"spec_id\")"), "{up}");
+    assert!(up.contains("CREATE TRIGGER \"guitars_A_owns_trigger\" AFTER DELETE ON \"guitars\" FOR EACH ROW BEGIN\nDELETE FROM \"specs\" WHERE \"specs\".\"id\" = OLD.\"spec_id\" AND NOT EXISTS (SELECT 1 FROM \"guitars\" AS x WHERE x.\"spec_id\" = \"specs\".\"id\");\nEND"), "{up}");
+}
+
+#[test]
+fn an_owned_row_stays_while_another_foreign_key_still_names_it() {
+    let extra = json!({"name": "Photo", "table": "photos", "fields": [id(), field("spec_id", "big_int")],
+        "relations": [{"name": "spec", "kind": "one", "target": "Spec", "from": "spec_id", "to": "id", "foreign_key": true}]});
+    let up = owning_up(owning("postgres", vec![extra])).join("\n");
+    assert!(up.contains("AND NOT EXISTS (SELECT 1 FROM \"photos\" AS x WHERE x.\"spec_id\" = \"specs\".\"id\")"), "{up}");
+    assert!(!up.contains("\"photos_A_owns\""), "{up}");
+}
+
+#[test]
+fn a_new_foreign_key_into_the_owned_table_replaces_the_trigger_function() {
+    let before = schema(owning("postgres", vec![]));
+    let snapshot = super::plan(&before, &DbSchema::default()).unwrap().snapshot;
+    let extra = json!({"name": "Photo", "table": "photos", "fields": [id(), field("spec_id", "big_int")],
+        "relations": [{"name": "spec", "kind": "one", "target": "Spec", "from": "spec_id", "to": "id", "foreign_key": true}]});
+    let plan = super::plan(&schema(owning("postgres", vec![extra])), &snapshot).unwrap();
+    let up = sql(&plan.up).join("\n");
+    assert!(up.contains("CREATE OR REPLACE FUNCTION \"guitars_A_owns\"()") && up.contains("\"photos\" AS x"), "{up}");
+    assert!(!up.contains("CREATE TRIGGER"), "{up}");
+}
+
+#[test]
+fn a_new_foreign_key_into_the_owned_table_recreates_the_sqlite_trigger() {
+    let before = schema(owning("sqlite", vec![]));
+    let snapshot = super::plan(&before, &DbSchema::default()).unwrap().snapshot;
+    let extra = json!({"name": "Photo", "table": "photos", "fields": [id(), field("spec_id", "big_int")],
+        "relations": [{"name": "spec", "kind": "one", "target": "Spec", "from": "spec_id", "to": "id", "foreign_key": true}]});
+    let plan = super::plan(&schema(owning("sqlite", vec![extra])), &snapshot).unwrap();
+    let up = sql(&plan.up).join("\n");
+    // The owner table is rebuilt, which drops the old trigger; the new one is created after the rebuild.
+    let rebuilt = up.find("DROP TABLE \"guitars\"").unwrap_or_else(|| panic!("{up}"));
+    let create = up.find("CREATE TRIGGER \"guitars_A_owns_trigger\"").unwrap_or_else(|| panic!("{up}"));
+    assert!(rebuilt < create && up.contains("\"photos\" AS x"), "{up}");
+}
+
+#[test]
+fn an_existing_index_that_starts_with_the_owning_column_is_enough() {
+    let mut ir = owning("postgres", vec![]);
+    ir["models"][1]["fields"] = json!([id(), field("spec_id", "big_int"), field("kind", "text")]);
+    ir["models"][1]["indexes"] = json!([{"columns": [{"field": "spec_id"}, {"field": "kind"}]}]);
+    let up = owning_up(ir).join("\n");
+    assert!(!up.contains("guitars_spec_id_idx"), "{up}");
+    assert_eq!(up.matches("CREATE INDEX").count(), 1, "{up}");
+    let mut ir = owning("postgres", vec![]);
+    ir["models"][1]["fields"] = json!([id(), field("kind", "text"), field("spec_id", "big_int")]);
+    ir["models"][1]["indexes"] = json!([{"columns": [{"field": "kind"}, {"field": "spec_id"}]}]);
+    let up = owning_up(ir).join("\n");
+    assert!(up.contains("guitars_spec_id_idx"), "{up}");
+    let mut ir = owning("postgres", vec![]);
+    ir["models"][1]["indexes"] = json!([{"columns": [{"field": "spec_id"}], "where": "spec_id > 0"}]);
+    assert!(owning_up(ir).join("\n").contains("guitars_spec_id_owns_idx"));
+    let mut ir = owning("postgres", vec![]);
+    ir["models"][1]["fields"][1]["unique"] = json!(true);
+    ir["models"][1]["relations"][0]["unique"] = json!(true);
+    assert!(!owning_up(ir).join("\n").contains("guitars_spec_id_idx"));
+}
+
+#[test]
+fn an_owning_cycle_has_one_trigger_for_each_table() {
+    let ir = json!({"models": [
+        {"name": "A", "table": "a", "fields": [id(), field("b_id", "big_int")],
+         "relations": [{"name": "b", "kind": "one", "target": "B", "from": "b_id", "to": "id", "foreign_key": true, "owns": true}]},
+        {"name": "B", "table": "b", "fields": [id(), field("a_id", "big_int")],
+         "relations": [{"name": "a", "kind": "one", "target": "A", "from": "a_id", "to": "id", "foreign_key": true, "owns": true}]},
+    ]});
+    let up = owning_up(ir).join("\n");
+    assert!(up.contains("\"a_A_owns\"") && up.contains("\"b_A_owns\""), "{up}");
+    assert!(up.contains("DELETE FROM \"b\" WHERE \"b\".\"id\" = OLD.\"b_id\" AND NOT EXISTS (SELECT 1 FROM \"a\" AS x WHERE x.\"b_id\" = \"b\".\"id\")"), "{up}");
+}
+
+#[test]
+fn the_postgres_trigger_locks_the_target_before_the_guard() {
+    let up = owning_up(owning("postgres", vec![])).join("\n");
+    let lock = up.find("PERFORM 1 FROM \"specs\" WHERE \"specs\".\"id\" = OLD.\"spec_id\" FOR NO KEY UPDATE").unwrap_or_else(|| panic!("{up}"));
+    assert!(lock < up.find("DELETE FROM \"specs\"").unwrap(), "{up}");
+    let sqlite = owning_up(owning("sqlite", vec![])).join("\n");
+    assert!(!sqlite.contains("PERFORM"), "{sqlite}");
+}
+
+#[test]
+fn a_table_with_two_owning_relations_has_one_trigger_with_two_deletes() {
+    let mut ir = owning("postgres", vec![json!({"name": "Finish", "table": "finishes", "fields": [id()]})]);
+    ir["models"][1]["fields"] = json!([id(), field("spec_id", "big_int"), field("finish_id", "big_int")]);
+    ir["models"][1]["relations"].as_array_mut().unwrap().push(json!({"name": "finish", "kind": "one", "target": "Finish",
+        "from": "finish_id", "to": "id", "foreign_key": true, "owns": true}));
+    let up = owning_up(ir).join("\n");
+    assert_eq!(up.matches("CREATE TRIGGER").count(), 1, "{up}");
+    assert!(up.contains("DELETE FROM \"specs\"") && up.contains("DELETE FROM \"finishes\""), "{up}");
+}
+
+#[test]
+fn an_owned_composed_model_is_deleted_at_its_root() {
+    let id = json!({"name": "id", "column": "id", "type": "int", "primary_key": true});
+    let rev = json!({"name": "rev", "column": "rev", "type": "int"});
+    let link = json!({"name": "parent", "kind": "one", "target": "Parent", "from": "id", "to": "id", "foreign_key": true, "on_delete": "cascade"});
+    let owner_fields = json!([id, {"name": "item_id", "column": "item_id", "type": "int"}]);
+    let owning = |target: &str| json!([{"name": "item", "kind": "one", "target": target, "from": "item_id", "to": "id", "foreign_key": true, "owns": true}]);
+    let physical = json!([
+        {"name": "Parent", "table": "parents", "fields": [id, rev]},
+        {"name": "Child", "table": "children", "fields": [id], "relations": [link]},
+        {"name": "Owner", "table": "owners", "fields": owner_fields, "relations": owning("Parent")},
+        {"name": "Note", "table": "notes", "fields": [id, {"name": "item_id", "column": "item_id", "type": "int"}],
+         "relations": [{"name": "item", "kind": "one", "target": "Child", "from": "item_id", "to": "id", "foreign_key": true}]},
+    ]);
+    let mut logical = physical.clone();
+    logical[1]["fields"].as_array_mut().unwrap().push(rev.clone());
+    logical[2]["relations"] = owning("Child");
+    let behavior = json!({"schema_contract": 5, "schema_contract_minor": 6, "storage": {"models": physical},
+        "field_storage": [{"model": "Child", "field": "rev", "owner": "Parent", "column": "rev"}],
+        "owner_links": [{"child": "Child", "parent": "Parent", "child_key": "id", "parent_key": "id"}]});
+    let s = Schema::from_ir(serde_json::from_value(json!({"models": logical, "behavior": behavior})).unwrap()).unwrap();
+    let db = snapshot(&s).unwrap();
+    let f = db.functions.iter().find(|f| f.name == "owners_A_owns").expect("the owner table has the trigger");
+    assert!(f.body.contains("DELETE FROM \"parents\" WHERE \"parents\".\"id\" = OLD.\"item_id\""), "{}", f.body);
+    // The level key is no guard; a key into a level table is a guard through the shared key.
+    assert!(!f.body.contains("FROM \"children\" AS x WHERE x.\"id\""), "{}", f.body);
+    assert!(f.body.contains("FROM \"notes\" AS x JOIN \"children\" AS m ON x.\"item_id\" = m.\"id\" WHERE m.\"id\" = \"parents\".\"id\""), "{}", f.body);
+}

@@ -104,14 +104,25 @@ pub fn parse_snapshot(json: &str) -> Result<DbSchema> {
 }
 
 pub fn snapshot(schema: &Schema) -> Result<DbSchema> {
-    let schema = schema.physical();
-    model::build(schema).map(|(s, _)| s)
+    let levels = level_links(schema);
+    model::build_with(schema.physical(), false, &levels).map(|(s, _)| s)
+}
+
+/// The owner links of a composed model, by table and key column of the physical schema.
+fn level_links(schema: &Schema) -> Vec<model::LevelLink> {
+    let owners = &schema.physical().models;
+    schema.owner_links.iter().map(|l| model::LevelLink {
+        child: owners[l.child.0].table().to_owned(),
+        child_key: owners[l.child.0].fields()[l.child_key].column.clone(),
+        parent: owners[l.parent.0].table().to_owned(),
+        parent_key: owners[l.parent.0].fields()[l.parent_key].column.clone(),
+    }).collect()
 }
 
 /// [`snapshot`] of a database that still holds the rules that triggers of the schema replace: the baseline of a database that `pull` read.
 pub fn baseline_snapshot(schema: &Schema) -> Result<DbSchema> {
-    let schema = schema.physical();
-    model::build_with(schema, true).map(|(s, _)| s)
+    let levels = level_links(schema);
+    model::build_with(schema.physical(), true, &levels).map(|(s, _)| s)
 }
 
 /// What `plan` and `plan_online` both start from: the schema after the change and its checks.
@@ -128,8 +139,9 @@ struct Prepared {
 }
 
 fn prepare(schema: &Schema, previous: &DbSchema, baseline: bool) -> Result<Prepared> {
+    let levels = level_links(schema);
     let schema = schema.physical();
-    let (mut current, renames) = model::build_with(schema, baseline)?;
+    let (mut current, renames) = model::build_with(schema, baseline, &levels)?;
     reconcile::reconcile(schema, previous, &mut current);
     if let Some(old) = &previous.identities {
         let next = current.identities.as_ref().ok_or("identity manifest removed from schema; retain frozen identities and tombstones")?;
