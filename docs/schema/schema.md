@@ -321,6 +321,27 @@ On SQLite `avg` is the mean rounded to the nearest microsecond, half away from z
 On PostgreSQL a write sends only microseconds, so the column never holds months or days. A value that another writer put in has a fixed length on read: a month is 30 days and a year is 360 days (`'1 year'` reads as 360 days).
 On PostgreSQL a `Duration` parameter is an `interval` value (binary on the engine's own connection), so `in_(param())`, the `unnest` insert and `insert_many(copy=True)` take a `Duration` column. A list of `Duration` values cannot hold `None`.
 A hook cannot compute a `Duration` field: that read is an error.
+
+Arithmetic on a `DateTime` and a `Duration` uses `+ - * /` in Python and `add`, `sub`, `mul` and `div` in TypeScript.
+A result is `NULL` when an operand is `NULL`.
+
+| Left | Operator | Right | Result |
+| --- | --- | --- | --- |
+| `DateTime` | `+` `-` | `Duration` | `DateTime` |
+| `Duration` | `+` | `DateTime` | `DateTime` |
+| `DateTime` | `-` | `DateTime` | `Duration` |
+| `Duration` | `+` `-` | `Duration` | `Duration` |
+| `Duration` | `*` `/` | number | `Duration` |
+| number | `*` | `Duration` | `Duration` |
+
+Any other pair is a plan error ("… is not defined"): `DateTime + DateTime`, `Duration * Duration`, `Duration / Duration`, `Duration - DateTime`, `n / Duration`, and `DateTime * n`.
+A `Duration` times or divided by a number that is not whole rounds to the nearest microsecond.
+A tie can round differently: PostgreSQL rounds half to even, SQLite half away from zero.
+A step whose result is outside the 64-bit range of microseconds, and a division by zero, are errors on both databases; a `NULL` operand gives `NULL`.
+A float factor or a divisor is exact only below 2^53 microseconds (about 285 years), on both databases, because the step is done in double precision.
+A column with `@db.Date` is a `Date`, not a `DateTime`: `Date + Duration` with a `Duration` column or a `Duration` parameter is a plan error, because PostgreSQL would give a timestamp and SQLite an integer.
+A `param()` operand takes the type that the table allows for its partner: `at + param()` takes a `Duration`, `span * param()` takes a number.
+Apart from a tie, both databases give the same microseconds. On SQLite the work is done by the functions `monorm_dt_add`, `monorm_dt_diff` and `monorm_dur_add`, `monorm_dur_sub`, `monorm_dur_mul`, `monorm_dur_div`, which MonOrm registers on each connection. They are `DIRECTONLY`: a trigger, a view or an index cannot call them, and a query copied into the `sqlite3` tool fails with "no such function".
 `pull` reads `interval` and `interval(p)` as `Duration`; the precision is dropped, and a gap note says so. It leaves out an `interval` whose field list holds `year` or `month`, because a month is not a fixed number of microseconds. A migration between `Duration` and another type is an error that asks for a manual migration.
 The schema contract is 5.5; the IR is stamped 5.5 only when it has a `Duration` field.
 

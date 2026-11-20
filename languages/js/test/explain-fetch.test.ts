@@ -1,7 +1,7 @@
 /** `qs.explain()` and `db.fetch(sql, ...params)` on Postgres and SQLite. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { connect, DatabaseError, Decimal, getDatabase, loads, QueryError, Registry, type QueryEvent } from "../src/index.js";
+import { connect, Decimal, getDatabase, loads, QueryError, Registry, type QueryEvent } from "../src/index.js";
 import { Post, User } from "./blog/models.js";
 import { useDatabase } from "./helpers.js";
 
@@ -84,6 +84,6 @@ test("fetch on Postgres", async () => {
     await db.execute("UPDATE users SET name = 'G'");
     assert.deepEqual(await db.fetch("SELECT name FROM users"), [{ name: "G" }]);
   });
-  await assert.rejects(db.fetch("SELECT interval '1 day' AS i"), (e: unknown) => e instanceof DatabaseError && /interval/.test(e.message));
+  assert.deepEqual(await db.fetch("SELECT interval '1 day' AS i"), [{ i: 86_400_000_000n }]);
   assert.deepEqual(await db.fetch("SELECT id FROM users WHERE false"), []);
 });

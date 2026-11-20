@@ -87,8 +87,7 @@ async def test_fetch_on_postgres(clean):
     async with db.transaction():
         await db.execute("UPDATE users SET name = 'G'")
         assert await db.fetch("SELECT name FROM users") == [{"name": "G"}]
-    with pytest.raises(monorm.DatabaseError, match="interval"):
-        await db.fetch("SELECT interval '1 day' AS i")
+    assert await db.fetch("SELECT interval '1 day' AS i") == [{"i": datetime.timedelta(days=1)}]
     assert await db.fetch("SELECT id FROM users WHERE false") == []
 
 

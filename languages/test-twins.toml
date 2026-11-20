@@ -12,6 +12,8 @@
 "languages/python/tests/test_sql_view_typing.py" = "Python type test: mypy and pyright; the twin is the tsc test in sql-view-typing.test.ts"
 
 [python-only.ids]
+# languages/python/tests/test_db_duration_arith.py
+"db_duration_arith::a_datetime_parameter_on_the_left_of_a_subtraction" = "one-language: a parameter has no arithmetic methods in TypeScript, so `param() - column` cannot be written; the engine test db_duration_arith covers it"
 # languages/python/tests/test_bytes.py
 "bytes::a_string_bytea_field_is_still_a_bytea_column_and_warns" = "one-language: checks the deprecation warning of the Python schema loader; the warning comes from the Rust loader and Python reports it through `warnings`; JavaScript has no such channel"
 "bytes::bytearray_and_memoryview_are_accepted_and_read_back_as_bytes" = "one-language: bytearray and memoryview have no JavaScript counterpart; a Uint8Array is the one binary type"
