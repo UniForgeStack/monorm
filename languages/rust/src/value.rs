@@ -195,7 +195,7 @@ mod duration_tests {
     fn a_duration_beyond_64_bit_microseconds_does_not_encode() {
         assert_eq!(
             TimeDelta::microseconds(-7).try_encode(),
-            Ok(Value::BigInt(Some(-7)))
+            Ok(monorm_engine::params::duration(Some(-7)))
         );
         for big in [TimeDelta::MAX, TimeDelta::MIN] {
             assert!(big.try_encode().unwrap_err().contains("64-bit microseconds"));

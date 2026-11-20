@@ -55,7 +55,7 @@ import { assignments, lookupValues, prepareRows, prepareUpdateRows, prepareAttac
 import { after, checkPaging, decodeCursor, encodeCursor, fingerprint, keyset, type Page, type PageOptions } from "./pagination.js";
 import { allowedWrites } from "./protection.js";
 import { PreparedWrite, prepareInsertMany, prepareInsertOne, prepareSet, prepareUpdateManyRows, type WriteShape } from "./prepared-write.js";
-import { active as debugging, internalLoop, relationLoad } from "./debug.js";
+import { active as debugging, atSite, internalLoop, relationLoad, siteNow } from "./debug.js";
 import type { Cte, CteColumnsOf, CteSelf } from "./cte.js";
 import type { Select, SelectItems, SelectRow, ItemsParams, ItemsOuter } from "./select.js";
 
@@ -2001,6 +2001,7 @@ function noReturningOption(op: string, removed: unknown): void {
  * `finally`). */
 abstract class Statement<T> implements Promise<T> {
   #promise: Promise<T> | undefined;
+  readonly #site = siteNow();
 
   get [Symbol.toStringTag](): string {
     return this.constructor.name;
@@ -2010,7 +2011,7 @@ abstract class Statement<T> implements Promise<T> {
   protected abstract execute(): Promise<T>;
 
   private start(): Promise<T> {
-    return (this.#promise ??= this.execute());
+    return (this.#promise ??= atSite(this.#site, () => this.execute()));
   }
 
   then<A = T, B = never>(onfulfilled?: ((value: T) => A | PromiseLike<A>) | null, onrejected?: ((reason: unknown) => B | PromiseLike<B>) | null): Promise<A | B> {
@@ -2644,6 +2645,16 @@ type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K>
  * the unchanged set gives them without a query.
  */
 export class RelatedSet<M extends ModelSpec, L extends string = never> extends QuerySet<M> {
+  /** @internal Where user code built this set: Bun gives the awaited set no caller frame. */
+  site?: string | undefined;
+
+  /** @internal */
+  protected override clone(changes: Partial<QueryState>): this {
+    const o = super.clone(changes);
+    o.site = siteNow();
+    return o;
+  }
+
   /** @internal */
   readonly relation!: RelationMeta;
   /** @internal */
@@ -2665,7 +2676,7 @@ export class RelatedSet<M extends ModelSpec, L extends string = never> extends Q
     }
     if (debugging() && this.pristine()) {
       const owner = (this.instance.constructor as unknown as { meta: { name: string } }).meta.name;
-      return relationLoad(owner, this.relation.name, "load", () => this[SUPER].fetch.call(this));
+      return relationLoad(owner, this.relation.name, "load", () => this[SUPER].fetch.call(this), this.site);
     }
     return this[SUPER].fetch.call(this);
   }
@@ -2724,6 +2735,16 @@ function isPlainObject(x: unknown): boolean {
  * `remove()`, `set()`, `clear()` and `insert()` write rows of the join model.
  */
 export class ManyRelatedSet<M extends ModelSpec> extends QuerySet<M> {
+  /** @internal Where user code built this set: Bun gives the awaited set no caller frame. */
+  site?: string | undefined;
+
+  /** @internal */
+  protected override clone(changes: Partial<QueryState>): this {
+    const o = super.clone(changes);
+    o.site = siteNow();
+    return o;
+  }
+
   /** @internal */
   readonly relation!: RelationMeta;
   /** @internal */
@@ -2741,7 +2762,7 @@ export class ManyRelatedSet<M extends ModelSpec> extends QuerySet<M> {
     }
     if (debugging() && pristine) {
       const owner = (this.instance.constructor as unknown as { meta: { name: string } }).meta.name;
-      return relationLoad(owner, this.relation.name, "load", () => this[SUPER].fetch.call(this));
+      return relationLoad(owner, this.relation.name, "load", () => this[SUPER].fetch.call(this), this.site);
     }
     return this[SUPER].fetch.call(this);
   }

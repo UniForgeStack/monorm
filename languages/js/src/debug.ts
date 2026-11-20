@@ -62,6 +62,8 @@ const outers = new AsyncLocalStorage<readonly Report[]>();
 const hint = new AsyncLocalStorage<{ readonly fix: string; readonly site: string }>();
 /** The shapes that the current internal ORM loop (batches, chunked inBulk) already counted. */
 const loop = new AsyncLocalStorage<Set<string>>();
+/** The site that a statement took when user code built it: Bun gives an awaited thenable no caller frame (Node gives an async one). */
+const awaited = new AsyncLocalStorage<string>();
 const here = dirname(fileURLToPath(import.meta.url)) + sep;
 
 /**
@@ -103,7 +105,17 @@ export function callSite(): string {
     if (file.startsWith(here) || file.startsWith("node:") || !file.includes(sep)) continue;
     return `${relative(process.cwd(), file)}:${m[2]}`;
   }
-  return "<unknown>";
+  return awaited.getStore() ?? "<unknown>";
+}
+
+/** @internal The call site to store on a statement that user code builds; `undefined` outside a scope. */
+export function siteNow(): string | undefined {
+  return scope.getStore() === undefined ? undefined : callSite();
+}
+
+/** @internal Runs `fn` so that a stack with no user frame reports `site`. */
+export function atSite<T>(site: string | undefined, fn: () => T): T {
+  return site === undefined ? fn() : awaited.run(site, fn);
 }
 
 /** @internal Counts each shape of `fn` once for the ORM loop that owns `seen`: its pages are one query to the user. */
@@ -112,8 +124,8 @@ export function internalLoop<T>(seen: Set<string>, fn: () => Promise<T>): Promis
 }
 
 /** @internal Marks the queries of a relation load, so the report names the fix. */
-export function relationLoad<T>(model: string, relation: string, fix: string, fn: () => Promise<T>): Promise<T> {
-  return hint.run({ fix: `${fix}(${model}.${relation})`, site: callSite() }, async () => await fn());
+export function relationLoad<T>(model: string, relation: string, fix: string, fn: () => Promise<T>, site = callSite()): Promise<T> {
+  return hint.run({ fix: `${fix}(${model}.${relation})`, site }, async () => await fn());
 }
 
 /** @internal Where user code sends the next queries and the fix to name; `undefined`
