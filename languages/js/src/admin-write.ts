@@ -800,6 +800,7 @@ function untag(value: unknown): unknown {
   const { $: tag, v: raw } = value as { $: string; v: any };
   switch (tag) {
     case "bigint": return BigInt(raw);
+    case "duration": return Duration.fromMicros(BigInt(raw));
     case "datetime": return parseDateTime(raw) ?? new Date(raw);
     case "date": {
       const m = /^(\d{4})-(\d\d)-(\d\d)$/.exec(raw);
@@ -838,7 +839,7 @@ class IrFilter extends Condition<any, any> {
 }
 
 /** The query set of an action call: the filters of the payload, on the database of the request. */
-function querySet(model: Loose, database: Database, args: Loose): Loose {
+export function querySet(model: Loose, database: Database, args: Loose): Loose {
   const values = ((args.values ?? []) as unknown[]).map(untag);
   let qs = model.objects.using(database);
   const filters = ((args.filters ?? []) as unknown[]).map((f) => new IrFilter(f, values));

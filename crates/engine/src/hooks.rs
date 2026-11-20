@@ -45,6 +45,7 @@ fn abi_of(value: &Value) -> Option<Abi> {
         Value::SmallInt(v) => v.map_or(Abi::Null, |v| Abi::Int(v.into())),
         Value::Int(v) => v.map_or(Abi::Null, |v| Abi::Int(v.into())),
         Value::BigInt(v) => v.map_or(Abi::Null, Abi::Int),
+        v if crate::params::duration_micros(v).is_some() => crate::params::duration_micros(v).flatten().map_or(Abi::Null, Abi::Int),
         Value::Float(v) => v.map_or(Abi::Null, |v| Abi::Float(v.into())),
         Value::Double(v) => v.map_or(Abi::Null, Abi::Float),
         Value::String(v) => v.as_ref().map_or(Abi::Null, |v| Abi::Text(v.clone())),
@@ -109,6 +110,7 @@ fn convert(label: &str, nullable: bool, original: &Value, out: Abi) -> Result<Va
         (Value::SmallInt(_), Abi::Int(v)) => Value::SmallInt(Some(int(v, i16::MIN.into(), i16::MAX.into())? as i16)),
         (Value::Int(_), Abi::Int(v)) => Value::Int(Some(int(v, i32::MIN.into(), i32::MAX.into())? as i32)),
         (Value::BigInt(_), Abi::Int(v)) => Value::BigInt(Some(v)),
+        (o, Abi::Int(v)) if crate::params::duration_micros(o).is_some() => crate::params::duration(Some(v)),
         (Value::Float(_), Abi::Float(v)) => Value::Float(Some(v as f32)),
         (Value::Double(_), Abi::Float(v)) => Value::Double(Some(v)),
         (Value::String(_), Abi::Text(v)) => Value::String(Some(v)),
@@ -265,7 +267,7 @@ pub fn computations(model: &Model, start: usize, positions: &[usize], params: &d
         let Some((hook, dependencies)) = plan.computed_at(position) else { continue };
         let field = &model.fields()[position];
         if field.ty == monorm_core::ir::ColType::Duration {
-            return Err(Error::query(format!("{}.{}: a computed field cannot be a Duration (its hook value has no microsecond carrier yet)", model.ir.name, field.name)));
+            return Err(Error::query(format!("{}.{}: a computed field cannot be a Duration", model.ir.name, field.name)));
         }
         let args = dependencies.iter().map(|d| {
             let at = positions.iter().position(|p| p == d).ok_or_else(|| Error::query(format!("{}.{}: the read does not select its dependency {}", model.ir.name, field.name, model.fields()[*d].name)))?;
@@ -294,6 +296,7 @@ impl RowSet for ComputedRows {
             Value::Double(v) => v.map_or(Cell::Null, Cell::Float),
             Value::String(v) => v.as_deref().map_or(Cell::Null, Cell::Text),
             Value::Uuid(v) => v.map_or(Cell::Null, Cell::Uuid),
+            v if crate::params::duration_micros(v).is_some() => crate::params::duration_micros(v).flatten().map_or(Cell::Null, Cell::Duration),
             Value::Json(v) => v.as_ref().map_or(Cell::Null, |j| Cell::Json((**j).clone())),
             Value::BigDecimal(v) => v.as_ref().map_or(Cell::Null, |d| Cell::Decimal(d.to_string())),
             Value::ChronoTime(v) => v.map_or(Cell::Null, Cell::Time),

@@ -214,6 +214,17 @@ impl<'s> Hint<'s> {
     }
 }
 
+/// The operand and result types of an arithmetic expression on a DateTime or a Duration.
+struct Temporal {
+    l: ColType,
+    r: ColType,
+    out: ColType,
+}
+
+fn is_number(t: ColType) -> bool {
+    matches!(t, ColType::Int | ColType::BigInt | ColType::Float)
+}
+
 #[derive(Clone)]
 struct Scope {
     path: Vec<String>,
@@ -321,6 +332,7 @@ pub(crate) fn json_list(list: sea_query::Value) -> Result<sea_query::Value> {
             V::Bool(Some(b)) => serde_json::Value::from(i64::from(b)),
             V::Int(Some(n)) => n.into(),
             V::BigInt(Some(n)) => n.into(),
+            v if matches!(crate::params::duration_micros(&v), Some(Some(_))) => crate::params::duration_micros(&v).flatten().expect("a duration").into(),
             V::Double(Some(n)) => serde_json::Number::from_f64(n).map(Into::into).ok_or_else(|| query_err("in_(param()) cannot take a NaN or infinite float".to_string()))?,
             V::String(Some(s)) => serde_json::Value::String(s.to_string()),
             V::Uuid(Some(u)) => serde_json::Value::String(u.to_string()),
@@ -1841,7 +1853,10 @@ impl<'s> Planner<'s> {
                 Hint { ty: field.map(|f| f.value_type()), field }
             }
             // Arithmetic results are plain values: no write_sql cast.
-            Expr::Arith { l, r, .. } => Hint { ty: self.hint_of(l).or(self.hint_of(r)).ty, field: None },
+            Expr::Arith { op, l, r } => match self.temporal(*op, l, r) {
+                Ok(Some(t)) => Hint::ty(t.out),
+                _ => Hint { ty: self.hint_of(l).or(self.hint_of(r)).ty, field: None },
+            },
             Expr::Func { .. } | Expr::Subquery { .. } | Expr::Window { .. } | Expr::Case { .. } | Expr::JsonPath { .. } => {
                 Hint { ty: self.expr_type(e).ok(), field: None }
             }
@@ -1959,6 +1974,11 @@ impl<'s> Planner<'s> {
                 if matches!(op, ArithOp::JsonMerge) && self.target.dialect == Dialect::Sqlite {
                     return Err(Error::query("sqlite does not support the JSON || merge"));
                 }
+                if let Some(t) = self.temporal(*op, l, r)? {
+                    let operand = |ty: ColType| if is_number(ty) { Hint::default() } else { Hint::ty(ty) };
+                    let (lhs, rhs) = (self.value(l, operand(t.l))?, self.value(r, operand(t.r))?);
+                    return Ok(self.temporal_sql(*op, &t, lhs, rhs));
+                }
                 let inner = self.hint_of(l).or(self.hint_of(r));
                 let hint = match op {
                     ArithOp::Concat => Hint { ty: Some(ValueType::scalar(ColType::Text)), field: None },
@@ -1977,6 +1997,109 @@ impl<'s> Planner<'s> {
             }
             cond => self.cond(cond)?,
         })
+    }
+
+    /// The type of an arithmetic operand that is not a parameter or a NULL; `None` when it has none.
+    fn operand_type(&self, e: &Expr) -> Option<ColType> {
+        match e {
+            Expr::Param { .. } | Expr::Scope { .. } | Expr::Null => None,
+            _ => self.expr_type(e).ok().filter(|t| !t.array).map(|t| t.ty),
+        }
+    }
+
+    /// The type a parameter's value has, when the operator leaves two types possible.
+    fn probe_type(&self, e: &Expr) -> Option<ColType> {
+        let Expr::Param { i } = e else { return None };
+        let t = crate::params::type_of(&self.params.probe(*i)?)?;
+        (!t.array).then_some(t.ty)
+    }
+
+    /// The type of the operand next to a known DateTime or Duration, when it has no type of its own (a parameter).
+    /// The partner is the one the table allows; with two choices the parameter's value decides.
+    fn partner(&self, op: ArithOp, known: ColType, known_left: bool, other: &Expr) -> ColType {
+        use ColType::{DateTime, Duration};
+        let temporal = || self.probe_type(other).filter(|t| matches!(t, DateTime | Duration));
+        match (known, op, known_left) {
+            (DateTime, ArithOp::Add, _) | (Duration, ArithOp::Sub, true) => Duration,
+            (DateTime, ArithOp::Sub, true) | (Duration, ArithOp::Add, _) | (Duration, ArithOp::Sub, false) => temporal().unwrap_or(Duration),
+            (DateTime, ArithOp::Sub, false) => DateTime,
+            _ => self.probe_type(other).filter(|t| is_number(*t)).unwrap_or(ColType::BigInt),
+        }
+    }
+
+    /// The typing table of arithmetic on a DateTime or a Duration. `None`: neither operand is one, and the
+    /// plain rule applies. A pair the table does not list is an error.
+    fn temporal(&self, op: ArithOp, l: &Expr, r: &Expr) -> Result<Option<Temporal>> {
+        use ColType::{DateTime, Duration};
+        if matches!(op, ArithOp::Concat | ArithOp::JsonMerge) {
+            return Ok(None);
+        }
+        let (lt, rt) = (self.operand_type(l), self.operand_type(r));
+        let is_temporal = |t: Option<ColType>| matches!(t, Some(DateTime | Duration));
+        if !is_temporal(lt) && !is_temporal(rt) {
+            // A `Date` or `Time` operand with a Duration parameter: the database would add an interval on PostgreSQL and an
+            // integer on SQLite, so the pair is refused like `Date + Duration` on two columns.
+            let calendar = |t: Option<ColType>| matches!(t, Some(ColType::Date | ColType::Time));
+            let duration = |e: &Expr| self.probe_type(e) == Some(Duration);
+            if (calendar(lt) && duration(r)) || (calendar(rt) && duration(l)) {
+                return Err(self.temporal_error(op, lt.or_else(|| self.probe_type(l)).unwrap_or(ColType::BigInt), rt.or_else(|| self.probe_type(r)).unwrap_or(ColType::BigInt)));
+            }
+            return Ok(None);
+        }
+        let (lt, rt) = match (lt, rt) {
+            (Some(l_), Some(r_)) => (l_, r_),
+            (Some(l_), None) => (l_, self.partner(op, l_, true, r)),
+            (None, Some(r_)) => (self.partner(op, r_, false, l), r_),
+            (None, None) => return Ok(None),
+        };
+        let out = match (lt, op, rt) {
+            (DateTime, ArithOp::Add | ArithOp::Sub, Duration) | (Duration, ArithOp::Add, DateTime) => DateTime,
+            (DateTime, ArithOp::Sub, DateTime) | (Duration, ArithOp::Add | ArithOp::Sub, Duration) => Duration,
+            (Duration, ArithOp::Mul | ArithOp::Div, n) | (n, ArithOp::Mul, Duration) if is_number(n) => Duration,
+            _ => return Err(self.temporal_error(op, lt, rt)),
+        };
+        Ok(Some(Temporal { l: lt, r: rt, out }))
+    }
+
+    fn temporal_error(&self, op: ArithOp, lt: ColType, rt: ColType) -> Error {
+        let sign = match op {
+            ArithOp::Add => "+",
+            ArithOp::Sub => "-",
+            ArithOp::Mul => "*",
+            _ => "/",
+        };
+        Error::query(format!(
+            "{lt:?} {sign} {rt:?} is not defined; a DateTime and a Duration take DateTime +/- Duration, Duration + DateTime, \
+             DateTime - DateTime, Duration +/- Duration, Duration * or / a number, and a number * Duration"
+        ))
+    }
+
+    /// The SQL of a typed `Temporal` expression. A Duration is `interval` on PostgreSQL and integer microseconds on
+    /// SQLite, where a DateTime is text and the `monorm_dt_*` and `monorm_dur_*` functions do the exact, range-checked steps.
+    fn temporal_sql(&self, op: ArithOp, t: &Temporal, l: SExpr, r: SExpr) -> SExpr {
+        use ColType::{DateTime, Duration};
+        let d = self.target.dialect;
+        if d == Dialect::Postgres {
+            let double = |e| template(d, "CAST($1 AS double precision)", vec![e]);
+            return match (t.l, t.r) {
+                (Duration, n) if is_number(n) => if op == ArithOp::Mul { l.mul(double(r)) } else { l.div(double(r)) },
+                (n, _) if is_number(n) => double(l).mul(r),
+                _ if op == ArithOp::Add => l.add(r),
+                _ => l.sub(r),
+            };
+        }
+        // Every Duration step is a function: SQLite wraps or saturates an integer overflow where PostgreSQL raises one.
+        let a = vec![l, r];
+        match (t.l, op, t.r) {
+            (DateTime, ArithOp::Add, _) => template(d, "monorm_dt_add($1, $2)", a),
+            (DateTime, ArithOp::Sub, Duration) => template(d, "monorm_dt_add($1, monorm_dur_sub(0, $2))", a),
+            (Duration, ArithOp::Add, DateTime) => template(d, "monorm_dt_add($2, $1)", a),
+            (DateTime, ArithOp::Sub, DateTime) => template(d, "monorm_dt_diff($1, $2)", a),
+            (Duration, ArithOp::Add, _) => template(d, "monorm_dur_add($1, $2)", a),
+            (Duration, ArithOp::Sub, _) => template(d, "monorm_dur_sub($1, $2)", a),
+            (Duration, ArithOp::Div, _) => template(d, "monorm_dur_div($1, $2)", a),
+            _ => template(d, "monorm_dur_mul($1, $2)", a),
+        }
     }
 
     /// A full-text search function. A configuration (`Expr::Text`) is written into the SQL
@@ -2133,10 +2256,15 @@ impl<'s> Planner<'s> {
             Expr::Arith { op: ArithOp::JsonMerge, .. } => scalar(ColType::Json),
             Expr::JsonPath { text: true, .. } => scalar(ColType::Text),
             Expr::JsonPath { .. } => scalar(ColType::Json),
-            Expr::Arith { l, r, .. } => match self.expr_type(l) {
-                Ok(t) => t,
-                Err(_) => self.expr_type(r)?,
-            },
+            Expr::Arith { op, l, r } => {
+                if let Some(t) = self.temporal(*op, l, r)? {
+                    return Ok(scalar(t.out));
+                }
+                match self.expr_type(l) {
+                    Ok(t) => t,
+                    Err(_) => self.expr_type(r)?,
+                }
+            }
             Expr::Func { name, args, .. } => {
                 let first = || match args.first() {
                     Some(a) => self.expr_type(a),

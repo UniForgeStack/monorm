@@ -287,16 +287,15 @@ async def test_a_host_write_compares_a_duration_by_value_and_writes_it_as_text(w
     assert (r.status, list(r.json()["conflicts"])) == (409, ["every"])
 
 
-async def test_an_action_filter_that_binds_a_duration_column_is_refused_by_name(world):
+async def test_an_action_filter_can_bind_a_duration_column(world):
     from monorm._admin_write import _query_set
 
     base, db, models = world
     Chore = models["WChore"]
-    bound = {"filters": [{"t": "cmp", "op": "eq", "l": {"t": "col", "path": [], "name": "every"}, "r": {"t": "param", "i": 0}}], "values": [{"$": "bigint", "v": "5400000000"}]}
-    with pytest.raises(monorm.QueryError, match="WChore.every: an admin action cannot filter a Duration column"):
-        _query_set(Chore, db, bound)
-    other = {"filters": [{"t": "cmp", "op": "eq", "l": {"t": "col", "path": [], "name": "code"}, "r": {"t": "param", "i": 0}}], "values": ["k"]}
-    assert _query_set(Chore, db, other) is not None
+    with monorm.allow_writes(Chore):
+        await Chore.objects.using(db).insert_many([{"code": "a", "every": datetime.timedelta(hours=1, minutes=30)}, {"code": "b", "every": datetime.timedelta(days=1)}])
+    bound = {"filters": [{"t": "cmp", "op": "eq", "l": {"t": "col", "path": [], "name": "every"}, "r": {"t": "param", "i": 0}}], "values": [{"$": "duration", "v": "5400000000"}]}
+    assert [c.code for c in await _query_set(Chore, db, bound)] == ["a"]
 
 
 async def test_a_bulk_delete_through_the_host_writer_deletes_the_query_set_and_writes_one_summary_row(world):

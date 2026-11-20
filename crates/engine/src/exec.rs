@@ -202,6 +202,7 @@ impl RowSet for ValueRows {
             Value::Double(v) => v.map_or(Cell::Null, Cell::Float),
             Value::String(v) => v.as_deref().map_or(Cell::Null, Cell::Text),
             Value::Uuid(v) => v.map_or(Cell::Null, Cell::Uuid),
+            v if crate::params::duration_micros(v).is_some() => crate::params::duration_micros(v).flatten().map_or(Cell::Null, Cell::Duration),
             Value::BigDecimal(v) => v.as_ref().map_or(Cell::Null, |d| Cell::Decimal(d.to_string())),
             Value::ChronoTime(v) => v.map_or(Cell::Null, Cell::Time),
             Value::ChronoDate(v) => v.map_or(Cell::Null, Cell::Date),

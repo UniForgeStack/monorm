@@ -435,7 +435,7 @@ fn scalar(schema: &Schema, f: &FieldIr, ty: ValueType, v: &Value) -> Result<Bind
         }
         ColType::Time => Bind::ChronoTime(Some(chrono::NaiveTime::parse_from_str(v.as_str().ok_or("must be a time")?.trim(), "%H:%M:%S%.f").map_err(|_| "must be a time (HH:MM:SS)")?)),
         ColType::Date => Bind::ChronoDate(Some(NaiveDate::parse_from_str(v.as_str().ok_or("must be a date")?.trim(), "%Y-%m-%d").map_err(|_| "must be a date (YYYY-MM-DD)")?)),
-        ColType::Duration => Bind::BigInt(Some(monorm_core::duration::parse_micros(v.as_str().ok_or("must be a duration")?).map_err(|_| "must be a duration (HH:MM:SS, 1 02:03:04 or PT1H30M)")?)),
+        ColType::Duration => monorm_engine::params::duration(Some(monorm_core::duration::parse_micros(v.as_str().ok_or("must be a duration")?).map_err(|_| "must be a duration (HH:MM:SS, 1 02:03:04 or PT1H30M)")?)),
         ColType::Uuid => Bind::Uuid(Some(v.as_str().ok_or("must be a UUID")?.trim().parse().map_err(|_| "must be a UUID")?)),
         ColType::Bytes => {
             use base64::Engine as _;

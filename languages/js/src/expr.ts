@@ -412,24 +412,38 @@ export abstract class Expression<T, S extends string = never, P = {}> extends No
 
   // Arithmetic -------------------------------------------------------------------------------
 
+  /** A `Date` plus a `Duration`, a `Duration` plus a `Date`, or a `Duration` plus a `Duration`. The result is `null` when an operand is. */
+  add<N extends string>(this: Expression<Date | null, S, P>, value: ParamRef<N>): Expression<T, S, P & ParamValues<N, Duration>>;
+  add<U extends Duration | null, S2 extends string = never, P2 = {}>(this: Expression<Date | null, S, P>, value: Duration | Expression<U, S2, P2>): Expression<Date | Extract<T, null> | Extract<U, null>, S | S2, P & P2>;
+  add<U extends Date | null, S2 extends string = never, P2 = {}>(this: Expression<Duration | null, S, P>, value: Date | Expression<U, S2, P2>): Expression<Date | Extract<T, null> | Extract<U, null>, S | S2, P & P2>;
   add<N extends string>(value: ParamRef<N>): Expression<T, S, P & ParamValues<N, In<NonNullable<T>>>>;
   add<S2 extends string = never, P2 = {}>(value: Operand<NonNullable<T>, S2, P2>): Expression<T, S | S2, P & P2>;
   add(value: unknown): unknown {
     return new Arith("add", this, wrap(value));
   }
 
+  /** A `Date` minus a `Duration` is a `Date`; a `Date` minus a `Date` is a `Duration`; a `Duration` minus a `Duration` is a `Duration`. */
+  sub<N extends string>(this: Expression<Date | null, S, P>, value: ParamRef<N>): Expression<T, S, P & ParamValues<N, Duration>>;
+  sub<U extends Date | null, S2 extends string = never, P2 = {}>(this: Expression<Date | null, S, P>, value: Date | Expression<U, S2, P2>): Expression<Duration | Extract<T, null> | Extract<U, null>, S | S2, P & P2>;
+  sub<U extends Duration | null, S2 extends string = never, P2 = {}>(this: Expression<Date | null, S, P>, value: Duration | Expression<U, S2, P2>): Expression<Date | Extract<T, null> | Extract<U, null>, S | S2, P & P2>;
   sub<N extends string>(value: ParamRef<N>): Expression<T, S, P & ParamValues<N, In<NonNullable<T>>>>;
   sub<S2 extends string = never, P2 = {}>(value: Operand<NonNullable<T>, S2, P2>): Expression<T, S | S2, P & P2>;
   sub(value: unknown): unknown {
     return new Arith("sub", this, wrap(value));
   }
 
+  /** A `Duration` times a number, rounded to the nearest microsecond. A number times a `Duration` is `durationExpr.mul(n)`. */
+  mul<N extends string>(this: Expression<Duration | null, S, P>, value: ParamRef<N>): Expression<T, S, P & ParamValues<N, number>>;
+  mul<U extends number | null, S2 extends string = never, P2 = {}>(this: Expression<Duration | null, S, P>, value: number | Expression<U, S2, P2>): Expression<Duration | Extract<T, null> | Extract<U, null>, S | S2, P & P2>;
   mul<N extends string>(value: ParamRef<N>): Expression<T, S, P & ParamValues<N, In<NonNullable<T>>>>;
   mul<S2 extends string = never, P2 = {}>(value: Operand<NonNullable<T>, S2, P2>): Expression<T, S | S2, P & P2>;
   mul(value: unknown): unknown {
     return new Arith("mul", this, wrap(value));
   }
 
+  /** A `Duration` divided by a number, rounded to the nearest microsecond. */
+  div<N extends string>(this: Expression<Duration | null, S, P>, value: ParamRef<N>): Expression<T, S, P & ParamValues<N, number>>;
+  div<U extends number | null, S2 extends string = never, P2 = {}>(this: Expression<Duration | null, S, P>, value: number | Expression<U, S2, P2>): Expression<Duration | Extract<T, null> | Extract<U, null>, S | S2, P & P2>;
   div<N extends string>(value: ParamRef<N>): Expression<T, S, P & ParamValues<N, In<NonNullable<T>>>>;
   div<S2 extends string = never, P2 = {}>(value: Operand<NonNullable<T>, S2, P2>): Expression<T, S | S2, P & P2>;
   div(value: unknown): unknown {

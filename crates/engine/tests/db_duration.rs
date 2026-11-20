@@ -1,4 +1,4 @@
-//! A Duration column on both databases: whole microseconds through a `Value::BigInt` carrier.
+//! A Duration column on both databases: whole microseconds through the interval carrier of `monorm_engine::params`.
 use monorm_core::{dialect::{Dialect, Target}, dsl, ir::{ColType, Operation, ValueType}};
 use monorm_engine::{db::{self, Cell, Executor}, exec::{self, Outcome}, params::NoParams, plan::Planner, Params, Result};
 use sea_query::Value;
@@ -15,7 +15,11 @@ model Job {
 const DAY: i64 = 86_400_000_000;
 
 fn schema_for(dialect: Dialect) -> monorm_core::schema::Schema {
-    let mut ir = dsl::compile(SOURCE, None).unwrap();
+    schema_of(SOURCE, dialect)
+}
+
+fn schema_of(source: &str, dialect: Dialect) -> monorm_core::schema::Schema {
+    let mut ir = dsl::compile(source, None).unwrap();
     ir.dialect = dialect;
     dsl::check(ir).unwrap().1
 }
@@ -28,7 +32,7 @@ impl Params for Args {
     fn count(&self, _: usize) -> Result<u64> { unreachable!() }
 }
 
-fn micros(v: i64) -> Value { Value::BigInt(Some(v)) }
+fn micros(v: i64) -> Value { monorm_engine::params::duration(Some(v)) }
 fn col() -> Json { json!({"t":"col","path":[],"name":"timeout"}) }
 fn param(i: usize) -> Json { json!({"t":"param","i":i}) }
 fn cmp(op: &str, i: usize) -> Json { json!({"t":"cmp","op":op,"l":col(),"r":param(i)}) }
@@ -58,7 +62,7 @@ async fn exercise(conn: &dyn Executor, dialect: Dialect) {
     let target = Target::new(dialect);
     for statement in monorm_core::migrate::create_all(&schema).unwrap() { conn.batch(statement).await.unwrap(); }
     let values = [Some(0), Some(1), Some(-1), Some(999 * DAY), Some(i64::MAX), Some(i64::MIN), None, Some(2), Some(3_600_000_000)];
-    let rows = values.iter().enumerate().map(|(i, v)| vec![Some(Value::Int(Some(i as i32 + 1))), Some(Value::BigInt(*v))]).collect();
+    let rows = values.iter().enumerate().map(|(i, v)| vec![Some(Value::Int(Some(i as i32 + 1))), Some(monorm_engine::params::duration(*v))]).collect();
     let fields = ["id", "timeout"].map(str::to_owned);
     let plan = exec::plan_insert(&schema, target, "Job", &fields, rows, None, &NoParams, &Default::default()).unwrap();
     exec::run(conn, target, plan).await.unwrap();
@@ -84,6 +88,15 @@ async fn exercise(conn: &dyn Executor, dialect: Dialect) {
     let list = json!({"t":"in","item":col(),"values":[param(0), param(1)]});
     let found = select(conn, &schema, target, read(vec![col()], vec![list], true), vec![micros(-1), micros(999 * DAY)]).await;
     assert_eq!(found, vec![Some(-1), Some(999 * DAY)]);
+
+    // in_(param()) takes a list of Durations as one parameter.
+    let one = json!({"t":"in_param","item":col(),"i":0});
+    let array = |v: &[i64]| Value::Array(monorm_engine::params::array_type(ColType::Duration), Some(Box::new(v.iter().map(|v| micros(*v)).collect())));
+    let found = select(conn, &schema, target, read(vec![col()], vec![one.clone()], true), vec![array(&[999 * DAY, -1, i64::MIN])]).await;
+    assert_eq!(found, vec![Some(i64::MIN), Some(-1), Some(999 * DAY)], "{dialect:?}");
+    let none = json!({"t":"in_param","item":col(),"i":0,"neg":true});
+    let rest = select(conn, &schema, target, read(vec![col()], vec![none, cmp("lt", 1)], true), vec![array(&[0, 1]), micros(3)]).await;
+    assert_eq!(rest, vec![Some(i64::MIN), Some(-1), Some(2)], "{dialect:?}");
 
     // Aggregates return a Duration; an empty sum is NULL.
     let small = json!({"t":"and","items":[cmp("ge", 0), cmp("le", 1)]});
@@ -147,6 +160,32 @@ fn a_postgres_parameter_builds_the_interval_from_its_microseconds() {
     let op: Operation = serde_json::from_value(read(vec![col()], vec![cmp("gt", 0)], false)).unwrap();
     let plan = Planner::plan(&schema, Target::new(Dialect::Postgres), &op, &Args(vec![micros(1)])).unwrap();
     let monorm_engine::plan::Plan::Select(p) = plan else { panic!() };
-    let sql = db::build(Dialect::Postgres, &p.stmt).0;
-    assert!(sql.contains("CAST(CAST($1 AS text) || ' microseconds' AS interval)"), "{sql}");
+    let (sql, values) = db::build(Dialect::Postgres, &p.stmt);
+    assert!(sql.contains("$1::\"interval\""), "{sql}");
+    assert_eq!(values.len(), 1);
+    assert_eq!(values[0], Value::String(Some("1 microseconds".into())));
+}
+
+#[test]
+fn postgres_copy_loads_a_duration_column() {
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let db = db::connect(&postgres_url(), 1).await.unwrap();
+        let schema = schema_of(&SOURCE.replace("duration_jobs", "duration_copy_jobs"), Dialect::Postgres);
+        let target = Target::new(Dialect::Postgres);
+        db.batch("DROP TABLE IF EXISTS duration_copy_jobs".into()).await.unwrap();
+        for statement in monorm_core::migrate::create_all(&schema).unwrap() { db.batch(statement).await.unwrap(); }
+        let values = [Some(0), Some(-1), Some(i64::MAX), Some(i64::MIN), None, Some(36 * 3_600_000_000)];
+        let rows = values.iter().enumerate().map(|(i, v)| vec![Some(Value::Int(Some(i as i32 + 1))), Some(monorm_engine::params::duration(*v))]).collect();
+        let fields = ["id", "timeout"].map(str::to_owned);
+        let copy = exec::plan_copy(&schema, target, "Job", &fields, rows).unwrap();
+        assert_eq!(exec::run_copy(db.as_ref(), copy).await.unwrap(), 6);
+        let all = select(db.as_ref(), &schema, target, read(vec![col()], vec![], false), vec![]).await;
+        let mut got = all.clone();
+        got.sort();
+        let mut want = values.to_vec();
+        want.sort();
+        assert_eq!(got, want);
+        db.batch("DROP TABLE duration_copy_jobs".into()).await.unwrap();
+        db.close().await;
+    });
 }

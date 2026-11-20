@@ -600,7 +600,8 @@ impl PreparedRows {
             types.push(f.ty);
         }
         let fits = |ty: ColType, v: &Value| match ty {
-            ColType::BigInt | ColType::Duration => matches!(v, Value::BigInt(_)),
+            ColType::BigInt => matches!(v, Value::BigInt(_)),
+            ColType::Duration => matches!(crate::params::duration_micros(v), Some(Some(_))),
             ColType::Int => matches!(v, Value::Int(_)),
             ColType::Float => matches!(v, Value::Double(_)),
             ColType::Bool => matches!(v, Value::Bool(_)),

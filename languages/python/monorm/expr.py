@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Sequence
 from contextvars import ContextVar
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Generic, Self, TypeVar, Union, Unpack, cast, overload
 from typing import Literal as _Literal
@@ -360,25 +360,113 @@ class Expression(Node, Generic[T]):
 
     # Arithmetic ----------------------------------------------------------------------------
 
-    def __add__(self, other: T | Expression[T]) -> Expression[T]:
+    # A DateTime and a Duration (`timedelta`) combine as in the D7 table: DateTime +/- Duration,
+    # Duration + DateTime, DateTime - DateTime, Duration +/- Duration, Duration * or / a number. The
+    # result is NULL when an operand is. Every other pair is a plan error.
+
+    @overload
+    def __add__(self: Expression[datetime], other: timedelta | Expression[timedelta]) -> Expression[datetime]: ...  # pyright: ignore[reportOverlappingOverload]
+    @overload
+    def __add__(  # type: ignore[overload-overlap]  # pyright: ignore[reportOverlappingOverload]
+        self: Expression[datetime] | Expression[datetime | None],
+        other: timedelta | Expression[timedelta] | Expression[timedelta | None],
+    ) -> Expression[datetime | None]: ...
+    @overload
+    def __add__(self: Expression[timedelta], other: datetime | Expression[datetime]) -> Expression[datetime]: ...  # pyright: ignore[reportOverlappingOverload]
+    @overload
+    def __add__(  # type: ignore[overload-overlap]  # pyright: ignore[reportOverlappingOverload]
+        self: Expression[timedelta] | Expression[timedelta | None],
+        other: datetime | Expression[datetime] | Expression[datetime | None],
+    ) -> Expression[datetime | None]: ...
+    @overload
+    def __add__(self: Expression[timedelta], other: timedelta | Expression[timedelta]) -> Expression[timedelta]: ...  # pyright: ignore[reportOverlappingOverload]
+    @overload
+    def __add__(  # pyright: ignore[reportOverlappingOverload]
+        self: Expression[timedelta] | Expression[timedelta | None],
+        other: timedelta | Expression[timedelta] | Expression[timedelta | None],
+    ) -> Expression[timedelta | None]: ...
+    @overload
+    def __add__(self, other: T | Expression[T]) -> Expression[T]: ...
+    def __add__(self, other: Any) -> Expression[Any]:
         return Arith("add", self, _wrap(other))
 
-    def __sub__(self, other: T | Expression[T]) -> Expression[T]:
+    @overload
+    def __sub__(self: Expression[datetime], other: timedelta | Expression[timedelta]) -> Expression[datetime]: ...  # pyright: ignore[reportOverlappingOverload]
+    @overload
+    def __sub__(self: Expression[datetime], other: datetime | Expression[datetime]) -> Expression[timedelta]: ...  # pyright: ignore[reportOverlappingOverload]
+    @overload
+    def __sub__(  # type: ignore[overload-overlap]  # pyright: ignore[reportOverlappingOverload]
+        self: Expression[datetime] | Expression[datetime | None],
+        other: timedelta | Expression[timedelta] | Expression[timedelta | None],
+    ) -> Expression[datetime | None]: ...
+    @overload
+    def __sub__(  # pyright: ignore[reportOverlappingOverload]
+        self: Expression[datetime] | Expression[datetime | None],
+        other: datetime | Expression[datetime] | Expression[datetime | None],
+    ) -> Expression[timedelta | None]: ...
+    @overload
+    def __sub__(self: Expression[timedelta], other: timedelta | Expression[timedelta]) -> Expression[timedelta]: ...  # pyright: ignore[reportOverlappingOverload]
+    @overload
+    def __sub__(  # pyright: ignore[reportOverlappingOverload]
+        self: Expression[timedelta] | Expression[timedelta | None],
+        other: timedelta | Expression[timedelta] | Expression[timedelta | None],
+    ) -> Expression[timedelta | None]: ...
+    @overload
+    def __sub__(self, other: T | Expression[T]) -> Expression[T]: ...
+    def __sub__(self, other: Any) -> Expression[Any]:
         return Arith("sub", self, _wrap(other))
 
-    def __mul__(self, other: T | Expression[T]) -> Expression[T]:
+    @overload
+    def __mul__(self: Expression[timedelta], other: int | float | Expression[int] | Expression[float]) -> Expression[timedelta]: ...  # pyright: ignore[reportOverlappingOverload]
+    @overload
+    def __mul__(  # pyright: ignore[reportOverlappingOverload]
+        self: Expression[timedelta] | Expression[timedelta | None],
+        other: int | float | Expression[int] | Expression[float] | Expression[int | None] | Expression[float | None],
+    ) -> Expression[timedelta | None]: ...
+    @overload
+    def __mul__(self, other: T | Expression[T]) -> Expression[T]: ...
+    def __mul__(self, other: Any) -> Expression[Any]:
         return Arith("mul", self, _wrap(other))
 
-    def __truediv__(self, other: T | Expression[T]) -> Expression[T]:
+    @overload
+    def __truediv__(self: Expression[timedelta], other: int | float | Expression[int] | Expression[float]) -> Expression[timedelta]: ...  # pyright: ignore[reportOverlappingOverload]
+    @overload
+    def __truediv__(  # pyright: ignore[reportOverlappingOverload]
+        self: Expression[timedelta] | Expression[timedelta | None],
+        other: int | float | Expression[int] | Expression[float] | Expression[int | None] | Expression[float | None],
+    ) -> Expression[timedelta | None]: ...
+    @overload
+    def __truediv__(self, other: T | Expression[T]) -> Expression[T]: ...
+    def __truediv__(self, other: Any) -> Expression[Any]:
         return Arith("div", self, _wrap(other))
 
-    def __radd__(self, other: T) -> Expression[T]:
+    @overload
+    def __radd__(self: Expression[datetime], other: timedelta) -> Expression[datetime]: ...  # pyright: ignore[reportOverlappingOverload]
+    @overload
+    def __radd__(self: Expression[timedelta], other: datetime) -> Expression[datetime]: ...  # pyright: ignore[reportOverlappingOverload]
+    @overload
+    def __radd__(self: Expression[timedelta], other: timedelta) -> Expression[timedelta]: ...  # pyright: ignore[reportOverlappingOverload]
+    @overload
+    def __radd__(self, other: T) -> Expression[T]: ...
+    def __radd__(self, other: Any) -> Expression[Any]:
         return Arith("add", _wrap(other), self)
 
-    def __rsub__(self, other: T) -> Expression[T]:
+    @overload
+    def __rsub__(self: Expression[datetime], other: datetime) -> Expression[timedelta]: ...  # pyright: ignore[reportOverlappingOverload]
+    @overload
+    def __rsub__(self: Expression[timedelta], other: datetime) -> Expression[datetime]: ...  # pyright: ignore[reportOverlappingOverload]
+    @overload
+    def __rsub__(self: Expression[timedelta], other: timedelta) -> Expression[timedelta]: ...  # pyright: ignore[reportOverlappingOverload]
+    @overload
+    def __rsub__(self, other: T) -> Expression[T]: ...
+    def __rsub__(self, other: Any) -> Expression[Any]:
         return Arith("sub", _wrap(other), self)
 
-    def __rmul__(self, other: T) -> Expression[T]:
+    @overload
+    def __rmul__(self: Expression[timedelta], other: int | float) -> Expression[timedelta]: ...  # pyright: ignore[reportOverlappingOverload]
+    @overload
+    def __rmul__(self, other: T) -> Expression[T]: ...
+    def __rmul__(self, other: Any) -> Expression[Any]:
         return Arith("mul", _wrap(other), self)
 
     # Boolean columns used directly as conditions: `filter(Post.published & ...)`.

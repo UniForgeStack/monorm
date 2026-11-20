@@ -153,12 +153,14 @@ async def test_a_duration_in_a_union_branch_and_a_prepared_parameter_filter(worl
     assert [r.id for r in await lt(v=dt.timedelta(0))] == [3, 6]
 
 
-async def test_postgres_refuses_a_prepared_in_list_and_copy_on_a_duration(world):
+async def test_a_prepared_in_list_and_a_copy_load_take_a_duration(world):
     db, Job, kind = world
-    if kind != 'postgres':
-        pytest.skip('the write template only exists on PostgreSQL')
     q = Job.objects.using(db)
-    with pytest.raises(monorm.QueryError, match='write_sql'):
-        await q.filter(Job.timeout.in_(monorm.param('v'))).prepare()(v=[dt.timedelta(0)])
-    with pytest.raises(monorm.QueryError, match='copy=True'):
-        await q.insert_many([{'id': 1, 'timeout': dt.timedelta(0)}], copy=True)
+    await fill(q)
+    keep = [dt.timedelta(microseconds=-1), dt.timedelta(0)]
+    found = await q.filter(Job.timeout.in_(monorm.param('v'))).order_by(Job.id).prepare()(v=keep)
+    assert [r.id for r in found] == [1, 3]
+    if kind == 'postgres':
+        await q.filter(Job.id < 100).delete()
+        await q.insert_many([{'id': 1, 'timeout': dt.timedelta(0)}, {'id': 2, 'timeout': dt.timedelta(microseconds=-1)}, {'id': 3, 'timeout': None}], copy=True)
+        assert [r.timeout for r in await q.order_by(Job.id)] == [dt.timedelta(0), dt.timedelta(microseconds=-1), None]

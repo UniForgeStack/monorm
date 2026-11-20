@@ -18,7 +18,6 @@ pub fn cell(schema: &Schema, ty: ValueType, cell: Cell<'_>) -> Value {
         Cell::Null => Value::Null,
         Cell::Bool(b) => json!(b),
         Cell::Int(n) => enum_label(schema, ty, i64::from(n)).map_or_else(|| json!(n), Value::String),
-        Cell::BigInt(n) if ty.ty == ColType::Duration && !ty.array => json!(monorm_core::duration::format_micros(n)),
         Cell::BigInt(n) => json!(n.to_string()),
         Cell::Duration(n) => json!(monorm_core::duration::format_micros(n)),
         Cell::Float(f) => serde_json::Number::from_f64(f).map_or_else(|| json!(f.to_string()), Value::Number),
@@ -59,7 +58,7 @@ pub fn bind(ty: ColType, v: &Value) -> Result<Bind, String> {
         ColType::DateTime => Bind::ChronoDateTimeWithTimeZone(Some(DateTime::parse_from_rfc3339(v.as_str().ok_or_else(bad)?).map_err(|_| bad())?)),
         ColType::Time => Bind::ChronoTime(Some(chrono::NaiveTime::parse_from_str(v.as_str().ok_or_else(bad)?, "%H:%M:%S%.f").map_err(|_| bad())?)),
         ColType::Date => Bind::ChronoDate(Some(chrono::NaiveDate::parse_from_str(v.as_str().ok_or_else(bad)?, "%Y-%m-%d").map_err(|_| bad())?)),
-        ColType::Duration => Bind::BigInt(Some(monorm_core::duration::parse_micros(v.as_str().ok_or_else(bad)?).map_err(|_| bad())?)),
+        ColType::Duration => monorm_engine::params::duration(Some(monorm_core::duration::parse_micros(v.as_str().ok_or_else(bad)?).map_err(|_| bad())?)),
         ColType::Uuid => Bind::Uuid(Some(v.as_str().ok_or_else(bad)?.parse().map_err(|_| bad())?)),
         ColType::Bytes => Bind::Bytes(Some(base64::engine::general_purpose::STANDARD.decode(v.as_str().ok_or_else(bad)?).map_err(|_| bad())?)),
         ColType::Json | ColType::Decimal => return Err(bad()),
@@ -81,6 +80,9 @@ pub fn bind_tagged(b: &Bind) -> Value {
         Bind::Double(Some(x)) => json!(x),
         Bind::String(Some(x)) => json!(x),
         Bind::BigInt(Some(x)) => tag("bigint", json!(x.to_string())),
+        Bind::Enum(_) if monorm_engine::params::duration_micros(b).flatten().is_some() => {
+            tag("duration", json!(monorm_engine::params::duration_micros(b).flatten().unwrap_or_default().to_string()))
+        }
         Bind::ChronoDateTimeWithTimeZone(Some(x)) => tag("datetime", json!(x.to_rfc3339_opts(SecondsFormat::AutoSi, false))),
         Bind::ChronoTime(Some(x)) => tag("time", json!(x.to_string())),
         Bind::ChronoDate(Some(x)) => tag("date", json!(x.format("%Y-%m-%d").to_string())),
@@ -98,6 +100,7 @@ fn bind_cell(b: &Bind) -> Cell<'_> {
         Bind::Bool(Some(x)) => Cell::Bool(*x),
         Bind::Int(Some(x)) => Cell::Int(*x),
         Bind::BigInt(Some(x)) => Cell::BigInt(*x),
+        Bind::Enum(_) if monorm_engine::params::duration_micros(b).flatten().is_some() => Cell::Duration(monorm_engine::params::duration_micros(b).flatten().unwrap_or_default()),
         Bind::Double(Some(x)) => Cell::Float(*x),
         Bind::String(Some(x)) => Cell::Text(x),
         Bind::ChronoDateTimeWithTimeZone(Some(x)) => Cell::DateTime(x.with_timezone(&Utc)),

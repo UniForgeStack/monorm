@@ -98,6 +98,7 @@ fn pg_type(v: &Value) -> DbResult<Type> {
         Value::ChronoDateTime(_) => Type::TIMESTAMP,
         Value::Uuid(_) => Type::UUID,
         Value::BigDecimal(_) => Type::NUMERIC,
+        Value::Enum(_) if crate::params::duration_micros(v).is_some() => Type::INTERVAL,
         Value::Array(t, _) => match t {
             ArrayType::Bool => Type::BOOL_ARRAY,
             ArrayType::Int => Type::INT4_ARRAY,
@@ -111,6 +112,7 @@ fn pg_type(v: &Value) -> DbResult<Type> {
             ArrayType::ChronoDateTime => Type::TIMESTAMP_ARRAY,
             ArrayType::Uuid => Type::UUID_ARRAY,
             ArrayType::BigDecimal => Type::NUMERIC_ARRAY,
+            ArrayType::Enum(n) if &***n == crate::params::INTERVAL => Type::INTERVAL_ARRAY,
             other => return Err(DbError::other(format!("unsupported array of {other:?}"))),
         },
         other => return Err(DbError::other(format!("unsupported parameter value {other:?}"))),
@@ -149,6 +151,17 @@ impl ToSql for Param<'_> {
             Value::ChronoDateTimeUtc(v) => v.to_sql(ty, out),
             Value::ChronoDateTime(v) => v.to_sql(ty, out),
             Value::Uuid(v) => v.to_sql(ty, out),
+            Value::Enum(_) => match crate::params::duration_micros(self.0) {
+                Some(None) => Ok(IsNull::Yes),
+                Some(Some(n)) => {
+                    // The binary interval: microseconds, days, months.
+                    out.extend_from_slice(&n.to_be_bytes());
+                    out.extend_from_slice(&0i32.to_be_bytes());
+                    out.extend_from_slice(&0i32.to_be_bytes());
+                    Ok(IsNull::No)
+                }
+                None => Err(format!("unsupported parameter value {:?}", self.0).into()),
+            },
             Value::BigDecimal(None) | Value::Array(_, None) => Ok(IsNull::Yes),
             Value::BigDecimal(Some(d)) => {
                 numeric::encode(&d.to_plain_string(), out)?;
@@ -740,7 +753,7 @@ impl RowSet for PgRows {
                 Value::ChronoDateTimeWithTimeZone(get::<DateTime<Utc>>(r, col)?.map(|d| d.fixed_offset()))
             }
             ColType::Time => Value::ChronoTime(get::<PgTime>(r, col)?.map(|t| t.0)),
-            ColType::Duration => Value::BigInt(get::<PgInterval>(r, col)?.map(|d| d.0)),
+            ColType::Duration => crate::params::duration(get::<PgInterval>(r, col)?.map(|d| d.0)),
             ColType::Date => Value::ChronoDate(get(r, col)?),
             ColType::Uuid => Value::Uuid(get(r, col)?),
             ColType::Json => Value::Json(get::<serde_json::Value>(r, col)?.map(Box::new)),

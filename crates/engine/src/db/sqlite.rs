@@ -113,6 +113,7 @@ impl SqliteDriver {
             let result = Connection::open(&path).and_then(|conn| {
                 conn.busy_timeout(BUSY_TIMEOUT)?;
                 crate::json_contains::register(&conn)?;
+                crate::sqlite_functions::register(&conn)?;
                 conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA case_sensitive_like = ON;")?;
                 Ok(conn)
             });
@@ -152,6 +153,7 @@ impl SqliteDriver {
 }
 
 fn bind(v: Value) -> DbResult<SqlValue> {
+    if let Some(micros) = crate::params::duration_micros(&v) { return Ok(micros.map_or(SqlValue::Null, SqlValue::Integer)); }
     if v == v.as_null() { return Ok(SqlValue::Null); }
     Ok(match v {
         Value::Bool(Some(v)) => SqlValue::Integer(i64::from(v)),
@@ -468,7 +470,7 @@ impl RowSet for Rows {
             Cell::Null => crate::params::null_of(Some(ty)), Cell::Bool(v) => v.into(),
             Cell::Int(v) => v.into(), Cell::BigInt(v) => v.into(), Cell::Float(v) => v.into(),
             Cell::Text(v) => v.into(), Cell::Json(v) => v.into(), Cell::Uuid(v) => v.into(),
-            Cell::Time(v) => v.into(), Cell::Bytes(v) => v.into(), Cell::Duration(v) => v.into(),
+            Cell::Time(v) => v.into(), Cell::Bytes(v) => v.into(), Cell::Duration(v) => crate::params::duration(Some(v)),
             Cell::Date(v) => v.into(), Cell::DateTime(v) => v.into(),
             _ => return Err(DbError::other("unsupported SQLite value")),
         })

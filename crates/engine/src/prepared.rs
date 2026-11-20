@@ -187,7 +187,8 @@ pub(crate) fn scalar(ty: ColType, k: usize, flag: bool) -> Value {
     let k = if k == KEYS { 999_999 } else { k };
     let n = k as i64;
     match ty {
-        ColType::BigInt | ColType::Duration => Value::BigInt(Some(BASE + n)),
+        ColType::BigInt => Value::BigInt(Some(BASE + n)),
+        ColType::Duration => crate::params::duration(Some(BASE + n)),
         ColType::Int => Value::Int(Some(1_900_000_000 + n as i32)),
         ColType::Float => Value::Double(Some(123_456_789.062_5 + n as f64)),
         ColType::Bool => Value::Bool(Some(flag)),
@@ -314,7 +315,7 @@ pub(crate) fn pass(schema: &Schema, target: Target, op: &Operation, len: usize, 
 }
 
 pub(crate) fn untyped_error(i: usize) -> Error {
-    Error::query(format!("parameter {i} is the only source of a CASE value type: declare its type with param(name, type=...)"))
+    Error::query(format!("parameter {i} has no declared type, and its type decides the statement (a CASE value, or the partner of an arithmetic operand such as `at - param()`): declare its type with param(name, type=...)"))
 }
 
 pub(crate) fn is_bool(read: &Read) -> bool {
@@ -326,6 +327,11 @@ fn candidates(read: &Read, k: usize, any_array: bool) -> Vec<(Value, Conv)> {
     match &read.conv {
         Conv::Value(ty) => {
             let mut out = vec![(sentinel(*ty, k, false), read.conv.clone())];
+            // The PostgreSQL build turns a Duration into text under an `::"interval"` cast.
+            if let Some(t) = ty.filter(|t| t.ty == ColType::Duration) {
+                let text = crate::params::duration_text(BASE + k as i64);
+                out.push(if t.array { (Value::Array(sea_query::ArrayType::String, Some(Box::new(vec![text]))), read.conv.clone()) } else { (text, read.conv.clone()) });
+            }
             if let Some(t) = ty.filter(|t| t.ty == ColType::DateTime) {
                 out.push((crate::plan::naive_utc(sentinel(Some(t), k, false)), Conv::NaiveUtc(t)));
             }

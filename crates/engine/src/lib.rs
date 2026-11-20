@@ -19,6 +19,7 @@ pub mod plan;
 pub mod prepared;
 pub mod prepared_write;
 pub mod protect;
+pub mod sqlite_functions;
 pub(crate) mod scoped;
 pub mod trace;
 pub mod validation;

@@ -30,7 +30,7 @@ use sea_query::Value;
 use crate::js::{Js, V};
 use monorm_core::ir::{ColType, ValueType};
 use monorm_engine::db::Cell;
-use monorm_engine::params::{array_type, null_of, Params};
+use monorm_engine::params::{null_of, Params};
 use monorm_engine::{Error, Result};
 
 const MAX_SAFE: f64 = 9007199254740991.0;
@@ -175,6 +175,10 @@ impl Conv {
         }
     }
 
+    fn holds_micros(self, v: V) -> bool {
+        self.js.get(v, "micros").ok().and_then(|m| self.kind(m).ok()) == Some(Kind::BigInt)
+    }
+
     fn decimal(self, v: V, kind: Kind) -> Result<BigDecimal> {
         let text = match kind {
             Kind::Decimal | Kind::BigInt => self.js.coerce_string(v).map_err(raw)?,
@@ -211,7 +215,7 @@ impl Conv {
             }
             let items = self.js.elements(v).map_err(raw)?;
             let items = items.into_iter().map(|i| self.value(i, Some(t.element()))).collect::<Result<Vec<_>>>()?;
-            return Ok(Value::Array(array_type(t.ty), Some(Box::new(items))));
+            return monorm_engine::params::array_of(t.ty, items).map_err(Error::value);
         }
         let Some(ty) = ty else { return self.infer(v, kind) };
         Ok(match ty.ty {
@@ -249,7 +253,7 @@ impl Conv {
                 Kind::Date => Value::ChronoDate(Some(self.datetime(v)?.date_naive())),
                 _ => return Err(self.expected("a Date", v)),
             },
-            ColType::Duration => Value::BigInt(Some(self.duration(v, kind)?)),
+            ColType::Duration => monorm_engine::params::duration(Some(self.duration(v, kind)?)),
             ColType::Uuid => match kind {
                 Kind::String => {
                     let s = self.js.string(v).map_err(raw)?;
@@ -285,6 +289,8 @@ impl Conv {
             Kind::Date => Value::ChronoDateTimeWithTimeZone(Some(self.datetime_micros(v)?.fixed_offset())),
             Kind::Decimal => Value::BigDecimal(Some(Box::new(self.decimal(v, kind)?))),
             Kind::Bytes => Value::Bytes(Some(self.js.uint8array(v).map_err(raw)?.unwrap_or_default())),
+            // A JSON value holds no bigint, so an object with a bigint `micros` is a `Duration`.
+            Kind::Object if self.holds_micros(v) => monorm_engine::params::duration(Some(self.duration(v, kind)?)),
             Kind::Array | Kind::Object => Value::Json(Some(Box::new(self.json(v)?))),
             Kind::Null | Kind::Undefined | Kind::Other => {
                 return Err(Error::value(format!("unsupported parameter: {}", kind.name())))
