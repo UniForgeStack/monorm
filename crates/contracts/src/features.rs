@@ -96,6 +96,11 @@ pub fn validate(ir: &SchemaIr) -> Result<(), String> {
         for tr in &m.triggers {
             let what = format!("{} trigger {}", m.name, tr.name);
             require(if tr.for_each == ForEach::Statement { Feature::StatementTriggers } else { Feature::RowTriggers }, &what)?;
+            if ir.dialect == Dialect::Sqlite {
+                for (used, arg) in [(tr.old_table.is_some() || tr.new_table.is_some(), "referencing"), (tr.deferrable.is_some(), "deferrable"), (tr.declare.is_some(), "declare")] {
+                    if used { return Err(format!("{what}: `{arg}` needs PostgreSQL; sqlite has no such trigger feature")); }
+                }
+            }
             if ir.dialect == Dialect::Sqlite && (tr.function.is_some() || tr.language.is_some() || !tr.args.is_empty()
                 || tr.events.len() != 1 || tr.events.contains(&TriggerEvent::Truncate) || tr.timing == TriggerTiming::InsteadOf) {
                 return Err(format!("{what}: sqlite table triggers require one insert/update/delete event and an inline SQL body"));

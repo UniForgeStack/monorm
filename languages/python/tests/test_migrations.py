@@ -57,7 +57,7 @@ model Book {
   @@index([name(ops: raw("gin_trgm_ops"))], type: Gin)
   @@unique([author_id, name])
   @@map("books")
-  @@trigger(touch, before: [update], body: "BEGIN\n    NEW.updated_at := now();\n    RETURN NEW;\nEND;")
+  @@trigger(touch, when: before, operation: [update], func: "BEGIN\n    NEW.updated_at := now();\n    RETURN NEW;\nEND;")
 }
 """
 

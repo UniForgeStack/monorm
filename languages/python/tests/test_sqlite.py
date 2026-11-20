@@ -488,7 +488,7 @@ async def test_uuid_date_timestamp_and_inline_trigger():
       day DateTime @db.Date
       at DateTime
       name String
-      @@trigger(uppercase, after: [insert], body: "UPDATE event SET name = upper(NEW.name) WHERE id = NEW.id")
+      @@trigger(uppercase, when: after, operation: [insert], func: "UPDATE event SET name = upper(NEW.name) WHERE id = NEW.id")
     }
     """
     reg, m = models(source)

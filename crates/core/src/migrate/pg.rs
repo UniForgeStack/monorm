@@ -219,16 +219,26 @@ fn trigger_def(table: &str, t: &Trigger, idempotent: bool) -> String {
         })
         .collect::<Vec<_>>()
         .join(" OR ");
+    // CREATE OR REPLACE does not exist for a constraint trigger: the idempotent form drops it first.
+    let constraint = t.deferrable.is_some();
     let mut s = format!(
-        "CREATE {}TRIGGER {} {timing} {events} ON {} FOR EACH {}",
-        if idempotent { "OR REPLACE " } else { "" },
+        "{}CREATE {}{}TRIGGER {} {timing} {events} ON {}",
+        if idempotent && constraint { format!("DROP TRIGGER IF EXISTS {} ON {};\n", ident(&t.name), ident(table)) } else { String::new() },
+        if idempotent && !constraint { "OR REPLACE " } else { "" },
+        if constraint { "CONSTRAINT " } else { "" },
         ident(&t.name),
         ident(table),
-        match t.for_each {
-            ForEach::Row => "ROW",
-            ForEach::Statement => "STATEMENT",
-        }
     );
+    s.push_str(deferrable(t.deferrable));
+    if t.old_table.is_some() || t.new_table.is_some() {
+        s.push_str(" REFERENCING");
+        if let Some(o) = &t.old_table { s.push_str(&format!(" OLD TABLE AS {}", ident(o))); }
+        if let Some(n) = &t.new_table { s.push_str(&format!(" NEW TABLE AS {}", ident(n))); }
+    }
+    s.push_str(match t.for_each {
+        ForEach::Row => " FOR EACH ROW",
+        ForEach::Statement => " FOR EACH STATEMENT",
+    });
     if let Some(w) = &t.when {
         s.push_str(&format!(" WHEN ({w})"));
     }

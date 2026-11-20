@@ -1018,7 +1018,7 @@ mod tests {
     #[test]
     fn enforces_the_formatter_rules() {
         // one attribute per line
-        let e = parse("model A {\n  id Int @id\n  @@trigger(t, after: [insert],\n    function: f)\n}").unwrap_err();
+        let e = parse("model A {\n  id Int @id\n  @@trigger(t, when: after, operation: [insert],\n    func: f)\n}").unwrap_err();
         assert_eq!(e.pos.line, 3);
         assert!(e.msg.contains("must be on one line"), "{}", e.msg);
         let e = parse("model A {\n  id Int\n    @id\n}").unwrap_err();
@@ -1026,7 +1026,7 @@ mod tests {
         let e = parse("model A {\n  id Int @id  b Int\n}").unwrap_err();
         assert!(e.msg.contains("one field or attribute per line"), "{}", e.msg);
         // """ only in top-level blocks
-        let e = parse("model A {\n  id Int @id\n  @@trigger(t, before: [update], body: \"\"\"BEGIN RETURN NEW; END;\"\"\")\n}")
+        let e = parse("model A {\n  id Int @id\n  @@trigger(t, when: before, operation: [update], func: \"\"\"BEGIN RETURN NEW; END;\"\"\")\n}")
             .unwrap_err();
         assert!(e.msg.contains("only go in top-level blocks"), "{}", e.msg);
         assert!(parse("function f {\nbody = \"\"\"\nBEGIN RETURN NEW; END;\n\"\"\"\n}").is_ok());

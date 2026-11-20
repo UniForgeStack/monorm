@@ -297,6 +297,13 @@ impl SchemaIr {
             self.behavior.schema_contract = SCHEMA_CONTRACT;
             self.behavior.schema_contract_minor = self.behavior.schema_contract_minor.max(7);
         }
+        // Contract 5.8 holds the new `TriggerIr` fields. An engine of 5.7 would drop a transition table, a deferral, a helper or a guard silently.
+        let physical = self.behavior.storage.iter().flat_map(|s| &s.models);
+        let uses_5_8_fields = |t: &TriggerIr| t.old_table.is_some() || t.new_table.is_some() || t.deferrable.is_some() || t.declare.is_some() || !t.changes.is_empty() || t.guard;
+        if self.models.iter().chain(physical).flat_map(|m| &m.triggers).any(uses_5_8_fields) {
+            self.behavior.schema_contract = SCHEMA_CONTRACT;
+            self.behavior.schema_contract_minor = self.behavior.schema_contract_minor.max(8);
+        }
     }
 
     /// Parse the IR that generated models embed; an older ORM can write fields this one rejects.
@@ -972,6 +979,49 @@ pub struct TriggerIr {
     /// snapshot leaves the trigger out and records the rule; the next migration drops the rule and creates the trigger.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub replaces_rule: Option<String>,
+    /// `REFERENCING OLD TABLE AS <name>` (schema contract 5.8). Needs an `after` statement or row trigger on one event.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub old_table: Option<String>,
+    /// `REFERENCING NEW TABLE AS <name>` (schema contract 5.8).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub new_table: Option<String>,
+    /// `CREATE CONSTRAINT TRIGGER ... DEFERRABLE INITIALLY <mode>` (schema contract 5.8).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub deferrable: Option<Deferrable>,
+    /// The `DECLARE` section of a generated function body, without the keyword (schema contract 5.8).
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub declare: Option<String>,
+    /// Change helpers of the condition (schema contract 5.8). The migration builder expands them, joined with AND, after `when`:
+    /// `exclude_auto` needs the write assignments that the extensions add.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub changes: Vec<ChangeIr>,
+    /// The migration builder ANDs the core skip guard of `skippable` into `WHEN` (schema contract 5.8). An extension that
+    /// builds its own guard leaves this off.
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub guard: bool,
+}
+
+/// What a change helper tests: `any_change`, `all_change`, `any_dont_change` or `all_dont_change`.
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ChangeKind {
+    AnyChange,
+    AllChange,
+    AnyDontChange,
+    AllDontChange,
+}
+
+/// One change helper of a trigger condition. An empty `fields` means every field of the model.
+#[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Eq)]
+pub struct ChangeIr {
+    pub kind: ChangeKind,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub fields: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub exclude: Vec<String>,
+    /// Leave out the fields that a write assignment sets on every update (such as `updated_at`).
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub exclude_auto: bool,
 }
 
 /// Row-level security of a table. `forced` makes the table owner obey the policies as well.

@@ -105,7 +105,7 @@ pub fn parse_snapshot(json: &str) -> Result<DbSchema> {
 
 pub fn snapshot(schema: &Schema) -> Result<DbSchema> {
     let levels = level_links(schema);
-    model::build_with(schema.physical(), false, &levels).map(|(s, _)| s)
+    model::build_with(schema.physical(), false, &levels, &auto_fields(schema)).map(|(s, _)| s)
 }
 
 /// The owner links of a composed model, by table and key column of the physical schema.
@@ -119,10 +119,17 @@ fn level_links(schema: &Schema) -> Vec<model::LevelLink> {
     }).collect()
 }
 
+/// The fields that a write assignment of the logical schema sets on every update.
+fn auto_fields(schema: &Schema) -> model::Auto {
+    schema.models.iter()
+        .map(|m| (m.ir.name.clone(), m.assignments.iter().filter(|a| a.applies_to(crate::writes::WriteKind::Update)).map(|a| m.fields()[a.field].name.clone()).collect()))
+        .collect()
+}
+
 /// [`snapshot`] of a database that still holds the rules that triggers of the schema replace: the baseline of a database that `pull` read.
 pub fn baseline_snapshot(schema: &Schema) -> Result<DbSchema> {
     let levels = level_links(schema);
-    model::build_with(schema.physical(), true, &levels).map(|(s, _)| s)
+    model::build_with(schema.physical(), true, &levels, &auto_fields(schema)).map(|(s, _)| s)
 }
 
 /// What `plan` and `plan_online` both start from: the schema after the change and its checks.
@@ -140,8 +147,9 @@ struct Prepared {
 
 fn prepare(schema: &Schema, previous: &DbSchema, baseline: bool) -> Result<Prepared> {
     let levels = level_links(schema);
+    let auto = auto_fields(schema);
     let schema = schema.physical();
-    let (mut current, renames) = model::build_with(schema, baseline, &levels)?;
+    let (mut current, renames) = model::build_with(schema, baseline, &levels, &auto)?;
     reconcile::reconcile(schema, previous, &mut current);
     if let Some(old) = &previous.identities {
         let next = current.identities.as_ref().ok_or("identity manifest removed from schema; retain frozen identities and tombstones")?;

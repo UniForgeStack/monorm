@@ -445,6 +445,15 @@ pub struct Trigger {
     pub body: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
+    /// `REFERENCING OLD TABLE AS <name>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_table: Option<String>,
+    /// `REFERENCING NEW TABLE AS <name>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_table: Option<String>,
+    /// A constraint trigger: `DEFERRABLE INITIALLY <mode>`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deferrable: Option<Deferrable>,
 }
 
 /// A row-level security policy as the database holds it; the expressions are SQL text.
@@ -679,7 +688,11 @@ struct Builder<'a> {
     /// A trigger that replaces a rule is left out and the rule is recorded (see `TriggerIr::replaces_rule`).
     baseline: bool,
     levels: &'a [LevelLink],
+    auto: &'a Auto,
 }
+
+/// By model name, the fields that a write assignment sets on every update. The physical schema holds no assignments, so the logical one supplies them.
+pub type Auto = BTreeMap<String, Vec<String>>;
 
 /// A composed model's level table and the table of the level above it; both share one key.
 #[derive(Clone, Debug)]
@@ -794,6 +807,39 @@ impl Builder<'_> {
             });
         }
         Ok(())
+    }
+
+    /// The `WHEN` text of a trigger: the raw condition, the change helpers and the skip guard, joined with `AND`.
+    fn trigger_when(&self, m: &Model, tr: &TriggerIr) -> Result<Option<String>> {
+        use monorm::sql::{change_condition, skip_guard};
+        let t = m.table();
+        let mut parts: Vec<String> = tr.when.iter().cloned().collect();
+        let auto: &[String] = self.auto.get(&m.ir.name).map_or(&[], Vec::as_slice);
+        for c in &tr.changes {
+            let names: Vec<&str> = if c.fields.is_empty() {
+                m.ir.fields.iter().filter(|f| f.generated.is_none()).map(|f| f.name.as_str())
+                    .filter(|n| !c.exclude.iter().any(|e| e == n) && !(c.exclude_auto && auto.iter().any(|a| a == n))).collect()
+            } else {
+                c.fields.iter().map(String::as_str).collect()
+            };
+            for e in &c.exclude {
+                m.field(e).map_err(|e| format!("trigger {t}.{}: {e}", tr.name))?;
+            }
+            let columns = names.iter().map(|n| self.column_of(m, n)).collect::<Result<Vec<_>>>()?;
+            let Some(test) = change_condition(self.schema.dialect, c.kind, &columns) else {
+                return Err(format!("trigger {t}.{}: a change helper names no field: exclude: leaves none", tr.name));
+            };
+            parts.push(test);
+        }
+        if tr.guard && self.schema.dialect != crate::dialect::Dialect::Sqlite {
+            let name = tr.skippable.as_deref().unwrap_or(&tr.name);
+            parts.extend(skip_guard(name, &self.schema.bypass_roles));
+        }
+        Ok(match parts.len() {
+            0 => None,
+            1 => parts.pop(),
+            _ => Some(parts.iter().map(|p| format!("({p})")).collect::<Vec<_>>().join(" AND ")),
+        })
     }
 
     /// The `AFTER DELETE` trigger of an owner table: it deletes each owned row that no other row still references.
@@ -1104,6 +1150,10 @@ impl Builder<'_> {
                 (Some(f), None) => f.clone(),
                 (None, Some(body)) => {
                     let name = object_name(&[&t, &tr.name]);
+                    let body = match &tr.declare {
+                        Some(d) if schema.dialect != crate::dialect::Dialect::Sqlite => format!("DECLARE {} {}", d.trim().trim_end_matches(';').trim_end().to_owned() + ";", body.trim()),
+                        _ => body.to_owned(),
+                    };
                     if schema.dialect != crate::dialect::Dialect::Sqlite { self.trigger_functions.push(Function {
                         name: name.clone(),
                         args: String::new(),
@@ -1129,10 +1179,13 @@ impl Builder<'_> {
                 events,
                 update_of: tr.update_of.iter().map(|f| self.column_of(m, f)).collect::<Result<_>>()?,
                 for_each: tr.for_each,
-                when: tr.when.as_deref().map(normalize_ws),
+                when: self.trigger_when(m, tr)?.map(|w| normalize_ws(&w)),
                 function,
                 body: if schema.dialect == crate::dialect::Dialect::Sqlite { tr.body.clone() } else { None },
                 args: tr.args.clone(),
+                old_table: tr.old_table.clone(),
+                new_table: tr.new_table.clone(),
+                deferrable: tr.deferrable,
             });
         }
         if schema.dialect == crate::dialect::Dialect::Sqlite && (!m.ir.rls.is_off() || !m.ir.policies.is_empty()) {
@@ -1181,7 +1234,8 @@ fn sql_view(schema: &Schema, m: &Model, v: &crate::ir::SqlViewIr, table: Table) 
 
 /// The schema as a database; with `baseline`, the schema as a database that still holds the rules that its triggers replace.
 /// `levels` are the owner links of a composed model: the delete trigger of an owning relation needs them.
-pub fn build_with(schema: &Schema, baseline: bool, levels: &[LevelLink]) -> Result<(DbSchema, Renames)> {
+/// `auto` feeds `exclude_auto` of the change helpers.
+pub fn build_with(schema: &Schema, baseline: bool, levels: &[LevelLink], auto: &Auto) -> Result<(DbSchema, Renames)> {
     let mut b = Builder {
         schema,
         catalog: Catalog::new(&[schema.catalog.as_slice(), schema.extensions.as_slice()].concat()),
@@ -1191,6 +1245,7 @@ pub fn build_with(schema: &Schema, baseline: bool, levels: &[LevelLink]) -> Resu
         trigger_functions: vec![],
         baseline,
         levels,
+        auto,
     };
     let mut db = DbSchema { identities: schema.identities.clone(), dialect: schema.dialect, version: if schema.models.iter().any(|m| m.ir.sql_view.is_some()) { SNAPSHOT_VERSION } else if !schema.partitions.is_empty() { 4 } else if schema.identities.is_some() { 3 } else if schema.dialect.is_postgres() { 1 } else { 2 }, ..Default::default() };
     let mut renames = Renames::default();

@@ -16,7 +16,7 @@ model Reward {
  @@partition(list: [kind])
  @@index([amount])
  @@check("id > 0")
- @@trigger(parent_touch, before: [update], body: "BEGIN RETURN NEW; END;")
+ @@trigger(parent_touch, when: before, operation: [update], func: "BEGIN RETURN NEW; END;")
 }
 partition reward_a {
 of = Reward
@@ -25,7 +25,7 @@ values = [A]
 @@unique([amount])
 @@index([id], name: "local_id")
 @@comment("positive rewards")
-@@trigger(local_touch, before: [insert], body: "BEGIN RETURN NEW; END;")
+@@trigger(local_touch, when: before, operation: [insert], func: "BEGIN RETURN NEW; END;")
 }
 partition reward_other {
 of = Reward
