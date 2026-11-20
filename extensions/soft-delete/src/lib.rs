@@ -76,6 +76,11 @@ fn all_models(ir: &SchemaIr) -> Vec<&ModelIr> {
 /// fails the schema, unless the relation field carries `@soft_delete.keep_child_rows`.
 /// The check works on tables, so it covers every level (each soft-delete child is a parent in its turn),
 /// proxies (same table as their root) and storage owners.
+fn keeps_rows(ir: &SchemaIr, child: &str, relation: &str) -> bool {
+    let root = ir.behavior.model_views.iter().find(|v| v.model == child).map_or(child, |v| v.root.as_str());
+    ir.behavior.declarations.iter().any(|d| d.attribute == KEEP_ROWS && (d.model == child || d.model == root) && d.field.as_deref() == Some(relation))
+}
+
 fn lost_children(ir: &SchemaIr) -> Result<(), String> {
     let models = all_models(ir);
     let root = |name: &str| ir.behavior.model_views.iter().find(|v| v.model == name).map_or(name.to_owned(), |v| v.root.clone());
@@ -92,12 +97,11 @@ fn lost_children(ir: &SchemaIr) -> Result<(), String> {
     let soft_roots: Vec<&str> = ir.behavior.delete_rewrites.iter().filter(|d| d.source == SOURCE).map(|d| d.model.as_str()).collect();
     let follows_root = |name: &str| tracking::composed_root(ir, name).is_some_and(|r| soft_roots.contains(&r.as_str()));
     for child in models.iter().filter(|m| !soft.contains(&m.table.as_str()) && !follows_root(&m.name)) {
-        let owner = root(&child.name);
         for r in child.relations.iter().filter(|r| r.foreign_key && r.on_delete == Some(OnDelete::Cascade)) {
             if !table(&r.target).is_some_and(|t| soft.contains(&t)) { continue; }
             // The link of a level to its parent is the composition itself.
             if ir.behavior.owner_links.iter().any(|l| l.child == child.name && l.parent == r.target && r.from == [l.child_key.clone()]) { continue; }
-            if opt_outs.iter().any(|d| (d.model == child.name || d.model == owner) && d.field.as_deref() == Some(r.name.as_str())) { continue; }
+            if keeps_rows(ir, &child.name, &r.name) { continue; }
             let (parent, child_name, relation) = (&r.target, &child.name, &r.name);
             let message = format!("{parent} is soft-deleted, but {child_name}.{relation} cascades deletes (onDelete: Cascade) and {child_name} has no soft delete, so a soft delete of {parent} keeps the {child_name} rows; \
                 fix: add @@{} to {child_name}, or add @{KEEP_ROWS} to the relation field {child_name}.{relation} to keep the {child_name} rows on a soft delete", TRACKED.attribute);
@@ -106,6 +110,16 @@ fn lost_children(ir: &SchemaIr) -> Result<(), String> {
                 Some(d) => d.error_with("@@", message),
                 None => message,
             });
+        }
+    }
+    // An owning relation from a soft-delete owner into a table without soft delete: the sweep has nothing to stamp, so the owned row stays when its last owner is soft-deleted.
+    for owner in models.iter().filter(|m| soft.contains(&m.table.as_str())) {
+        for r in owner.relations.iter().filter(|r| r.owns && r.foreign_key) {
+            let Some(target) = models.iter().find(|m| m.name == r.target) else { continue };
+            if soft.contains(&target.table.as_str()) || follows_root(&target.name) || keeps_rows(ir, &owner.name, &r.name) { continue; }
+            let (owner_name, target_name, relation) = (&owner.name, &target.name, &r.name);
+            return Err(format!("{owner_name} is soft-deleted, but {owner_name}.{relation} owns {target_name} and {target_name} has no soft delete, so the last soft delete of an owner keeps the {target_name} rows; \
+                fix: add @@{} to {target_name}, or add @{KEEP_ROWS} to the relation field {owner_name}.{relation} to keep the {target_name} rows on a soft delete", TRACKED.attribute));
         }
     }
     Ok(())
@@ -140,28 +154,41 @@ fn delete_trigger(dialect: Dialect, model: &ModelIr, field: &str, version: Optio
 /// A table that a soft delete of a parent reaches. `keys` pairs a foreign key column with the referenced parent column.
 /// A composed level keeps no soft-delete column of its own: `table` is the root table, and `via` names the level table
 /// that holds the foreign key, as `(level table, its key column, the root key column)`.
-struct Child { table: String, soft: String, version: Option<String>, keys: Vec<(String, String)>, via: Option<(String, String, String)> }
+struct Child { table: String, soft: String, version: Option<String>, keys: Vec<(String, String)>, via: Option<(String, String, String)>, kept: bool }
 
 /// `AFTER UPDATE OF` the field, when a row becomes soft-deleted: soft-delete the live rows
 /// of each soft-delete child whose relation cascades deletes.
 fn cascade_trigger(dialect: Dialect, parent: &ModelIr, field: &str, children: &[Child]) -> Result<TriggerIr, String> {
     let c = ident(column(parent, field)?);
-    let statements: Vec<String> = children.iter().map(|Child { table, soft, version, keys, via }| {
-        let bump = bump(version.as_deref());
+    let statements = children.iter().map(|child| child.statement(&format!("NEW.{c}"), &format!("{} IS NULL", ident(&child.soft)))).collect::<Vec<_>>();
+    Ok(TriggerIr { name: "soft_delete_cascade".into(), timing: TriggerTiming::After, events: vec![TriggerEvent::Update], update_of: vec![field.into()],
+        when: Some(format!("OLD.{c} IS NULL AND NEW.{c} IS NOT NULL")), body: Some(trigger_body(dialect, &statements)), ..Default::default() })
+}
+
+/// `AFTER UPDATE OF` the field, when a row is undeleted: undelete the rows its soft delete cascaded to,
+/// those that carry the stamp of the parent. A row that was soft-deleted on its own, with another stamp, stays deleted.
+/// A relation with `@soft_delete.keep_child_rows` has no revive.
+fn revive_trigger(dialect: Dialect, parent: &ModelIr, field: &str, children: &[Child]) -> Result<Option<TriggerIr>, String> {
+    let c = ident(column(parent, field)?);
+    let statements = children.iter().filter(|child| !child.kept).map(|child| child.statement("NULL", &format!("{} = OLD.{c}", ident(&child.soft)))).collect::<Vec<_>>();
+    if statements.is_empty() { return Ok(None); }
+    Ok(Some(TriggerIr { name: "soft_delete_revive".into(), timing: TriggerTiming::After, events: vec![TriggerEvent::Update], update_of: vec![field.into()],
+        when: Some(format!("OLD.{c} IS NOT NULL AND NEW.{c} IS NULL")), body: Some(trigger_body(dialect, &statements)), ..Default::default() }))
+}
+
+impl Child {
+    /// `UPDATE child SET soft = <value> WHERE <link to the parent row> AND <guard>`.
+    fn statement(&self, value: &str, guard: &str) -> String {
+        let Child { table, soft, version, keys, via, .. } = self;
         let (table, soft) = (ident(table), ident(soft));
+        let bump = bump(version.as_deref());
         let link: Vec<String> = keys.iter().map(|(key, to)| format!("{} = NEW.{}", ident(key), ident(to))).collect();
         let matched = match via {
             None => link.join(" AND "),
             Some((level, level_key, root_key)) => format!("{} IN (SELECT {} FROM {} WHERE {})", ident(root_key), ident(level_key), ident(level), link.join(" AND ")),
         };
-        format!("UPDATE {table} SET {soft} = NEW.{c}{bump} WHERE {matched} AND {soft} IS NULL")
-    }).collect();
-    let body = match dialect {
-        Dialect::Postgres => format!("BEGIN {}; RETURN NULL; END;", statements.join("; ")),
-        Dialect::Sqlite => statements.join("; "),
-    };
-    Ok(TriggerIr { name: "soft_delete_cascade".into(), timing: TriggerTiming::After, events: vec![TriggerEvent::Update], update_of: vec![field.into()],
-        when: Some(format!("OLD.{c} IS NULL AND NEW.{c} IS NOT NULL")), body: Some(body), ..Default::default() })
+        format!("UPDATE {table} SET {soft} = {value}{bump} WHERE {matched} AND {guard}")
+    }
 }
 
 /// The row is live: its soft-delete field is `NULL`.
@@ -349,7 +376,8 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
                     }
                     _ => None,
                 };
-                children.push((Child { table: soft_model.table.clone(), soft: column(soft_model, &child_field.field)?.to_owned(), version, keys: vec![], via }, keys, r.to.clone()));
+                let kept = keeps_rows(ir, &child.name, &r.name);
+                children.push((Child { table: soft_model.table.clone(), soft: column(soft_model, &child_field.field)?.to_owned(), version, keys: vec![], via, kept }, keys, r.to.clone()));
             }
         }
         let version = bumped(&ir.behavior.write_assignments, &s.model).map(str::to_owned);
@@ -359,9 +387,10 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
             if !children.is_empty() {
                 let resolved = children.iter().map(|(child, keys, to)| {
                     let pairs = keys.iter().zip(to).map(|(k, to)| Ok((k.clone(), column(model, to)?.to_owned()))).collect::<Result<Vec<_>, String>>()?;
-                    Ok(Child { table: child.table.clone(), soft: child.soft.clone(), version: child.version.clone(), keys: pairs, via: child.via.clone() })
+                    Ok(Child { table: child.table.clone(), soft: child.soft.clone(), version: child.version.clone(), keys: pairs, via: child.via.clone(), kept: child.kept })
                 }).collect::<Result<Vec<_>, String>>()?;
                 triggers.push(cascade_trigger(dialect, model, &s.field, &resolved)?);
+                triggers.extend(revive_trigger(dialect, model, &s.field, &resolved)?);
             }
             for mut t in triggers {
                 t.replaces_rule = s.rule.clone();
@@ -680,11 +709,15 @@ mod tests {
         assert_eq!(ir.behavior.delete_rewrites[1].model, "Book");
         for author in [&ir.models[0], &ir.behavior.storage.as_ref().unwrap().models[0]] {
             let names: Vec<_> = author.triggers.iter().map(|t| t.name.as_str()).collect();
-            assert_eq!(names, ["soft_delete", "soft_delete_cascade"]);
+            assert_eq!(names, ["soft_delete", "soft_delete_cascade", "soft_delete_revive"]);
             assert_eq!(author.triggers[0].when.as_deref(), Some("OLD.\"deleted\" IS NULL AND pg_trigger_depth() = 0"));
             assert_eq!(author.triggers[0].body.as_deref(), Some("BEGIN UPDATE \"authors\" SET \"deleted\" = now(), \"rev\" = \"rev\" + 1 WHERE \"id\" = OLD.\"id\"; RETURN NULL; END;"));
             // Note has no soft delete, so only Book is soft-deleted with its author.
             assert_eq!(author.triggers[1].body.as_deref(), Some("BEGIN UPDATE \"books\" SET \"deleted\" = NEW.\"deleted\", \"lock\" = \"lock\" + 1 WHERE \"writer\" = NEW.\"id\" AND \"deleted\" IS NULL; RETURN NULL; END;"));
+            // The revive undeletes the rows that carry the stamp of the parent.
+            let revive = &author.triggers[2];
+            assert_eq!(revive.when.as_deref(), Some("OLD.\"deleted\" IS NOT NULL AND NEW.\"deleted\" IS NULL"));
+            assert_eq!(revive.body.as_deref(), Some("BEGIN UPDATE \"books\" SET \"deleted\" = NULL, \"lock\" = \"lock\" + 1 WHERE \"writer\" = NEW.\"id\" AND \"deleted\" = OLD.\"deleted\"; RETURN NULL; END;"));
         }
         assert_eq!(ir.models[1].triggers.len(), 1);
         let up = migration(&ir);
@@ -758,6 +791,45 @@ mod tests {
         model(&mut ir, serde_json::json!({"name": "Mark", "table": "marks", "fields": [
             {"name": "id", "column": "id", "type": "int", "primary_key": true}, {"name": "note_id", "column": "note_id", "type": "int"}],
             "relations": [{"name": "note", "kind": "one", "target": "Note", "from": "note_id", "to": "id", "foreign_key": true, "on_delete": "cascade"}]}));
+        checked(ir).unwrap();
+    }
+
+    #[test]
+    fn keep_child_rows_gives_the_relation_no_revive() {
+        let mut ir = bare("postgres", "database");
+        ir.behavior.declarations.push(keep_rows("Book", "author", 12));
+        ir.behavior.declarations.push(keep_rows("Note", "author", 13));
+        prepared(&mut ir).unwrap();
+        let names: Vec<_> = ir.models[0].triggers.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["soft_delete", "soft_delete_cascade"]);
+    }
+
+    #[test]
+    fn sqlite_revive_cascade_undeletes_the_rows_with_the_stamp_of_the_parent() {
+        let mut ir = schema("sqlite", "database");
+        prepared(&mut ir).unwrap();
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        for statement in migration(&ir) { db.execute_batch(&statement).unwrap(); }
+        db.execute_batch("INSERT INTO authors (id, rev) VALUES (1, 0); INSERT INTO books (id, writer, lock) VALUES (1, 1, 0), (2, 1, 0), (3, 1, 0);
+            UPDATE books SET deleted = '2020-01-01 00:00:00.000' WHERE id = 3").unwrap();
+        db.execute("DELETE FROM authors WHERE id = 1", []).unwrap();
+        let live = |sql: &str| db.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap();
+        assert_eq!(live("SELECT count(*) FROM books WHERE deleted IS NOT NULL"), 3);
+        db.execute("UPDATE authors SET deleted = NULL WHERE id = 1", []).unwrap();
+        // Books 1 and 2 follow the stamp of the author; book 3 was deleted on its own and stays deleted.
+        assert_eq!(live("SELECT count(*) FROM books WHERE deleted IS NULL AND id IN (1, 2)"), 2);
+        assert_eq!(live("SELECT count(*) FROM books WHERE id = 3 AND deleted = '2020-01-01 00:00:00.000'"), 1);
+        assert_eq!(live("SELECT lock FROM books WHERE id = 1"), 2);
+    }
+
+    #[test]
+    fn an_owning_relation_into_a_table_without_soft_delete_fails_the_schema_with_both_fixes() {
+        let mut ir = owning("postgres", 1);
+        ir.behavior.declarations.retain(|d| d.model != "Display");
+        let err = checked(ir.clone()).unwrap_err();
+        assert_eq!(err, "B1 is soft-deleted, but B1.display owns Display and Display has no soft delete, so the last soft delete of an owner keeps the Display rows; \
+            fix: add @@soft_delete.deleted_at to Display, or add @soft_delete.keep_child_rows to the relation field B1.display to keep the Display rows on a soft delete");
+        ir.behavior.declarations.push(keep_rows("B1", "display", 30));
         checked(ir).unwrap();
     }
 
