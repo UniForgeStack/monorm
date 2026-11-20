@@ -1,5 +1,6 @@
-import type { BoundQuerySet, ModelSpec, QuerySet, WriteStatement } from "monorm";
-import { behaviorField, behaviorRecords, boundMeta, boundWrite, hardDeleteStatement } from "monorm/ext";
+import { getDatabase, unscoped } from "monorm";
+import type { BoundQuerySet, Database, ModelSpec, QuerySet, WriteStatement } from "monorm";
+import { behaviorField, behaviorRecords, behaviorValue, boundMeta, boundWrite, hardDeleteStatement } from "monorm/ext";
 import type { BoundQuerySetCtor, QuerySetCtor } from "monorm/ext";
 
 type AnyQuerySet = QuerySet<ModelSpec>;
@@ -101,4 +102,67 @@ export class SoftDeleteInstance {
     const column = deletedAt({ meta: (this as unknown as { constructor: { meta: AnyQuerySet["meta"] } }).constructor.meta });
     await (this as any).update({ [column.name]: null });
   }
+}
+
+type Row = Record<string, unknown>;
+type Owned = { model: string; key: string[]; passes: number; report_sql: string; repair_sql: string; role_sql: string | null };
+
+export interface SweepOwnedOptions {
+  /** Stamp the rows that no live owner holds, until a pass finds none. Default `false`: only report them. */
+  repair?: boolean;
+  /** Check only these target models (classes or names). */
+  models?: readonly (string | { readonly _meta: { readonly name: string } })[];
+  db?: Database;
+}
+
+function ownedRecords(db: Database, models: SweepOwnedOptions["models"]): Owned[] {
+  const records = ((behaviorValue("extension_records", db.registry) as Row[] | undefined) ?? []).filter((r) => r["source"] === SOURCE && r["kind"] === "owned");
+  const all = records.map((r) => ({ ...(r["data"] as Omit<Owned, "model">), model: String(r["model"]) }));
+  if (models === undefined) return all;
+  const names = models.map((m) => (typeof m === "string" ? m : m._meta.name));
+  const unknown = names.filter((n) => !all.some((o) => o.model === n));
+  if (unknown.length > 0) throw new TypeError(`sweepOwned() has no model ${unknown.join(", ")}: no owning relation points at it`);
+  return all.filter((o) => names.includes(o.model));
+}
+
+/**
+ * Find the live rows that every owner has left: all their owners are soft-deleted, and at least
+ * one owner was. Returns `{ model name: [primary key columns of each row] }`; a model with no such row
+ * is absent, so `{}` is a clean database. With `repair: true`, stamps each row with the current time,
+ * as the sweep trigger does, and repeats until a pass finds none. It throws when it needs more passes than the
+ * number of owning relations plus one; the repair runs in one transaction, so the error rolls back all passes. It runs without the scope filters. On PostgreSQL it refuses
+ * a role that is neither a superuser nor in `bypass_roles` before it reads or writes anything. It
+ * takes no lock: run it in a quiet window, or run it again.
+ */
+export async function sweepOwned(options: SweepOwnedOptions = {}): Promise<Record<string, Row[]>> {
+  const db = options.db ?? getDatabase();
+  const records = ownedRecords(db, options.models);
+  const keys = [...new Set(((behaviorValue("scoped_fields", db.registry) as Row[] | undefined) ?? []).map((r) => String(r["key"])))].sort();
+  const found: Record<string, Row[]> = {};
+  const run = async (): Promise<void> => {
+    const sql = records.find((r) => r.role_sql)?.role_sql;
+    if (sql && !(await db.fetch(sql))[0]?.["ok"]) throw new Error("sweepOwned() needs a superuser or a role of bypass_roles");
+    if (options.repair !== true) {
+      for (const r of records) {
+        const rows = await db.fetch(r.report_sql);
+        if (rows.length > 0) found[r.model] = rows;
+      }
+      return;
+    }
+    await db.transaction(async () => {
+      for (let pass = 0; pass < Math.max(1, ...records.map((r) => r.passes)); pass++) {
+        let changed = false;
+        for (const r of records) {
+          const rows = await db.fetch(r.repair_sql);
+          if (rows.length > 0) (found[r.model] ??= []).push(...rows);
+          changed ||= rows.length > 0;
+        }
+        if (!changed) return;
+      }
+      throw new Error("sweepOwned({ repair: true }) did not settle: the owner rows keep changing, or the owning relations form a loop of more than one pass");
+    });
+  };
+  if (keys.length > 0) await unscoped(keys, run);
+  else await run();
+  return found;
 }

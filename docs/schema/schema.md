@@ -648,7 +648,7 @@ The compiler refuses an owning relation that:
 * points at a level of a composed model with more than one column in `fields:`;
 * is part of a cycle of owning relations on SQLite (a model that owns itself is the shortest cycle).
 
-The target of an owning relation with soft delete is not part of this section. The soft-delete extension handles it.
+A target with soft delete is soft-deleted, not deleted, when its last owner is soft-deleted. The soft-delete extension handles it: see [Schema extensions](../extensions/schema-extensions.md) and its `sweep_owned()`.
 
 The IR carries `owns` on the relation. The schema contract is 5.6; the IR is stamped 5.6 only when a relation has `owns`.
 

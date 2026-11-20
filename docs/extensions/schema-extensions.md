@@ -146,6 +146,24 @@ model Book {
   Delete or hard-delete the children first.
 * Migration: a changed trigger body (the depth guard, the version bump) shows in the next migration diff; apply that migration to an existing database.
 * Application mode has no cascade; the schema check above is the same in both modes.
+* Revive cascade, database mode: `undelete()` of a parent clears the stamp of the child rows that carry the stamp of the parent.
+  A child that was soft-deleted on its own, with another stamp, stays deleted.
+  A relation with `@soft_delete.keep_child_rows` has no cascade and no revive: the child rows stay as they are.
+  This is new in `undelete()`: a revive now reaches the children.
+* Owning relations (`owns`): an owned row with soft delete gets the stamp of the last owner that is soft-deleted, and only then.
+  The sweep trigger on each owner stamps the owned row when no live owner remains; an owner without soft delete counts as live.
+  The owned revive clears the stamp when the owner has the same stamp, or when no other live owner exists.
+  An owning relation into a table without soft delete is a schema error with the same two fixes as a lost cascade.
+  An owning relation into a level of a composed model is a schema error: point it at the root, or remove `owns: true`.
+  Application mode has no owning trigger.
+* PostgreSQL and SQLite differ for owning relations.
+  PostgreSQL locks the owned row (`FOR UPDATE`), so two co-owners that archive at the same time stamp it once, and a new owner waits for the sweep.
+  It allows an owning cycle; two transactions that archive two rows of one cycle can deadlock, and PostgreSQL aborts one.
+  SQLite has no row lock and no recursive triggers: an owning cycle is a schema error, a chain works, and a hard delete of a non-soft owner soft-deletes the live owned row.
+* `sweep_owned(repair=False, models=None)` (`sweepOwned({ repair, models })`) finds the live owned rows that every owner has left; `{}` means none.
+  `repair=True` stamps them with the current time, in one transaction, in at most owning relations + 1 passes; it raises and rolls back all passes at the bound.
+  On PostgreSQL it needs a superuser or a role of `bypass_roles`, and it takes no lock.
+  A CI script runs it and exits 1 when it finds a row; see `extensions/soft-delete/README.md`.
 * A composed model (`model-composition`) takes the roles on its root only.
   `@@timestamps.updated_at`, `@@soft_delete.deleted_at` and `@@locking.version` on a level below the root are a schema error that names the root.
   A change on any level bumps the root's `updated_at` and its version.

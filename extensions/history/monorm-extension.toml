@@ -12,8 +12,8 @@ capabilities = ["schema-transformations", "physical-schema"]
 [[passes]]
 id = "monorm.history.models"
 phase = "storage"
-effects = ["models.history_events", "models.history_versions", "storage.history_events", "storage.history_versions", "behavior.extension_records"]
-additive = ["behavior.published_scope_keys"]
+effects = ["models.history_events", "models.history_versions", "storage.history_events", "storage.history_versions"]
+additive = ["behavior.extension_records", "behavior.published_scope_keys"]
 
 # Adds the row triggers of each tracker to the table that it tracks. Runs after the `behavior` passes, so the triggers of the other extensions exist.
 [[passes]]

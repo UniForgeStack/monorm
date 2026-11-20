@@ -646,6 +646,11 @@ class Database:
         extensions stay."""
         await self._engine.drop_tables()
 
+    @property
+    def registry(self) -> Registry:
+        """The read-only models registry that this database was connected with."""
+        return self._registry
+
     async def close(self) -> None:
         """Close the pools of the primary and of each replica."""
         global _default

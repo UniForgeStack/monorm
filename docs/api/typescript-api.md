@@ -888,6 +888,10 @@ A field that a default hides is `NotLoaded` after a write, also when the caller 
 * The column-role extensions change these writes (`schema-extensions.md`).
   Each update sets the `@@timestamps.updated_at` and `@@locking.version` fields.
   On a `@@soft_delete.deleted_at` model, `delete()` soft-deletes, and `hardDelete()`, `undelete()`, `allWithDeleted()` and `deletedOnly()` exist (from the soft-delete extension's generated code).
+  The function `await sweepOwned({ repair, models })` (from `monorm/extensions/soft-delete`) lists the live rows of an owned model that every owner has left, as `{ [model name]: key[] }` (`{}` when clean).
+  `repair: true` stamps them with the current time, in one transaction, one pass for each level of a chain.
+  It rejects with `Error` and rolls back all passes when it needs more than the number of owning relations plus one.
+  On PostgreSQL it needs a superuser or a role of `bypass_roles` (it rejects with `Error`) and takes no lock.
   Plain reads hide deleted rows (the `"deleted"` default); those methods bypass only that default.
   On a query set, `withoutDefaults("deleted")` bypasses only it: a bare `withoutDefaults()` drops all defaults, a tenant filter too.
   An instance `hardDelete()` bypasses only `"deleted"` too; it deletes the row it holds, and no scope check applies to it.

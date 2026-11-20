@@ -1393,6 +1393,11 @@ Rails. What's left out on purpose: SQLAlchemy's session and dirty tracking, Rail
 The column-role extensions change these writes (see `schema-extensions.md`).
 Each update sets the `@@timestamps.updated_at` and `@@locking.version` fields.
 On a `@@soft_delete.deleted_at` model, `delete()` soft-deletes, and `hard_delete()`, `undelete()`, `all_with_deleted()` and `deleted_only()` exist (from the soft-delete extension's generated code).
+The module function `await sweep_owned(repair=False, models=None)` (from `monorm_soft_delete`) lists the live rows of an owned model that every owner has left, as `{model name: [key, ...]}` (`{}` when clean).
+`repair=True` stamps them with the current time, in one transaction, one pass for each level of a chain.
+It raises `RuntimeError` and rolls back all passes when it needs more than the number of owning relations plus one.
+On PostgreSQL it needs a superuser or a role of `bypass_roles` (`PermissionError`) and takes no lock.
+`Database.registry` is the read-only models registry that the database was connected with.
 Plain reads hide deleted rows (the `"deleted"` default); `all_with_deleted()` and `deleted_only()` bypass only that default.
 On a query set, `without_defaults("deleted")` bypasses only it: a bare `without_defaults()` drops all defaults, a tenant filter too.
 An instance `hard_delete()` bypasses only `"deleted"` too; it deletes the row it holds, and no scope check applies to it.
