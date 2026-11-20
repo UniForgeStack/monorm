@@ -616,6 +616,42 @@ followers User[]  @relation(through: Follow, through_fields: [followee, follower
   hop (see [`python-api.md`](../api/python-api.md)). Prisma's implicit many-to-many (no join
   model) isn't supported.
 
+#### Owning relations
+
+```
+spec     Spec?    @relation(fields: [spec_id], references: [id], onDelete: NoAction, owns: true)
+```
+
+`owns: true` marks a to-one relation as owning.
+The owner is the model that holds the key.
+The target is owned: the database deletes the target row when its last owner row goes.
+`onDelete:` acts on the owner when the target goes. `owns:` acts on the target when the owner goes.
+The two do not conflict. We recommend `onDelete: NoAction`, because the target is never deleted while an owner still names it.
+
+* The core adds an index on the owning columns, unless a primary key, a unique constraint or a plain btree index already starts with them.
+  The index is named `<table>_<columns>_idx`, or `<table>_<columns>_owns_idx` when a user index has that name.
+* The core adds one `AFTER DELETE` trigger to each owner table, on PostgreSQL and on SQLite. It runs for a delete from the ORM and for raw SQL.
+  It deletes the target row only when no other foreign key row names it.
+  Owners that go in one statement delete the shared target once. A null key deletes nothing.
+* A chain of owning relations deletes every level. A cycle of owning relations deletes every row of the cycle on PostgreSQL. SQLite does not fire a trigger again while it runs, so a cycle of owning relations is a schema error there.
+* On PostgreSQL the trigger first locks the target row (`FOR NO KEY UPDATE`). Two transactions that delete two owners of one target wait for each other, so the last one deletes the target.
+* The guard counts the foreign keys that a relation declares. A foreign key that no relation declares is not seen, and under row level security the delete runs as the invoker, so the guard cannot see an owner row that the invoker may not read.
+* When the target is a composed model, the trigger deletes the root row. The level rows go with it, through their level-key foreign keys.
+* A new foreign key into an owned table changes the trigger of every owner. A migration replaces the trigger function.
+* Reads and `load()` do not change.
+
+The compiler refuses an owning relation that:
+
+* has no `fields:` (the list side), or whose `references:` is not the primary key;
+* has a different scope key on the owner and on the target;
+* is on a composed level below the root;
+* points at a level of a composed model with more than one column in `fields:`;
+* is part of a cycle of owning relations on SQLite (a model that owns itself is the shortest cycle).
+
+The target of an owning relation with soft delete is not part of this section. The soft-delete extension handles it.
+
+The IR carries `owns` on the relation. The schema contract is 5.6; the IR is stamped 5.6 only when a relation has `owns`.
+
 ### Model attributes (`@@`)
 
 ```

@@ -1,6 +1,6 @@
 //! `monorm pull`: a [`DbSchema`] read from a live database, written as a schema file.
 //!
-//! This is the reverse of [`super::model::build`]. Types, defaults and expressions are
+//! This is the reverse of [`super::model::build_with`]. Types, defaults and expressions are
 //! the database's own text; the SQL-to-schema type map lives only here. What the schema
 //! language cannot say is left out and reported as a gap, and listed at the end of the
 //! file, so a reader sees what the pulled schema does not reproduce.

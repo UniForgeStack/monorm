@@ -144,6 +144,7 @@ already does.
 | `posts: Post[] @relation(via: Post.author_id)` | `posts Post[]` | native |
 | two relations between the same models | `@relation("name", ...)` on both sides | native |
 | `deferrable: deferred` | `@relation(..., deferrable: deferred)` | ours |
+| `owns: true` | `@relation(..., owns: true)` | ours |
 | foreign-key name | `@relation(..., map: "fk_name")` | native |
 
 ### Model attributes

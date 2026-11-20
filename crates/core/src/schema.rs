@@ -423,6 +423,7 @@ impl Schema {
                 }
             }
         }
+        crate::owning::validate(&models, &model_index, ir.dialect, &ir.behavior.scoped_fields, &ir.behavior.owner_links, &ir.behavior.field_storage)?;
         crate::selection::prepare(&mut models, &ir.behavior.read_defaults)?;
         crate::writes::prepare(&mut models, &model_index, &ir.behavior)?;
         if let (true, Some(packages)) = (behavioral, packages) { crate::hooks::bind(&mut models, &model_index, &ir.behavior, packages)?; }

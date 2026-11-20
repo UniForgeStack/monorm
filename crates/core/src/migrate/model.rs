@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::ext::Catalog;
 use crate::ir::{
     ColType, ConstraintIr, EnumStorage, Deferrable, FieldIr, ForEach, IndexColumnIr, Nulls, OnDelete, TriggerEvent,
-    TriggerTiming,
+    TriggerIr, TriggerTiming,
 };
 use crate::schema::{Model, Result, Schema};
 
@@ -678,6 +678,16 @@ struct Builder<'a> {
     trigger_functions: Vec<Function>,
     /// A trigger that replaces a rule is left out and the rule is recorded (see `TriggerIr::replaces_rule`).
     baseline: bool,
+    levels: &'a [LevelLink],
+}
+
+/// A composed model's level table and the table of the level above it; both share one key.
+#[derive(Clone, Debug)]
+pub struct LevelLink {
+    pub child: String,
+    pub child_key: String,
+    pub parent: String,
+    pub parent_key: String,
 }
 
 impl Builder<'_> {
@@ -746,6 +756,110 @@ impl Builder<'_> {
             .map(|k| k.column.clone().unwrap_or_else(|| expression_tag(k.expr.as_deref().unwrap_or(""))))
             .collect::<Vec<_>>()
             .join("_")
+    }
+
+    /// An index on the columns of each owning relation, unless an index already starts with them:
+    /// the owner-side lookup of the delete trigger and the foreign key check both read it.
+    fn owning_index(&mut self, m: &Model, table: &mut Table) -> Result<()> {
+        let t = table.name.clone();
+        for r in m.ir.relations.iter().filter(|r| r.owns && r.foreign_key) {
+            let cols = r.from.iter().map(|f| self.column_of(m, f)).collect::<Result<Vec<_>>>()?;
+            let set: BTreeSet<&str> = cols.iter().map(String::as_str).collect();
+            let starts = |keys: Vec<&str>| keys.len() >= cols.len() && keys[..cols.len()].iter().copied().collect::<BTreeSet<_>>() == set;
+            let covered = table.primary_key.iter().any(|p| starts(p.columns.iter().map(String::as_str).collect()))
+                || table.uniques.iter().any(|u| starts(u.columns.iter().map(String::as_str).collect()))
+                || table.indexes.iter().any(|ix| {
+                    ix.where_.is_none() && ix.method.is_none()
+                        && ix.keys.iter().all(|k| k.column.is_some())
+                        && starts(ix.keys.iter().filter_map(|k| k.column.as_deref()).collect())
+                });
+            if covered { continue; }
+            let mut parts: Vec<&str> = vec![&t];
+            parts.extend(cols.iter().map(String::as_str));
+            parts.push("idx");
+            let mut name = object_name(&parts);
+            if self.names.contains(&name) {
+                parts.insert(parts.len() - 1, "owns");
+                name = object_name(&parts);
+            }
+            table.indexes.push(Index {
+                name: self.claim(name, m)?,
+                unique: false,
+                method: None,
+                keys: cols.iter().map(|c| IndexKey { column: Some(c.clone()), expr: None, collation: None, opclass: None, desc: false, nulls: None }).collect(),
+                include: vec![],
+                where_: None,
+                with: vec![],
+                nulls_not_distinct: false,
+            });
+        }
+        Ok(())
+    }
+
+    /// The `AFTER DELETE` trigger of an owner table: it deletes each owned row that no other row still references.
+    /// The name sorts before the `RI_ConstraintTrigger` names, so an owning cycle deletes both rows before the key checks run.
+    fn owning_trigger(&self, m: &Model) -> Result<Option<TriggerIr>> {
+        use crate::migrate::pg::ident;
+        let schema = self.schema;
+        let mut stmts = vec![];
+        let mut locks = vec![];
+        for r in m.ir.relations.iter().filter(|r| r.owns && r.foreign_key) {
+            let target = schema.model(schema.model_idx(&r.target)?);
+            // A composed target has its level tables below the root: delete the root, the level keys cascade.
+            let mut root = target.table().to_owned();
+            let mut root_key = target.pk_field().column.clone();
+            while let Some(l) = self.levels.iter().find(|l| l.child == root) {
+                root = l.parent.clone();
+                root_key = l.parent_key.clone();
+            }
+            let mut members = vec![(root.clone(), root_key.clone())];
+            let mut i = 0;
+            while i < members.len() {
+                let parent = members[i].0.clone();
+                members.extend(self.levels.iter().filter(|l| l.parent == parent).map(|l| (l.child.clone(), l.child_key.clone())));
+                i += 1;
+            }
+            let on = if target.table() == root {
+                r.from.iter().zip(&r.to).map(|(f, to)| Ok(format!("{}.{} = OLD.{}", ident(&root), ident(&target.field(to)?.column), ident(&m.field(f)?.column)))).collect::<Result<Vec<_>>>()?
+            } else {
+                vec![format!("{}.{} = OLD.{}", ident(&root), ident(&root_key), ident(&m.field(&r.from[0])?.column))]
+            };
+            // Two owner deletes in two transactions each see the other owner row: lock the target so the second one re-checks.
+            locks.push(format!("PERFORM 1 FROM {} WHERE {} FOR NO KEY UPDATE", ident(&root), on.join(" AND ")));
+            let mut conds = on;
+            for (member, member_key) in &members {
+                for other in &schema.models {
+                    for fk in other.ir.relations.iter().filter(|fk| fk.foreign_key) {
+                        let member_model = schema.model(schema.model_idx(&fk.target)?);
+                        if member_model.table() != member { continue; }
+                        let from = fk.from.iter().map(|f| Ok(other.field(f)?.column.clone())).collect::<Result<Vec<_>>>()?;
+                        if self.levels.iter().any(|l| l.child == other.table() && l.parent == *member && from == [l.child_key.clone()]) { continue; }
+                        let to = fk.to.iter().map(|f| Ok(member_model.field(f)?.column.clone())).collect::<Result<Vec<_>>>()?;
+                        let eq = |a: &str, b: &str, cols: &[String], tcols: &[String]| cols.iter().zip(tcols).map(|(c, tc)| format!("{a}.{} = {b}.{}", ident(c), ident(tc))).collect::<Vec<_>>().join(" AND ");
+                        conds.push(if member == &root {
+                            format!("NOT EXISTS (SELECT 1 FROM {} AS x WHERE {})", ident(other.table()), eq("x", &ident(&root), &from, &to))
+                        } else {
+                            format!("NOT EXISTS (SELECT 1 FROM {} AS x JOIN {} AS m ON {} WHERE m.{} = {}.{})", ident(other.table()), ident(member), eq("x", "m", &from, &to), ident(member_key), ident(&root), ident(&root_key))
+                        });
+                    }
+                }
+            }
+            stmts.push(format!("DELETE FROM {} WHERE {}", ident(&root), conds.join(" AND ")));
+        }
+        if stmts.is_empty() { return Ok(None); }
+        let body = if schema.dialect == crate::dialect::Dialect::Sqlite {
+            stmts.join(";\n")
+        } else {
+            format!("BEGIN\n{};\nRETURN NULL;\nEND", locks.iter().chain(&stmts).cloned().collect::<Vec<_>>().join(";\n"))
+        };
+        Ok(Some(TriggerIr {
+            name: "A_owns".into(),
+            timing: TriggerTiming::After,
+            events: vec![TriggerEvent::Delete],
+            for_each: ForEach::Row,
+            body: Some(body),
+            ..Default::default()
+        }))
     }
 
     fn table(&mut self, m: &Model) -> Result<Table> {
@@ -973,7 +1087,9 @@ impl Builder<'_> {
             }
         }
 
-        for tr in &m.ir.triggers {
+        self.owning_index(m, &mut table)?;
+        let owning = self.owning_trigger(m)?;
+        for tr in m.ir.triggers.iter().chain(owning.as_ref()) {
             if let (true, Some(rule)) = (self.baseline, &tr.replaces_rule) {
                 if !table.rules.contains(rule) { table.rules.push(rule.clone()); }
                 continue;
@@ -1063,12 +1179,9 @@ fn sql_view(schema: &Schema, m: &Model, v: &crate::ir::SqlViewIr, table: Table) 
     Ok(SqlView { name: table.name, body: v.body.clone(), materialized: v.materialized, depends_on, columns, indexes })
 }
 
-pub fn build(schema: &Schema) -> Result<(DbSchema, Renames)> {
-    build_with(schema, false)
-}
-
-/// [`build`]; with `baseline`, the schema as a database that still holds the rules that its triggers replace.
-pub fn build_with(schema: &Schema, baseline: bool) -> Result<(DbSchema, Renames)> {
+/// The schema as a database; with `baseline`, the schema as a database that still holds the rules that its triggers replace.
+/// `levels` are the owner links of a composed model: the delete trigger of an owning relation needs them.
+pub fn build_with(schema: &Schema, baseline: bool, levels: &[LevelLink]) -> Result<(DbSchema, Renames)> {
     let mut b = Builder {
         schema,
         catalog: Catalog::new(&[schema.catalog.as_slice(), schema.extensions.as_slice()].concat()),
@@ -1077,6 +1190,7 @@ pub fn build_with(schema: &Schema, baseline: bool) -> Result<(DbSchema, Renames)
         local_names: BTreeSet::new(),
         trigger_functions: vec![],
         baseline,
+        levels,
     };
     let mut db = DbSchema { identities: schema.identities.clone(), dialect: schema.dialect, version: if schema.models.iter().any(|m| m.ir.sql_view.is_some()) { SNAPSHOT_VERSION } else if !schema.partitions.is_empty() { 4 } else if schema.identities.is_some() { 3 } else if schema.dialect.is_postgres() { 1 } else { 2 }, ..Default::default() };
     let mut renames = Renames::default();

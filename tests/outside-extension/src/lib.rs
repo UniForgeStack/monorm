@@ -35,7 +35,7 @@ fn template(ir: &mut SchemaIr) -> Result<(), String> {
 fn link(name: &str, target: &str, key: &str, foreign_key: bool) -> RelationIr {
     RelationIr {
         name: name.into(), kind: RelKind::One, target: target.into(), from: vec![key.into()], to: vec![key.into()],
-        foreign_key, on_delete: foreign_key.then_some(OnDelete::Cascade), on_update: None, deferrable: None, fk_name: None, through: None, label: None, join_label: None,
+        foreign_key, on_delete: foreign_key.then_some(OnDelete::Cascade), on_update: None, deferrable: None, fk_name: None, through: None, label: None, join_label: None, owns: false,
     }
 }
 

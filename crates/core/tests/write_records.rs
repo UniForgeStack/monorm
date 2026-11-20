@@ -163,3 +163,29 @@ fn published_scope_keys_are_scope_keys() {
     assert_eq!(schema.scope_keys().into_iter().collect::<Vec<_>>(), ["user"]);
     assert_eq!(schema.published_scope_keys().collect::<Vec<_>>(), ["user"]);
 }
+
+#[test]
+fn an_owning_field_belongs_to_the_root_of_a_composed_model() {
+    let build = |owner: &str| {
+        let id = json!({"name": "id", "column": "id", "type": "int", "primary_key": true});
+        let spec_id = json!({"name": "spec_id", "column": "spec_id", "type": "int"});
+        let rev = json!({"name": "rev", "column": "rev", "type": "int"});
+        let spec = json!({"name": "Spec", "table": "specs", "fields": [id]});
+        let owning = json!({"name": "spec", "kind": "one", "target": "Spec", "from": "spec_id", "to": "id", "foreign_key": true, "owns": true});
+        let link = json!({"name": "parent", "kind": "one", "target": "Parent", "from": "id", "to": "id", "foreign_key": true});
+        let (parent, child) = if owner == "Parent" { (json!([owning]), json!([link])) } else { (json!([]), json!([link, owning])) };
+        let physical = json!([
+            {"name": "Parent", "table": "parents", "fields": [id, spec_id, rev], "relations": parent},
+            {"name": "Child", "table": "children", "fields": [id, spec_id], "relations": child},
+            spec]);
+        let mut logical = physical.clone();
+        logical[1]["fields"].as_array_mut().unwrap().push(rev.clone());
+        let behavior = json!({"schema_contract": SCHEMA_CONTRACT, "schema_contract_minor": 6, "storage": {"models": physical},
+            "field_storage": [{"model": "Child", "field": "rev", "owner": "Parent", "column": "rev"}],
+            "owner_links": [{"child": "Child", "parent": "Parent", "child_key": "id", "parent_key": "id"}]});
+        Schema::from_ir(serde_json::from_value(json!({"models": logical, "behavior": behavior})).unwrap())
+    };
+    if let Err(e) = build("Parent") { panic!("{e}") }
+    let e = build("Child").err().expect("a level below the root can't own");
+    assert!(e.contains("relation Child.spec: owns: an owning field belongs to the root of a composed model"), "{e}");
+}

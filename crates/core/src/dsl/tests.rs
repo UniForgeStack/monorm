@@ -1994,3 +1994,84 @@ fn a_marker_that_a_pass_wrapped_is_an_error() {
     let e = deferred.finish(&mut ir).unwrap_err();
     assert!(e.msg.contains("was not resolved"), "{}", e.msg);
 }
+
+fn owning_src(provider: &str, owner_extra: &str, relation: &str) -> String {
+    format!(
+        "datasource db {{\n  provider = \"{provider}\"\n}}\nmodel Guitar {{\n  id BigInt @id\n  spec_id BigInt\n  spec Spec {relation}\n{owner_extra}}}\nmodel Spec {{\n  id BigInt @id\n  code String @unique\n  guitars Guitar[]\n}}\n"
+    )
+}
+
+#[test]
+fn an_owning_relation_sets_the_flag_and_the_contract_minor() {
+    let ir = ok(&owning_src("postgresql", "", "@relation(fields: [spec_id], references: [id], owns: true)"));
+    assert!(ir.models.iter().find(|m| m.name == "Guitar").unwrap().relations.iter().find(|r| r.name == "spec").unwrap().owns);
+    let mut stamped = ir.clone();
+    stamped.stamp_expression_records();
+    assert_eq!(stamped.behavior.schema_contract_minor, 6);
+    let plain = ok(&owning_src("postgresql", "", "@relation(fields: [spec_id], references: [id])"));
+    assert!(!plain.models.iter().flat_map(|m| &m.relations).any(|r| r.owns));
+    let mut stamped = plain;
+    stamped.stamp_expression_records();
+    assert!(stamped.behavior.schema_contract_minor < 6);
+}
+
+#[test]
+fn an_owning_relation_takes_every_on_delete_value() {
+    for action in ["Cascade", "NoAction", "Restrict"] {
+        let rel = format!("@relation(fields: [spec_id], references: [id], onDelete: {action}, owns: true)");
+        check(ok(&owning_src("postgresql", "", &rel))).unwrap_or_else(|e| panic!("{action}: {e}"));
+    }
+    let nullable = "datasource db {\n  provider = \"postgresql\"\n}\nmodel Guitar {\n  id BigInt @id\n  spec_id BigInt?\n  spec Spec? @relation(fields: [spec_id], references: [id], onDelete: SetNull, owns: true)\n}\nmodel Spec {\n  id BigInt @id\n  guitars Guitar[]\n}\n";
+    check(ok(nullable)).unwrap();
+}
+
+#[test]
+fn owns_goes_on_a_to_one_side_with_fields() {
+    let list = fails(&owning_src("postgresql", "", "@relation(fields: [spec_id], references: [id], owns: true)").replace("guitars Guitar[]", "guitars Guitar[] @relation(owns: true)"));
+    assert!(list.contains("owns: goes on a to-one side that has fields: and references:, not on Guitar[]"), "{list}");
+    let back = "datasource db {\n  provider = \"postgresql\"\n}\nmodel Guitar {\n  id BigInt @id\n  spec_id BigInt @unique\n  spec Spec @relation(fields: [spec_id], references: [id])\n}\nmodel Spec {\n  id BigInt @id\n  guitar Guitar? @relation(owns: true)\n}\n";
+    assert!(fails(back).contains("owns: goes on a to-one side"));
+    let through = "datasource db {\n  provider = \"postgresql\"\n}\nmodel A {\n  id BigInt @id\n  bs B[] @relation(through: AB, owns: true)\n}\nmodel B {\n  id BigInt @id\n}\nmodel AB {\n  a_id BigInt\n  b_id BigInt\n  a A @relation(fields: [a_id], references: [id])\n  b B @relation(fields: [b_id], references: [id])\n  @@id([a_id, b_id])\n}\n";
+    assert!(fails(through).contains("not on a many-to-many relation"));
+    assert!(fails(&owning_src("postgresql", "", "@relation(fields: [spec_id], references: [id], owns: 1)")).contains("owns must be true or false"));
+}
+
+#[test]
+fn an_owning_relation_references_the_primary_key() {
+    let e = fails(&owning_src("postgresql", "", "@relation(fields: [spec_id], references: [code], owns: true)").replace("spec_id BigInt", "spec_id String"));
+    assert!(e.contains("relation Guitar.spec: owns: references: must be the primary key of Spec"), "{e}");
+}
+
+#[test]
+fn an_owning_relation_keeps_the_scope_of_the_owned_row() {
+    use crate::writes::ScopedField;
+    let scoped = |model: &str| ScopedField { source: "x".into(), model: model.into(), field: "id".into(), key: "tenant".into() };
+    let mut ir = ok(&owning_src("postgresql", "", "@relation(fields: [spec_id], references: [id], owns: true)"));
+    ir.behavior.scoped_fields = vec![scoped("Guitar")];
+    ir.stamp_expression_records();
+    let e = check(ir.clone()).err().expect("an error");
+    assert!(e.contains("Guitar and Spec must have the same scope keys"), "{e}");
+    ir.behavior.scoped_fields = vec![scoped("Guitar"), scoped("Spec")];
+    check(ir).unwrap();
+}
+
+#[test]
+fn a_model_owns_itself_on_postgresql_only() {
+    let own = |provider: &str| {
+        format!("datasource db {{\n  provider = \"{provider}\"\n}}\nmodel Node {{\n  id BigInt @id\n  next_id BigInt?\n  next Node? @relation(\"next\", fields: [next_id], references: [id], owns: true)\n  prev Node[] @relation(\"next\")\n}}\n")
+    };
+    check(ok(&own("postgresql"))).unwrap();
+    let e = check(ok(&own("sqlite"))).err().expect("an error");
+    assert!(e.contains("a model can't own itself on SQLite"), "{e}");
+}
+
+#[test]
+fn an_owning_cycle_of_any_length_is_refused_on_sqlite_only() {
+    let ring = |provider: &str| format!("datasource db {{\n  provider = \"{provider}\"\n}}\n\
+        model A {{\n  id BigInt @id\n  b_id BigInt?\n  b B? @relation(\"ab\", fields: [b_id], references: [id], owns: true)\n  from_c C[] @relation(\"ca\")\n}}\n\
+        model B {{\n  id BigInt @id\n  c_id BigInt?\n  c C? @relation(\"bc\", fields: [c_id], references: [id], owns: true)\n  from_a A[] @relation(\"ab\")\n}}\n\
+        model C {{\n  id BigInt @id\n  a_id BigInt?\n  a A? @relation(\"ca\", fields: [a_id], references: [id], owns: true)\n  from_b B[] @relation(\"bc\")\n}}\n");
+    check(ok(&ring("postgresql"))).unwrap();
+    let e = check(ok(&ring("sqlite"))).err().expect("an error");
+    assert!(e.contains("an owning cycle (") && e.contains("is not allowed on SQLite"), "{e}");
+}
