@@ -119,9 +119,11 @@ async def test_a_scope_shows_its_rows_and_the_client_equals_a_raw_read(world):
     app = await connect_as("app")
     with monorm.scope(shop=1):
         via_the_client = sorted(r.total for r in await Order.objects.using(app).all())
-    async with Raw(app, 1):
+    with monorm.scope(shop=1):
         raw = sorted(r["total"] for r in await app.fetch("SELECT total FROM rls_orders"))
-    assert via_the_client == raw == [10, 11]
+        async with app.transaction():
+            raw_in_tx = sorted(r["total"] for r in await app.fetch("SELECT total FROM rls_orders"))
+    assert via_the_client == raw == raw_in_tx == [10, 11]
     with monorm.scope(shop=2):
         assert [r.total for r in await Order.objects.using(app).all()] == [20]
 

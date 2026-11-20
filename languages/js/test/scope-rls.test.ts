@@ -106,8 +106,10 @@ scenario("a scope shows its rows and the client equals a raw read", async (owner
   const app = await connectAs("app");
   const totals = async (shop: number) => ((await scope({ shop }, () => Order.objects.using(app))) as Any[]).map((o) => o.total).sort((a, b) => a - b);
   const viaTheClient = await totals(1);
-  const rawRows = (await raw(app, 1, () => app.fetch("SELECT total FROM rls_js_orders"))).map((r) => Number(r["total"])).sort((a, b) => a - b);
+  const rawRows = (await scope({ shop: 1 }, () => app.fetch("SELECT total FROM rls_js_orders"))).map((r) => Number(r["total"])).sort((a, b) => a - b);
+  const rawInTx = (await scope({ shop: 1 }, () => app.transaction(() => app.fetch("SELECT total FROM rls_js_orders")))).map((r) => Number(r["total"])).sort((a, b) => a - b);
   assert.deepEqual(viaTheClient, rawRows);
+  assert.deepEqual(viaTheClient, rawInTx);
   assert.deepEqual(viaTheClient, [10, 11]);
   assert.deepEqual(await totals(2), [20]);
 });

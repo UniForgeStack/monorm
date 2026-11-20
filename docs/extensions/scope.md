@@ -95,8 +95,8 @@ Do not put the role of your application in `exempt_roles`: that role then reads 
 
 The ORM sets `scope.<key>` for each key that a policy reads, from the `scope()` context, in the first statement of the transaction.
 A `scope=` option on one call is not sent to the database.
-Raw SQL (`db.execute`, `db.fetch`) carries no setting.
-In a raw statement, set it yourself at the start of the transaction: `SELECT set_config('scope.shop', '1', true)`.
+Raw SQL (`db.execute`, `db.fetch`) inside `scope()` carries the same settings, in a transaction and outside one.
+A connection that MonOrm does not open (Django, `psql`) sets it itself at the start of the transaction: `SELECT set_config('scope.shop', '1', true)`.
 
 ## Check the database: `monorm audit`
 
