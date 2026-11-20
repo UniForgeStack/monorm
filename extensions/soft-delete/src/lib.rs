@@ -281,8 +281,8 @@ fn lock_target(dialect: Dialect, o: &Owning, row: &str) -> Option<String> {
 
 /// `AFTER UPDATE OF` the field, when an owner becomes soft-deleted: soft-delete the target of each owning relation that
 /// no live owner holds any more, with the owner's stamp. It reads `OLD`, so a key move in the same statement releases the old target.
-fn sweep_trigger(dialect: Dialect, all: &[Owning], rels: &[&Owning], field: &str) -> TriggerIr {
-    let c = ident(field);
+fn sweep_trigger(dialect: Dialect, all: &[Owning], rels: &[&Owning], field: &str, column: &str) -> TriggerIr {
+    let c = ident(column);
     let mut statements = vec![];
     for o in rels {
         statements.extend(lock_target(dialect, o, "OLD"));
@@ -298,8 +298,8 @@ fn sweep_trigger(dialect: Dialect, all: &[Owning], rels: &[&Owning], field: &str
 
 /// `AFTER UPDATE OF` the field, when an owner is undeleted: revive the target that its delete stamped (the same stamp),
 /// and the target that is deleted while this owner is its only live owner.
-fn owned_revive_trigger(dialect: Dialect, all: &[Owning], rels: &[&Owning], field: &str) -> TriggerIr {
-    let c = ident(field);
+fn owned_revive_trigger(dialect: Dialect, all: &[Owning], rels: &[&Owning], field: &str, column: &str) -> TriggerIr {
+    let c = ident(column);
     let mut statements = vec![];
     for o in rels {
         statements.extend(lock_target(dialect, o, "NEW"));
@@ -491,7 +491,8 @@ fn owning_triggers(ir: &mut SchemaIr, roles: &[SoftDelete], added: &[String]) ->
     }
     for (name, field) in owners {
         let rels: Vec<&Owning> = all.iter().filter(|o| o.model == name).collect();
-        let triggers = [sweep_trigger(dialect, &all, &rels, &field), owned_revive_trigger(dialect, &all, &rels, &field)];
+        let Some(column) = rels.iter().find_map(|o| o.soft.clone()) else { continue };
+        let triggers = [sweep_trigger(dialect, &all, &rels, &field, &column), owned_revive_trigger(dialect, &all, &rels, &field, &column)];
         for model in ir.models_named_mut(&name) {
             model.triggers.retain(|t| triggers.iter().all(|n| n.name != t.name));
             for t in &triggers { model.push_trigger(t.clone())?; }
@@ -984,6 +985,19 @@ mod tests {
 
     fn trigger<'a>(ir: &'a SchemaIr, model: &str, name: &str) -> &'a TriggerIr {
         ir.models.iter().find(|m| m.name == model).unwrap().triggers.iter().find(|t| t.name == name).unwrap_or_else(|| panic!("{model} has no trigger {name}"))
+    }
+
+    #[test]
+    fn the_sweep_and_the_owned_revive_use_the_mapped_column_of_the_field() {
+        let mut ir = owning("postgres", 1);
+        for m in &mut ir.models { for f in m.fields.iter_mut().filter(|f| f.name == "deleted") { f.column = "_deleted_at".into(); } }
+        prepared(&mut ir).unwrap();
+        for name in ["soft_delete_sweep", "soft_delete_owned_revive"] {
+            let t = trigger(&ir, "B1", name);
+            let text = format!("{} {}", t.when.as_deref().unwrap(), t.body.as_deref().unwrap());
+            assert!(text.contains(r#""_deleted_at""#) && !text.contains(r#""deleted""#), "{name}: {text}");
+            assert_eq!(t.update_of, vec!["deleted".to_owned()]);
+        }
     }
 
     #[test]
