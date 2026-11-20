@@ -49,9 +49,9 @@ test("pull, baseline and drift of a Django-style database", async () => {
 
   const pulled = await pull(db);
   assert.ok(pulled.schema.includes('map: "bundles_bundle_shop_id_8f3e_fk_account_shop_id"'));
-  // a trigger with REFERENCING transition tables is left out, not written without them
-  assert.ok(!pulled.schema.includes("@@trigger(account_shop_updated_at"));
-  assert.ok(pulled.gaps.some((g) => g.includes("account_shop_updated_at has REFERENCING transition tables")));
+  // a trigger with REFERENCING transition tables reads back with them
+  assert.ok(pulled.schema.includes("@@trigger(account_shop_updated_at, referencing(new: new_rows), when: after, operation: [update], level: statement"));
+  assert.ok(!pulled.gaps.some((g) => g.includes("account_shop_updated_at")));
   assert.ok(pulled.gaps.some((g) => g.startsWith("rule bundles_bundle_soft_delete")));
   assert.deepEqual(pulled.differences.map((s) => s.summary), EXPECTED);
 
@@ -160,7 +160,7 @@ test("sqlite triggers pull back as trigger attributes without drift", async () =
   // a trigger in another form is a gap, not an attribute
   await db.execute("CREATE TRIGGER other AFTER INSERT ON tr_posts BEGIN SELECT 1; END");
   const pulled = await pull(db);
-  assert.ok(pulled.schema.includes('@@trigger(touch, after: [update], update_of: [title], when: "old.title <> new.title", body: '), pulled.schema);
+  assert.ok(pulled.schema.includes('@@trigger(touch, when: after, operation: [update_of(title)], condition: "old.title <> new.title", func: '), pulled.schema);
   assert.ok(!pulled.schema.includes("@@trigger(other"));
   assert.ok(pulled.gaps.some((g) => g.startsWith("trigger other on tr_posts")));
   assert.ok(!pulled.gaps.some((g) => g.startsWith("trigger tr_posts_touch_trigger")));

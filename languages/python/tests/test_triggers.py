@@ -5,6 +5,7 @@ import os
 import pytest
 
 import monorm
+from artifact_caps import has_extension
 from monorm import QueryError
 
 MODEL = """
@@ -48,6 +49,21 @@ model TgStock {
   @@map("tg_stock")
   @@trigger(nonnegative, when: after, operation: [insert, update], deferrable: deferred, func: "BEGIN IF (SELECT stock FROM tg_stock WHERE id = NEW.id) < 0 THEN RAISE EXCEPTION 'negative stock'; END IF; RETURN NULL; END;")
   @@trigger(batch, referencing(new: n), when: after, operation: [insert], level: statement, func: "BEGIN INSERT INTO tg_log (note) SELECT 'inserted ' || count(*) FROM n; RETURN NULL; END;")
+}
+model TgBound {
+  id Int @id @default(autoincrement())
+  stock Int
+  @@map("tg_bound")
+  @@trigger(cap, when: after, operation: [insert, update], deferrable: immediate, func: "BEGIN IF (SELECT stock FROM tg_bound WHERE id = NEW.id) > 10 THEN RAISE EXCEPTION 'over the cap'; END IF; RETURN NULL; END;")
+}
+model TgWide {
+  id Int @id @default(autoincrement())
+  a Int
+  b Int
+  @@map("tg_wide")
+  @@trigger(declared, when: before, operation: [insert], declare: "n int := 40;", func: "BEGIN NEW.a := n + 2; RETURN NEW; END;")
+  @@trigger(both, when: after, operation: [update], condition: [all_change(a, b)], func: "BEGIN INSERT INTO tg_log (note) VALUES ('both'); RETURN NULL; END;")
+  @@trigger(wiped, when: after, operation: [truncate], level: statement, func: "BEGIN INSERT INTO tg_log (note) VALUES ('wiped'); RETURN NULL; END;")
 }
 """
 
@@ -107,11 +123,69 @@ async def test_a_deferred_check_fails_at_commit():
         await close(db)
 
 
+async def test_an_immediate_constraint_trigger_defers_under_set_constraints():
+    db, m = await open_database("postgresql", POSTGRES_ONLY)
+    try:
+        Bound = m["TgBound"]
+        reached = []
+        with pytest.raises(monorm.DatabaseError, match="over the cap"):
+            async with db.transaction():
+                await Bound.objects.using(db).insert(stock=11)
+                reached.append("after the insert")
+        assert reached == []
+        async with db.transaction():
+            await db.execute("SET CONSTRAINTS cap DEFERRED")
+            row = await Bound.objects.using(db).insert(stock=11)
+            await Bound.objects.using(db).filter(Bound.id == row.id).update(stock=5)
+        assert [r["stock"] for r in await db.fetch("SELECT stock FROM tg_bound")] == [5]
+    finally:
+        await close(db)
+
+
+STAMPED = """
+model TgStamp {
+  id Int @id @default(autoincrement())
+  name String
+  @@map("tg_stamps")
+  @@timestamps.updated_at("changed", mode: "application")
+  @@trigger(stamped, when: after, operation: [update], condition: any_change(exclude_auto: true), func: "BEGIN INSERT INTO tg_log (note) VALUES ('stamped'); RETURN NULL; END;")
+}
+"""
+
+
+@pytest.mark.skipif(not has_extension("monorm.timestamps"), reason="requires the timestamps package")
+async def test_exclude_auto_leaves_out_the_field_an_extension_writes():
+    db, m = await open_database("postgresql", POSTGRES_ONLY + STAMPED)
+    try:
+        Stamp = m["TgStamp"]
+        await Stamp.objects.using(db).insert_many([{"name": "a"}, {"name": "b"}])
+        await db.execute("UPDATE tg_stamps SET changed = '2001-02-03T00:00:00'")
+        assert await db.fetch("SELECT note FROM tg_log") == []
+        await Stamp.objects.using(db).filter(Stamp.name == "a").update(name="c")
+        await db.execute("UPDATE tg_stamps SET name = 'd' WHERE name = 'b'")
+        assert [r["note"] for r in await db.fetch("SELECT note FROM tg_log")] == ["stamped", "stamped"]
+    finally:
+        await close(db)
+
+
 async def test_a_statement_trigger_reads_the_transition_table():
     db, m = await open_database("postgresql", POSTGRES_ONLY)
     try:
         await m["TgStock"].objects.using(db).insert_many([{"stock": 1}, {"stock": 2}, {"stock": 3}])
         assert [r["note"] for r in await db.fetch("SELECT note FROM tg_log")] == ["inserted 3"]
+    finally:
+        await close(db)
+
+
+async def test_declare_all_change_and_truncate_run_on_postgresql():
+    db, m = await open_database("postgresql", POSTGRES_ONLY)
+    try:
+        await m["TgWide"].objects.using(db).insert(a=0, b=1)
+        assert (await db.fetch("SELECT a FROM tg_wide"))[0]["a"] == 42
+        await db.execute("UPDATE tg_wide SET a = 1, b = 2")
+        await db.execute("UPDATE tg_wide SET b = 3")
+        await db.execute("TRUNCATE tg_wide")
+        assert [r["note"] for r in await db.fetch("SELECT note FROM tg_log ORDER BY id")] == ["both", "wiped"]
     finally:
         await close(db)
 
@@ -163,6 +237,19 @@ async def test_a_skip_block_raises_on_sqlite_and_referencing_is_refused():
         monorm.loads(source, registry=monorm.Registry())
 
 
+@pytest.mark.parametrize(
+    "attributes, word",
+    [
+        ('deferrable: deferred, func: "SELECT 1"', "deferrable"),
+        ('declare: "x int;", func: "SELECT 1"', "declare"),
+    ],
+)
+def test_deferrable_and_declare_are_refused_on_sqlite(attributes, word):
+    source = f'datasource db {{ provider = "sqlite" }}\nmodel T {{ id Int @id\n @@trigger(t, when: after, operation: [insert], {attributes}) }}'
+    with pytest.raises(Exception, match=f"`{word}` needs PostgreSQL; sqlite has no such trigger feature"):
+        monorm.loads(source, registry=monorm.Registry())
+
+
 def audit(path):
     import subprocess
     import sys
@@ -171,7 +258,7 @@ def audit(path):
     return subprocess.run([sys.executable, "-m", "monorm", "--schema", "schema.prisma", "audit"], cwd=path, env=env, capture_output=True, text=True)
 
 
-async def test_audit_lists_an_unknown_trigger_and_fails_on_a_disabled_one(tmp_path):
+async def test_audit_lists_an_unknown_trigger_and_fails_on_a_disabled_or_an_outdated_one(tmp_path):
     if not os.environ.get("ORM_TEST_DATABASE_URL"):
         pytest.skip("set ORM_TEST_DATABASE_URL for PostgreSQL")
     db, _ = await open_database("postgresql")
@@ -185,6 +272,11 @@ async def test_audit_lists_an_unknown_trigger_and_fails_on_a_disabled_one(tmp_pa
         await db.execute("ALTER TABLE tg_items DISABLE TRIGGER bump")
         off = audit(tmp_path)
         assert off.returncode == 1 and "tg_items.bump: disabled" in off.stdout, off.stdout
+        await db.execute("ALTER TABLE tg_items ENABLE TRIGGER bump")
+        edited = schema("postgresql").replace("SET version = version + 1", "SET version = version + 2")
+        (tmp_path / "schema.prisma").write_text(f'datasource db {{\n provider = "postgresql"\n}}\n{edited}')
+        stale = audit(tmp_path)
+        assert stale.returncode == 1 and "tg_items.bump: outdated" in stale.stdout, stale.stdout
     finally:
         await db.execute("DROP TABLE IF EXISTS tg_items CASCADE; DROP FUNCTION IF EXISTS tg_foreign()")
         await close(db)

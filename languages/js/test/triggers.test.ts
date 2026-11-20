@@ -5,6 +5,8 @@ import { test } from "node:test";
 
 import { connect, DatabaseError, loads, QueryError, Registry, skipTriggers, type Database } from "../src/index.js";
 
+import { hasExtension } from "./artifact-caps.js";
+
 type Any = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
 const MODEL = (bump: string, when: string, shout: string) => `
@@ -41,6 +43,31 @@ model TgStock {
   @@map("tg_js_stock")
   @@trigger(nonnegative, when: after, operation: [insert, update], deferrable: deferred, func: "BEGIN IF (SELECT stock FROM tg_js_stock WHERE id = NEW.id) < 0 THEN RAISE EXCEPTION 'negative stock'; END IF; RETURN NULL; END;")
   @@trigger(batch, referencing(new: n), when: after, operation: [insert], level: statement, func: "BEGIN INSERT INTO tg_js_log (note) SELECT 'inserted ' || count(*) FROM n; RETURN NULL; END;")
+}
+model TgBound {
+  id Int @id @default(autoincrement())
+  stock Int
+  @@map("tg_js_bound")
+  @@trigger(cap, when: after, operation: [insert, update], deferrable: immediate, func: "BEGIN IF (SELECT stock FROM tg_js_bound WHERE id = NEW.id) > 10 THEN RAISE EXCEPTION 'over the cap'; END IF; RETURN NULL; END;")
+}
+model TgWide {
+  id Int @id @default(autoincrement())
+  a Int
+  b Int
+  @@map("tg_js_wide")
+  @@trigger(declared, when: before, operation: [insert], declare: "n int := 40;", func: "BEGIN NEW.a := n + 2; RETURN NEW; END;")
+  @@trigger(both, when: after, operation: [update], condition: [all_change(a, b)], func: "BEGIN INSERT INTO tg_js_log (note) VALUES ('both'); RETURN NULL; END;")
+  @@trigger(wiped, when: after, operation: [truncate], level: statement, func: "BEGIN INSERT INTO tg_js_log (note) VALUES ('wiped'); RETURN NULL; END;")
+}
+`;
+
+const STAMPED = `
+model TgStamp {
+  id Int @id @default(autoincrement())
+  name String
+  @@map("tg_js_stamps")
+  @@timestamps.updated_at("changed", mode: "application")
+  @@trigger(stamped, when: after, operation: [update], condition: any_change(exclude_auto: true), func: "BEGIN INSERT INTO tg_js_log (note) VALUES ('stamped'); RETURN NULL; END;")
 }
 `;
 
@@ -93,10 +120,51 @@ test("a deferred check fails at commit", { skip: !postgresUrl }, () =>
     assert.equal((await db.fetch("SELECT id FROM tg_js_stock")).length, 1);
   }, POSTGRES_ONLY));
 
+test("an immediate constraint trigger defers under set constraints", { skip: !postgresUrl }, () =>
+  withDatabase("postgresql", async (db, m) => {
+    const Bound = m["TgBound"];
+    const reached: string[] = [];
+    await assert.rejects(
+      db.transaction(async () => {
+        await Bound.objects.using(db).insert({ stock: 11 });
+        reached.push("after the insert");
+      }),
+      (e: Any) => e instanceof DatabaseError && /over the cap/.test(e.message),
+    );
+    assert.deepEqual(reached, []);
+    await db.transaction(async () => {
+      await db.execute("SET CONSTRAINTS cap DEFERRED");
+      const row: Any = await Bound.objects.using(db).insert({ stock: 11 });
+      await Bound.objects.using(db).filter(Bound.id.eq(row.id)).update({ stock: 5 });
+    });
+    assert.deepEqual((await db.fetch("SELECT stock FROM tg_js_bound")).map((r) => Number(r["stock"])), [5]);
+  }, POSTGRES_ONLY));
+
+test("exclude_auto leaves out the field an extension writes", { skip: !postgresUrl || !hasExtension("monorm.timestamps") }, () =>
+  withDatabase("postgresql", async (db, m) => {
+    const Stamp = m["TgStamp"];
+    await Stamp.objects.using(db).insertMany([{ name: "a" }, { name: "b" }]);
+    await db.execute("UPDATE tg_js_stamps SET changed = '2001-02-03T00:00:00'");
+    assert.deepEqual(await db.fetch("SELECT note FROM tg_js_log"), []);
+    await Stamp.objects.using(db).filter(Stamp.name.eq("a")).update({ name: "c" });
+    await db.execute("UPDATE tg_js_stamps SET name = 'd' WHERE name = 'b'");
+    assert.deepEqual((await db.fetch("SELECT note FROM tg_js_log")).map((r) => r["note"]), ["stamped", "stamped"]);
+  }, POSTGRES_ONLY + STAMPED));
+
 test("a statement trigger reads the transition table", { skip: !postgresUrl }, () =>
   withDatabase("postgresql", async (db, m) => {
     await m["TgStock"].objects.using(db).insertMany([{ stock: 1 }, { stock: 2 }, { stock: 3 }]);
     assert.deepEqual((await db.fetch("SELECT note FROM tg_js_log")).map((r) => r["note"]), ["inserted 3"]);
+  }, POSTGRES_ONLY));
+
+test("declare, all_change and truncate run on postgresql", { skip: !postgresUrl }, () =>
+  withDatabase("postgresql", async (db, m) => {
+    await m["TgWide"].objects.using(db).insert({ a: 0, b: 1 });
+    assert.equal(Number((await db.fetch("SELECT a FROM tg_js_wide"))[0]!["a"]), 42);
+    await db.execute("UPDATE tg_js_wide SET a = 1, b = 2");
+    await db.execute("UPDATE tg_js_wide SET b = 3");
+    await db.execute("TRUNCATE tg_js_wide");
+    assert.deepEqual((await db.fetch("SELECT note FROM tg_js_log ORDER BY id")).map((r) => r["note"]), ["both", "wiped"]);
   }, POSTGRES_ONLY));
 
 test("a skippable trigger skips under a bypass role and not outside it", { skip: !postgresUrl }, () =>
@@ -128,3 +196,13 @@ test("a skip block raises on sqlite and referencing is refused", async () => {
     'datasource db { provider = "sqlite" }\nmodel T { id Int @id\n @@trigger(t, referencing(new: n), when: after, operation: [insert], func: "SELECT 1") }';
   assert.throws(() => loads(source, { registry: new Registry() }), /referencing/);
 });
+
+for (const [attributes, word] of [
+  ['deferrable: deferred, func: "SELECT 1"', "deferrable"],
+  ['declare: "x int;", func: "SELECT 1"', "declare"],
+] as const) {
+  test(`deferrable and declare are refused on sqlite (${word})`, () => {
+    const source = `datasource db { provider = "sqlite" }\nmodel T { id Int @id\n @@trigger(t, when: after, operation: [insert], ${attributes}) }`;
+    assert.throws(() => loads(source, { registry: new Registry() }), new RegExp(`\`${word}\` needs PostgreSQL; sqlite has no such trigger feature`));
+  });
+}

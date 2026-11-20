@@ -36,6 +36,8 @@ pub struct Introspection {
     pub gaps: Vec<String>,
     /// The rules of the database; each one also has a line in `gaps` (see [`rule_gap`]).
     pub rules: Vec<LiveRule>,
+    /// `(table, name)` of each trigger that is switched off (`tgenabled` is `D` or `R`).
+    pub disabled_triggers: Vec<(String, String)>,
 }
 
 /// The gap line of a rule that the schema language cannot say.
@@ -211,7 +213,10 @@ struct PgTrigger {
     def: String,
     constraint: bool,
     enabled: String,
-    transition: bool,
+    deferrable: bool,
+    deferred: bool,
+    old_table: Option<String>,
+    new_table: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -340,7 +345,7 @@ const TRIGGERS_SQL: &str = "SELECT coalesce(json_agg(json_build_object('table', 
                  JOIN pg_attribute a ON a.attrelid = t.tgrelid AND a.attnum = k.n), \
      'function', p.proname, 'function_schema', pn.nspname, 'args', encode(t.tgargs, 'hex'), \
      'def', pg_get_triggerdef(t.oid, true), 'constraint', t.tgconstraint <> 0, 'enabled', t.tgenabled::text, \
-     'transition', t.tgoldtable IS NOT NULL OR t.tgnewtable IS NOT NULL) ORDER BY t.tgname), '[]') \
+     'deferrable', t.tgdeferrable, 'deferred', t.tginitdeferred, 'old_table', t.tgoldtable, 'new_table', t.tgnewtable) ORDER BY t.tgname), '[]') \
      FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace \
      JOIN pg_proc p ON p.oid = t.tgfoid JOIN pg_namespace pn ON pn.oid = p.pronamespace \
      WHERE n.nspname = current_schema() AND NOT t.tgisinternal AND t.tgparentid = 0";
@@ -651,16 +656,15 @@ async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
             continue;
         }
         let Some(t) = by_oid.get_mut(&tr.table) else { continue };
-        if tr.constraint {
-            gaps.push(format!("constraint trigger {}.{}: constraint triggers are not supported", t.name, tr.name));
-            continue;
-        }
-        if tr.transition {
-            gaps.push(format!("trigger {}.{} has REFERENCING transition tables; it is left out", t.name, tr.name));
+        if tr.constraint && !tr.deferrable {
+            gaps.push(format!("constraint trigger {}.{} is not deferrable; it is left out", t.name, tr.name));
             continue;
         }
         if tr.enabled == "D" {
             gaps.push(format!("trigger {}.{} is disabled; it is read as enabled", t.name, tr.name));
+        }
+        if tr.enabled == "D" || tr.enabled == "R" {
+            out.disabled_triggers.push((t.name.clone(), tr.name.clone()));
         }
         let bits = tr.bits;
         let timing = if bits & 64 != 0 {
@@ -691,6 +695,9 @@ async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
             function: tr.function,
             body: None,
             args: trigger_args(&tr.args),
+            old_table: tr.old_table,
+            new_table: tr.new_table,
+            deferrable: deferrable(tr.constraint && tr.deferrable, tr.deferred),
         });
     }
     for p in policies {
@@ -1071,7 +1078,7 @@ fn lite_trigger(sql: &str, table: &str, stored: &str) -> Option<Trigger> {
         None => (None, rest),
     };
     let body = rest.strip_prefix(" BEGIN\n")?.strip_suffix(";\nEND")?.to_owned();
-    let trigger = Trigger { name: name.to_owned(), timing, events: vec![event], update_of, for_each: ForEach::Row, when, function: object_name(&[table, name]), body: Some(body), args: vec![] };
+    let trigger = Trigger { name: name.to_owned(), timing, events: vec![event], update_of, for_each: ForEach::Row, when, function: object_name(&[table, name]), body: Some(body), args: vec![], old_table: None, new_table: None, deferrable: None };
     (monorm_core::migrate::sqlite::trigger(table, &trigger, false) == sql).then_some(trigger)
 }
 
@@ -1583,6 +1590,19 @@ pub async fn compare(conn: &dyn Executor, target: &DbSchema) -> Result<(Vec<Step
 
 /// [`compare`], reporting only the differences of `kind`.
 pub async fn compare_with(conn: &dyn Executor, target: &DbSchema, kind: Kind) -> Result<(Vec<Step>, Vec<String>)> {
+    let c = comparable(conn, target).await?;
+    Ok((differences_of(&c.live, &c.shadow, kind)?, c.gaps))
+}
+
+/// The live schema and the target, both read back from the database so that their expression text agrees.
+struct Comparable {
+    live: DbSchema,
+    shadow: DbSchema,
+    gaps: Vec<String>,
+    disabled_triggers: Vec<(String, String)>,
+}
+
+async fn comparable(conn: &dyn Executor, target: &DbSchema) -> Result<Comparable> {
     let live = introspect(conn).await?;
     let mut target = target.clone();
     target.dialect = conn.dialect();
@@ -1597,7 +1617,77 @@ pub async fn compare_with(conn: &dyn Executor, target: &DbSchema, kind: Kind) ->
         Err(_) => live.schema,
     };
     monorm_core::migrate::reconcile_introspection(&shadow, &mut live_schema);
-    Ok((differences_of(&live_schema, &shadow, kind)?, live.gaps))
+    Ok(Comparable { live: live_schema, shadow, gaps: live.gaps, disabled_triggers: live.disabled_triggers })
+}
+
+/// What the database holds for one trigger of the schema, or a trigger that the schema does not name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TriggerState {
+    /// The definition equals the schema and the trigger fires.
+    Installed,
+    /// The definition equals the schema and the trigger is switched off.
+    Disabled,
+    /// A trigger of this name exists with another definition.
+    Outdated,
+    /// The schema names it and the database has none.
+    Missing,
+    /// The database has it and the schema does not name it.
+    Unknown,
+}
+
+impl TriggerState {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Installed => "installed",
+            Self::Disabled => "disabled",
+            Self::Outdated => "outdated",
+            Self::Missing => "missing",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TriggerAudit {
+    pub table: String,
+    pub name: String,
+    pub state: TriggerState,
+}
+
+/// The body of the trigger function is not part of `Trigger`: a changed body alone makes the trigger outdated.
+fn function_differs(c: &Comparable, name: &str) -> bool {
+    let find = |d: &DbSchema| d.functions.iter().find(|f| f.name == name).map(|f| (f.body.clone(), f.args.clone(), f.language.clone()));
+    find(&c.live) != find(&c.shadow)
+}
+
+/// The state of each trigger of `target` and of each live trigger that `target` does not name, ordered by table and name.
+/// PostgreSQL only: SQLite keeps no disabled state, so it returns no entry.
+pub async fn audit_triggers(conn: &dyn Executor, target: &DbSchema) -> Result<Vec<TriggerAudit>> {
+    if conn.dialect() != Dialect::Postgres { return Ok(vec![]); }
+    let c = comparable(conn, target).await?;
+    let mut out: Vec<TriggerAudit> = vec![];
+    for t in &c.shadow.tables {
+        let live = c.live.tables.iter().find(|x| x.name == t.name);
+        for tr in &t.triggers {
+            let state = match live.and_then(|l| l.triggers.iter().find(|x| x.name == tr.name)) {
+                None => TriggerState::Missing,
+                Some(found) if found != tr || function_differs(&c, &tr.function) => TriggerState::Outdated,
+                Some(_) if c.disabled_triggers.iter().any(|(table, name)| *table == t.name && *name == tr.name) => TriggerState::Disabled,
+                Some(_) => TriggerState::Installed,
+            };
+            out.push(TriggerAudit { table: t.name.clone(), name: tr.name.clone(), state });
+        }
+    }
+    for l in &c.live.tables {
+        let known = c.shadow.tables.iter().find(|x| x.name == l.name);
+        for tr in &l.triggers {
+            if !known.is_some_and(|k| k.triggers.iter().any(|x| x.name == tr.name)) {
+                out.push(TriggerAudit { table: l.name.clone(), name: tr.name.clone(), state: TriggerState::Unknown });
+            }
+        }
+    }
+    out.sort_by(|a, b| (&a.table, &a.name).cmp(&(&b.table, &b.name)));
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -1655,7 +1745,7 @@ mod tests {
         use monorm_core::migrate::model::object_name;
         let make = |name: &str, update_of: &[&str], when: Option<&str>| Trigger {
             name: name.into(), timing: TriggerTiming::After, events: vec![TriggerEvent::Update], update_of: update_of.iter().map(|s| (*s).into()).collect(),
-            for_each: ForEach::Row, when: when.map(Into::into), function: object_name(&["t", name]), body: Some("UPDATE \"t\" SET \"a\" = 1".into()), args: vec![],
+            for_each: ForEach::Row, when: when.map(Into::into), function: object_name(&["t", name]), body: Some("UPDATE \"t\" SET \"a\" = 1".into()), args: vec![], old_table: None, new_table: None, deferrable: None,
         };
         for tr in [make("touch", &[], None), make("touch", &["a", "we\"ird"], Some("old.a <> new.a"))] {
             let sql = monorm_core::migrate::sqlite::trigger("t", &tr, false);

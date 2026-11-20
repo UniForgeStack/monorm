@@ -101,7 +101,10 @@ const COMMANDS: &str = "  init [dir] [--lang python|typescript] [--tool uv|pip|n
   drift                                    compare the database with the last migration's
                                            snapshot; exit 1 if they differ
   audit                                    compare the row-level security of the database with the
-                                           schema; exit 1 if it differs, warn when the role skips it
+                                           schema, and list each trigger as installed, disabled,
+                                           outdated, missing or unknown (PostgreSQL); exit 1 if the
+                                           security differs or a trigger is disabled, outdated or
+                                           missing; warn when the role skips it
 
 The schema and migrations directory come from --schema / --dir, else from the first settings
 file: monorm.toml, [tool.monorm] in pyproject.toml, or \"monorm\" in package.json (the files
@@ -876,13 +879,23 @@ async fn database(command: &str, args: &Args, dir: &Path, schema: &Path) -> Resu
                     println!("warning: {w}");
                 }
                 let (steps, _) = introspect::compare_with(&*driver, &target, introspect::Kind::Security).await?;
+                let mut differs = !steps.is_empty();
                 if steps.is_empty() {
                     println!("The row-level security of the database equals the schema.");
-                    return Ok(0);
+                } else {
+                    println!("The row-level security of the database differs from the schema; a migration to it would:");
+                    print_steps(&steps);
                 }
-                println!("The row-level security of the database differs from the schema; a migration to it would:");
-                print_steps(&steps);
-                return Ok(1);
+                let triggers = introspect::audit_triggers(&*driver, &target).await?;
+                if !triggers.is_empty() {
+                    println!("Triggers:");
+                    for t in &triggers {
+                        println!("  {}.{}: {}", t.table, t.name, t.state.label());
+                    }
+                    // a trigger that the schema does not name is listed, not a failure: other tools and hand-written triggers are not drift of the schema
+                    differs |= triggers.iter().any(|t| !matches!(t.state, introspect::TriggerState::Installed | introspect::TriggerState::Unknown));
+                }
+                return Ok(i32::from(differs));
             }
             "drift" => {
                 let found = introspect::drift(&*driver, dir).await?;

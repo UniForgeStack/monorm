@@ -206,3 +206,60 @@ fn pull_reports_what_it_cannot_write() {
         migrate::upgrade(&*other, &migrations, None, true).await.unwrap();
     });
 }
+
+const TRIGGERS: &str = r#"
+datasource db {
+  provider = "postgresql"
+  bypass_roles = ["monorm_trigger_bypass"]
+}
+model Item {
+  id BigInt @id
+  title String
+  updated_at DateTime
+  @@map("items")
+  @@trigger(touch, when: before, operation: [update], condition: [any_change(title)], skippable: true, func: "BEGIN RETURN NEW; END;")
+  @@trigger(seen, referencing(new: n), when: after, operation: [insert], level: statement, func: "BEGIN RETURN NULL; END;")
+  @@trigger(settled, when: after, operation: [insert], deferrable: deferred, func: "BEGIN RETURN NULL; END;")
+  @@trigger(plain, when: after, operation: [delete], func: "BEGIN RETURN NULL; END;")
+}
+"#;
+
+async fn trigger_states(conn: &dyn Driver, target: &monorm_core::migrate::model::DbSchema) -> Vec<(String, String)> {
+    introspect::audit_triggers(conn, target).await.unwrap().into_iter().map(|t| (t.name, t.state.label().to_owned())).collect()
+}
+
+fn states(list: &[(&str, &str)]) -> Vec<(String, String)> { list.iter().map(|(a, b)| ((*a).to_owned(), (*b).to_owned())).collect() }
+
+#[test]
+fn audit_reports_each_state_of_a_trigger_and_pull_reads_the_forms_back() {
+    let setup = "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'monorm_trigger_bypass') THEN CREATE ROLE monorm_trigger_bypass; END IF; END $$;";
+    with_database(setup, |conn, _, _| async move {
+        let dir = Dir::new("triggers");
+        let migrations = make(&dir, TRIGGERS);
+        migrate::upgrade(&*conn, &migrations, None, true).await.unwrap();
+        let target = ddl::files::latest_snapshot(&migrations).unwrap();
+        let all_installed = states(&[("plain", "installed"), ("seen", "installed"), ("settled", "installed"), ("touch", "installed")]);
+        assert_eq!(trigger_states(&*conn, &target).await, all_installed);
+
+        let pulled = pull(&*conn).await;
+        let text = &pulled.schema;
+        assert!(text.contains("referencing(new: n)") && text.contains("deferrable: deferred") && text.contains("level: statement"), "{text}");
+        assert!(pulled.steps.is_empty(), "{:?}", pulled.steps);
+
+        conn.batch(
+            "ALTER TABLE items DISABLE TRIGGER plain;
+             DO $$ DECLARE f regproc; BEGIN
+               SELECT tgfoid INTO f FROM pg_trigger WHERE tgname = 'settled';
+               DROP TRIGGER settled ON items;
+               EXECUTE format('CREATE TRIGGER settled AFTER INSERT ON items FOR EACH ROW EXECUTE FUNCTION %s()', f);
+               DROP TRIGGER seen ON items;
+               EXECUTE format('CREATE TRIGGER extra AFTER INSERT ON items FOR EACH ROW EXECUTE FUNCTION %s()', f);
+             END $$"
+                .into(),
+        )
+        .await
+        .unwrap();
+        let found = trigger_states(&*conn, &target).await;
+        assert_eq!(found, states(&[("extra", "unknown"), ("plain", "disabled"), ("seen", "missing"), ("settled", "outdated"), ("touch", "installed")]));
+    });
+}
