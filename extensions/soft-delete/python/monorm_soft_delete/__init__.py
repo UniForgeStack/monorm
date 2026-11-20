@@ -3,18 +3,23 @@
 from __future__ import annotations
 
 import weakref
+from collections.abc import Iterable
 from typing import Any, Self, cast
 
-from monorm import BoundQuerySet, ColumnRef, Delete, QuerySet, Update
+from monorm import BoundQuerySet, ColumnRef, Delete, QuerySet, Update, unscoped
+from monorm.db import Database, resolve
 from monorm.ext import (
     ModelLike,
     ModelT,
     behavior_field,
     behavior_records,
+    behavior_value,
     bound_query,
     bound_write,
     hard_delete_statement,
 )
+
+__all__ = ["sweep_owned"]
 
 _DEFAULT = "deleted"
 _SOURCE = "monorm.soft-delete"
@@ -103,3 +108,69 @@ class SoftDeleteInstance:
     async def undelete(self: ModelLike) -> None:
         """Clear the soft-delete field of this row and refresh it."""
         await cast(Any, self).update(**{_deleted_at(self)._field.name: None})
+
+
+def _owned_records(models: Iterable[Any] | None) -> list[dict[str, Any]]:
+    """The ``owned`` records of the target models, all of them or the ones that ``models`` names (classes or model names)."""
+    records = [r for r in behavior_value("extension_records") or () if r["source"] == _SOURCE and r["kind"] == "owned"]
+    if models is None:
+        return [r["data"] | {"model": r["model"]} for r in records]
+    names = [m if isinstance(m, str) else m._meta.name for m in models]
+    known = {r["model"] for r in records}
+    unknown = [n for n in names if n not in known]
+    if unknown:
+        raise ValueError(f"sweep_owned() has no model {', '.join(unknown)}: no owning relation points at it")
+    return [r["data"] | {"model": r["model"]} for r in records if r["model"] in names]
+
+
+async def _check_role(db: Database, records: list[dict[str, Any]]) -> None:
+    """The repair stamps rows that policies may hide, so it needs a superuser or a role of ``bypass_roles``."""
+    sql = next((r["role_sql"] for r in records if r.get("role_sql")), None)
+    if sql is not None and not (await db.fetch(sql))[0]["ok"]:
+        raise PermissionError("sweep_owned() needs a superuser or a role of bypass_roles")
+
+
+async def sweep_owned(
+    repair: bool = False, models: Iterable[Any] | None = None, *, db: Database | None = None
+) -> dict[str, list[dict[str, Any]]]:
+    """Find the live rows that every owner has left: all their owners are soft-deleted, and at least one owner was.
+
+    Gives ``{model name: [primary key of each such row, ...]}``; a model with no such row is absent,
+    so ``{}`` is a clean database. With ``repair=True``, stamps each row with the current time, as the
+    sweep trigger does, and repeats until a pass finds none. A chain of owners needs one pass for each
+    level. It raises ``RuntimeError`` when the passes pass the number of owning relations plus one.
+    The repair gives the rows that it stamped. ``models`` limits the check to some target models (classes or names).
+
+    It runs without the scope filters. On PostgreSQL it refuses a role that is neither a superuser nor
+    in ``bypass_roles`` (``PermissionError``), before it reads or writes anything. It takes no lock:
+    run it in a quiet window, or run it again.
+    """
+    db = resolve(db)
+    records = _owned_records(models)
+    keys = sorted({r["key"] for r in behavior_value("scoped_fields") or ()})
+    found: dict[str, list[dict[str, Any]]] = {}
+
+    async def run() -> None:
+        await _check_role(db, records)
+        if not repair:
+            for r in records:
+                if rows := await db.fetch(r["report_sql"]):
+                    found[r["model"]] = rows
+            return
+        async with db.transaction():
+            for _ in range(max((r["passes"] for r in records), default=1)):
+                changed = False
+                for r in records:
+                    if rows := await db.fetch(r["repair_sql"]):
+                        found.setdefault(r["model"], []).extend(rows)
+                        changed = True
+                if not changed:
+                    return
+            raise RuntimeError("sweep_owned(repair=True) did not settle: the owner rows keep changing, or the owning relations form a loop of more than one pass")
+
+    if keys:
+        with unscoped(*keys):
+            await run()
+    else:
+        await run()
+    return found

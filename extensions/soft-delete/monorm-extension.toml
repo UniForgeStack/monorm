@@ -19,7 +19,7 @@ effects = ["models.soft_delete", "storage.soft_delete"]
 id = "monorm.soft-delete.prepare"
 phase = "late_behavior"
 effects = ["behavior.delete_rewrites", "storage.soft_delete_triggers"]
-additive = ["behavior.read_defaults"]
+additive = ["behavior.extension_records", "behavior.read_defaults"]
 
 # Runs after every behavior pass, so the read defaults of other extensions exist.
 [[passes]]

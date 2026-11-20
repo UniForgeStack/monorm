@@ -2,7 +2,7 @@
 //! soft-deletes rows instead of deleting them.
 //! Database mode adds row triggers, so a raw `DELETE` soft-deletes too
 //! and the soft delete cascades to soft-delete children.
-use monorm::{dialect::Dialect, extension::{views_keeping, Declaration, ReadDefault}, ir::{ColType, Expr, FieldIr, ModelIr, OnDelete, SchemaIr, TriggerEvent, TriggerIr, TriggerTiming}, sql::ident, tracking::{self, composed_root, error, Mode, Tracked}, writes::{AssignValue, DeleteRewrite, WriteAssignment, WriteKind}};
+use monorm::{dialect::Dialect, extension::{views_keeping, Declaration, ExtensionRecord, ReadDefault}, ir::{ColType, Expr, FieldIr, ModelIr, OnDelete, SchemaIr, TriggerEvent, TriggerIr, TriggerTiming}, sql::{ident, literal}, tracking::{self, composed_root, error, Mode, Tracked}, writes::{AssignValue, DeleteRewrite, WriteAssignment, WriteKind}};
 
 /// The read default that hides soft-deleted rows; `without_defaults("deleted")` bypasses it.
 const SOURCE: &str = "monorm.soft-delete";
@@ -205,7 +205,9 @@ struct Owning {
     keys: Vec<String>,
     /// `(owner column, target column)` for each key field of the relation.
     pairs: Vec<(String, String)>,
+    target: String,
     target_table: String,
+    target_keys: Vec<String>,
     target_soft: String,
     target_version: Option<String>,
 }
@@ -223,10 +225,20 @@ fn owning_relations(ir: &SchemaIr, roles: &[SoftDelete]) -> Result<Vec<Owning>, 
             let pairs = r.from.iter().zip(&r.to).map(|(f, t)| Ok((column(m, f)?.to_owned(), column(target, t)?.to_owned()))).collect::<Result<Vec<_>, String>>()?;
             let keys = m.key_fields().into_iter().map(|k| column(m, k).map(str::to_owned)).collect::<Result<Vec<_>, String>>()?;
             let target_version = bumped(&ir.behavior.write_assignments, &target.name).map(|f| column(target, f).map(str::to_owned)).transpose()?;
-            out.push(Owning { model: m.name.clone(), table: m.table.clone(), soft, keys, pairs, target_table: target.table.clone(), target_soft: column(target, &role.field)?.to_owned(), target_version });
+            let target_keys = target.key_fields().into_iter().map(|k| column(target, k).map(str::to_owned)).collect::<Result<Vec<_>, String>>()?;
+            out.push(Owning { model: m.name.clone(), table: m.table.clone(), soft, keys, pairs, target: target.name.clone(), target_table: target.table.clone(), target_keys, target_soft: column(target, &role.field)?.to_owned(), target_version });
         }
     }
     Ok(out)
+}
+
+/// The owning columns into the table `target`, one for each owner table and column pair.
+fn arms<'a>(all: &'a [Owning], target: &str) -> Vec<&'a Owning> {
+    let mut arms: Vec<&Owning> = vec![];
+    for o in all.iter().filter(|o| o.target_table == target) {
+        if !arms.iter().any(|a| a.table == o.table && a.pairs == o.pairs) { arms.push(o); }
+    }
+    arms
 }
 
 /// The guard of the table `target`: `NOT EXISTS` for each owning column into it, true when no live row still owns the target row.
@@ -235,10 +247,7 @@ fn owning_relations(ir: &SchemaIr, roles: &[SoftDelete]) -> Result<Vec<Owning>, 
 /// that a revive trigger reads as `NEW`, given as its table and key columns.
 fn guard(all: &[Owning], target: &str, spare: Option<(&str, &[String])>) -> Vec<String> {
     let t = ident(target);
-    let mut arms: Vec<&Owning> = vec![];
-    for o in all.iter().filter(|o| o.target_table == target) {
-        if !arms.iter().any(|a| a.table == o.table && a.pairs == o.pairs) { arms.push(o); }
-    }
+    let arms = arms(all, target);
     arms.iter().enumerate().map(|(i, a)| {
         let alias = format!("o{i}");
         let mut conds: Vec<String> = a.pairs.iter().map(|(from, to)| format!("{alias}.{} = {t}.{}", ident(from), ident(to))).collect();
@@ -294,6 +303,60 @@ fn owned_revive_trigger(dialect: Dialect, all: &[Owning], rels: &[&Owning], fiel
     }
     TriggerIr { name: "soft_delete_owned_revive".into(), timing: TriggerTiming::After, events: vec![TriggerEvent::Update], update_of: vec![field.into()],
         when: Some(format!("OLD.{c} IS NOT NULL AND NEW.{c} IS NULL")), body: Some(trigger_body(dialect, &statements)), ..Default::default() }
+}
+
+/// The live target rows that no live owner holds and at least one archived owner held: `NOT EXISTS` live, `EXISTS` archived.
+/// An owner without soft delete is always live, so it never adds an archived arm and its guard arm is never true.
+fn lost(all: &[Owning], target: &Owning) -> String {
+    let t = ident(&target.target_table);
+    let mut conds = vec![format!("{t}.{} IS NULL", ident(&target.target_soft))];
+    let archived: Vec<String> = arms(all, &target.target_table).iter().enumerate().filter_map(|(i, a)| {
+        let soft = a.soft.as_ref()?;
+        let alias = format!("a{i}");
+        let mut c: Vec<String> = a.pairs.iter().map(|(from, to)| format!("{alias}.{} = {t}.{}", ident(from), ident(to))).collect();
+        c.push(format!("{alias}.{} IS NOT NULL", ident(soft)));
+        if a.table == target.target_table {
+            c.push(format!("NOT ({})", a.pairs.iter().map(|(_, to)| format!("{alias}.{0} = {t}.{0}", ident(to))).collect::<Vec<_>>().join(" AND ")));
+        }
+        Some(format!("EXISTS (SELECT 1 FROM {} AS {alias} WHERE {})", ident(&a.table), c.join(" AND ")))
+    }).collect();
+    if archived.is_empty() { return "FALSE".into(); }
+    conds.push(format!("({})", archived.join(" OR ")));
+    conds.extend(guard(all, &target.target_table, None));
+    conds.join(" AND ")
+}
+
+/// PostgreSQL: true for a superuser or a member of a role in `roles`. `pg_has_role` with a name fails for an unknown role, so the names are matched in `pg_roles`.
+fn role_check(roles: &[String]) -> String {
+    let names = roles.iter().map(|r| literal(r)).collect::<Vec<_>>().join(", ");
+    let member = if roles.is_empty() { String::new() } else { format!(" OR EXISTS (SELECT 1 FROM pg_roles WHERE rolname IN ({names}) AND pg_has_role(current_user, oid, 'member'))") };
+    format!("SELECT (COALESCE((SELECT rolsuper FROM pg_roles WHERE rolname = current_user), false){member}) AS ok")
+}
+
+/// One record for each target model, for `sweep_owned()`: the report and the repair statements, the key columns,
+/// the pass bound (owning relations + 1) and, on PostgreSQL, the role check. The SQL is built here, not in the bindings.
+fn owned_records(ir: &mut SchemaIr, roles: &[SoftDelete]) -> Result<(), String> {
+    ir.behavior.extension_records.retain(|r| r.source != SOURCE);
+    let all = owning_relations(ir, roles)?;
+    let dialect = ir.dialect;
+    let mut done: Vec<&str> = vec![];
+    for target in &all {
+        if done.contains(&target.target.as_str()) { continue; }
+        done.push(&target.target);
+        let (t, ts) = (ident(&target.target_table), ident(&target.target_soft));
+        let keys = target.target_keys.iter().map(|k| format!("{t}.{}", ident(k))).collect::<Vec<_>>().join(", ");
+        let predicate = lost(&all, target);
+        let stamp = match dialect { Dialect::Postgres => "now()", Dialect::Sqlite => "strftime('%Y-%m-%d %H:%M:%f', 'now')" };
+        let data = serde_json::json!({
+            "key": target.target_keys,
+            "passes": all.len() + 1,
+            "report_sql": format!("SELECT {keys} FROM {t} WHERE {predicate} ORDER BY {keys}"),
+            "repair_sql": format!("UPDATE {t} SET {ts} = {stamp}{} WHERE {predicate} RETURNING {keys}", bump(target.target_version.as_deref())),
+            "role_sql": (dialect == Dialect::Postgres).then(|| role_check(&ir.bypass_roles)),
+        });
+        ir.behavior.extension_records.push(ExtensionRecord { source: SOURCE.into(), model: target.target.clone(), kind: "owned".into(), data });
+    }
+    Ok(())
 }
 
 /// The statements as a trigger body: a PostgreSQL function body, or the bare statements of a SQLite trigger.
@@ -398,7 +461,8 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
             }
         }
     }
-    owning_triggers(ir, &roles, &added)
+    owning_triggers(ir, &roles, &added)?;
+    owned_records(ir, &roles)
 }
 
 /// The sweep and the owned revive of every database-mode owner. The guard of a target reads each owning column into it,
@@ -1027,6 +1091,79 @@ mod tests {
         db.execute("UPDATE b1 SET display_id = 1, deleted = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE id = 2", []).unwrap();
         assert_eq!(count("SELECT count(*) FROM displays WHERE id = 2 AND deleted IS NOT NULL"), 1);
         assert_eq!(count("SELECT count(*) FROM displays WHERE id = 1 AND deleted IS NULL"), 1);
+    }
+
+    fn owned(ir: &SchemaIr, model: &str) -> serde_json::Value {
+        let mut found = ir.behavior.extension_records.iter().filter(|r| r.source == SOURCE && r.kind == "owned" && r.model == model);
+        let record = found.next().unwrap_or_else(|| panic!("{model} has no owned record"));
+        assert!(found.next().is_none(), "{model} has two owned records");
+        record.data.clone()
+    }
+
+    #[test]
+    fn the_owned_record_holds_the_report_and_the_repair_of_each_target() {
+        let mut ir = owning("postgres", 1);
+        prepared(&mut ir).unwrap();
+        assert_eq!(ir.behavior.extension_records.iter().filter(|r| r.kind == "owned").count(), 1, "one record for each target, none for an owner");
+        let data = owned(&ir, "Display");
+        assert_eq!((data["key"].clone(), data["passes"].clone()), (serde_json::json!(["id"]), serde_json::json!(2)));
+        let predicate = concat!(
+            r#""displays"."deleted" IS NULL AND (EXISTS (SELECT 1 FROM "b1" AS a0 WHERE a0."display_id" = "displays"."id" AND a0."deleted" IS NOT NULL)) "#,
+            r#"AND NOT EXISTS (SELECT 1 FROM "b1" AS o0 WHERE o0."display_id" = "displays"."id" AND o0."deleted" IS NULL)"#);
+        assert_eq!(data["report_sql"], format!(r#"SELECT "displays"."id" FROM "displays" WHERE {predicate} ORDER BY "displays"."id""#));
+        assert_eq!(data["repair_sql"], format!(r#"UPDATE "displays" SET "deleted" = now(), "rev" = "rev" + 1 WHERE {predicate} RETURNING "displays"."id""#));
+    }
+
+    #[test]
+    fn the_role_check_accepts_a_superuser_and_the_bypass_roles_only() {
+        let mut ir = owning("postgres", 1);
+        prepared(&mut ir).unwrap();
+        let none = owned(&ir, "Display")["role_sql"].as_str().unwrap().to_owned();
+        assert!(none.contains("rolsuper") && !none.contains("pg_has_role"), "{none}");
+        let mut ir = owning("postgres", 1);
+        ir.bypass_roles = vec!["app_admin".into(), "o'brien".into()];
+        prepared(&mut ir).unwrap();
+        let some = owned(&ir, "Display")["role_sql"].as_str().unwrap().to_owned();
+        assert!(some.contains("rolsuper") && some.contains("rolname IN ('app_admin', 'o''brien')") && some.contains("pg_has_role(current_user, oid, 'member')"), "{some}");
+        let mut ir = owning("sqlite", 1);
+        prepared(&mut ir).unwrap();
+        assert!(owned(&ir, "Display")["role_sql"].is_null());
+    }
+
+    #[test]
+    fn the_pass_bound_counts_every_owning_relation() {
+        let mut ir = owning("postgres", 4);
+        prepared(&mut ir).unwrap();
+        assert_eq!(owned(&ir, "Display")["passes"], 5);
+        let report = owned(&ir, "Display")["report_sql"].as_str().unwrap().to_owned();
+        assert_eq!(report.matches("EXISTS (SELECT 1 FROM").count(), 8, "four archived arms and four live arms: {report}");
+    }
+
+    #[test]
+    fn no_owning_relation_means_no_owned_record() {
+        let mut ir = schema("postgres", "database");
+        prepared(&mut ir).unwrap();
+        assert!(ir.behavior.extension_records.iter().all(|r| r.kind != "owned"));
+    }
+
+    #[test]
+    fn sqlite_repair_stamps_a_target_whose_owners_are_all_archived() {
+        let mut ir = owning("sqlite", 2);
+        prepared(&mut ir).unwrap();
+        let data = owned(&ir, "Display");
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        for statement in migration(&ir) { db.execute_batch(&statement).unwrap(); }
+        let stamp = "'2026-01-01 00:00:00.000'";
+        // A row that a trigger never saw: owners inserted archived. Display 1 is lost, display 2 has a live owner, display 3 is archived already.
+        db.execute_batch(&format!("INSERT INTO displays (id, rev, deleted) VALUES (1, 0, NULL), (2, 0, NULL), (3, 0, {stamp}), (4, 0, NULL);
+            INSERT INTO b1 (id, display_id, deleted) VALUES (1, 1, {stamp}), (2, 2, {stamp}), (3, 3, {stamp});
+            INSERT INTO b2 (id, display_id, deleted) VALUES (1, 1, {stamp}), (2, 2, NULL)")).unwrap();
+        let ids = |sql: &str| db.prepare(sql).unwrap().query_map([], |r| r.get::<_, i64>(0)).unwrap().map(Result::unwrap).collect::<Vec<_>>();
+        assert_eq!(ids(data["report_sql"].as_str().unwrap()), vec![1]);
+        assert_eq!(ids(data["repair_sql"].as_str().unwrap()), vec![1]);
+        assert_eq!(ids(data["report_sql"].as_str().unwrap()), Vec::<i64>::new());
+        assert_eq!(ids("SELECT rev FROM displays WHERE id = 1"), vec![1]);
+        assert_eq!(ids("SELECT id FROM displays WHERE deleted IS NULL ORDER BY id"), vec![2, 4]);
     }
 
     #[test]
