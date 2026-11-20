@@ -111,15 +111,15 @@ export interface SweepOwnedOptions {
   /** Stamp the rows that no live owner holds, until a pass finds none. Default `false`: only report them. */
   repair?: boolean;
   /** Check only these target models (classes or names). */
-  models?: readonly (string | { readonly meta: { readonly name: string } })[];
+  models?: readonly (string | { readonly _meta: { readonly name: string } })[];
   db?: Database;
 }
 
-function ownedRecords(models: SweepOwnedOptions["models"]): Owned[] {
-  const records = ((behaviorValue("extension_records") as Row[] | undefined) ?? []).filter((r) => r["source"] === SOURCE && r["kind"] === "owned");
+function ownedRecords(db: Database, models: SweepOwnedOptions["models"]): Owned[] {
+  const records = ((behaviorValue("extension_records", db.registry) as Row[] | undefined) ?? []).filter((r) => r["source"] === SOURCE && r["kind"] === "owned");
   const all = records.map((r) => ({ ...(r["data"] as Omit<Owned, "model">), model: String(r["model"]) }));
   if (models === undefined) return all;
-  const names = models.map((m) => (typeof m === "string" ? m : m.meta.name));
+  const names = models.map((m) => (typeof m === "string" ? m : m._meta.name));
   const unknown = names.filter((n) => !all.some((o) => o.model === n));
   if (unknown.length > 0) throw new TypeError(`sweepOwned() has no model ${unknown.join(", ")}: no owning relation points at it`);
   return all.filter((o) => names.includes(o.model));
@@ -127,17 +127,17 @@ function ownedRecords(models: SweepOwnedOptions["models"]): Owned[] {
 
 /**
  * Find the live rows that every owner has left: all their owners are soft-deleted, and at least
- * one owner was. Gives `{ model name: [primary key columns of each row] }`; a model with no such row
+ * one owner was. Returns `{ model name: [primary key columns of each row] }`; a model with no such row
  * is absent, so `{}` is a clean database. With `repair: true`, stamps each row with the current time,
- * as the sweep trigger does, and repeats until a pass finds none; it throws when the passes pass the
- * number of owning relations plus one. It runs without the scope filters. On PostgreSQL it refuses
+ * as the sweep trigger does, and repeats until a pass finds none. It throws when it needs more passes than the
+ * number of owning relations plus one; the repair runs in one transaction, so the error rolls back all passes. It runs without the scope filters. On PostgreSQL it refuses
  * a role that is neither a superuser nor in `bypass_roles` before it reads or writes anything. It
  * takes no lock: run it in a quiet window, or run it again.
  */
 export async function sweepOwned(options: SweepOwnedOptions = {}): Promise<Record<string, Row[]>> {
   const db = options.db ?? getDatabase();
-  const records = ownedRecords(options.models);
-  const keys = [...new Set(((behaviorValue("scoped_fields") as Row[] | undefined) ?? []).map((r) => String(r["key"])))].sort();
+  const records = ownedRecords(db, options.models);
+  const keys = [...new Set(((behaviorValue("scoped_fields", db.registry) as Row[] | undefined) ?? []).map((r) => String(r["key"])))].sort();
   const found: Record<string, Row[]> = {};
   const run = async (): Promise<void> => {
     const sql = records.find((r) => r.role_sql)?.role_sql;

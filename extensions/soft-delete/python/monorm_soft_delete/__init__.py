@@ -110,17 +110,18 @@ class SoftDeleteInstance:
         await cast(Any, self).update(**{_deleted_at(self)._field.name: None})
 
 
-def _owned_records(models: Iterable[Any] | None) -> list[dict[str, Any]]:
+def _owned_records(db: Database, models: Iterable[Any] | None) -> list[dict[str, Any]]:
     """The ``owned`` records of the target models, all of them or the ones that ``models`` names (classes or model names)."""
-    records = [r for r in behavior_value("extension_records") or () if r["source"] == _SOURCE and r["kind"] == "owned"]
+    records = [r for r in behavior_value("extension_records", db.registry) or () if r["source"] == _SOURCE and r["kind"] == "owned"]
+    all_ = [r["data"] | {"model": r["model"]} for r in records]
     if models is None:
-        return [r["data"] | {"model": r["model"]} for r in records]
+        return all_
     names = [m if isinstance(m, str) else m._meta.name for m in models]
     known = {r["model"] for r in records}
     unknown = [n for n in names if n not in known]
     if unknown:
         raise ValueError(f"sweep_owned() has no model {', '.join(unknown)}: no owning relation points at it")
-    return [r["data"] | {"model": r["model"]} for r in records if r["model"] in names]
+    return [r for r in all_ if r["model"] in names]
 
 
 async def _check_role(db: Database, records: list[dict[str, Any]]) -> None:
@@ -135,19 +136,20 @@ async def sweep_owned(
 ) -> dict[str, list[dict[str, Any]]]:
     """Find the live rows that every owner has left: all their owners are soft-deleted, and at least one owner was.
 
-    Gives ``{model name: [primary key of each such row, ...]}``; a model with no such row is absent,
+    Returns ``{model name: [primary key of each such row, ...]}``; a model with no such row is absent,
     so ``{}`` is a clean database. With ``repair=True``, stamps each row with the current time, as the
     sweep trigger does, and repeats until a pass finds none. A chain of owners needs one pass for each
-    level. It raises ``RuntimeError`` when the passes pass the number of owning relations plus one.
-    The repair gives the rows that it stamped. ``models`` limits the check to some target models (classes or names).
+    level. It raises ``RuntimeError`` when it needs more passes than the number of owning relations plus one;
+    the repair runs in one transaction, so the error rolls back all passes.
+    The repair returns the rows that it stamped. ``models`` limits the check to some target models (classes or names).
 
     It runs without the scope filters. On PostgreSQL it refuses a role that is neither a superuser nor
     in ``bypass_roles`` (``PermissionError``), before it reads or writes anything. It takes no lock:
     run it in a quiet window, or run it again.
     """
     db = resolve(db)
-    records = _owned_records(models)
-    keys = sorted({r["key"] for r in behavior_value("scoped_fields") or ()})
+    records = _owned_records(db, models)
+    keys = sorted({r["key"] for r in behavior_value("scoped_fields", db.registry) or ()})
     found: dict[str, list[dict[str, Any]]] = {}
 
     async def run() -> None:
