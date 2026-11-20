@@ -1648,13 +1648,13 @@ class Condition(Node):
 def _to_one(column: ColumnRef[Any]) -> bool:
     """Whether the column sits behind to-one hops only, counted from the last to-many hop (the
     engine's scope): there a missing related row reads as a NULL."""
-    from .fields import BelongsTo, HasOne
+    from .fields import BelongsTo, HasOne, Linked
 
     owner: type[Model] = column._root
     to_one = False
     for name in column._path:
         relation = owner._meta.relations[name]
-        to_one = isinstance(relation, (BelongsTo, HasOne))
+        to_one = isinstance(relation, (BelongsTo, HasOne)) or (isinstance(relation, Linked) and relation.kind == "one")
         owner = relation.target
     return to_one
 

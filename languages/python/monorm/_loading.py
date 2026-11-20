@@ -6,7 +6,7 @@ from typing import Any
 
 from .errors import NotLoaded
 from .expr import ColumnRef, Labeled, RelationPath
-from .fields import BelongsTo, HasOne
+from .fields import BelongsTo, HasOne, Linked
 from .nested import NestedRef
 
 
@@ -26,7 +26,7 @@ def loaded(
     attr = label if not rest and label is not None else name
     try:
         value = owner.__dict__[attr] if label is not None and not rest else getattr(owner, name)
-        if not isinstance(relation, (BelongsTo, HasOne)) and attr == name:
+        if not isinstance(relation, (BelongsTo, HasOne, Linked)) and attr == name:
             value = value.cached
     except (NotLoaded, KeyError):
         return False

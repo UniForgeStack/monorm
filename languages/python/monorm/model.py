@@ -21,7 +21,7 @@ from collections.abc import Collection, Iterable, Sequence
 
 from .expr import ColumnRef, Condition, RelationPath, and_, differs
 from .index import _Indexes
-from .fields import BY_TYPE, Array, BelongsTo, Enum, Field, HasMany, HasOne, ManyToMany, Relation, String, key_items
+from .fields import BY_TYPE, Array, BelongsTo, Enum, Field, HasMany, HasOne, Linked, ManyToMany, Relation, String, key_items
 from .nested import NestedGroup, NestedJson, NestedType, _Access, build_types, leaf_names
 
 if TYPE_CHECKING:
@@ -506,6 +506,8 @@ def _field(ir: dict[str, Any], nested_types: dict[str, NestedType] | None = None
 
 
 def _relation(ir: dict[str, Any]) -> Relation[Any, Any]:
+    if ir.get("path"):
+        return Linked(ir["target"], path=ir["path"], kind=ir["kind"])
     if ir["kind"] == "one" and ir.get("foreign_key"):
         return BelongsTo(ir["target"], via=ir["from"], to=ir["to"], on_delete=ir.get("on_delete", "no_action"))
     if ir["kind"] == "one":
@@ -877,6 +879,7 @@ _PYTHON_TYPES: dict[str, type] = {
     "bytes": bytes,
 }
 _RELATION_KINDS: tuple[tuple[type, str], ...] = (
+    (Linked, "linked"),
     (ManyToMany, "many_to_many"),
     (HasMany, "has_many"),
     (HasOne, "has_one"),

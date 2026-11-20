@@ -526,6 +526,50 @@ class HasOne(Relation[M, P]):
         }
 
 
+class Linked(Relation[M, P]):
+    """Read-only relation over a path of other relations: ``User.commenters`` with
+    ``path=("posts", "comments", "author")``. On an instance it is a ``list`` of targets
+    (a to-many path) or the target or ``None`` (a path of to-one hops) once loaded with
+    ``load()``; before that it raises :class:`~monorm.errors.NotLoaded`."""
+
+    def __init__(self, target: str | type[Any], *, path: Sequence[str], kind: str) -> None:
+        super().__init__(target)
+        self.path = tuple(path)
+        self.kind = kind  # type: ignore[misc]
+
+    @property
+    def from_fields(self) -> tuple[str, ...]:
+        return self.model._meta.key_names
+
+    @overload
+    def __get__(self, obj: None, owner: type[Any]) -> P: ...
+    @overload
+    def __get__(self, obj: object, owner: type[Any]) -> M: ...
+    def __get__(self, obj: object | None, owner: type[Any]) -> Any:
+        if obj is None:
+            return RelationPath(owner, (self.name,), cast("type[Model]", self.target))
+        d = obj.__dict__
+        if self.name in d:
+            return d[self.name]
+        raise NotLoaded(f"{owner.__name__}.{self.name} is not loaded; use load({owner.__name__}.{self.name})")
+
+    def __set__(self, obj: Model, value: Never) -> None:
+        raise AttributeError(
+            f"{self.model.__name__}.{self.name} is a linked relation and read-only; "
+            f"write the rows of its path ({', '.join(self.path)})"
+        )
+
+    def ir(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "kind": self.kind,
+            "target": self.target_name,
+            "from": [],
+            "to": [],
+            "path": list(self.path),
+        }
+
+
 class ManyToMany(Relation[MM, P]):
     """Many-to-many relation through a join model: ``Post.tags`` when ``PostTag`` rows
     link posts (``source``, its key column) and tags (``target_field``). On an instance,
