@@ -163,7 +163,7 @@ already does.
 | `nulls_not_distinct:`, `deferrable:` | same arguments in `@@unique` (no key order) | ours |
 | `@@check(raw("..."), name: "...")` | same | ours |
 | `@@exclude([...], where: "...")` | same | ours |
-| `@@trigger(name, before: [...], function: f, args: [...])` | same, on one line | ours |
+| `@@trigger(name, when: before, operation: [update_of(a)], level: row, condition: any_change(a), func: f, args: [...])`; also `referencing(old: o, new: n)` (right after the name), `deferrable:`, `declare:`, `skippable:` | same, on one line | ours |
 | `@@comment("...")`, `@@renamed_from("old")` | same | ours |
 
 ## The blog example
@@ -319,8 +319,8 @@ model Account {
   @@map("accounts")
   @@check(raw("char_length(nick) > 0"))
   @@exclude([id(op: "="), sql("tstzrange(updated_at, updated_at)", op: "&&")], where: "views > 0")
-  @@trigger(touch, before: [update], update_of: [nick], when: "OLD.nick <> NEW.nick", body: "BEGIN NEW.updated_at := now(); RETURN NEW; END;")
-  @@trigger(audit, after: [insert, update, delete], for_each: statement, function: audit_row, args: ["accounts"])
+  @@trigger(touch, when: before, operation: [update_of(nick)], condition: any_change(nick), func: "BEGIN NEW.updated_at := now(); RETURN NEW; END;")
+  @@trigger(audit, when: after, operation: [insert, update, delete], level: statement, func: audit_row, args: ["accounts"])
   @@comment("customer accounts")
   @@renamed_from("customers")
 }

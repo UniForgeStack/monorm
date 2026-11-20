@@ -718,8 +718,10 @@ The IR carries `owns` on the relation. The schema contract is 5.6; the IR is sta
 @@check(raw("starts_at < ends_at"), name: "bookings_order")
 @@exclude([room_id(op: "="), sql("tstzrange(starts_at, ends_at)", op: "&&")], where: "not cancelled")
 
-@@trigger(touch, before: [update], update_of: [title], when: "OLD.title <> NEW.title", body: "BEGIN NEW.updated_at := now(); RETURN NEW; END;")
-@@trigger(audit, after: [insert, update, delete], for_each: statement, function: audit_row, args: ["posts"])
+@@trigger(touch, when: before, operation: [update_of(title)], condition: any_change(title), func: "BEGIN NEW.updated_at := now(); RETURN NEW; END;")
+@@trigger(audit, when: after, operation: [insert, update, delete], level: statement, func: audit_row, args: ["posts"])
+@@trigger(copy_rows, referencing(old: o, new: n), when: after, operation: [update], level: statement, func: copy_rows)
+@@trigger(balanced, when: after, operation: [insert, update], deferrable: deferred, func: check_balance)
 ```
 
 * `@@id([a, b])` is a composite primary key, in that column order.
@@ -742,9 +744,45 @@ The IR carries `owns` on the relation. The schema contract is 5.6; the IR is sta
   `raw("...")` or a string. The database name is `name:` or `map:`.
 * For a unique *expression* or a partial unique rule, use `@@index(..., unique: true)`.
 * `@@exclude` with `=` on a plain column under GiST pulls in `btree_gist` by itself.
-* A trigger fires on exactly one of `before:` / `after:` / `instead_of:`. Give it
-  either a one-line `body:` (a function `<table>_<name>()` is generated and replaced in
-  place when the body changes) or a `function:` declared in a `function` block.
+* `@@trigger(name, ...)` takes these arguments:
+
+  | Argument | Meaning |
+  |---|---|
+  | `when:` | `before`, `after` or `instead_of`: one firing time. |
+  | `operation:` | A list of `insert`, `update`, `update_of(a, b)`, `delete`, `truncate`. `update_of` is the `update` event with a column list. |
+  | `level:` | `row` (default) or `statement`. |
+  | `condition:` | A SQL test (`WHEN (...)`), a change helper, or a list of them joined with `AND`. |
+  | `referencing(old: o, new: n)` | The transition tables of an `after` statement trigger. Write it right after the name: the grammar takes a call value before the named arguments. |
+  | `deferrable:` | `deferred` or `immediate`: a constraint trigger that runs at commit (or after `SET CONSTRAINTS`). |
+  | `func:` | A one-line body string, or the name of a `function` block. |
+  | `args:`, `declare:` | The arguments of a `func:` function; the `DECLARE` part of a body. |
+  | `skippable: true` | `skip_triggers("<trigger name>")` turns the trigger off for a block. |
+
+  A body string generates the function `<table>_<name>()` and replaces it in place when the body changes.
+  `declare:` goes with a body string, not with a function name.
+* The change helpers are `any_change(a, b)`, `all_change(...)`, `any_dont_change(...)` and `all_dont_change(...)`.
+  They expand to `OLD.a IS DISTINCT FROM NEW.a` joined with `OR` (`any_*`) or `AND` (`all_*`);
+  the `dont_change` forms use `IS NOT DISTINCT FROM`.
+  With no field they cover every stored field.
+  `exclude: [a]` removes fields, and `exclude_auto: true` removes the fields that a write assignment sets on every update (such as `updated_at`).
+  `any_change(exclude_auto: true)` therefore ignores an update that only touched `updated_at`.
+  A helper needs `level: row` and `update` as the only event.
+* `skippable: true` adds a skip test to `WHEN`.
+  The trigger name is the skip name, and only a role in `bypass_roles` can skip.
+  With no `bypass_roles`, no role can skip.
+  On SQLite, `skip_triggers()` with the name raises.
+* The old arguments `before:`, `after:`, `instead_of:`, `for_each:`, `update_of:`, `body:`, `function:` and a string `when:` fail with an error that names the new argument.
+* These combinations are schema errors:
+  `referencing` needs `when: after`, one event, no `update_of(...)`, no `deferrable:`;
+  `old:` needs an `update` or `delete` event, and `new:` an `update` or `insert` event.
+  `deferrable:` needs `when: after` and `level: row`.
+  `instead_of` needs `level: row`, and takes no `condition:`, no `update_of(...)` and no `skippable: true`.
+  `truncate` needs `level: statement`.
+  A statement-level `condition:` cannot read `OLD` or `NEW`, an `insert` condition cannot read `OLD`, and a `delete` condition cannot read `NEW`.
+  On SQLite, `referencing`, `deferrable:` and `declare:` are schema errors, with the trigger rules of SQLite (one event, an inline body, `level: row`).
+* `monorm audit` on PostgreSQL lists each trigger of the schema with its state in the database:
+  `installed`, `disabled`, `outdated` (the definition text differs), `missing` or `unknown` (a trigger in the database that the schema does not name).
+  `audit` exits `1` for a trigger that is `disabled`, `outdated` or `missing`; an `unknown` trigger is listed and does not change the exit code.
 
 Mistakes are reported with file, line and column:
 
@@ -819,7 +857,7 @@ It rejects every writer, also the service that should write; exempt that service
 model Post {
   id    Int    @id
   title String
-  @@trigger(read_only, before: [insert, update, delete], body: "BEGIN RAISE EXCEPTION 'posts are read-only'; END;")
+  @@trigger(read_only, when: before, operation: [insert, update, delete], func: "BEGIN RAISE EXCEPTION 'posts are read-only'; END;")
 }
 ```
 
@@ -946,7 +984,7 @@ python -m monorm pull [-o schema.prisma] [--force]   # the schema file from a li
 python -m monorm baseline                       # mark the first migration applied (after pull)
 python -m monorm fmt --native                   # convert supported SQL expressions offline
 python -m monorm drift                          # exit 1 if the database differs from the last snapshot
-python -m monorm audit                          # exit 1 if the row-level security differs from the schema
+python -m monorm audit                          # exit 1 if the row-level security or a trigger differs from the schema
 ```
 
 There is one command line, written in Rust (`crates/cli/`): `python -m monorm`, `npx monorm` and the
@@ -1167,7 +1205,7 @@ The column must be nullable or have a database `@default`. Before step 1, add th
 
 `@renamed_from` renames the column in one step, so old code that names the old column fails during the rollout. Use these steps for a rename without downtime:
 
-1. Add the new field as nullable, with no `@default`. Add a `@@trigger` on insert and on `update_of: [old]` that copies the value to the new column only when `NEW.old IS DISTINCT FROM OLD.old`, so a write that new code makes to the new column stays. Run `makemigrations`.
+1. Add the new field as nullable, with no `@default`. Add a `@@trigger` on `insert` and on `update_of(old)` that copies the value to the new column only when `NEW.old IS DISTINCT FROM OLD.old`, so a write that new code makes to the new column stays. Run `makemigrations`.
 2. In the same migration folder, add a data step (`data.py` or `data.ts`) that copies the existing values: `UPDATE t SET new = old WHERE new IS NULL`. See [Data migrations](#data-migrations).
 3. Deploy code that reads and writes the new field. Old code reads the old column, so it does not see these writes. If old code must see them, add a second trigger that copies the new column back to the old one.
 4. Add `@deprecated` to the old field and deploy. No migration is made.
@@ -1207,10 +1245,9 @@ out, printed, and listed at the end of the file as `// gap:` lines:
   SQL for that conversion reseeds the new identity above the largest existing key
   (`setval(pg_get_serial_sequence(...))`), so the next insert does not collide;
 * a primary key not named `<table>_pkey`; `GENERATED ALWAYS` identities (read as
-  `BY DEFAULT`); constraint triggers and triggers that call a function of another schema;
+  `BY DEFAULT`); constraint triggers that are not deferrable, and triggers that call a function of another schema;
 * row-level security, `UNLOGGED` tables, table storage options, `INCLUDE` columns of a
-  unique constraint, triggers with `REFERENCING` transition tables, foreign keys to a
-  table of another schema;
+  unique constraint, foreign keys to a table of another schema;
 * on SQLite: triggers. A declared type becomes the type of its storage class
   (`INTEGER`, `REAL`, `TEXT`), except `BOOL...` (Boolean), `DATE...` and `TIME...`
   (DateTime), and `DECIMAL` / `NUMERIC` (Float). Drift reports the declared type as a
