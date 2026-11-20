@@ -1303,6 +1303,9 @@ fn relation(
     if let Some((tp, v)) = n.get("through") {
         let join = name_of(tp, v, &what)?;
         let through_fields = n.names("through_fields")?;
+        if let Some((op, _)) = n.get("owns") {
+            return err(op, format!("{what}: owns: goes on a to-one side that has fields:, not on a many-to-many relation"));
+        }
         n.finish()?;
         if join.contains("{model}") {
             // A model with deferred identity gets its join model from a pass, which fills the relation from `join_label`.
@@ -1332,6 +1335,7 @@ fn relation(
                 through: None,
                 label: Some(name.unwrap_or_default()),
                 join_label: Some(join),
+                owns: false,
             });
         }
         return many_to_many(m, member, &what, tp, &join, &through_fields, models);
@@ -1348,6 +1352,9 @@ fn relation(
             Some((p, v)) if deferred_identity.contains(&m.name) => Some((p, action(p, &name_of(p, v, &what)?)?)),
             _ => None,
         };
+        if let Some((op, _)) = n.get("owns") {
+            return err(op, format!("{what}: owns: goes on a to-one side that has fields: and references:, not on {target}{}", if member.ty.list { "[]" } else { "" }));
+        }
         n.finish()?;
         let back: Vec<RelArgs> = target_decl
             .members
@@ -1380,6 +1387,7 @@ fn relation(
                     through: None,
                     label: Some(name.unwrap_or_default()),
                     join_label: None,
+                    owns: false,
                 });
             }
             [] if name.as_deref().is_some_and(|n| n.contains("{model}")) => {
@@ -1444,6 +1452,7 @@ fn relation(
             through: None,
             label: None,
             join_label: None,
+            owns: false,
         });
     };
     if member.ty.list {
@@ -1489,6 +1498,7 @@ fn relation(
     };
     let deferrable = deferrable(&mut n)?;
     let fk_name = n.str("map")?;
+    let owns = n.bool("owns")?;
     n.finish()?;
     Ok(RelationIr {
         name: member.name.clone(),
@@ -1504,6 +1514,7 @@ fn relation(
         through: None,
         label: None,
         join_label: None,
+        owns,
     })
 }
 
@@ -1600,6 +1611,7 @@ fn many_to_many(
         through: Some(ThroughIr { model: join.to_owned(), source: src.clone(), target: dst.clone() }),
         label: None,
         join_label: None,
+        owns: false,
     })
 }
 

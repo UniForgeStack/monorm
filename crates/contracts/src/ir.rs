@@ -285,6 +285,12 @@ impl SchemaIr {
             self.behavior.schema_contract = SCHEMA_CONTRACT;
             self.behavior.schema_contract_minor = self.behavior.schema_contract_minor.max(5);
         }
+        // Contract 5.6 holds `RelationIr.owns`. An engine of 5.5 would ignore the flag and leave the owned row behind.
+        let physical = self.behavior.storage.iter().flat_map(|s| &s.models);
+        if self.models.iter().chain(physical).flat_map(|m| &m.relations).any(|r| r.owns) {
+            self.behavior.schema_contract = SCHEMA_CONTRACT;
+            self.behavior.schema_contract_minor = self.behavior.schema_contract_minor.max(6);
+        }
     }
 
     /// Parse the IR that generated models embed; an older ORM can write fields this one rejects.
@@ -765,6 +771,10 @@ pub struct RelationIr {
     /// join model yet, set together with `label`. A pass consumes it.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub join_label: Option<String>,
+    /// The owner holds the key of a row that lives only while an owner points at it (schema contract 5.6).
+    /// Only a to-one side with key fields sets it; the database deletes the target with its last owner.
+    #[serde(skip_serializing_if = "crate::ir::is_false", default)]
+    pub owns: bool,
 }
 
 impl RelationIr {
@@ -772,7 +782,7 @@ impl RelationIr {
     pub fn one(name: &str, target: &str, from: &str, to: &str) -> RelationIr {
         RelationIr {
             name: name.to_owned(), kind: RelKind::One, target: target.to_owned(), from: vec![from.to_owned()], to: vec![to.to_owned()],
-            foreign_key: false, on_delete: None, on_update: None, deferrable: None, fk_name: None, through: None, label: None, join_label: None,
+            foreign_key: false, on_delete: None, on_update: None, deferrable: None, fk_name: None, through: None, label: None, join_label: None, owns: false,
         }
     }
 }

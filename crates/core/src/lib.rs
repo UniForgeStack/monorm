@@ -29,6 +29,7 @@ pub mod hooks;
 pub mod loader;
 
 pub mod ownership;
+pub mod owning;
 
 pub mod field_adapters;
 pub mod identity;
