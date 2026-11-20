@@ -215,7 +215,7 @@ for (const provider of ["sqlite", "postgresql"]) {
     });
   }
 
-  await run("a raw sql delete gives the same result as the orm call", async (db, m) => {
+  await run("a raw sql delete gives the same result as the ORM call", async (db, m) => {
     const Guitar = m.Guitar;
     await m.Spec.objects.using(db).insertMany([{ id: 1, body: "a" }, { id: 2, body: "b" }]);
     await Guitar.objects.using(db).insertMany([{ id: 1, specId: 1 }, { id: 2, specId: 1 }, { id: 3, specId: 2 }]);
