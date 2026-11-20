@@ -32,3 +32,32 @@ fn composite_primary_key_types() {
     let ts = typescript::generate(&ir, &schema, "schema.prisma", "@ufstack/monorm").unwrap();
     assert!(ts.contains("readonly pk: { readonly shop: bigint; readonly id: bigint };"), "{ts}");
 }
+
+#[cfg(feature = "generate-rust")]
+#[test]
+fn the_rust_client_refuses_a_linked_relation() {
+    let linked = r#"
+model Owner {
+  id    Int    @id
+  notes Note[]
+  seen  Tag[]  @relation(path: [notes, tags])
+}
+
+model Note {
+  id      Int   @id
+  ownerId Int
+  owner   Owner @relation(fields: [ownerId], references: [id])
+  tags    Tag[]
+}
+
+model Tag {
+  id     Int  @id
+  noteId Int
+  note   Note @relation(fields: [noteId], references: [id])
+}
+"#;
+    let ir = dsl::compile(linked, None).unwrap();
+    let schema = Schema::from_ir(serde_json::from_value(serde_json::to_value(&ir).unwrap()).unwrap()).unwrap();
+    let error = monorm_core::codegen::rust::generate(&ir, &schema).unwrap_err();
+    assert!(error.contains("Owner.seen") && error.contains("linked relation"), "{error}");
+}

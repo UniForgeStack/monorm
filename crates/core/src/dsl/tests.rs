@@ -2075,3 +2075,91 @@ fn an_owning_cycle_of_any_length_is_refused_on_sqlite_only() {
     let e = check(ok(&ring("sqlite"))).err().expect("an error");
     assert!(e.contains("an owning cycle (") && e.contains("is not allowed on SQLite"), "{e}");
 }
+
+const LINKED: &str = "datasource db {\n  provider = \"postgresql\"\n}\n\
+model User {\n  id BigInt @id\n  name String\n  posts Post[]\n  comments Comment[]\n  commenters User[] @relation(path: [posts, comments, author])\n}\n\
+model Post {\n  id BigInt @id\n  author_id BigInt\n  author User @relation(fields: [author_id], references: [id])\n  comments Comment[]\n}\n\
+model Comment {\n  id BigInt @id\n  post_id BigInt\n  author_id BigInt\n  post Post @relation(fields: [post_id], references: [id])\n  author User @relation(fields: [author_id], references: [id])\n}\n";
+
+const CHAIN: &str = "datasource db {\n  provider = \"postgresql\"\n}\n\
+model Post {\n  id BigInt @id\n  address_id BigInt\n  address Address @relation(fields: [address_id], references: [id])\n  country Country? @relation(path: [address, city, country])\n}\n\
+model Address {\n  id BigInt @id\n  city_id BigInt\n  city City @relation(fields: [city_id], references: [id])\n  posts Post[]\n}\n\
+model City {\n  id BigInt @id\n  country_id BigInt\n  country Country @relation(fields: [country_id], references: [id])\n  addresses Address[]\n}\n\
+model Country {\n  id BigInt @id\n  cities City[]\n}\n";
+
+fn linked_with(from: &str, to: &str) -> String {
+    assert!(LINKED.contains(from), "{from}");
+    LINKED.replace(from, to)
+}
+
+#[test]
+fn a_linked_relation_keeps_its_path_and_sets_the_contract_minor() {
+    let ir = ok(LINKED);
+    let r = ir.models.iter().find(|m| m.name == "User").unwrap().relations.iter().find(|r| r.name == "commenters").unwrap();
+    assert_eq!((r.kind, r.path.clone(), r.foreign_key, r.from.is_empty(), r.constraint), (crate::ir::RelKind::Many, vec!["posts".to_string(), "comments".into(), "author".into()], false, true, true));
+    let mut stamped = ir.clone();
+    stamped.stamp_expression_records();
+    assert_eq!(stamped.behavior.schema_contract_minor, 7);
+    check(ir).unwrap();
+    let ir = ok(CHAIN);
+    check(ir).unwrap();
+}
+
+#[test]
+fn a_linked_relation_needs_no_back_side_and_may_use_a_linked_hop() {
+    let src = LINKED.replace("  comments Comment[]\n  commenters", "  comments Comment[]\n  also User[] @relation(path: [commenters])\n  commenters");
+    check(ok(&src)).unwrap();
+}
+
+#[test]
+fn a_linked_relation_with_a_wrong_path_is_a_schema_error() {
+    let e = fails(&linked_with("[posts, comments, author]", "[posts, nothing, author]"));
+    assert!(e.contains("relation User.commenters: path: Post has no relation nothing"), "{e}");
+    let e = fails(&linked_with("[posts, comments, author]", "[posts, author, author]"));
+    assert!(e.contains("path: author is a relation of Comment, not of User") || e.contains("path: author is a relation of Post"), "{e}");
+    let e = fails(&linked_with("[posts, comments, author]", "[posts, comments, post]"));
+    assert!(e.contains("path: the last hop ends at Post, not at User"), "{e}");
+    let e = fails(&linked_with("[posts, comments, author]", "[commenters]"));
+    assert!(e.contains("path: a cycle: User.commenters -> User.commenters"), "{e}");
+    let e = fails(&linked_with("commenters User[]", "commenters User?"));
+    assert!(e.contains("path: a hop is to-many, so the relation is User[], not User?"), "{e}");
+    let e = fails(&linked_with("commenters User[]", "commenters User"));
+    assert!(e.contains("a linked relation over to-one hops is optional: User?"), "{e}");
+}
+
+#[test]
+fn a_linked_relation_has_no_keys_of_its_own() {
+    for key in ["fields: [id]", "references: [id]", "through: Comment", "onDelete: Cascade"] {
+        let e = fails(&linked_with("path: [posts, comments, author]", &format!("path: [posts, comments, author], {key}")));
+        assert!(e.contains(&format!("a linked relation, which has no keys of its own; {}: does not go with it", key.split(':').next().unwrap())), "{e}");
+    }
+}
+
+#[test]
+fn a_cycle_through_two_linked_relations_is_a_schema_error() {
+    let src = LINKED.replace("  commenters User[] @relation(path: [posts, comments, author])\n", "  a User[] @relation(path: [b])\n  b User[] @relation(path: [a])\n");
+    let e = fails(&src);
+    assert!(e.contains("path: a cycle: User.a -> User.b -> User.a"), "{e}");
+}
+
+#[test]
+fn constraint_false_sets_the_flag_and_refuses_the_actions() {
+    let plain = "@relation(fields: [spec_id], references: [id])";
+    let ir = ok(&owning_src("postgresql", "", "@relation(fields: [spec_id], references: [id], constraint: false)"));
+    let r = ir.models.iter().find(|m| m.name == "Guitar").unwrap().relations.iter().find(|r| r.name == "spec").unwrap();
+    assert!(!r.constraint && r.foreign_key);
+    let mut stamped = ir.clone();
+    stamped.stamp_expression_records();
+    assert_eq!(stamped.behavior.schema_contract_minor, 7);
+    let mut stamped = ok(&owning_src("postgresql", "", plain));
+    stamped.stamp_expression_records();
+    assert!(stamped.behavior.schema_contract_minor < 7);
+    for arg in ["onDelete: Cascade", "onUpdate: Cascade", "deferrable: deferred", "map: \"fk_spec\""] {
+        let e = fails(&owning_src("postgresql", "", &format!("@relation(fields: [spec_id], references: [id], constraint: false, {arg})")));
+        assert!(e.contains(&format!("{}: does not go with constraint: false", arg.split(':').next().unwrap())), "{e}");
+    }
+    let e = fails(&owning_src("postgresql", "", "@relation(fields: [spec_id], references: [id], constraint: false, owns: true)"));
+    assert!(e.contains("owns: does not go with constraint: false"), "{e}");
+    let e = fails(&owning_src("postgresql", "", "@relation(fields: [spec_id], references: [id], constraint: 1)"));
+    assert!(e.contains("constraint must be true or false"), "{e}");
+}

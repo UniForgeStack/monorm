@@ -26,6 +26,7 @@ model Author {
   active   Boolean
   nick     String?
   comments Comment[]
+  seen     Comment[] @relation(path: [comments])
   @@map("authors")
 }
 
@@ -37,6 +38,7 @@ model Comment {
   rank      Int
   at        DateTime
   author    Author?  @relation(fields: [author_id], references: [id])
+  writer    Author?  @relation(path: [author])
   @@map("comments")
 }
 "#;
