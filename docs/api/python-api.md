@@ -583,6 +583,7 @@ await Tag.objects.load(Tag.posts.author)
   anything else (bulk inserts: `await PostTag.objects.insert_many(...)`).
 * Prefetching selects the join row's key next to each tag, so a tag linked to two posts
   comes back once per post. `Post.tags.objects...[:3]` slices per post.
+* A linked relation (`@relation(path: [...])`) is a `Linked` descriptor on the model: read-only, with `kind` `"one"` or `"many"`. See [Linked relations](../schema/schema.md#linked-relations).
 
 ### Decimal, enum and array columns
 

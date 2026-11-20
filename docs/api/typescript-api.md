@@ -400,6 +400,7 @@ A relation query set can lock (`load(User.posts.objects.lock())`) or select (`lo
   LEFT JOINs. The row type gains the loaded objects: `c.post.author.name` is a `string`,
   and `c.author` is `User | null` because the key is nullable. Reading an unloaded
   relation is a type error, and at runtime it throws `NotLoaded`.
+* A linked relation (`@relation(path: [...])`) has `kind` `"linkedOne"` or `"linkedMany"` in the relation meta, and the hop kind `"list"` (to-many) or `"opt"` (to-one) in the generated path types. It is read-only. See [Linked relations](../schema/schema.md#linked-relations).
 * `load(User.posts.comments)` runs one extra `IN` query per relation level from the first to-many hop.
   To-many results are in `u.posts.cached`, and to-one results are on the attribute.
 * Columns narrow the row type to the loaded fields: `load(Post.title)` gives `Omit<Post, ...>` with `title`, `pk` and the methods; a later `load(Post.views)` adds `views`, and `load()` without items gives whole rows again.

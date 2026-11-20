@@ -351,6 +351,7 @@ An older host fails to parse a manifest that uses a new phase name, so a manifes
 A manifest of an outside extension that lists a pass of another manifest, or an unknown id, in `after` must use a phase instead: an earlier phase for the pass that runs first, or `late_behavior` for the pass that runs last.
 Schema contract 5.5 adds `ColType::Duration` to the IR (an IR with a `Duration` field is stamped 5.5). The manifest format does not change, and no extension declares 5.5.
 Schema contract 5.6 adds the `owns` flag to a relation in the IR (an IR with an owning relation is stamped 5.6). The manifest format does not change, and no extension declares 5.6.
+Schema contract 5.7 adds `path` and `constraint` to a relation in the IR (an IR with a linked relation or a `constraint: false` relation is stamped 5.7). The manifest format does not change, and no extension declares 5.7.
 A version fits when its major equals the engine major and its minor is at most the engine minor.
 This holds for `schema_contract` and for `abi`, and for the `abi` that the library reports.
 Another major, or a newer minor, gives an error that names both versions and says what to install, even when the manifest has fields that this release does not know.

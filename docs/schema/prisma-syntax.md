@@ -145,6 +145,8 @@ already does.
 | two relations between the same models | `@relation("name", ...)` on both sides | native |
 | `deferrable: deferred` | `@relation(..., deferrable: deferred)` | ours |
 | `owns: true` | `@relation(..., owns: true)` | ours |
+| a path through relations | `@relation(path: [posts, author])` | ours |
+| no foreign key | `@relation(..., constraint: false)` | ours |
 | foreign-key name | `@relation(..., map: "fk_name")` | native |
 
 ### Model attributes

@@ -616,6 +616,56 @@ followers User[]  @relation(through: Follow, through_fields: [followee, follower
   hop (see [`python-api.md`](../api/python-api.md)). Prisma's implicit many-to-many (no join
   model) isn't supported.
 
+#### Linked relations
+
+```
+commenters  User[]   @relation(path: [posts, comments, author])   // to-many: a hop is to-many
+country     Country? @relation(path: [address, city, country])      // to-one: every hop is to-one
+```
+
+`path:` follows relations that already exist.
+The first hop is a relation of this model, and each next hop is a relation of the model the hop before reaches.
+The last hop reaches the target.
+A hop can be a linked relation or a many-to-many relation.
+The relation is `Target?` when every hop is to-one, and `Target[]` when one hop is to-many.
+A linked relation has no keys, no foreign key and no back side, and it can be on a model of any dialect.
+
+* It is read-only. Assignment, `add()`, `remove()` and `set()` raise, and an `insert` or `update` that names it raises an error that names the relation.
+  Before `load()` the generated type raises `NotLoaded`.
+* It is its own path. `filter(User.commenters.name == x)` does not share a join with `User.posts`.
+* `filter` is one `EXISTS` over the flat hops. A to-one chain loads in one query with `LEFT JOIN`s and sorts with `order_by`.
+  A to-many chain loads with one extra query: a `DISTINCT` list of (parent key, target key) pairs joined to the target.
+  Each target appears once per parent. `order_by` over a to-many chain is an error, as for any to-many path.
+* `count()` over a to-many chain counts each target once (`COUNT(DISTINCT key)`).
+  `sum()` and the other aggregates do not remove duplicates: a target that two paths reach counts twice.
+* The read default of the model of every hop applies, so a soft-deleted middle row hides the path.
+  The scope policy of every table on the path applies.
+* The database needs an index on the key of every hop. The core does not add one for a linked relation.
+* A linked relation is not in the Rust client. `generate rust` refuses a schema that has one.
+
+The compiler refuses a linked relation that:
+
+* has an unknown hop, a hop that is not a relation of the model before it, or a path that comes back to itself;
+* ends on a model other than its target;
+* is `Target?` over a to-many hop;
+* has `fields:`, `references:`, `through:`, `onDelete:`, `onUpdate:`, `deferrable:`, `map:` or `owns:`.
+
+The IR carries `path` on the relation (schema contract 5.7).
+
+#### Relations without a constraint
+
+```
+author  User  @relation(fields: [author_id], references: [id], constraint: false)
+```
+
+`constraint: false` on a to-one relation with `fields:` keeps the key field and the join, and creates no `FOREIGN KEY`.
+Reads, `load()`, filters and writes work as for any relation.
+A migration that sets or drops `constraint: false` adds or drops the foreign key.
+The compiler refuses `onDelete:`, `onUpdate:`, `deferrable:`, `map:` and `owns: true` with it, because each needs the constraint.
+The soft-delete check for a lost cascade ignores the relation.
+A key that no target row has reads as `NotLoaded`, as for any relation whose key is set and has no row.
+The IR carries `constraint` (schema contract 5.7).
+
 #### Owning relations
 
 ```
