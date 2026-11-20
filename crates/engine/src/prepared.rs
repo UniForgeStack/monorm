@@ -315,7 +315,7 @@ pub(crate) fn pass(schema: &Schema, target: Target, op: &Operation, len: usize, 
 }
 
 pub(crate) fn untyped_error(i: usize) -> Error {
-    Error::query(format!("parameter {i} is the only source of a CASE value type: declare its type with param(name, type=...)"))
+    Error::query(format!("parameter {i} has no declared type, and its type decides the statement (a CASE value, or the partner of an arithmetic operand such as `at - param()`): declare its type with param(name, type=...)"))
 }
 
 pub(crate) fn is_bool(read: &Read) -> bool {

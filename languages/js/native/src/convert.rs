@@ -175,6 +175,10 @@ impl Conv {
         }
     }
 
+    fn holds_micros(self, v: V) -> bool {
+        self.js.get(v, "micros").ok().and_then(|m| self.kind(m).ok()) == Some(Kind::BigInt)
+    }
+
     fn decimal(self, v: V, kind: Kind) -> Result<BigDecimal> {
         let text = match kind {
             Kind::Decimal | Kind::BigInt => self.js.coerce_string(v).map_err(raw)?,
@@ -285,6 +289,8 @@ impl Conv {
             Kind::Date => Value::ChronoDateTimeWithTimeZone(Some(self.datetime_micros(v)?.fixed_offset())),
             Kind::Decimal => Value::BigDecimal(Some(Box::new(self.decimal(v, kind)?))),
             Kind::Bytes => Value::Bytes(Some(self.js.uint8array(v).map_err(raw)?.unwrap_or_default())),
+            // A JSON value holds no bigint, so an object with a bigint `micros` is a `Duration`.
+            Kind::Object if self.holds_micros(v) => monorm_engine::params::duration(Some(self.duration(v, kind)?)),
             Kind::Array | Kind::Object => Value::Json(Some(Box::new(self.json(v)?))),
             Kind::Null | Kind::Undefined | Kind::Other => {
                 return Err(Error::value(format!("unsupported parameter: {}", kind.name())))

@@ -113,6 +113,7 @@ impl SqliteDriver {
             let result = Connection::open(&path).and_then(|conn| {
                 conn.busy_timeout(BUSY_TIMEOUT)?;
                 crate::json_contains::register(&conn)?;
+                crate::sqlite_functions::register(&conn)?;
                 conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA case_sensitive_like = ON;")?;
                 Ok(conn)
             });
