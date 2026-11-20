@@ -486,6 +486,7 @@ async def test_one_row_missing_and_required(one_row_topics):
         await t.filter(Topic.name == "missing").require().last()
 
 
+@pytest.mark.case("queries::first_last_at_and_get_start_no_query_until_awaited")
 async def test_one_row_laziness_and_fresh_awaits(one_row_topics, observe_queries):
     db, Topic, t = one_row_topics
     with observe_queries(db) as events:

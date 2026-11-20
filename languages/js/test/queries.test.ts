@@ -724,15 +724,18 @@ test("first(), last(), at() and get() start no query until awaited", async () =>
     const [first, last, second, bob] = await Promise.all(queries);
     assert.equal(events.length, 4);
     assert.deepEqual([first!.name, last!.name, second!.name, bob!.name], ["Alice", "Carol", "Bob", "Bob"]);
-    // one run per query, however often it is awaited
-    await firstQuery;
+    // a query, not a result: every await runs the SQL again
+    assert.equal((await firstQuery)!.name, "Alice");
+    assert.equal(events.length, 5);
     await firstQuery.then((u) => u);
-    assert.equal(events.length, 4);
+    assert.equal(events.length, 6);
     // `then` is what starts it
     const lazy = User.objects.first();
-    assert.equal(events.length, 4);
+    assert.equal(events.length, 6);
     await lazy.catch(() => undefined);
-    assert.equal(events.length, 5);
+    assert.equal(events.length, 7);
+    await lazy.finally(() => undefined);
+    assert.equal(events.length, 8);
   } finally {
     stop();
   }

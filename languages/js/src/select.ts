@@ -695,7 +695,7 @@ export class Select<M extends ModelSpec, Row extends object, S extends string, P
 
 /**
  * `first()`, `last()`, `at(n)` and `get()` of a select: one row, or `null`. Like
- * {@link OneRowQuery}, it runs once, on the first `then`.
+ * {@link OneRowQuery}, it runs again on each `then`.
  */
 export class OneSelectRow<T, P = {}, X extends string = never> extends OneRowQuery<T, P, X> {
   readonly #select: Select<ModelSpec, object, string, {}, never, unknown>;

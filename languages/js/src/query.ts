@@ -2001,7 +2001,7 @@ function noReturningOption(op: string, removed: unknown): void {
  * `finally`). */
 abstract class Statement<T> implements Promise<T> {
   #promise: Promise<T> | undefined;
-  readonly #site = siteNow();
+  protected readonly site = siteNow();
 
   get [Symbol.toStringTag](): string {
     return this.constructor.name;
@@ -2010,8 +2010,8 @@ abstract class Statement<T> implements Promise<T> {
   /** @internal */
   protected abstract execute(): Promise<T>;
 
-  private start(): Promise<T> {
-    return (this.#promise ??= atSite(this.#site, () => this.execute()));
+  protected start(): Promise<T> {
+    return (this.#promise ??= atSite(this.site, () => this.execute()));
   }
 
   then<A = T, B = never>(onfulfilled?: ((value: T) => A | PromiseLike<A>) | null, onrejected?: ((reason: unknown) => B | PromiseLike<B>) | null): Promise<A | B> {
@@ -2032,9 +2032,10 @@ function pickFirst(rows: unknown[]): unknown {
 }
 
 /**
- * `first()`, `last()`, `at(n)` and `get()`: one row of a query set, or `null`. It runs
- * once, on the first `then` / `catch` / `finally`, so `qs.first()` starts no query by
- * itself. A query that holds `param()` placeholders can't be awaited: use `prepare()`.
+ * `first()`, `last()`, `at(n)` and `get()`: one row of a query set, or `null`. It is a
+ * query, not a result: each `then` / `catch` / `finally` runs the SQL again and the
+ * object caches no row, so `qs.first()` starts no query by itself. A query that holds
+ * `param()` placeholders can't be awaited: use `prepare()`.
  */
 export class OneRowQuery<T, P = {}, X extends string = never, V = null> extends Statement<T> {
   readonly #shape: () => QuerySet<ModelSpec, unknown, string, P, X>;
@@ -2071,6 +2072,11 @@ export class OneRowQuery<T, P = {}, X extends string = never, V = null> extends 
   protected async execute(): Promise<T> {
     const qs = this.shaped();
     return this.#pick(qs.checkRows(await qs.fetch())) as T;
+  }
+
+  /** @internal Every await runs the query again. */
+  protected override start(): Promise<T> {
+    return atSite(this.site, () => this.execute());
   }
 
   /** This query compiled once, to run with `param()` values: `run(values)` gives the row or `null`. */
