@@ -373,10 +373,10 @@ async def test_a_two_table_insert_assigns_the_omitted_values_of_the_child_table(
     try:
         await db.create_tables()
         staff = Staff.objects.using(db)
-        base = {"text": "t", "start": 1, "end": 2, "shop_id": 1, "bio": "b"}
+        base = {"text": "t", "start": 1, "end": 2, "bio": "b"}
         with monorm.scope(shop=1, user="ann"):
             omitted = await staff.insert(email="ada@x.io", **base)
-            assert (omitted.origin, omitted.badge) == ("ann", "guarded")
+            assert (omitted.shop_id, omitted.updated_by, omitted.origin, omitted.badge) == (1, "ann", "ann", "guarded")
             supplied = await staff.insert(email="bo@x.io", origin="bob", badge="mine", **base)
             assert (supplied.origin, supplied.badge) == ("bob", "mine")
             await staff.insert_many([{"email": "cy@x.io", "origin": "cy", **base}, {"email": "di@x.io", **base}])

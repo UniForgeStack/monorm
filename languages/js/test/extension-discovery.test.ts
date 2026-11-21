@@ -380,10 +380,10 @@ test("a two-table insert assigns the omitted values of the child table", { timeo
   try {
     await db.createTables();
     const staff = Staff.objects.using(db);
-    const base = { text: "t", start: 1, end: 2, shopId: 1, bio: "b" };
+    const base = { text: "t", start: 1, end: 2, bio: "b" };
     await scope({ shop: 1, user: "ann" }, async () => {
       const omitted = await staff.insert({ email: "ada@x.io", ...base });
-      assert.deepEqual([omitted.origin, omitted.badge], ["ann", "guarded"]);
+      assert.deepEqual([omitted.shopId, omitted.updatedBy, omitted.origin, omitted.badge], [1, "ann", "ann", "guarded"]);
       const supplied = await staff.insert({ email: "bo@x.io", origin: "bob", badge: "mine", ...base });
       assert.deepEqual([supplied.origin, supplied.badge], ["bob", "mine"]);
       await staff.insertMany([{ email: "cy@x.io", origin: "cy", ...base }, { email: "di@x.io", ...base }]);

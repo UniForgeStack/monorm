@@ -4393,15 +4393,7 @@ pub(crate) fn insert_statement(
                 if !omitted(i) { continue; }
                 let Some((position, default)) = m.client_defaults.iter().find(|(p, _)| m.fields()[*p].name == c.name) else { continue };
                 if m.assignments.iter().any(|a| a.field == *position && a.applies_to(AssignKind::Insert)) { continue; }
-                match default {
-                    monorm_core::client_default::ClientDefault::Expr(e) => *slot = Some(planner.value(e, Hint { ty: Some(c.value_type()), field: Some(c) })?),
-                    monorm_core::client_default::ClientDefault::Hook(export) => {
-                        let e = crate::hooks::expression(m, *position, true, &crate::hooks::Contexts::new(params))?
-                            .ok_or_else(|| Error::query(format!("{}.{}: hook {export} is not loaded", m.ir.name, c.name)))?;
-                        *slot = Some(planner.value(&e, Hint { ty: Some(c.value_type()), field: Some(c) })?);
-                    }
-                    _ => {}
-                }
+                *slot = insert_default_expression(m, *position, default, &mut planner)?;
             }
         }
         if m.assignments.iter().any(|a| a.applies_to(AssignKind::Insert)) {
@@ -4639,6 +4631,29 @@ pub(crate) fn maintained<'s>(m: &'s Model, kind: AssignKind, is_set: impl Fn(&st
         out.push((f.column.as_str(), v));
     }
     Ok(out)
+}
+
+/// Plan a client default that supplies an SQL expression for an omitted insert value.
+pub(crate) fn insert_default_expression<'s>(
+    model: &'s Model,
+    position: usize,
+    default: &monorm_core::client_default::ClientDefault,
+    planner: &mut Planner<'s>,
+) -> Result<Option<SExpr>> {
+    use monorm_core::client_default::ClientDefault;
+
+    let field = &model.fields()[position];
+    let hint = Hint { ty: Some(field.value_type()), field: Some(field) };
+    match default {
+        ClientDefault::Expr(expr) => planner.value(expr, hint).map(Some),
+        ClientDefault::Hook(export) => {
+            let contexts = crate::hooks::Contexts::new(planner.params);
+            let expr = crate::hooks::expression(model, position, true, &contexts)?
+                .ok_or_else(|| Error::query(format!("{}.{}: hook {export} is not loaded", model.ir.name, field.name)))?;
+            planner.value(&expr, hint).map(Some)
+        }
+        _ => Ok(None),
+    }
 }
 
 /// An expression assigned to field `f`: through its `write_sql` template, if any.

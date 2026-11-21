@@ -2,44 +2,53 @@
 
 use monorm::extension::Declaration;
 use monorm::ir::{SchemaIr, TriggerEvent};
-use monorm::writes::WriteRule;
+use monorm::writes::{
+    fingerprint, WriteAction, WriteCondition, WriteLayer, WriteRule, WriteRuleDeclaration,
+};
 use serde_json::json;
 
 const SOURCE: &str = "monorm.write-rules";
 
+#[derive(serde::Deserialize)]
+struct RuleOptions {
+    operations: Vec<TriggerEvent>,
+    fields: Vec<String>,
+    condition: Option<WriteCondition>,
+    layer: WriteLayer,
+    action: WriteAction,
+    skippable: bool,
+}
+
 fn rule(ir: &SchemaIr, declaration: &Declaration) -> Result<WriteRule, String> {
     let args = &declaration.arguments;
-    let (name, operations, fields, changed) = match declaration.field.as_deref() {
-        Some(field) => (
-            format!("read_only_{field}"),
-            json!([TriggerEvent::Update]),
-            json!([field]),
-            true,
-        ),
+    let (operations, fields) = match declaration.field.as_deref() {
+        Some(field) => (json!([TriggerEvent::Update]), json!([field])),
         None => {
             let operation = args.get("operation");
             (
-                "protect".into(),
                 operation.map_or_else(
                     || json!(["insert", "update", "delete"]),
                     |op| op["operations"].clone(),
                 ),
                 operation.map_or_else(|| json!([]), |op| op["fields"].clone()),
-                false,
             )
         }
     };
-    let mut rule: WriteRule = serde_json::from_value(json!({
-        "source": SOURCE, "model": declaration.model, "name": name,
-        "operations": operations, "fields": fields, "changed": changed,
+    let RuleOptions {
+        mut operations,
+        fields,
+        condition,
+        layer,
+        action,
+        skippable,
+    } = serde_json::from_value(json!({
+        "operations": operations, "fields": fields, "condition": args.get("condition"),
         "layer": args.get("layer").cloned().unwrap_or_else(|| json!("both")),
         "action": args.get("action").cloned().unwrap_or_else(|| json!("refuse")),
         "skippable": args.get("skippable").cloned().unwrap_or(serde_json::Value::Bool(false)),
-        "condition": args.get("condition"),
-        "declaration": { "attribute": declaration.attribute, "field": declaration.field },
     }))
     .map_err(|error| monorm::tracking::error(declaration, error))?;
-    rule.operations.sort();
+    operations.sort();
     let model = ir
         .behavior
         .storage
@@ -47,14 +56,14 @@ fn rule(ir: &SchemaIr, declaration: &Declaration) -> Result<WriteRule, String> {
         .map_or(&ir.models, |storage| &storage.models)
         .iter()
         .chain(&ir.models)
-        .find(|model| model.name == rule.model);
+        .find(|model| model.name == declaration.model);
     let column = |field: &str| {
         model
             .and_then(|m| m.fields.iter().find(|f| f.name == field))
             .map_or_else(|| field.to_owned(), |f| f.column.clone())
     };
     let columns = |fields: &[String]| fields.iter().map(|field| column(field)).collect::<Vec<_>>();
-    if let Some(field) = &declaration.field {
+    let name = if let Some(field) = &declaration.field {
         let column = column(field);
         let tag = if column
             .bytes()
@@ -62,11 +71,11 @@ fn rule(ir: &SchemaIr, declaration: &Declaration) -> Result<WriteRule, String> {
         {
             column
         } else {
-            fingerprint(column.as_bytes())
+            fingerprint(column.bytes())
         };
-        rule.name = format!("read_only_{tag}");
+        format!("read_only_{tag}")
     } else {
-        let mut condition = rule.condition.clone();
+        let mut condition = condition.clone();
         if let Some(condition) = &mut condition {
             for change in &mut condition.changes {
                 change.fields = columns(&change.fields);
@@ -74,23 +83,31 @@ fn rule(ir: &SchemaIr, declaration: &Declaration) -> Result<WriteRule, String> {
             }
         }
         let key = json!([
-            rule.operations,
-            columns(&rule.fields),
+            operations,
+            columns(&fields),
             condition,
-            rule.layer,
-            rule.action,
-            rule.skippable
+            layer,
+            action,
+            skippable
         ]);
-        rule.name = format!("protect_{}", fingerprint(key.to_string().as_bytes()));
-    }
-    Ok(rule)
-}
-
-fn fingerprint(bytes: &[u8]) -> String {
-    let hash = bytes.iter().fold(0xcbf29ce484222325_u64, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
-    });
-    format!("{hash:016x}")
+        format!("protect_{}", fingerprint(key.to_string().bytes()))
+    };
+    Ok(WriteRule {
+        source: SOURCE.into(),
+        model: declaration.model.clone(),
+        name,
+        operations,
+        fields,
+        condition,
+        changed: declaration.field.is_some(),
+        action,
+        layer,
+        skippable,
+        declaration: Some(WriteRuleDeclaration {
+            attribute: declaration.attribute.clone(),
+            field: declaration.field.clone(),
+        }),
+    })
 }
 
 pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
@@ -149,6 +166,13 @@ mod tests {
         let (ir, schema) = monorm_core::dsl::check(ir)?;
         assert_eq!(ir.behavior.schema_contract_minor, 10);
         Ok(monorm_core::migrate::create_all(&schema)?.join("\n"))
+    }
+
+    #[test]
+    fn the_default_protection_has_a_stable_name() {
+        let mut ir = schema("postgres", json!([protect(json!({}))]));
+        prepare(&mut ir).unwrap();
+        assert_eq!(ir.behavior.write_rules[0].name, "protect_4c7f4a3dd5c6b431");
     }
 
     #[test]

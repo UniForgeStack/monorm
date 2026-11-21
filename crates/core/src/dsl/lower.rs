@@ -1948,7 +1948,7 @@ fn blank_literals(sql: &str) -> String {
 }
 
 /// A whole-word, case-insensitive mention of `OLD.` or `NEW.` in raw SQL, outside a string literal.
-pub(super) fn reads_row(sql: &str, which: &str) -> bool {
+pub(crate) fn reads_row(sql: &str, which: &str) -> bool {
     let lower = blank_literals(sql).to_lowercase();
     let is_id = |c: char| c.is_alphanumeric() || c == '_' || c == '"';
     lower.match_indices(which).any(|(i, _)| {
