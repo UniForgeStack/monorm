@@ -171,3 +171,12 @@ pub struct WriteRuleDeclaration {
 /// The database error identifier used by write-rule triggers in either dialect.
 pub const WRITE_PROTECTED_SQLSTATE: &str = "MW001";
 pub const WRITE_PROTECTED_PREFIX: &str = "monorm write rule: ";
+
+/// Stable 64-bit FNV-1a fingerprint for persisted rule identifiers.
+#[doc(hidden)]
+pub fn fingerprint(bytes: impl IntoIterator<Item = u8>) -> String {
+    let hash = bytes.into_iter().fold(0xcbf29ce484222325_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+    });
+    format!("{hash:016x}")
+}

@@ -155,10 +155,26 @@ pub fn prepare_insert(
     model_fields: Option<&[String]>,
     without_defaults: &Bypass,
 ) -> Result<Insert> {
+    prepare_insert_steps(schema, target, model, fields, rows, params, model_fields, without_defaults, true)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_insert_steps(
+    schema: &Schema,
+    target: Target,
+    model: &str,
+    fields: &[String],
+    rows: Vec<Vec<Option<Value>>>,
+    params: &dyn crate::Params,
+    model_fields: Option<&[String]>,
+    without_defaults: &Bypass,
+    complete: bool,
+) -> Result<Insert> {
     let model_idx = schema.model_idx(model).map_err(query_err)?;
     let logical = schema.model(model_idx);
+    let has_assignments = logical.assignments.iter().any(|a| a.applies_to(WriteKind::Insert));
     // The scope column lives on the root level; every level's insert shares the one fill.
-    let (mut fields, mut rows) = if logical.assignments.iter().any(|a| a.applies_to(WriteKind::Insert)) {
+    let (mut fields, mut rows) = if complete || has_assignments {
         let (fields, rows) = crate::client_default::fill(logical, fields, rows)?;
         (fields.into_owned(), rows)
     } else {
@@ -195,14 +211,26 @@ pub fn prepare_insert(
         let map = crate::hooks::input_map(logical.fields().len(), &positions)?;
         crate::hooks::insert_rows(logical, &map, &mut rows, false, params)?;
     }
-    let mut assigned = std::collections::BTreeMap::new();
-    if logical.assignments.iter().any(|a| a.applies_to(WriteKind::Insert)) {
+    let mut expressions = std::collections::BTreeMap::new();
+    if has_assignments || (complete && !logical.client_defaults.is_empty()) {
         let mut planner = plan::Planner::new(schema, &[], target, model, None, params, vec![], 0)?;
-        for (column, expression) in plan::maintained(logical, WriteKind::Insert, |name| {
+        let is_set = |name: &str| {
             fields.iter().position(|f| f == name).is_none_or(|i| rows.iter().all(|row| row[i].is_some()))
-        }, &mut planner)? {
+        };
+        for (column, expression) in plan::maintained(logical, WriteKind::Insert, is_set, &mut planner)? {
             if let Some(field) = logical.fields().iter().find(|f| f.column == column) {
-                assigned.insert(field.name.as_str(), plan::write_expr(expression, field));
+                expressions.insert(field.name.as_str(), plan::write_expr(expression, field));
+            }
+        }
+        if complete {
+            for (position, default) in &logical.client_defaults {
+                let field = &logical.fields()[*position];
+                if is_set(&field.name) || expressions.contains_key(field.name.as_str()) {
+                    continue;
+                }
+                if let Some(expression) = plan::insert_default_expression(logical, *position, default, &mut planner)? {
+                    expressions.insert(field.name.as_str(), expression);
+                }
             }
         }
     }
@@ -217,7 +245,7 @@ pub fn prepare_insert(
             let physical = &owners[owner.0];
             let mut columns = vec![];
             let mut values = vec![];
-            let mut expressions = std::collections::BTreeMap::new();
+            let mut assigned = std::collections::BTreeMap::new();
             for (&position, value) in positions.iter().zip(&row) {
                 let resolved = &logical.resolved_fields[position];
                 let field = if position == logical.pk && index == 0 {
@@ -228,8 +256,8 @@ pub fn prepare_insert(
                     continue;
                 };
                 if value.is_none() {
-                    if let Some(expression) = assigned.get(logical.fields()[position].name.as_str()) {
-                        expressions.insert(field.column.clone(), expression.clone());
+                    if let Some(expression) = expressions.get(logical.fields()[position].name.as_str()) {
+                        assigned.insert(field.column.clone(), expression.clone());
                     }
                 }
                 columns.push(field.clone());
@@ -239,7 +267,7 @@ pub fn prepare_insert(
                 table: physical.table().into(),
                 fields: columns,
                 values,
-                assigned: expressions,
+                assigned,
                 key: physical.pk_field().clone(),
             });
         }
@@ -942,7 +970,7 @@ fn prepare_attach_rows(
             row
         })
         .collect();
-    let mut insert = prepare_insert(schema, target, model, &fields, rows, &NoParams, None, &Bypass::All(true))?;
+    let mut insert = prepare_insert_steps(schema, target, model, &fields, rows, &NoParams, None, &Bypass::All(true), false)?;
     for row in &mut insert.rows {
         let mut leaf = row.pop().expect("prepared multi-table leaf");
         // Complete creates place a supplied shared key at the root. Attach places

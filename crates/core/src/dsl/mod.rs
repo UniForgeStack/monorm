@@ -39,11 +39,8 @@ use std::path::{Path, PathBuf};
 use crate::ir::SchemaIr;
 use crate::schema::Schema;
 
+pub(crate) use lower::reads_row;
 pub use syntax::Pos;
-
-pub(crate) fn reads_trigger_row(sql: &str, row: &str) -> bool {
-    lower::reads_row(sql, row)
-}
 
 /// Compiles schema source. `origin` is the file it came from: error messages name it
 /// and `import` paths resolve against its directory.

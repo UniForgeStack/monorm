@@ -273,6 +273,7 @@ mod backends {
         let target = Target::new(dialect);
         let db = db::connect(url, 1).await.unwrap();
         let conn = db.begin().await.unwrap();
+        conn.batch("DROP TABLE IF EXISTS posts".into()).await.unwrap();
         for s in monorm_core::migrate::create_all(&schema).unwrap() { conn.batch(s).await.unwrap(); }
         conn.batch("INSERT INTO posts (id, title, views) VALUES (1,'a',10),(2,'b',20),(3,'c',30),(4,'d',40)".into()).await.unwrap();
         let go = |terminal: &str, expr: Value| {

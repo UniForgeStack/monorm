@@ -1,11 +1,12 @@
 //! Validates neutral write rules and builds their database triggers.
 
 use crate::dialect::Dialect;
+use crate::dsl::reads_row;
 use crate::ir::{ChangeIr, ChangeKind, ModelIr, SchemaIr, TriggerEvent, TriggerIr};
 use crate::migrate::model::object_name;
 use monorm::sql::literal;
 use monorm::writes::{
-    WriteAction, WriteLayer, WriteRule, WRITE_PROTECTED_PREFIX, WRITE_PROTECTED_SQLSTATE,
+    fingerprint, WriteAction, WriteLayer, WriteRule, WRITE_PROTECTED_PREFIX, WRITE_PROTECTED_SQLSTATE,
 };
 use serde::{Deserialize, Serialize};
 
@@ -95,8 +96,8 @@ fn validate(dialect: Dialect, model: &ModelIr, rule: &WriteRule) -> Result<(), S
             return error("change helpers require update or update_of(...)");
         }
         if let Some(sql) = &cond.sql {
-            if (rule.operations.contains(&Insert) && crate::dsl::reads_trigger_row(sql, "old"))
-                || (rule.operations.contains(&Delete) && crate::dsl::reads_trigger_row(sql, "new"))
+            if (rule.operations.contains(&Insert) && reads_row(sql, "old"))
+                || (rule.operations.contains(&Delete) && reads_row(sql, "new"))
             {
                 return error("the condition reads a row unavailable for one of its operations");
             }
@@ -166,16 +167,8 @@ impl DeclarationMarker {
 
 pub(crate) fn skip_name(model: &ModelIr, rule: &WriteRule) -> String {
     // Use only array-safe ASCII bytes, including when the physical table was mapped.
-    let hash = model
-        .table
-        .as_bytes()
-        .iter()
-        .chain([&0])
-        .chain(rule.name.as_bytes())
-        .fold(0xcbf29ce484222325_u64, |hash, b| {
-            (hash ^ u64::from(*b)).wrapping_mul(0x100000001b3)
-        });
-    format!("rule_{hash:016x}")
+    let fingerprint = fingerprint(model.table.bytes().chain([0]).chain(rule.name.bytes()));
+    format!("rule_{fingerprint}")
 }
 
 pub(crate) fn sqlite_trigger_name(name: &str, operation: TriggerEvent) -> Option<String> {

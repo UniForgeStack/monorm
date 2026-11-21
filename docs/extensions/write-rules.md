@@ -43,6 +43,8 @@ In Python, use `with monorm.allow_writes(Ledger):`. In TypeScript, use
 model's application rules. To open a database rule, set `skippable: true` and
 connect with a PostgreSQL session role listed in the datasource's
 `bypass_roles`. Database rules default to `skippable: false`.
+Use the model-based scope to skip write rules because MonOrm generates each
+database skip name from the physical table and rule name.
 
 SQLite implements database refusals with `RAISE(ABORT)` and drops with
 `RAISE(IGNORE)`. A skippable `layer: both` rule keeps its application layer on
