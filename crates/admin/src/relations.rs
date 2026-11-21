@@ -95,6 +95,9 @@ pub(crate) fn build(schema: &Schema, resources: &[Resource], r: &Resource, confi
     for (name, c) in config {
         let at = format!("{}: relation {name:?}", r.name);
         let Ok((rel, target_idx)) = model.relation(name) else { return err(format!("{at} is not a relation of the model")) };
+        if rel.is_conditioned() {
+            return err(format!("{at} has fixed conditions or union members, which the admin does not support"));
+        }
         let Some(target) = resources.iter().find(|o| o.model == target_idx) else { return err(format!("{at} leads to {}, which is not a resource", schema.model(target_idx).ir.name)) };
         let label = match &c.label {
             Some(l) => {

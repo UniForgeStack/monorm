@@ -24,7 +24,7 @@ pub enum Literal {
 const SHAPE: &str = "has the wrong shape";
 
 impl Literal {
-    fn parse(value: &Value, ty: ValueType) -> Result<Self, String> {
+    pub fn parse(value: &Value, ty: ValueType) -> Result<Self, String> {
         // On a Json field, null is the JSON value, like `@default("null")`.
         if ty.ty == ColType::Json && !ty.array { return Ok(Self::Json(value.clone())); }
         if value.is_null() { return Ok(Self::Null(ty)); }

@@ -163,9 +163,11 @@ export class Builder {
     const parentCells = cellsOf(parentRows);
     for (let i = 0; i < parents.length; i++) {
       const parent = parents[i]!;
+      const matches = f.matchingParents?.[i] ?? true;
+      if (f.union && !matches) continue;
       if (rel) clearAbsent(parent, rel.name);
       const k = rowKey(parentCells, i * pw, f.keyPos);
-      const found = k === null ? undefined : groups.get(k);
+      const found = !matches || k === null ? undefined : groups.get(k);
       let value: unknown;
       if (f.many) {
         const list = (found as Obj[] | undefined) ?? [];

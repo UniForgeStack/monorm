@@ -170,7 +170,7 @@ for (const dialect of ["sqlite", "postgres"] as const) {
       // runtime related set directly to exercise its independent insert path.
       const related = new RelatedSet(models.ActiveUser!._meta);
       Object.assign(related, {
-        relation: { name: "activeRows", ir: "active_rows", kind: "many", target: "ActiveUser", from: ["id"], to: ["id"], through: undefined },
+        relation: { name: "activeRows", ir: "active_rows", kind: "many", target: "ActiveUser", from: ["id"], to: ["id"], through: undefined, path: [], conditions: [], members: [] },
         instance: owner,
       });
       const bound = related.using(db);

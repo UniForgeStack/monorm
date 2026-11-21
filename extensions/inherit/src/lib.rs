@@ -390,9 +390,9 @@ fn join_model(
     generated.insert((rel.target.clone(), back.to_owned()), child.to_owned());
     ir.models.push(model);
     ir.models[ti].relations.push(RelationIr {
-        name: back.to_owned(), kind: RelKind::Many, target: child.to_owned(), from: vec![target_key.clone()], to: vec![child_key.clone()],
-        foreign_key: false, on_delete: None, on_update: None, deferrable: None, fk_name: None,
-        through: Some(ThroughIr { model: join_name.clone(), source: target.name.clone(), target: source.name.clone() }), label: None, join_label: None, owns: false, path: vec![], constraint: true,
+        kind: RelKind::Many,
+        through: Some(ThroughIr { model: join_name.clone(), source: target.name.clone(), target: source.name.clone() }),
+        ..RelationIr::one(back, child, &target_key, &child_key)
     });
     let owner = ir.models[ci].relations.iter_mut().find(|r| r.name == member).ok_or("lost a relation")?;
     owner.from = vec![child_key];

@@ -31,7 +31,7 @@ use crate::error::{query_err, Error, Result};
 use crate::params::Params;
 use monorm_core::ir::{
     Annotation, ArithOp, Assignment, Bypass, CmpOp, ColType, Count, Cte, Delete, Expr, FieldIr, Frame, FrameKind, Lock, Nulls, Operation, Order, ParamRef,
-    JsonKey, NestedStorage, Prefetch, RelKind, RelationIr, Select, SelectItem, Update, ValueType, When,
+    JsonKey, NestedStorage, Prefetch, RelKind, RelationCondition, RelationIr, RelationSide, Select, SelectItem, Update, ValueType, When,
 };
 use monorm_core::dialect::{Capabilities, Dialect, Target};
 use monorm_core::schema::{Model, Schema};
@@ -99,6 +99,8 @@ pub struct PrefetchPlan {
     /// Positions and types of the relation's `from` fields in the parent rows.
     pub key_pos: Vec<usize>,
     pub key_type: Vec<ValueType>,
+    pub source_conditions: Vec<FixedSource>,
+    pub union: Option<UnionPrefetch>,
     /// Positions of the relation's `to` fields in the related rows.
     pub child_key_pos: Vec<usize>,
     /// The names of the `select(...)` columns of the related rows.
@@ -123,7 +125,28 @@ pub struct PrefetchPlan {
     pub children: Vec<std::sync::Arc<PrefetchPlan>>,
 }
 
+#[derive(Clone)]
+pub struct FixedSource {
+    pub position: usize,
+    pub ty: ValueType,
+    pub value: Value,
+}
+
+#[derive(Clone)]
+pub struct UnionPrefetch {
+    pub name: String,
+    pub member: usize,
+    pub choices: Vec<Vec<FixedSource>>,
+}
+
 impl PrefetchPlan {
+    pub fn remap_parent(&mut self, position: impl Fn(usize) -> usize) {
+        self.key_pos.iter_mut().for_each(|p| *p = position(*p));
+        for condition in self.source_conditions.iter_mut().chain(self.union.iter_mut().flat_map(|u| u.choices.iter_mut().flatten())) {
+            condition.position = position(condition.position);
+        }
+    }
+
     /// The statement for these parent keys (non-NULL, distinct), one value per key column.
     pub fn statement(&self, keys: Vec<Vec<sea_query::Value>>) -> SelectStatement {
         let mut stmt = self.stmt.clone();
@@ -1381,12 +1404,21 @@ impl<'s> Planner<'s> {
         }
     }
 
+    fn fixed(&self, at: (&str, usize), condition: &RelationCondition) -> Result<SExpr> {
+        let field = self.model(at.1).field(&condition.field).map_err(query_err)?;
+        let value = fixed_value(field, condition)?;
+        Ok(col(at.0, &field.column).eq(bind(value, Some(field))))
+    }
+
     /// `dst.<to> = src.<from>` over every column pair of the relation.
     fn link(&self, src: (&str, usize), rel: &RelationIr, dst: (&str, usize)) -> Result<SExpr> {
         let (sm, dm) = (self.model(src.1), self.model(dst.1));
         let mut pairs = vec![];
         for (from, to) in rel.from.iter().zip(&rel.to) {
             pairs.push(col(dst.0, &dm.field(to).map_err(query_err)?.column).eq(col(src.0, &sm.field(from).map_err(query_err)?.column)));
+        }
+        for c in &rel.conditions {
+            pairs.push(self.fixed(if c.side == RelationSide::Source { src } else { dst }, c)?);
         }
         Ok(fold(pairs, true))
     }
@@ -1447,8 +1479,15 @@ impl<'s> Planner<'s> {
                 let jm = self.model(self.model_idx(&th.model)?);
                 let jalias = self.alias(prefix);
                 let jtable = Alias::new(jm.table());
-                let to_target = col(&jalias, &jm.field(&th.target).map_err(query_err)?.column).eq(col(&alias, to_col));
-                let to_source = col(&jalias, &jm.field(&th.source).map_err(query_err)?.column).eq(col(src.0, from_col));
+                let mut to_target = col(&jalias, &jm.field(&th.target).map_err(query_err)?.column).eq(col(&alias, to_col));
+                let mut to_source = col(&jalias, &jm.field(&th.source).map_err(query_err)?.column).eq(col(src.0, from_col));
+                for c in &rel.conditions {
+                    if c.side == RelationSide::Source {
+                        to_source = to_source.and(self.fixed(src, c)?);
+                    } else {
+                        to_target = to_target.and(self.fixed((&alias, target), c)?);
+                    }
+                }
                 if first {
                     stmt.from_as(table, Alias::new(&alias))
                         .join_as(JoinType::InnerJoin, jtable, Alias::new(&jalias), to_target)
@@ -1512,7 +1551,7 @@ impl<'s> Planner<'s> {
         let mut model = scope.model;
         for hop in &path[scope.path.len()..] {
             match self.model(model).relation(hop) {
-                Ok((rel, target)) if rel.kind == RelKind::One && rel.through.is_none() => model = target,
+                Ok((rel, target)) if rel.kind == RelKind::One && rel.through.is_none() && self.model(model).relation_union(hop).is_none() => model = target,
                 _ => return false,
             }
         }
@@ -3022,6 +3061,9 @@ impl<'s> Planner<'s> {
             }
             let m = self.model(model);
             let (rel, target) = m.relation(&path[i]).map_err(query_err)?;
+            if m.relation_union(&path[i]).is_some() {
+                return Err(Error::query(format!("{why} cannot follow a union relation")));
+            }
             if rel.kind != RelKind::One {
                 return Err(Error::query(format!(
                     "{why} can only follow to-one relations; {} is to-many",
@@ -3169,10 +3211,19 @@ impl<'s> Planner<'s> {
         let public = positions.len();
         // Identity and relation keys remain private when omitted by the caller.
         let mut helpers = m.key.clone();
-        for r in &m.ir.relations { for f in &r.from { helpers.push(m.field_pos(f).map_err(query_err)?); } }
+        for r in &m.ir.relations {
+            for rel in r.with_members() {
+                for f in &rel.from { helpers.push(m.field_pos(f).map_err(query_err)?); }
+                for c in rel.conditions.iter().filter(|c| c.side == RelationSide::Source) {
+                    helpers.push(m.field_pos(&c.field).map_err(query_err)?);
+                }
+            }
+        }
         for source in &self.schema.models {
-            for relation in &source.ir.relations {
-                if relation.target == m.ir.name { for f in &relation.to { helpers.push(m.field_pos(f).map_err(query_err)?); } }
+            for r in &source.ir.relations {
+                for relation in r.with_members().filter(|rel| rel.target == m.ir.name) {
+                    for f in &relation.to { helpers.push(m.field_pos(f).map_err(query_err)?); }
+                }
             }
         }
         for name in extra { helpers.push(m.field_pos(name).map_err(query_err)?); }
@@ -3316,9 +3367,10 @@ impl<'s> Planner<'s> {
         }
         let mut prefetch = vec![];
         for node in &q.prefetch {
-            let mut plan = plan_prefetch(self.schema, self.target, self.params, self.root, node, &q.without_defaults)?;
-            plan.key_pos = plan.key_pos.iter().map(|&k| positions.iter().position(|f| f == k).expect("selected relation helper")).collect();
-            prefetch.push(std::sync::Arc::new(plan));
+            for mut plan in plan_prefetch_node(self.schema, self.target, self.params, self.root, node, &q.without_defaults)? {
+                plan.remap_parent(|k| positions.iter().position(|f| f == k).expect("selected relation helper"));
+                prefetch.push(std::sync::Arc::new(plan));
+            }
         }
         Ok(SelectPlan { stmt, types, output: Output::Instances { model: self.root, shape, joins, annotations }, filtered: self.root_filtered, prefetch, computed })
     }
@@ -3836,7 +3888,41 @@ pub fn plan_prefetch_only(schema: &Schema, target: Target, q: &Select, params: &
     let root = schema.model_idx(&q.model).map_err(query_err)?;
     let scoped = crate::params::Scoped { params, scope: &q.scope };
     let params: &dyn Params = if q.scope.is_empty() { params } else { &scoped };
-    q.prefetch.iter().map(|node| plan_prefetch(schema, target, params, root, node, &q.without_defaults).map(std::sync::Arc::new)).collect()
+    let mut plans = vec![];
+    for node in &q.prefetch {
+        plans.extend(plan_prefetch_node(schema, target, params, root, node, &q.without_defaults)?.into_iter().map(std::sync::Arc::new));
+    }
+    Ok(plans)
+}
+
+fn fixed_value(field: &FieldIr, condition: &RelationCondition) -> Result<Value> {
+    let parsed = monorm_core::client_default::Literal::parse(&condition.value, field.value_type()).map_err(query_err)?;
+    Ok(crate::client_default::literal(&parsed))
+}
+
+fn source_conditions(model: &monorm_core::schema::Model, rel: &RelationIr) -> Result<Vec<FixedSource>> {
+    rel.conditions.iter().filter(|c| c.side == RelationSide::Source).map(|c| {
+        let position = model.field_pos(&c.field).map_err(query_err)?;
+        let field = &model.fields()[position];
+        Ok(FixedSource { position, ty: field.value_type(), value: fixed_value(field, c)? })
+    }).collect()
+}
+
+fn plan_prefetch_node(schema: &Schema, target: Target, params: &dyn Params, parent: usize, node: &Prefetch, bypass: &Bypass) -> Result<Vec<PrefetchPlan>> {
+    let model = schema.model(parent);
+    let Some(union) = model.ir.relations.iter().find(|r| r.name == node.relation && !r.members.is_empty()) else {
+        return plan_prefetch(schema, target, params, parent, node, bypass).map(|plan| vec![plan]);
+    };
+    let choices = union.members.iter().map(|member| source_conditions(model, member)).collect::<Result<Vec<_>>>()?;
+    union.members.iter().enumerate().map(|(member, rel)| {
+        let mut node = node.clone();
+        node.attr = Some(node.attr.unwrap_or_else(|| union.name.clone()));
+        node.relation = rel.name.clone();
+        node.query.model = rel.target.clone();
+        let mut plan = plan_prefetch(schema, target, params, parent, &node, bypass)?;
+        plan.union = Some(UnionPrefetch { name: format!("{}.{}", model.ir.name, union.name), member, choices: choices.clone() });
+        Ok(plan)
+    }).collect()
 }
 
 /// The query loading `node` (a relation of `parent`) for a set of parent keys. A slice
@@ -3914,6 +4000,9 @@ fn plan_prefetch(
     let virt = derive_ctes(schema, target, &q.with, params)?;
     let mut p = Planner::new(schema, &virt, target, &q.model, q.from.as_deref(), params, vec![], 0)?;
     let mut plan = p.build_select(&q)?;
+    for condition in rel.conditions.iter().filter(|c| c.side == RelationSide::Target) {
+        plan.stmt.and_where(p.fixed((p.root_alias(), child), condition)?);
+    }
     // the parent key each row belongs to: the row's own `to` field, or (many-to-many)
     // the join row's source field, selected as an extra `_key` column
     let (mut key_field, mut key, mut child_key_pos) = (vec![], vec![], vec![]);
@@ -4018,7 +4107,7 @@ fn plan_prefetch(
         plan.stmt.with_cte(w);
     }
     // has-many / has-one: the child's to-one relation back to the parent is set too
-    let back = (!selected && !rel.foreign_key && rel.through.is_none() && rel.path.is_empty())
+    let back = (!selected && rel.conditions.is_empty() && !rel.foreign_key && rel.through.is_none() && rel.path.is_empty())
         .then(|| {
             cm.ir.relations.iter().find(|r| {
                 r.kind == RelKind::One
@@ -4040,6 +4129,8 @@ fn plan_prefetch(
         key_pos: parent_key.iter().map(|f| pm.field_pos(f).map_err(query_err)).collect::<Result<_>>()?,
         key_type: parent_key.iter().map(|f| Ok(pm.field(f).map_err(query_err)?.value_type())).collect::<Result<_>>()?,
         child_key_pos,
+        source_conditions: source_conditions(pm, rel)?,
+        union: None,
         names: node.names.clone(),
         filtered: plan.filtered,
         unset_when_absent: rel.foreign_key && !plan.filtered && !many && node.attr.is_none(),

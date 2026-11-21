@@ -104,7 +104,13 @@ export interface FieldMeta {
   readonly leaf?: { readonly group: string; readonly path: readonly string[]; readonly underNull: boolean; readonly rootRequired: boolean } | undefined;
 }
 
-export type RelationKind = "belongsTo" | "hasOne" | "hasMany" | "manyToMany" | "linkedOne" | "linkedMany";
+export type RelationKind = "belongsTo" | "hasOne" | "hasMany" | "manyToMany" | "linkedOne" | "linkedMany" | "union";
+
+export type RelationCondition = {
+  readonly side: "source" | "target";
+  readonly field: string;
+  readonly value: string | number | boolean;
+};
 
 export interface RelationMeta {
   readonly name: string;
@@ -117,6 +123,8 @@ export interface RelationMeta {
   readonly through: { readonly model: string; readonly source: string; readonly target: string } | undefined;
   /** The relation names a linked relation reads through; empty for every other kind. */
   readonly path: readonly string[];
+  readonly conditions: readonly RelationCondition[];
+  readonly members: readonly RelationMeta[];
 }
 
 /** `author_id` -> `authorId`: how schema names read in TypeScript. */

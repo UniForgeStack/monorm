@@ -308,6 +308,45 @@ async fn a_to_many_tab_lists_the_children_of_one_record_with_the_child_list_feat
     assert_eq!(author["tabs"], json!([{"name": "comments", "title": "Comments", "target": "Comment", "prefill": [{"parent": "id", "child": "author_id"}]}]));
 }
 
+/// The schema of `SOURCE` where `Author.comments` and `Comment.author` carry a fixed condition, as an extension defines them.
+fn conditioned() -> Arc<Schema> {
+    let mut ir = dsl::compile(SOURCE, None).unwrap();
+    let condition = |side, field: &str| serde_json::from_value(json!({"side": side, "field": field, "value": 1})).unwrap();
+    let relation = |model: &str, name: &str, ir: &mut monorm_core::ir::SchemaIr, side, field: &str| {
+        let m = ir.models.iter_mut().find(|m| m.name == model).unwrap();
+        m.relations.iter_mut().find(|r| r.name == name).unwrap().conditions.push(condition(side, field));
+    };
+    relation("Author", "comments", &mut ir, "target", "rank");
+    relation("Comment", "author", &mut ir, "source", "rank");
+    Arc::new(dsl::check(ir).unwrap().1)
+}
+
+#[tokio::test]
+async fn the_admin_refuses_a_relation_with_a_fixed_condition() {
+    let conn = database().await;
+    let build = |config: Value| Site::build(conditioned(), &config.to_string()).map(Arc::new).map_err(|e| e.to_string());
+    let list = json!({"columns": ["body"], "order": ["id"]});
+    let site = build(json!({"resources": [{"model": "Comment", "list": list}, {"model": "Author", "list": {"columns": ["name"], "order": ["id"]}}]})).unwrap();
+    // No tab, so no tab of the comments of every rank and no "Add" prefill that misses the condition.
+    let (_, meta, _) = get(&site, &conn, "/admin/api/resources").await;
+    let author = meta["resources"].as_array().unwrap().iter().find(|r| r["name"] == "Author").unwrap();
+    assert_eq!(author["tabs"], json!([]));
+    assert_eq!(get(&site, &conn, "/admin/api/resources/Author/1/comments").await.0, 404);
+    let resources = |extra: Value| {
+        let mut author = json!({"model": "Author", "list": {"columns": ["name"], "order": ["id"]}});
+        for (k, v) in extra.as_object().unwrap() {
+            if k == "tabs" { author["list"][k] = v.clone() } else { author[k] = v.clone() }
+        }
+        json!({"resources": [{"model": "Comment", "list": {"columns": ["body"], "order": ["id"]}}, author]})
+    };
+    let error = build(resources(json!({"tabs": ["comments"]}))).err().unwrap();
+    assert!(error.contains("tab \"comments\"") && error.contains("no fixed conditions"), "{error}");
+    let error = build(resources(json!({"inlines": [{"model": "Comment", "via": "comments"}]}))).err().unwrap();
+    assert!(error.contains("fixed conditions"), "{error}");
+    let error = build(json!({"resources": [{"model": "Comment", "list": {"columns": ["body"], "filters": ["author"]}}, {"model": "Author", "list": {"columns": ["name"]}}]})).err().unwrap();
+    assert!(error.contains("fixed conditions"), "{error}");
+}
+
 #[tokio::test]
 async fn labels_and_empty_texts_reach_the_metadata() {
     let conn = database().await;

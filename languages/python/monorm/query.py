@@ -35,7 +35,7 @@ from .expr import (
     or_,
 )
 from . import pagination
-from .fields import BelongsTo, HasMany, Linked, ManyToMany, key_items, key_value
+from .fields import BelongsTo, HasMany, Linked, ManyToMany, UnionPath, UnionRelation, key_items, key_value, relation_constant
 from .nested import NestedRef
 from .pagination import Page
 from . import adapters, debug
@@ -281,6 +281,13 @@ def _derive(
     whole: set[tuple[str, ...]] = set()
     prefetch: list[_Prefetch] = []
     for hop, entries in groups.items():
+        relation = model._meta.relations.get(hop)
+        union = relation if isinstance(relation, UnionRelation) else model._meta.relations.get(hop.split("#", 1)[0])
+        if isinstance(union, UnionRelation):
+            if relation is not union or any(len(path) != 1 or not isinstance(item, UnionPath) for path, item in entries):
+                raise QueryError(f"load() needs the whole union relation {model.__name__}.{union.name}")
+            prefetch.append(_Prefetch(UnionPath(model, (hop,), union)))
+            continue
         if not by_query and not any(
             _to_many(model, hops) or (isinstance(item, QuerySet) and not item._plain_relation())
             for hops, item in entries
@@ -2210,7 +2217,15 @@ class RelatedSet(QuerySet[M]):
 
         fields = relation.target._meta.fields
         key = key_value(instance, relation.from_fields)
-        self._filters = (key_match(relation.target, (), [fields[n] for n in relation.via_fields], key),)
+        filters = [key_match(relation.target, (), [fields[n] for n in relation.via_fields], key)]
+        for c in relation._conditions:
+            if c["side"] == "target":
+                filters.append(ColumnRef(relation.target, (), fields[c["field"]]) == relation_constant(relation.target, c))
+            else:
+                matches = instance._field_value(c["field"]) == relation_constant(type(instance), c)
+                filters.append(ColumnRef(relation.target, (), relation.target._meta.pk).is_not_null()
+                               if matches else ColumnRef(relation.target, (), relation.target._meta.pk).in_(()))
+        self._filters = tuple(filters)
 
     @property
     def cached(self) -> list[M]:
@@ -2223,7 +2238,7 @@ class RelatedSet(QuerySet[M]):
         return list(rows)
 
     def _is_pristine(self) -> bool:
-        return len(self._filters) == 1 and not self._order and self._limit is None and self._offset is None
+        return len(self._filters) == 1 + len(self._relation._conditions) and not self._order and self._limit is None and self._offset is None
 
     async def _fetch(self) -> list[M]:
         rows = self._instance.__dict__.get(self._relation.name)
@@ -2270,7 +2285,11 @@ class RelatedSet(QuerySet[M]):
         return super().insert_many(linked, batch_size=batch_size)
 
     def _link(self) -> dict[str, Any]:
-        return key_items(self._relation.via_fields, key_value(self._instance, self._relation.from_fields))
+        keys = key_items(self._relation.via_fields, key_value(self._instance, self._relation.from_fields))
+        for c in self._relation._conditions:
+            if c["side"] == "target":
+                keys[c["field"]] = relation_constant(self._relation.target, c)
+        return keys
 
 
 class ManyRelatedSet(QuerySet[M]):

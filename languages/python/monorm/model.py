@@ -21,7 +21,7 @@ from collections.abc import Collection, Iterable, Sequence
 
 from .expr import ColumnRef, Condition, RelationPath, and_, differs
 from .index import _Indexes
-from .fields import BY_TYPE, Array, BelongsTo, Enum, Field, HasMany, HasOne, Linked, ManyToMany, Relation, String, key_items
+from .fields import BY_TYPE, Array, BelongsTo, Enum, Field, HasMany, HasOne, Linked, ManyToMany, Relation, String, UnionRelation, key_items
 from .nested import NestedGroup, NestedJson, NestedType, _Access, build_types, leaf_names
 
 if TYPE_CHECKING:
@@ -506,6 +506,8 @@ def _field(ir: dict[str, Any], nested_types: dict[str, NestedType] | None = None
 
 
 def _relation(ir: dict[str, Any]) -> Relation[Any, Any]:
+    if ir.get("members"):
+        return UnionRelation(ir)
     if ir.get("path"):
         return Linked(ir["target"], path=ir["path"], kind=ir["kind"])
     if ir["kind"] == "one" and ir.get("foreign_key"):
@@ -522,7 +524,9 @@ def _relation(ir: dict[str, Any]) -> Relation[Any, Any]:
             from_=ir["from"],
             to=ir["to"],
         )
-    return HasMany(ir["target"], via=ir["to"], from_=ir["from"])
+    many: HasMany[Any, Any] = HasMany(ir["target"], via=ir["to"], from_=ir["from"])
+    many._conditions = tuple(ir.get("conditions", ()))
+    return many
 
 
 def _enum(ir: dict[str, Any], module: str | None) -> type[enum.Enum]:
@@ -739,8 +743,12 @@ class Model:
         )
 
     def __setattr__(self, name: str, value: Any) -> None:
+        relation = self._meta.relations.get(name)
+        if isinstance(relation, UnionRelation):
+            relation.__set__(self, value)
+            return
         raise AttributeError(
-            f"{type(self).__name__} instances are read-only snapshots of a row; "
+            f"{type(self).__name__} instances are read-only snapshots of a row (only a union relation takes an assignment); "
             f"write with `await obj.update({name}=...)`"
         )
 
@@ -880,6 +888,7 @@ _PYTHON_TYPES: dict[str, type] = {
 }
 _RELATION_KINDS: tuple[tuple[type, str], ...] = (
     (Linked, "linked"),
+    (UnionRelation, "union"),
     (ManyToMany, "many_to_many"),
     (HasMany, "has_many"),
     (HasOne, "has_one"),
