@@ -2000,10 +2000,12 @@ function noReturningOption(op: string, removed: unknown): void {
 }
 
 /** A statement that runs once, when first awaited (or given `then` / `catch` /
- * `finally`). */
+ * `finally`), and caches its result. `OneRowQuery` (and `OneSelectRow`) set
+ * `cacheResult` to `false`: each await of one runs the SQL again. */
 abstract class Statement<T> implements Promise<T> {
   #promise: Promise<T> | undefined;
-  protected readonly site = siteNow();
+  readonly #site = siteNow();
+  protected readonly cacheResult: boolean = true;
 
   get [Symbol.toStringTag](): string {
     return this.constructor.name;
@@ -2012,8 +2014,9 @@ abstract class Statement<T> implements Promise<T> {
   /** @internal */
   protected abstract execute(): Promise<T>;
 
-  protected start(): Promise<T> {
-    return (this.#promise ??= atSite(this.site, () => this.execute()));
+  private start(): Promise<T> {
+    if (!this.cacheResult) return atSite(this.#site, () => this.execute());
+    return (this.#promise ??= atSite(this.#site, () => this.execute()));
   }
 
   then<A = T, B = never>(onfulfilled?: ((value: T) => A | PromiseLike<A>) | null, onrejected?: ((reason: unknown) => B | PromiseLike<B>) | null): Promise<A | B> {
@@ -2043,6 +2046,8 @@ export class OneRowQuery<T, P = {}, X extends string = never, V = null> extends 
   readonly #shape: () => QuerySet<ModelSpec, unknown, string, P, X>;
   readonly #pick: (rows: unknown[]) => unknown;
   #shaped: QuerySet<ModelSpec, unknown, string, P, X> | undefined;
+  /** @internal Every await runs the query again. */
+  protected override readonly cacheResult = false;
 
   /** @internal */
   constructor(shape: () => unknown, pick: (rows: unknown[]) => unknown, private readonly unique = false) {
@@ -2074,11 +2079,6 @@ export class OneRowQuery<T, P = {}, X extends string = never, V = null> extends 
   protected async execute(): Promise<T> {
     const qs = this.shaped();
     return this.#pick(qs.checkRows(await qs.fetch())) as T;
-  }
-
-  /** @internal Every await runs the query again. */
-  protected override start(): Promise<T> {
-    return atSite(this.site, () => this.execute());
   }
 
   /** This query compiled once, to run with `param()` values: `run(values)` gives the row or `null`. */

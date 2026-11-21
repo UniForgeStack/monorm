@@ -74,7 +74,7 @@ async def world():
 
 
 class Raw:
-    """Raw SQL runs with no scope of its own, so the helper sets the setting for one transaction."""
+    """Raw SQL in a transaction that sets `scope.shop` by hand, with no `scope()` fill."""
 
     def __init__(self, db, shop):
         self.db, self.shop, self.tx = db, shop, None

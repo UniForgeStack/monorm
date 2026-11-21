@@ -502,6 +502,24 @@ async def test_one_row_laziness_and_fresh_awaits(one_row_topics, observe_queries
         assert len(events) == 4
         assert (await first).name == "c"
         assert len(events) == 5
+        sel = t.select(Topic.name).order_by(Topic.name)
+        forms = [
+            lambda: t.first(),
+            lambda: t.last(),
+            lambda: t[1],
+            lambda: t.get(Topic.name == "b"),
+            lambda: sel.first(),
+            lambda: sel.last(),
+            lambda: sel[1],
+            lambda: sel.get(Topic.name == "b"),
+        ]
+        for make in forms:
+            query = make()
+            before = len(events)
+            one = await query
+            assert len(events) == before + 1
+            assert await query == one
+            assert len(events) == before + 2
     with pytest.raises(Topic.MultipleObjectsReturned):
         await t.get()
 
