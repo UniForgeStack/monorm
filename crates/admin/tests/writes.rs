@@ -44,13 +44,52 @@ model Chore {
 model Locked {
   id Int @id @default(autoincrement())
   x  Int
-  @@protected_write
+}
+
+model Journal {
+  id Int @id @default(autoincrement())
+  note String
+}
+
+model Sealed {
+  id Int @id @default(autoincrement())
+  x  Int
+}
+
+model Fielded {
+  id   Int    @id @default(autoincrement())
+  code String
+  note String
+}
+
+model Gated {
+  id   Int    @id @default(autoincrement())
+  note String
 }
 "#;
 
 fn schema() -> Arc<Schema> {
     let source = format!("{MODELS}\n{ADMIN}");
-    Arc::new(dsl::check(dsl::compile(&source, None).unwrap()).unwrap().1)
+    Arc::new({
+        let mut ir = dsl::compile(&source, None).unwrap();
+        ir.behavior.write_rules.push(serde_json::from_value(serde_json::json!({
+            "source": "test", "model": "Locked", "name": "protect",
+            "operations": ["insert", "update", "delete"], "layer": "app"
+        })).unwrap());
+        ir.behavior.write_rules.push(serde_json::from_value(serde_json::json!({
+            "source": "test", "model": "Journal", "name": "append_only",
+            "operations": ["update", "delete"]
+        })).unwrap());
+        for rule in [
+            json!({"source": "test", "model": "Sealed", "name": "sealed", "operations": ["update"], "layer": "db"}),
+            json!({"source": "test", "model": "Fielded", "name": "code_fixed", "operations": ["update"], "fields": ["code"], "layer": "app"}),
+            json!({"source": "test", "model": "Gated", "name": "gate", "operations": ["update"], "layer": "db", "condition": {"sql": "OLD.note = 'locked'"}}),
+        ] {
+            ir.behavior.write_rules.push(serde_json::from_value(rule).unwrap());
+        }
+        ir.stamp_expression_records();
+        dsl::check(ir).unwrap().1
+    })
 }
 
 async fn database(schema: &Schema) -> Arc<dyn Executor> {
@@ -203,12 +242,57 @@ async fn a_protected_model_is_read_only_with_the_reason_and_the_metadata_says_so
     let w = world(config()).await;
     let (status, out) = w.send("POST", "/resources/Locked", Some(json!({"set": {"x": 1}}))).await;
     assert_eq!((status, &out["error"]["kind"]), (403, &json!("ReadOnly")));
-    assert!(out["error"]["message"].as_str().unwrap().contains("@@protected_write"));
+    assert!(out["error"]["message"].as_str().unwrap().contains("write-protected"));
     let (_, meta) = w.send("GET", "/resources", None).await;
     let of = |name: &str| meta["resources"].as_array().unwrap().iter().find(|r| r["name"] == name).cloned().unwrap();
     assert_eq!(of("Locked")["writable"], false);
     assert_eq!(of("Book")["writable"], true);
     assert!(of("Locked")["read_only_reason"].is_string());
+}
+
+#[tokio::test]
+async fn append_only_rules_leave_create_available_in_the_admin() {
+    let w = world(json!({"resources": [{"model": "Journal"}]})).await;
+    let (_, meta) = w.send("GET", "/resources", None).await;
+    assert_eq!(meta["resources"][0]["ops"], json!(["create"]));
+    assert_eq!(meta["resources"][0]["bulk_delete"], false);
+    let (status, out) = w.send("POST", "/resources/Journal", Some(json!({"set": {"note": "entry"}}))).await;
+    assert_eq!(status, 201, "{out}");
+    let (status, _) = w.send("DELETE", "/resources/Journal/1", None).await;
+    assert_eq!(status, 403);
+}
+
+#[tokio::test]
+async fn a_database_only_rule_takes_its_operation_away_and_a_field_rule_marks_only_its_field() {
+    let w = world(json!({"resources": [{"model": "Sealed"}, {"model": "Fielded"}, {"model": "Gated"}]})).await;
+    let (_, meta) = w.send("GET", "/resources", None).await;
+    let of = |name: &str| meta["resources"].as_array().unwrap().iter().find(|r| r["name"] == name).cloned().unwrap();
+    // A rule on the database layer alone hides the update; create and delete stay.
+    assert_eq!(of("Sealed")["ops"], json!(["create", "delete"]));
+    assert!(of("Sealed")["writable"] == true);
+    let (status, out) = w.send("PATCH", "/resources/Sealed/1", Some(json!({"set": {"x": 2}}))).await;
+    assert_eq!((status, &out["error"]["kind"]), (403, &json!("ReadOnly")), "{out}");
+    // A rule on one field keeps the update and marks only that field (and the key) read-only on update.
+    assert_eq!(of("Fielded")["ops"], json!(["create", "update", "delete"]));
+    let readonly: Vec<(String, bool)> = of("Fielded")["form"].as_array().unwrap().iter().map(|f| (f["name"].as_str().unwrap().to_owned(), f["readonly_on_update"].as_bool().unwrap())).collect();
+    assert_eq!(readonly, [("id".to_owned(), true), ("code".to_owned(), true), ("note".to_owned(), false)]);
+    w.conn.batch("INSERT INTO \"Fielded\" (id, code, note) VALUES (1, 'c', 'n')".into()).await.unwrap();
+    let (status, out) = w.send("PATCH", "/resources/Fielded/1", Some(json!({"set": {"note": "edited"}, "loaded": {"note": "n"}}))).await;
+    assert_eq!(status, 200, "{out}");
+    // A conditional rule leaves the update offered, because the admin cannot evaluate the condition.
+    assert_eq!(of("Gated")["ops"], json!(["create", "update", "delete"]));
+}
+
+#[tokio::test]
+async fn a_conditional_rule_refuses_in_the_database_and_the_admin_answers_with_a_403() {
+    let w = world(json!({"resources": [{"model": "Gated"}]})).await;
+    w.conn.batch("INSERT INTO \"Gated\" (id, note) VALUES (1, 'open'), (2, 'locked')".into()).await.unwrap();
+    let (status, out) = w.send("PATCH", "/resources/Gated/1", Some(json!({"set": {"note": "edited"}, "loaded": {"note": "open"}}))).await;
+    assert_eq!(status, 200, "{out}");
+    let (status, out) = w.send("PATCH", "/resources/Gated/2", Some(json!({"set": {"note": "edited"}, "loaded": {"note": "locked"}}))).await;
+    assert_eq!((status, &out["error"]["kind"]), (403, &json!("WriteProtected")), "{out}");
+    assert!(out["error"]["message"].as_str().unwrap().contains("gate"), "{out}");
+    assert_eq!(w.rows("SELECT note FROM \"Gated\" WHERE id = 2").await[0][0].as_deref(), Some("locked"));
 }
 
 #[tokio::test]

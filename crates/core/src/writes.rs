@@ -3,7 +3,7 @@
 //! (the field exists and has a fitting type); the role rules stay in the extensions.
 use std::collections::HashMap;
 
-pub use monorm::writes::{AssignValue, ScopedField, UpsertDefault, WriteKind};
+pub use monorm::writes::{AssignValue, ScopedField, UpsertDefault, WriteKind, WriteRule};
 
 use crate::behavior::Requirements;
 use crate::ir::{ColType, Expr, FieldIr};
@@ -89,8 +89,12 @@ pub fn prepare(models: &mut [Model], index: &HashMap<String, usize>, r: &Require
                 at
             }
         };
+        let on_insert = a.on.contains(&WriteKind::Insert);
+        if on_insert && matches!(a.value, AssignValue::Increment) {
+            return Err(format!("{}.{}: an insert assignment cannot increment a stored value", a.model, a.field));
+        }
         let expr = match &a.value {
-            AssignValue::Expr(json) => Some(parse_expr(json, true).map_err(|e| format!("{}.{}: the write assignment from {}: {e}", a.model, a.field, a.source))?),
+            AssignValue::Expr(json) => Some(parse_expr(json, !on_insert).map_err(|e| format!("{}.{}: the write assignment from {}: {e}", a.model, a.field, a.source))?),
             _ => None,
         };
         if a.on.is_empty() { return Err(format!("{}.{}: a write assignment from {} names no statement kind", a.model, a.field, a.source)); }

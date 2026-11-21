@@ -46,21 +46,21 @@ model WBook {
 model WLocked {
   id Int @id @default(autoincrement())
   x  Int
-  @@protected_write
+  @@write_rules.protect(layer: app)
   @@map("w_locked")
 }
 
 model WCoded {
   code String @id
   note String @default("")
-  @@protected_write
+  @@write_rules.protect(layer: app)
   @@map("w_coded")
 }
 
 model WChore {
   code  String    @id
   every Duration?
-  @@protected_write
+  @@write_rules.protect(layer: app)
   @@map("w_chores")
 }
 %(money)s"""
@@ -70,7 +70,7 @@ MONEY = """
 model WMoney {
   code  String  @id
   price Decimal @db.Decimal(10, 2)
-  @@protected_write
+  @@write_rules.protect(layer: app)
   @@map("w_money")
 }
 """
@@ -339,7 +339,7 @@ async def test_a_protected_model_is_read_only_with_the_reason_and_the_metadata_s
     client = site.test_client(db, user=SU)
     r = await client.post("/admin/api/resources/WLocked", json={"set": {"x": 1}})
     assert (r.status, r.json()["error"]["kind"]) == (403, "ReadOnly")
-    assert "@@protected_write" in r.json()["error"]["message"]
+    assert "write-protected" in r.json()["error"]["message"]
     resources = {m["name"]: m for m in (await client.get("/admin/api/resources")).json()["resources"]}
     assert resources["WLocked"]["writable"] is False
     assert resources["WBook"]["writable"] is True

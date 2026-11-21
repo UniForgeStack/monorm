@@ -205,7 +205,7 @@ impl Site {
         if !inline.resource.allow.contains(&op) || (op == Op::Delete && !inline.delete) || !self.allows(grants, parent, Op::Read) {
             return false;
         }
-        if op != Op::Read && (!parent.allow.contains(&Op::Update) || crate::write::read_only_reason(&self.schema, parent).is_some()) {
+        if op != Op::Read && (!parent.allow.contains(&Op::Update) || crate::write::write_reason(&self.schema, parent, Op::Update).is_some()) {
             return false;
         }
         let needed = self.inline_requires(parent, inline, op);
@@ -238,8 +238,8 @@ impl Site {
                 let r: &Resource = &sight;
                 let mut meta = r.meta.clone();
                 meta["actions"] = json!(r.actions.iter().filter(|a| a.placement.is_some() && self.action_allowed(grants, r, a)).map(action_meta).collect::<Vec<_>>());
-                meta["ops"] = json!([Op::Create, Op::Update, Op::Delete].iter().filter(|o| r.allow.contains(o) && self.allows(grants, r, **o)).map(|o| o.name()).collect::<Vec<_>>());
-                meta["bulk_delete"] = json!(r.bulk_delete && r.allow.contains(&Op::Delete) && self.allows(grants, r, Op::Delete));
+                meta["ops"] = json!([Op::Create, Op::Update, Op::Delete].iter().filter(|o| r.allow.contains(o) && self.allows(grants, r, **o) && crate::write::write_reason(&self.schema, r, **o).is_none()).map(|o| o.name()).collect::<Vec<_>>());
+                meta["bulk_delete"] = json!(r.bulk_delete && r.allow.contains(&Op::Delete) && self.allows(grants, r, Op::Delete) && crate::write::write_reason(&self.schema, r, Op::Delete).is_none());
                 meta["bypass"] = json!(self.bypassable(grants, r));
                 meta["field_permissions"] = json!(r.field_permissions.iter().filter(|f| self.allowed_extra(grants, r, &format!("{}.{f}", r.label))).collect::<Vec<_>>());
                 let shown: Vec<Json> = r
@@ -249,7 +249,7 @@ impl Site {
                     .filter(|(i, _)| self.inline_allows(grants, r, i, Op::Read))
                     .map(|(i, m)| {
                         let mut m = m.clone();
-                        m["ops"] = json!([Op::Create, Op::Update, Op::Delete].iter().filter(|o| self.inline_allows(grants, r, i, **o)).map(|o| o.name()).collect::<Vec<_>>());
+                        m["ops"] = json!([Op::Create, Op::Update, Op::Delete].iter().filter(|o| self.inline_allows(grants, r, i, **o) && crate::write::write_reason(&self.schema, &i.resource, **o).is_none()).map(|o| o.name()).collect::<Vec<_>>());
                         if m["link"].as_str().and_then(|l| self.resource(l)).is_none_or(|l| !self.allows(grants, l, Op::Read)) {
                             m["link"] = Json::Null;
                         }

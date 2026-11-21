@@ -208,7 +208,7 @@ export class ReadOnlyModel extends ORMError {
   override name = "ReadOnlyModel";
 }
 
-/** An ORM write to a `@@protected_write` model outside `allowWrites(...)`. */
+/** An application or database write rule refused a write. */
 export class WriteProtected extends ORMError {
   override name = "WriteProtected";
 }

@@ -45,7 +45,7 @@ model ABig {
 model AVault {
   id   Int    @id @default(autoincrement())
   note String @db.VarChar(10)
-  @@protected_write
+  @@write_rules.protect(layer: app)
   @@map("a_vaults")
 }
 `;

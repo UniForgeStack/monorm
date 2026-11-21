@@ -207,7 +207,7 @@ export interface ResourceConfig {
   readonly delete?: (ctx: Context, qs: any) => Promise<unknown>;
   /** Controls of the form that are no field (`input("reason", { type: "textarea" })`). Only a service reads them (`ctx.inputs`). */
   readonly inputs?: readonly InputDef[];
-  /** A model with `@@protected_write` is closed to the admin. `true` opens it; the audit row records the opt-in. */
+  /** Open application write rules for this resource. The audit row records the opt-in. */
   readonly allowProtectedWrites?: boolean;
   /**
    * To-many relations that the detail page shows and edits in place: `inline(OrderLine)` for each one (a bare model works too).

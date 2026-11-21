@@ -32,13 +32,20 @@ model Vault {
   id   Int    @id @default(autoincrement())
   note String
 
-  @@protected_write
 }
 "#;
 
 fn schema() -> Arc<Schema> {
     let source = format!("{MODELS}\n{ADMIN}");
-    Arc::new(dsl::check(dsl::compile(&source, None).unwrap()).unwrap().1)
+    Arc::new({
+        let mut ir = dsl::compile(&source, None).unwrap();
+        ir.behavior.write_rules.push(serde_json::from_value(serde_json::json!({
+            "source": "test", "model": "Vault", "name": "protect",
+            "operations": ["insert", "update", "delete"], "layer": "app"
+        })).unwrap());
+        ir.stamp_expression_records();
+        dsl::check(ir).unwrap().1
+    })
 }
 
 /// The host answers every action with the canned envelope and keeps what it saw.

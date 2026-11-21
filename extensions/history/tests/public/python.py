@@ -14,7 +14,8 @@ assert "monorm.history" in resolve_extensions(), "install the monorm-history pac
 
 async def run(provider: str, url: str) -> None:
     registry = monorm.Registry()
-    models = monorm.loads(FIXTURE.replace('"sqlite"', f'"{provider}"'), registry=registry)
+    provider_line = f'"{provider}"' + ('\n  bypass_roles = ["postgres"]' if provider == "postgresql" else "")
+    models = monorm.loads(FIXTURE.replace('"sqlite"', provider_line), registry=registry)
     Post = models["Post"]
     db = await monorm.connect(url, registry=registry, default=False)
     await db.drop_tables()

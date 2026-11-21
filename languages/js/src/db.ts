@@ -294,9 +294,12 @@ export class Database {
       names.push("monorm.bypass");
       values.push(`{${[...open].sort().join(",")}}`);
     }
-    if (skip?.size) {
+    const allowed = allowedWrites();
+    const ruleSkips = sqlite || allowed.length === 0 ? [] : engine.writeRuleSkips([...allowed]);
+    const triggerSkips = new Set([...(skip ?? []), ...ruleSkips]);
+    if (triggerSkips.size) {
       names.push("monorm.skip");
-      values.push(`{${[...skip].sort().join(",")}}`);
+      values.push(`{${[...triggerSkips].sort().join(",")}}`);
     }
     const root = this.root;
     const current = scopeValues.getStore();

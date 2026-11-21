@@ -257,6 +257,7 @@ export interface NativeEngine extends NativeInspector {
   ): Promise<unknown>;
   begin(tx: NativeTransaction | null, isolation?: string | null, timeout?: number | null): Promise<NativeTransaction>;
   advisoryLock(key: string, name: Buffer | null, exclusive: boolean, nowait: boolean, tx: NativeTransaction, trace?: NativeTrace | null): Promise<boolean>;
+  writeRuleSkips(models: string[]): string[];
   withSettings(names: string[], values: string[]): NativeEngine;
   scopeKeys(): string[];
   /** True when a hook reads the scope, so any key is valid. */

@@ -273,7 +273,7 @@ pub(crate) async fn reach(s: &State_, resource: &Resource, user: &User, grants: 
         }
     }
     let labels = (0..resource.refs.len()).filter(|&i| s.site.resources.iter().find(|t| t.name == resource.refs[i].target).is_some_and(|t| s.site.allows(grants, t, Op::Read))).collect();
-    let change = !resource.editable.is_empty() && s.site.allows(grants, resource, Op::Update) && crate::write::read_only_reason(&s.site.schema, resource).is_none() && (s.bridge.is_some() || crate::hostwrite::route(&s.site.schema, resource, Op::Update).is_none());
+    let change = !resource.editable.is_empty() && s.site.allows(grants, resource, Op::Update) && crate::write::write_reason(&s.site.schema, resource, Op::Update).is_none() && (s.bridge.is_some() || crate::hostwrite::route(&s.site.schema, resource, Op::Update).is_none());
     Ok((scope, Reach { rows, labels, change }))
 }
 

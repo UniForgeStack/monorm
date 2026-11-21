@@ -18,7 +18,7 @@ const MONEY = `
 model WMoney {
   code  String  @id
   price Decimal @db.Decimal(10, 2)
-  @@protected_write
+  @@write_rules.protect(layer: app)
   @@map("w_money")
 }
 `;
@@ -57,21 +57,21 @@ model WBook {
 model WLocked {
   id Int @id @default(autoincrement())
   x  Int
-  @@protected_write
+  @@write_rules.protect(layer: app)
   @@map("w_locked")
 }
 
 model WCoded {
   code String @id
   note String @default("")
-  @@protected_write
+  @@write_rules.protect(layer: app)
   @@map("w_coded")
 }
 
 model WChore {
   code  String    @id
   every Duration?
-  @@protected_write
+  @@write_rules.protect(layer: app)
   @@map("w_chores")
 }
 ${provider === "sqlite" ? "" : MONEY}`;
@@ -363,7 +363,7 @@ for (const provider of PROVIDERS) {
     const client = w.site.testClient(w.db, { user: SU });
     const r = await client.post("/admin/api/resources/WLocked", { json: { set: { x: 1 } } });
     assert.deepEqual([r.status, r.json().error.kind], [403, "ReadOnly"]);
-    assert.ok(r.json().error.message.includes("@@protected_write"));
+    assert.ok(r.json().error.message.includes("write-protected"));
     const resources = Object.fromEntries((await client.get("/admin/api/resources")).json().resources.map((m: Loose) => [m.name, m]));
     assert.equal(resources["WLocked"].writable, false);
     assert.equal(resources["WBook"].writable, true);

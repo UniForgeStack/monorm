@@ -66,10 +66,11 @@ create_exception!(
     _native,
     WriteProtected,
     PyException,
-    "An ORM write to a `@@protected_write` model outside `monorm.allow_writes(...)`."
+    "An application or database write rule refused a write."
 );
 
 pub fn db_err(e: DbError) -> PyErr {
+    if e.write_rule().is_some() { return WriteProtected::new_err(e.message); }
     let err = match e.kind {
         ErrorKind::Query => QueryError::new_err(e.message),
         ErrorKind::Integrity => IntegrityError::new_err(e.message),
@@ -124,7 +125,8 @@ pub fn engine_err(e: Error) -> PyErr {
         Error::Db(e) => db_err(e),
         Error::Value(m) => PyTypeError::new_err(m),
         Error::ReadOnlyModel(m) => ReadOnlyModel::new_err(format!("{m} is a view; it can't be written")),
-        Error::WriteProtected(m) => WriteProtected::new_err(format!("{m} is write-protected (@@protected_write); write it inside monorm.allow_writes({m})")),
+        Error::WriteProtected(monorm_engine::error::WriteProtection::Database { message: m }) => WriteProtected::new_err(m),
+        Error::WriteProtected(monorm_engine::error::WriteProtection::Application { model: m }) => WriteProtected::new_err(format!("{m} is write-protected; write it inside monorm.allow_writes({m})")),
         Error::ScopeMissing { model, key, message } => with_attrs(ScopeMissing::new_err(message), &[("model", model), ("key", key)]),
         Error::ScopeMismatch { model, key, expected, actual } => {
             let message = format!("{model} is scoped by {key}: the scope is {expected}, the write sets {actual}; write inside the scope, or use unscoped({key:?}) to write another scope");

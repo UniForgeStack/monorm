@@ -15,6 +15,11 @@ use monorm_core::{dialect::Dialect, ir::{ColType, ValueType}};
 type Job = Box<dyn FnOnce(&mut Connection) + Send>;
 
 fn sqlite_err(e: rusqlite::Error) -> DbError {
+    if let rusqlite::Error::SqliteFailure(error, Some(message)) = &e {
+        if error.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_TRIGGER && message.starts_with(monorm::writes::WRITE_PROTECTED_PREFIX) {
+            return DbError { sqlstate: Some(monorm::writes::WRITE_PROTECTED_SQLSTATE.into()), ..DbError::other(message) };
+        }
+    }
     let kind = match &e {
         rusqlite::Error::SqliteFailure(e, _) if e.code == rusqlite::ErrorCode::ConstraintViolation => ErrorKind::Integrity,
         rusqlite::Error::SqliteFailure(e, _) if matches!(e.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) => ErrorKind::LockNotAvailable,

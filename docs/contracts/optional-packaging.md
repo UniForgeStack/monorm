@@ -354,6 +354,10 @@ Schema contract 5.6 adds the `owns` flag to a relation in the IR (an IR with an 
 Schema contract 5.7 adds `path` and `constraint` to a relation in the IR (an IR with a linked relation or a `constraint: false` relation is stamped 5.7). The manifest format does not change, and no extension declares 5.7.
 Schema contract 5.8 adds the trigger fields to the IR: transition table names, a deferrable mode, a `declare` block, change helpers (`changes`), and a skip guard (an IR with any of them is stamped 5.8). The manifest format does not change, and no extension declares 5.8.
 Schema contract 5.9 adds fixed source or target conditions and typed union members to relation IR. Schemas using either field are stamped 5.9. The manifest format does not change, and the generic extension declares 5.9.
+Schema contract 5.10 adds neutral `behavior.write_rules` records and the
+`insert` write-assignment kind. IR containing either is stamped 5.10. Model
+rules identify the owning model, operations, optional fields and database
+predicate, action, layer, skip policy and rule name.
 
 A version fits when its major equals the engine major and its minor is at most the engine minor.
 This holds for `schema_contract` and for `abi`, and for the `abi` that the library reports.

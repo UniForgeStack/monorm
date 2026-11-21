@@ -152,7 +152,7 @@ struct ResourceConfig {
     /// Controls that a form shows next to the fields. Only a service reads them.
     #[serde(default)]
     inputs: Vec<crate::hostwrite::InputConfig>,
-    /// The resource opts in to writes of a `@@protected_write` model.
+    /// The resource opts in to writes of a protected model.
     #[serde(default)]
     allow_protected_writes: bool,
     /// The model has host behavior that the host knows (a field adapter): its writes run through the host.
@@ -496,7 +496,7 @@ pub struct Resource {
     pub service: crate::hostwrite::ServiceConfig,
     /// The controls of the form that only a service reads.
     pub inputs: Vec<crate::hostwrite::InputConfig>,
-    /// The resource writes a `@@protected_write` model, by its own opt-in.
+    /// The resource writes a protected model, by its own opt-in.
     pub allow_protected: bool,
     /// The host reports host behavior that the schema does not show.
     pub host_behavior: bool,

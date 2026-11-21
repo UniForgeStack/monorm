@@ -1,6 +1,6 @@
 //! Fill `@client_default`s into omitted insert values.
 use crate::{error::{Error, Result}, params::{array_type, null_of}};
-use monorm_core::{client_default::{ClientDefault, Literal}, ir::{ClientCall, ColType}, schema::Model};
+use monorm_core::{client_default::{ClientDefault, Literal}, ir::{ClientCall, ColType}, schema::Model, writes::WriteKind};
 use sea_query::Value;
 
 type Rows = Vec<Vec<Option<Value>>>;
@@ -43,10 +43,21 @@ pub fn now(ty: ColType) -> Value { call(ClientCall::Now, ty) }
 /// fill omission before native transforms/validation or SQL planning; an expression
 /// default adds its column and leaves the omitted value for the planner.
 pub fn fill<'a>(model: &Model, fields: &'a [String], mut rows: Rows) -> Result<(std::borrow::Cow<'a, [String]>, Rows)> {
-    if model.client_defaults.is_empty() { return Ok((std::borrow::Cow::Borrowed(fields), rows)); }
+    let assigned = model.assignments.iter().filter(|a| a.applies_to(WriteKind::Insert));
+    if model.client_defaults.is_empty() && assigned.clone().next().is_none() {
+        return Ok((std::borrow::Cow::Borrowed(fields), rows));
+    }
     let mut fields = fields.to_vec();
     if rows.iter().any(|r| r.len() != fields.len()) { return Err(Error::query("insert row length does not match fields")); }
+    for assignment in assigned.clone() {
+        let field = &model.fields()[assignment.field];
+        if !fields.contains(&field.name) {
+            fields.push(field.name.clone());
+            for row in &mut rows { row.push(None); }
+        }
+    }
     for (position, default) in &model.client_defaults {
+        if assigned.clone().any(|a| a.field == *position) { continue; }
         let field = &model.fields()[*position];
         let slot = match fields.iter().position(|f| *f == field.name) {
             Some(slot) => slot,

@@ -23,6 +23,8 @@ SCANNED = [
 MANIFESTS = ["extensions/*/monorm-extension.toml", "tests/outside-extension/monorm-extension.toml"]
 # The one host line that tells a user which extension supplies a bare `Generic` type.
 ALLOWED = [
+    # The removed core attribute names its replacement in the upgrade diagnostic.
+    ("crates/core/src/dsl/lower.rs", "@@protected_write was removed; use @@write_rules.protect(layer: app)"),
     ("crates/core/src/dsl/lower.rs", "Generic belongs to the built-in generic extension"),
     # The Python admin names the package that holds the files of a `files` field; the message tells the user what to install.
     ("languages/python/monorm/admin.py", "monorm_file_storage"),

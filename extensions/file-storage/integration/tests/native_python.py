@@ -203,12 +203,14 @@ class NativeFileTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_a_protected_file_write_reads_its_scope_at_the_await(self):
         ir = json.loads(
-            monorm._native.compile_schema("model FileReport08 {\n id Int @id\n file Json?\n @@protected_write\n}", None)
+            monorm._native.compile_schema("model FileReport08 {\n id Int @id\n file Json?\n}", None)
         )
         ir["dialect"] = "sqlite"
         ir["behavior"] = {
             "schema_contract": 5,
             "field_adapters": [{"model": "FileReport08", "field": "file", "adapter": "file-storage.reference.v1"}],
+            "write_rules": [{"source": "test", "model": "FileReport08", "name": "protect",
+                             "operations": ["insert", "update", "delete"], "layer": "app"}],
         }
         reg = monorm.Registry()
         Protected = monorm.define(ir, registry=reg)["FileReport08"]

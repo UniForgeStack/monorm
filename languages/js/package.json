@@ -54,6 +54,10 @@
       "types": "./dist/src/cli.d.ts",
       "default": "./dist/src/cli.js"
     },
+    "./extensions/write-rules": {
+      "types": "./extensions/write-rules/index.d.ts",
+      "default": "./extensions/write-rules/index.js"
+    },
     "./extensions/timestamps": {
       "types": "./extensions/timestamps/index.d.ts",
       "default": "./extensions/timestamps/index.js"
@@ -139,6 +143,7 @@
     "bundled": {
       "extensions": {
         "monorm.timestamps": "extensions/timestamps",
+        "monorm.write-rules": "extensions/write-rules",
         "monorm.soft-delete": "extensions/soft-delete",
         "monorm.locking": "extensions/locking",
         "monorm.inherit": "extensions/inherit",

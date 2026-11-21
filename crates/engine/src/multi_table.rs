@@ -21,6 +21,7 @@ struct OwnerInsert {
     table: String,
     fields: Vec<FieldIr>,
     values: Vec<Option<Value>>,
+    assigned: std::collections::BTreeMap<String, SimpleExpr>,
     key: FieldIr,
 }
 /// Immutable bound insert input, owned independently of the defining registry.
@@ -52,9 +53,9 @@ impl Insert {
                 let mut fields = vec![];
                 let mut values = vec![];
                 for (field, value) in step.fields.iter().zip(&step.values) {
-                    if let Some(value) = value {
+                    if let Some(value) = value.clone().map(|v| plan::bind(v, Some(field))).or_else(|| step.assigned.get(&field.column).cloned()) {
                         fields.push(Alias::new(&field.column));
-                        values.push(plan::bind(value.clone(), Some(field)));
+                        values.push(value);
                     }
                 }
                 if index > 0 {
@@ -157,8 +158,12 @@ pub fn prepare_insert(
     let model_idx = schema.model_idx(model).map_err(query_err)?;
     let logical = schema.model(model_idx);
     // The scope column lives on the root level; every level's insert shares the one fill.
-    let mut fields = fields.to_vec();
-    let mut rows = rows;
+    let (mut fields, mut rows) = if logical.assignments.iter().any(|a| a.applies_to(WriteKind::Insert)) {
+        let (fields, rows) = crate::client_default::fill(logical, fields, rows)?;
+        (fields.into_owned(), rows)
+    } else {
+        (fields.to_vec(), rows)
+    };
     if !logical.scoped.is_empty() {
         if rows.iter().any(|r| r.len() != fields.len()) {
             return Err(Error::query("insert row length does not match fields"));
@@ -188,7 +193,18 @@ pub fn prepare_insert(
     }
     if logical.hooks.is_some() {
         let map = crate::hooks::input_map(logical.fields().len(), &positions)?;
-        crate::hooks::insert_rows(logical, &map, &mut rows, false, &crate::params::NoParams)?;
+        crate::hooks::insert_rows(logical, &map, &mut rows, false, params)?;
+    }
+    let mut assigned = std::collections::BTreeMap::new();
+    if logical.assignments.iter().any(|a| a.applies_to(WriteKind::Insert)) {
+        let mut planner = plan::Planner::new(schema, &[], target, model, None, params, vec![], 0)?;
+        for (column, expression) in plan::maintained(logical, WriteKind::Insert, |name| {
+            fields.iter().position(|f| f == name).is_none_or(|i| rows.iter().all(|row| row[i].is_some()))
+        }, &mut planner)? {
+            if let Some(field) = logical.fields().iter().find(|f| f.column == column) {
+                assigned.insert(field.name.as_str(), plan::write_expr(expression, field));
+            }
+        }
     }
     let mut chain = vec![logical.owner];
     chain.extend(owner_chain(schema, logical.owner).iter().map(|l| l.parent));
@@ -201,22 +217,29 @@ pub fn prepare_insert(
             let physical = &owners[owner.0];
             let mut columns = vec![];
             let mut values = vec![];
+            let mut expressions = std::collections::BTreeMap::new();
             for (&position, value) in positions.iter().zip(&row) {
                 let resolved = &logical.resolved_fields[position];
-                if position == logical.pk {
-                    if index == 0 {
-                        columns.push(physical.pk_field().clone());
-                        values.push(value.clone());
+                let field = if position == logical.pk && index == 0 {
+                    physical.pk_field()
+                } else if position != logical.pk && resolved.storage.owner == owner {
+                    &physical.fields()[resolved.storage.column]
+                } else {
+                    continue;
+                };
+                if value.is_none() {
+                    if let Some(expression) = assigned.get(logical.fields()[position].name.as_str()) {
+                        expressions.insert(field.column.clone(), expression.clone());
                     }
-                } else if resolved.storage.owner == owner {
-                    columns.push(physical.fields()[resolved.storage.column].clone());
-                    values.push(value.clone());
                 }
+                columns.push(field.clone());
+                values.push(value.clone());
             }
             steps.push(OwnerInsert {
                 table: physical.table().into(),
                 fields: columns,
                 values,
+                assigned: expressions,
                 key: physical.pk_field().clone(),
             });
         }
@@ -253,7 +276,7 @@ pub fn prepare_bulk_insert(
 ) -> Result<Insert> {
     debug_assert!(target.dialect == monorm_core::dialect::Dialect::Postgres);
     let mut insert = prepare_insert(schema, target, model, fields, rows, params, model_fields, without_defaults)?;
-    insert.bulk = true;
+    insert.bulk = insert.rows.iter().flatten().all(|step| step.assigned.is_empty());
     Ok(insert)
 }
 
@@ -276,9 +299,9 @@ pub async fn run_insert(conn: &dyn Executor, target: Target, insert: Insert, own
                 let mut values = vec![];
                 for (field, value) in step.fields.iter().zip(step.values) {
                     // Omitting a column uses its actual database default on both backends.
-                    if let Some(value) = value {
+                    if let Some(value) = value.map(|v| plan::bind(v, Some(field))).or_else(|| step.assigned.get(&field.column).cloned()) {
                         columns.push(Alias::new(&field.column));
-                        values.push(plan::bind(value, Some(field)));
+                        values.push(value);
                     }
                 }
                 if let Some(value) = identity.take() {

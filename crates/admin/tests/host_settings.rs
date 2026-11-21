@@ -8,7 +8,7 @@ use monorm_engine::db;
 use serde_json::{json, Value};
 
 const ADMIN: &str = include_str!("../../../apps/admin/schema.prisma");
-const MODELS: &str = "datasource db {\n  provider = \"postgresql\"\n}\n\nmodel HsLocked {\n  id Int @id @default(autoincrement())\n  x  Int\n  @@protected_write\n  @@map(\"hs_locked\")\n}\n";
+const MODELS: &str = "datasource db {\n  provider = \"postgresql\"\n}\n\nmodel HsLocked {\n  id Int @id @default(autoincrement())\n  x  Int\n  @@map(\"hs_locked\")\n}\n";
 
 /// The host reads the setting inside the transaction it gets, then writes the row as the default writer does.
 struct Host {
@@ -37,7 +37,15 @@ async fn a_host_write_sees_the_db_settings_of_the_request() {
         return;
     };
     let source = format!("{MODELS}\n{ADMIN}");
-    let schema = Arc::new(dsl::check(dsl::compile(&source, None).unwrap()).unwrap().1);
+    let schema = Arc::new({
+        let mut ir = dsl::compile(&source, None).unwrap();
+        ir.behavior.write_rules.push(serde_json::from_value(serde_json::json!({
+            "source": "test", "model": "HsLocked", "name": "protect",
+            "operations": ["insert", "update", "delete"], "layer": "app"
+        })).unwrap());
+        ir.stamp_expression_records();
+        dsl::check(ir).unwrap().1
+    });
     let conn = db::connect(&url, 2).await.unwrap();
     conn.batch("DROP TABLE IF EXISTS hs_locked".into()).await.unwrap();
     for step in migrate::plan(&schema, &Default::default()).unwrap().up {

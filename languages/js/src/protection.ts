@@ -1,4 +1,4 @@
-/** `@@protected_write`: ORM writes to a protected model run only inside {@link allowWrites}. */
+/** Scoped bypass for model write rules. */
 
 import { AsyncLocalStorage } from "node:async_hooks";
 
@@ -9,10 +9,9 @@ const scope = new AsyncLocalStorage<readonly string[]>();
 const none: readonly string[] = [];
 
 /**
- * Runs `fn` with ORM writes allowed to `models`, which `@@protected_write` otherwise
- * rejects with `WriteProtected`. An application-level check: raw SQL (`db.execute`),
- * migrations and other database clients still write. Work that `fn` starts gets the
- * scope too. It starts no transaction. Gives what `fn` gives.
+ * Runs `fn` with the application write rules of `models` open. On PostgreSQL it also
+ * opens skippable database rules for a database role listed in `bypass_roles`.
+ * Work that `fn` starts shares the scope. The function starts no transaction.
  */
 export function allowWrites<T>(models: readonly { readonly _meta: ModelMeta }[], fn: () => Promise<T>): Promise<T> {
   // A Promise API: wrong arguments reject, they do not throw.

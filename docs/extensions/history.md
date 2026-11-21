@@ -35,7 +35,7 @@ A tracker that lists `fields` writes an update event only when one of them chang
 Columns: `id`, `row_<key>` (one for each key field of the row), `label`, `data`, `created_at`, `xact_id`, and one column for each scope key.
 `data` is a JSON object that holds the tracked fields, keyed by the schema field name.
 `xact_id` is the PostgreSQL transaction id. SQLite stores `NULL`.
-The event model is write-protected in the application: an insert, update or delete outside `purge` fails with `WriteProtected`.
+History event tables are append-only. Updates and deletes fail with `WriteProtected` in the ORM and, on PostgreSQL, in raw SQL. For `purge` on PostgreSQL, connect with a role listed in the datasource’s `bypass_roles`. SQLite keeps the application rule and allows `purge` through that rule.
 
 A composed model has rows in several tables and cannot be tracked. Track each part model.
 The PostgreSQL trigger names of a tracker are `h_<suffix>_ins`, `h_<suffix>_upd` and `h_<suffix>_del`, with the functions `<table>_h_<suffix>_ins|upd|del`.
@@ -175,7 +175,7 @@ SQLite has no skip: `skip_triggers("history")` raises `QueryError`.
 
 | Error | Cause and fix |
 | --- | --- |
-| `WriteProtected` | An ORM write to an event model outside `purge`. Use `purge`. Raw SQL is not checked. |
+| `WriteProtected` | An update or delete of an event was refused. Use `purge` with a bypass role on PostgreSQL. |
 | `QueryError` from `skip_triggers("history")` | SQLite has no skip. Use PostgreSQL with a role in `bypass_roles`. |
 | `ValueError` from `record` with `"restore"` | Only `restore()` writes that change type. |
 | schema: `when` without `update` in `events` | Add `update` to `events`, or remove `when`. |

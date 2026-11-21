@@ -70,8 +70,10 @@ def url(provider):
 
 @pytest.fixture(params=["sqlite", "postgresql"])
 async def world(request):
+    bypass = ' bypass_roles = ["postgres"]\n' if request.param == "postgresql" and "a_skip_outside" not in request.node.name else ""
+    datasource = SOURCES[request.param].replace("}", bypass + "}")
     registry = monorm.Registry()
-    models = monorm.loads(SOURCES[request.param] + SCHEMA, registry=registry)
+    models = monorm.loads(datasource + SCHEMA, registry=registry)
     db = await monorm.connect(url(request.param), registry=registry, default=False)
     await db.drop_tables()
     await db.create_tables()
@@ -293,6 +295,9 @@ async def test_the_event_model_has_no_update_or_delete_in_the_app(world):
     event = (await Post.history.using(db).timeline(post))[0].event
     with pytest.raises(monorm.WriteProtected):
         await type(event).objects.using(db).filter(type(event).id == event.id).delete()
+    if not db.url.startswith("sqlite://"):
+        with pytest.raises(monorm.WriteProtected, match="append_only"):
+            await db.execute("UPDATE hx_posts_events SET label = 'forged'")
 
 
 async def test_events_of_one_transaction_share_a_transaction_id_on_postgresql(world):

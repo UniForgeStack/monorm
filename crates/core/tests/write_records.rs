@@ -189,3 +189,20 @@ fn an_owning_field_belongs_to_the_root_of_a_composed_model() {
     let e = build("Child").err().expect("a level below the root can't own");
     assert!(e.contains("relation Child.spec: owns: an owning field belongs to the root of a composed model"), "{e}");
 }
+
+#[test]
+fn a_write_rule_on_a_proxy_is_refused_and_the_root_keeps_its_rule() {
+    let build = |model: &str| {
+        let id = json!({"name": "id", "column": "id", "type": "int", "primary_key": true});
+        let behavior = json!({"schema_contract": SCHEMA_CONTRACT,
+            "model_views": [{"model": "PublicPost", "source": "Post", "root": "Post"}],
+            "write_rules": [{"source": "ext-a", "model": model, "name": "protect", "operations": ["update"], "layer": "app"}]});
+        let ir = json!({"models": [
+            {"name": "Post", "table": "posts", "fields": [id]},
+            {"name": "PublicPost", "table": "posts", "fields": [id]}], "behavior": behavior});
+        Schema::from_ir(serde_json::from_value(ir).unwrap())
+    };
+    let error = build("PublicPost").err().expect("a proxy cannot declare a write rule");
+    assert!(error.contains("PublicPost: a proxy cannot declare a write rule; protect the root model Post"), "{error}");
+    assert!(build("Post").is_ok());
+}

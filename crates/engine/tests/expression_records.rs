@@ -156,6 +156,20 @@ fn a_copy_load_rejects_an_omitted_value_that_has_an_expression_or_hook_default()
 }
 
 #[test]
+fn a_copy_load_rejects_an_omitted_value_that_has_an_insert_assignment() {
+    let schema = schema(Json::Null, json!({"write_assignments": [{"source": "test.a", "model": "Post", "field": "shop", "on": ["insert"], "value": {"expr": {"t": "scope", "name": "shop"}}}]})).unwrap();
+    let postgres = Target::new(Dialect::Postgres);
+    for (fields, rows) in [(vec!["name"], vec![vec![text("a")]]), (vec!["name", "shop"], vec![vec![text("a"), int(7)], vec![text("b"), None]])] {
+        let fields: Vec<String> = fields.into_iter().map(str::to_owned).collect();
+        let error = exec::plan_copy(&schema, postgres, "Post", &fields, rows).err().expect("the insert assignment was dropped");
+        assert!(error.to_string().contains("has an insert assignment; use insert_many()"), "{error}");
+    }
+    // Every row sets the value: the assignment is not needed.
+    let fields = ["name".to_owned(), "shop".to_owned()];
+    assert!(exec::plan_copy(&schema, postgres, "Post", &fields, vec![vec![text("a"), int(7)]]).is_ok());
+}
+
+#[test]
 fn update_many_rejects_a_computed_field_in_every_build() {
     let schema = with_computed_field();
     let fields = ["id".to_owned(), "slug".to_owned()];
@@ -268,5 +282,22 @@ fn a_computed_duration_field_is_refused_on_a_read() {
         let op: Operation = serde_json::from_value(json!({"op":"select","model":"Post"})).unwrap();
         let error = Planner::plan(&schema, Target::new(dialect), &op, &Ints(vec![])).err().unwrap();
         assert!(error.to_string().contains("Post.slug") && error.to_string().contains("Duration"), "{error}");
+    }
+}
+
+#[test]
+fn an_insert_assignment_fills_only_omitted_values() {
+    let schema = schema(Json::Null, json!({"write_assignments": [{
+        "source": "test.a", "model": "Post", "field": "shop", "on": ["insert"],
+        "value": {"expr": {"t": "scope", "name": "shop"}}
+    }]})).unwrap();
+    let scope = BTreeMap::from([("shop".to_owned(), 0)]);
+    let ints = Ints(vec![42]);
+    let params = Scoped { params: &ints, scope: &scope };
+    for dialect in [Dialect::Postgres, Dialect::Sqlite] {
+        let (statement, values) = insert(&schema, dialect, &["name", "shop"],
+            vec![vec![text("omitted"), None], vec![text("explicit"), int(7)]], &params);
+        assert!(statement.contains("\"shop_id\""), "{statement}");
+        assert_eq!(values, vec![text("omitted").unwrap(), int(42).unwrap(), text("explicit").unwrap(), int(7).unwrap()]);
     }
 }

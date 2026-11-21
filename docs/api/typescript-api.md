@@ -1042,25 +1042,19 @@ Outside a transaction it runs in a transaction of its own.
 
 ### Protected writes
 
-`@@protected_write` is an application-level check in the ORM. It does not protect the database.
-Raw SQL (`db.execute`), migrations, other ORM processes without this schema, and other database clients can still write.
-For database-level protection, use `@@trigger` or database grants.
+Application and database write rules raise `WriteProtected`. A model scope opens
+application rules for that model. On PostgreSQL, the scope also opens its skippable
+database rules if the database session role is in `bypass_roles`.
 
 ```ts
-// sketch: Post declared with @@protected_write
-await allowWrites([Post], async () => { await post.update({ title: "new" }); });
-await Post.objects.filter(Post.published).update({ title: "x" });   // throws WriteProtected
+await allowWrites([Post], async () => {
+  await post.update({ title: "new" });
+});
 ```
 
-Every ORM write to a `@@protected_write` model fails outside `allowWrites(models, fn)` with `WriteProtected`:
-`insert`, `insertMany`, upserts, `update`, `updateMany`, `delete`, instance writes and composed writes.
-The check is on the table that the SQL writes, so `post.tags.add()` needs `allowWrites([PostTag], ...)` when `PostTag` is protected.
-The scope follows the async call chain through `AsyncLocalStorage`, like the transaction: work started inside `fn` gets it.
-A nested call adds its models to the outer ones. `allowWrites` starts no transaction and gives what `fn` gives.
-A lazy write reads the scope when it is first awaited, as Python does; instance writes start when called.
-`prepareInsert` and `prepareUpdate` also check protection, so a file field uploads nothing for a rejected write.
-Wrong arguments give a rejected promise with a `TypeError`.
-See `docs/schema/schema.md`, "Protected writes".
+The function starts no transaction. Nested calls add their models to the enclosing
+scope. A lazy write reads the scope when first awaited. See [Write rules](../extensions/write-rules.md) for the schema attributes
+and database behavior.
 
 ### Locks
 

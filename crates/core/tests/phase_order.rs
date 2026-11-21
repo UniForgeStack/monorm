@@ -23,17 +23,17 @@ fn outside(pass: &str) -> Manifest {
     )).unwrap()
 }
 
-// The order that the manifests gave before the phases `expansion` and `late_behavior`, when `after` crossed manifests (measured at eb1e5f25).
-const OLD_ORDER: [&str; 17] = [
+// The first-party passes in the order the phase sort gives them.
+const EXPECTED_ORDER: [&str; 18] = [
     "monorm.inherit.expand", "monorm.locking.fields", "monorm.soft-delete.fields", "monorm.timestamps.fields",
     "monorm.composition.lower", "monorm.proxy.lower", "monorm.history.models",
     "monorm.file-storage.fields", "monorm.generic.prepare", "monorm.locking.prepare", "monorm.proto.fields", "monorm.scope.prepare", "monorm.timestamps.prepare",
-    "monorm.history.triggers", "monorm.soft-delete.prepare", "query.defaults.lower", "monorm.soft-delete.check",
+    "monorm.write-rules.prepare", "monorm.history.triggers", "monorm.soft-delete.prepare", "query.defaults.lower", "monorm.soft-delete.check",
 ];
 
 #[test]
-fn the_first_party_passes_run_in_the_order_they_had_with_cross_manifest_after() {
-    assert_eq!(order(first_party()), OLD_ORDER);
+fn the_first_party_passes_run_in_the_expected_order() {
+    assert_eq!(order(first_party()), EXPECTED_ORDER);
 }
 
 #[test]

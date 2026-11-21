@@ -157,9 +157,6 @@ pub fn lower_specs(ir: &mut SchemaIr, specs: &[ProxyModel]) -> Result<(), String
             return Err(format!("{}: proxies cannot declare physical objects", spec.model));
         }
         if placeholder.partition.is_some() { return Err(format!("{}: declare the partition strategy on the source; use @@partition.values on the proxy", spec.model)); }
-        if placeholder.protected_write {
-            return Err(format!("{}: a proxy cannot declare @@protected_write; protect the root model {}", spec.model, spec.parent));
-        }
         let inherited = lowered.iter().find(|p| p.model == spec.parent);
         let partition = if let Some(declared) = &spec.partition {
             if inherited.is_some() { return Err(format!("{}: @@partition.values cannot own a partition of a proxy", spec.model)); }

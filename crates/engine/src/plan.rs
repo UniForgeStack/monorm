@@ -4392,6 +4392,7 @@ pub(crate) fn insert_statement(
             for (i, (slot, c)) in expr_defaults.iter_mut().zip(&cols).enumerate() {
                 if !omitted(i) { continue; }
                 let Some((position, default)) = m.client_defaults.iter().find(|(p, _)| m.fields()[*p].name == c.name) else { continue };
+                if m.assignments.iter().any(|a| a.field == *position && a.applies_to(AssignKind::Insert)) { continue; }
                 match default {
                     monorm_core::client_default::ClientDefault::Expr(e) => *slot = Some(planner.value(e, Hint { ty: Some(c.value_type()), field: Some(c) })?),
                     monorm_core::client_default::ClientDefault::Hook(export) => {
@@ -4400,6 +4401,17 @@ pub(crate) fn insert_statement(
                         *slot = Some(planner.value(&e, Hint { ty: Some(c.value_type()), field: Some(c) })?);
                     }
                     _ => {}
+                }
+            }
+        }
+        if m.assignments.iter().any(|a| a.applies_to(AssignKind::Insert)) {
+            let mut planner = Planner::new(schema, &[], target, model, None, params, vec![], 0)?;
+            let assigned = maintained(m, AssignKind::Insert, |field| {
+                cols.iter().position(|c| c.name == field).is_none_or(|i| !omitted(i))
+            }, &mut planner)?;
+            for (i, column) in cols.iter().enumerate() {
+                if let Some((_, expr)) = assigned.iter().find(|(name, _)| *name == column.column) {
+                    expr_defaults[i] = Some(write_expr(expr.clone(), column));
                 }
             }
         }
@@ -4619,7 +4631,7 @@ pub(crate) fn maintained<'s>(m: &'s Model, kind: AssignKind, is_set: impl Fn(&st
                 planner.value(expr, Hint { ty: Some(f.value_type()), field: Some(f) })?
             }
             AssignValue::ExprHook { export } => {
-                let expr = crate::hooks::expression(m, a.field, false, &contexts)?
+                let expr = crate::hooks::assignment_expression(m, a.field, kind == AssignKind::Insert, &contexts)?
                     .ok_or_else(|| Error::query(format!("{}.{}: hook {export} is not loaded", m.ir.name, f.name)))?;
                 planner.value(&expr, Hint { ty: Some(f.value_type()), field: Some(f) })?
             }
@@ -4630,7 +4642,7 @@ pub(crate) fn maintained<'s>(m: &'s Model, kind: AssignKind, is_set: impl Fn(&st
 }
 
 /// An expression assigned to field `f`: through its `write_sql` template, if any.
-fn write_expr(e: SExpr, f: &FieldIr) -> SExpr {
+pub(crate) fn write_expr(e: SExpr, f: &FieldIr) -> SExpr {
     match &f.write_sql {
         Some(t) => SExpr::cust_with_expr(t.replace("{}", "$1"), e),
         None => e,

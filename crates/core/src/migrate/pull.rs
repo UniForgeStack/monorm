@@ -12,6 +12,9 @@ use super::model::{object_name, DbSchema, ForeignKey, Function, Index, IndexKey,
 use crate::dialect::Dialect;
 use crate::ir::{Deferrable, ForEach, Nulls, OnDelete, TriggerEvent, TriggerTiming};
 
+use crate::write_rules::DeclarationMarker;
+use monorm::writes::{WriteAction, WriteLayer};
+
 /// A pulled schema file and what it leaves out.
 #[derive(Debug, Clone, Default)]
 pub struct Pulled {
@@ -247,7 +250,11 @@ fn strip_objects(db: &DbSchema, objects: &[ClaimedObjects]) -> DbSchema {
     let mut out = db.clone();
     let mut functions: Vec<String> = vec![];
     for o in objects {
-        out.tables.retain(|t| !o.tables.contains(&t.name));
+        out.tables.retain(|t| {
+            if !o.tables.contains(&t.name) { return true; }
+            functions.extend(t.triggers.iter().map(|trigger| trigger.function.clone()));
+            false
+        });
         let Some(t) = out.tables.iter_mut().find(|t| t.name == o.table) else { continue };
         functions.extend(t.triggers.iter().filter(|x| o.triggers.contains(&x.name)).map(|x| x.function.clone()));
         t.triggers.retain(|x| !o.triggers.contains(&x.name));
@@ -615,9 +622,99 @@ pub fn pull_with(db: &DbSchema, gaps: &[String], claimed: &[ClaimedRule], instal
     pull_claims(db, gaps, claimed, &[], installed)
 }
 
+/// Recover the local name of a generated SQLite rule trigger when its global name was shortened.
+pub fn sqlite_rule_trigger_name(body: &str, event: TriggerEvent) -> Option<String> {
+    let marker = DeclarationMarker::read(body)?;
+    if !marker.rule.operations.contains(&event) { return None; }
+    crate::write_rules::sqlite_trigger_name(&marker.rule.name, event)
+}
+
+fn trigger_marker(db: &DbSchema, trigger: &super::model::Trigger) -> Option<DeclarationMarker> {
+    let body = trigger.body.as_deref().or_else(|| {
+        db.functions.iter().find(|f| f.name == trigger.function).map(|f| f.body.as_str())
+    })?;
+    DeclarationMarker::read(body)
+}
+
+/// Recover a generated rule only when its source package and attribute are installed.
+fn rule_declaration(
+    db: &DbSchema, trigger: &super::model::Trigger, installed: &BTreeMap<String, BTreeSet<String>>,
+) -> Option<DeclarationMarker> {
+    let marker = trigger_marker(db, trigger)?;
+    let declaration = marker.rule.declaration.as_ref()?;
+    if trigger.timing != TriggerTiming::Before
+        || !installed.get(&marker.rule.source)?.contains(&declaration.attribute) {
+        return None;
+    }
+    let names = if db.dialect.is_postgres() {
+        trigger.name == object_name(&[&marker.rule.name])
+    } else {
+        trigger.events.first().and_then(|event| crate::write_rules::sqlite_trigger_name(&marker.rule.name, *event)).is_some_and(|name| trigger.name == name)
+    };
+    (names && trigger.events.iter().all(|event| marker.rule.operations.contains(event))).then_some(marker)
+}
+
+fn emit_rule(m: &mut ModelOut<'_>, marker: &DeclarationMarker) -> Option<()> {
+    use crate::ir::ChangeKind;
+    let rule = &marker.rule;
+    let declaration = rule.declaration.as_ref()?;
+    let fields = |names: &[String]| names.iter().map(|column| m.fields.get(column).cloned()).collect::<Option<Vec<_>>>();
+    if let Some(column) = &declaration.field {
+        let field = m.fields.get(column)?;
+        let line = m.lines.iter_mut().find(|line| line.split_whitespace().next() == Some(field.as_str()))?;
+        line.push_str(&format!(" @{}", declaration.attribute));
+        return Some(());
+    }
+    let mut events = rule.operations.clone();
+    events.sort();
+    let mut operations = vec![];
+    for event in events {
+        operations.push(match event {
+            TriggerEvent::Insert => "insert".into(),
+            TriggerEvent::Update if !rule.fields.is_empty() => format!("update_of({})", fields(&rule.fields)?.join(", ")),
+            TriggerEvent::Update => "update".into(),
+            TriggerEvent::Delete => "delete".into(),
+            TriggerEvent::Truncate => return None,
+        });
+    }
+    let mut args = vec![format!("operation: [{}]", operations.join(", "))];
+    match rule.layer {
+        WriteLayer::App => args.push("layer: app".into()),
+        WriteLayer::Db => args.push("layer: db".into()),
+        WriteLayer::Both => (),
+    }
+    if rule.action == WriteAction::Drop { args.push("action: drop".into()); }
+    if rule.skippable { args.push("skippable: true".into()); }
+    if let Some(condition) = &rule.condition {
+        let mut terms: Vec<String> = condition.sql.iter().map(|sql| quoted(sql)).collect();
+        for helper in &condition.changes {
+            let kind = match helper.kind {
+                ChangeKind::AnyChange => "any_change", ChangeKind::AllChange => "all_change",
+                ChangeKind::AnyDontChange => "any_dont_change", ChangeKind::AllDontChange => "all_dont_change",
+            };
+            let mut parts = fields(&helper.fields)?;
+            if !helper.exclude.is_empty() { parts.push(format!("exclude: [{}]", fields(&helper.exclude)?.join(", "))); }
+            if helper.exclude_auto { parts.push("exclude_auto: true".into()); }
+            terms.push(format!("{kind}({})", parts.join(", ")));
+        }
+        if terms.len() > 1 { args.push(format!("condition: [{}]", terms.join(", "))); }
+        else if let Some(term) = terms.pop() { args.push(format!("condition: {term}")); }
+    }
+    m.attrs.push(format!("@@{}({})", declaration.attribute, args.join(", ")));
+    Some(())
+}
+
 /// [`pull_with`] with the objects that extensions claim (see [`claim_objects`]): each becomes an attribute of its model, and the
 /// tables, triggers, columns, indexes and functions that the attribute makes are left out.
 pub fn pull_claims(db: &DbSchema, gaps: &[String], claimed: &[ClaimedRule], objects: &[ClaimedObjects], installed: &crate::dsl::Installed) -> Pulled {
+    // A claimed table is regenerated by its extension. Its skippable rules
+    // still describe datasource roles even when they have no direct attribute.
+    let mut bypass_roles = Vec::new();
+    for table in db.tables.iter().filter(|t| objects.iter().any(|claim| claim.tables.contains(&t.name))) {
+        for role in table.triggers.iter().filter_map(|trigger| trigger_marker(db, trigger)).flat_map(|marker| marker.roles) {
+            if !bypass_roles.contains(&role) { bypass_roles.push(role); }
+        }
+    }
     let stripped = strip_objects(db, objects);
     let db = &stripped;
     let mut gaps = gaps.to_vec();
@@ -868,8 +965,26 @@ pub fn pull_claims(db: &DbSchema, gaps: &[String], claimed: &[ClaimedRule], obje
 
     // -- triggers --------------------------------------------------------------------------
     let functions: BTreeSet<&str> = db.functions.iter().filter(|f| writable(f)).map(|f| f.name.as_str()).collect();
+    let installed_attributes: BTreeMap<String, BTreeSet<String>> = installed.extensions.iter()
+        .filter_map(|(id, path)| crate::loader::read_manifest(id, path).ok().map(|d| (id.clone(), d.manifest.attributes.into_iter().map(|a| a.name).collect())))
+        .collect();
+    let mut rule_functions = BTreeSet::new();
+    let mut ordinary_functions = BTreeSet::new();
     for m in &mut models {
+        let mut emitted = BTreeSet::new();
         for tr in &m.table.triggers {
+            let marker = rule_declaration(db, tr, &installed_attributes);
+            if let Some(marker) = marker {
+                if emitted.contains(&marker.rule.name) || emit_rule(m, &marker).is_some() {
+                    emitted.insert(marker.rule.name);
+                    for role in marker.roles {
+                        if !bypass_roles.contains(&role) { bypass_roles.push(role); }
+                    }
+                    rule_functions.insert(tr.function.as_str());
+                    continue;
+                }
+            }
+            ordinary_functions.insert(tr.function.as_str());
             if dialect == Dialect::Postgres && !functions.contains(tr.function.as_str()) {
                 gaps.push(format!("trigger {}.{} calls {}, which is not pulled; it is left out", m.table.name, tr.name, tr.function));
                 continue;
@@ -1005,6 +1120,9 @@ pub fn pull_claims(db: &DbSchema, gaps: &[String], claimed: &[ClaimedRule], obje
     let mut out = String::from("// Pulled from a live database by `monorm pull`. Review it before the first migration.\n\n");
     out.push_str("datasource db {\n");
     out.push_str(&format!("  provider = {}\n", if dialect == Dialect::Sqlite { "\"sqlite\"" } else { "\"postgresql\"" }));
+    if !bypass_roles.is_empty() {
+        out.push_str(&format!("  bypass_roles = [{}]\n", bypass_roles.iter().map(|role| quoted(role)).collect::<Vec<_>>().join(", ")));
+    }
     if !db.extensions.is_empty() {
         let list: Vec<String> = db
             .extensions
@@ -1025,6 +1143,7 @@ pub fn pull_claims(db: &DbSchema, gaps: &[String], claimed: &[ClaimedRule], obje
     }
     out.push_str("}\n");
     for f in &db.functions {
+        if rule_functions.contains(f.name.as_str()) && !ordinary_functions.contains(f.name.as_str()) { continue; }
         if !writable(f) {
             gaps.push(format!("function {}({}) can't be written as a function block; it is left out", f.name, f.args));
             continue;

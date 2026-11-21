@@ -26,7 +26,9 @@ async function fixture(run, { protectedWrite = false } = {}) {
     behavior: { schema_contract: 5,
       field_adapters: [{ model: 'FileReport07', field: 'file', adapter: 'file-storage.reference.v1' }] },
   };
-  ir.models[0].protected_write = protectedWrite;
+  if (protectedWrite) {
+    ir.behavior.write_rules = [{ source: "test", model: ir.models[0].name, name: "protect", operations: ["insert", "update", "delete"], layer: "app" }];
+  }
   const registry = new ModelRegistry();
   const Report = define(ir, { registry }).FileReport07;
   installModel(Report._meta.Row.prototype, new Map([['file', new FileField('file', 'reports', true)]]), providers, Report._meta);

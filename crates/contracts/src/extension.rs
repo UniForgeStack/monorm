@@ -5,7 +5,7 @@ use crate::ir::{ColType, SchemaIr, ValueType};
 pub use crate::version::ContractVersion;
 
 /// The IR records. A library of the same major and a lower or equal minor fits.
-pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(5, 9);
+pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(5, 10);
 /// The C ABI that `monorm::extension!` writes.
 pub const ABI_VERSION: ContractVersion = ContractVersion::new(0, 2);
 /// The stamps of an IR and an artifact keep the major only.
@@ -87,6 +87,8 @@ pub struct Requirements {
     pub field_adapters: Vec<FieldAdapter>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub write_assignments: Vec<crate::writes::WriteAssignment>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub write_rules: Vec<crate::writes::WriteRule>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub delete_rewrites: Vec<crate::writes::DeleteRewrite>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -196,11 +198,12 @@ impl Requirements {
             .or_else(|| self.owner_links.iter().find(|l| l.child == model).map(|l| l.parent.as_str()))
     }
 
-    /// The extensions that prepared a read default, delete rewrite, write assignment or instance guard for `model`.
+    /// The extensions that prepared behavior records for `model`.
     pub fn record_sources<'a>(&'a self, model: &'a str) -> impl Iterator<Item = &'a str> {
         self.read_defaults.iter().filter(move |r| r.model == model).map(|r| r.source.as_str())
             .chain(self.delete_rewrites.iter().filter(move |r| r.model == model).map(|r| r.source.as_str()))
             .chain(self.write_assignments.iter().filter(move |r| r.model == model).map(|r| r.source.as_str()))
+            .chain(self.write_rules.iter().filter(move |r| r.model == model).map(|r| r.source.as_str()))
             .chain(self.instance_guards.iter().filter(move |r| r.model == model).map(|r| r.source.as_str()))
             .chain(self.scoped_fields.iter().filter(move |r| r.model == model).map(|r| r.source.as_str()))
     }
@@ -208,7 +211,7 @@ impl Requirements {
     pub fn is_empty(&self) -> bool {
         self.read_defaults.is_empty() && self.model_views.is_empty() && self.result_checks.is_empty() && self.declarations.is_empty() && self.packages.is_empty()
             && self.lowered_models.is_empty() && self.result_fields.is_empty() && self.storage.is_none() && self.field_storage.is_empty() && self.owner_links.is_empty() && self.field_adapters.is_empty()
-            && self.write_assignments.is_empty() && self.delete_rewrites.is_empty() && self.instance_guards.is_empty() && self.scoped_fields.is_empty() && self.published_scope_keys.is_empty() && self.extension_records.is_empty() && self.added_triggers.is_empty() && self.type_models.is_empty() && self.model_overrides.is_empty() && self.schema_contract == 0
+            && self.write_rules.is_empty() && self.write_assignments.is_empty() && self.delete_rewrites.is_empty() && self.instance_guards.is_empty() && self.scoped_fields.is_empty() && self.published_scope_keys.is_empty() && self.extension_records.is_empty() && self.added_triggers.is_empty() && self.type_models.is_empty() && self.model_overrides.is_empty() && self.schema_contract == 0
             && self.schema_contract_minor == 0 && self.hooks.is_empty() && self.extension_data.is_empty()
     }
 }
@@ -707,6 +710,7 @@ impl Attribute {
 #[serde(rename_all = "snake_case")]
 pub enum ArgumentKind {
     String, Integer, Boolean, List, Value,
+    TriggerEvents, TriggerCondition,
     /// A schema expression of the default-filter context. The core checks it and passes the engine filter form (JSON); `null` is `"none"`.
     /// A string is the string form of a filter, which the core reads into the same tree.
     Expression,
@@ -867,7 +871,7 @@ pub fn validate_declarations(ir: &SchemaIr, manifests: &[Manifest], language: Op
         let matches = |v: &serde_json::Value, arg: &Argument| match arg.kind {
             ArgumentKind::String => v.is_string(), ArgumentKind::Integer => v.is_i64(),
             ArgumentKind::Boolean => v.is_boolean(), ArgumentKind::List => v.is_array() && literal(v),
-            ArgumentKind::Value | ArgumentKind::Expression => true,
+            ArgumentKind::Value | ArgumentKind::Expression | ArgumentKind::TriggerEvents | ArgumentKind::TriggerCondition => true,
         };
         for (name, value) in &d.arguments {
             let arg = a.arguments.get(name).or(a.open_arguments.as_ref()).ok_or_else(|| fail(d, format!("unknown argument {name}")))?;
@@ -1175,6 +1179,7 @@ pub fn merge_definition(mut context: SchemaIr, mut incoming: SchemaIr) -> Result
     c.owner_links.extend(n.owner_links);
     c.field_adapters.extend(n.field_adapters);
     c.write_assignments.extend(n.write_assignments);
+    c.write_rules.extend(n.write_rules);
     c.delete_rewrites.extend(n.delete_rewrites);
     c.instance_guards.extend(n.instance_guards);
     c.scoped_fields.extend(n.scoped_fields);

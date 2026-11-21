@@ -849,14 +849,10 @@ fn an_attribute_asks_for_identities_in_its_manifest() {
 }
 
 #[test]
-fn protected_write_is_a_model_flag_without_ddl() {
+fn removed_protected_write_names_its_replacement() {
     let source = "model Post {\n id Int @id\n @@protected_write\n}";
-    let ir = compile(source, None).unwrap();
-    assert!(ir.models[0].protected_write);
-    let snapshot = |source: &str| crate::migrate::snapshot(&check(compile(source, None).unwrap()).unwrap().1).unwrap();
-    assert_eq!(snapshot(source), snapshot(&source.replace(" @@protected_write\n", "")));
-    let error = compile(&source.replace("@@protected_write", "@@protected_write(true)"), None).unwrap_err();
-    assert!(error.contains("@@protected_write takes no arguments"), "{error}");
+    let error = compile(source, None).unwrap_err();
+    assert!(error.contains("@@write_rules.protect(layer: app)"), "{error}");
 }
 
 #[test]

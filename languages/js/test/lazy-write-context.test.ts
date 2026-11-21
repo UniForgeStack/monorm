@@ -16,7 +16,7 @@ model LazyContextEntry {
   id Int @id
   name String
   @@map("lazy_context_entry")
-  ${protectedWrite ? "@@protected_write" : ""}
+  ${protectedWrite ? "@@write_rules.protect(layer: app)" : ""}
 }`;
 async function setup(url: string, protectedWrite = false) {
   const registry = new Registry();

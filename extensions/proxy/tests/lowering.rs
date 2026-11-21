@@ -242,11 +242,7 @@ fn proxy_fields_declarations_reject_include_and_exclude_together() {
 }
 
 #[test]
-fn a_proxy_cannot_protect_writes_and_a_client_default_stays_in_the_subset() {
-    let mut ir = schema();
-    ir.models[1].protected_write = true;
-    let error = lower_specs(&mut ir, &[spec("Active", "User")]).unwrap_err();
-    assert!(error.contains("Active: a proxy cannot declare @@protected_write; protect the root model User"), "{error}");
+fn a_client_default_stays_in_the_subset() {
     let mut ir = schema();
     redeclare(&mut ir, "Active", "status", |f| { f.enum_subset = Some(names(&["ACTIVE"])); f.client_default = Some(ClientDefaultIr::Value(json!("old"))); });
     let error = lower_specs(&mut ir, &[spec("Active", "User")]).unwrap_err();

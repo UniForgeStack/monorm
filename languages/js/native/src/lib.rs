@@ -63,6 +63,7 @@ fn db_kind(e: &DbError) -> &'static str {
 /// A database error; with SQLSTATE fields the tag is `[monorm:<Kind>+] <json>\n<message>`
 /// (JSON escapes newlines, so the first line is the whole object).
 fn db_tagged(e: DbError) -> napi::Error {
+    if e.write_rule().is_some() { return tagged("WriteProtected", e.message); }
     let kind = db_kind(&e);
     if e.sqlstate.is_none() && e.constraint.is_none() && e.detail.is_none() && e.cause.is_none() && e.outcome.is_none() {
         return tagged(kind, e);
@@ -94,7 +95,8 @@ fn engine_err(e: Error) -> napi::Error {
         Error::Db(e) => db_tagged(e),
         Error::Value(m) => tagged("TypeError", m),
         Error::ReadOnlyModel(m) => tagged("ReadOnlyModel", format!("{m} is a view; it can't be written")),
-        Error::WriteProtected(m) => tagged("WriteProtected", format!("{m} is write-protected (@@protected_write); write it inside allowWrites([{m}], ...)")),
+        Error::WriteProtected(monorm_engine::error::WriteProtection::Database { message: m }) => tagged("WriteProtected", m),
+        Error::WriteProtected(monorm_engine::error::WriteProtection::Application { model: m }) => tagged("WriteProtected", format!("{m} is write-protected; write it inside allowWrites([{m}], ...)")),
         Error::ScopeMissing { model, key, message } => scope_tagged("ScopeMissing", serde_json::json!({ "model": model, "key": key }), message),
         Error::ScopeMismatch { model, key, expected, actual } => {
             let message = format!("{model} is scoped by {key}: the scope is {expected}, the write sets {actual}; write inside the scope, or use unscoped({key:?}) to write another scope");
@@ -522,7 +524,7 @@ impl JsSchema {
     /// `Engine.prepareWrite` without a connection: `sql()` and `inspect()` only.
     #[napi]
     pub fn prepare_write(&self, op_json: String, n: u32, declared: Vec<Option<String>>) -> napi::Result<PreparedWrite> {
-        prepared_write(&self.inner, Target::new(self.inner.dialect), &op_json, n, &declared, None)
+        prepared_write(&self.inner, Target::new(self.inner.dialect), &op_json, n, &declared, None, None)
     }
 
     /// `Engine.prepareInsert` without a connection.
@@ -530,7 +532,7 @@ impl JsSchema {
     #[allow(clippy::too_many_arguments)]
     pub fn prepare_insert(&self, model: String, fields: Vec<String>, options: String, n: u32, declared: Vec<Option<String>>,
         returning: bool, batch_size: Option<u32>) -> napi::Result<PreparedRows> {
-        prepared_rows(&self.inner, Target::new(self.inner.dialect), "insert", &model, fields, &options, returning, batch_size, n, &declared, None)
+        prepared_rows(&self.inner, Target::new(self.inner.dialect), "insert", &model, fields, &options, returning, batch_size, n, &declared, None, None)
     }
 
     /// `Engine.prepareUpdateMany` without a connection.
@@ -538,7 +540,7 @@ impl JsSchema {
     #[allow(clippy::too_many_arguments)]
     pub fn prepare_update_many(&self, model: String, fields: Vec<String>, options: String, n: u32, declared: Vec<Option<String>>,
         returning: bool, batch_size: Option<u32>) -> napi::Result<PreparedRows> {
-        prepared_rows(&self.inner, Target::new(self.inner.dialect), "update_many", &model, fields, &options, returning, batch_size, n, &declared, None)
+        prepared_rows(&self.inner, Target::new(self.inner.dialect), "update_many", &model, fields, &options, returning, batch_size, n, &declared, None, None)
     }
 
     /// The static read flags of each model (JSON `{model: {filtered, fields, related}}`).
@@ -583,7 +585,7 @@ impl JsSchema {
     /// write protection check runs here too, before a caller's own I/O.
     #[napi]
     pub fn validate_insert(&self, env: &Env, model: String, fields: Vec<String>, rows: Unknown<'_>, allowed: Vec<String>) -> napi::Result<()> {
-        protect::ensure_writable(&self.inner, &model, &allowed).map_err(engine_err)?;
+        protect::Writable::insert(&self.inner, &model, None).and_then(|check| check.check(&self.inner, &allowed)).map_err(engine_err)?;
         let values = convert_rows(env, &self.inner, &model, &fields, rows, true)?;
         exec::plan_insert(&self.inner, Target::new(self.inner.dialect), &model, &fields, values, None, &monorm_engine::NoParams, &ir::Bypass::default()).map_err(engine_err)?;
         Ok(())
@@ -594,9 +596,7 @@ impl JsSchema {
     #[napi]
     pub fn unique_row_update(&self, env: &Env, op_json: String, params_: Unknown<'_>, allowed: Vec<String>) -> napi::Result<bool> {
         let op = parse_op(&op_json).map_err(engine_err)?;
-        if let ir::Operation::Update(ir::Update { model, .. }) = &op {
-            protect::ensure_writable(&self.inner, model, &allowed).map_err(engine_err)?;
-        }
+        protect::Writable::operation(&self.inner, &op).and_then(|check| check.check(&self.inner, &allowed)).map_err(engine_err)?;
         let p = params(env, params_)?;
         plan::unique_row_update(&self.inner, Target::new(self.inner.dialect), &op, &p).map_err(engine_err)
     }
@@ -826,26 +826,22 @@ fn declared_types(declared: &[Option<String>]) -> napi::Result<Vec<Option<ValueT
 }
 
 fn prepared_write(schema: &Arc<schema::Schema>, target: Target, op_json: &str, n: u32, declared: &[Option<String>],
-    driver: Option<Arc<dyn Driver>>) -> napi::Result<PreparedWrite> {
+    driver: Option<Arc<dyn Driver>>, settings: Option<Vec<(String, String)>>) -> napi::Result<PreparedWrite> {
     let op = parse_op(op_json).map_err(engine_err)?;
-    let model = match &op {
-        ir::Operation::Update(ir::Update { model, .. }) | ir::Operation::Delete(ir::Delete { model, .. }) => model.clone(),
-        _ => return Err(query_err("prepare() takes an update or a delete")),
-    };
     let inner = monorm_engine::prepared_write::PreparedWrite::prepare(schema, target, &op, n as usize, &declared_types(declared)?).map_err(engine_err)?;
-    let writable = protect::Writable::of(schema, &model).map_err(engine_err)?;
-    Ok(PreparedWrite { inner: Arc::new(inner), driver, schema: schema.clone(), writable })
+    let writable = protect::Writable::operation(schema, &op).map_err(engine_err)?;
+    Ok(PreparedWrite { inner: Arc::new(inner), driver, settings, schema: schema.clone(), writable })
 }
 
 #[allow(clippy::too_many_arguments)]
 fn prepared_rows(schema: &Arc<schema::Schema>, target: Target, kind: &str, model: &str, fields: Vec<String>, options: &str,
-    returning: bool, batch_size: Option<u32>, n: u32, declared: &[Option<String>], driver: Option<Arc<dyn Driver>>) -> napi::Result<PreparedRows> {
+    returning: bool, batch_size: Option<u32>, n: u32, declared: &[Option<String>], driver: Option<Arc<dyn Driver>>, settings: Option<Vec<(String, String)>>) -> napi::Result<PreparedRows> {
     use monorm_engine::prepared_write::RowsSpec;
     let spec = RowsSpec::from_options(kind, model, fields, options, returning, batch_size.map(|b| b as usize), n as usize, declared_types(declared)?)
         .map_err(engine_err)?;
+    let writable = protect::Writable::rows(schema, &spec).map_err(engine_err)?;
     let inner = monorm_engine::prepared_write::PreparedRows::prepare(schema.clone(), target, spec).map_err(engine_err)?;
-    let writable = protect::Writable::of(schema, model).map_err(engine_err)?;
-    Ok(PreparedRows { inner: Arc::new(inner), driver, schema: schema.clone(), writable })
+    Ok(PreparedRows { inner: Arc::new(inner), driver, settings, schema: schema.clone(), writable })
 }
 
 // -- prepared reads ---------------------------------------------------------------------------
@@ -900,6 +896,7 @@ pub struct PreparedWrite {
     inner: Arc<monorm_engine::prepared_write::PreparedWrite>,
     /// None on a schema without a connection: `sql()` and `inspect()` only.
     driver: Option<Arc<dyn Driver>>,
+    settings: Option<Vec<(String, String)>>,
     schema: Arc<schema::Schema>,
     writable: protect::Writable,
 }
@@ -912,10 +909,11 @@ impl PreparedWrite {
         trace: Option<&Trace>) -> napi::Result<PromiseRaw<'env, Raw>> {
         self.writable.check(&self.schema, allowed.as_deref().unwrap_or_default()).map_err(engine_err)?;
         let call = self.inner.call(&params(env, params_)?).map_err(engine_err)?;
-        let conn: Arc<dyn Executor> = match (tx, &self.driver) {
-            (Some(tx), _) => tx.inner.clone(),
-            (None, Some(driver)) => driver.clone(),
-            (None, None) => return Err(query_err("the schema has no connection")),
+        let conn: Arc<dyn Executor> = match (tx, &self.driver, &self.settings) {
+            (Some(tx), _, Some(settings)) => db::SettingsTx::wrap(tx.inner.clone(), settings.clone()),
+            (Some(tx), _, None) => tx.inner.clone(),
+            (None, Some(driver), _) => driver.clone(),
+            (None, None, _) => return Err(query_err("the schema has no connection")),
         };
         let conn = monorm_engine::trace::wrap(conn, trace.map(|t| &t.0));
         let inner = self.inner.clone();
@@ -945,6 +943,7 @@ impl PreparedWrite {
 pub struct PreparedRows {
     inner: Arc<monorm_engine::prepared_write::PreparedRows>,
     driver: Option<Arc<dyn Driver>>,
+    settings: Option<Vec<(String, String)>>,
     schema: Arc<schema::Schema>,
     writable: protect::Writable,
 }
@@ -958,10 +957,11 @@ impl PreparedRows {
         allowed: Option<Vec<String>>, trace: Option<&Trace>) -> napi::Result<PromiseRaw<'env, Raw>> {
         self.writable.check(&self.schema, allowed.as_deref().unwrap_or_default()).map_err(engine_err)?;
         let rows = convert_cells(env, self.inner.field_types(), rows, true)?;
-        let conn: Arc<dyn Executor> = match (tx, &self.driver) {
-            (Some(tx), _) => tx.inner.clone(),
-            (None, Some(driver)) => driver.clone(),
-            (None, None) => return Err(query_err("the schema has no connection")),
+        let conn: Arc<dyn Executor> = match (tx, &self.driver, &self.settings) {
+            (Some(tx), _, Some(settings)) => db::SettingsTx::wrap(tx.inner.clone(), settings.clone()),
+            (Some(tx), _, None) => tx.inner.clone(),
+            (None, Some(driver), _) => driver.clone(),
+            (None, None, _) => return Err(query_err("the schema has no connection")),
         };
         let own_tx = tx.is_none();
         let conn = monorm_engine::trace::wrap(conn, trace.map(|t| &t.0));
@@ -1025,7 +1025,7 @@ impl Engine {
     /// Plans an update or a delete once for `n` parameters, scope values included.
     #[napi]
     pub fn prepare_write(&self, op_json: String, n: u32, declared: Vec<Option<String>>) -> napi::Result<PreparedWrite> {
-        prepared_write(&self.schema, self.target, &op_json, n, &declared, Some(self.driver.clone()))
+        prepared_write(&self.schema, self.target, &op_json, n, &declared, Some(self.driver.clone()), self.settings.clone())
     }
 
     /// Plans an insert (`insertMany`, an upsert) of rows once. `options`: the insert options JSON.
@@ -1033,7 +1033,7 @@ impl Engine {
     #[allow(clippy::too_many_arguments)]
     pub fn prepare_insert(&self, model: String, fields: Vec<String>, options: String, n: u32, declared: Vec<Option<String>>,
         returning: bool, batch_size: Option<u32>) -> napi::Result<PreparedRows> {
-        prepared_rows(&self.schema, self.target, "insert", &model, fields, &options, returning, batch_size, n, &declared, Some(self.driver.clone()))
+        prepared_rows(&self.schema, self.target, "insert", &model, fields, &options, returning, batch_size, n, &declared, Some(self.driver.clone()), self.settings.clone())
     }
 
     /// Plans `updateMany` once. `options`: `{"filters", "model_fields", "without_defaults"}` JSON.
@@ -1041,7 +1041,7 @@ impl Engine {
     #[allow(clippy::too_many_arguments)]
     pub fn prepare_update_many(&self, model: String, fields: Vec<String>, options: String, n: u32, declared: Vec<Option<String>>,
         returning: bool, batch_size: Option<u32>) -> napi::Result<PreparedRows> {
-        prepared_rows(&self.schema, self.target, "update_many", &model, fields, &options, returning, batch_size, n, &declared, Some(self.driver.clone()))
+        prepared_rows(&self.schema, self.target, "update_many", &model, fields, &options, returning, batch_size, n, &declared, Some(self.driver.clone()), self.settings.clone())
     }
 
     /// Inspect planned templates without executing or collecting statement events.
@@ -1076,9 +1076,7 @@ impl Engine {
         trace: Option<&Trace>,
     ) -> napi::Result<PromiseRaw<'env, Raw>> {
         let op = parse_op(&op_json).map_err(engine_err)?;
-        if let ir::Operation::Update(ir::Update { model, .. }) | ir::Operation::Delete(ir::Delete { model, .. }) = &op {
-            protect::ensure_writable(&self.schema, model, allowed.as_deref().unwrap_or_default()).map_err(engine_err)?;
-        }
+        protect::Writable::operation(&self.schema, &op).and_then(|check| check.check(&self.schema, allowed.as_deref().unwrap_or_default())).map_err(engine_err)?;
         let target = self.target;
         let plan = Planner::plan(&self.schema, target, &op, &params(env, params_)?).map_err(engine_err)?;
         let own_tx = tx.is_none();
@@ -1165,7 +1163,6 @@ impl Engine {
     ) -> napi::Result<PromiseRaw<'env, Raw>> {
         let returning = returning.unwrap_or(true);
         let without_defaults: ir::Bypass = serde_json::from_str(without_defaults.as_deref().unwrap_or("false")).map_err(|e| query_err(format!("invalid bypass: {e}")))?;
-        protect::ensure_writable(&self.schema, &model, allowed.as_deref().unwrap_or_default()).map_err(engine_err)?;
         let set: Vec<ir::Assignment> = match set {
             Some(json) => serde_json::from_str(&json).map_err(|e| query_err(format!("invalid assignment IR: {e}")))?,
             None => vec![],
@@ -1175,6 +1172,7 @@ impl Engine {
             Some(update) => Conflict::Update { target, index, update, set },
             None => Conflict::Nothing { target, index },
         });
+        protect::Writable::insert(&self.schema, &model, conflict.as_ref()).and_then(|check| check.check(&self.schema, allowed.as_deref().unwrap_or_default())).map_err(engine_err)?;
         let values = convert_rows(env, &self.schema, &model, &fields, rows, true)?;
         let p = params(env, params_)?;
         let scope = serde_json::from_str(scope.as_deref().unwrap_or("{}")).map_err(|e| query_err(format!("invalid scope IR: {e}")))?;
@@ -1205,7 +1203,7 @@ impl Engine {
         allowed: Option<Vec<String>>,
         trace: Option<&Trace>,
     ) -> napi::Result<PromiseRaw<'env, f64>> {
-        protect::ensure_writable(&self.schema, &model, allowed.as_deref().unwrap_or_default()).map_err(engine_err)?;
+        protect::Writable::insert(&self.schema, &model, None).and_then(|check| check.check(&self.schema, allowed.as_deref().unwrap_or_default())).map_err(engine_err)?;
         let values = convert_rows(env, &self.schema, &model, &fields, rows, true)?;
         let copy = exec::plan_copy(&self.schema, self.target, &model, &fields, values).map_err(engine_err)?;
         let conn = self.traced(tx, trace);
@@ -1234,7 +1232,7 @@ impl Engine {
         trace: Option<&Trace>,
         model_fields: Option<Vec<String>>,
     ) -> napi::Result<PromiseRaw<'env, Raw>> {
-        protect::ensure_writable(&self.schema, &model, allowed.as_deref().unwrap_or_default()).map_err(engine_err)?;
+        protect::Writable::update_many(&self.schema, &model, &fields).and_then(|check| check.check(&self.schema, allowed.as_deref().unwrap_or_default())).map_err(engine_err)?;
         let (_, um) = update_many_plan(
             env, &self.schema, self.target, &model, &fields, rows, &filters_json, params_, returning, model_fields.as_deref(), batch_size,
             without_defaults.as_deref().unwrap_or("false"),
@@ -1298,6 +1296,11 @@ impl Engine {
     #[napi]
     pub fn scope_keys_open(&self) -> bool {
         self.schema.scope_keys_open()
+    }
+
+    #[napi]
+    pub fn write_rule_skips(&self, models: Vec<String>) -> Vec<String> {
+        self.schema.write_rule_skips(&models)
     }
 
     /// The names that `skipTriggers()` accepts.
@@ -1637,7 +1640,7 @@ impl Engine {
     #[napi(ts_return_type = "Promise<unknown>")]
     #[allow(clippy::too_many_arguments)]
     pub fn attach<'env>(&self, env: &'env Env, model: String, parent_id: Unknown<'_>, fields: Vec<String>, rows: Unknown<'_>, tx: Option<&Transaction>, allowed: Option<Vec<String>>, trace: Option<&Trace>) -> napi::Result<PromiseRaw<'env, Raw>> {
-        protect::ensure_writable(&self.schema, &model, allowed.as_deref().unwrap_or_default()).map_err(engine_err)?;
+        protect::Writable::insert(&self.schema, &model, None).and_then(|check| check.check(&self.schema, allowed.as_deref().unwrap_or_default())).map_err(engine_err)?;
         let model_idx = self.schema.model_idx(&model).map_err(schema_err)?;
         let identity = conv(env)?.value(parent_id.raw(), Some(self.schema.model(model_idx).pk_field().value_type())).map_err(engine_err)?;
         let values = convert_rows(env, &self.schema, &model, &fields, rows, true)?;
@@ -1656,7 +1659,7 @@ impl Engine {
     #[napi(ts_return_type = "Promise<unknown>")]
     #[allow(clippy::too_many_arguments)]
     pub fn attach_many<'env>(&self, env: &'env Env, model: String, parent_ids: Unknown<'_>, fields: Vec<String>, rows: Unknown<'_>, tx: Option<&Transaction>, allowed: Option<Vec<String>>, trace: Option<&Trace>) -> napi::Result<PromiseRaw<'env, Raw>> {
-        protect::ensure_writable(&self.schema, &model, allowed.as_deref().unwrap_or_default()).map_err(engine_err)?;
+        protect::Writable::insert(&self.schema, &model, None).and_then(|check| check.check(&self.schema, allowed.as_deref().unwrap_or_default())).map_err(engine_err)?;
         let model_idx = self.schema.model_idx(&model).map_err(schema_err)?;
         let key_type = self.schema.model(model_idx).pk_field().value_type();
         let identities = convert_cells(env, &[key_type], parent_ids, false)?;

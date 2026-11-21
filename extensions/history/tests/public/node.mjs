@@ -12,7 +12,8 @@ const { history } = await import('../../../../languages/js/extensions/history/in
 
 async function run(provider, url) {
   const registry = new Registry();
-  const { Post, BundleVersion } = loads(fixture.replace('"sqlite"', `"${provider}"`), { registry });
+  const providerLine = `"${provider}"` + (provider === "postgresql" ? '\n  bypass_roles = ["postgres"]' : "");
+  const { Post, BundleVersion } = loads(fixture.replace('"sqlite"', providerLine), { registry });
   const db = await connect(url, { registry, default: false });
   await db.dropTables();
   await db.createTables();

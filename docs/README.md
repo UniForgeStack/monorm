@@ -39,6 +39,7 @@ Start with the runnable [quickstart](../examples/quickstart) (Python and TypeScr
 | file-storage | `extensions/file-storage` (`monorm/extensions/file-storage` on npm) | `@storage.file(storage:)` | [file-storage.md](extensions/file-storage.md) |
 | proto | `extensions/proto` (`monorm/extensions/proto` on npm) | `@proto.message("<full name>")` | [proto.md](extensions/proto.md) |
 | generic | `extensions/generic` (`monorm/extensions/generic` on npm) | `@generic.relation(targets:, type:, key:)`, `@@generic.relation`, `@generic.reverse` | [generic-identities.md](schema/generic-identities.md) |
+| write-rules | `extensions/write-rules` | `@@write_rules.protect`, `@write_rules.read_only` | [Write rules](extensions/write-rules.md) |
 | timestamps | `extensions/timestamps` (`monorm/extensions/timestamps` on npm) | `@@timestamps.updated_at(name, map:, mode:, upsert:)` | [schema-extensions.md](extensions/schema-extensions.md) |
 | soft-delete | `extensions/soft-delete` (`monorm/extensions/soft-delete` on npm) | `@@soft_delete.deleted_at(name, map:, mode:, rule:)`, `@soft_delete.keep_child_rows` | [schema-extensions.md](extensions/schema-extensions.md) |
 | locking | `extensions/locking` (`monorm/extensions/locking` on npm) | `@@locking.version(name, map:, upsert:)` | [schema-extensions.md](extensions/schema-extensions.md) |

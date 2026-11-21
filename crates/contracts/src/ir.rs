@@ -297,6 +297,11 @@ impl SchemaIr {
             self.behavior.schema_contract = SCHEMA_CONTRACT;
             self.behavior.schema_contract_minor = self.behavior.schema_contract_minor.max(7);
         }
+        // An older engine cannot enforce write rules or parse insert assignments.
+        if !self.behavior.write_rules.is_empty() || self.behavior.write_assignments.iter().any(|a| a.on.contains(&crate::writes::WriteKind::Insert)) {
+            self.behavior.schema_contract = SCHEMA_CONTRACT;
+            self.behavior.schema_contract_minor = self.behavior.schema_contract_minor.max(10);
+        }
         // Contract 5.8 holds the new `TriggerIr` fields. An engine of 5.7 would drop a transition table, a deferral, a helper or a guard silently.
         let physical = self.behavior.storage.iter().flat_map(|s| &s.models);
         let uses_5_8_fields = |t: &TriggerIr| t.old_table.is_some() || t.new_table.is_some() || t.deferrable.is_some() || t.declare.is_some() || !t.changes.is_empty() || t.guard;
@@ -316,13 +321,23 @@ impl SchemaIr {
     pub fn from_json(json: &str) -> Result<Self, String> {
         // The version comes first: an IR of a newer contract fails with both versions, not with a serde error about a record.
         #[derive(Deserialize)]
-        struct Head { #[serde(default)] behavior: HeadBehavior }
+        struct Head {
+            #[serde(default)]
+            behavior: HeadBehavior,
+            #[serde(default)]
+            models: Vec<LegacyModel>,
+        }
+        #[derive(Deserialize)]
+        struct LegacyModel { #[serde(default)] protected_write: bool }
         #[derive(Default, Deserialize)]
         struct HeadBehavior { #[serde(default)] schema_contract: u32, #[serde(default)] schema_contract_minor: u32 }
-        if let Ok(Head { behavior }) = serde_json::from_str(json) {
+        if let Ok(Head { behavior, models }) = serde_json::from_str(json) {
             let found = crate::version::ContractVersion::new(behavior.schema_contract.min(u16::MAX.into()) as u16, behavior.schema_contract_minor.min(u16::MAX.into()) as u16);
             if found > crate::extension::SCHEMA_CONTRACT_VERSION {
                 return Err(format!("schema contract {found} is newer than this engine ({}); update the ORM, or regenerate the models with an older one", crate::extension::SCHEMA_CONTRACT_VERSION));
+            }
+            if models.iter().any(|m| m.protected_write) {
+                return Err("schema IR contains removed write protection; update the schema and regenerate the models".into());
             }
         }
         let ir: Self = serde_json::from_str(json).map_err(|e| format!("invalid schema IR: {e}; if another ORM version generated the models, regenerate the models and rebuild the native artifact"))?;
@@ -418,9 +433,6 @@ pub struct ModelIr {
     pub renamed_from: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub comment: Option<String>,
-    /// `@@protected_write`: ORM writes need a scope that allows them. No DDL, no snapshot.
-    #[serde(skip_serializing_if = "crate::ir::is_false", default)]
-    pub protected_write: bool,
     /// `@@query_set("Class")`: the class name only. Codegen finds the module.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub query_set: Option<String>,

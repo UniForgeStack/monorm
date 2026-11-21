@@ -1595,27 +1595,18 @@ A hot-standby replica can give `40001` at `READ COMMITTED` too (I recall this fr
 
 ### Protected writes
 
-`@@protected_write` is an application-level check in the ORM. It does not protect the database.
-Raw SQL (`db.execute`), migrations, other ORM processes without this schema, and other database clients can still write.
-For database-level protection, use `@@trigger` or database grants.
+Application and database write rules raise `WriteProtected`. A model scope opens
+application rules for that model. On PostgreSQL, the scope also opens its skippable
+database rules if the database session role is in `bypass_roles`.
 
 ```python
-with monorm.allow_writes(Post):               # a sync `with`: it does no I/O
+with monorm.allow_writes(Post):
     await post.update(title="new")
-
-await Post.objects.filter(...).update(title="x")   # raises monorm.WriteProtected
 ```
 
-Every ORM write to a `@@protected_write` model fails outside `monorm.allow_writes(...)` with `monorm.WriteProtected`:
-`insert`, `insert_many`, upserts, `update`, `update_many`, `delete`, instance writes and composed writes.
-The check is on the table that the SQL writes, so `post.tags.add()` needs `allow_writes(PostTag)` when `PostTag` is protected.
-The scope is a `ContextVar`, like the transaction: tasks started inside it get it.
-A nested scope adds its models to the outer ones. `allow_writes` starts no transaction.
-A query set is lazy, so the scope applies where the write is awaited, not where it is built:
-`u = qs.update(...)` inside the scope and `await u` outside it raises `WriteProtected`.
-Do not `yield` inside `allow_writes` in an async generator: when the consumer stops early, the scope stays open in the consumer task.
-`monorm.hooks.prepare_insert` and `prepare_update` also check protection, so a file field uploads nothing for a rejected write.
-See `docs/schema/schema.md`, "Protected writes".
+The context manager starts no transaction. Nested blocks add their models to the
+enclosing scope. A lazy write reads the scope when awaited. See [Write rules](../extensions/write-rules.md) for the schema attributes
+and database behavior.
 
 ### Locks
 
@@ -1929,7 +1920,7 @@ factory_boy has no async support, so a `SubFactory` with `create` gives a corout
 | `monorm.NotLoaded` | a relation or field was not loaded |
 | `monorm.NotConnected` | no default database |
 | `monorm.TransactionRequired` | `lock()` or `db.lock()` outside a transaction |
-| `monorm.WriteProtected` | a write to a `@@protected_write` model outside `allow_writes` |
+| `monorm.WriteProtected` | an application or database write rule refused a write |
 | `monorm.ValidationError` | app code rejects a value: `fields` maps a path (`address.city`, `lines.2.qty`) to messages, and `non_field_messages` holds the messages with no field (see below) |
 | `monorm.debug.NPlusOne` | the N+1 finder with `fail=True` |
 

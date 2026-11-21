@@ -38,7 +38,7 @@ still return the proxy model. Cycles, unknown sources, stored-field additions,
 encoding changes, key changes and physical object overrides fail during definition.
 A proxy cannot override a relation; inherited relations keep their targets.
 The rules for an omitted field (primary key, `NOT NULL` without a database default, relation keys) are the core hide rules that `@deprecated` also uses ([schema.md](../schema/schema.md#backward-compatible-rollouts)).
-A proxy cannot declare `@@protected_write`; it shares the protection of its root model.
+A proxy inherits the write protection of its root table.
 
 **Inherited behavior.** A proxy has every member that another extension adds to its root model.
 For example, a proxy of a soft-delete model has `all_with_deleted()`, `deleted_only()`, `undelete()` and `hard_delete()`.
@@ -239,7 +239,7 @@ The table lists the `<text>` of the main causes.
 | `P.f: a redeclared field must be in the inherited set` | The field must exist in the source and not be omitted. |
 | `P.f: a proxy cannot add a stored field` | Declare a new column on the source. |
 | `P.f: proxy override changes physical type, encoding, identity or constraint; redeclare only nullability, an enum subset or @client_default` | Keep the type and the constraints of the source. |
-| `P: a proxy cannot declare @@protected_write; protect the root model U` | Move the attribute to the root model. |
+| `P: a proxy cannot declare a write rule; protect the root model U` | Move the attribute to the root model. |
 | `P.id: the primary key cannot be omitted` | Keep every key field. |
 | `P.b: a NOT NULL field without a database default cannot be omitted, because an insert through the proxy would fail` | Keep the field, or give the source field a default. |
 | `P: @@partition.values requires @@proxy.of` | Put `@@partition.values` on a proxy. |
@@ -256,7 +256,7 @@ A warning, not an error, comes from `@@check("sql text")` with a plain string: w
 ## Limits
 
 - A proxy cannot add a stored field, change a type or a key, or override a relation.
-- A proxy has no `@@protected_write`; it uses the one of its root model.
+- A proxy uses the write rules of its root model.
 - A partition proxy needs PostgreSQL.
   An insert through a partition proxy with a string key and no default partition fails on PostgreSQL when the value matches no partition (`no partition of relation "reward" found for row`).
 - The shape checks warn; they never filter a row or reject a value.

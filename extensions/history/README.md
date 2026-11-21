@@ -81,7 +81,7 @@ CREATE TRIGGER "h_events_upd" AFTER UPDATE ON "post" FOR EACH ROW WHEN ((OLD."id
 
 ### Runtime hooks
 
-* The event model is write-protected: an insert, update or delete outside `purge` fails with `WriteProtected`.
+* History event models are append-only. Updates and deletes raise `WriteProtected` in the ORM and on PostgreSQL. Purge uses `allow_writes()` and needs a role in `bypass_roles` on PostgreSQL. SQLite keeps the application rule.
 * `restore` sets the transaction setting `monorm.history_restore` on PostgreSQL, so the trigger writes the label `restore`.
   SQLite cannot read a setting, so `restore` relabels its own events after the write.
 * `skip_triggers("history")` skips the triggers for a role in `bypass_roles`, on PostgreSQL only.
@@ -126,6 +126,6 @@ The behavior tests are `languages/python/tests/test_history.py` and `test_histor
 * `pull` reads the event and version tables as plain models.
   On PostgreSQL it also writes the triggers as `@@trigger(...)` lines, and on SQLite it reports the triggers as a gap.
   It never writes a `@@history.*` attribute.
-* Errors a user meets: `WriteProtected` on a direct write to an event model, `QueryError` from `skip_triggers("history")` on SQLite, and `ValueError` from `record` with the change type `restore`.
+* Errors a user meets: `WriteProtected` on an update or delete of an event, `QueryError` from `skip_triggers("history")` on SQLite, and `ValueError` from `record` with the change type `restore`.
 
 User doc: [docs/extensions/history.md](../../docs/extensions/history.md).

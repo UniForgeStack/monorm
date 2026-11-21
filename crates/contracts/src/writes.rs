@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum WriteKind {
+    Insert,
     Update,
     /// The `DO UPDATE` arm of an upsert.
     Upsert,
@@ -99,3 +100,74 @@ pub struct ScopedField {
     pub field: String,
     pub key: String,
 }
+
+/// The layer in which a write rule is enforced.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WriteLayer {
+    App,
+    Db,
+    #[default]
+    Both,
+}
+
+impl WriteLayer {
+    pub fn app(self) -> bool { self != Self::Db }
+    pub fn db(self) -> bool { self != Self::App }
+}
+
+/// What a database trigger does when a rule matches.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WriteAction {
+    #[default]
+    Refuse,
+    Drop,
+}
+
+/// A database predicate. The change helpers are expanded against physical columns.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct WriteCondition {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sql: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changes: Vec<crate::ir::ChangeIr>,
+}
+
+/// One restriction on writes to the table owned by `model`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WriteRule {
+    pub source: String,
+    pub model: String,
+    pub name: String,
+    pub operations: Vec<crate::ir::TriggerEvent>,
+    /// For an update, match only assignments to these schema fields.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub condition: Option<WriteCondition>,
+    /// The database checks for an actual value change in the selected fields.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub changed: bool,
+    #[serde(default)]
+    pub action: WriteAction,
+    #[serde(default)]
+    pub layer: WriteLayer,
+    #[serde(default)]
+    pub skippable: bool,
+    /// The declaration that `pull` can recover when its package is installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub declaration: Option<WriteRuleDeclaration>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct WriteRuleDeclaration {
+    pub attribute: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+}
+
+/// The database error identifier used by write-rule triggers in either dialect.
+pub const WRITE_PROTECTED_SQLSTATE: &str = "MW001";
+pub const WRITE_PROTECTED_PREFIX: &str = "monorm write rule: ";
