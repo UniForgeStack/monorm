@@ -416,6 +416,83 @@ class BelongsTo(Relation[M, P]):
         }
 
 
+class UnionPath(RelationPath[Any]):
+    """A relation whose target model is selected by the source row."""
+
+    __slots__ = ("_relation",)
+
+    def __init__(self, root: type[Model], path: tuple[str, ...], relation: UnionRelation[Any, Any]) -> None:
+        super().__init__(root, path, relation.target)
+        self._relation = relation
+
+    def of(self, target: type[Model]) -> RelationPath[Any]:
+        member = self._relation.member(target)
+        return RelationPath(self._root, (*self._path[:-1], member["name"]), target)
+
+    if not TYPE_CHECKING:
+        def __getattr__(self, name: str) -> Any:
+            raise AttributeError(f"select a target with of() before accessing {name!r}")
+
+
+class UnionRelation(Relation[M, P]):
+    kind = "union"
+
+    def __init__(self, ir: dict[str, Any]) -> None:
+        super().__init__(ir["target"])
+        self._ir = ir
+
+    @property
+    def from_fields(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(
+            name for m in self._ir["members"]
+            for name in (*key_names(m["from"]), *(c["field"] for c in m["conditions"] if c["side"] == "source"))
+        ))
+
+    def member(self, target: type[Model]) -> dict[str, Any]:
+        for member in self._ir["members"]:
+            if self.model._meta.registry.get(member["target"]) is target:
+                return cast("dict[str, Any]", member)
+        raise TypeError(f"{self.model.__name__}.{self.name}: {target.__name__} is not a relation target")
+
+    @overload
+    def __get__(self, obj: None, owner: type[Any]) -> P: ...
+    @overload
+    def __get__(self, obj: Model, owner: type[Any]) -> M | None: ...
+    def __get__(self, obj: Model | None, owner: type[Any]) -> Any:
+        if obj is None:
+            return UnionPath(owner, (self.name,), self)
+        if self.name in obj.__dict__:
+            return obj.__dict__[self.name]
+        first = self._ir["members"][0]
+        if all(obj._field_value(c["field"]) is None for c in first["conditions"] if c["side"] == "source"):
+            return None
+        raise NotLoaded(f"{owner.__name__}.{self.name} is not loaded; use load({owner.__name__}.{self.name})")
+
+    def __set__(self, obj: Model, value: M) -> None:
+        from .model import Model
+
+        if not isinstance(value, Model):
+            raise TypeError(f"{self.model.__name__}.{self.name}: expected a relation target instance")
+        member = self.member(type(value))
+        parts = [value._field_value(name) for name in key_names(member["to"])]
+        if any(part is None for part in parts):
+            raise TypeError(f"{self.model.__name__}.{self.name}: target has no key")
+        changes = dict(zip(key_names(member["from"]), parts))
+        for c in member["conditions"]:
+            if c["side"] == "source":
+                changes[c["field"]] = relation_constant(self.model, c)
+        obj.__dict__.update(changes)
+        obj.__dict__[self.name] = value
+
+    def ir(self) -> dict[str, Any]:
+        return self._ir
+
+
+def relation_constant(model: type[Model], condition: dict[str, Any]) -> Any:
+    field = model._meta.fields[condition["field"]]
+    return field.enum_class(condition["value"]) if isinstance(field, Enum) else condition["value"]
+
+
 class HasMany(Relation[MM, P]):
     """To-many relation: rows of ``target`` whose ``via`` column points at this model.
 
@@ -432,6 +509,7 @@ class HasMany(Relation[MM, P]):
         super().__init__(target)
         self.via_fields = key_names(via)
         self._from = None if from_ is None else key_names(from_)
+        self._conditions: tuple[dict[str, Any], ...] = ()
 
     @property
     def via(self) -> str:

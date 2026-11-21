@@ -329,7 +329,7 @@ function loadPath(item: LoadEntry): readonly string[] {
 function toMany(meta: ModelMeta, hops: readonly string[]): boolean {
   for (const hop of hops) {
     const rel = meta.relationByIr.get(hop)!;
-    if (rel.kind === "hasMany" || rel.kind === "manyToMany" || rel.kind === "linkedMany") return true;
+    if (rel.kind === "hasMany" || rel.kind === "manyToMany" || rel.kind === "linkedMany" || rel.kind === "union") return true;
     meta = meta.registry.get(rel.target);
   }
   return false;
@@ -376,6 +376,20 @@ function derive(meta: ModelMeta, loads: readonly LoadEntry[], byQuery = false): 
   const prefetch: PrefetchItem[] = [];
   const has = (p: readonly string[]): boolean => related.some((r) => r.length === p.length && r.every((h, i) => h === p[i]));
   for (const [hop, entries] of groups) {
+    const rel = meta.relationByIr.get(hop);
+    if (!rel) {
+      const union = meta.relationByIr.get(hop.split("#", 1)[0]!);
+      if (union?.kind === "union") throw new QueryError(`load() needs the whole union relation ${meta.name}.${union.name}`);
+      throw new QueryError(`${meta.name} has no relation ${hop}`);
+    }
+    if (rel.kind === "union") {
+      const path = entries[0];
+      if (entries.some((item) => !(item instanceof RelationPath) || loadPath(item).length !== 1) || !(path instanceof RelationPath)) {
+        throw new QueryError(`load() needs the whole union relation ${meta.name}.${rel.name}`);
+      }
+      prefetch.push({ path, queryset: undefined, toAttr: undefined, one: false });
+      continue;
+    }
     const joined = !byQuery && !entries.some((i) => toMany(meta, loadPath(i)) || (i instanceof QuerySet && !i.plainRelation()));
     if (joined) {
       for (const item of entries) {
@@ -391,7 +405,6 @@ function derive(meta: ModelMeta, loads: readonly LoadEntry[], byQuery = false): 
       }
       continue;
     }
-    const rel = meta.relationByIr.get(hop)!;
     const target = meta.registry.get(rel.target);
     const path = (meta.model as unknown as Record<string, RelationPath<ModelSpec, string, readonly Hop[]>>)[rel.name]!;
     // a bare path (or a plain query set) asks for the normal selection; named columns add to it
@@ -2673,7 +2686,7 @@ export class RelatedSet<M extends ModelSpec, L extends string = never> extends Q
   /** @internal */
   pristine(): boolean {
     const s = this.state;
-    return s.filters.length === this.relation.to.length && !s.order.length && s.limit === undefined && s.offset === undefined && !s.prefetch.length && !s.related.length && !this.annotations().length;
+    return s.filters.length === this.relation.to.length + this.relation.conditions.length && !s.order.length && s.limit === undefined && s.offset === undefined && !s.prefetch.length && !s.related.length && !this.annotations().length;
   }
 
   /** @internal */
@@ -2696,6 +2709,9 @@ export class RelatedSet<M extends ModelSpec, L extends string = never> extends Q
     this.relation.to.forEach((to, i) => {
       out[meta.fieldByIr.get(to)!.name] = fieldValue(this.instance, owner.fieldByIr.get(this.relation.from[i]!)!.name);
     });
+    for (const c of this.relation.conditions) {
+      if (c.side === "target") out[meta.fieldByIr.get(c.field)!.name] = c.value;
+    }
     return out;
   }
 
@@ -3049,7 +3065,9 @@ export async function prefetch(
   const keys: string[] = [];
   for (const node of prefetchTree(meta, qs.state.prefetch.map((p) => [[...p.path[PATH].path], p] as [string[], typeof p])).values()) {
     const rel = meta.relationByIr.get(node.relation)!;
-    for (const from of rel.from) if (!keys.includes(from)) keys.push(from);
+    for (const from of [...rel.from, ...rel.conditions.filter((c) => c.side === "source").map((c) => c.field)]) {
+      if (!keys.includes(from)) keys.push(from);
+    }
   }
   const names = keys.map((k) => meta.fieldByIr.get(k)!.name);
   const rows = objs.map((o) => names.map((n) => fieldValue(o, n)));
@@ -3233,6 +3251,15 @@ function makeRelatedSet(rel: RelationMeta, instance: object): RelatedSet<ModelSp
   const owner = (inst.constructor as unknown as { meta: ModelMeta }).meta;
   const target = owner.registry.get(rel.target);
   const filters = rel.to.map((to, i) => asCondition(target.column(target.fieldByIr.get(to)!).eq(fieldValue(inst, owner.fieldByIr.get(rel.from[i]!)!.name) as never)));
+  for (const c of rel.conditions) {
+    if (c.side === "target") {
+      filters.push(asCondition(target.column(target.fieldByIr.get(c.field)!).eq(c.value as never)));
+    } else {
+      const matches = fieldValue(inst, owner.fieldByIr.get(c.field)!.name) === c.value;
+      const pk = target.column(target.key[0]!);
+      filters.push(asCondition(matches ? pk.isNotNull() : pk.in([])));
+    }
+  }
   const qs = new (relationSetClass(RelatedSet, target))<ModelSpec>(target, { ...EMPTY, filters, db: inst[DB] as Database | undefined });
   Object.assign(qs, { relation: rel, instance: inst });
   return qs as never;

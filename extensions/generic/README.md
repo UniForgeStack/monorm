@@ -49,10 +49,10 @@ await models["Tag"].objects.using(db).insert(id=1, target_type=ContentType.Post,
 ```
 
 ```ts
-import { loads, Registry } from "monorm";
+import { load, Registry } from "monorm";
 
 const registry = new Registry();
-const { Tag } = loads(schemaText, { registry });
+const { Tag } = load("schema.prisma", { registry });
 const ContentType = registry.getEnum("ContentType");
 await Tag.objects.using(db).insert({ id: 1, targetType: ContentType.Post, targetId: 7 });
 ```
@@ -62,7 +62,7 @@ await Tag.objects.using(db).insert({ id: 1, targetType: ContentType.Post, target
 ## How it works
 
 **Pass.** `monorm.generic.prepare` runs in the `behavior` phase.
-Its effects are `behavior.extension_data.generic` and `storage.generic_checks`.
+Its effects cover extension metadata, storage checks and logical relations.
 For each relation the pass creates the pair fields (or finds the fields that `type:` and `key:` name), adds the pair index, and records the relation and its reverse in `behavior.extension_data["monorm.generic"]`.
 The `ContentType` enum and the id of each model come from the host: the file `schema.identities.json` freezes them.
 
@@ -84,12 +84,11 @@ The first check comes from the host (the enum).
 The second check is the `storage.generic_checks` effect: the pair is both null or both set, and the type is one of the targets.
 SQLite gets the same checks.
 
-**Runtime.** No runtime hook.
-The type and key fields are ordinary fields.
-The extension does not check that the target row exists.
+**Runtime.** The prepare pass emits a union relation and reverse relations with fixed conditions in schema contract 5.9.
+The host uses those definitions to batch loads, filter typed targets and query the reverse relation. The bindings also turn assignment into a change to the type and key fields on the current instance.
 
 **Rust and bindings.** All logic is in the Rust crate (`src/lib.rs`).
-The Python module `monorm_generic` and the TypeScript module `monorm/extensions/generic` are empty.
+The Python module `monorm_generic` and the TypeScript module `monorm/extensions/generic` are empty; the host bindings own the union behavior.
 
 **Other extensions.** The `proxy` and `composition` passes copy fields before this pass runs.
 A proxy or a composed child cannot keep a `Generic` field: exclude the field there, or use the model form.
@@ -117,7 +116,7 @@ python -m pytest -q languages/python/tests/test_generic_identities.py
 
 - The database does not check that the target row exists.
 - A half pair, or a type that is not a target, raises `IntegrityError`.
-- The bindings have no generic accessor, loader, prefetch, reverse query API or generated target union.
+- Order by across a union relation raises a query error.
 - `monorm pull` reads the columns back as plain fields and writes no `@generic.relation`.
 - A schema error starts with `extension monorm.generic: pass monorm.generic.prepare:`.
 

@@ -162,7 +162,11 @@ GENERIC_HEADER = 'datasource db {\nprovider = "sqlite"\n}\nmodel Post {\nid Int 
 
 
 @pytest.mark.case("identities::a_generic_field_creates_its_pair_its_index_and_the_reverse_field")
-async def test_generic_field_form_creates_the_pair_and_the_reverse(tmp_path):
+@pytest.mark.parametrize("provider", ["sqlite", "postgresql"])
+async def test_generic_field_form_creates_the_pair_and_the_reverse(tmp_path, provider):
+    url = "sqlite://:memory:" if provider == "sqlite" else os.environ.get("ORM_TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("set ORM_TEST_DATABASE_URL for PostgreSQL acceptance")
     from monorm import _native
     from monorm._packages import resolve_extensions
 
@@ -173,12 +177,21 @@ async def test_generic_field_form_creates_the_pair_and_the_reverse(tmp_path):
 
     schema = tmp_path / "schema.prisma"
     schema.write_text(
-        GENERIC_HEADER
+        GENERIC_HEADER.replace('"sqlite"', f'"{provider}"').replace(
+            'tags Tag[]', 'title String\nhidden Boolean @default(false)\nshop_id Int\n'
+            '@@query.defaults(filter: hidden == false)\n@@scope.by(shop: shop_id)\ntags Tag[]',
+        )
         + 'model Tag {\nid Int @id\ntarget Generic? @generic.relation(targets: ["Post", "Photo"])\nnote String\n@@map("generic_field_tags")\n}'
     )
     generate(schema)
     registry = monorm.Registry()
     models = monorm.load(schema, registry=registry)
+    out = tmp_path / "models.py"
+    assert cli(["--schema", str(schema), "generate", "python", "-o", str(out)]) == 0
+    stub = out.with_suffix(".pyi").read_text()
+    assert "target: f.UnionRelation[Photo | Post," in stub
+    assert "def of(self, target: type[Post]) -> _PostPath:" in stub
+    assert registry.ir()["behavior"]["schema_contract_minor"] == 9
     tag = next(m for m in registry.ir()["models"] if m["name"] == "Tag")
     assert [(f["name"], f.get("nullable", False), f.get("enum")) for f in tag["fields"]] == [
         ("id", False, None),
@@ -198,14 +211,139 @@ async def test_generic_field_form_creates_the_pair_and_the_reverse(tmp_path):
         }
     ]
     assert data["reverse"] == [{"model": "Post", "name": "tags", "source": "Tag", "relation": "target"}]
+    db = await monorm.connect(url, registry=registry, default=False)
+    try:
+        await db.drop_tables()
+        await db.create_tables()
+        Post, Photo, Tag = (models[name] for name in ("Post", "Photo", "Tag"))
+        types = models["ContentType"]
+        with monorm.scope(shop=1):
+            await Post.objects.using(db).insert_many([
+                {"id": 7, "title": "visible"}, {"id": 8, "title": "hidden", "hidden": True},
+            ])
+        with monorm.scope(shop=2):
+            await Post.objects.using(db).insert(id=9, title="foreign")
+        photo = await Photo.objects.using(db).insert(id=7)
+        tags = Tag.objects.using(db)
+        await tags.insert_many([
+            {"id": 1, "target_type": types.Post, "target_id": 7, "note": "post"},
+            {"id": 2, "target_type": types.Photo, "target_id": 7, "note": "photo"},
+            {"id": 3, "target_type": types.Post, "target_id": 8, "note": "hidden"},
+            {"id": 4, "target_type": types.Post, "target_id": 9, "note": "foreign"},
+            {"id": 5, "note": "empty"},
+        ])
+        with monorm.scope(shop=1):
+            statements = []
+            stop = db.on_query(lambda event: statements.append(event.sql))
+            try:
+                rows = await tags.load(Tag.target).order_by(Tag.id).all()
+            finally:
+                stop()
+            assert len([sql for sql in statements if sql.lstrip().upper().startswith("SELECT")]) == 3
+            assert [type(row.target) for row in rows] == [Post, Photo, type(None), type(None), type(None)]
+            row = rows[0]
+            row.target = photo
+            assert row.target is photo and row.target_type is types.Photo and row.target_id == 7
+
+            typed = tags.filter(Tag.target.of(Post).title == "visible")
+            assert "EXISTS" in typed.sql()
+            assert [row.id for row in await typed.all()] == [1]
+            assert not await tags.filter(Tag.target.of(Post).title.in_(["hidden", "foreign"])).all()
+            with pytest.raises(monorm.QueryError):
+                await tags.order_by(Tag.target.of(Post).title).all()
+
+            posts = Post.objects.using(db)
+            post = await posts.load(Post.tags).get()
+            assert [tag.id for tag in post.tags.cached] == [1]
+            assert [tag.id for tag in await post.tags.filter(Tag.note == "post").all()] == [1]
+            assert await post.tags.count() == 1
+            assert [p.id for p in await posts.filter(Post.tags.note == "post").all()] == [7]
+            assert not await posts.filter(Post.tags.note == "photo").all()
+            partial = await tags.load(Tag.note).filter(Tag.id == 1).get()
+            await partial.load(Tag.target)
+            assert partial.target.id == 7
+
+        # A table from before the pair constraint can contain a registered type
+        # which this relation does not allow.
+        await db.execute("DROP TABLE generic_field_tags")
+        await db.execute("CREATE TABLE generic_field_tags (id INTEGER PRIMARY KEY, target_type INTEGER, target_id INTEGER, note TEXT)")
+        await db.execute(f"INSERT INTO generic_field_tags VALUES (6, {types.Tag.value}, 7, 'invalid')")
+        with monorm.scope(shop=1), pytest.raises(monorm.DatabaseError, match=r"^Tag\.target: unknown relation type \d+$"):
+            await tags.load(Tag.target).all()
+    finally:
+        await db.drop_tables()
+        await db.close()
+
+
+@pytest.mark.case("identities::a_union_relation_refuses_what_is_not_a_target_and_what_is_not_whole")
+async def test_a_union_relation_refuses_what_is_not_a_target_and_what_is_not_whole(tmp_path):
+    schema = tmp_path / "schema.prisma"
+    schema.write_text(
+        GENERIC_HEADER.replace("generic_field_posts", "generic_err_posts").replace("generic_field_photos", "generic_err_photos")
+        + 'model Tag {\nid Int @id\ntarget Generic? @generic.relation(targets: ["Post", "Photo"])\nnote String?\n@@map("generic_err_tags")\n}'
+    )
+    generate(schema)
+    registry = monorm.Registry()
+    models = monorm.load(schema, registry=registry)
+    Post, Tag = models["Post"], models["Tag"]
+    types = models["ContentType"]
     db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
     try:
         await db.create_tables()
-        await (
-            models["Tag"].objects.using(db).insert(id=1, target_type=models["ContentType"].Post, target_id=7, note="n")
-        )
-        tag = await models["Tag"].objects.using(db).get()
-        assert tag.target_type is models["ContentType"].Post and tag.target_id == 7
+        post = await Post.objects.using(db).insert(id=7)
+        tags = Tag.objects.using(db)
+        await tags.insert(id=1, target_type=types.Post, target_id=7)
+        tag = await tags.filter(Tag.id == 1).get()
+
+        with pytest.raises(monorm.NotLoaded, match=r"Tag\.target is not loaded"):
+            tag.target
+        for value in (tag, "x", None):
+            expected = r"Tag\.target: Tag is not a relation target" if value is tag else r"Tag\.target: expected a relation target instance"
+            with pytest.raises(TypeError, match=expected):
+                tag.target = value
+        with pytest.raises(TypeError, match=r"Tag\.target: Tag is not a relation target"):
+            Tag.target.of(Tag)
+        for item in (Tag.target.of(Post), Tag.target.of(Post).id):
+            with pytest.raises(monorm.QueryError, match=r"^load\(\) needs the whole union relation Tag\.target$"):
+                tags.load(item)
+
+        created = await post.tags.insert(id=2, note="through the reverse")
+        assert (created.target_type, created.target_id) == (types.Post, 7)
+        assert [(t.id, t.target_type) for t in await Tag.objects.using(db).filter(Tag.target_id == 7).order_by(Tag.id).all()] == [
+            (1, types.Post), (2, types.Post),
+        ]
+    finally:
+        await db.close()
+
+
+@pytest.mark.case("identities::a_union_relation_loads_targets_with_string_keys")
+async def test_a_union_relation_loads_targets_with_string_keys(tmp_path):
+    schema = tmp_path / "schema.prisma"
+    schema.write_text(
+        'datasource db {\nprovider = "sqlite"\n}\n'
+        'model Post {\nid String @id\ntags Tag[] @generic.reverse\n@@map("generic_str_posts")\n}\n'
+        'model Photo {\nid String @id\n@@map("generic_str_photos")\n}\n'
+        'model Tag {\nid Int @id\ntarget Generic? @generic.relation(targets: ["Post", "Photo"])\n@@map("generic_str_tags")\n}'
+    )
+    generate(schema)
+    registry = monorm.Registry()
+    models = monorm.load(schema, registry=registry)
+    Post, Photo, Tag = (models[name] for name in ("Post", "Photo", "Tag"))
+    types = models["ContentType"]
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
+    try:
+        await db.create_tables()
+        await Post.objects.using(db).insert(id="p-1")
+        await Photo.objects.using(db).insert(id="p-1")
+        tags = Tag.objects.using(db)
+        await tags.insert_many([
+            {"id": 1, "target_type": types.Post, "target_id": "p-1"},
+            {"id": 2, "target_type": types.Photo, "target_id": "p-1"},
+        ])
+        rows = await tags.load(Tag.target).order_by(Tag.id).all()
+        assert [type(row.target) for row in rows] == [Post, Photo]
+        post = await Post.objects.using(db).load(Post.tags).get()
+        assert [tag.id for tag in post.tags.cached] == [1]
     finally:
         await db.close()
 

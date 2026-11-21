@@ -221,11 +221,16 @@ impl Plan {
             match owner_of.get(pass.id.as_str()) {
                 Some(owner) => {
                     let generated = generated_fields(ir);
+                    let relations = conditioned_relations(ir);
                     *ir = natives[owner].call(owner, &pass.id, ir)?;
                     // A library built before contract 5.1 parses and writes its own `FieldIr`, which has no `generated`.
                     let kept = generated_fields(ir);
                     if let Some((model, field)) = generated.into_iter().find(|key| !kept.contains(key)) {
                         return Err(format!("pass {} of {owner} removed the generated column {model}.{field}; the library was built for an older schema contract: rebuild it", pass.id));
+                    }
+                    let kept = conditioned_relations(ir);
+                    if let Some((model, relation)) = relations.into_iter().find(|(key, fields)| kept.get(key).is_some_and(|kept| fields.0 && !kept.0 || fields.1 && !kept.1)).map(|(key, _)| key) {
+                        return Err(format!("pass {} of {owner} removed fixed conditions or union members from {model}.{relation}; rebuild the library for schema contract 5.9", pass.id));
                     }
                     ir.behavior.packages.get_mut(*owner).expect("stamped above").passes.push(pass.id.clone());
                 }
@@ -892,4 +897,11 @@ mod tests {
 /// The models and fields of the IR that hold a generated column.
 fn generated_fields(ir: &SchemaIr) -> std::collections::HashSet<(String, String)> {
     ir.models.iter().flat_map(|m| m.fields.iter().filter(|f| f.generated.is_some()).map(|f| (m.name.clone(), f.name.clone()))).collect()
+}
+
+/// Condition and union fields that older extension libraries could drop on an IR round trip.
+fn conditioned_relations(ir: &SchemaIr) -> BTreeMap<(String, String), (bool, bool)> {
+    ir.models.iter().flat_map(|m| m.relations.iter().map(|r| {
+        ((m.name.clone(), r.name.clone()), (!r.conditions.is_empty(), !r.members.is_empty()))
+    })).collect()
 }

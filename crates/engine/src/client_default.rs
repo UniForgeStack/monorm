@@ -5,7 +5,7 @@ use sea_query::Value;
 
 type Rows = Vec<Vec<Option<Value>>>;
 
-fn literal(value: &Literal) -> Value {
+pub(crate) fn literal(value: &Literal) -> Value {
     match value {
         Literal::Null(ty) => null_of(Some(*ty)),
         Literal::Int(v) => Value::Int(Some(*v)),

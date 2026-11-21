@@ -21,6 +21,7 @@ pub struct Fetched {
     pub plan: Arc<PrefetchPlan>,
     pub rows: Box<dyn RowSet>,
     pub children: Vec<Fetched>,
+    pub matching_parents: Option<Vec<bool>>,
 }
 
 /// The rows of a SELECT and of its prefetch queries.
@@ -235,6 +236,29 @@ pub struct PrefetchCall<'a> {
     pub context: Option<&'a monorm::abi::Context>,
 }
 
+fn matches_source(parent: &dyn RowSet, row: usize, conditions: &[plan::FixedSource]) -> DbResult<bool> {
+    for c in conditions {
+        if parent.value(row, c.position, c.ty)? != c.value {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// True when the row has no type and no key, so the union target is null. A row of a type that no member names is an error.
+fn is_null_union(parent: &dyn RowSet, row: usize, union: &plan::UnionPrefetch) -> DbResult<bool> {
+    for conditions in &union.choices {
+        if matches_source(parent, row, conditions)? { return Ok(false); }
+    }
+    let mut values = vec![];
+    for c in union.choices.first().into_iter().flatten() {
+        let value = parent.value(row, c.position, c.ty)?;
+        if value != null_of(Some(c.ty)) { values.push(crate::scoped::show(Some(&value))); }
+    }
+    if values.is_empty() { return Ok(true); }
+    Err(DbError::other(format!("{}: unknown relation type {}", union.name, values.join(", "))))
+}
+
 pub(crate) fn run_prefetch<'a>(
     conn: &'a dyn Executor,
     target: Target,
@@ -249,7 +273,15 @@ pub(crate) fn run_prefetch<'a>(
             let nulls: Vec<Value> = p.key_type.iter().map(|t| null_of(Some(*t))).collect();
             let mut seen = std::collections::HashSet::new();
             let mut keys = vec![];
+            let mut matching_parents = (!p.source_conditions.is_empty()).then(|| vec![false; parent.len()]);
             for i in 0..parent.len() {
+                let null_union = match &p.union {
+                    Some(u) if u.member == 0 => is_null_union(parent, i, u)?,
+                    _ => false,
+                };
+                let matches = matches_source(parent, i, &p.source_conditions)?;
+                if let Some(rows) = &mut matching_parents { rows[i] = matches || null_union; }
+                if !matches { continue; }
                 let k = p.key_pos.iter().zip(&p.key_type).map(|(&pos, &ty)| parent.value(i, pos, ty)).collect::<DbResult<Vec<_>>>()?;
                 if k.iter().zip(&nulls).all(|(v, null)| v != null) && seen.insert(k.clone()) {
                     keys.push(k);
@@ -283,7 +315,7 @@ pub(crate) fn run_prefetch<'a>(
             let child_call = call.zip(run).map(|(c, r)| PrefetchCall { runs: &r.children, ..c });
             let children = run_prefetch(conn, target, rows.as_ref(), nested, child_call).await?;
             let rows = crate::hooks::compute_with(rows, &p.computed, call.and_then(|c| c.context))?;
-            out.push(Fetched { plan: p, rows, children });
+            out.push(Fetched { plan: p, rows, children, matching_parents });
         }
         Ok(out)
     })

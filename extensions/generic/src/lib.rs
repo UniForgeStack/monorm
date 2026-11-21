@@ -1,6 +1,5 @@
-//! Compiler contribution for type/key references. The relation records go to
-//! `extension_data["monorm.generic"]`; no host code reads them at query time.
-use monorm::{extension::Declaration, ir::{ColType, ConstraintIr, FieldIr, IndexColumnIr, IndexIr, NewMemberError, SchemaIr}, sql::ident};
+//! Compiler contribution for type/key references and their reverse relations.
+use monorm::{extension::Declaration, ir::{ColType, ConstraintIr, FieldIr, IndexColumnIr, IndexIr, NewMemberError, RelKind, RelationCondition, RelationIr, RelationSide, SchemaIr}, sql::ident};
 use serde::{Deserialize, Serialize};
 
 /// The id under which the pass keeps its records in `extension_data`.
@@ -179,6 +178,7 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
             return Err(error(d, "generic pairs cannot have independent server defaults"));
         }
         let mut ids = vec![];
+        let mut members = vec![];
         for target in &targets {
             let id = *active.get(target).ok_or_else(|| error(d, format!("{target} is not an active concrete model identity")))?;
             let target_model = ir.models.iter().find(|m| &m.name == target).ok_or_else(|| error(d, format!("unknown target {target}")))?;
@@ -188,6 +188,9 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
                 return Err(error(d, format!("{target} primary key has incompatible storage/binding representation")));
             }
             ids.push(id);
+            let mut member = RelationIr::one(&format!("{relation_name}#{target}"), target, &key_field, &pk.name);
+            member.conditions.push(RelationCondition { side: RelationSide::Source, field: type_field.clone(), value: id.into() });
+            members.push(member);
         }
         if data.relations.iter().any(|r| r.model == d.model && (r.type_field == type_field || r.key_field == key_field || r.type_field == key_field || r.key_field == type_field)) {
             return Err(error(d, "generic pairs must not share storage fields"));
@@ -197,7 +200,13 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
         let allowed = format!("{} IN ({})", ident(&ty.column), ids.iter().map(i32::to_string).collect::<Vec<_>>().join(", "));
         let expr = format!("({pair}) AND ({allowed})");
         let check = || ConstraintIr::Check { name: None, expr: expr.clone() };
-        ir.models.iter_mut().find(|m| m.name == d.model).unwrap().constraints.push(check());
+        let mut union = RelationIr::one(&relation_name, &members[0].target, &key_field, &members[0].to[0]);
+        union.from.push(type_field.clone());
+        union.to.clear();
+        union.members = members;
+        let model = ir.models.iter_mut().find(|m| m.name == d.model).unwrap();
+        model.constraints.push(check());
+        model.relations.push(union);
         if let Some(storage) = &mut ir.behavior.storage {
             storage.models.iter_mut().find(|m| m.name == d.model).ok_or_else(|| error(d, "source must have its own physical storage model"))?.constraints.push(check());
         }
@@ -222,6 +231,14 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
         };
         if !forward.targets.contains(&d.model) { return Err(error(d, "reverse owner is not an allowed concrete target")); }
         let relation = forward.name.clone();
+        let model = ir.models.iter_mut().find(|m| m.name == d.model).unwrap();
+        let pk = model.key_fields()[0];
+        let mut reverse = RelationIr::one(&relation_name, &source, pk, &forward.key_field);
+        reverse.kind = RelKind::Many;
+        reverse.conditions.push(RelationCondition {
+            side: RelationSide::Target, field: forward.type_field.clone(), value: active[&d.model].into(),
+        });
+        model.relations.push(reverse);
         data.reverse.push(GenericReverse { model: d.model.clone(), name: relation_name, source, relation });
     }
     if let Some(d) = declarations.iter().find(|d| !matches!(d.attribute.as_str(), "generic.relation" | "generic.reverse")) {
@@ -253,8 +270,7 @@ mod tests {
         })).unwrap()
     }
     fn data(ir: &SchemaIr) -> GenericData { serde_json::from_value(ir.behavior.extension_data[ID].clone()).unwrap() }
-    /// Declared effects `behavior.extension_data` and `storage.generic_checks`
-    /// (the pair check constraint, logical and physical).
+    /// The pass contributes extension data, logical relations and storage checks.
     #[test]
     fn preparation_changes_only_its_declared_effects_once() {
         let effects = monorm::extension::pass_effects(&schema(), prepare).unwrap();
@@ -267,8 +283,9 @@ mod tests {
         prepare(&mut ir).unwrap();
         assert_eq!(data(&ir).relations[0].targets, ["Photo", "Post"]);
         assert_eq!(data(&ir).reverse[0].model, "Post");
+        assert_eq!(ir.models[2].relations[0].members.len(), 2);
+        assert_eq!(ir.models[0].relations[0].conditions[0].side, RelationSide::Target);
         for model in [&ir.models[2], &ir.behavior.storage.as_ref().unwrap().models[2]] {
-            assert!(model.relations.is_empty());
             let ConstraintIr::Check { expr, .. } = &model.constraints[0] else { panic!() };
             assert_eq!(expr, "((\"kind\" IS NULL) = (\"target_id\" IS NULL)) AND (\"kind\" IN (1, 2))");
         }

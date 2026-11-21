@@ -78,7 +78,6 @@ The proxy and composition passes copy fields before the generic pass runs.
 So a proxy or a composed child cannot keep a `Generic` field: exclude the field there, or use the explicit form.
 
 `tags Tag[] @generic.reverse` is the reverse side: the field name is the relation name, and `Tag[]` is the source.
-It is no ordinary relation, because no foreign key exists.
 `relation: "target"` names the source relation; it is necessary only when the source has more than one generic relation with this model in its targets.
 A reverse field fails when the source has no generic relation with this model in its targets.
 The model-level form `@@generic.reverse("tags", source: "Tag", relation: "target")` is removed; write `tags Tag[] @generic.reverse(relation: "target")` instead.
@@ -105,8 +104,7 @@ preserve pair validity for external scalar writes without promising target exist
 **Enable:** nothing to install. The extension is built into the `monorm` Python wheel (module `monorm_generic`) and the `monorm` npm package (`monorm/extensions/generic`). It has no Python or TypeScript code of its own. No build is needed.
 See [Installable packages](../contracts/optional-packaging.md#installable-packages).
 The extension asks for the host capabilities `schema-transformations` and `physical-schema`, and for no host feature.
-Its pass is `monorm.generic.prepare` (phase `behavior`). It declares the effects `behavior.extension_data.generic` and `storage.generic_checks`.
-Its relation and reverse records live in `behavior.extension_data["monorm.generic"]`. The host has no generic code.
+Its pass is `monorm.generic.prepare` (phase `behavior`). The pass contributes a union relation for the forward accessor and a fixed target condition for each reverse relation. Compiled schemas use schema contract 5.9.
 Models generated for schema contract 2 fail to load with an instruction to regenerate them.
 Frozen identities and `ContentType` work in every build.
 How it works, the layout and the tests: [`extensions/generic/README.md`](../../extensions/generic/README.md).
@@ -123,34 +121,50 @@ How it works, the layout and the tests: [`extensions/generic/README.md`](../../e
 
 ## Use
 
-The pair fields are ordinary fields.
-The type field is an integer enum, `ContentType`, and the key field has the type of the target key.
+Load the forward accessor with `load(Tag.target)`. The ORM batches the load
+into one query per target type present, subject to the database's parameter
+limit. Each query applies the target model's read defaults and scope. A missing,
+hidden or out-of-scope target resolves to `None` in Python or `null` in TypeScript.
+The generated accessor types include every allowed target class.
+
+### Python
 
 ```python
-import monorm
+tags = Tag.objects.using(db)
+tag = await tags.load(Tag.target).require().get()
+assert tag.target is not None and tag.target.id == 7
 
-registry = monorm.Registry()
-models = monorm.loads(open("schema.prisma").read(), registry=registry)
-Tag = models["Tag"]
-ContentType = registry.get_enum("ContentType")
-db = await monorm.connect(url, registry=registry, default=False)
-await Tag.objects.using(db).insert(id=1, target_type=ContentType.Post, target_id=7)
-tags = await Tag.objects.using(db).filter(Tag.target_type == ContentType.Post, Tag.target_id == 7)
+post = await Post.objects.using(db).load(Post.tags).require().get()
+tag.target = post
+await tag.update(target_type=tag.target_type, target_id=tag.target_id)
+
+matches = await tags.filter(Tag.target.of(Post).id == 7)
+loaded = post.tags.cached
+matching_tags = await post.tags.filter(Tag.id == 1)
 ```
+
+### TypeScript
 
 ```ts
-import { connect, loads, Registry } from "monorm";
+const tags = Tag.objects.using(db);
+const tag = await tags.load(Tag.target).require().get();
+console.log(tag.target?.id);
 
-const registry = new Registry();
-const { Tag } = loads(schemaText, { registry });
-const ContentType = registry.getEnum("ContentType");
-const db = await connect(url, { registry, default: false });
-await Tag.objects.using(db).insert({ id: 1, targetType: ContentType.Post, targetId: 7 });
-const tags = await Tag.objects.using(db).filter(Tag.targetType.eq(ContentType.Post), Tag.targetId.eq(7));
+const post = await Post.objects.using(db).load(Post.tags).require().get();
+tag.target = post;
+await tag.update({ targetType: tag.targetType, targetId: tag.targetId });
+
+const matches = await tags.filter(Tag.target.of(Post).id.eq(7));
+const loaded = post.tags.cached;
+const matchingTags = await post.tags.filter(Tag.id.eq(1));
 ```
 
-A query is awaitable: `await queryset` returns the list of rows.
-The TypeScript members are camel case (`targetType`, `targetId`).
+Assignment sets the pair on the current instance. Call `update()` to persist
+the pair. A typed filter through `of(Post)` checks the discriminator and uses
+`EXISTS` to match the target. Ordering across the forward relation raises a
+query error. `load()` takes the whole union relation: `load(Tag.target.of(Post))` raises a
+`QueryError`. A value that is not an instance of a target raises `TypeError`, as does
+`of()` with a model that is not a target.
 
 The migration adds the two columns, a check for the allowed type values and for a paired null, and the pair index.
 Sample from PostgreSQL (`monorm sqlmigrate`). The hash in the name of the second check depends on its text:
@@ -184,4 +198,9 @@ The host raises two more errors before the pass runs:
 ## Limits
 
 - The check does not test that the target row exists. A pair that names a missing row inserts. A half pair, or a type that is not a target, raises `IntegrityError`.
-- The bindings have no generic accessor, loader, prefetch, reverse query API or generated target union.
+- Assigning `tag.target = post` changes the two fields of the instance in memory only. Persist them with `update(target_type=..., target_id=...)`. `insert()` and `update()` take the two fields, not `target=`.
+- Assigning `None` (`null`) raises `TypeError`. To clear a target, write `None` to both fields.
+- A row with a null type loads as `None` (`null`), and so does a key that names no row. Neither raises an error.
+- A row with a type that no target names raises an error that names the relation: `Tag.target: unknown relation type 3`.
+- The type is one `ContentType` column and the key is one scalar column. A target with a composite primary key fails with `needs one scalar primary key`.
+- Generating the Rust client for a schema with a union or conditioned relation fails with `the Rust client does not support union or conditioned relations`.

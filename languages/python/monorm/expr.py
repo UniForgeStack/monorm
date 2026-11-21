@@ -1504,7 +1504,11 @@ class RelationPath(Generic[M]):
             if name in meta.fields:
                 return ColumnRef(self._root, self._path, meta.fields[name], self._rule, self._alias)
             if name in meta.relations:
+                from .fields import UnionPath, UnionRelation
+
                 rel = meta.relations[name]
+                if isinstance(rel, UnionRelation):
+                    return UnionPath(self._root, (*self._path, name), rel)
                 return RelationPath(self._root, (*self._path, name), rel.target, self._rule, self._alias)
             raise AttributeError(f"{self._target.__name__} has no field or relation {name!r}")
 

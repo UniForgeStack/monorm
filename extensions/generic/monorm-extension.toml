@@ -2,7 +2,7 @@ id = "monorm.generic"
 version = "0.1.2"
 abi = "0.2"
 library = "monorm_generic"
-schema_contract = "5.0"
+schema_contract = "5.9"
 language_contract = 1
 languages = ["python", "typescript"]
 databases = ["postgres", "sqlite"]
@@ -41,4 +41,4 @@ relation = { kind = "string" }
 [[passes]]
 id = "monorm.generic.prepare"
 phase = "behavior"
-effects = ["behavior.extension_data.generic", "storage.generic_checks"]
+effects = ["behavior.extension_data.generic", "storage.generic_checks", "model.*.relations"]

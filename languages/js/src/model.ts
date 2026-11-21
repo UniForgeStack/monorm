@@ -11,7 +11,7 @@ import { isAbsent } from "./reference-absence.js";
 import { DoesNotExist, MultipleObjectsReturned, NotLoaded, VersionConflict } from "./errors.js";
 import { Column, PATH, RelationPath, and, differs, type Condition, type NullRule, type PathState, type Source } from "./expr.js";
 import { NestedColumn, buildTypes, decodeJsonCell, type IRNested, type IRType, type NestedInfo, type NestedType } from "./nested.js";
-import { camel, type ColType, type FieldMeta, type DeleteArgs, type ModelSpec, type RelationKind, type RelationMeta } from "./meta.js";
+import { camel, type ColType, type FieldMeta, type DeleteArgs, type ModelSpec, type RelationKind, type RelationMeta, type RelationCondition } from "./meta.js";
 
 import { resolveApps } from "./apps.js";
 import { hookPackages, resolveExtensions } from "./packages.js";
@@ -66,6 +66,8 @@ export type IRRelation = {
   foreign_key?: boolean;
   through?: { model: string; source: string; target: string };
   path?: string[];
+  conditions?: RelationCondition[];
+  members?: IRRelation[];
   [key: string]: unknown;
 };
 
@@ -263,18 +265,7 @@ export class ModelMeta implements Source {
     const chain = registry.multiTable(ir.name);
     if (chain) this.attachInputFields = ir.fields.filter((f) => chain.local.has(f.name)).map((f) => this.fieldByIr.get(f.name)!);
     for (const r of ir.relations ?? []) {
-      const kind: RelationKind = r.path?.length
-        ? r.kind === "many"
-          ? "linkedMany"
-          : "linkedOne"
-        : r.through
-          ? "manyToMany"
-          : r.kind === "many"
-            ? "hasMany"
-            : r.foreign_key
-              ? "belongsTo"
-              : "hasOne";
-      const rm: RelationMeta = { name: camel(r.name), ir: r.name, kind, target: r.target, from: keyList(r.from), to: keyList(r.to), through: r.through, path: r.path ?? [] };
+      const rm = relationMeta(r);
       if (this.fields.has(rm.name)) {
         throw new TypeError(`${ir.name}.${rm.name} is both a field and a relation`);
       }
@@ -413,6 +404,18 @@ export class ModelMeta implements Source {
       Object.defineProperty(proto, r.name, {
         get(this: RelationPath<ModelSpec, string, never>) {
           const s = this[PATH];
+          if (r.kind === "union") {
+            const union = Object.create(RelationPath.prototype) as Record<PropertyKey, unknown>;
+            union[PATH] = { root: s.root, path: [...s.path, r.ir], names: [...s.names, r.name], target: r.target } satisfies PathState;
+            union["of"] = (target: ModelClass<ModelSpec>) => {
+              const member = r.members.find((m) => registry.get(m.target).model === target);
+              if (!member) throw new TypeError(`${owner.name}.${r.name}: ${target?._meta?.name} is not a relation target`);
+              const p = Object.create(registry.get(member.target).pathProto) as Record<PropertyKey, unknown>;
+              p[PATH] = { root: s.root, path: [...s.path, member.ir], names: [...s.names, r.name], target: member.target } satisfies PathState;
+              return p;
+            };
+            return union;
+          }
           const p = Object.create(registry.get(r.target).pathProto) as Record<PropertyKey, unknown>;
           const toOne = (r.kind === "belongsTo" || r.kind === "hasOne" || r.kind === "linkedOne") && r.through === undefined;
           const state: PathState = { root: s.root, path: [...s.path, r.ir], names: [...s.names, r.name], target: r.target, toOne, ...(s.rule ? { rule: s.rule } : {}), ...(s.alias ? { alias: s.alias } : {}) };
@@ -432,6 +435,7 @@ export class ModelMeta implements Source {
       const baseline = relationGetter(meta, r);
       Object.defineProperty(proto, r.name, {
         get: referenceAdapter ? referenceAdapter.getter(meta, r, baseline, INTERNAL, RELATED) : baseline,
+        ...(r.kind === "union" ? { set(this: Row, value: Row) { assignUnion(meta, r, this, value); } } : {}),
         enumerable: false,
       });
     }
@@ -610,6 +614,35 @@ export function related(o: object): Record<string, unknown> {
   return (r[RELATED] ??= {});
 }
 
+function relationMeta(r: IRRelation): RelationMeta {
+  let kind: RelationKind;
+  if (r.members?.length) kind = "union";
+  else if (r.path?.length) kind = r.kind === "many" ? "linkedMany" : "linkedOne";
+  else if (r.through) kind = "manyToMany";
+  else if (r.kind === "many") kind = "hasMany";
+  else kind = r.foreign_key ? "belongsTo" : "hasOne";
+  const members = r.members?.map(relationMeta) ?? [];
+  const from = members.length ? [...new Set(members.flatMap((m) => [
+    ...m.from, ...m.conditions.filter((c) => c.side === "source").map((c) => c.field),
+  ]))] : keyList(r.from);
+  return { name: camel(r.name), ir: r.name, kind, target: r.target, from, to: keyList(r.to), through: r.through,
+    path: r.path ?? [], conditions: r.conditions ?? [], members };
+}
+
+function assignUnion(meta: ModelMeta, relation: RelationMeta, row: Row, value: Row): void {
+  const target = (value?.constructor as { meta?: ModelMeta } | undefined)?.meta;
+  const member = relation.members.find((m) => target === meta.registry.get(m.target));
+  if (!target) throw new TypeError(`${meta.name}.${relation.name}: expected a relation target instance`);
+  if (!member) throw new TypeError(`${meta.name}.${relation.name}: ${target.name} is not a relation target`);
+  const keys = member.to.map((part) => fieldValue(value, target.fieldByIr.get(part)!.name));
+  if (keys.some((key) => key === null || key === undefined)) throw new TypeError(`${meta.name}.${relation.name}: target has no key`);
+  member.from.forEach((part, i) => { row[meta.fieldByIr.get(part)!.name] = keys[i]; });
+  for (const c of member.conditions) {
+    if (c.side === "source") row[meta.fieldByIr.get(c.field)!.name] = c.value;
+  }
+  related(row)[relation.name] = value;
+}
+
 function relationGetter(meta: ModelMeta, r: RelationMeta): (this: Row) => unknown {
   const registry = meta.registry;
   const loadHint = `load it with load(${meta.name}.${r.name})`;
@@ -635,6 +668,14 @@ function relationGetter(meta: ModelMeta, r: RelationMeta): (this: Row) => unknow
         throw new NotLoaded(`${meta.name}.${r.name} is not loaded${dangling ? ": the key is set and no row of the target has it" : ""}; ${loadHint}`);
       };
     }
+    case "union":
+      return function (this) {
+        const loaded = this[RELATED];
+        if (loaded && r.name in loaded) return loaded[r.name];
+        const conditions = r.members[0]!.conditions.filter((c) => c.side === "source");
+        if (conditions.every((c) => fieldValue(this, meta.fieldByIr.get(c.field)!.name) === null)) return null;
+        throw new NotLoaded(`${meta.name}.${r.name} is not loaded; ${loadHint}`);
+      };
     case "hasOne":
     case "linkedOne":
     case "linkedMany":
@@ -1191,7 +1232,7 @@ export interface FieldInfo {
 /** A relation of {@link describe}. `from` and `to` are field names of this model and the target. */
 export interface RelationInfo {
   readonly name: string;
-  readonly kind: "belongsTo" | "hasOne" | "hasMany" | "manyToMany" | "linkedOne" | "linkedMany";
+  readonly kind: RelationKind;
   readonly target: ModelClass<ModelSpec>;
   /** The key fields in key order, including single-field keys. */
   readonly from: readonly string[];

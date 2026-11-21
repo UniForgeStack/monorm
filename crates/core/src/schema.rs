@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::ir::{ColType, EnumIr, EnumStorage, ExtensionIr, FieldIr, FunctionIr, ModelIr, RelKind, RelationIr, SchemaIr};
+use crate::ir::{ColType, EnumIr, EnumStorage, ExtensionIr, FieldIr, FunctionIr, ModelIr, RelKind, RelationIr, RelationSide, SchemaIr};
 
 pub type Result<T> = std::result::Result<T, String>;
 
@@ -49,6 +49,8 @@ pub struct Model {
     field_index: HashMap<String, usize>,
     /// relation name -> (index into `ir.relations`, target model index)
     pub(crate) relation_index: HashMap<String, (usize, usize)>,
+    /// Member path -> (union index, member index, target model index).
+    union_index: HashMap<String, (usize, usize, usize)>,
 }
 
 impl Model {
@@ -85,7 +87,7 @@ impl Model {
         };
         Ok(Model {
             field_adapters: vec![],
-            ir, pk: 0, key: vec![0], field_index, relation_index: HashMap::new(), client_defaults: vec![],
+            ir, pk: 0, key: vec![0], field_index, relation_index: HashMap::new(), union_index: HashMap::new(), client_defaults: vec![],
             read_defaults: Default::default(),
             read_flags: ReadFlags::default(),
             assignments: vec![], delete_rewrite: None, scoped: vec![], guards: vec![], view: None, hooks: None,
@@ -151,10 +153,18 @@ impl Model {
 
     /// Returns the relation and the index of its target model.
     pub fn relation(&self, name: &str) -> Result<(&RelationIr, usize)> {
+        if let Some(&(union, member, target)) = self.union_index.get(name) {
+            return Ok((&self.ir.relations[union].members[member], target));
+        }
         self.relation_index
             .get(name)
             .map(|&(r, t)| (&self.ir.relations[r], t))
             .ok_or_else(|| format!("model {} has no relation {name:?}", self.ir.name))
+    }
+
+    /// The union a selected member belongs to.
+    pub fn relation_union(&self, member: &str) -> Option<&RelationIr> {
+        self.union_index.get(member).map(|&(union, _, _)| &self.ir.relations[union])
     }
 }
 
@@ -376,23 +386,54 @@ impl Schema {
                 _ => return Err(format!("model {} must have exactly one primary key: @id on one field or @@id([...])", m.name)),
             };
             let mut relation_index = HashMap::new();
+            let mut union_index = HashMap::new();
+            let mut relation_names = std::collections::HashSet::new();
             for (i, r) in m.relations.iter().enumerate() {
-                let target = *model_index.get(&r.target).ok_or_else(|| {
-                    format!("relation {}.{} targets unknown model {}", m.name, r.name, r.target)
-                })?;
-                if let Some(missing) = r.from.iter().find(|f| !field_index.contains_key(*f)) {
-                    return Err(format!("relation {}.{}: no field {missing:?}", m.name, r.name));
-                }
-                if r.path.is_empty() && (r.from.is_empty() || r.from.len() != r.to.len()) {
-                    return Err(format!("relation {}.{}: from and to need the same number of fields", m.name, r.name));
-                }
-                if r.through.is_some() && r.from.len() != 1 {
-                    return Err(format!("relation {}.{}: a many-to-many relation has one key field on each side", m.name, r.name));
-                }
                 if field_index.contains_key(&r.name) {
                     return Err(format!("{}.{} is both a field and a relation", m.name, r.name));
                 }
-                relation_index.insert(r.name.clone(), (i, target));
+                if !relation_names.insert(&r.name) || r.name.contains('#') {
+                    return Err(format!("{}.{} is an invalid or repeated relation name", m.name, r.name));
+                }
+                let validate = |rel: &RelationIr| -> Result<usize> {
+                    let what = |message| format!("relation {}.{}: {message}", m.name, rel.name);
+                    let target = *model_index.get(&rel.target).ok_or_else(|| {
+                        format!("relation {}.{} targets unknown model {}", m.name, rel.name, rel.target)
+                    })?;
+                    if let Some(missing) = rel.from.iter().find(|f| !field_index.contains_key(*f)) {
+                        return Err(format!("relation {}.{}: no field {missing:?}", m.name, rel.name));
+                    }
+                    if rel.path.is_empty() && (rel.from.is_empty() || rel.from.len() != rel.to.len()) {
+                        return Err(what("from and to need the same number of fields"));
+                    }
+                    if rel.through.is_some() && rel.from.len() != 1 {
+                        return Err(what("a many-to-many relation has one key field on each side"));
+                    }
+                    Ok(target)
+                };
+                if r.members.is_empty() {
+                    relation_index.insert(r.name.clone(), (i, validate(r)?));
+                    continue;
+                }
+                let invalid = || format!("relation {}.{} needs distinct, conditioned to-one members", m.name, r.name);
+                if r.kind != RelKind::One || r.foreign_key || r.through.is_some() || !r.path.is_empty() || !r.conditions.is_empty() {
+                    return Err(invalid());
+                }
+                let mut source_fields = None;
+                let mut values = std::collections::HashSet::new();
+                for (j, member) in r.members.iter().enumerate() {
+                    let mut source: Vec<_> = member.conditions.iter().filter(|c| c.side == RelationSide::Source).collect();
+                    source.sort_by_key(|c| &c.field);
+                    let fields: Vec<_> = source.iter().map(|c| &c.field).collect();
+                    if member.kind != RelKind::One || member.foreign_key || member.through.is_some() || !member.path.is_empty() || !member.members.is_empty()
+                        || member.name != format!("{}#{}", r.name, member.target) || source.is_empty()
+                        || fields.windows(2).any(|w| w[0] == w[1])
+                        || source_fields.get_or_insert_with(|| fields.clone()) != &fields
+                        || !values.insert(source.iter().map(|c| c.value.to_string()).collect::<Vec<_>>())
+                        || union_index.insert(member.name.clone(), (i, j, validate(member)?)).is_some() {
+                        return Err(invalid());
+                    }
+                }
             }
             if let Some(f) = m.fields.iter().find(|f| f.enum_subset.is_some()) {
                 return Err(format!("{}.{}: an enum subset is only allowed on a field of a view model", m.name, f.name));
@@ -400,7 +441,7 @@ impl Schema {
             let client_defaults = crate::client_default::prepare(&m.name, &m.fields, &enums)?;
             models.push(Model {
                 field_adapters: field_adapters.next().expect("prepared adapter model"),
-                ir: m, pk, key, field_index, relation_index, client_defaults,
+                ir: m, pk, key, field_index, relation_index, union_index, client_defaults,
                 read_defaults: Default::default(),
                 read_flags: ReadFlags::default(),
                 assignments: vec![], delete_rewrite: None, scoped: vec![], guards: vec![], view: None,
@@ -409,11 +450,19 @@ impl Schema {
         }
         // Validate relation targets now that every model is indexed.
         for m in &models {
-            for r in &m.ir.relations {
+            for r in m.ir.relations.iter().flat_map(|r| if r.members.is_empty() { std::slice::from_ref(r) } else { &r.members }) {
                 let (_, t) = m.relation(&r.name)?;
                 let what = |e: String| format!("relation {}.{}: {e}", m.ir.name, r.name);
                 for to in &r.to {
                     models[t].field(to).map_err(what)?;
+                }
+                for condition in &r.conditions {
+                    let model = if condition.side == RelationSide::Source { m } else { &models[t] };
+                    let f = model.field(&condition.field).map_err(what)?;
+                    if condition.value.is_null() || f.array {
+                        return Err(what("a fixed condition needs a non-null scalar".into()));
+                    }
+                    crate::client_default::Literal::parse(&condition.value, f.value_type()).map_err(what)?;
                 }
                 if let Some(th) = &r.through {
                     if r.kind != RelKind::Many {

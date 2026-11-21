@@ -108,7 +108,7 @@ fn mismatch(m: &Model, s: &PreparedScoped, expected: &Value, actual: Option<&Val
 }
 
 /// A value as the caller wrote it, for the message: a number bare, a string quoted, a null as `NULL`.
-fn show(v: Option<&Value>) -> String {
+pub(crate) fn show(v: Option<&Value>) -> String {
     match v {
         None => "NULL".into(),
         Some(Value::Bool(Some(b))) => b.to_string(),

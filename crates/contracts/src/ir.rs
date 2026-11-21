@@ -304,6 +304,12 @@ impl SchemaIr {
             self.behavior.schema_contract = SCHEMA_CONTRACT;
             self.behavior.schema_contract_minor = self.behavior.schema_contract_minor.max(8);
         }
+        // Contract 5.9 holds `RelationIr.conditions` and `RelationIr.members`. An engine of 5.8 would drop a fixed condition and read a union as one relation.
+        let physical = self.behavior.storage.iter().flat_map(|s| &s.models);
+        if self.models.iter().chain(physical).flat_map(|m| &m.relations).any(RelationIr::is_conditioned) {
+            self.behavior.schema_contract = SCHEMA_CONTRACT;
+            self.behavior.schema_contract_minor = self.behavior.schema_contract_minor.max(9);
+        }
     }
 
     /// Parse the IR that generated models embed; an older ORM can write fields this one rejects.
@@ -796,15 +802,44 @@ pub struct RelationIr {
     /// `foreign_key` still marks the side that holds the key.
     #[serde(skip_serializing_if = "crate::ir::is_true", default = "crate::ir::yes")]
     pub constraint: bool,
+    /// Constant equalities on the source or target of this relation.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub conditions: Vec<RelationCondition>,
+    /// Mutually exclusive to-one relations exposed through this relation name.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub members: Vec<RelationIr>,
 }
 
+/// A constant equality that every plan of the relation adds: `field` of the `side` model equals `value`.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct RelationCondition {
+    pub side: RelationSide,
+    pub field: String,
+    pub value: serde_json::Value,
+}
+
+/// The model of a relation that a fixed condition reads.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RelationSide { Source, Target }
+
 impl RelationIr {
+    /// True when the relation has fixed conditions or union members: a consumer that reads only `from` and `to` must refuse it.
+    pub fn is_conditioned(&self) -> bool {
+        !self.conditions.is_empty() || !self.members.is_empty()
+    }
+
+    /// The relation itself, then each union member: the relations a plan reads for one name.
+    pub fn with_members(&self) -> impl Iterator<Item = &RelationIr> {
+        std::iter::once(self).chain(&self.members)
+    }
+
     /// A to-one relation from `from` of the owner to `to` of `target`, with no foreign key and no other option.
     pub fn one(name: &str, target: &str, from: &str, to: &str) -> RelationIr {
         RelationIr {
             name: name.to_owned(), kind: RelKind::One, target: target.to_owned(), from: vec![from.to_owned()], to: vec![to.to_owned()],
             foreign_key: false, on_delete: None, on_update: None, deferrable: None, fk_name: None, through: None, label: None, join_label: None, owns: false,
-            path: vec![], constraint: true,
+            path: vec![], constraint: true, conditions: vec![], members: vec![],
         }
     }
 }

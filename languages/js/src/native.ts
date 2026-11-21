@@ -45,6 +45,8 @@ export interface NativePrefetch {
   readonly attr: string;
   readonly many: boolean;
   readonly unsetWhenAbsent: boolean;
+  readonly union: boolean;
+  readonly matchingParents?: readonly boolean[];
   readonly keyPos: readonly number[];
   readonly childKeyPos: readonly number[];
   readonly back: string | null;

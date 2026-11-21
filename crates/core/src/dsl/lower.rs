@@ -1334,6 +1334,8 @@ fn relation(
             owns: false,
             path: hops,
             constraint: true,
+            conditions: vec![],
+            members: vec![],
         });
     }
     if let Some((tp, v)) = n.get("through") {
@@ -1374,6 +1376,8 @@ fn relation(
                 owns: false,
                 path: vec![],
                 constraint: true,
+                conditions: vec![],
+                members: vec![],
             });
         }
         return many_to_many(m, member, &what, tp, &join, &through_fields, models);
@@ -1428,6 +1432,8 @@ fn relation(
                     owns: false,
                     path: vec![],
                     constraint: true,
+                    conditions: vec![],
+                    members: vec![],
                 });
             }
             [] if name.as_deref().is_some_and(|n| n.contains("{model}")) => {
@@ -1495,6 +1501,8 @@ fn relation(
             owns: false,
             path: vec![],
             constraint: true,
+            conditions: vec![],
+            members: vec![],
         });
     };
     if member.ty.list {
@@ -1574,6 +1582,8 @@ fn relation(
         owns,
         path: vec![],
         constraint,
+        conditions: vec![],
+        members: vec![],
     })
 }
 
@@ -1673,6 +1683,8 @@ fn many_to_many(
         owns: false,
         path: vec![],
         constraint: true,
+        conditions: vec![],
+        members: vec![],
     })
 }
 

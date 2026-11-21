@@ -419,6 +419,11 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
             body.push('\n');
         }
         for r in &m.ir.relations {
+            if !r.members.is_empty() {
+                let targets = r.members.iter().map(|member| member.target.as_str()).collect::<Vec<_>>().join(" | ");
+                writeln!(body, "    {}: f.UnionRelation[{targets}, _{name}_{}_Path]", r.name, r.name).unwrap();
+                continue;
+            }
             match r.kind {
                 RelKind::Many if !r.path.is_empty() => {
                     writeln!(body, "    {}: f.Linked[list[{}], _{}Path]", r.name, r.target, r.target).unwrap()
@@ -474,10 +479,23 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
             writeln!(body, "    {}: _{}Ref", g.name, g.ty).unwrap();
         }
         for r in &m.ir.relations {
-            writeln!(body, "    {}: _{}Path", r.name, r.target).unwrap();
+            if r.members.is_empty() {
+                writeln!(body, "    {}: _{}Path", r.name, r.target).unwrap();
+            } else {
+                writeln!(body, "    {}: _{name}_{}_Path", r.name, r.name).unwrap();
+            }
         }
         writeln!(body, "    @property\n    def objects(self) -> {objects}: ...").unwrap();
         body.push('\n');
+        for r in m.ir.relations.iter().filter(|r| !r.members.is_empty()) {
+            let targets = r.members.iter().map(|member| member.target.as_str()).collect::<Vec<_>>().join(" | ");
+            writeln!(body, "class _{name}_{}_Path(RelationPath[{targets}]):", r.name).unwrap();
+            for member in &r.members {
+                if r.members.len() > 1 { writeln!(body, "    @overload").unwrap(); }
+                writeln!(body, "    def of(self, target: type[{}]) -> _{}Path: ...", member.target, member.target).unwrap();
+            }
+            body.push('\n');
+        }
         if !indexes.is_empty() {
             writeln!(body, "class _{name}Indexes:").unwrap();
             for index in indexes.iter().filter(|n| super::is_python_ident(n)) {

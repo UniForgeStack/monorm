@@ -979,10 +979,13 @@ fn merge_inline_pages(config: &mut Value) -> Result<(), ConfigError> {
 fn inline_relation<'a>(schema: &'a Schema, parent: &Resource, child: usize, via: Option<&str>, at: &str) -> Result<&'a monorm_core::ir::RelationIr, ConfigError> {
     let pm = schema.model(parent.model);
     let child_name = &schema.model(child).ir.name;
-    let leads = |rel: &monorm_core::ir::RelationIr| rel.kind == RelKind::Many && rel.through.is_none() && rel.path.is_empty() && matches!(pm.relation(&rel.name), Ok((_, t)) if t == child);
+    let leads = |rel: &monorm_core::ir::RelationIr| rel.kind == RelKind::Many && rel.through.is_none() && rel.path.is_empty() && !rel.is_conditioned() && matches!(pm.relation(&rel.name), Ok((_, t)) if t == child);
     match via {
         Some(v) => {
             let Some(rel) = pm.ir.relations.iter().find(|r| r.name == v) else { return err(format!("{at}: via {v:?} is not a relation of {}", parent.name)) };
+            if rel.is_conditioned() {
+                return err(format!("{at}: via {v:?} has fixed conditions or union members, which the admin does not support"));
+            }
             if !leads(rel) {
                 return err(format!("{at}: via {v:?} is not a to-many relation (not a many-to-many) to {child_name}"));
             }
@@ -1085,13 +1088,14 @@ fn inlines_of(schema: &Schema, resources: &[Resource], i: usize, config: &Resour
 }
 
 /// The tabs of resource `i`: the to-many relations that lead to a resource, and are not a many-to-many.
+/// A relation with fixed conditions or union members has no tab: the tab and its "Add" prefill read only `from` and `to`.
 fn tabs_of(schema: &Schema, resources: &[Resource], i: usize) -> Result<Vec<Tab>, ConfigError> {
     let r = &resources[i];
     let model = schema.model(r.model);
     let usable = |rel: &monorm_core::ir::RelationIr| -> Option<String> {
         let (_, target) = model.relation(&rel.name).ok()?;
         let child = resources.iter().find(|o| o.model == target)?;
-        (rel.kind == RelKind::Many && rel.through.is_none() && rel.path.is_empty() && field_columns(schema, r.model, &rel.from).is_some() && field_columns(schema, child.model, &rel.to).is_some()).then(|| child.name.clone())
+        (rel.kind == RelKind::Many && rel.through.is_none() && rel.path.is_empty() && !rel.is_conditioned() && field_columns(schema, r.model, &rel.from).is_some() && field_columns(schema, child.model, &rel.to).is_some()).then(|| child.name.clone())
     };
     let mut out = Vec::new();
     match &r.tabs_config {
@@ -1108,7 +1112,7 @@ fn tabs_of(schema: &Schema, resources: &[Resource], i: usize) -> Result<Vec<Tab>
                     return err(format!("{}: tabs has {n:?}, which is not a relation", r.name));
                 };
                 let Some(target) = usable(rel) else {
-                    return err(format!("{}: tab {n:?} needs a to-many relation (not a many-to-many) to a resource", r.name));
+                    return err(format!("{}: tab {n:?} needs a to-many relation (not a many-to-many, no fixed conditions or union members) to a resource", r.name));
                 };
                 if out.iter().any(|t: &Tab| t.name == *n) {
                     return err(format!("{}: tab {n:?} is listed twice", r.name));
@@ -1500,7 +1504,7 @@ fn links_of(schema: &Schema, resources: &[Resource], r: &Resource) -> Vec<Link> 
     for rel in &model.ir.relations {
         let Ok((_, target_idx)) = model.relation(&rel.name) else { continue };
         let Some(target) = resources.iter().find(|r| r.model == target_idx) else { continue };
-        if rel.kind != RelKind::One {
+        if rel.kind != RelKind::One || rel.is_conditioned() {
             continue;
         }
         let target_model = schema.model(target_idx);
@@ -1963,6 +1967,9 @@ fn relation_filter(schema: &Schema, idx: usize, name: &str, spec: &str) -> Resul
     let (rel, target_idx) = model.relation(spec).map_err(|e| ConfigError(e.to_string()))?;
     if rel.kind != RelKind::One {
         return err(format!("{name}: filter {spec:?}: a filter takes a to-one relation, and {spec:?} is to-many"));
+    }
+    if rel.is_conditioned() {
+        return err(format!("{name}: filter {spec:?}: a relation with fixed conditions or union members is not a filter"));
     }
     let target = schema.model(target_idx);
     let keys = target.key_fields();

@@ -387,9 +387,11 @@ impl<'a, 'py> Builder<'a, 'py> {
         }
         let attr = PyString::intern(py, &p.attr);
         for (i, parent) in parents.iter().enumerate() {
+            let matches = f.matching_parents.as_ref().is_none_or(|rows| rows[i]);
+            if p.union.is_some() && !matches { continue; }
             self.clear_absent(parent, &p.attr)?;
             let key = key_cell(py, parent_rows, i, &p.key_pos, &p.key_type)?;
-            let found = if key.is_none(py) { None } else { groups.get_item(&key)? };
+            let found = if !matches || key.is_none(py) { None } else { groups.get_item(&key)? };
             if !p.many {
                 if let (Some(back), Some(child)) = (&p.back, &found) {
                     // SAFETY: as in `blank`.

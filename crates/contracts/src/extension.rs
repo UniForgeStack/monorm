@@ -5,7 +5,7 @@ use crate::ir::{ColType, SchemaIr, ValueType};
 pub use crate::version::ContractVersion;
 
 /// The IR records. A library of the same major and a lower or equal minor fits.
-pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(5, 8);
+pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(5, 9);
 /// The C ABI that `monorm::extension!` writes.
 pub const ABI_VERSION: ContractVersion = ContractVersion::new(0, 2);
 /// The stamps of an IR and an artifact keep the major only.
@@ -1676,6 +1676,32 @@ mod tests {
         generated.stamp_expression_records();
         assert_eq!((generated.behavior.schema_contract, minor(&generated)), (SCHEMA_CONTRACT, 1));
         assert!(check_requirements(&generated, &Artifact { schema_contract: SCHEMA_CONTRACT, ..Artifact::default() }).is_ok());
+        // a fixed condition or a union member needs contract 5.9, in a logical or a physical model; a plain relation keeps the stamp
+        let related = |relation: serde_json::Value, physical: bool| {
+            let model = serde_json::json!({"name": "Tag", "table": "tag", "fields": [{"name": "id", "column": "id", "type": "int", "primary_key": true}], "relations": [relation]});
+            let mut ir: SchemaIr = serde_json::from_value(if physical {
+                serde_json::json!({"models": [], "behavior": {"storage": {"models": [model]}}})
+            } else {
+                serde_json::json!({"models": [model]})
+            }).unwrap();
+            ir.stamp_expression_records();
+            ir
+        };
+        let relation = |extra: serde_json::Value| {
+            let mut r = serde_json::json!({"name": "posts", "kind": "many", "target": "Post", "from": ["id"], "to": ["tag_id"]});
+            r.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            r
+        };
+        let condition = serde_json::json!({"conditions": [{"side": "target", "field": "kind", "value": 2}]});
+        let member = serde_json::json!({"members": [{"name": "posts#Post", "kind": "one", "target": "Post", "from": ["id"], "to": ["id"], "conditions": [{"side": "source", "field": "kind", "value": 2}]}]});
+        for physical in [false, true] {
+            let plain = related(relation(serde_json::json!({})), physical);
+            assert_eq!((plain.behavior.schema_contract, minor(&plain)), (0, 0), "a plain relation, physical {physical}");
+            for (what, extra) in [("a condition", &condition), ("a union member", &member)] {
+                let ir = related(relation(extra.clone()), physical);
+                assert_eq!((ir.behavior.schema_contract, minor(&ir)), (SCHEMA_CONTRACT, 9), "{what}, physical {physical}");
+            }
+        }
         // a default filter needs contract 5.2 only with a shape that the string form could not write
         let col = |name: &str| serde_json::json!({"t": "col", "path": [], "name": name});
         let filtered = |filter: serde_json::Value| {

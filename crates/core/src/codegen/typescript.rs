@@ -339,6 +339,13 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
             }
         }
         for r in m.ir.relations.iter().filter(|r| r.path.is_empty()) {
+            if !r.members.is_empty() {
+                let targets = r.members.iter().map(|member| member.target.as_str()).collect::<Vec<_>>().join(" | ");
+                let prop = camel(&r.name);
+                writeln!(body, "  get {prop}(): {targets} | null;").unwrap();
+                writeln!(body, "  set {prop}(value: {targets});").unwrap();
+                continue;
+            }
             match r.kind {
                 RelKind::Many if r.through.is_some() => {
                     let queries = if has_queries(&r.target) { format!(" & QueriesOf<{}Spec>", r.target) } else { String::new() };
@@ -347,7 +354,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
                 RelKind::Many => {
                     // the key and the to-one relation back, filled in by insert()
                     let target = schema.model(schema.model_idx(&r.target)?);
-                    let mut link: Vec<String> = r.to.iter().map(|k| quote(&camel(k))).collect();
+                    let mut link: Vec<String> = r.to.iter().chain(r.conditions.iter().filter(|c| c.side == monorm::ir::RelationSide::Target).map(|c| &c.field)).map(|k| quote(&camel(k))).collect();
                     if let Some(back) = target
                         .ir
                         .relations
@@ -510,6 +517,17 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
             writeln!(body, "  readonly {}: {}Ref<S, H, O, {}, {x}>;", camel(g.name), g.ty, quote(&camel(g.name))).unwrap();
         }
         for r in &m.ir.relations {
+            if !r.members.is_empty() {
+                let specs = r.members.iter().map(|member| format!("{}Spec", member.target)).collect::<Vec<_>>().join(" | ");
+                let relation = quote(&camel(&r.name));
+                writeln!(body, "  readonly {}: RelationPath<{specs}, S, [...H, Hop<{relation}, \"opt\", {specs}>]> & {{", camel(&r.name)).unwrap();
+                for member in &r.members {
+                    let target = &member.target;
+                    writeln!(body, "    of(target: {target}Model): {target}Path<S, [...H, Hop<{relation}, \"opt\", {target}Spec>], O>;").unwrap();
+                }
+                writeln!(body, "  }};").unwrap();
+                continue;
+            }
             let kind = hop_kind(schema, m, r)?;
             let scope = if matches!(kind, "many" | "m2m" | "list") { "S | Many" } else { "S" };
             let opt = if kind == "opt" { "true" } else { "O" };
