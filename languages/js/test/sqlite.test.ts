@@ -389,7 +389,7 @@ test("UUID, date, timestamp and inline trigger", async () => {
       day DateTime @db.Date
       at DateTime
       name String
-      @@trigger(uppercase, after: [insert], body: "UPDATE event SET name = upper(NEW.name) WHERE id = NEW.id")
+      @@trigger(uppercase, when: after, operation: [insert], func: "UPDATE event SET name = upper(NEW.name) WHERE id = NEW.id")
     }
   `, { registry })["Event"]!;
   const db = await connect("sqlite://:memory:", { registry, default: false });

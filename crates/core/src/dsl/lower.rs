@@ -9,7 +9,7 @@ use crate::behavior::ArgumentKind;
 use crate::ext::{ExtensionDef, TypeDef};
 use crate::ir::{
     ClientCall, ClientDefaultIr, ColType, ConstraintIr, Deferrable, EnumIr, EnumStorage, EnumValueIr, ExcludeElementIr, ExtensionIr, FieldIr,
-    ForEach, FunctionIr, GeneratedIr, IndexColumnIr, IndexIr, ModelIr, Nulls, OnDelete, RelKind, RelationIr, SchemaIr,
+    ChangeIr, ChangeKind, ForEach, FunctionIr, GeneratedIr, IndexColumnIr, IndexIr, ModelIr, Nulls, OnDelete, RelKind, RelationIr, SchemaIr,
     ThroughIr, TriggerEvent, TriggerIr, TriggerTiming, PartitionIr, PartitionKeyIr, SqlViewIr,
 };
 use crate::migrate::pg::ident;
@@ -51,14 +51,6 @@ impl<'a> Named<'a> {
             None => Ok(None),
             Some((_, Value::Str(s))) => Ok(Some(s.clone())),
             Some((p, _)) => err(p, format!("{}: {key} must be a string", self.what)),
-        }
-    }
-
-    /// SQL text: `"..."` or Prisma's `raw("...")`.
-    fn sql(&mut self, key: &'a str) -> Result<Option<String>> {
-        match self.get(key) {
-            None => Ok(None),
-            Some((p, v)) => Ok(Some(raw_sql(p, v, &format!("{}: {key}", self.what))?)),
         }
     }
 
@@ -518,7 +510,7 @@ fn hide_deprecated(ir: &mut SchemaIr, hidden: &[(String, Deprecated)]) -> Result
             ConstraintIr::Exclude { elements, where_, .. } => !elements.iter().any(|e| uses(&e.column)) && !in_sql(where_),
             ConstraintIr::Check { .. } => true,
         });
-        model.triggers.retain(|t| !refers(&t.update_of));
+        model.triggers.retain(|t| !refers(&t.update_of) && !t.changes.iter().any(|c| refers(&c.fields) || refers(&c.exclude)));
     }
     Ok(())
 }
@@ -1918,6 +1910,258 @@ fn method(n: &mut Named<'_>) -> Result<Option<String>> {
     Ok(n.name("type")?.map(|t| t.to_lowercase()))
 }
 
+/// Every old `@@trigger` argument and the new argument that replaces it.
+const OLD_TRIGGER_ARGS: [(&str, &str); 7] = [
+    ("before", "when: before, operation: [...]"),
+    ("after", "when: after, operation: [...]"),
+    ("instead_of", "when: instead_of, operation: [...]"),
+    ("for_each", "level: row | statement"),
+    ("update_of", "operation: [update_of(a, b)]"),
+    ("body", "func: \"...\""),
+    ("function", "func: <function block name>"),
+];
+
+fn trigger_event(pos: Pos, name: &str) -> Result<TriggerEvent> {
+    Ok(match name {
+        "insert" => TriggerEvent::Insert,
+        "update" => TriggerEvent::Update,
+        "delete" => TriggerEvent::Delete,
+        "truncate" => TriggerEvent::Truncate,
+        o => return err(pos, format!("unknown trigger event {o}; use insert, update, update_of(a, b), delete or truncate")),
+    })
+}
+
+/// The SQL with the text of each single-quoted literal blanked: a word in a literal is no mention of a row.
+fn blank_literals(sql: &str) -> String {
+    let mut in_literal = false;
+    sql.chars().map(|c| if c == '\'' { in_literal = !in_literal; c } else if in_literal { ' ' } else { c }).collect()
+}
+
+/// A whole-word, case-insensitive mention of `OLD.` or `NEW.` in raw SQL, outside a string literal.
+fn reads_row(sql: &str, which: &str) -> bool {
+    let lower = blank_literals(sql).to_lowercase();
+    let is_id = |c: char| c.is_alphanumeric() || c == '_' || c == '"';
+    lower.match_indices(which).any(|(i, _)| {
+        !lower[..i].chars().next_back().is_some_and(is_id) && lower[i + which.len()..].trim_start().starts_with('.')
+    })
+}
+
+/// One change helper of a `condition:`: `any_change(a, b, exclude: [c], exclude_auto: true)`.
+fn change_helper(pos: Pos, v: &Value, what: &str) -> Result<Option<ChangeIr>> {
+    let Value::Path(p, Some(args)) = v else { return Ok(None) };
+    let kind = match p.as_slice() {
+        [n] if n == "any_change" => ChangeKind::AnyChange,
+        [n] if n == "all_change" => ChangeKind::AllChange,
+        [n] if n == "any_dont_change" => ChangeKind::AnyDontChange,
+        [n] if n == "all_dont_change" => ChangeKind::AllDontChange,
+        _ => return Ok(None),
+    };
+    let helper = p[0].clone();
+    let mut n = Named::new(format!("{what}: {helper}"), args);
+    let fields = args.positional.iter().map(|(fp, fv)| name_of(*fp, fv, &n.what)).collect::<Result<Vec<_>>>()?;
+    let exclude = n.names("exclude")?;
+    let exclude_auto = n.bool("exclude_auto")?;
+    n.finish()?;
+    if !fields.is_empty() && (!exclude.is_empty() || exclude_auto) {
+        return err(pos, format!("{what}: {helper}: exclude: and exclude_auto: leave fields out of the whole model; name no fields with them"));
+    }
+    Ok(Some(ChangeIr { kind, fields, exclude, exclude_auto }))
+}
+
+/// A list value as its items, or a single value as a one-item list.
+fn list_items(pos: Pos, v: &Value) -> Vec<(Pos, &Value)> {
+    match v {
+        Value::List(items) => items.iter().map(|(p, v)| (*p, v)).collect(),
+        v => vec![(pos, v)],
+    }
+}
+
+/// The `operation:` events of a trigger, and the fields of its `update_of(...)`.
+fn trigger_events(n: &mut Named<'_>, what: &str, pos: Pos) -> Result<(Vec<TriggerEvent>, Vec<String>)> {
+    let mut events: Vec<TriggerEvent> = vec![];
+    let mut update_of: Vec<String> = vec![];
+    let mut seen_update_of = false;
+    let Some((op_pos, op)) = n.get("operation") else {
+        return err(pos, format!("{what}: give the events: operation: [insert, update, update_of(a, b), delete, truncate]"));
+    };
+    for (p, v) in list_items(op_pos, op) {
+        match v {
+            Value::Path(path, None) if path.len() == 1 => {
+                let e = trigger_event(p, &path[0])?;
+                if events.contains(&e) { return err(p, format!("{what}: operation names {} twice", path[0])); }
+                events.push(e);
+            }
+            Value::Path(path, Some(args)) if path.len() == 1 && path[0] == "update_of" => {
+                if seen_update_of || events.contains(&TriggerEvent::Update) {
+                    return err(p, format!("{what}: operation takes update or one update_of(...), not both"));
+                }
+                seen_update_of = true;
+                if args.positional.is_empty() || !args.named.is_empty() {
+                    return err(p, format!("{what}: update_of(a, b) takes the field names"));
+                }
+                update_of = args.positional.iter().map(|(fp, fv)| name_of(*fp, fv, what)).collect::<Result<_>>()?;
+                events.push(TriggerEvent::Update);
+            }
+            _ => return err(p, format!("{what}: operation takes insert, update, update_of(a, b), delete or truncate")),
+        }
+        if events.iter().filter(|e| **e == TriggerEvent::Update).count() > 1 {
+            return err(p, format!("{what}: operation takes update or one update_of(...), not both"));
+        }
+    }
+    if events.is_empty() {
+        return err(op_pos, format!("{what}: operation names no event"));
+    }
+    Ok((events, update_of))
+}
+
+/// The `referencing(old: o, new: n)` clause: both table names and its position.
+fn trigger_referencing(b: &Attr, what: &str) -> Result<(Option<String>, Option<String>, Option<Pos>)> {
+    let (mut old_table, mut new_table) = (None, None);
+    let mut referencing_pos = None;
+    for (p, v) in b.args.positional.iter().skip(1).map(|(p, v)| (*p, v)) {
+        let Value::Path(path, Some(args)) = v else { return err(p, format!("{what}: unexpected argument; use referencing(old: o, new: n)")) };
+        if path.len() != 1 || path[0] != "referencing" || !args.positional.is_empty() {
+            return err(p, format!("{what}: unexpected argument; use referencing(old: o, new: n)"));
+        }
+        if referencing_pos.is_some() { return err(p, format!("{what}: referencing(...) twice")); }
+        referencing_pos = Some(p);
+        let mut r = Named::new(format!("{what}: referencing"), args);
+        old_table = r.name("old")?;
+        new_table = r.name("new")?;
+        r.finish()?;
+        if old_table.is_none() && new_table.is_none() {
+            return err(p, format!("{what}: referencing(old: o, new: n) names at least one table"));
+        }
+        if old_table.is_some() && old_table == new_table {
+            return err(p, format!("{what}: referencing: old and new need two different names"));
+        }
+    }
+    Ok((old_table, new_table, referencing_pos))
+}
+
+/// `@@trigger(name, when: ..., operation: [...], level: ..., condition: ..., referencing(...), deferrable: ..., func: ...)`.
+fn trigger_attr(b: &Attr, what: &str) -> Result<TriggerIr> {
+    let name = match b.args.positional.first() {
+        Some((p, v)) => name_of(*p, v, what)?,
+        None => return err(b.pos, format!("{what}: the first argument is the trigger name")),
+    };
+    let what = format!("{what}({name})");
+    let mut n = Named::new(what.clone(), &b.args);
+    for (old, new) in OLD_TRIGGER_ARGS {
+        if let Some((p, _)) = n.get(old) {
+            return err(p, format!("{what}: `{old}:` is removed; use `{new}`"));
+        }
+    }
+    let timing = match n.get("when") {
+        None => return err(b.pos, format!("{what}: say when it fires: when: before | after | instead_of")),
+        Some((_, Value::Path(p, None))) if p.len() == 1 && p[0] == "before" => TriggerTiming::Before,
+        Some((_, Value::Path(p, None))) if p.len() == 1 && p[0] == "after" => TriggerTiming::After,
+        Some((_, Value::Path(p, None))) if p.len() == 1 && p[0] == "instead_of" => TriggerTiming::InsteadOf,
+        Some((p, _)) => return err(p, format!("{what}: `when:` takes before, after or instead_of; a SQL test is `condition: \"...\"`")),
+    };
+    let (events, update_of) = trigger_events(&mut n, &what, b.pos)?;
+    let level = match n.name("level")?.as_deref() {
+        None | Some("row") => ForEach::Row,
+        Some("statement") => ForEach::Statement,
+        Some(o) => return err(b.pos, format!("{what}: level must be row or statement, not {o}")),
+    };
+    let mut raw: Vec<String> = vec![];
+    let mut changes: Vec<ChangeIr> = vec![];
+    let mut cond_pos = b.pos;
+    if let Some((cp, v)) = n.get("condition") {
+        cond_pos = cp;
+        for (p, v) in list_items(cp, v) {
+            match change_helper(p, v, &what)? {
+                Some(c) => changes.push(c),
+                None => raw.push(raw_sql(p, v, &format!("{what}: condition"))?),
+            }
+        }
+    }
+    let (old_table, new_table, referencing_pos) = trigger_referencing(b, &what)?;
+    let deferrable = deferrable(&mut n)?;
+    let (mut body, mut function) = (None, None);
+    match n.get("func") {
+        None => return err(b.pos, format!("{what}: give func: \"...\" (a body) or func: name (a `function` block)")),
+        Some((_, Value::Path(p, None))) if p.len() == 1 => function = Some(p[0].clone()),
+        Some((p, v)) => body = Some(raw_sql(p, v, &format!("{what}: func"))?),
+    }
+    let declare = n.str("declare")?;
+    let args = match n.get("args") {
+        None => vec![],
+        Some((_, Value::List(items))) => items.iter().map(|(p, v)| sql_text(*p, v)).collect::<Result<_>>()?,
+        Some((p, _)) => return err(p, "args: takes a list"),
+    };
+    let language = n.name("language")?;
+    let skippable = n.bool("skippable")?;
+    n.finish()?;
+    if declare.is_some() && function.is_some() {
+        return err(b.pos, format!("{what}: declare: belongs to a func: body; a `function` block has its own declare section"));
+    }
+    let has = |e| events.contains(&e);
+    if let Some(p) = referencing_pos {
+        if timing != TriggerTiming::After { return err(p, format!("{what}: referencing needs when: after")); }
+        if events.len() != 1 { return err(p, format!("{what}: referencing needs exactly one event in operation")); }
+        if !update_of.is_empty() { return err(p, format!("{what}: referencing allows no update_of(...)")); }
+        if deferrable.is_some() { return err(p, format!("{what}: referencing allows no deferrable:")); }
+        if old_table.is_some() && !(has(TriggerEvent::Update) || has(TriggerEvent::Delete)) {
+            return err(p, format!("{what}: referencing old: needs an update or delete event"));
+        }
+        if new_table.is_some() && !(has(TriggerEvent::Update) || has(TriggerEvent::Insert)) {
+            return err(p, format!("{what}: referencing new: needs an update or insert event"));
+        }
+    }
+    if deferrable.is_some() && (timing != TriggerTiming::After || level != ForEach::Row) {
+        return err(b.pos, format!("{what}: deferrable: needs when: after and level: row"));
+    }
+    if timing == TriggerTiming::InsteadOf {
+        if level != ForEach::Row { return err(b.pos, format!("{what}: instead_of needs level: row")); }
+        if !raw.is_empty() || !changes.is_empty() { return err(cond_pos, format!("{what}: instead_of allows no condition:")); }
+        if !update_of.is_empty() { return err(b.pos, format!("{what}: instead_of allows no update_of(...)")); }
+        if skippable { return err(b.pos, format!("{what}: instead_of allows no skippable: true (the skip guard is a WHEN term)")); }
+    }
+    if has(TriggerEvent::Truncate) && level != ForEach::Statement {
+        return err(b.pos, format!("{what}: truncate needs level: statement"));
+    }
+    if !changes.is_empty() {
+        if level != ForEach::Row { return err(cond_pos, format!("{what}: a change helper needs level: row")); }
+        if events.iter().any(|e| *e != TriggerEvent::Update) {
+            return err(cond_pos, format!("{what}: a change helper reads OLD and NEW; it needs update as the only event"));
+        }
+    }
+    for sql in &raw {
+        if level == ForEach::Statement && (reads_row(sql, "old") || reads_row(sql, "new")) {
+            return err(cond_pos, format!("{what}: a statement-level condition cannot read OLD or NEW"));
+        }
+        if has(TriggerEvent::Insert) && reads_row(sql, "old") {
+            return err(cond_pos, format!("{what}: a condition of an insert trigger cannot read OLD"));
+        }
+        if has(TriggerEvent::Delete) && reads_row(sql, "new") {
+            return err(cond_pos, format!("{what}: a condition of a delete trigger cannot read NEW"));
+        }
+    }
+    let when = (!raw.is_empty()).then(|| raw.iter().map(|c| if raw.len() > 1 { format!("({c})") } else { c.clone() }).collect::<Vec<_>>().join(" AND "));
+    Ok(TriggerIr {
+        skippable: skippable.then(|| name.clone()),
+        guard: skippable,
+        name,
+        timing,
+        events,
+        update_of,
+        for_each: level,
+        when,
+        function,
+        args,
+        body,
+        language,
+        old_table,
+        new_table,
+        deferrable,
+        declare,
+        changes,
+        replaces_rule: None,
+    })
+}
+
 fn model_block(m: &mut ModelIr, b: &Attr, pending: Option<&Pendings>) -> Result<()> {
     let what = format!("{}: @@{}", m.name, b.name);
     let first = b.args.positional.first().map(|(_, v)| v);
@@ -2038,62 +2282,7 @@ fn model_block(m: &mut ModelIr, b: &Attr, pending: Option<&Pendings>) -> Result<
             m.constraints.push(c);
         }
         "trigger" => {
-            extra_positional(1)?;
-            let name = match b.args.positional.first() {
-                Some((p, v)) => name_of(*p, v, &what)?,
-                None => return err(b.pos, format!("{what}: the first argument is the trigger name")),
-            };
-            let mut n = Named::new(format!("{what}({name})"), &b.args);
-            let mut timing = None;
-            for (key, t) in [("before", TriggerTiming::Before), ("after", TriggerTiming::After), ("instead_of", TriggerTiming::InsteadOf)] {
-                let events = n.names(key)?;
-                if !events.is_empty() {
-                    if timing.is_some() {
-                        return err(b.pos, format!("{what}({name}): give one of before: / after: / instead_of:"));
-                    }
-                    let events = events
-                        .iter()
-                        .map(|e| match e.as_str() {
-                            "insert" => Ok(TriggerEvent::Insert),
-                            "update" => Ok(TriggerEvent::Update),
-                            "delete" => Ok(TriggerEvent::Delete),
-                            "truncate" => Ok(TriggerEvent::Truncate),
-                            o => err(b.pos, format!("unknown trigger event {o}")),
-                        })
-                        .collect::<Result<Vec<_>>>()?;
-                    timing = Some((t, events));
-                }
-            }
-            let Some((timing, events)) = timing else {
-                return err(b.pos, format!("{what}({name}): say when it fires: before: [update], after: [insert, delete], ..."));
-            };
-            let for_each = match n.name("for_each")?.as_deref() {
-                None | Some("row") => ForEach::Row,
-                Some("statement") => ForEach::Statement,
-                Some(o) => return err(b.pos, format!("for_each must be row or statement, not {o}")),
-            };
-            let t = TriggerIr {
-                name,
-                timing,
-                events,
-                update_of: n.names("update_of")?,
-                for_each,
-                when: n.sql("when")?,
-                function: n.name("function")?,
-                args: match n.get("args") {
-                    None => vec![],
-                    Some((_, Value::List(items))) => items.iter().map(|(p, v)| sql_text(*p, v)).collect::<Result<_>>()?,
-                    Some((p, _)) => return err(p, "args: takes a list"),
-                },
-                body: n.str("body")?,
-                language: n.name("language")?,
-                skippable: None,
-                replaces_rule: None,
-            };
-            n.finish()?;
-            if t.body.is_some() == t.function.is_some() {
-                return err(b.pos, format!("{what}({}): give body: \"...\" or function: name (a `function` block)", t.name));
-            }
+            let t = trigger_attr(b, &what)?;
             m.triggers.push(t);
         }
         "id" => {}

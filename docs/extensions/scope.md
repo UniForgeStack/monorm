@@ -109,6 +109,7 @@ It exits `0` if they are equal and `1` if not, and it prints each difference.
 It warns when the connected role is a superuser or has `BYPASSRLS`: RLS does not apply to such a role.
 `migrate` gives the same warning when it runs as a superuser on a schema with RLS, because data steps in the migration then skip RLS.
 `audit` does not compare the fill trigger; `drift` does.
+On PostgreSQL, `audit` also lists each trigger of the schema with its state (see [the schema guide](../schema/schema.md)), and it exits `1` if a trigger is disabled, outdated or missing.
 A policy that is in the database but not in the schema, such as a hand-written one, is reported as a `drop policy` difference, and `audit` exits `1`.
 
 `pull` does not turn policies back into `@@scope.by`.

@@ -352,6 +352,7 @@ A manifest of an outside extension that lists a pass of another manifest, or an 
 Schema contract 5.5 adds `ColType::Duration` to the IR (an IR with a `Duration` field is stamped 5.5). The manifest format does not change, and no extension declares 5.5.
 Schema contract 5.6 adds the `owns` flag to a relation in the IR (an IR with an owning relation is stamped 5.6). The manifest format does not change, and no extension declares 5.6.
 Schema contract 5.7 adds `path` and `constraint` to a relation in the IR (an IR with a linked relation or a `constraint: false` relation is stamped 5.7). The manifest format does not change, and no extension declares 5.7.
+Schema contract 5.8 adds the trigger fields to the IR: transition table names, a deferrable mode, a `declare` block, change helpers (`changes`), and a skip guard (an IR with any of them is stamped 5.8). The manifest format does not change, and no extension declares 5.8.
 A version fits when its major equals the engine major and its minor is at most the engine minor.
 This holds for `schema_contract` and for `abi`, and for the `abi` that the library reports.
 Another major, or a newer minor, gives an error that names both versions and says what to install, even when the manifest has fields that this release does not know.

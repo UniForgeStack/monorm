@@ -46,8 +46,8 @@ fn sqlite_targets_and_feature_checks() {
         ("model Item {\n  id BigInt @id\n  values String[]\n}", "Item.values: sqlite does not support Arrays"),
         ("enum Role {\n  user\n}\nmodel Item {\n  id BigInt @id\n  role Role\n}", "choose @@storage(text)"),
         ("model Item {\n  id BigInt @id\n  amount Decimal\n}", "ExactDecimal"),
-        ("model Item {\n  id BigInt @id\n  @@trigger(t, after: [insert], for_each: statement, body: \"SELECT 1\")\n}", "StatementTriggers"),
-        ("model Item {\n  id BigInt @id\n  @@trigger(t, after: [insert, update], body: \"SELECT 1\")\n}", "one insert/update/delete event"),
+        ("model Item {\n  id BigInt @id\n  @@trigger(t, when: after, operation: [insert], level: statement, func: \"SELECT 1\")\n}", "StatementTriggers"),
+        ("model Item {\n  id BigInt @id\n  @@trigger(t, when: after, operation: [insert, update], func: \"SELECT 1\")\n}", "one insert/update/delete event"),
         ("model Item {\n  id BigInt @id\n  @@index([id], type: Gin)\n}", "IndexMethods"),
         ("model Item {\n  id BigInt @id\n  @@unique([id], deferrable: deferred)\n}", "DeferrableUnique"),
     ] {
@@ -137,8 +137,8 @@ model Room {
   @@index([sql("lower(label)", collate: "C"), floor(sort: Desc, nulls: last)], unique: true, include: [name], name: "rooms_x")
   @@unique([floor, title], nulls_not_distinct: true, deferrable: deferred)
   @@map("rooms")
-  @@trigger(audit, after: [insert, delete], for_each: statement, function: audit_row, args: ["rooms"])
-  @@trigger(touch, before: [update], update_of: [title], when: "OLD.label <> NEW.label", body: "BEGIN RETURN NEW; END;")
+  @@trigger(audit, when: after, operation: [insert, delete], level: statement, func: audit_row, args: ["rooms"])
+  @@trigger(touch, when: before, operation: [update_of(title)], condition: "OLD.label <> NEW.label", func: "BEGIN RETURN NEW; END;")
   @@comment("bookable")
 }
 
@@ -279,7 +279,7 @@ fn errors_point_at_the_problem() {
         ("model A {\n  id BigInt @id\n  @@index([nope])\n}".into(), "nope"),
         ("model A {\n  id BigInt @id\n  @@index([id], wher: \"x\")\n}".into(), "unknown argument `wher`"),
         ("model A {\n  id BigInt @id\n  @@index([id(sort: desc)])\n}".into(), "sort must be Asc or Desc"),
-        ("model A {\n  id BigInt @id\n  @@trigger(t, body: \"x\")\n}".into(), "say when it fires"),
+        ("model A {\n  id BigInt @id\n  @@trigger(t, func: \"x\")\n}".into(), "say when it fires"),
         ("model A {\n  id BigInt @id\n  e Unsupported(\"vector\")\n}".into(), "needs argument \"dims\""),
         ("model A {\n  id BigInt @id\n  e Unsupported(\"nope(1)\")\n}".into(), "unknown type nope"),
         ("model A {\n  id BigInt @id\n  e String @db.Nope\n}".into(), "unknown native type @db.Nope"),
@@ -325,9 +325,9 @@ fn errors_point_at_the_problem() {
             "needs through_fields",
         ),
         ("import \"missing.toml\"".into(), "import \"missing.toml\""),
-        ("model A {\n  id BigInt @id\n  @@trigger(t, after: [insert],\n    function: f)\n}".into(), "<schema>:3:3: model A: an attribute must be on one line"),
+        ("model A {\n  id BigInt @id\n  @@trigger(t, when: after, operation: [insert],\n    func: f)\n}".into(), "<schema>:3:3: model A: an attribute must be on one line"),
         (
-            "model A {\n  id BigInt @id\n  @@trigger(t, before: [update], body: \"\"\"BEGIN RETURN NEW; END;\"\"\")\n}".into(),
+            "model A {\n  id BigInt @id\n  @@trigger(t, when: before, operation: [update], func: \"\"\"BEGIN RETURN NEW; END;\"\"\")\n}".into(),
             "only go in top-level blocks",
         ),
         (
@@ -1460,7 +1460,7 @@ fn deprecated_takes_exclusions_triggers_and_partial_objects_with_it() {
   title String
   legacy String @default(\"x\") @deprecated
   @@exclude([legacy(op: \"=\")], where: \"id > 0\")
-  @@trigger(touch, before: [update], update_of: [legacy], body: \"BEGIN RETURN NEW; END;\")
+  @@trigger(touch, when: before, operation: [update_of(legacy)], func: \"BEGIN RETURN NEW; END;\")
   @@index([title], where: \"legacy <> 'x'\")
   @@index([title], name: \"item_other_idx\", where: \"legacy_other IS NULL\")
   @@index([title], name: \"item_partial_uq\", unique: true, where: \"\\\"legacy\\\" = 'y'\")
@@ -2162,4 +2162,219 @@ fn constraint_false_sets_the_flag_and_refuses_the_actions() {
     assert!(e.contains("owns: does not go with constraint: false"), "{e}");
     let e = fails(&owning_src("postgresql", "", "@relation(fields: [spec_id], references: [id], constraint: 1)"));
     assert!(e.contains("constraint must be true or false"), "{e}");
+}
+
+fn trigger_schema(provider: &str, extra: &str, attrs: &str) -> String {
+    format!(
+        "datasource db {{\n  provider = \"{provider}\"\n  {extra}\n}}\nfunction f {{\nreturns = trigger\nlanguage = plpgsql\nbody = \"\"\"\nBEGIN RETURN NULL; END;\n\"\"\"\n}}\n\
+         model Item {{\n  id BigInt @id\n  title String\n  stock Int\n  updated_at DateTime\n  {attrs}\n}}\n"
+    )
+}
+
+fn pg_ddl(attrs: &str) -> String {
+    let (_, schema) = check(ok(&trigger_schema("postgresql", "", attrs))).unwrap_or_else(|e| panic!("{e}"));
+    crate::migrate::create_all(&schema).unwrap().into_iter().find(|s| s.contains("TRIGGER")).unwrap()
+}
+
+fn pg_fails(attrs: &str) -> String {
+    fails(&trigger_schema("postgresql", "", attrs))
+}
+
+#[test]
+fn create_tables_drops_a_constraint_trigger_before_it_creates_it() {
+    let (_, schema) = check(ok(&trigger_schema("postgresql", "", "@@trigger(t, when: after, operation: [insert], deferrable: deferred, func: f)"))).unwrap();
+    let plain = crate::migrate::create_all(&schema).unwrap().into_iter().find(|s| s.contains("TRIGGER")).unwrap();
+    assert!(plain.starts_with("DROP TRIGGER IF EXISTS \"t\" ON \"item\";\nCREATE CONSTRAINT TRIGGER \"t\" AFTER INSERT ON \"item\" DEFERRABLE INITIALLY DEFERRED"), "{plain}");
+    assert!(!plain.contains("OR REPLACE"), "{plain}");
+}
+
+#[test]
+fn a_trigger_takes_the_pgtrigger_arguments() {
+    let t = |attrs: &str| ok(&trigger_schema("postgresql", "", attrs)).models[0].triggers[0].clone();
+    let one = t("@@trigger(t, when: before, operation: [insert, update_of(title, stock), delete], condition: \"true\", func: \"BEGIN RETURN NEW; END;\")");
+    assert_eq!(one.timing, crate::ir::TriggerTiming::Before);
+    assert_eq!(one.events, [crate::ir::TriggerEvent::Insert, crate::ir::TriggerEvent::Update, crate::ir::TriggerEvent::Delete]);
+    assert_eq!(one.update_of, ["title", "stock"]);
+    assert_eq!(one.for_each, crate::ir::ForEach::Row);
+    assert_eq!(one.when.as_deref(), Some("true"));
+    assert_eq!(one.body.as_deref(), Some("BEGIN RETURN NEW; END;"));
+    // a single operation needs no list, and a list of conditions is joined with AND
+    let two = t("@@trigger(t, when: after, operation: update, level: statement, condition: [\"1 = 1\", raw(\"2 = 2\")], func: f, args: [\"a\"])");
+    assert_eq!(two.for_each, crate::ir::ForEach::Statement);
+    assert_eq!(two.when.as_deref(), Some("(1 = 1) AND (2 = 2)"));
+    assert_eq!((two.function.as_deref(), two.args.as_slice()), (Some("f"), ["a".to_owned()].as_slice()));
+    let three = t("@@trigger(t, referencing(old: o, new: n), when: after, operation: [update], level: statement, func: f)");
+    assert_eq!((three.old_table.as_deref(), three.new_table.as_deref()), (Some("o"), Some("n")));
+    let four = t("@@trigger(t, when: after, operation: [insert], deferrable: deferred, func: f)");
+    assert_eq!(four.deferrable, Some(crate::ir::Deferrable::Deferred));
+    let five = t("@@trigger(t, when: before, operation: [insert], declare: \"x int;\", func: \"BEGIN RETURN NEW; END;\")");
+    assert_eq!(five.declare.as_deref(), Some("x int;"));
+    let six = t("@@trigger(t, when: before, operation: [insert], skippable: true, func: \"BEGIN RETURN NEW; END;\")");
+    assert_eq!(six.skippable.as_deref(), Some("t"));
+    let seven = t("@@trigger(t, when: before, operation: [update], condition: [any_change(title, stock), all_dont_change(exclude: [title], exclude_auto: true)], func: \"BEGIN RETURN NEW; END;\")");
+    assert_eq!(seven.changes.len(), 2);
+    assert_eq!(seven.changes[0].fields, ["title", "stock"]);
+    assert!(seven.changes[1].exclude_auto && seven.changes[1].exclude == ["title"]);
+    let mut plain = ok(&trigger_schema("postgresql", "", "@@trigger(t, when: before, operation: [insert], func: \"x\")"));
+    plain.stamp_expression_records();
+    assert_eq!(plain.behavior.schema_contract_minor, 0);
+    let mut stamped = ok(&trigger_schema("postgresql", "", "@@trigger(t, when: after, operation: [insert], deferrable: immediate, func: f)"));
+    stamped.stamp_expression_records();
+    assert_eq!(stamped.behavior.schema_contract_minor, 8);
+}
+
+#[test]
+fn a_trigger_schema_error_names_the_rule() {
+    let body = "func: \"BEGIN RETURN NEW; END;\"";
+    let cases = [
+        (format!("@@trigger(t, referencing(new: n), when: after, operation: [insert, update], level: statement, {body})"), "referencing needs exactly one event"),
+        (format!("@@trigger(t, referencing(new: n), when: before, operation: [insert], level: statement, {body})"), "referencing needs when: after"),
+        (format!("@@trigger(t, referencing(new: n), when: after, operation: [update_of(title)], level: statement, {body})"), "referencing allows no update_of"),
+        (format!("@@trigger(t, referencing(new: n), when: after, operation: [insert], deferrable: deferred, {body})"), "referencing allows no deferrable"),
+        (format!("@@trigger(t, referencing(old: o), when: after, operation: [insert], level: statement, {body})"), "old: needs an update or delete event"),
+        (format!("@@trigger(t, referencing(new: n), when: after, operation: [delete], level: statement, {body})"), "new: needs an update or insert event"),
+        (format!("@@trigger(t, when: before, operation: [insert], deferrable: deferred, {body})"), "deferrable: needs when: after and level: row"),
+        (format!("@@trigger(t, when: after, operation: [insert], level: statement, deferrable: deferred, {body})"), "deferrable: needs when: after and level: row"),
+        (format!("@@trigger(t, when: instead_of, operation: [insert], level: statement, {body})"), "instead_of needs level: row"),
+        (format!("@@trigger(t, when: instead_of, operation: [insert], condition: \"true\", {body})"), "instead_of allows no condition:"),
+        (format!("@@trigger(t, when: instead_of, operation: [update_of(title)], {body})"), "instead_of allows no update_of"),
+        (format!("@@trigger(t, when: instead_of, operation: [insert], skippable: true, {body})"), "instead_of allows no skippable: true"),
+        (format!("@@trigger(t, when: after, operation: [truncate], {body})"), "truncate needs level: statement"),
+        (format!("@@trigger(t, when: before, operation: [update], level: statement, condition: any_change(title), {body})"), "needs level: row"),
+        (format!("@@trigger(t, when: before, operation: [insert, update], condition: any_change(title), {body})"), "update as the only event"),
+        (format!("@@trigger(t, when: before, operation: [update], level: statement, condition: \"NEW.stock > 0\", {body})"), "a statement-level condition cannot read OLD or NEW"),
+        (format!("@@trigger(t, when: before, operation: [insert], condition: \"OLD.stock > 0\", {body})"), "a condition of an insert trigger cannot read OLD"),
+        (format!("@@trigger(t, when: before, operation: [delete], condition: \"new.stock > 0\", {body})"), "a condition of a delete trigger cannot read NEW"),
+        (format!("@@trigger(t, when: before, operation: [update], condition: any_change(nope), {body})"), "nope"),
+        (format!("@@trigger(t, when: before, operation: [update, update_of(title)], {body})"), "update"),
+        (format!("@@trigger(t, when: before, operation: [insert, insert], {body})"), "twice"),
+        (format!("@@trigger(t, operation: [insert], {body})"), "say when it fires"),
+        (format!("@@trigger(t, when: before, {body})"), "operation"),
+        (format!("@@trigger(t, when: before, operation: [insert], declare: \"x int;\", func: f)"), "declare"),
+        (format!("@@trigger(t, when: before, operation: [insert], func: f, body: \"x\")"), "`body:` is removed"),
+        (format!("@@trigger(t, when: before, operation: [update], condition: any_change(title, exclude: [title]), {body})"), "exclude"),
+        (format!("@@trigger(t, when: before, operation: [update], condition: any_change(exclude: [title, stock, id, updated_at]), {body})"), "none"),
+    ];
+    for (attrs, expected) in cases {
+        let e = match compile(&trigger_schema("postgresql", "", &attrs), None).and_then(check) {
+            Ok(_) => panic!("{attrs}: expected an error"),
+            Err(e) => e,
+        };
+        assert!(e.contains(expected), "{attrs}\n  got: {e}\n  expected: {expected}");
+    }
+}
+
+#[test]
+fn a_row_word_inside_a_string_literal_is_no_row_read() {
+    let body = "func: \"BEGIN RETURN NEW; END;\"";
+    let attrs = |cond: &str| format!("@@trigger(t, when: before, operation: [insert], condition: \"{cond}\", {body})");
+    let accepted = |cond: &str| compile(&trigger_schema("postgresql", "", &attrs(cond)), None).and_then(check).map(|_| ());
+    accepted("NEW.title <> 'old.x'").unwrap();
+    accepted("NEW.title <> 'it''s old.x'").unwrap();
+    let e = accepted("NEW.title <> 'x' AND OLD.stock > 0").unwrap_err();
+    assert!(e.contains("a condition of an insert trigger cannot read OLD"), "{e}");
+}
+
+#[test]
+fn an_old_trigger_argument_names_the_new_one() {
+    for (attrs, expected) in [
+        ("@@trigger(t, before: [insert], func: f)", "`before:` is removed; use `when: before"),
+        ("@@trigger(t, after: [insert], func: f)", "`after:` is removed; use `when: after"),
+        ("@@trigger(t, instead_of: [insert], func: f)", "`instead_of:` is removed; use `when: instead_of"),
+        ("@@trigger(t, when: before, operation: [insert], for_each: statement, func: f)", "`for_each:` is removed; use `level:"),
+        ("@@trigger(t, when: before, operation: [update], update_of: [title], func: f)", "`update_of:` is removed; use `operation: [update_of(a, b)]`"),
+        ("@@trigger(t, when: before, operation: [insert], body: \"x\")", "`body:` is removed; use `func: \"...\"`"),
+        ("@@trigger(t, when: before, operation: [insert], function: f)", "`function:` is removed; use `func: <function block name>`"),
+        ("@@trigger(t, when: \"NEW.stock > 0\", operation: [insert], func: f)", "`condition: \"...\"`"),
+    ] {
+        let e = pg_fails(attrs);
+        assert!(e.contains(expected), "{attrs}\n  got: {e}\n  expected: {expected}");
+    }
+}
+
+#[test]
+fn trigger_ddl_has_deferral_transition_tables_and_helpers() {
+    assert_eq!(
+        pg_ddl("@@trigger(t, when: after, operation: [insert, update], deferrable: deferred, func: f)"),
+        "DROP TRIGGER IF EXISTS \"t\" ON \"item\";\nCREATE CONSTRAINT TRIGGER \"t\" AFTER INSERT OR UPDATE ON \"item\" DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION \"f\"()"
+    );
+    assert_eq!(
+        pg_ddl("@@trigger(t, when: after, operation: [insert], deferrable: immediate, func: f)"),
+        "DROP TRIGGER IF EXISTS \"t\" ON \"item\";\nCREATE CONSTRAINT TRIGGER \"t\" AFTER INSERT ON \"item\" DEFERRABLE INITIALLY IMMEDIATE FOR EACH ROW EXECUTE FUNCTION \"f\"()"
+    );
+    assert_eq!(
+        pg_ddl("@@trigger(t, referencing(old: o, new: n), when: after, operation: [update], level: statement, func: f)"),
+        "CREATE OR REPLACE TRIGGER \"t\" AFTER UPDATE ON \"item\" REFERENCING OLD TABLE AS \"o\" NEW TABLE AS \"n\" FOR EACH STATEMENT EXECUTE FUNCTION \"f\"()"
+    );
+    assert!(pg_ddl("@@trigger(t, referencing(new: n), when: after, operation: [insert], level: statement, func: f)").contains("REFERENCING NEW TABLE AS \"n\" FOR EACH STATEMENT"));
+    let helper = |h: &str| pg_ddl(&format!("@@trigger(t, when: before, operation: [update], condition: {h}, func: f)"));
+    assert!(helper("any_change(title, stock)").contains("WHEN ((OLD.\"title\" IS DISTINCT FROM NEW.\"title\" OR OLD.\"stock\" IS DISTINCT FROM NEW.\"stock\")) EXECUTE"));
+    assert!(helper("all_change(title, stock)").contains("WHEN ((OLD.\"title\" IS DISTINCT FROM NEW.\"title\" AND OLD.\"stock\" IS DISTINCT FROM NEW.\"stock\")) EXECUTE"));
+    assert!(helper("any_dont_change(title, stock)").contains("WHEN ((OLD.\"title\" IS NOT DISTINCT FROM NEW.\"title\" OR OLD.\"stock\" IS NOT DISTINCT FROM NEW.\"stock\")) EXECUTE"));
+    assert!(helper("all_dont_change(title, stock)").contains("WHEN ((OLD.\"title\" IS NOT DISTINCT FROM NEW.\"title\" AND OLD.\"stock\" IS NOT DISTINCT FROM NEW.\"stock\")) EXECUTE"));
+    let all = helper("any_change(exclude: [title])");
+    assert!(all.contains("OLD.\"id\"") && all.contains("OLD.\"stock\"") && all.contains("OLD.\"updated_at\"") && !all.contains("OLD.\"title\""), "{all}");
+    let both = helper("[any_change(title), \"NEW.stock > 0\"]");
+    assert!(both.contains("WHEN ((NEW.stock > 0) AND (OLD.\"title\" IS DISTINCT FROM NEW.\"title\"))"), "{both}");
+}
+
+#[test]
+fn exclude_auto_drops_the_fields_a_write_assignment_sets() {
+    use monorm::writes::{AssignValue, UpsertDefault, WriteAssignment, WriteKind};
+    let mut ir = ok(&trigger_schema("postgresql", "", "@@trigger(t, when: before, operation: [update], condition: any_change(exclude_auto: true), func: f)"));
+    ir.behavior.write_assignments.push(WriteAssignment {
+        source: "acme.touch".into(), model: "Item".into(), field: "updated_at".into(), on: vec![WriteKind::Update], value: AssignValue::Now, upsert: UpsertDefault::default(),
+    });
+    ir.stamp_expression_records();
+    let (_, schema) = check(ir).unwrap();
+    let ddl = crate::migrate::create_all(&schema).unwrap().into_iter().find(|s| s.contains("TRIGGER")).unwrap();
+    assert!(ddl.contains("OLD.\"title\"") && !ddl.contains("OLD.\"updated_at\""), "{ddl}");
+}
+
+#[test]
+fn a_skippable_trigger_gets_the_skip_guard_in_when() {
+    let attrs = "@@trigger(guarded, when: before, operation: [insert], condition: \"NEW.stock > 0\", skippable: true, func: \"BEGIN RETURN NEW; END;\")";
+    let with_roles = {
+        let (ir, schema) = check(ok(&trigger_schema("postgresql", "bypass_roles = [\"ops\"]", attrs))).unwrap();
+        assert_eq!(ir.models[0].triggers[0].skippable.as_deref(), Some("guarded"));
+        assert_eq!(schema.skippable_triggers().into_iter().collect::<Vec<_>>(), ["guarded"]);
+        crate::migrate::create_all(&schema).unwrap().into_iter().find(|s| s.contains("TRIGGER \"guarded\"")).unwrap()
+    };
+    assert!(with_roles.contains("WHEN ((NEW.stock > 0) AND (NOT ('guarded' = ANY(") && with_roles.contains("pg_has_role(session_user, 'ops', 'member')"), "{with_roles}");
+    // with no bypass_roles nobody can skip, so the trigger has no skip test
+    assert!(pg_ddl(attrs).contains("WHEN (NEW.stock > 0) EXECUTE"));
+    // a trigger without skippable: true has no guard
+    let plain = {
+        let (_, schema) = check(ok(&trigger_schema("postgresql", "bypass_roles = [\"ops\"]", "@@trigger(plain, when: before, operation: [insert], func: \"BEGIN RETURN NEW; END;\")"))).unwrap();
+        assert!(schema.skippable_triggers().is_empty());
+        crate::migrate::create_all(&schema).unwrap().into_iter().find(|s| s.contains("TRIGGER \"plain\"")).unwrap()
+    };
+    assert!(!plain.contains("WHEN"), "{plain}");
+}
+
+#[test]
+fn a_declared_variable_goes_in_front_of_the_body() {
+    let (_, schema) = check(ok(&trigger_schema("postgresql", "", "@@trigger(t, when: before, operation: [insert], declare: \"n int;\", func: \"BEGIN n := 1; RETURN NEW; END;\")"))).unwrap();
+    let all = crate::migrate::create_all(&schema).unwrap().join("\n");
+    assert!(all.contains("DECLARE n int; BEGIN n := 1; RETURN NEW; END;"), "{all}");
+}
+
+#[test]
+fn sqlite_refuses_the_postgresql_trigger_features() {
+    let sqlite = |attrs: &str| fails(&trigger_schema("sqlite", "", attrs).replace("function f {\nreturns = trigger\nlanguage = plpgsql\nbody = \"\"\"\nBEGIN RETURN NULL; END;\n\"\"\"\n}\n", ""));
+    let body = "func: \"SELECT 1\"";
+    for (attrs, expected) in [
+        (format!("@@trigger(t, referencing(new: n), when: after, operation: [update], {body})"), "`referencing` needs PostgreSQL; sqlite has no such trigger feature"),
+        (format!("@@trigger(t, when: after, operation: [insert], deferrable: deferred, {body})"), "`deferrable` needs PostgreSQL; sqlite has no such trigger feature"),
+        (format!("@@trigger(t, when: after, operation: [insert], declare: \"x int;\", {body})"), "`declare` needs PostgreSQL; sqlite has no such trigger feature"),
+    ] {
+        let e = sqlite(&attrs);
+        assert!(e.contains(expected), "{attrs}: {e}");
+    }
+    // a change helper and skippable work on SQLite: the helper is the SQLite null-safe test
+    let src = trigger_schema("sqlite", "", "@@trigger(t, when: before, operation: [update], condition: any_change(title), skippable: true, func: \"SELECT 1\")")
+        .replace("function f {\nreturns = trigger\nlanguage = plpgsql\nbody = \"\"\"\nBEGIN RETURN NULL; END;\n\"\"\"\n}\n", "");
+    let (_, schema) = check(ok(&src)).unwrap();
+    let ddl = crate::migrate::create_all(&schema).unwrap().join("\n");
+    assert!(ddl.contains("WHEN (OLD.\"title\" IS NOT NEW.\"title\")") && !ddl.contains("pg_has_role"), "{ddl}");
 }

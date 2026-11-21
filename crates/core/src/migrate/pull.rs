@@ -874,37 +874,45 @@ pub fn pull_claims(db: &DbSchema, gaps: &[String], claimed: &[ClaimedRule], obje
                 gaps.push(format!("trigger {}.{} calls {}, which is not pulled; it is left out", m.table.name, tr.name, tr.function));
                 continue;
             }
-            let events = |list: &[TriggerEvent]| -> String {
-                let names: Vec<&str> = list
-                    .iter()
-                    .map(|e| match e {
-                        TriggerEvent::Insert => "insert",
-                        TriggerEvent::Update => "update",
-                        TriggerEvent::Delete => "delete",
-                        TriggerEvent::Truncate => "truncate",
-                    })
-                    .collect();
-                format!("[{}]", names.join(", "))
-            };
+            let operations: Vec<String> = tr
+                .events
+                .iter()
+                .map(|e| match e {
+                    TriggerEvent::Insert => "insert".to_owned(),
+                    TriggerEvent::Update if !tr.update_of.is_empty() => {
+                        format!("update_of({})", tr.update_of.iter().map(|c| m.field(c)).collect::<Vec<_>>().join(", "))
+                    }
+                    TriggerEvent::Update => "update".to_owned(),
+                    TriggerEvent::Delete => "delete".to_owned(),
+                    TriggerEvent::Truncate => "truncate".to_owned(),
+                })
+                .collect();
             let timing = match tr.timing {
                 TriggerTiming::Before => "before",
                 TriggerTiming::After => "after",
                 TriggerTiming::InsteadOf => "instead_of",
             };
-            let name = if is_ident(&tr.name) { tr.name.clone() } else { quoted(&tr.name) };
-            let mut args = vec![name, format!("{timing}: {}", events(&tr.events))];
-            if !tr.update_of.is_empty() {
-                args.push(format!("update_of: {}", m.fields_list(&tr.update_of)));
+            let ident = |n: &str| if is_ident(n) { n.to_owned() } else { quoted(n) };
+            let mut args = vec![ident(&tr.name)];
+            if tr.old_table.is_some() || tr.new_table.is_some() {
+                let mut tables = Vec::new();
+                if let Some(o) = &tr.old_table { tables.push(format!("old: {}", ident(o))); }
+                if let Some(n) = &tr.new_table { tables.push(format!("new: {}", ident(n))); }
+                // a call value is positional, so it comes before the named arguments
+                args.push(format!("referencing({})", tables.join(", ")));
             }
+            args.push(format!("when: {timing}"));
+            args.push(format!("operation: [{}]", operations.join(", ")));
             if tr.for_each == ForEach::Statement {
-                args.push("for_each: statement".into());
+                args.push("level: statement".into());
             }
             if let Some(w) = &tr.when {
-                args.push(format!("when: {}", quoted(w)));
+                args.push(format!("condition: {}", quoted(w)));
             }
+            args.extend(deferrable(tr.deferrable).map(str::to_owned));
             match (&tr.body, dialect) {
-                (Some(body), Dialect::Sqlite) => args.push(format!("body: {}", quoted(body))),
-                _ => args.push(format!("function: {}", tr.function)),
+                (Some(body), Dialect::Sqlite) => args.push(format!("func: {}", quoted(body))),
+                _ => args.push(format!("func: {}", tr.function)),
             }
             if !tr.args.is_empty() {
                 args.push(format!("args: [{}]", tr.args.iter().map(|a| quoted(a)).collect::<Vec<_>>().join(", ")));
@@ -1204,7 +1212,7 @@ mod tests {
     fn trigger(name: &str, function: &str) -> crate::migrate::model::Trigger {
         crate::migrate::model::Trigger {
             name: name.into(), timing: TriggerTiming::After, events: vec![TriggerEvent::Update], update_of: vec![], for_each: ForEach::Row,
-            when: None, function: function.into(), body: None, args: vec![],
+            when: None, function: function.into(), body: None, args: vec![], old_table: None, new_table: None, deferrable: None,
         }
     }
 

@@ -64,9 +64,9 @@ async def test_pull_baseline_and_drift_of_a_django_style_database(tmp_path):
         assert '@@unique([domain], map: "account_shop_domain_9a1b2c3d_uniq")' in text
         assert 'ops: raw("varchar_pattern_ops")' in text
         assert "with: { fillfactor: 70 }" in text
-        # a trigger with REFERENCING transition tables is left out, not written without them
-        assert "@@trigger(account_shop_updated_at" not in text
-        assert any("account_shop_updated_at has REFERENCING transition tables" in g for g in pulled.gaps)
+        # a trigger with REFERENCING transition tables reads back with them
+        assert "@@trigger(account_shop_updated_at, referencing(new: new_rows), when: after, operation: [update], level: statement" in text
+        assert not any("account_shop_updated_at" in g for g in pulled.gaps)
         assert "function set_updated_at {" in text and "volatility = immutable" in text
         assert "status ShopStatus @default(active)" in text
         assert '@relation("BundlesBundle_parent"' in text
@@ -248,7 +248,7 @@ async def test_sqlite_triggers_pull_back_as_trigger_attributes_without_drift(tmp
         # a trigger in another form is a gap, not an attribute
         await db.execute("CREATE TRIGGER other AFTER INSERT ON tr_posts BEGIN SELECT 1; END")
         pulled = await pull(db)
-        assert '@@trigger(touch, after: [update], update_of: [title], when: "old.title <> new.title", body: ' in pulled.schema
+        assert '@@trigger(touch, when: after, operation: [update_of(title)], condition: "old.title <> new.title", func: ' in pulled.schema
         assert "@@trigger(other" not in pulled.schema
         assert any(g.startswith("trigger other on tr_posts") for g in pulled.gaps)
         assert not any(g.startswith("trigger tr_posts_touch_trigger") for g in pulled.gaps)

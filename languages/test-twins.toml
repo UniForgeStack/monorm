@@ -20,6 +20,8 @@
 # languages/python/tests/test_scope_rls.py
 "scope_rls::audit_names_a_missing_role_and_a_leftover_hand_written_policy" = "one-language: Python-only: runs `python -m monorm audit`, the Rust command both hosts share; crates/cli reaches the same code"
 "scope_rls::audit_names_a_dropped_policy_and_a_forced_flag_that_is_off" = "one-language: Python-only: runs `python -m monorm audit`, the Rust command both hosts share; crates/cli reaches the same code"
+# languages/python/tests/test_triggers.py
+"triggers::audit_lists_an_unknown_trigger_and_fails_on_a_disabled_or_an_outdated_one" = "one-language: Python-only: runs `python -m monorm audit`, the Rust command both hosts share; crates/cli reaches the same code"
 # languages/python/tests/test_admin_writes.py
 # languages/python/tests/test_admin_services.py
 "admin_services::a_threaded_sync_service_gets_plain_values_and_runs_database_calls_through_ctx_run" = "one-language: Python-only: a sync service runs in a thread; a TypeScript service is always async"

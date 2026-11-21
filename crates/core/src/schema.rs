@@ -175,6 +175,8 @@ pub struct Schema {
     model_index: HashMap<String, usize>,
     storage: Option<Box<Schema>>,
     pub owner_links: Vec<crate::behavior::PreparedOwnerLink>,
+    /// The roles of the datasource's `bypass_roles`: the skip guard of a skippable trigger names them.
+    pub bypass_roles: Vec<String>,
     published_scope_keys: std::collections::BTreeSet<String>,
 }
 
@@ -457,6 +459,7 @@ impl Schema {
             model_index,
             storage,
             owner_links,
+            bypass_roles: ir.bypass_roles,
             published_scope_keys: ir.behavior.published_scope_keys.iter().map(|k| k.key.clone()).collect(),
         })
     }

@@ -436,7 +436,7 @@ fn a_deprecated_base_field_keeps_the_physical_storage_and_leaves_the_child() {
 /// `hide` adds `@deprecated`; the column sits between `id` and `name`, with objects over it.
 fn legacy_storage(dialect: &str, hide: bool, objects: bool) -> monorm_core::schema::Schema {
     let postgres_only = if objects && dialect == "postgres" {
-        "  @@exclude([legacy(op: \"=\")], where: \"id > 0\")\n  @@trigger(touch, before: [update], update_of: [legacy], body: \"BEGIN RETURN NEW; END;\")\n"
+        "  @@exclude([legacy(op: \"=\")], where: \"id > 0\")\n  @@trigger(touch, when: before, operation: [update_of(legacy)], func: \"BEGIN RETURN NEW; END;\")\n"
     } else { "" };
     let indexes = if objects { "  @@index([legacy, name])\n  @@unique([legacy, name])\n" } else { "" };
     let mark = if hide { " @deprecated" } else { "" };
