@@ -736,6 +736,26 @@ test("first(), last(), at() and get() start no query until awaited", async () =>
     assert.equal(events.length, 7);
     await lazy.finally(() => undefined);
     assert.equal(events.length, 8);
+    // every form, on a query set and on a select, runs again on each await
+    const sel = User.objects.select({ name: User.name }).orderBy(User.name);
+    const forms = [
+      () => User.objects.first(),
+      () => User.objects.last(),
+      () => User.objects.at(1),
+      () => User.objects.get(User.name.eq("Bob")),
+      () => sel.first(),
+      () => sel.last(),
+      () => sel.at(1),
+      () => sel.get(User.name.eq("Bob")),
+    ];
+    for (const make of forms) {
+      const query: PromiseLike<unknown> = make();
+      const before: number = events.length;
+      const one = await query;
+      assert.equal(events.length, before + 1);
+      assert.deepEqual(await query, one);
+      assert.equal(events.length, before + 2);
+    }
   } finally {
     stop();
   }

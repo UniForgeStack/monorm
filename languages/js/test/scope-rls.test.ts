@@ -72,7 +72,7 @@ async function world(body: (owner: Database, connectAs: (kind: string) => Promis
   }
 }
 
-/** Raw SQL runs with no scope of its own, so the helper sets the setting for one transaction. */
+/** Raw SQL in a transaction that sets `scope.shop` by hand, with no `scope()` fill. */
 const raw = <T>(db: Database, shop: number, fn: () => Promise<T>): Promise<T> =>
   db.transaction(async () => {
     await db.execute(`SELECT set_config('scope.shop', '${shop}', true)`);
