@@ -151,9 +151,11 @@ type Wrap<K extends HopKind, T, Plain extends boolean> = K extends "one"
   ? T
   : K extends "opt"
     ? T | null
-    : Plain extends true
+    : K extends "list"
       ? readonly T[]
-      : { readonly cached: readonly T[] };
+      : Plain extends true
+        ? readonly T[]
+        : { readonly cached: readonly T[] };
 
 /**
  * What loading the relations of path `H` adds to a row: `Comment.post.author` gives
@@ -327,7 +329,7 @@ function loadPath(item: LoadEntry): readonly string[] {
 function toMany(meta: ModelMeta, hops: readonly string[]): boolean {
   for (const hop of hops) {
     const rel = meta.relationByIr.get(hop)!;
-    if (rel.kind === "hasMany" || rel.kind === "manyToMany") return true;
+    if (rel.kind === "hasMany" || rel.kind === "manyToMany" || rel.kind === "linkedMany") return true;
     meta = meta.registry.get(rel.target);
   }
   return false;

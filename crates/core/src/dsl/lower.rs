@@ -1300,6 +1300,50 @@ fn relation(
             Some((p, _)) => err(p, format!("{what}: {key}: takes a list, e.g. [author_id]")),
         }
     };
+    if let Some((pp, v)) = n.get("path") {
+        for key in ["fields", "references", "through", "through_fields", "onDelete", "onUpdate", "deferrable", "map", "owns", "constraint"] {
+            if let Some((p, _)) = n.get(key) {
+                return err(p, format!("{what}: path: makes a linked relation, which has no keys of its own; {key}: does not go with it"));
+            }
+        }
+        if name.is_some() {
+            return err(rel.pos, format!("{what}: path: does not go with a relation name"));
+        }
+        let hops = match v {
+            Value::List(items) if !items.is_empty() => items.iter().map(|(p, v)| name_of(*p, v, &what)).collect::<Result<Vec<_>>>()?,
+            _ => return err(pp, format!("{what}: path: takes a list of relation names, e.g. [posts, author]")),
+        };
+        n.finish()?;
+        let kind = if member.ty.list {
+            if member.ty.optional {
+                return err(member.ty.pos, format!("{what}: a to-many relation can't be optional"));
+            }
+            RelKind::Many
+        } else {
+            if !member.ty.optional {
+                return err(member.ty.pos, format!("{what}: a linked relation over to-one hops is optional: {target}?"));
+            }
+            RelKind::One
+        };
+        return Ok(RelationIr {
+            name: member.name.clone(),
+            kind,
+            target: target.clone(),
+            from: vec![],
+            to: vec![],
+            foreign_key: false,
+            on_delete: None,
+            on_update: None,
+            deferrable: None,
+            fk_name: None,
+            through: None,
+            label: None,
+            join_label: None,
+            owns: false,
+            path: hops,
+            constraint: true,
+        });
+    }
     if let Some((tp, v)) = n.get("through") {
         let join = name_of(tp, v, &what)?;
         let through_fields = n.names("through_fields")?;
@@ -1336,6 +1380,8 @@ fn relation(
                 label: Some(name.unwrap_or_default()),
                 join_label: Some(join),
                 owns: false,
+                path: vec![],
+                constraint: true,
             });
         }
         return many_to_many(m, member, &what, tp, &join, &through_fields, models);
@@ -1388,6 +1434,8 @@ fn relation(
                     label: Some(name.unwrap_or_default()),
                     join_label: None,
                     owns: false,
+                    path: vec![],
+                    constraint: true,
                 });
             }
             [] if name.as_deref().is_some_and(|n| n.contains("{model}")) => {
@@ -1453,6 +1501,8 @@ fn relation(
             label: None,
             join_label: None,
             owns: false,
+            path: vec![],
+            constraint: true,
         });
     };
     if member.ty.list {
@@ -1496,9 +1546,24 @@ fn relation(
         Some((p, v)) => Some(action(p, &name_of(p, v, &what)?)?),
         None => None,
     };
+    let constraint = match n.get("constraint") {
+        None => true,
+        Some((_, Value::Bool(b))) => *b,
+        Some((p, _)) => return err(p, format!("{what}: constraint must be true or false")),
+    };
+    if !constraint {
+        for key in ["onDelete", "onUpdate", "deferrable", "map"] {
+            if let Some((p, _)) = n.get(key) {
+                return err(p, format!("{what}: {key}: does not go with constraint: false, because no foreign key constraint exists to act"));
+            }
+        }
+    }
     let deferrable = deferrable(&mut n)?;
     let fk_name = n.str("map")?;
     let owns = n.bool("owns")?;
+    if owns && !constraint {
+        return err(rel.pos, format!("{what}: owns: does not go with constraint: false; an owned row needs the foreign key constraint"));
+    }
     n.finish()?;
     Ok(RelationIr {
         name: member.name.clone(),
@@ -1515,6 +1580,8 @@ fn relation(
         label: None,
         join_label: None,
         owns,
+        path: vec![],
+        constraint,
     })
 }
 
@@ -1612,6 +1679,8 @@ fn many_to_many(
         label: None,
         join_label: None,
         owns: false,
+        path: vec![],
+        constraint: true,
     })
 }
 

@@ -183,6 +183,7 @@ fn last_key(r: &RelationIr, field: &str) -> bool {
 /// The hop kind of a relation, for loaded-relation types.
 fn hop_kind(schema: &Schema, m: &Model, r: &RelationIr) -> Result<&'static str, String> {
     if r.kind == RelKind::One && super::reference_target_filtered(schema, &r.target) { return Ok("opt"); }
+    if !r.path.is_empty() { return Ok(if r.kind == RelKind::Many { "list" } else { "opt" }); }
     Ok(match r.kind {
         RelKind::Many if r.through.is_some() => "m2m",
         RelKind::Many => "many",
@@ -337,7 +338,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
                 writeln!(body, "  {}", monorm::extension::expand_adapter_template(member, "typescript", &m.fields()[a.position].name)).unwrap();
             }
         }
-        for r in &m.ir.relations {
+        for r in m.ir.relations.iter().filter(|r| r.path.is_empty()) {
             match r.kind {
                 RelKind::Many if r.through.is_some() => {
                     let queries = if has_queries(&r.target) { format!(" & QueriesOf<{}Spec>", r.target) } else { String::new() };
@@ -510,7 +511,7 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, runtime: &str
         }
         for r in &m.ir.relations {
             let kind = hop_kind(schema, m, r)?;
-            let scope = if matches!(kind, "many" | "m2m") { "S | Many" } else { "S" };
+            let scope = if matches!(kind, "many" | "m2m" | "list") { "S | Many" } else { "S" };
             let opt = if kind == "opt" { "true" } else { "O" };
             writeln!(
                 body,

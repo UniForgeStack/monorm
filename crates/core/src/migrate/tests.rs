@@ -2649,3 +2649,26 @@ fn an_owned_composed_model_is_deleted_at_its_root() {
     assert!(!f.body.contains("FROM \"children\" AS x WHERE x.\"id\""), "{}", f.body);
     assert!(f.body.contains("FROM \"notes\" AS x JOIN \"children\" AS m ON x.\"item_id\" = m.\"id\" WHERE m.\"id\" = \"parents\".\"id\""), "{}", f.body);
 }
+
+fn blog_without_constraint() -> Value {
+    let mut ir = blog(vec![], json!({}));
+    let relation = &mut ir["models"][1]["relations"][0];
+    relation["constraint"] = json!(false);
+    relation.as_object_mut().unwrap().remove("on_delete");
+    ir
+}
+
+#[test]
+fn a_relation_without_a_constraint_makes_no_foreign_key_and_the_diff_follows_the_flag() {
+    let with = schema(blog(vec![], json!({})));
+    let without = schema(blog_without_constraint());
+    let created = super::plan(&without, &DbSchema::default()).unwrap();
+    assert!(sql(&created.up).iter().all(|s| !s.contains("FOREIGN KEY")), "{:?}", sql(&created.up));
+    settled(&without, &created);
+    let first = super::plan(&with, &DbSchema::default()).unwrap();
+    let dropped = super::plan(&without, &first.snapshot).unwrap();
+    assert_eq!(sql(&dropped.up), vec!["ALTER TABLE \"posts\" DROP CONSTRAINT \"posts_author_id_fkey\""]);
+    assert!(sql(&dropped.down).iter().any(|s| s.contains("ADD CONSTRAINT \"posts_author_id_fkey\"")), "{:?}", sql(&dropped.down));
+    let added = super::plan(&with, &created.snapshot).unwrap();
+    assert!(sql(&added.up).iter().any(|s| s.contains("ADD CONSTRAINT \"posts_author_id_fkey\" FOREIGN KEY")), "{:?}", sql(&added.up));
+}

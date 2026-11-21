@@ -65,6 +65,7 @@ export type IRRelation = {
   to: string | string[];
   foreign_key?: boolean;
   through?: { model: string; source: string; target: string };
+  path?: string[];
   [key: string]: unknown;
 };
 
@@ -262,14 +263,18 @@ export class ModelMeta implements Source {
     const chain = registry.multiTable(ir.name);
     if (chain) this.attachInputFields = ir.fields.filter((f) => chain.local.has(f.name)).map((f) => this.fieldByIr.get(f.name)!);
     for (const r of ir.relations ?? []) {
-      const kind: RelationKind = r.through
-        ? "manyToMany"
-        : r.kind === "many"
-          ? "hasMany"
-          : r.foreign_key
-            ? "belongsTo"
-            : "hasOne";
-      const rm: RelationMeta = { name: camel(r.name), ir: r.name, kind, target: r.target, from: keyList(r.from), to: keyList(r.to), through: r.through };
+      const kind: RelationKind = r.path?.length
+        ? r.kind === "many"
+          ? "linkedMany"
+          : "linkedOne"
+        : r.through
+          ? "manyToMany"
+          : r.kind === "many"
+            ? "hasMany"
+            : r.foreign_key
+              ? "belongsTo"
+              : "hasOne";
+      const rm: RelationMeta = { name: camel(r.name), ir: r.name, kind, target: r.target, from: keyList(r.from), to: keyList(r.to), through: r.through, path: r.path ?? [] };
       if (this.fields.has(rm.name)) {
         throw new TypeError(`${ir.name}.${rm.name} is both a field and a relation`);
       }
@@ -409,7 +414,7 @@ export class ModelMeta implements Source {
         get(this: RelationPath<ModelSpec, string, never>) {
           const s = this[PATH];
           const p = Object.create(registry.get(r.target).pathProto) as Record<PropertyKey, unknown>;
-          const toOne = (r.kind === "belongsTo" || r.kind === "hasOne") && r.through === undefined;
+          const toOne = (r.kind === "belongsTo" || r.kind === "hasOne" || r.kind === "linkedOne") && r.through === undefined;
           const state: PathState = { root: s.root, path: [...s.path, r.ir], names: [...s.names, r.name], target: r.target, toOne, ...(s.rule ? { rule: s.rule } : {}), ...(s.alias ? { alias: s.alias } : {}) };
           p[PATH] = r.kind === "belongsTo" ? { ...state, belongsTo: belongsToKey(owner, s, r) } : state;
           return p;
@@ -631,6 +636,8 @@ function relationGetter(meta: ModelMeta, r: RelationMeta): (this: Row) => unknow
       };
     }
     case "hasOne":
+    case "linkedOne":
+    case "linkedMany":
       return function (this) {
         const loaded = this[RELATED];
         if (loaded && r.name in loaded) {
@@ -1184,7 +1191,7 @@ export interface FieldInfo {
 /** A relation of {@link describe}. `from` and `to` are field names of this model and the target. */
 export interface RelationInfo {
   readonly name: string;
-  readonly kind: "belongsTo" | "hasOne" | "hasMany" | "manyToMany";
+  readonly kind: "belongsTo" | "hasOne" | "hasMany" | "manyToMany" | "linkedOne" | "linkedMany";
   readonly target: ModelClass<ModelSpec>;
   /** The key fields in key order, including single-field keys. */
   readonly from: readonly string[];

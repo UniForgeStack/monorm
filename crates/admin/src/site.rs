@@ -979,7 +979,7 @@ fn merge_inline_pages(config: &mut Value) -> Result<(), ConfigError> {
 fn inline_relation<'a>(schema: &'a Schema, parent: &Resource, child: usize, via: Option<&str>, at: &str) -> Result<&'a monorm_core::ir::RelationIr, ConfigError> {
     let pm = schema.model(parent.model);
     let child_name = &schema.model(child).ir.name;
-    let leads = |rel: &monorm_core::ir::RelationIr| rel.kind == RelKind::Many && rel.through.is_none() && matches!(pm.relation(&rel.name), Ok((_, t)) if t == child);
+    let leads = |rel: &monorm_core::ir::RelationIr| rel.kind == RelKind::Many && rel.through.is_none() && rel.path.is_empty() && matches!(pm.relation(&rel.name), Ok((_, t)) if t == child);
     match via {
         Some(v) => {
             let Some(rel) = pm.ir.relations.iter().find(|r| r.name == v) else { return err(format!("{at}: via {v:?} is not a relation of {}", parent.name)) };
@@ -1091,7 +1091,7 @@ fn tabs_of(schema: &Schema, resources: &[Resource], i: usize) -> Result<Vec<Tab>
     let usable = |rel: &monorm_core::ir::RelationIr| -> Option<String> {
         let (_, target) = model.relation(&rel.name).ok()?;
         let child = resources.iter().find(|o| o.model == target)?;
-        (rel.kind == RelKind::Many && rel.through.is_none() && field_columns(schema, r.model, &rel.from).is_some() && field_columns(schema, child.model, &rel.to).is_some()).then(|| child.name.clone())
+        (rel.kind == RelKind::Many && rel.through.is_none() && rel.path.is_empty() && field_columns(schema, r.model, &rel.from).is_some() && field_columns(schema, child.model, &rel.to).is_some()).then(|| child.name.clone())
     };
     let mut out = Vec::new();
     match &r.tabs_config {

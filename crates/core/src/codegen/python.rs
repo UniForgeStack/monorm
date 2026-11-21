@@ -420,6 +420,12 @@ pub fn generate_with(ir: &SchemaIr, schema: &Schema, source: &str, options: &sup
         }
         for r in &m.ir.relations {
             match r.kind {
+                RelKind::Many if !r.path.is_empty() => {
+                    writeln!(body, "    {}: f.Linked[list[{}], _{}Path]", r.name, r.target, r.target).unwrap()
+                }
+                RelKind::One if !r.path.is_empty() => {
+                    writeln!(body, "    {}: f.Linked[{} | None, _{}Path]", r.name, r.target, r.target).unwrap()
+                }
                 RelKind::Many if r.through.is_some() => {
                     writeln!(body, "    {}: f.ManyToMany[{}, _{}Path]", r.name, r.target, r.target).unwrap()
                 }

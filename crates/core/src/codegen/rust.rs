@@ -12,6 +12,9 @@ pub fn generate(ir: &SchemaIr, schema: &Schema) -> Result<String, String> {
     if ir.dialect != schema.dialect {
         return Err("prepared schema dialect mismatch".into());
     }
+    if let Some((m, r)) = schema.models.iter().find_map(|m| m.ir.relations.iter().find(|r| !r.path.is_empty()).map(|r| (m, r))) {
+        return Err(format!("{}.{}: the Rust client does not support a linked relation (`path:`)", m.ir.name, r.name));
+    }
     // Do not accept an unrelated prepared schema and silently emit mismatched codecs.
     let prepared = Schema::from_ir_unbound(SchemaIr::from_json(&super::embedded_schema_json(ir)?)?)?;
     if prepared.models.len() != schema.models.len()

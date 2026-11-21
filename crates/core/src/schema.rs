@@ -48,7 +48,7 @@ pub struct Model {
     pub has_foreign_storage: bool,
     field_index: HashMap<String, usize>,
     /// relation name -> (index into `ir.relations`, target model index)
-    relation_index: HashMap<String, (usize, usize)>,
+    pub(crate) relation_index: HashMap<String, (usize, usize)>,
 }
 
 impl Model {
@@ -381,7 +381,7 @@ impl Schema {
                 if let Some(missing) = r.from.iter().find(|f| !field_index.contains_key(*f)) {
                     return Err(format!("relation {}.{}: no field {missing:?}", m.name, r.name));
                 }
-                if r.from.is_empty() || r.from.len() != r.to.len() {
+                if r.path.is_empty() && (r.from.is_empty() || r.from.len() != r.to.len()) {
                     return Err(format!("relation {}.{}: from and to need the same number of fields", m.name, r.name));
                 }
                 if r.through.is_some() && r.from.len() != 1 {
@@ -423,6 +423,7 @@ impl Schema {
                 }
             }
         }
+        crate::linked::validate(&models)?;
         crate::owning::validate(&models, &model_index, ir.dialect, &ir.behavior.scoped_fields, &ir.behavior.owner_links, &ir.behavior.field_storage)?;
         crate::selection::prepare(&mut models, &ir.behavior.read_defaults)?;
         crate::writes::prepare(&mut models, &model_index, &ir.behavior)?;

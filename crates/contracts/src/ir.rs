@@ -291,6 +291,12 @@ impl SchemaIr {
             self.behavior.schema_contract = SCHEMA_CONTRACT;
             self.behavior.schema_contract_minor = self.behavior.schema_contract_minor.max(6);
         }
+        // Contract 5.7 holds `RelationIr.path` and `RelationIr.constraint`. An engine of 5.6 would read a linked relation as a has-many with no key, and would add the foreign key that `constraint: false` leaves out.
+        let physical = self.behavior.storage.iter().flat_map(|s| &s.models);
+        if self.models.iter().chain(physical).flat_map(|m| &m.relations).any(|r| !r.path.is_empty() || !r.constraint) {
+            self.behavior.schema_contract = SCHEMA_CONTRACT;
+            self.behavior.schema_contract_minor = self.behavior.schema_contract_minor.max(7);
+        }
     }
 
     /// Parse the IR that generated models embed; an older ORM can write fields this one rejects.
@@ -775,6 +781,14 @@ pub struct RelationIr {
     /// Only a to-one side with key fields sets it; the database deletes the target with its last owner.
     #[serde(skip_serializing_if = "crate::ir::is_false", default)]
     pub owns: bool,
+    /// The relations to follow, in order, for a linked relation (schema contract 5.7): each name is a relation of the model
+    /// the previous hop reaches. A linked relation is read-only and has no key fields; `kind` is `One` when every hop is to-one.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub path: Vec<String>,
+    /// False on a to-one side with key fields that has no `FOREIGN KEY` constraint (schema contract 5.7).
+    /// `foreign_key` still marks the side that holds the key.
+    #[serde(skip_serializing_if = "crate::ir::is_true", default = "crate::ir::yes")]
+    pub constraint: bool,
 }
 
 impl RelationIr {
@@ -783,6 +797,7 @@ impl RelationIr {
         RelationIr {
             name: name.to_owned(), kind: RelKind::One, target: target.to_owned(), from: vec![from.to_owned()], to: vec![to.to_owned()],
             foreign_key: false, on_delete: None, on_update: None, deferrable: None, fk_name: None, through: None, label: None, join_label: None, owns: false,
+            path: vec![], constraint: true,
         }
     }
 }

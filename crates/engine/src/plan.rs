@@ -1483,7 +1483,19 @@ impl<'s> Planner<'s> {
 
         let mut sub = Query::select();
         sub.expr(SExpr::val(1));
-        let alias = self.add_hop(&mut sub, true, false, (&outer_alias, cur_model_idx), rel, target, "t")?;
+        let alias = if rel.path.is_empty() {
+            self.add_hop(&mut sub, true, false, (&outer_alias, cur_model_idx), rel, target, "t")?
+        } else {
+            // A linked relation is its own path: one EXISTS over every hop behind it.
+            let hops = monorm_core::linked::flatten(&self.schema.models, cur_model_idx, hop);
+            let (mut src_alias, mut src_model) = (outer_alias, cur_model_idx);
+            for (i, h) in hops.iter().enumerate() {
+                let (hr, ht) = self.model(src_model).relation(h).map_err(query_err)?;
+                src_alias = self.add_hop(&mut sub, i == 0, false, (&src_alias, src_model), hr, ht, "t")?;
+                src_model = ht;
+            }
+            src_alias
+        };
         self.scopes.push(Scope { path, model: target, alias });
         let body = body(self);
         self.scopes.pop();
@@ -1816,10 +1828,15 @@ impl<'s> Planner<'s> {
         let (alias, root) = self.outer[self.outer.len() - depth].clone();
         let mut sub = Query::select();
         let mut at = (alias, root);
-        for (k, hop) in path.iter().enumerate() {
-            let (rel, target) = self.model(at.1).relation(hop).map_err(query_err)?;
-            let next = self.add_hop(&mut sub, k == 0, false, (&at.0, at.1), rel, target, "o")?;
-            at = (next, target);
+        let mut first = true;
+        for hop in path {
+            // A linked relation is every hop behind it.
+            for h in monorm_core::linked::flatten(&self.schema.models, at.1, hop) {
+                let (rel, target) = self.model(at.1).relation(&h).map_err(query_err)?;
+                let next = self.add_hop(&mut sub, first, false, (&at.0, at.1), rel, target, "o")?;
+                first = false;
+                at = (next, target);
+            }
         }
         sub.expr(col(&at.0, &field.column));
         Ok(SExpr::SubQuery(None, Box::new(sub.into())))
@@ -2651,7 +2668,20 @@ impl<'s> Planner<'s> {
         for (k, hop) in hops.iter().enumerate() {
             let (rel, target) = self.model(outer.1).relation(hop).map_err(query_err)?;
             let left = k > 0 && rel.kind == RelKind::One && rel.through.is_none();
-            let alias = self.add_hop(&mut sub, k == 0, left, (&outer.0, outer.1), rel, target, "a")?;
+            let alias = if rel.path.is_empty() {
+                self.add_hop(&mut sub, k == 0, left, (&outer.0, outer.1), rel, target, "a")?
+            } else {
+                // A linked relation is every hop behind it, as one hop of the path.
+                let flat = monorm_core::linked::flatten(&self.schema.models, outer.1, hop);
+                let (mut src_alias, mut src_model) = outer.clone();
+                for (i, h) in flat.iter().enumerate() {
+                    let (hr, ht) = self.model(src_model).relation(h).map_err(query_err)?;
+                    let hop_left = left && hr.kind == RelKind::One && hr.through.is_none();
+                    src_alias = self.add_hop(&mut sub, k == 0 && i == 0, hop_left, (&src_alias, src_model), hr, ht, "a")?;
+                    src_model = ht;
+                }
+                src_alias
+            };
             self.scopes.push(Scope { path: path[..base.len() + k + 1].to_vec(), model: target, alias: alias.clone() });
             outer = (alias, target);
         }
@@ -2664,6 +2694,9 @@ impl<'s> Planner<'s> {
             // A LEFT-joined to-one tail has no row for a NULL key: count its primary key.
             let tail = match &self.scopes[pushed..] {
                 [.., prev, last] => Some((prev.model, last.model, last.path.clone())),
+                [last] if last.path.last().is_some_and(|h| self.model(self.scopes[pushed - 1].model).relation(h).is_ok_and(|(r, _)| !r.path.is_empty())) => {
+                    Some((self.scopes[pushed - 1].model, last.model, last.path.clone()))
+                }
                 _ => None,
             };
             if let Some((prev, target, path)) = tail {
@@ -2671,6 +2704,11 @@ impl<'s> Planner<'s> {
                 if rel.kind == RelKind::One && rel.through.is_none() {
                     let pk = Expr::Col { path, name: self.model(target).pk_field().name.clone(), sub: vec![], alias: vec![] };
                     return self.call("count", &[pk], false, c.filter, &[]);
+                }
+                // Two middle rows can reach one target: a linked relation counts it once.
+                if !rel.path.is_empty() {
+                    let pk = Expr::Col { path, name: self.model(target).pk_field().name.clone(), sub: vec![], alias: vec![] };
+                    return self.call("count", &[pk], true, c.filter, &[]);
                 }
             }
             self.call("count", &[], false, c.filter, &[])
@@ -2989,6 +3027,33 @@ impl<'s> Planner<'s> {
                     "{why} can only follow to-one relations; {} is to-many",
                     prefix.join(".")
                 )));
+            }
+            if !rel.path.is_empty() {
+                // A linked relation over to-one hops: one LEFT JOIN per hop behind it; the
+                // last one answers to the path of the linked relation.
+                let hops = monorm_core::linked::flatten(&self.schema.models, model, &path[i]);
+                let (mut src_alias, mut src_model) = (alias.clone(), model);
+                for (k, h) in hops.iter().enumerate() {
+                    let (hr, ht) = self.model(src_model).relation(h).map_err(query_err)?;
+                    if hr.kind != RelKind::One || hr.through.is_some() {
+                        return Err(Error::query(format!("{why} can only follow to-one relations; {} is to-many", prefix.join("."))));
+                    }
+                    let hop_alias = self.alias("j");
+                    let on = self.link((&src_alias, src_model), hr, (&hop_alias, ht))?;
+                    let on = match self.active_filter(self.model(ht), &self.policy_bypass) {
+                        Some(filter) => { self.filtered_joins.push(prefix.to_vec()); on.and(self.target_default(ht, &hop_alias, &filter)?) }
+                        None => on,
+                    };
+                    let on = match self.view_filter(ht, &hop_alias) { Some(filter) => on.and(filter), None => on };
+                    let mut at = prefix.to_vec();
+                    if k + 1 < hops.len() {
+                        at.push(format!("{}#{k}", path[i]));
+                    }
+                    self.joins.push((Scope { path: at, model: ht, alias: hop_alias.clone() }, on));
+                    (src_alias, src_model) = (hop_alias, ht);
+                }
+                (alias, model) = (src_alias, src_model);
+                continue;
             }
             let new_alias = self.alias("j");
             let on = self.link((&alias, model), rel, (&new_alias, target))?;
@@ -3853,6 +3918,38 @@ fn plan_prefetch(
     // the join row's source field, selected as an extra `_key` column
     let (mut key_field, mut key, mut child_key_pos) = (vec![], vec![], vec![]);
     match &rel.through {
+        None if !rel.path.is_empty() => {
+            // A linked relation: the distinct (parent key, target key) pairs over every hop,
+            // joined to the target, so one row per (parent, target) comes back.
+            let hops = monorm_core::linked::flatten(&schema.models, parent, &node.relation);
+            let mut sub = Query::select();
+            let palias = p.alias("p");
+            sub.from_as(Alias::new(pm.table()), Alias::new(&palias)).distinct();
+            let (mut src_alias, mut src_model) = (palias.clone(), parent);
+            for h in &hops {
+                let (hr, ht) = schema.model(src_model).relation(h).map_err(query_err)?;
+                src_alias = p.add_hop(&mut sub, false, false, (&src_alias, src_model), hr, ht, "l")?;
+                src_model = ht;
+            }
+            let lk = p.alias("lk");
+            let mut on = vec![];
+            for (i, f) in cm.key_fields().into_iter().enumerate() {
+                sub.expr_as(col(&src_alias, &f.column), Alias::new(format!("t{i}")));
+                on.push(col(p.root_alias(), &f.column).eq(col(&lk, &format!("t{i}"))));
+            }
+            for (i, f) in pm.key_fields().into_iter().enumerate() {
+                sub.expr_as(col(&palias, &f.column), Alias::new(format!("k{i}")));
+                plan.stmt.expr_as(col(&lk, &format!("k{i}")), Alias::new(format!("_key{i}")));
+                plan.types.push(f.value_type());
+                child_key_pos.push(plan.types.len() - 1);
+                key.push(col(&lk, &format!("k{i}")));
+                key_field.push(f.clone());
+            }
+            plan.stmt.join_subquery(JoinType::InnerJoin, sub, Alias::new(&lk), fold(on, true));
+            if selected && grouped {
+                plan.stmt.add_group_by(key.iter().cloned());
+            }
+        }
         None => {
             let positions = match &plan.output {
                 Output::Instances { shape, .. } => Some(shape_positions(cm, shape.as_ref())),
@@ -3921,7 +4018,7 @@ fn plan_prefetch(
         plan.stmt.with_cte(w);
     }
     // has-many / has-one: the child's to-one relation back to the parent is set too
-    let back = (!selected && !rel.foreign_key && rel.through.is_none())
+    let back = (!selected && !rel.foreign_key && rel.through.is_none() && rel.path.is_empty())
         .then(|| {
             cm.ir.relations.iter().find(|r| {
                 r.kind == RelKind::One
@@ -3933,11 +4030,15 @@ fn plan_prefetch(
         })
         .flatten()
         .map(|r| r.name.clone());
+    let parent_key: Vec<String> = match rel.path.is_empty() {
+        true => rel.from.clone(),
+        false => pm.key_fields().iter().map(|f| f.name.clone()).collect(),
+    };
     Ok(PrefetchPlan {
         attr: node.attr.clone().unwrap_or_else(|| node.relation.clone()),
         many,
-        key_pos: rel.from.iter().map(|f| pm.field_pos(f).map_err(query_err)).collect::<Result<_>>()?,
-        key_type: rel.from.iter().map(|f| Ok(pm.field(f).map_err(query_err)?.value_type())).collect::<Result<_>>()?,
+        key_pos: parent_key.iter().map(|f| pm.field_pos(f).map_err(query_err)).collect::<Result<_>>()?,
+        key_type: parent_key.iter().map(|f| Ok(pm.field(f).map_err(query_err)?.value_type())).collect::<Result<_>>()?,
         child_key_pos,
         names: node.names.clone(),
         filtered: plan.filtered,

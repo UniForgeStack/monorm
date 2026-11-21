@@ -89,7 +89,7 @@ fn lost_children(ir: &SchemaIr) -> Result<(), String> {
     for d in &opt_outs {
         if !d.arguments.is_empty() || !d.positional.is_empty() { return Err(error(d, "takes no argument")); }
         let Some(field) = &d.field else { return Err(d.error_with("@@", "write it on the relation field that cascades, not on the model")) };
-        let relation = models.iter().find(|m| m.name == d.model).is_some_and(|m| m.relations.iter().any(|r| &r.name == field && r.foreign_key));
+        let relation = models.iter().find(|m| m.name == d.model).is_some_and(|m| m.relations.iter().any(|r| &r.name == field && r.foreign_key && r.constraint));
         if !relation { return Err(error(d, format!("{}.{field} is no relation field with a foreign key; write the attribute on the relation field, for example on {}.author", d.model, d.model))); }
     }
     let table = |name: &str| models.iter().find(|m| m.name == name).map(|m| m.table.as_str());
@@ -98,7 +98,7 @@ fn lost_children(ir: &SchemaIr) -> Result<(), String> {
     let soft_roots: Vec<&str> = ir.behavior.delete_rewrites.iter().filter(|d| d.source == SOURCE).map(|d| d.model.as_str()).collect();
     let follows_root = |name: &str| tracking::composed_root(ir, name).is_some_and(|r| soft_roots.contains(&r.as_str()));
     for child in models.iter().filter(|m| !soft.contains(&m.table.as_str()) && !follows_root(&m.name)) {
-        for r in child.relations.iter().filter(|r| r.foreign_key && r.on_delete == Some(OnDelete::Cascade)) {
+        for r in child.relations.iter().filter(|r| r.foreign_key && r.constraint && r.on_delete == Some(OnDelete::Cascade)) {
             if !table(&r.target).is_some_and(|t| soft.contains(&t)) { continue; }
             // The link of a level to its parent is the composition itself.
             if ir.behavior.owner_links.iter().any(|l| l.child == child.name && l.parent == r.target && r.from == [l.child_key.clone()]) { continue; }
@@ -428,7 +428,7 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
             let role_model = composed.as_deref().unwrap_or(&child.name);
             let Some(child_field) = roles.iter().find(|c| c.model == role_model) else { continue };
             let Some(soft_model) = ir.models.iter().find(|m| m.name == role_model) else { continue };
-            for r in child.relations.iter().filter(|r| r.foreign_key && r.target == s.model && r.on_delete == Some(OnDelete::Cascade)) {
+            for r in child.relations.iter().filter(|r| r.foreign_key && r.constraint && r.target == s.model && r.on_delete == Some(OnDelete::Cascade)) {
                 // The link of a level to its parent is the composition itself: the root's soft delete covers every level.
                 if ir.behavior.owner_links.iter().any(|l| l.child == child.name && l.parent == r.target && r.from == [l.child_key.clone()]) { continue; }
                 if keeps_rows(ir, &child.name, &r.name) { continue; }
@@ -919,6 +919,14 @@ mod tests {
     fn a_relation_that_does_not_cascade_is_no_loss() {
         let mut ir = bare("postgres", "database");
         for m in ir.models.iter_mut().filter(|m| m.name == "Note") { m.relations[0].on_delete = Some(OnDelete::SetNull); }
+        checked(ir).unwrap();
+    }
+
+    #[test]
+    fn a_relation_without_a_constraint_is_no_loss() {
+        let mut ir = bare("postgres", "database");
+        assert!(checked(ir.clone()).is_err());
+        for m in ir.models.iter_mut().filter(|m| m.name == "Note") { m.relations[0].constraint = false; }
         checked(ir).unwrap();
     }
 

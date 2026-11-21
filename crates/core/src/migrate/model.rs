@@ -984,7 +984,7 @@ impl Builder<'_> {
         table.primary_key =
             Some(PrimaryKey { name: self.claim(name, m)?, columns: m.key_fields().iter().map(|f| f.column.clone()).collect() });
 
-        for r in m.ir.relations.iter().filter(|r| r.foreign_key) {
+        for r in m.ir.relations.iter().filter(|r| r.foreign_key && r.constraint) {
             let target = schema.model(schema.model_idx(&r.target)?);
             let columns = r.from.iter().map(|f| Ok(m.field(f)?.column.clone())).collect::<Result<Vec<_>>>()?;
             let default_name = {

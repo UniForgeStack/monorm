@@ -34,6 +34,13 @@ async function run(provider, url) {
     await AdminTeam.objects.using(db).insertMany([{ adminId: admin.pk, teamId: teams[2].pk }]);
     assert.deepEqual((await user.teams.using(db).all()).map((t) => t.name).sort(), ['dev', 'ops']);
     assert.deepEqual((await admin.teams.using(db).all()).map((t) => t.name), ['qa']);
+    // a linked relation of the abstract base resolves its hops on each child
+    const [loadedUser] = await User.objects.using(db).load(User.squads).all();
+    assert.deepEqual(loadedUser.squads.map((t) => t.name).sort(), ['dev', 'ops']);
+    const [loadedAdmin] = await Admin.objects.using(db).load(Admin.squads).all();
+    assert.deepEqual(loadedAdmin.squads.map((t) => t.name), ['qa']);
+    assert.deepEqual((await User.objects.using(db).filter(User.squads.name.eq('ops')).all()).map((u) => u.email), ['a@b.c']);
+    assert.equal(await Admin.objects.using(db).filter(Admin.squads.name.eq('ops')).count(), 0);
     assert.deepEqual((await teams[0].userTeams.using(db).all()).map((u) => u.email), ['a@b.c']);
     assert.deepEqual((await teams[2].adminTeams.using(db).all()).map((a) => a.email), ['x@y.z']);
   } finally {

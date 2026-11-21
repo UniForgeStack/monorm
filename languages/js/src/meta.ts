@@ -57,7 +57,7 @@ export type DefaultNames<M extends ModelSpec> = M extends { readonly defaults: i
 
 /**
  * One relation hop of a path, for the types of loaded relations: `one` (always there),
- * `opt` (nullable to-one), `many` (to-many), `m2m` (many-to-many).
+ * `opt` (nullable to-one), `many` (to-many), `m2m` (many-to-many), `list` (a linked to-many: a plain array).
  */
 export interface Hop<N extends string = string, K extends HopKind = HopKind, M extends ModelSpec = ModelSpec> {
   readonly name: N;
@@ -65,7 +65,7 @@ export interface Hop<N extends string = string, K extends HopKind = HopKind, M e
   readonly spec: M;
 }
 
-export type HopKind = "one" | "opt" | "many" | "m2m";
+export type HopKind = "one" | "opt" | "many" | "m2m" | "list";
 
 /** The value types a column accepts: `bigint` columns take safe-integer numbers too,
  * `Decimal` columns numbers and decimal text. */
@@ -104,7 +104,7 @@ export interface FieldMeta {
   readonly leaf?: { readonly group: string; readonly path: readonly string[]; readonly underNull: boolean; readonly rootRequired: boolean } | undefined;
 }
 
-export type RelationKind = "belongsTo" | "hasOne" | "hasMany" | "manyToMany";
+export type RelationKind = "belongsTo" | "hasOne" | "hasMany" | "manyToMany" | "linkedOne" | "linkedMany";
 
 export interface RelationMeta {
   readonly name: string;
@@ -115,6 +115,8 @@ export interface RelationMeta {
   readonly from: readonly string[];
   readonly to: readonly string[];
   readonly through: { readonly model: string; readonly source: string; readonly target: string } | undefined;
+  /** The relation names a linked relation reads through; empty for every other kind. */
+  readonly path: readonly string[];
 }
 
 /** `author_id` -> `authorId`: how schema names read in TypeScript. */

@@ -35,7 +35,7 @@ from .expr import (
     or_,
 )
 from . import pagination
-from .fields import BelongsTo, HasMany, ManyToMany, key_items, key_value
+from .fields import BelongsTo, HasMany, Linked, ManyToMany, key_items, key_value
 from .nested import NestedRef
 from .pagination import Page
 from . import adapters, debug
@@ -225,7 +225,7 @@ _LoadItem: TypeAlias = "ColumnRef[Any] | RelationPath[Any] | QuerySet[Any] | Lab
 def _to_many(model: type[Model], hops: tuple[str, ...]) -> bool:
     for hop in hops:
         rel = model._meta.relations[hop]
-        if isinstance(rel, (HasMany, ManyToMany)):
+        if isinstance(rel, (HasMany, ManyToMany)) or (isinstance(rel, Linked) and rel.kind == "many"):
             return True
         model = rel.target
     return False

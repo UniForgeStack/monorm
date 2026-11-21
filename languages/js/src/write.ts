@@ -40,6 +40,9 @@ function normalize(meta: ModelMeta, row: object, what: string, expressions: bool
       });
       continue;
     }
+    if (rel?.kind === "linkedOne" || rel?.kind === "linkedMany") {
+      throw new TypeError(`${meta.name}.${key} is a linked relation: read-only`);
+    }
     throw new TypeError(`${meta.name} has no field ${JSON.stringify(key)}`);
   }
   return values;

@@ -41,6 +41,13 @@ async def run(provider: str, url: str) -> None:
         await AdminTeam.objects.using(db).insert_many([{"admin_id": admin.pk, "team_id": teams[2].pk}])
         assert sorted(t.name for t in await user.teams.using(db).all()) == ["dev", "ops"]
         assert [t.name for t in await admin.teams.using(db).all()] == ["qa"]
+        # a linked relation of the abstract base resolves its hops on each child
+        (loaded,) = await User.objects.using(db).load(User.squads)
+        assert sorted(t.name for t in loaded.squads) == ["dev", "ops"]
+        (loaded,) = await Admin.objects.using(db).load(Admin.squads)
+        assert [t.name for t in loaded.squads] == ["qa"]
+        assert [u.email for u in await User.objects.using(db).filter(User.squads.name == "ops")] == ["a@b.c"]
+        assert await Admin.objects.using(db).filter(Admin.squads.name == "ops").count() == 0
         assert [u.email for u in await teams[0].user_teams.using(db).all()] == ["a@b.c"]
         assert [a.email for a in await teams[2].admin_teams.using(db).all()] == ["x@y.z"]
     finally:

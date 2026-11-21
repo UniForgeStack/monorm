@@ -379,7 +379,7 @@ fn compile_project_overlay(source: &str, origin: Option<&Path>, update: Option<I
                         "relation {}.{}: {{model}} in a through: name is only expanded in a relation that an extension pass derives; name the join model without it",
                         model.name, relation.name)));
                 }
-                if relation.label.is_some() || relation.through.is_none() && relation.from.is_empty() {
+                if relation.label.is_some() || relation.through.is_none() && relation.from.is_empty() && relation.path.is_empty() {
                     let named = relation.label.as_deref().filter(|l| !l.is_empty()).map(|l| format!(" named {l:?}")).unwrap_or_default();
                     return Err(at(&model.name, Some(&relation.name), format!(
                         "relation {}.{}: {} has no relation to {} with fields: / references:{named} after extension lowering",

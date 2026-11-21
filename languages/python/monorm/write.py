@@ -31,7 +31,7 @@ from . import _native
 from .expr import ColumnRef, Expression, IRContext, Ordering, Param, SlotParams, _Slot
 from .errors import QueryError
 from .index import IndexRef
-from .fields import BelongsTo
+from .fields import BelongsTo, Linked
 
 if TYPE_CHECKING:
     from .model import Model
@@ -52,6 +52,12 @@ __all__ = [
     "Delete",
     "Returning",
 ]
+
+
+def _no_field(meta: Any, name: str) -> TypeError:
+    if isinstance(meta.relations.get(name), Linked):
+        return TypeError(f"{meta.name}.{name} is a linked relation: read-only")
+    return TypeError(f"{meta.name} has no field {name!r}")
 
 
 def _key_of(value: Any, name: str) -> Any:
@@ -125,7 +131,7 @@ def prepare_rows(
             elif isinstance(rel := meta.relations.get(key), BelongsTo):
                 values.update(_link(rel, value))
             else:
-                raise TypeError(f"{meta.name} has no field {key!r}")
+                raise _no_field(meta, key)
         provided.update(values)
         for name, field in meta.input_fields.items():
             if name in values:
@@ -153,7 +159,7 @@ def lookup_values(model: type[Model], values: Mapping[str, Any]) -> dict[str, An
         if isinstance(rel := meta.relations.get(key), BelongsTo):
             items = _link(rel, value)
         elif key not in meta.input_fields and key not in meta.generated:
-            raise TypeError(f"{meta.name} has no field {key!r}")
+            raise _no_field(meta, key)
         else:
             items = {key: value}
         for key, value in items.items():
@@ -194,7 +200,7 @@ def prepare_update_rows(model: type[Model], rows: Iterable[Mapping[str, Any]]) -
             elif isinstance(rel := meta.relations.get(key), BelongsTo):
                 values.update(_link(rel, value))
             else:
-                raise TypeError(f"{meta.name} has no field {key!r}")
+                raise _no_field(meta, key)
         if any(values.get(k) is None for k in pk):
             raise ValueError(f"update_many row {n} has no {shown}")
         row_key = tuple(values[k] for k in pk)
@@ -275,7 +281,7 @@ def assignments(model: type[Model], values: Mapping[str, Any], ctx: IRContext) -
         rel = meta.relations.get(name)
         for name, value in (_link(rel, value) if isinstance(rel, BelongsTo) else {name: value}).items():
             if name not in meta.input_fields and name not in meta.generated:
-                raise TypeError(f"{meta.name} has no field {name!r}")
+                raise _no_field(meta, name)
             if isinstance(value, Ordering):
                 raise TypeError(
                     f"{name}={value!r} is an ordering, for order_by(); write 0 - {value.expr!r} to negate a value"

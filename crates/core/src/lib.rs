@@ -30,6 +30,7 @@ pub mod loader;
 
 pub mod ownership;
 pub mod owning;
+pub mod linked;
 
 pub mod field_adapters;
 pub mod identity;
