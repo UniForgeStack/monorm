@@ -86,7 +86,7 @@ def test_the_extensions_bundled_with_monorm_need_no_dependency() -> None:
     found = resolve_extensions()
     assert sorted(found) == [
         "monorm.composition", "monorm.file-storage", "monorm.generic", "monorm.history", "monorm.inherit", "monorm.locking",
-        "monorm.proto", "monorm.proxy", "monorm.query-defaults", "monorm.scope", "monorm.soft-delete", "monorm.timestamps",
+        "monorm.proto", "monorm.proxy", "monorm.query-defaults", "monorm.scope", "monorm.soft-delete", "monorm.timestamps", "monorm.write-rules",
     ]
     for manifest in found.values():
         assert Path(manifest).exists(), manifest
@@ -327,6 +327,61 @@ async def test_a_value_that_the_caller_sets_goes_through_the_hook_that_assigns_t
         with monorm.scope(shop=1):
             with pytest.raises(monorm.QueryError, match="no user in the request scope"):
                 await notes.filter(Note.id == 1).update(updated_by="eve")
+    finally:
+        await db.close()
+
+
+ASSIGNED = (
+    'datasource db { provider = "sqlite" }\n'
+    "model Note {\n id Int @id\n text String\n start Int\n end Int\n shop_id Int\n updated_by String?\n origin String?\n badge String?\n @@outside.guard\n}\n"
+)
+
+
+async def test_an_insert_assignment_fills_only_the_values_that_an_insert_omits(site: Path, outside_library: Path) -> None:
+    install_outside(site, outside_library)
+    registry = monorm.Registry()
+    Note = monorm.loads(ASSIGNED, registry=registry)["Note"]
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
+    try:
+        await db.create_tables()
+        notes = Note.objects.using(db)
+        base = {"text": "a", "start": 1, "end": 2, "shop_id": 1}
+        with monorm.scope(shop=1, user="ann"):
+            omitted = await notes.insert(id=1, **base)
+            assert (omitted.origin, omitted.badge) == ("ann", "guarded")
+            supplied = await notes.insert(id=2, origin="bob", badge="mine", **base)
+            assert (supplied.origin, supplied.badge) == ("bob", "mine")
+            await notes.insert_many([{"id": 3, "origin": "cy", **base}, {"id": 4, **base}, {"id": 5, "badge": "own", **base}])
+            by_id = {n.id: (n.origin, n.badge) for n in await notes.all()}
+            assert by_id[3] == ("cy", "guarded") and by_id[4] == ("ann", "guarded") and by_id[5] == ("ann", "own")
+    finally:
+        await db.close()
+
+
+TWO_TABLE_ASSIGNED = (
+    'datasource db { provider = "sqlite" }\n'
+    "model Account {\n id Int @id @default(autoincrement())\n email String\n text String\n start Int\n end Int\n shop_id Int\n updated_by String?\n origin String?\n badge String?\n @@outside.guard\n}\n"
+    'model Staff {\n bio String\n @@outside.base(parent: "Account", parentRef: "account", childRef: "staff")\n}\n'
+)
+
+
+async def test_a_two_table_insert_assigns_the_omitted_values_of_the_child_table(site: Path, outside_library: Path) -> None:
+    install_outside(site, outside_library)
+    registry = monorm.Registry()
+    Staff = monorm.loads(TWO_TABLE_ASSIGNED, registry=registry)["Staff"]
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
+    try:
+        await db.create_tables()
+        staff = Staff.objects.using(db)
+        base = {"text": "t", "start": 1, "end": 2, "shop_id": 1, "bio": "b"}
+        with monorm.scope(shop=1, user="ann"):
+            omitted = await staff.insert(email="ada@x.io", **base)
+            assert (omitted.origin, omitted.badge) == ("ann", "guarded")
+            supplied = await staff.insert(email="bo@x.io", origin="bob", badge="mine", **base)
+            assert (supplied.origin, supplied.badge) == ("bob", "mine")
+            await staff.insert_many([{"email": "cy@x.io", "origin": "cy", **base}, {"email": "di@x.io", **base}])
+            by_email = {r.email: (r.origin, r.badge) for r in await staff.all()}
+            assert by_email == {"ada@x.io": ("ann", "guarded"), "bo@x.io": ("bob", "mine"), "cy@x.io": ("cy", "guarded"), "di@x.io": ("ann", "guarded")}
     finally:
         await db.close()
 

@@ -1,0 +1,32 @@
+id = "monorm.write-rules"
+version = "0.1.2"
+abi = "0.2"
+library = "monorm_write_rules"
+schema_contract = "5.10"
+language_contract = 1
+languages = ["python", "typescript"]
+databases = ["postgres", "sqlite"]
+capabilities = ["schema-transformations", "physical-schema"]
+
+[[passes]]
+id = "monorm.write-rules.prepare"
+phase = "behavior"
+additive = ["behavior.write_rules"]
+
+[[attributes]]
+name = "write_rules.protect"
+target = "model"
+[attributes.arguments.operation]
+kind = "trigger_events"
+[attributes.arguments.layer]
+kind = "value"
+[attributes.arguments.action]
+kind = "value"
+[attributes.arguments.condition]
+kind = "trigger_condition"
+[attributes.arguments.skippable]
+kind = "boolean"
+
+[[attributes]]
+name = "write_rules.read_only"
+target = "field"

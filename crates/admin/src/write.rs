@@ -5,7 +5,7 @@
 //! loaded, the statement, one audit row, then the commit. The admin sets no scope value of its own: the read defaults that
 //! read a `scope.<name>` value are off in the lock read too.
 //!
-//! A model with host behavior (hooks, a hook assignment or default), a `@@protected_write` model that the resource
+//! A model with host behavior (hooks, a hook assignment or default), a protected model that the resource
 //! opens and a resource with a service write through host code: see `hostwrite`.
 
 use std::collections::BTreeMap;
@@ -46,16 +46,63 @@ pub(crate) const MAX_BODY: usize = 1 << 20;
 /// The width of the record label in the audit row.
 const LABEL_WIDTH: usize = 200;
 
-/// Why the admin does not write to this model, or none when it does.
-pub fn read_only_reason(schema: &Schema, r: &Resource) -> Option<String> {
-    (schema.model(r.model).ir.protected_write && !r.allow_protected).then(|| "this model is @@protected_write: set allow_protected_writes=True on its admin resource to write it".into())
+const WRITES: [Op; 3] = [Op::Create, Op::Update, Op::Delete];
+
+fn event(op: Op) -> Option<ir::TriggerEvent> {
+    match op {
+        Op::Create => Some(ir::TriggerEvent::Insert),
+        Op::Update => Some(ir::TriggerEvent::Update),
+        Op::Delete => Some(ir::TriggerEvent::Delete),
+        Op::Read => None,
+    }
 }
 
-/// `read_only_reason` for a model that is not a resource, such as the join model of a many-to-many relation.
+fn db_applies(schema: &Schema, rule: &monorm_core::writes::WriteRule) -> bool {
+    rule.layer.db() && !(rule.skippable && !schema.dialect.is_postgres())
+}
+
+fn blocked_rule(schema: &Schema, rule: &monorm_core::writes::WriteRule, allow_protected: bool) -> bool {
+    (rule.layer.app() && !allow_protected)
+        || (db_applies(schema, rule) && !(allow_protected && rule.skippable && !schema.bypass_roles.is_empty()))
+}
+
+/// Why the admin does not offer this operation.
+pub(crate) fn write_reason(schema: &Schema, r: &Resource, op: Op) -> Option<String> {
+    let event = event(op)?;
+    let table = schema.model(r.model).table();
+    schema.storage_chain(r.model).find_map(|owner| {
+        schema.write_rules.iter()
+            .find(|rule| rule.model == owner.ir.name && rule.operations.contains(&event) && rule.condition.is_none()
+                && (event != ir::TriggerEvent::Update || rule.fields.is_empty())
+                && blocked_rule(schema, rule, r.allow_protected && owner.table() == table))
+            .map(|rule| format!("this model is write-protected by rule {}", rule.name))
+    })
+}
+
+/// A reason shared by an entirely read-only form.
+pub fn read_only_reason(schema: &Schema, r: &Resource) -> Option<String> {
+    let mut reasons = WRITES.iter().map(|op| write_reason(schema, r, *op));
+    let first = reasons.next().flatten()?;
+    reasons.all(|reason| reason.is_some()).then_some(first)
+}
+
+fn field_protected(schema: &Schema, r: &Resource, field: &FieldIr) -> bool {
+    let model = schema.model(r.model);
+    let Ok(position) = model.field_pos(&field.name) else { return false };
+    let storage = model.resolved_fields[position].storage;
+    let table = schema.physical().model(storage.owner.0);
+    let stored = &table.fields()[storage.column].name;
+    schema.write_rules.iter().any(|rule| rule.model == table.ir.name
+        && rule.operations.contains(&ir::TriggerEvent::Update)
+        && rule.condition.is_none() && blocked_rule(schema, rule, r.allow_protected && table.table() == model.table())
+        && rule.fields.contains(stored))
+}
+
+/// Restrictions of a model that is not a resource, such as a many-to-many join table.
 pub(crate) fn model_read_only_reason(schema: &Schema, model: usize) -> Option<String> {
     let m = schema.model(model);
-    if m.ir.protected_write {
-        return Some("this model is @@protected_write: its writes need host code, which the admin does not run yet".into());
+    if schema.rules_for_model(model).any(|rule| blocked_rule(schema, rule, false)) {
+        return Some("this model has a write rule".into());
     }
     let hook_assignment = m.assignments.iter().any(|a| matches!(a.value, AssignValue::Hook { .. } | AssignValue::ExprHook { .. }));
     let hook_default = m.client_defaults.iter().any(|(_, d)| matches!(d, monorm_core::client_default::ClientDefault::Hook(_)));
@@ -83,7 +130,7 @@ pub fn form_meta(schema: &Schema, r: &Resource) -> Value {
                 "file": r.files.contains(&c.field),
                 "required": !f.nullable && !has_default(f),
                 "default": has_default(f),
-                "readonly_on_update": key,
+                "readonly_on_update": key || field_protected(schema, r, f),
                 "readonly": r.form.readonly.contains(&c.label),
                 "widget": r.form.widgets.get(&c.label).map_or_else(|| crate::meta::widget(c), String::as_str),
                 "max_length": f.max_length,
@@ -174,7 +221,7 @@ pub(crate) async fn open_head<'a>(s: &'a State_, user: Option<Extension<User>>, 
     if !s.site.allows(&grants, &resource, op) {
         return Err(Box::new(deny(&s.site, scope, &user, &resource.name, json!({"needs": s.site.requires(&resource, op)})).await));
     }
-    if let Some(reason) = read_only_reason(&s.site.schema, &resource) {
+    if let Some(reason) = write_reason(&s.site.schema, &resource, op) {
         scope.rollback().await;
         return Err(Box::new(reject(StatusCode::FORBIDDEN, "ReadOnly", &reason)));
     }
@@ -256,6 +303,9 @@ pub(crate) fn list_failure(meta: &Meta, e: ListError) -> Response {
 
 /// The failure of a statement: a constraint becomes a message for a field or the form; anything else a server error.
 pub(crate) fn statement_failure(site: &Site, r: &Resource, meta: &Meta, written: &[String], deleting: bool, e: Error) -> Response {
+    if let Error::WriteProtected(monorm_engine::error::WriteProtection::Database { message }) = &e {
+        return reject(StatusCode::FORBIDDEN, "WriteProtected", message);
+    }
     if let Error::Db(d) = &e {
         if let Some(p) = constraint_problems(&site.schema, r, written, deleting, d) {
             return p.response();
@@ -513,7 +563,7 @@ pub(crate) fn convert_set(site: &Site, r: &Resource, set: &Map<String, Value>, u
             problems.field(name, "This field cannot be written.");
             continue;
         };
-        if r.form.readonly.contains(name) {
+        if r.form.readonly.contains(name) || (updating && field_protected(&site.schema, r, f)) {
             problems.field(name, "This field is read-only.");
             continue;
         }

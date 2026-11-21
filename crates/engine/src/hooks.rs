@@ -174,12 +174,13 @@ fn row<R: Slots + ?Sized>(model: &Model, plan: &HookPlan, map: &[Option<usize>],
 
 /// Gives the value that the caller supplied for an assigned field to its point-4 hook, which keeps, replaces or rejects it.
 /// A field that the caller leaves out gets its value from `assigned`.
-fn assign_row<R: Slots + ?Sized>(model: &Model, plan: &HookPlan, map: &[Option<usize>], row: &mut R, skip: usize, contexts: &Contexts) -> Result<()> {
+fn assign_row<R: Slots + ?Sized>(model: &Model, plan: &HookPlan, map: &[Option<usize>], row: &mut R, skip: usize, kind: WriteKind, contexts: &Contexts) -> Result<()> {
     for (p, hook) in &plan.assign {
         let Some(s) = map.get(*p).copied().flatten().filter(|s| *s >= skip) else { continue };
-        let on_update = model.assignments.iter().any(|a| a.field == *p && matches!(a.value, AssignValue::Hook { .. }) && a.applies_to(WriteKind::Update));
-        if !on_update { continue; }
+        let applies = model.assignments.iter().any(|a| a.field == *p && matches!(a.value, AssignValue::Hook { .. }) && a.applies_to(kind));
+        if !applies { continue; }
         let Some(value) = row.slot(s) else {
+            if kind == WriteKind::Insert { continue; }
             return Err(Error::query(format!("{}.{}: a hook assigns this field; supply a value, not a database expression", model.ir.name, model.fields()[*p].name)));
         };
         let mut abi = to_abi(model, *p, value)?;
@@ -195,7 +196,7 @@ pub fn update_set(model: &Model, positions: &[usize], values: &mut [Option<Value
     let map = input_map(model.fields().len(), positions)?;
     let contexts = Contexts::new(params);
     row(model, plan, &map, values, 0, &contexts)?;
-    assign_row(model, plan, &map, values, 0, &contexts)
+    assign_row(model, plan, &map, values, 0, WriteKind::Update, &contexts)
 }
 
 /// The statement-level checks of an insert: the supplied fields, and the upsert.
@@ -219,7 +220,10 @@ pub fn insert_rows(model: &Model, map: &[Option<usize>], rows: &mut [Vec<Option<
     let Some(plan) = model.hooks.as_deref() else { return Ok(()) };
     insert_fields(model, plan, map, upsert)?;
     let contexts = Contexts::new(params);
-    rows.iter_mut().try_for_each(|r| row(model, plan, map, r.as_mut_slice(), 0, &contexts))
+    rows.iter_mut().try_for_each(|r| {
+        row(model, plan, map, r.as_mut_slice(), 0, &contexts)?;
+        assign_row(model, plan, map, r.as_mut_slice(), 0, WriteKind::Insert, &contexts)
+    })
 }
 
 /// Runs the hooks on the rows of an `update_many`; slot 0 is the key.
@@ -228,7 +232,7 @@ pub fn update_rows(model: &Model, map: &[Option<usize>], rows: &mut [Vec<Value>]
     let contexts = Contexts::new(params);
     rows.iter_mut().try_for_each(|r| {
         row(model, plan, map, r.as_mut_slice(), 1, &contexts)?;
-        assign_row(model, plan, map, r.as_mut_slice(), 1, &contexts)
+        assign_row(model, plan, map, r.as_mut_slice(), 1, WriteKind::Update, &contexts)
     })
 }
 
@@ -246,6 +250,15 @@ pub fn assigned(model: &Model, position: usize, contexts: &Contexts) -> Result<O
 pub fn expression(model: &Model, position: usize, insert: bool, contexts: &Contexts) -> Result<Option<monorm_core::ir::Expr>> {
     let Some(plan) = model.hooks.as_deref() else { return Ok(None) };
     let Some(hook) = (if insert { plan.expr_defaulter(position) } else { plan.expr_assigner(position) }) else { return Ok(None) };
+    evaluate_expression(model, position, hook, insert, contexts)
+}
+
+pub fn assignment_expression(model: &Model, position: usize, insert: bool, contexts: &Contexts) -> Result<Option<monorm_core::ir::Expr>> {
+    let Some(hook) = model.hooks.as_deref().and_then(|plan| plan.expr_assigner(position)) else { return Ok(None) };
+    evaluate_expression(model, position, hook, insert, contexts)
+}
+
+fn evaluate_expression(model: &Model, position: usize, hook: &HookRef, insert: bool, contexts: &Contexts) -> Result<Option<monorm_core::ir::Expr>> {
     let json = hook.expression(contexts.of(hook)?).map_err(|m| failure(model, Some(position), m))?;
     let label = format!("{}.{}", model.ir.name, model.fields()[position].name);
     monorm_core::writes::parse_expr(&json, !insert).map(Some).map_err(|e| Error::query(format!("{label}: the expression hook returned an expression that a statement cannot use: {e}")))

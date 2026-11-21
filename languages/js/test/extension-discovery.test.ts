@@ -116,7 +116,7 @@ test("the extensions bundled with monorm need no dependency", (t) => {
   const found = resolveExtensions(join(root, "schema.prisma"));
   assert.deepEqual(Object.keys(found).sort(), [
     "monorm.composition", "monorm.file-storage", "monorm.generic", "monorm.history", "monorm.inherit", "monorm.locking",
-    "monorm.proto", "monorm.proxy", "monorm.query-defaults", "monorm.scope", "monorm.soft-delete", "monorm.timestamps",
+    "monorm.proto", "monorm.proxy", "monorm.query-defaults", "monorm.scope", "monorm.soft-delete", "monorm.timestamps", "monorm.write-rules",
   ]);
   for (const manifest of Object.values(found)) assert.ok(existsSync(manifest), manifest);
   assert.deepEqual(resolveExtensions(join(directory(t), "schema.prisma")), found);
@@ -345,6 +345,50 @@ test("a value that the caller sets goes through the hook that assigns the field"
     });
     await scope({ shop: 1 }, async () => {
       await assert.rejects(notes.filter(Note.id.eq(1)).update({ updatedBy: "eve" }), /no user in the request scope/);
+    });
+  } finally { await db.close(); }
+});
+
+const ASSIGNED = 'datasource db { provider = "sqlite" }\nmodel Note {\n id Int @id\n text String\n start Int\n end Int\n shop_id Int\n updated_by String?\n origin String?\n badge String?\n @@outside.guard\n}\n';
+
+test("an insert assignment fills only the values that an insert omits", { timeout: 300_000 }, async (t) => {
+  const { root } = installOutside(t);
+  const { Note } = load(write(join(root, "schema.prisma"), ASSIGNED), { registry: new Registry() }) as Record<string, any>;
+  const db = await connect("sqlite://:memory:", { default: false, registry: Note._meta.registry });
+  try {
+    await db.createTables();
+    const notes = Note.objects.using(db);
+    const base = { text: "a", start: 1, end: 2, shopId: 1 };
+    await scope({ shop: 1, user: "ann" }, async () => {
+      const omitted = await notes.insert({ id: 1, ...base });
+      assert.deepEqual([omitted.origin, omitted.badge], ["ann", "guarded"]);
+      const supplied = await notes.insert({ id: 2, origin: "bob", badge: "mine", ...base });
+      assert.deepEqual([supplied.origin, supplied.badge], ["bob", "mine"]);
+      await notes.insertMany([{ id: 3, origin: "cy", ...base }, { id: 4, ...base }, { id: 5, badge: "own", ...base }]);
+      const byId = Object.fromEntries((await notes.all()).map((n: any) => [n.id, [n.origin, n.badge]]));
+      assert.deepEqual([byId[3], byId[4], byId[5]], [["cy", "guarded"], ["ann", "guarded"], ["ann", "own"]]);
+    });
+  } finally { await db.close(); }
+});
+
+const TWO_TABLE_ASSIGNED = 'datasource db { provider = "sqlite" }\nmodel Account {\n id Int @id @default(autoincrement())\n email String\n text String\n start Int\n end Int\n shop_id Int\n updated_by String?\n origin String?\n badge String?\n @@outside.guard\n}\nmodel Staff {\n bio String\n @@outside.base(parent: "Account", parentRef: "account", childRef: "staff")\n}\n';
+
+test("a two-table insert assigns the omitted values of the child table", { timeout: 300_000 }, async (t) => {
+  const { root } = installOutside(t);
+  const { Staff } = load(write(join(root, "schema.prisma"), TWO_TABLE_ASSIGNED), { registry: new Registry() }) as Record<string, any>;
+  const db = await connect("sqlite://:memory:", { default: false, registry: Staff._meta.registry });
+  try {
+    await db.createTables();
+    const staff = Staff.objects.using(db);
+    const base = { text: "t", start: 1, end: 2, shopId: 1, bio: "b" };
+    await scope({ shop: 1, user: "ann" }, async () => {
+      const omitted = await staff.insert({ email: "ada@x.io", ...base });
+      assert.deepEqual([omitted.origin, omitted.badge], ["ann", "guarded"]);
+      const supplied = await staff.insert({ email: "bo@x.io", origin: "bob", badge: "mine", ...base });
+      assert.deepEqual([supplied.origin, supplied.badge], ["bob", "mine"]);
+      await staff.insertMany([{ email: "cy@x.io", origin: "cy", ...base }, { email: "di@x.io", ...base }]);
+      const byEmail = Object.fromEntries((await staff.all()).map((r: any) => [r.email, [r.origin, r.badge]]));
+      assert.deepEqual(byEmail, { "ada@x.io": ["ann", "guarded"], "bo@x.io": ["bob", "mine"], "cy@x.io": ["cy", "guarded"], "di@x.io": ["ann", "guarded"] });
     });
   } finally { await db.close(); }
 });

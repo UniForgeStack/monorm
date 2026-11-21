@@ -1051,8 +1051,6 @@ fn lite_ident(s: &str) -> Option<(String, &str)> {
 /// the name has the form `<table>_<name>_trigger`, and the text is the same when it is written again from the parts.
 fn lite_trigger(sql: &str, table: &str, stored: &str) -> Option<Trigger> {
     use monorm_core::migrate::model::object_name;
-    let name = stored.strip_prefix(table)?.strip_prefix('_')?.strip_suffix("_trigger")?;
-    if object_name(&[table, name, "trigger"]) != stored { return None; }
     let rest = sql.strip_prefix("CREATE TRIGGER ")?;
     let (_, rest) = lite_ident(rest)?;
     let rest = rest.strip_prefix(' ')?;
@@ -1078,7 +1076,11 @@ fn lite_trigger(sql: &str, table: &str, stored: &str) -> Option<Trigger> {
         None => (None, rest),
     };
     let body = rest.strip_prefix(" BEGIN\n")?.strip_suffix(";\nEND")?.to_owned();
-    let trigger = Trigger { name: name.to_owned(), timing, events: vec![event], update_of, for_each: ForEach::Row, when, function: object_name(&[table, name]), body: Some(body), args: vec![], old_table: None, new_table: None, deferrable: None };
+    let name = stored.strip_prefix(table).and_then(|name| name.strip_prefix('_')).and_then(|name| name.strip_suffix("_trigger")).map(str::to_owned)
+        .or_else(|| monorm_core::migrate::pull::sqlite_rule_trigger_name(&body, event))?;
+    if object_name(&[table, &name, "trigger"]) != stored { return None; }
+    let function = object_name(&[table, &name]);
+    let trigger = Trigger { name, timing, events: vec![event], update_of, for_each: ForEach::Row, when, function, body: Some(body), args: vec![], old_table: None, new_table: None, deferrable: None };
     (monorm_core::migrate::sqlite::trigger(table, &trigger, false) == sql).then_some(trigger)
 }
 
@@ -1510,16 +1512,17 @@ pub async fn pull(conn: &dyn Executor, installed: &monorm_core::dsl::Installed) 
     let compile = |pulled: &pulling::Pulled| {
         monorm_core::dsl::compile_installed_with_overrides(&pulled.schema, None, installed, &pulled.views).and_then(monorm_core::dsl::check)
     };
-    // The attempts, from the most claims to none (rules, objects). A claim that makes the schema fail to compile is not a claim, and
+    // The attempts, from the most claims to none. A claim that makes the schema fail to compile is not a claim, and
     // an object claim that leaves a difference with the database is not one either: the objects stay as they were, and a gap line says why.
     let mut attempts = vec![];
-    if !objects.is_empty() { attempts.push((true, true)); }
-    if !rules.is_empty() { attempts.push((true, false)); }
-    attempts.push((false, false));
+    if !objects.is_empty() { attempts.push((true, true, true)); }
+    if !rules.is_empty() { attempts.push((true, false, true)); }
+    if !installed.extensions.is_empty() { attempts.push((false, false, true)); }
+    attempts.push((false, false, false));
     let mut notes = vec![];
-    for (n, &(use_rules, use_objects)) in attempts.iter().enumerate() {
+    for (n, &(use_rules, use_objects, use_declarations)) in attempts.iter().enumerate() {
         let last = n + 1 == attempts.len();
-        let pulled = if use_rules || use_objects {
+        let pulled = if use_declarations {
             let (gaps, rules) = if use_rules { (&rule_gaps, &rules[..]) } else { (&live.gaps, &[][..]) };
             pulling::pull_claims(&live.schema, gaps, rules, if use_objects { &objects } else { &[] }, installed)
         } else {
@@ -1529,7 +1532,8 @@ pub async fn pull(conn: &dyn Executor, installed: &monorm_core::dsl::Installed) 
         let (dropped, with) = match (use_objects, rules.is_empty()) {
             (true, false) => ("object", "the rule and object claims"),
             (true, true) => ("object", "them"),
-            (false, _) => ("rule", "them"),
+            (false, _) if use_rules => ("rule", "them"),
+            (false, _) => ("write rule", "them"),
         };
         let compiled = match compile(&pulled) {
             Ok(c) => c,

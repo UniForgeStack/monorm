@@ -2,7 +2,7 @@ id = "monorm.history"
 version = "0.1.2"
 abi = "0.2"
 library = "monorm_history"
-schema_contract = "5.4"
+schema_contract = "5.10"
 language_contract = 1
 languages = ["python", "typescript"]
 databases = ["postgres", "sqlite"]
@@ -13,7 +13,7 @@ capabilities = ["schema-transformations", "physical-schema"]
 id = "monorm.history.models"
 phase = "storage"
 effects = ["models.history_events", "models.history_versions", "storage.history_events", "storage.history_versions"]
-additive = ["behavior.extension_records", "behavior.published_scope_keys"]
+additive = ["behavior.extension_records", "behavior.published_scope_keys", "behavior.write_rules"]
 
 # Adds the row triggers of each tracker to the table that it tracks. Runs after the `behavior` passes, so the triggers of the other extensions exist.
 [[passes]]

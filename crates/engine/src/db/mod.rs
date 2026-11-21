@@ -72,6 +72,12 @@ impl DbError {
         DbError { kind, message: message.into(), sqlstate: None, constraint: None, detail: None, cause: None, outcome: None }
     }
 
+    /// The message carried by a database write-rule refusal.
+    pub fn write_rule(&self) -> Option<&str> {
+        (self.sqlstate.as_deref() == Some(monorm::writes::WRITE_PROTECTED_SQLSTATE))
+            .then_some(self.message.as_str())
+    }
+
     pub fn other(message: impl Into<String>) -> Self {
         DbError::new(ErrorKind::Other, message)
     }

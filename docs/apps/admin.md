@@ -680,7 +680,7 @@ Without it, a write answers `403` with `error.kind` `ReadOnly` and the reason "t
 Relation chips (`links`) do not go through host code: a host route refuses them.
 Guards and the other extension behavior that has no host code are not host behavior: those models stay writable on the plain path.
 
-`@@protected_write` is closed: `writable` is `false`, a write answers `403` with `error.kind` `ReadOnly` and the reason, and the UI shows the reason on the record and on the form.
+The admin hides operations blocked by unconditional [write rules](../extensions/write-rules.md). A direct request for a blocked operation returns `403 ReadOnly`. A fully protected model shows the reason on the record and form.
 A resource opts in with `allow_protected_writes=True` (`allowProtectedWrites: true` in TypeScript).
 The audit row records the opt-in as `allow_protected_writes: true`.
 

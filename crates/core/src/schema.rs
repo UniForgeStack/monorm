@@ -79,7 +79,6 @@ impl Model {
             policies: vec![],
             renamed_from: None,
             comment: None,
-            protected_write: false,
             query_set: None,
             model_methods: None,
             classes_from: None,
@@ -187,6 +186,7 @@ pub struct Schema {
     pub owner_links: Vec<crate::behavior::PreparedOwnerLink>,
     /// The roles of the datasource's `bypass_roles`: the skip guard of a skippable trigger names them.
     pub bypass_roles: Vec<String>,
+    pub write_rules: Vec<monorm::writes::WriteRule>,
     published_scope_keys: std::collections::BTreeSet<String>,
 }
 
@@ -297,7 +297,32 @@ impl Schema {
 
     /// The names that `skip_triggers` accepts: the `skippable` name of each trigger of a model.
     pub fn skippable_triggers(&self) -> std::collections::BTreeSet<String> {
-        self.models.iter().flat_map(|m| m.ir.triggers.iter()).filter_map(|t| t.skippable.clone()).collect()
+        self.physical().models.iter().flat_map(|m| m.ir.triggers.iter()).filter_map(|t| t.skippable.clone()).collect()
+    }
+
+    /// A model's table followed by its shared-key ancestors.
+    pub fn storage_chain(&self, index: usize) -> impl Iterator<Item = &Model> {
+        let owners = &self.physical().models;
+        std::iter::successors(Some(self.model(index).owner), |owner| {
+            self.owner_links.iter().find(|link| link.child == *owner).map(|link| link.parent)
+        }).map(|owner| &owners[owner.0])
+    }
+
+    /// Rules on the table a logical model writes, including a proxy's root table.
+    pub fn rules_for_model(&self, index: usize) -> impl Iterator<Item = &monorm::writes::WriteRule> {
+        let owner = &self.physical().models[self.model(index).owner.0].ir.name;
+        self.write_rules.iter().filter(move |rule| rule.model == *owner)
+    }
+
+    /// The physical table rules that a scope for these logical models may skip.
+    pub fn write_rule_skips(&self, models: &[String]) -> Vec<String> {
+        if !self.dialect.is_postgres() || self.bypass_roles.is_empty() { return vec![]; }
+        let tables: std::collections::BTreeSet<_> = models.iter().filter_map(|name| self.model_idx(name).ok())
+            .map(|index| self.model(index).table()).collect();
+        self.physical().models.iter().filter(|m| tables.contains(m.table()))
+            .flat_map(|model| self.write_rules.iter().filter(move |r| r.model == model.ir.name && r.skippable && r.layer.db())
+                .map(|rule| crate::write_rules::skip_name(&model.ir, rule)))
+            .collect()
     }
 
     /// True when a hook of a model reads the request context. A hook names no key it reads, so `scope()` accepts any
@@ -321,6 +346,7 @@ impl Schema {
     fn from_ir_impl(mut ir: SchemaIr, behavioral: bool, packages: Option<&std::collections::BTreeMap<String, std::path::PathBuf>>) -> Result<Self> {
         crate::identity::validate(&ir, crate::behavior::manifests())?;
         if behavioral { crate::behavior::prepare(&mut ir, None)?; }
+        if behavioral { crate::write_rules::prepare(&mut ir)?; }
         crate::partition::validate(&ir)?;
         validate_sql_views(&ir)?;
         let storage = match ir.behavior.storage.take() {
@@ -329,6 +355,7 @@ impl Schema {
                     "models": storage.models, "enums": ir.enums, "types": ir.types, "dialect": ir.dialect,
                     "native_expression_slots": ir.native_expression_slots,
                     "extensions": ir.extensions, "catalog": ir.catalog, "functions": ir.functions, "identities": ir.identities, "partitions": ir.partitions,
+                    "bypass_roles": ir.bypass_roles,
                 })).map_err(|e| e.to_string())?;
                 Some(Box::new(Self::from_ir_impl(physical, false, None)?))
             }
@@ -509,6 +536,7 @@ impl Schema {
             storage,
             owner_links,
             bypass_roles: ir.bypass_roles,
+            write_rules: ir.behavior.write_rules,
             published_scope_keys: ir.behavior.published_scope_keys.iter().map(|k| k.key.clone()).collect(),
         })
     }

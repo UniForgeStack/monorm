@@ -161,6 +161,9 @@ class Database:
         if (open_ := _open.get()) and not sqlite:
             names.append("monorm.bypass")
             values.append("{" + ",".join(sorted(open_)) + "}")
+        allowed = allowed_writes()
+        if allowed and not sqlite:
+            skip = skip.union(engine.write_rule_skips(list(allowed)))
         if skip:
             names.append("monorm.skip")
             values.append("{" + ",".join(sorted(skip)) + "}")

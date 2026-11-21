@@ -1,4 +1,4 @@
-//! Writes that run in host code: a model with host behavior, a `@@protected_write` model that the
+//! Writes that run in host code: a model with host behavior, a protected model that the
 //! resource opens, and a resource with a service (`create`, `update`, `delete`).
 //!
 //! The admin checks the user, the permission, the field rules, the `queryset` filter and the `can=`
@@ -174,7 +174,7 @@ pub fn route(schema: &Schema, r: &Resource, op: Op) -> Option<String> {
     if r.service.get(op).is_some() {
         return Some(format!("service.{}.{}", r.name, op_name(op)));
     }
-    let protected = schema.model(r.model).ir.protected_write;
+    let protected = schema.rules_for_model(r.model).any(|rule| rule.layer.app() || rule.skippable);
     (r.host_behavior || schema_host_behavior(schema, r.model) || (protected && r.allow_protected)).then(|| "admin.write".to_owned())
 }
 
@@ -261,7 +261,7 @@ pub(crate) fn key_object(r: &Resource, key: &[Value]) -> Value {
 
 /// The payload of one write for the host function.
 pub(crate) fn payload_of(s: &State_, resource: &Resource, user: &User, meta: &crate::write::Meta, p: &Prepared) -> Value {
-    let protected = s.site.schema.model(resource.model).ir.protected_write;
+    let protected = s.site.schema.rules_for_model(resource.model).any(|rule| rule.layer.app() || rule.skippable);
     json!({
         "resource": resource.name,
         "model": s.site.schema.model(resource.model).ir.name,
@@ -429,7 +429,7 @@ pub(crate) async fn settle<'a>(s: &State_, c: Call<'a>, p: &Prepared, answer: &V
         let diff = diff_of(resource, p.op, before.as_deref(), after.as_deref());
         let mut extra = Map::new();
         extra.insert("inputs".into(), Value::Object(audit_inputs(resource, &p.inputs)));
-        extra.insert("allow_protected_writes".into(), Value::Bool(s.site.schema.model(resource.model).ir.protected_write && resource.allow_protected));
+        extra.insert("allow_protected_writes".into(), Value::Bool(s.site.schema.rules_for_model(resource.model).any(|rule| rule.layer.app() || rule.skippable) && resource.allow_protected));
         extra.insert("service".into(), Value::Bool(service));
         if let Some(rows) = &p.inlines {
             extra.insert("inlines".into(), rows.clone());

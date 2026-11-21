@@ -165,6 +165,7 @@ const SOURCE: &str = "acme.outside";
 /// Optional text fields get expression records: `slug` (`lower(text)` on update), `stamp` and `editor` (expression hooks on update),
 /// `region` and `owner` (expression hooks as insert defaults), `secret` (sealed by hook 1, read back as the computed field `secret_plain`). `shop_id` and `updated_by` default to the request scope on insert.
 /// `touched_by` takes the request `user` on update through an expression assignment that reads the request scope.
+/// `origin` takes the request `user` and `badge` takes the expression of hook 6, each when an insert omits the value (insert assignments).
 fn guard(ir: &mut SchemaIr) -> Result<(), String> {
     use monorm::{extension::{HookBinding, ReadDefault}, ir::ClientDefaultIr, writes::{AssignValue, UpsertDefault, WriteAssignment, WriteKind}};
     let declarations: Vec<Declaration> = ir.behavior.declarations.iter().filter(|d| !d.lowered && d.attribute == GUARD).cloned().collect();
@@ -178,6 +179,7 @@ fn guard(ir: &mut SchemaIr) -> Result<(), String> {
         let has = |name: &str| m.fields.iter().any(|f| f.name == name);
         let (has_slug, has_stamp, has_editor, has_region, has_owner, has_secret) = (has("slug"), has("stamp"), has("editor"), has("region"), has("owner"), has("secret"));
         let has_touched = has("touched_by");
+        let (has_origin, has_badge) = (has("origin"), has("badge"));
         let bind = |point: u8, field: Option<&str>, export: &str, dependencies: &[&str], reads_context: bool| HookBinding {
             source: SOURCE.into(), point, model: model.clone(), field: field.map(Into::into), export: export.into(),
             dependencies: dependencies.iter().map(|s| (*s).into()).collect(), reads_context,
@@ -232,6 +234,16 @@ fn guard(ir: &mut SchemaIr) -> Result<(), String> {
             source: SOURCE.into(), model: model.clone(), field: "updated_by".into(), on: vec![WriteKind::Update],
             value: AssignValue::Hook { export: "acme.outside.actor".into() }, upsert: UpsertDefault::Drop,
         });
+        let on_insert = |field: &str, value: AssignValue| WriteAssignment {
+            source: SOURCE.into(), model: model.clone(), field: field.into(), on: vec![WriteKind::Insert], value, upsert: UpsertDefault::Drop,
+        };
+        if has_origin {
+            ir.behavior.write_assignments.push(on_insert("origin", AssignValue::Expr(serde_json::json!({"t": "scope", "name": "user"}))));
+        }
+        if has_badge {
+            ir.behavior.hooks.push(bind(6, Some("badge"), "acme.outside.label", &[], false));
+            ir.behavior.write_assignments.push(on_insert("badge", AssignValue::ExprHook { export: "acme.outside.label".into() }));
+        }
         // After the hook assignments: a request without a user fails on the hooks first.
         if has_touched {
             ir.behavior.write_assignments.push(assign("touched_by", AssignValue::Expr(serde_json::json!({"t": "scope", "name": "user"}))));

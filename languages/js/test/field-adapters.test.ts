@@ -16,7 +16,7 @@ model Doc {
 model Locked {
   id Int @id
   body Json?
-  @@protected_write
+  @@write_rules.protect(layer: app)
 }`;
 
 class Counting {

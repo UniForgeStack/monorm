@@ -1,9 +1,4 @@
-"""``@@protected_write``: ORM writes to a protected model run only inside
-:func:`allow_writes`.
-
-An application-level check in the ORM, not in the database: raw SQL (``db.execute``),
-migrations and other database clients still write.
-"""
+"""Scoped bypass for model write rules."""
 
 from __future__ import annotations
 
@@ -20,8 +15,9 @@ _allowed: ContextVar[tuple[str, ...]] = ContextVar("monorm_allowed_writes", defa
 
 @contextmanager
 def allow_writes(*models: Any) -> Generator[None]:
-    """``with monorm.allow_writes(Post):`` allows ORM writes to ``Post``, which
-    ``@@protected_write`` otherwise rejects with :class:`monorm.WriteProtected`.
+    """``with monorm.allow_writes(Post):`` allows ORM writes to ``Post``, opening
+    its application rules. On PostgreSQL it also opens skippable database rules
+    for a database role listed in ``bypass_roles``.
 
     A sync ``with``: it does no I/O and starts no transaction. Tasks started inside it
     get the scope too. A nested scope adds its models to the outer ones.

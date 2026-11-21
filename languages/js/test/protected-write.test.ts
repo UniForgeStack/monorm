@@ -1,7 +1,7 @@
-/** `@@protected_write` and `allowWrites`: an application-level write check. */
+/** `@@write_rules.protect(layer: app)` and `allowWrites`: an application-level write check. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { allowWrites, connect, loads, Registry, SchemaError, WriteProtected, type Database } from "../src/index.js";
+import { allowWrites, connect, loads, pull, Registry, SchemaError, WriteProtected, type Database } from "../src/index.js";
 import { hasExtension } from "./artifact-caps.js";
 
 const source = `datasource db {
@@ -12,7 +12,7 @@ model Post {
   title String
   tags  Tag[]     @relation(through: PostTag)
   links PostTag[]
-  @@protected_write
+  @@write_rules.protect(layer: app)
 }
 model Tag {
   id    Int       @id
@@ -27,7 +27,7 @@ model PostTag {
   post    Post @relation(fields: [post_id], references: [id])
   tag     Tag  @relation(fields: [tag_id], references: [id])
   @@unique([post_id, tag_id])
-  @@protected_write
+  @@write_rules.protect(layer: app)
 }
 `;
 
@@ -54,7 +54,7 @@ test("every write method fails outside allowWrites and works inside", async () =
   ];
   try {
     for (const write of writes) {
-      await assert.rejects(write(), (e: Error) => e instanceof WriteProtected && /Post is write-protected .*allowWrites\(\[Post\]/.test(e.message));
+      await assert.rejects(write(), (e: Error) => e instanceof WriteProtected && /Post is write-protected.*allowWrites\(\[Post\]/.test(e.message));
       await allowWrites([Post], write);
     }
     assert.deepEqual((await posts().orderBy(Post.id).all()).map((p: Any) => [p.id, p.title]), [[1, "x"], [2, "y"]]);
@@ -119,16 +119,16 @@ test("the scope follows async work and reads and raw SQL are unchanged", async (
   } finally { await db.close(); }
 });
 
-test("@@protected_write creates no DDL and no snapshot change", () => {
+test("protected write creates no DDL and no snapshot change", () => {
   const schema = (text: string) => {
     const registry = new Registry();
     loads(text, { registry });
     const s = registry.native();
     return [s.ddl(), s.snapshot()];
   };
-  assert.deepEqual(schema(source), schema(source.replaceAll("@@protected_write", "")));
-  assert.throws(() => loads(source.replace("@@protected_write", "@@protected_write(true)"), { registry: new Registry() }),
-    (e: Error) => e instanceof SchemaError && /@@protected_write takes no arguments/.test(e.message));
+  assert.deepEqual(schema(source), schema(source.replaceAll("@@write_rules.protect(layer: app)", "")));
+  assert.throws(() => loads(source.replace("@@write_rules.protect(layer: app)", "@@protected_write"), { registry: new Registry() }),
+    (e: Error) => e instanceof SchemaError && /@@write_rules\.protect\(layer: app\)/.test(e.message));
 });
 
 test("a proxy writes the table of its protected root", { skip: !hasExtension("monorm.proxy") }, async () => {
@@ -148,7 +148,7 @@ test("a composed write also writes its protected parent", { skip: !hasExtension(
 model Person {
   id   Int    @id @default(autoincrement())
   name String
-  @@protected_write
+  @@write_rules.protect(layer: app)
 }
 model Employee {
   salary Int
@@ -165,3 +165,115 @@ model Employee {
     await allowWrites([Employee, Person], () => Employee.objects.using(db).attach(bob.id, { salary: 2 }));
   } finally { await db.close(); }
 });
+
+const rules = `
+model Ledger {
+  id Int @id
+  note String
+  slug String @write_rules.read_only
+  @@map("wr_js_ledger")
+  @@write_rules.protect(operation: [delete])
+  @@write_rules.protect(operation: [update], condition: "OLD.note = 'locked'", layer: db)
+}
+model Dropped {
+  id Int @id
+  @@map("wr_js_dropped_table_with_a_long_name_for_introspection")
+  @@write_rules.protect(operation: [insert], layer: db, action: drop)
+}
+model Openable {
+  id Int @id
+  @@map("wr_js_openable")
+  @@write_rules.protect(operation: [insert], skippable: true)
+}
+model Frozen {
+  id Int @id
+  @@map("wr_js_frozen")
+  @@write_rules.protect
+}
+model Base {
+  @@inherit.abstract
+  @@write_rules.protect(operation: [update])
+}
+model Child {
+  id Int @id
+  note String
+  @@inherit.extends("Base")
+  @@map("wr_js_child")
+}
+`;
+
+for (const provider of ["sqlite", "postgresql"]) {
+  const postgres = provider === "postgresql";
+  const url = postgres ? process.env["ORM_TEST_DATABASE_URL"] : "sqlite://:memory:";
+  const scenario = (name: string, body: (db: Database, models: Record<string, Any>) => Promise<void>) =>
+    test(name, { skip: !url }, async () => {
+      const roles = postgres ? '\n  bypass_roles = ["postgres"]' : "";
+      const registry = new Registry();
+      const models = loads(`datasource db {\n  provider = "${provider}"${roles}\n}\n${rules}`, { registry }) as Record<string, Any>;
+      const db = await connect(url!, { registry, default: false });
+      await db.dropTables();
+      await db.createTables();
+      try {
+        await body(db, models);
+      } finally {
+        await db.dropTables();
+        await db.close();
+      }
+    });
+
+  scenario("write rule layers agree on which writes they refuse", async (db, models) => {
+    const { Ledger, Child, Frozen } = models;
+    const rows = Ledger.objects.using(db);
+    await rows.insertMany([{ id: 1, note: "open", slug: "a" }, { id: 2, note: "locked", slug: "b" }]);
+    const row = rows.filter(Ledger.id.eq(1));
+    await row.update({ note: "edited" });
+    await assert.rejects(row.update({ slug: "a" }), (e: Error) => e instanceof WriteProtected && /Ledger/.test(e.message));
+    assert.equal(await db.execute("UPDATE wr_js_ledger SET slug = 'a' WHERE id = 1"), 1);
+    await assert.rejects(db.execute("UPDATE wr_js_ledger SET slug = 'new' WHERE id = 1"), (e: Error) => e instanceof WriteProtected && /read_only_slug/.test(e.message));
+    await assert.rejects(rows.filter(Ledger.id.eq(2)).update({ note: "editable" }), WriteProtected);
+    await assert.rejects(row.delete(), WriteProtected);
+    await assert.rejects(allowWrites([Ledger], () => row.delete()), WriteProtected);
+    await assert.rejects(allowWrites([Frozen], () => Frozen.objects.using(db).insert({ id: 1 })), WriteProtected);
+    assert.equal(await db.execute("INSERT INTO wr_js_dropped_table_with_a_long_name_for_introspection (id) VALUES (1)"), 0);
+    await Child.objects.using(db).insert({ id: 1, note: "a" });
+    await assert.rejects(Child.objects.using(db).filter(Child.id.eq(1)).update({ note: "b" }), (e: Error) => e instanceof WriteProtected && /Child/.test(e.message));
+  });
+
+  scenario("a child of a protected base refuses a raw update in its own table", async (db, models) => {
+    const { Child } = models;
+    await Child.objects.using(db).insertMany([{ id: 1, note: "a" }, { id: 2, note: "b" }]);
+    await assert.rejects(db.execute("UPDATE wr_js_child SET note = 'raw' WHERE id = 1"), (e: Error) => e instanceof WriteProtected && /protect_/.test(e.message));
+    assert.equal((await Child.objects.using(db).filter(Child.id.eq(1)).first()).note, "a");
+    // The inherited rule names the update only, so the database still takes a raw delete.
+    assert.equal(await db.execute("DELETE FROM wr_js_child WHERE id = 2"), 1);
+  });
+
+  // case: protected_write::allow_writes_opens_only_skippable_rules_for_approved_roles
+  scenario("allowWrites opens only skippable rules for approved roles", async (db, models) => {
+    const { Openable } = models;
+    const rows = Openable.objects.using(db);
+    await assert.rejects(rows.insert({ id: 1 }), (e: Error) => e instanceof WriteProtected && /Openable/.test(e.message));
+    await allowWrites([Openable], async () => {
+      await rows.insert({ id: 1 });
+      await db.transaction(() => rows.insert({ id: 2 }).prepare().run());
+    });
+    if (!postgres) return;
+    await assert.rejects(db.execute("INSERT INTO wr_js_openable (id) VALUES (3)"), WriteProtected);
+    assert.equal(await allowWrites([Openable], () => db.execute("INSERT INTO wr_js_openable (id) VALUES (3)")), 1);
+    await assert.rejects(allowWrites([Openable], () => db.transaction(async () => {
+      await db.execute("CREATE ROLE monorm_wr_js_scoped_plain");
+      await db.execute("GRANT INSERT, SELECT ON wr_js_openable TO monorm_wr_js_scoped_plain");
+      await db.execute("SET LOCAL SESSION AUTHORIZATION monorm_wr_js_scoped_plain");
+      await rows.insert({ id: 4 });
+    })), (e: Error) => e instanceof WriteProtected && /monorm write rule/.test(e.message));
+    assert.equal(await rows.count(), 3);
+  });
+  scenario("pull recovers rule attributes", async (db) => {
+    const pulled = await pull(db);
+    assert.ok(pulled.schema.includes("@write_rules.read_only"));
+    assert.ok(pulled.schema.includes("@@write_rules.protect(operation: [update], layer: db, condition:"));
+    assert.ok(pulled.schema.includes("@@write_rules.protect(operation: [insert], layer: db, action: drop)"));
+    assert.deepEqual(pulled.gaps.filter((gap) => /wr_js_|write rule claims/.test(gap)), []);
+  });
+
+}

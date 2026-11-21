@@ -16,8 +16,8 @@ pub enum Error {
     Db(DbError),
     /// A parameter value of the wrong type for its column (a `TypeError`).
     Value(String),
-    /// A write to a `@@protected_write` model (named here) outside a scope that allows it.
-    WriteProtected(String),
+    /// A write was refused by an application rule or a database trigger.
+    WriteProtected(WriteProtection),
     /// A statement needs `scope.<key>` of `model` and the scope has no value for it. `message` says what the statement was.
     ScopeMissing { model: String, key: String, message: String },
     /// A write sets the scope column of `model` to a value other than the scope value.
@@ -29,6 +29,12 @@ pub enum Error {
     /// An error a binding raised itself while converting its values (e.g. a Python
     /// exception), handed back to it unchanged.
     Binding(Box<dyn std::error::Error + Send + Sync>),
+}
+
+#[derive(Debug)]
+pub enum WriteProtection {
+    Application { model: String },
+    Database { message: String },
 }
 
 impl Error {
@@ -48,7 +54,8 @@ impl std::fmt::Display for Error {
             Error::ScopeMissing { message, .. } => f.write_str(message),
             Error::ScopeMismatch { model, key, expected, actual } => write!(f, "{model} is scoped by {key}: the scope is {expected}, the write sets {actual}; write inside the scope, or use unscoped({key:?}) to write another scope"),
             Error::ReadOnlyModel(m) => write!(f, "{m} is a view; it can't be written"),
-            Error::WriteProtected(m) => write!(f, "{m} is write-protected (@@protected_write); write it inside a scope that allows writes to {m}"),
+            Error::WriteProtected(WriteProtection::Application { model }) => write!(f, "{model} is write-protected; write it inside a scope that allows writes to {model}"),
+            Error::WriteProtected(WriteProtection::Database { message }) => f.write_str(message),
             Error::Validation(e) => write!(f, "{e}"),
             Error::Db(e) => write!(f, "{e}"),
             Error::Binding(e) => write!(f, "{e}"),
@@ -64,7 +71,7 @@ impl From<ValidationError> for Error {
 
 impl From<DbError> for Error {
     fn from(e: DbError) -> Self {
-        Error::Db(e)
+        if e.write_rule().is_some() { Error::WriteProtected(WriteProtection::Database { message: e.message }) } else { Error::Db(e) }
     }
 }
 

@@ -57,7 +57,7 @@ The pass turns each proxy into an ordinary model that has the fields of its sour
 The proxy keeps the table, the primary key, the column types, the enum representation and the database defaults of its root model.
 
 **What the pass checks.**
-It refuses a cycle, an unknown source, a stored field that the source does not have, a changed key, type or encoding, a relation override, a physical object on the proxy, `@@protected_write`, and an omitted field that the proxy needs (a primary key, a `NOT NULL` field with no database default, a relation key).
+It refuses a cycle, an unknown source, a stored field that the source does not have, a changed key, type or encoding, a relation override, a physical object on the proxy, a write rule, and an omitted field that the proxy needs (a primary key, a `NOT NULL` field with no database default, a relation key).
 A redeclared field may change only nullability, the enum subset and `@client_default`.
 The user doc lists each message.
 

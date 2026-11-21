@@ -38,6 +38,7 @@ dev = ["pytest>=8", "pytest-asyncio>=1.1", "pydantic>=2", "mypy>=1.11", "pyright
 
 [project.entry-points."monorm.extensions"]
 "monorm.timestamps" = "monorm_timestamps"
+"monorm.write-rules" = "monorm_write_rules"
 "monorm.soft-delete" = "monorm_soft_delete"
 "monorm.locking" = "monorm_locking"
 "monorm.inherit" = "monorm_inherit"
@@ -65,7 +66,7 @@ python-source = "languages/python"
 module-name = "monorm._native"
 no-default-features = true
 features = ["pyo3/extension-module", "profile-tooling"]
-python-packages = ["monorm_auth", "monorm_admin", "monorm_timestamps", "monorm_soft_delete", "monorm_locking", "monorm_inherit", "monorm_query_defaults", "monorm_scope", "monorm_history", "monorm_generic", "monorm_proxy", "monorm_composition", "monorm_file_storage", "monorm_proto"]
+python-packages = ["monorm_auth", "monorm_admin", "monorm_timestamps", "monorm_write_rules", "monorm_soft_delete", "monorm_locking", "monorm_inherit", "monorm_query_defaults", "monorm_scope", "monorm_history", "monorm_generic", "monorm_proxy", "monorm_composition", "monorm_file_storage", "monorm_proto"]
 include = [{ path = "languages/python/monorm_*/**/*", format = "wheel" }]
 
 [tool.pytest.ini_options]

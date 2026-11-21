@@ -27,7 +27,7 @@ model SNote {
 model SLocked {
   id Int @id @default(autoincrement())
   x  Int
-  @@protected_write
+  @@write_rules.protect(layer: app)
   @@map("s_locked")
 }
 

@@ -182,7 +182,7 @@ model Note {
 model Vault {
   id Int @id
   name String
-  @@protected_write
+  @@write_rules.protect(layer: app)
   @@map("pw_js_vault")
 }
 `;

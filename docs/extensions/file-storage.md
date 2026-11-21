@@ -112,7 +112,7 @@ Creating an `Upload` makes no I/O call.
   It uploads one object even when no row matches.
 - Upserts, expressions and `insert_many(copy=True)` reject `Upload` before any upload.
 - A `Reference` value and `None` write as ordinary JSON, with no upload.
-- A write to a `@@protected_write` model that the scope refuses uploads nothing.
+- An application write rule that refuses a write prevents its file upload.
 
 ### Reads
 

@@ -59,17 +59,14 @@ fn prepared_read(schema: &schema::Schema, target: Target, op_json: &str, n: usiz
     Ok(PreparedRead { inner: Arc::new(inner), driver, classes })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn prepared_write(schema: &Arc<schema::Schema>, target: Target, op_json: &str, n: usize, declared: &[Option<String>],
-    driver: Option<Arc<dyn Driver>>, classes: Arc<Classes>) -> PyResult<PreparedWrite> {
+    driver: Option<Arc<dyn Driver>>, settings: Option<Vec<(String, String)>>, classes: Arc<Classes>) -> PyResult<PreparedWrite> {
     let op = parse_op(op_json).map_err(engine_err)?;
-    let model = match &op {
-        Operation::Update(ir::Update { model, .. }) | Operation::Delete(ir::Delete { model, .. }) => model.clone(),
-        _ => return Err(query_err("prepare() takes an update or a delete".into())),
-    };
     let declared = declared.iter().map(|d| d.as_deref().map(declared_type).transpose()).collect::<PyResult<Vec<_>>>()?;
     let inner = monorm_engine::prepared_write::PreparedWrite::prepare(schema, target, &op, n, &declared).map_err(engine_err)?;
-    let writable = protect::Writable::of(schema, &model).map_err(engine_err)?;
-    Ok(PreparedWrite { inner: Arc::new(inner), schema: schema.clone(), writable, driver, classes })
+    let writable = protect::Writable::operation(schema, &op).map_err(engine_err)?;
+    Ok(PreparedWrite { inner: Arc::new(inner), schema: schema.clone(), writable, driver, settings, classes })
 }
 
 /// The held write of rows. `options` is the insert options JSON (`kind` "insert"), or
@@ -77,13 +74,13 @@ fn prepared_write(schema: &Arc<schema::Schema>, target: Target, op_json: &str, n
 #[allow(clippy::too_many_arguments)]
 fn prepared_rows(schema: &Arc<schema::Schema>, target: Target, kind: &str, model: &str, fields: Vec<String>, options: &str,
     returning: bool, batch_size: Option<usize>, n: usize, declared: &[Option<String>],
-    driver: Option<Arc<dyn Driver>>, classes: Arc<Classes>) -> PyResult<PreparedRows> {
+    driver: Option<Arc<dyn Driver>>, settings: Option<Vec<(String, String)>>, classes: Arc<Classes>) -> PyResult<PreparedRows> {
     use monorm_engine::prepared_write::RowsSpec;
     let declared = declared.iter().map(|d| d.as_deref().map(declared_type).transpose()).collect::<PyResult<Vec<_>>>()?;
     let spec = RowsSpec::from_options(kind, model, fields, options, returning, batch_size, n, declared).map_err(engine_err)?;
+    let writable = protect::Writable::rows(schema, &spec).map_err(engine_err)?;
     let inner = monorm_engine::prepared_write::PreparedRows::prepare(schema.clone(), target, spec).map_err(engine_err)?;
-    let writable = protect::Writable::of(schema, model).map_err(engine_err)?;
-    Ok(PreparedRows { inner: Arc::new(inner), schema: schema.clone(), writable, driver, classes })
+    Ok(PreparedRows { inner: Arc::new(inner), schema: schema.clone(), writable, driver, settings, classes })
 }
 
 fn inspect_operation(schema: &schema::Schema, target: Target, op_json: &str, params: &[Bound<'_, PyAny>]) -> PyResult<String> {
@@ -228,7 +225,7 @@ impl PySchema {
 
     /// `Engine.prepare_write` without a connection.
     fn prepare_write(&self, op_json: &str, n: usize, declared: Vec<Option<String>>) -> PyResult<PreparedWrite> {
-        prepared_write(&self.inner, Target::new(self.inner.dialect), op_json, n, &declared, None, self.classes.clone())
+        prepared_write(&self.inner, Target::new(self.inner.dialect), op_json, n, &declared, None, None, self.classes.clone())
     }
 
     /// `Engine.prepare_insert` without a connection.
@@ -236,7 +233,7 @@ impl PySchema {
     #[allow(clippy::too_many_arguments)]
     fn prepare_insert(&self, model: &str, fields: Vec<String>, options: &str, n: usize, declared: Vec<Option<String>>,
         returning: bool, batch_size: Option<usize>) -> PyResult<PreparedRows> {
-        prepared_rows(&self.inner, Target::new(self.inner.dialect), "insert", model, fields, options, returning, batch_size, n, &declared, None, self.classes.clone())
+        prepared_rows(&self.inner, Target::new(self.inner.dialect), "insert", model, fields, options, returning, batch_size, n, &declared, None, None, self.classes.clone())
     }
 
     /// `Engine.prepare_update_many` without a connection.
@@ -244,13 +241,13 @@ impl PySchema {
     #[allow(clippy::too_many_arguments)]
     fn prepare_update_many(&self, model: &str, fields: Vec<String>, options: &str, n: usize, declared: Vec<Option<String>>,
         returning: bool, batch_size: Option<usize>) -> PyResult<PreparedRows> {
-        prepared_rows(&self.inner, Target::new(self.inner.dialect), "update_many", model, fields, options, returning, batch_size, n, &declared, None, self.classes.clone())
+        prepared_rows(&self.inner, Target::new(self.inner.dialect), "update_many", model, fields, options, returning, batch_size, n, &declared, None, None, self.classes.clone())
     }
 
     /// Converts and plans a single-row insert without SQL or I/O (`monorm.hooks.prepare_insert`).
     /// `allowed`: the write protection check runs here too, before a caller's own I/O.
     fn validate_insert(&self, model: &str, fields: Vec<String>, rows: &Bound<'_, PyList>, allowed: Vec<String>) -> PyResult<()> {
-        protect::ensure_writable(&self.inner, model, &allowed).map_err(engine_err)?;
+        protect::Writable::insert(&self.inner, model, None).and_then(|check| check.check(&self.inner, &allowed)).map_err(engine_err)?;
         let values = convert_rows(&self.inner, model, &fields, rows, true)?;
         exec::plan_insert(&self.inner, Target::new(self.inner.dialect), model, &fields, values, None, &monorm_engine::NoParams, &ir::Bypass::default()).map_err(engine_err)?;
         Ok(())
@@ -260,9 +257,7 @@ impl PySchema {
     /// non-null primary key or unique field (`monorm.hooks.prepare_update`).
     fn unique_row_update(&self, op_json: &str, params: Vec<Bound<'_, PyAny>>, allowed: Vec<String>) -> PyResult<bool> {
         let op = parse_op(op_json).map_err(engine_err)?;
-        if let Operation::Update(ir::Update { model, .. }) = &op {
-            protect::ensure_writable(&self.inner, model, &allowed).map_err(engine_err)?;
-        }
+        protect::Writable::operation(&self.inner, &op).and_then(|check| check.check(&self.inner, &allowed)).map_err(engine_err)?;
         plan::unique_row_update(&self.inner, Target::new(self.inner.dialect), &op, &PyParams(&params)).map_err(engine_err)
     }
 
@@ -544,6 +539,7 @@ struct PreparedWrite {
     schema: Arc<schema::Schema>,
     writable: protect::Writable,
     driver: Option<Arc<dyn Driver>>,
+    settings: Option<Vec<(String, String)>>,
     classes: Arc<Classes>,
 }
 
@@ -566,10 +562,11 @@ impl PreparedWrite {
         self.writable.check(&self.schema, &allowed).map_err(engine_err)?;
         let call = self.inner.call(&PyParams(&params)).map_err(engine_err)?;
         let inner = self.inner.clone();
-        let conn: Arc<dyn Executor> = match (tx, &self.driver) {
-            (Some(tx), _) => tx.get().inner.clone(),
-            (None, Some(driver)) => driver.clone(),
-            (None, None) => return Err(query_err("the schema has no connection".into())),
+        let conn: Arc<dyn Executor> = match (tx, &self.driver, &self.settings) {
+            (Some(tx), _, Some(settings)) => db::SettingsTx::wrap(tx.get().inner.clone(), settings.clone()),
+            (Some(tx), _, None) => tx.get().inner.clone(),
+            (None, Some(driver), _) => driver.clone(),
+            (None, None, _) => return Err(query_err("the schema has no connection".into())),
         };
         let conn = monorm_engine::trace::wrap(conn, trace.map(|t| &t.get().0));
         let classes = self.classes.clone();
@@ -600,6 +597,7 @@ struct PreparedRows {
     schema: Arc<schema::Schema>,
     writable: protect::Writable,
     driver: Option<Arc<dyn Driver>>,
+    settings: Option<Vec<(String, String)>>,
     classes: Arc<Classes>,
 }
 
@@ -622,10 +620,11 @@ impl PreparedRows {
     ) -> PyResult<Bound<'py, PyAny>> {
         self.writable.check(&self.schema, &allowed).map_err(engine_err)?;
         let rows = convert_cells(self.inner.field_types(), rows, true)?;
-        let conn: Arc<dyn Executor> = match (tx, &self.driver) {
-            (Some(tx), _) => tx.get().inner.clone(),
-            (None, Some(driver)) => driver.clone(),
-            (None, None) => return Err(query_err("the schema has no connection".into())),
+        let conn: Arc<dyn Executor> = match (tx, &self.driver, &self.settings) {
+            (Some(tx), _, Some(settings)) => db::SettingsTx::wrap(tx.get().inner.clone(), settings.clone()),
+            (Some(tx), _, None) => tx.get().inner.clone(),
+            (None, Some(driver), _) => driver.clone(),
+            (None, None, _) => return Err(query_err("the schema has no connection".into())),
         };
         let own_tx = tx.is_none();
         let conn = monorm_engine::trace::wrap(conn, trace.map(|t| &t.get().0));
@@ -692,7 +691,7 @@ impl Engine {
 
     /// Plans an update or a delete once, for `n` parameters (scope values included).
     fn prepare_write(&self, op_json: &str, n: usize, declared: Vec<Option<String>>) -> PyResult<PreparedWrite> {
-        prepared_write(&self.schema, self.target, op_json, n, &declared, Some(self.driver.clone()), self.classes.clone())
+        prepared_write(&self.schema, self.target, op_json, n, &declared, Some(self.driver.clone()), self.settings.clone(), self.classes.clone())
     }
 
     /// Holds an insert of rows (`options`: the `inspect_insert` options JSON).
@@ -700,7 +699,7 @@ impl Engine {
     #[allow(clippy::too_many_arguments)]
     fn prepare_insert(&self, model: &str, fields: Vec<String>, options: &str, n: usize, declared: Vec<Option<String>>,
         returning: bool, batch_size: Option<usize>) -> PyResult<PreparedRows> {
-        prepared_rows(&self.schema, self.target, "insert", model, fields, options, returning, batch_size, n, &declared, Some(self.driver.clone()), self.classes.clone())
+        prepared_rows(&self.schema, self.target, "insert", model, fields, options, returning, batch_size, n, &declared, Some(self.driver.clone()), self.settings.clone(), self.classes.clone())
     }
 
     /// Holds an `update_many` (`options`: `{"filters", "model_fields", "without_defaults"}`).
@@ -708,7 +707,7 @@ impl Engine {
     #[allow(clippy::too_many_arguments)]
     fn prepare_update_many(&self, model: &str, fields: Vec<String>, options: &str, n: usize, declared: Vec<Option<String>>,
         returning: bool, batch_size: Option<usize>) -> PyResult<PreparedRows> {
-        prepared_rows(&self.schema, self.target, "update_many", model, fields, options, returning, batch_size, n, &declared, Some(self.driver.clone()), self.classes.clone())
+        prepared_rows(&self.schema, self.target, "update_many", model, fields, options, returning, batch_size, n, &declared, Some(self.driver.clone()), self.settings.clone(), self.classes.clone())
     }
 
     /// Planner inspection without executing or observing any statements.
@@ -750,9 +749,7 @@ impl Engine {
         trace: Option<&Bound<'py, Trace>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let op = parse_op(op_json).map_err(engine_err)?;
-        if let Operation::Update(ir::Update { model, .. }) | Operation::Delete(ir::Delete { model, .. }) = &op {
-            protect::ensure_writable(&self.schema, model, &allowed).map_err(engine_err)?;
-        }
+        protect::Writable::operation(&self.schema, &op).and_then(|check| check.check(&self.schema, &allowed)).map_err(engine_err)?;
         let target = self.target;
         let plan = Planner::plan(&self.schema, target, &op, &PyParams(&params)).map_err(engine_err)?;
         let own_tx = tx.is_none();
@@ -833,7 +830,6 @@ impl Engine {
         without_defaults: &str,
         model_fields: Option<Vec<String>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        protect::ensure_writable(&self.schema, model, &allowed).map_err(engine_err)?;
         let without_defaults: ir::Bypass = serde_json::from_str(without_defaults).map_err(|e| query_err(format!("invalid bypass: {e}")))?;
         let set: Vec<ir::Assignment> = match set {
             Some(json) => serde_json::from_str(json).map_err(|e| query_err(format!("invalid assignment IR: {e}")))?,
@@ -844,6 +840,7 @@ impl Engine {
             Some(update) => Conflict::Update { target, index, update, set },
             None => Conflict::Nothing { target, index },
         });
+        protect::Writable::insert(&self.schema, model, conflict.as_ref()).and_then(|check| check.check(&self.schema, &allowed)).map_err(engine_err)?;
         let values = convert_rows(&self.schema, model, &fields, rows, true)?;
         let scope = serde_json::from_str(scope.unwrap_or("{}")).map_err(|e| query_err(format!("invalid scope IR: {e}")))?;
         let params = monorm_engine::params::Scoped { params: &PyParams(&params), scope: &scope };
@@ -875,7 +872,7 @@ impl Engine {
         allowed: Vec<String>,
         trace: Option<&Bound<'py, Trace>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        protect::ensure_writable(&self.schema, model, &allowed).map_err(engine_err)?;
+        protect::Writable::insert(&self.schema, model, None).and_then(|check| check.check(&self.schema, &allowed)).map_err(engine_err)?;
         let values = convert_rows(&self.schema, model, &fields, rows, true)?;
         let copy = exec::plan_copy(&self.schema, self.target, model, &fields, values).map_err(engine_err)?;
         let conn = self.traced(tx, trace);
@@ -886,7 +883,7 @@ impl Engine {
     #[pyo3(signature = (model, parent_id, fields, rows, tx = None, db = None, allowed = vec![], trace = None))]
     #[allow(clippy::too_many_arguments)]
     fn attach<'py>(&self, py: Python<'py>, model: &str, parent_id: &Bound<'py, PyAny>, fields: Vec<String>, rows: &Bound<'py, PyList>, tx: Option<&Bound<'py, Transaction>>, db: Option<Bound<'py, PyAny>>, allowed: Vec<String>, trace: Option<&Bound<'py, Trace>>) -> PyResult<Bound<'py, PyAny>> {
-        protect::ensure_writable(&self.schema, model, &allowed).map_err(engine_err)?;
+        protect::Writable::insert(&self.schema, model, None).and_then(|check| check.check(&self.schema, &allowed)).map_err(engine_err)?;
         let model_idx = self.schema.model_idx(model).map_err(schema_err)?;
         let identity = py_to_value(parent_id, Some(self.schema.model(model_idx).pk_field().value_type()))?;
         let values = convert_rows(&self.schema, model, &fields, rows, true)?;
@@ -906,7 +903,7 @@ impl Engine {
     #[pyo3(signature = (model, parent_ids, fields, rows, tx = None, db = None, allowed = vec![], trace = None))]
     #[allow(clippy::too_many_arguments)]
     fn attach_many<'py>(&self, py: Python<'py>, model: &str, parent_ids: &Bound<'py, PyList>, fields: Vec<String>, rows: &Bound<'py, PyList>, tx: Option<&Bound<'py, Transaction>>, db: Option<Bound<'py, PyAny>>, allowed: Vec<String>, trace: Option<&Bound<'py, Trace>>) -> PyResult<Bound<'py, PyAny>> {
-        protect::ensure_writable(&self.schema, model, &allowed).map_err(engine_err)?;
+        protect::Writable::insert(&self.schema, model, None).and_then(|check| check.check(&self.schema, &allowed)).map_err(engine_err)?;
         let model_idx = self.schema.model_idx(model).map_err(schema_err)?;
         let key_type = self.schema.model(model_idx).pk_field().value_type();
         let identities = parent_ids.iter().map(|id| py_to_value(&id, Some(key_type))).collect::<PyResult<Vec<_>>>()?;
@@ -949,7 +946,7 @@ impl Engine {
         trace: Option<&Bound<'py, Trace>>,
         model_fields: Option<Vec<String>>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        protect::ensure_writable(&self.schema, model, &allowed).map_err(engine_err)?;
+        protect::Writable::update_many(&self.schema, model, &fields).and_then(|check| check.check(&self.schema, &allowed)).map_err(engine_err)?;
         let classes = self.classes.clone();
         let db = db.map(Bound::unbind);
         let (_, um) = update_many_plan(
@@ -1008,6 +1005,10 @@ impl Engine {
     /// True when a hook reads the scope: `scope()` then accepts any key.
     fn scope_keys_open(&self) -> bool {
         self.schema.scope_keys_open()
+    }
+
+    fn write_rule_skips(&self, models: Vec<String>) -> Vec<String> {
+        self.schema.write_rule_skips(&models)
     }
 
     /// The names that `skip_triggers()` accepts.

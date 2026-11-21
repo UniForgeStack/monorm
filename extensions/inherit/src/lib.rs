@@ -264,7 +264,6 @@ fn merge(ir: &mut SchemaIr, child: &str, bases: &[String], override_base: Option
                 class_source.get_or_insert_with(|| bm.classes_from.clone().unwrap_or_else(|| base.clone()));
             }
         }
-        cm.protected_write |= bm.protected_write;
         if cm.comment.is_none() { cm.comment = bm.comment.clone(); }
         for x in ir.behavior.declarations.iter().filter(|x| &x.model == base && !x.attribute.starts_with("inherit.")) {
             let key = (x.attribute.clone(), x.field.clone());
@@ -378,7 +377,7 @@ fn join_model(
     };
     let model = ModelIr {
         name: join_name.clone(), table: table.clone(), mapped: false, primary_key: vec![], pk_name: None, partition: None, renamed_from: None, comment: None,
-        protected_write: false, query_set: None, model_methods: None, classes_from: None, sql_view: None, indexes: vec![], triggers: vec![], rls: Default::default(), policies: vec![],
+        query_set: None, model_methods: None, classes_from: None, sql_view: None, indexes: vec![], triggers: vec![], rls: Default::default(), policies: vec![],
         relations: vec![link(&child_side, &source, child, &child_key), link(&target_side, &target, &rel.target, &target_key)],
         constraints: vec![ConstraintIr::Unique {
             name: None, fields: vec![source.name.clone(), target.name.clone()],

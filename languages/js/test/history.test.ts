@@ -84,7 +84,10 @@ const ids = (entries: { event: Any }[]) => entries.map((e) => e.event.id);
 const anyOf = (m: Any, name: string) => m[name].objects;
 
 for (const provider of ["sqlite", "postgresql"]) {
-  const scenario = (what: string, body: (db: Database, models: Record<string, Any>) => Promise<void>) => test(what, { skip }, () => withSchema(provider, SCHEMA, body));
+  const scenario = (what: string, body: (db: Database, models: Record<string, Any>) => Promise<void>) => {
+    const bypass = provider === "postgresql" && !what.startsWith("a skip outside") ? '  bypass_roles = ["postgres"]\n' : "";
+    return test(what, { skip }, () => withSchema(provider, SCHEMA, body, bypass));
+  };
 
   scenario("the event model is named after the table and holds the row key", async (db, models) => {
     const meta = models["PostEvent"]._meta;
@@ -265,6 +268,9 @@ for (const provider of ["sqlite", "postgresql"]) {
     const event = (await timeline(post))[0]!.event;
     const Event = models["PostEvent"];
     await assert.rejects(Event.objects.using(db).filter(Event.id.eq(event.id)).delete(), WriteProtected);
+    if (provider === "postgresql") {
+      await assert.rejects(db.execute("UPDATE hx_js_posts_events SET label = 'forged'"), (e: Error) => e instanceof WriteProtected && /append_only/.test(e.message));
+    }
   });
 
   scenario("events of one transaction share a transaction id on postgresql", async (db, models) => {

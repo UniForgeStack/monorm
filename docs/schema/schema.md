@@ -826,40 +826,9 @@ model User {
 * A proxy model takes the `@@model_methods` of its root model, as it takes the `@@query_set`. Name the class on the proxy to replace it.
 * An inherited attribute resolves in the package of the schema that declared it (the IR field `classes_from`).
 
-### Protected writes (`@@protected_write`)
+### Write protection
 
-`@@protected_write` is an application-level check in the ORM. It does not protect the database.
-Raw SQL (`db.execute`), migrations, other ORM processes without this schema, and other database clients can still write.
-For database-level protection, use `@@trigger` or database grants.
-
-```prisma
-model Post {
-  id    Int    @id
-  title String
-  @@protected_write
-}
-```
-
-* All ORM writes to a protected model fail outside an `allow_writes` scope (`allowWrites` in TypeScript) with `WriteProtected`:
-  inserts, bulk inserts, updates, `update_many`, deletes, upserts, instance writes and multi-table writes.
-* The check is on the table that the SQL writes.
-  `post.tags.add()` writes `PostTag` rows, so `PostTag` must be protected for it to fail.
-  A proxy writes the table of its root, so the protection of the root applies to the proxy.
-  A multi-table write also writes the tables of its storage ancestors.
-* A scope allows the tables of the models it names. Scopes nest: an inner scope adds its models to the outer ones.
-* Reads are not changed.
-* `@@protected_write` creates no trigger, no grant and no DDL. Migrations ignore it.
-
-A database-level option is a trigger that rejects writes (PostgreSQL).
-It rejects every writer, also the service that should write; exempt that service with a database role or grants, not with this trigger:
-
-```prisma
-model Post {
-  id    Int    @id
-  title String
-  @@trigger(read_only, when: before, operation: [insert, update, delete], func: "BEGIN RAISE EXCEPTION 'posts are read-only'; END;")
-}
-```
+Use the [write-rules extension](../extensions/write-rules.md) to protect a model, an operation, or a field in the ORM and database.
 
 ### Names
 
@@ -932,7 +901,7 @@ otherwise definition fails with `@<name>: not compiled into this artifact and no
 | `@storage.file(storage:)` | file-storage | [file-storage.md](../extensions/file-storage.md) |
 | `x Generic? @generic.relation(targets: [...])`, `@@generic.relation(...)`, `@generic.reverse` | generic | [generic-identities.md](generic-identities.md) |
 
-`@client_default`, enum subsets in proxies (`Status(ACTIVE)`) and `@@protected_write` are core syntax.
+`@client_default` and enum subsets in proxies (`Status(ACTIVE)`) are core syntax.
 
 ### Installed extension libraries
 

@@ -296,7 +296,6 @@ fn event_model(t: &Tracker, root: &ModelIr) -> Result<ModelIr, String> {
     let mut index_fields: Vec<String> = t.key.iter().map(|k| k.event_field.clone()).collect();
     index_fields.push("id".into());
     model.indexes.push(IndexIr { name: Some(format!("{}_row_idx", t.event_table)), columns: index_fields.into_iter().map(|f| IndexColumnIr { field: Some(f), ..Default::default() }).collect(), ..Default::default() });
-    model.protected_write = true;
     Ok(model)
 }
 
@@ -376,6 +375,12 @@ fn parse(ir: &SchemaIr, d: &monorm::extension::Declaration) -> Result<(Tracker, 
 pub fn events(ir: &mut SchemaIr) -> Result<(), String> {
     for d in &TRACKED.declarations_besides(ir, OTHERS)? {
         let (tracker, model) = parse(ir, d)?;
+        use monorm::writes::{WriteAction, WriteLayer, WriteRule};
+        ir.behavior.write_rules.push(WriteRule {
+            source: SOURCE.into(), model: model.name.clone(), name: "append_only".into(),
+            operations: vec![TriggerEvent::Update, TriggerEvent::Delete], fields: vec![],
+            condition: None, changed: false, action: WriteAction::Refuse, layer: WriteLayer::Both, skippable: true, declaration: None,
+        });
         publish_scope_keys(ir, &tracker.scope);
         if let Some(storage) = &mut ir.behavior.storage { storage.models.push(model.clone()); }
         ir.models.push(model);
@@ -601,7 +606,8 @@ mod tests {
     fn a_tracker_adds_the_event_model_to_logical_and_physical_models_and_one_record() {
         let ir = lowered("postgres", track(serde_json::json!({}))).unwrap();
         for model in [ir.models.last().unwrap(), ir.behavior.storage.as_ref().unwrap().models.last().unwrap()] {
-            assert_eq!((model.name.as_str(), model.table.as_str(), model.protected_write), ("PostEvent", "posts_events", true));
+            assert_eq!((model.name.as_str(), model.table.as_str()), ("PostEvent", "posts_events"));
+            assert!(ir.behavior.write_rules.iter().any(|r| r.model == model.name));
             let names: Vec<&str> = model.fields.iter().map(|f| f.name.as_str()).collect();
             assert_eq!(names, ["id", "row_id", "label", "data", "created_at", "xact_id"]);
             assert!(model.fields.iter().all(|f| f.nullable == (f.name == "xact_id")));
@@ -619,7 +625,7 @@ mod tests {
         let mut ir = schema("postgres", track(serde_json::json!({"scope": ["user"]})));
         monorm::extension::capture_storage(&mut ir).unwrap();
         let effects = pass_effects(&ir, events).unwrap();
-        assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.extension_records", "behavior.published_scope_keys", "behavior.storage", "models"]);
+        assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.extension_records", "behavior.published_scope_keys", "behavior.storage", "behavior.write_rules", "models"]);
         events(&mut ir).unwrap();
         let effects = pass_effects(&ir, triggers).unwrap();
         assert_eq!(effects.into_iter().collect::<Vec<_>>(), ["behavior.storage", "models"]);

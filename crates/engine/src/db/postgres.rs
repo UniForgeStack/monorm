@@ -56,6 +56,9 @@ fn pg_err(e: tokio_postgres::Error) -> DbError {
             } else {
                 ErrorKind::Other
             };
+            if code == monorm::writes::WRITE_PROTECTED_SQLSTATE {
+                return DbError { sqlstate: Some(code.to_owned()), ..DbError::new(kind, db.message()) };
+            }
             let mut message = format!("{} ({code}): {}", db.severity(), db.message());
             if let Some(detail) = db.detail() {
                 message.push_str("\nDETAIL: ");

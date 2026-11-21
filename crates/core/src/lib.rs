@@ -36,6 +36,7 @@ pub mod field_adapters;
 pub mod identity;
 pub mod client_default;
 pub mod writes;
+mod write_rules;
 
 pub mod result_check;
 pub mod view;

@@ -610,6 +610,9 @@ pub fn plan_copy(schema: &Schema, target: Target, model: &str, fields: &[String]
             return Err(Error::query(format!("insert_many(copy=True): {}.{name} writes through SQL; use insert_many()", m.ir.name)));
         }
         let set = rows.iter().filter(|r| r.get(i).is_some_and(Option::is_some)).count();
+        if set != rows.len() && m.assignments.iter().any(|a| a.applies_to(monorm_core::writes::WriteKind::Insert) && m.fields()[a.field].name == *name) {
+            return Err(Error::query(format!("insert_many(copy=True): {}.{name} has an insert assignment; use insert_many()", m.ir.name)));
+        }
         if set != rows.len() && m.client_defaults.iter().any(|(p, d)| m.fields()[*p].name == *name && matches!(d, monorm_core::client_default::ClientDefault::Expr(_) | monorm_core::client_default::ClientDefault::Hook(_))) {
             return Err(Error::query(format!("insert_many(copy=True): {}.{name} has an expression default; use insert_many()", m.ir.name)));
         }

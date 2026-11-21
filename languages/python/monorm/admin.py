@@ -219,7 +219,7 @@ class ResourceConfig(TypedDict, total=False):
     inputs: Sequence[InputDef]
     """Controls of the form that are no field (``admin.input("reason", type="textarea")``). Only a service reads them (``ctx.inputs``)."""
     allow_protected_writes: bool
-    """A model with ``@@protected_write`` is closed to the admin. ``True`` opens it; the audit row records the opt-in."""
+    """Open application write rules for this resource. The audit row records the opt-in."""
     inlines: Sequence[Any]
     """To-many relations that the detail page shows and edits in place: ``admin.inline(OrderLine)`` for each one (a bare model works too).
     The inline takes the registered page of the child model; ``admin.inline(..., page={...})`` overrides page keys."""

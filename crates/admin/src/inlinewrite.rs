@@ -150,8 +150,8 @@ pub(crate) async fn check(s: &State_, c: &Call<'_>, parent_op: Op, parent: Optio
                 return Err(Fail::Deny { resource: child.name.clone(), changes: json!({"needs": site.inline_requires(&c.resource, inline, op)}) });
             }
         }
-        if !create.is_empty() || !update.is_empty() || !delete.is_empty() {
-            if let Some(reason) = write::read_only_reason(&site.schema, child) {
+        for (op, present) in [(Op::Create, !create.is_empty()), (Op::Update, !update.is_empty()), (Op::Delete, !delete.is_empty())] {
+            if let Some(reason) = present.then(|| write::write_reason(&site.schema, child, op)).flatten() {
                 return Err(Fail::Reply(reject(StatusCode::FORBIDDEN, "ReadOnly", &reason)));
             }
         }
@@ -373,7 +373,7 @@ async fn open_inline<'a>(s: &'a State_, user: Option<Extension<User>>, parent: &
     if !parent.allow.contains(&Op::Update) {
         return Err(Box::new(deny(&s.site, scope, &user, &parent.name, json!({"reason": "allow"})).await));
     }
-    if let Some(reason) = write::read_only_reason(&s.site.schema, parent).or_else(|| write::read_only_reason(&s.site.schema, child)) {
+    if let Some(reason) = write::write_reason(&s.site.schema, parent, Op::Update).or_else(|| write::write_reason(&s.site.schema, child, op)) {
         scope.rollback().await;
         return Err(Box::new(reject(StatusCode::FORBIDDEN, "ReadOnly", &reason)));
     }

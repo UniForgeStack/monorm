@@ -724,7 +724,6 @@ fn model_fields(m: &ModelDecl, models: &HashMap<&str, &ModelDecl>, ctx: &Ctx<'_>
         policies: vec![],
         renamed_from: None,
         comment: None,
-        protected_write: false,
         query_set: None,
         model_methods: None,
         classes_from: None,
@@ -743,8 +742,7 @@ fn model_fields(m: &ModelDecl, models: &HashMap<&str, &ModelDecl>, ctx: &Ctx<'_>
             "map" => ir.table = text(a)?,
             "comment" => ir.comment = Some(text(a)?),
             "renamed_from" => ir.renamed_from = Some(text(a)?),
-            "protected_write" if a.args.positional.is_empty() && a.args.named.is_empty() => ir.protected_write = true,
-            "protected_write" => return err(a.pos, format!("{}: @@protected_write takes no arguments", m.name)),
+            "protected_write" => return err(a.pos, format!("{}: @@protected_write was removed; use @@write_rules.protect(layer: app)", m.name)),
             "query_set" => ir.query_set = Some(text(a)?),
             "model_methods" => ir.model_methods = Some(text(a)?),
             "materialized" | "depends_on" if !m.is_view => return err(a.pos, format!("{}: @@{} belongs on a `view` block", m.name, a.name)),
@@ -1950,7 +1948,7 @@ fn blank_literals(sql: &str) -> String {
 }
 
 /// A whole-word, case-insensitive mention of `OLD.` or `NEW.` in raw SQL, outside a string literal.
-fn reads_row(sql: &str, which: &str) -> bool {
+pub(super) fn reads_row(sql: &str, which: &str) -> bool {
     let lower = blank_literals(sql).to_lowercase();
     let is_id = |c: char| c.is_alphanumeric() || c == '_' || c == '"';
     lower.match_indices(which).any(|(i, _)| {
@@ -1990,12 +1988,16 @@ fn list_items(pos: Pos, v: &Value) -> Vec<(Pos, &Value)> {
 
 /// The `operation:` events of a trigger, and the fields of its `update_of(...)`.
 fn trigger_events(n: &mut Named<'_>, what: &str, pos: Pos) -> Result<(Vec<TriggerEvent>, Vec<String>)> {
-    let mut events: Vec<TriggerEvent> = vec![];
-    let mut update_of: Vec<String> = vec![];
-    let mut seen_update_of = false;
     let Some((op_pos, op)) = n.get("operation") else {
         return err(pos, format!("{what}: give the events: operation: [insert, update, update_of(a, b), delete, truncate]"));
     };
+    parse_trigger_events(op_pos, op, what)
+}
+
+fn parse_trigger_events(op_pos: Pos, op: &Value, what: &str) -> Result<(Vec<TriggerEvent>, Vec<String>)> {
+    let mut events = vec![];
+    let mut update_of = vec![];
+    let mut seen_update_of = false;
     for (p, v) in list_items(op_pos, op) {
         match v {
             Value::Path(path, None) if path.len() == 1 => {
@@ -2199,7 +2201,7 @@ fn model_block(m: &mut ModelIr, b: &Attr, pending: Option<&Pendings>) -> Result<
             n.finish()?;
             m.partition = Some(partition.ok_or_else(|| super::syntax::Error { pos: b.pos, msg: format!("{what}: give list:, range: or hash:") })?);
         }
-        "map" | "comment" | "renamed_from" | "protected_write" | "query_set" | "model_methods" | "materialized" | "depends_on" => {}
+        "map" | "comment" | "renamed_from" | "query_set" | "model_methods" | "materialized" | "depends_on" => {}
         "index" => {
             extra_positional(1)?;
             let columns: Vec<IndexColumnIr> = keys(m, pending, b.pos, first, &what, false)?.into_iter().map(|(k, _)| k).collect();
@@ -2325,6 +2327,25 @@ fn param(pos: Pos, v: &Value) -> Result<String> {
 /// Bare names, `null` and objects are literals only for arguments of kind `value`
 /// (or of an attribute no compiled manifest declares, which validation rejects later).
 fn declaration_value(pos: Pos, value: &Value, kind: Option<ArgumentKind>) -> Result<serde_json::Value> {
+    if kind == Some(ArgumentKind::TriggerEvents) {
+        let (operations, fields) = parse_trigger_events(pos, value, "operation")?;
+        return Ok(serde_json::json!({ "operations": operations, "fields": fields }));
+    }
+    if kind == Some(ArgumentKind::TriggerCondition) {
+        let mut raw = vec![];
+        let mut changes = vec![];
+        for (p, v) in list_items(pos, value) {
+            match change_helper(p, v, "condition")? {
+                Some(helper) => changes.push(helper),
+                None => raw.push(raw_sql(p, v, "condition")?),
+            }
+        }
+        let sql = match raw.len() {
+            0 | 1 => raw.pop(),
+            _ => Some(raw.into_iter().map(|s| format!("({s})")).collect::<Vec<_>>().join(" AND ")),
+        };
+        return Ok(serde_json::json!({ "sql": sql, "changes": changes }));
+    }
     if kind == Some(ArgumentKind::Expression) {
         return Ok(super::expr_arg::marker(pos, value));
     }
