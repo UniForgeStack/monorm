@@ -121,6 +121,12 @@ fn pull_baseline_and_drift_on_sqlite() {
     assert!(std::fs::read_to_string(dir.join("schema.prisma")).unwrap().contains("model Book {"));
     assert_eq!(monorm(&dir, &["--url", &url, "pull"]).status.code(), Some(2));
 
+    let unmanaged = monorm(&dir, &["--url", &url, "pull", "--unmanaged", "-o", "unmanaged.prisma"]);
+    assert!(unmanaged.status.success(), "{}", text(&unmanaged.stderr));
+    let unmanaged = std::fs::read_to_string(dir.join("unmanaged.prisma")).unwrap();
+    assert_eq!(unmanaged.matches("@@managed(false)").count(), unmanaged.matches("model ").count());
+    assert!(!std::fs::read_to_string(dir.join("schema.prisma")).unwrap().contains("@@managed"));
+
     // baseline refuses a database that has applied migrations, before writing one
     let refused = monorm(&dir, &["--url", &url, "baseline"]);
     assert_eq!(refused.status.code(), Some(1));

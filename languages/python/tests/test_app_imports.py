@@ -13,6 +13,7 @@ from monorm import Registry, _native
 from monorm._apps import resolve_apps
 from monorm._packages import resolve_extensions
 from monorm._native import SchemaError
+from monorm.migrations import Migrations
 
 PROJECT = 'datasource db {\n  provider = "sqlite"\n}\nimport "app:monorm-fixture-auth" (prefix: "auth_")\nmodel Post {\n  id Int @id\n}\n'
 AUTH = 'import "app:monorm-billing" (prefix: "b_")\nmodel User {\n  id Int @id\n  @@query_set("UserQueries")\n}\n'
@@ -130,3 +131,8 @@ def test_the_auth_app_comes_with_monorm_and_needs_no_install(tmp_path: Path) -> 
     assert apps["monorm-auth"].endswith(str(Path("monorm_auth") / "schema.prisma"))
     ir = json.loads(_native.compile_schema_file(str(schema), apps, resolve_extensions()))
     assert "auth_user" in [m["table"] for m in ir["models"]]
+
+    schema.write_text(BUILTIN.replace('prefix: "auth_"', 'prefix: "auth_", managed: false'))
+    plan = Migrations(tmp_path / "migrations", schema).plan()
+    assert 'CREATE TABLE "__orm_new_post"' in "\n".join(step.sql for step in plan.up)
+    assert all("auth_" not in step.sql for step in plan.up)

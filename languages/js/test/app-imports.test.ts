@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { mock, test, type TestContext } from "node:test";
-import { Registry, SchemaError, load, loads } from "../src/index.js";
+import { Migrations, Registry, SchemaError, load, loads } from "../src/index.js";
 import { resolveApps } from "../src/apps.js";
 import { native } from "../src/native.js";
 import { resolveExtensions } from "../src/packages.js";
@@ -130,6 +130,10 @@ test("the auth app comes with monorm and needs no install", (t) => {
   assert.deepEqual(Object.keys(apps), ["auth"]);
   assert.ok(apps["auth"]?.endsWith(join("auth", "schema.prisma")));
   assert.ok(tables(native().compileSchemaFile(schema, apps, resolveExtensions(schema))).includes("auth_user"));
+  writeFileSync(schema, BUILTIN.replace('prefix: "auth_"', 'prefix: "auth_", managed: false'));
+  const plan = new Migrations(join(dir, "migrations"), schema).plan();
+  assert.ok(plan.up.some((step) => step.sql.includes('CREATE TABLE "__orm_new_post"')));
+  assert.ok(plan.up.every((step) => !step.sql.includes("auth_")));
 });
 
 test("the bundled auth app wins over an installed package of the same name", (t) => {

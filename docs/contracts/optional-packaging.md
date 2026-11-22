@@ -293,7 +293,7 @@ Schema contract 4.0 holds `Requirements.hooks` (a `HookBinding` per model, field
 Schema contract 4.0 holds `Requirements.model_views` and `Requirements.result_checks`, and the `view_source` key of an attribute.
 Schema contract 5.0 removes `Requirements.file_fields` and the `file-storage` host capability: the `monorm.file-storage` extension uses `field_adapters`.
 Contract 5.0 also has no `Requirements.extensions`, `Requirements.completed_passes` or `Requirements.methods`. The IR crosses the ABI as JSON, so an extension library that was built before this removal fails to parse the IR with an unknown-field error: rebuild it. After the first publish of the `monorm` crate, such a removal needs a major bump.
-Schema contract 5.1 holds `FieldIr.generated` (the SQL of a generated column and `stored`). `stamp_expression_records` sets `schema_contract_minor = 1` when a field has it. An extension library that was built before 5.1 drops the field when it runs a pass, because it parses and writes its own `FieldIr`; rebuild such a library.
+Schema contract 5.1 holds `FieldIr.generated` (the SQL of a generated column and `stored`). `stamp_schema_contract` sets `schema_contract_minor = 1` when a field has it. An extension library that was built before 5.1 drops the field when it runs a pass, because it parses and writes its own `FieldIr`; rebuild such a library.
 Models of contract 4 fail `define` with a "schema contract 4 is older" error; regenerate them.
 Schema contract 5.2 adds the argument kind `expression` to the manifest.
 An attribute argument of this kind holds a schema expression.
@@ -302,7 +302,7 @@ It gives the extension the checked engine tree (JSON), or `null` for `"none"`.
 A string is the old filter language: the core reads it into the same tree and warns with the native form.
 An older host fails to read a manifest with the kind `expression`; install an older release of the extension or update the ORM.
 `query-defaults` declares 5.2.
-`stamp_expression_records` sets `schema_contract_minor = 2` when a read-default filter holds a shape that the old string language could not write.
+`stamp_schema_contract` sets `schema_contract_minor = 2` when a read-default filter holds a shape that the old string language could not write.
 These shapes are a path, `in`, `like`, a function and arithmetic.
 An older engine then refuses the IR with "newer than this engine".
 A filter of plain `==`, `<`, `&`, `|`, `~` and null tests keeps the old stamp.
@@ -310,7 +310,7 @@ Schema contract 5.3 adds `Attribute.open_arguments` to the manifest.
 An attribute with it takes named arguments that its manifest does not list; each value is a schema expression.
 It also holds `behavior.scoped_fields`, a `ScopedField` (`source`, `model`, `field`, `key`) for each column that an extension fills and checks from the scope value of `key`.
 The engine fills an unset column with the scope value, accepts an equal value, and raises `ScopeMismatch` for another value.
-`stamp_expression_records` sets `schema_contract_minor = 3` when `scoped_fields` is not empty.
+`stamp_schema_contract` sets `schema_contract_minor = 3` when `scoped_fields` is not empty.
 An older engine then refuses the IR with "newer than this engine", because it would write rows with no scope.
 `scope` declares 5.3.
 Schema contract 5.3 also adds `Manifest.rule_claims`, a `RuleClaim` (`attribute`, `rule_argument`, `patterns`) for each database rule shape that `pull` reads as a model attribute; `TriggerIr.replaces_rule`, the rule that a trigger replaces; and the snapshot field `Table.rules`.
@@ -330,12 +330,12 @@ The host names no extension.
 Schema contract 5.3 also adds `Manifest.extension_records` and `Manifest.added_triggers`.
 An `ExtensionRecord` (`source`, `model`, `kind`, `data`) is a record that an extension pass keeps for its language code and for `pull`; the host reads none of them.
 An `AddedTrigger` (`model`, `trigger`) adds a trigger to a model of an earlier schema batch; `merge_definition` adds it to that model and drops the list.
-`stamp_expression_records` sets `schema_contract_minor = 3` when `extension_records` is not empty, because an older engine refuses the unknown `extension_records` field of the IR as a parse error, and the stamp turns that into the version error.
+`stamp_schema_contract` sets `schema_contract_minor = 3` when `extension_records` is not empty, because an older engine refuses the unknown `extension_records` field of the IR as a parse error, and the stamp turns that into the version error.
 `added_triggers` needs no stamp: the IR holds the trigger in the model after the merge.
 `history` uses both.
 Schema contract 5.3 also lets a field adapter sit on a `Bytes` field, and adds `FieldAdapter.null_only` and `AdapterRuntime.resolve`.
 A `null_only` adapter marks a column that the database cannot compare or sort. The planner refuses every expression on it except `IS NULL` and `IS NOT NULL`, at build time.
-`stamp_expression_records` sets `schema_contract_minor = 3` when an adapter has `null_only`.
+`stamp_schema_contract` sets `schema_contract_minor = 3` when an adapter has `null_only`.
 `AdapterRuntime.resolve` (`option`, `setting`) makes the generator find a class: `option` names a key of `FieldAdapter.options` that holds a dotted name, and `setting` names the settings section whose `python` and `typescript` tables map a package to a module.
 The longest package that is a dotted prefix of the name gives the module. A name with no entry is an error.
 `value` and `input` write the class as `{class}`; the options that the generated code passes to the runtime gain `module` and `symbol`.
@@ -354,10 +354,10 @@ Schema contract 5.6 adds the `owns` flag to a relation in the IR (an IR with an 
 Schema contract 5.7 adds `path` and `constraint` to a relation in the IR (an IR with a linked relation or a `constraint: false` relation is stamped 5.7). The manifest format does not change, and no extension declares 5.7.
 Schema contract 5.8 adds the trigger fields to the IR: transition table names, a deferrable mode, a `declare` block, change helpers (`changes`), and a skip guard (an IR with any of them is stamped 5.8). The manifest format does not change, and no extension declares 5.8.
 Schema contract 5.9 adds fixed source or target conditions and typed union members to relation IR. Schemas using either field are stamped 5.9. The manifest format does not change, and the generic extension declares 5.9.
-Schema contract 5.10 adds neutral `behavior.write_rules` records and the
-`insert` write-assignment kind. IR containing either is stamped 5.10. Model
-rules identify the owning model, operations, optional fields and database
-predicate, action, layer, skip policy and rule name.
+Schema contract 5.10 adds neutral `behavior.write_rules` records and the `insert` write-assignment kind. IR containing either is stamped 5.10.
+Model rules identify the owning model, operations, optional fields and database predicate, action, layer, skip policy and rule name.
+Schema contract 5.11 adds the optional `ModelIr.managed` flag. It defaults to `true`, and an IR that contains an unmanaged model is stamped 5.11.
+Unmanaged models remain readable and writable. Snapshot version 6 records their ownership so migration planners can leave their tables untouched.
 
 A version fits when its major equals the engine major and its minor is at most the engine minor.
 This holds for `schema_contract` and for `abi`, and for the `abi` that the library reports.

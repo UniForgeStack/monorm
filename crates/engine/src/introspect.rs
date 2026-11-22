@@ -10,7 +10,7 @@
 //! What a [`DbSchema`] cannot hold (rules, views, generated columns, policies, ...)
 //! goes into [`Introspection::gaps`].
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 use serde::Deserialize;
@@ -59,10 +59,20 @@ async fn json<T: for<'de> Deserialize<'de>>(conn: &dyn Executor, sql: &str) -> R
 
 /// The live schema of `conn`: Postgres' current schema, or the SQLite database.
 pub async fn introspect(conn: &dyn Executor) -> Result<Introspection> {
+    introspect_except(conn, &HashSet::new()).await
+}
+
+async fn introspect_except(conn: &dyn Executor, ignored: &HashSet<&str>) -> Result<Introspection> {
     match conn.dialect() {
-        Dialect::Postgres => postgres(conn).await,
-        Dialect::Sqlite => sqlite(conn).await,
+        Dialect::Postgres => postgres(conn, ignored).await,
+        Dialect::Sqlite => sqlite(conn, ignored).await,
     }
+}
+
+/// Keep external tables in the catalog read so their functions, types and incoming foreign keys can
+/// be attributed, but omit their diagnostics.
+fn table_gap(gaps: &mut Vec<String>, ignored: &HashSet<&str>, table: &str, message: String) {
+    if !ignored.contains(table) { gaps.push(message); }
 }
 
 /// A level key of a composed model: a column of `table` that references `parent`.
@@ -162,6 +172,7 @@ struct PgConstraint {
     ref_schema: Option<String>,
     #[serde(default)]
     ref_local: bool,
+    ref_visible: bool,
     ref_columns: Option<Vec<String>>,
     on_delete: String,
     on_update: String,
@@ -290,7 +301,7 @@ const CONSTRAINTS_SQL: &str = "SELECT coalesce(json_agg(json_build_object('table
      'type', con.contype::text, \
      'columns', (SELECT json_agg(a.attname ORDER BY k.i) FROM unnest(con.conkey) WITH ORDINALITY k(n, i) \
                  JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.n), \
-     'ref_table', rc.relname, 'ref_schema', rn.nspname, 'ref_local', coalesce(rn.nspname = current_schema(), true), \
+     'ref_table', rc.relname, 'ref_schema', rn.nspname, 'ref_local', coalesce(rn.nspname = current_schema(), true), 'ref_visible', coalesce(pg_table_is_visible(rc.oid), false), \
      'ref_columns', (SELECT json_agg(a.attname ORDER BY k.i) FROM unnest(con.confkey) WITH ORDINALITY k(n, i) \
                      JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.n), \
      'on_delete', con.confdeltype::text, 'on_update', con.confupdtype::text, \
@@ -473,7 +484,7 @@ fn trigger_args(hex: &str) -> Vec<String> {
     args
 }
 
-async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
+async fn postgres(conn: &dyn Executor, ignored: &HashSet<&str>) -> Result<Introspection> {
     let tables: Vec<PgTable> = json(conn, &tables_sql()).await?;
     let columns: Vec<PgColumn> = json(conn, COLUMNS_SQL).await?;
     let constraints: Vec<PgConstraint> = json(conn, CONSTRAINTS_SQL).await?;
@@ -508,15 +519,15 @@ async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
         match t.kind.as_str() {
             "r" | "p" => {
                 if t.unlogged {
-                    gaps.push(format!("table {} is UNLOGGED; it is read as logged", t.name));
+                    table_gap(gaps, ignored, &t.name, format!("table {} is UNLOGGED; it is read as logged", t.name));
                 }
                 if let Some(options) = t.options.filter(|o| !o.is_empty()) {
-                    gaps.push(format!("table {} has storage options ({}); they are not reproduced", t.name, options.join(", ")));
+                    table_gap(gaps, ignored, &t.name, format!("table {} has storage options ({}); they are not reproduced", t.name, options.join(", ")));
                 }
                 let partition_of = if t.partition {
                     match (t.parent, t.bound) {
                         (Some(parent), Some(bound)) => Some(monorm_core::migrate::model::PartitionOf { parent, bound }),
-                        _ => { gaps.push(format!("{}: missing partition parent or bound", t.name)); None }
+                        _ => { table_gap(gaps, ignored, &t.name, format!("{}: missing partition parent or bound", t.name)); None }
                     }
                 } else { None };
                 by_oid.insert(t.oid, Table { name: t.name, comment: t.comment, partition_by: t.partition_by, partition_of, rls: monorm_core::ir::RlsIr { enabled: t.rls, forced: t.force_rls }, ..Default::default() });
@@ -532,20 +543,20 @@ async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
                 let view = SqlView { name: t.name.clone(), body, materialized: t.kind == "m", depends_on: t.depends.unwrap_or_default(), ..Default::default() };
                 view_tables.insert(t.oid, (Table { name: t.name, ..Default::default() }, view));
             }
-            _ => gaps.push(format!("foreign table {}: foreign tables are not supported", t.name)),
+            _ => table_gap(gaps, ignored, &t.name, format!("foreign table {}: foreign tables are not supported", t.name)),
         }
     }
     for c in columns {
         let Some(t) = by_oid.get_mut(&c.table).or_else(|| view_tables.get_mut(&c.table).map(|(t, _)| t)) else { continue };
         if c.identity == "a" {
-            gaps.push(format!("column {}.{} is GENERATED ALWAYS AS IDENTITY; the schema has BY DEFAULT only", t.name, c.name));
+            table_gap(gaps, ignored, &t.name, format!("column {}.{} is GENERATED ALWAYS AS IDENTITY; the schema has BY DEFAULT only", t.name, c.name));
         }
         if let Some(coll) = &c.collation {
-            gaps.push(format!("column {}.{} has collation {coll}; column collations are not supported", t.name, c.name));
+            table_gap(gaps, ignored, &t.name, format!("column {}.{} has collation {coll}; column collations are not supported", t.name, c.name));
         }
         let serial = c.owned_serial && c.default.as_deref().is_some_and(|d| d.starts_with("nextval("));
         if serial {
-            gaps.push(format!(
+            table_gap(gaps, ignored, &t.name, format!(
                 "column {}.{} uses a sequence ({}); it is read as an identity column, and the sequence stays as it is",
                 t.name,
                 c.name,
@@ -571,12 +582,12 @@ async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
         let Some(t) = by_oid.get_mut(&c.table) else { continue };
         let columns = c.columns.clone().unwrap_or_default();
         if !c.validated {
-            gaps.push(format!("constraint {}.{} is NOT VALID; it is read as valid", t.name, c.name));
+            table_gap(gaps, ignored, &t.name, format!("constraint {}.{} is NOT VALID; it is read as valid", t.name, c.name));
         }
         match c.kind.as_str() {
             "p" => t.primary_key = Some(PrimaryKey { name: c.name, columns }),
             "u" if index_keys.get(&c.index).is_some_and(|ix| ix.include.as_ref().is_some_and(|i| !i.is_empty())) => {
-                gaps.push(format!("unique constraint {}.{} has INCLUDE columns; it is read without them", t.name, c.name));
+                table_gap(gaps, ignored, &t.name, format!("unique constraint {}.{} has INCLUDE columns; it is read without them", t.name, c.name));
                 t.uniques.push(Unique {
                     name: c.name,
                     columns,
@@ -594,14 +605,14 @@ async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
                 let def = c.def.trim_end_matches(" NOT VALID").trim();
                 let expr = def.strip_prefix("CHECK ").unwrap_or(def);
                 if expr.ends_with("NO INHERIT") {
-                    gaps.push(format!("check {}.{} is NO INHERIT", t.name, c.name));
+                    table_gap(gaps, ignored, &t.name, format!("check {}.{} is NO INHERIT", t.name, c.name));
                 }
                 t.checks.push(Check { name: c.name, expr: strip_parens(expr.trim_end_matches(" NO INHERIT")).to_owned() });
             }
-            "f" if !c.ref_local => {
+            "f" if !c.ref_local && !(c.ref_visible && c.ref_table.as_deref().is_some_and(|t| ignored.contains(t))) => {
                 // matched by table name, it would point at a local table of the same name
                 let ref_table = c.ref_table.unwrap_or_default();
-                gaps.push(format!("foreign key {}.{} references {}.{ref_table}, outside the schema; it is left out", t.name, c.name, c.ref_schema.unwrap_or_default()));
+                table_gap(gaps, ignored, &t.name, format!("foreign key {}.{} references {}.{ref_table}, outside the schema; it is left out", t.name, c.name, c.ref_schema.unwrap_or_default()));
             }
             "f" => {
                 t.foreign_keys.push(ForeignKey {
@@ -652,16 +663,16 @@ async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
     }
     for tr in triggers {
         if let Some((t, _)) = view_tables.get(&tr.table) {
-            gaps.push(format!("trigger {}.{} is on a view; a view takes no trigger, so it is left out", t.name, tr.name));
+            table_gap(gaps, ignored, &t.name, format!("trigger {}.{} is on a view; a view takes no trigger, so it is left out", t.name, tr.name));
             continue;
         }
         let Some(t) = by_oid.get_mut(&tr.table) else { continue };
         if tr.constraint && !tr.deferrable {
-            gaps.push(format!("constraint trigger {}.{} is not deferrable; it is left out", t.name, tr.name));
+            table_gap(gaps, ignored, &t.name, format!("constraint trigger {}.{} is not deferrable; it is left out", t.name, tr.name));
             continue;
         }
         if tr.enabled == "D" {
-            gaps.push(format!("trigger {}.{} is disabled; it is read as enabled", t.name, tr.name));
+            table_gap(gaps, ignored, &t.name, format!("trigger {}.{} is disabled; it is read as enabled", t.name, tr.name));
         }
         if tr.enabled == "D" || tr.enabled == "R" {
             out.disabled_triggers.push((t.name.clone(), tr.name.clone()));
@@ -683,7 +694,7 @@ async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
         events.sort();
         let current = functions.iter().any(|f| f.name == tr.function);
         if !current {
-            gaps.push(format!("trigger {}.{} calls {}.{}, a function outside the schema", t.name, tr.name, tr.function_schema, tr.function));
+            table_gap(gaps, ignored, &t.name, format!("trigger {}.{} calls {}.{}, a function outside the schema", t.name, tr.name, tr.function_schema, tr.function));
         }
         t.triggers.push(Trigger {
             name: tr.name,
@@ -739,6 +750,7 @@ async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
     }
     for o in others {
         let n = o.named;
+        if n.table.as_deref().is_some_and(|t| ignored.contains(t)) { continue; }
         gaps.push(match o.kind.as_str() {
             "rule" => {
                 let rule = LiveRule { name: n.name, table: n.table.unwrap_or_default(), def: n.def.unwrap_or_default(), enabled: o.enabled.unwrap_or(true) };
@@ -756,7 +768,7 @@ async fn postgres(conn: &dyn Executor) -> Result<Introspection> {
     db.tables = by_oid.into_values().collect();
     db.views = finish_views(view_tables.into_values());
     if !db.views.is_empty() {
-        db.version = monorm_core::migrate::model::SNAPSHOT_VERSION;
+        db.version = monorm_core::migrate::model::VIEW_SNAPSHOT_VERSION;
     }
     Ok(out)
 }
@@ -1128,7 +1140,7 @@ fn lite_index(sql: &str, columns: &[LiteIndexColumn]) -> (Vec<IndexKey>, Option<
     (keys, where_)
 }
 
-async fn sqlite(conn: &dyn Executor) -> Result<Introspection> {
+async fn sqlite(conn: &dyn Executor, ignored: &HashSet<&str>) -> Result<Introspection> {
     let tables: Vec<LiteTable> = json(conn, LITE_TABLES).await?;
     let views: Vec<LiteTable> = json(conn, LITE_VIEWS).await?;
     let columns: Vec<LiteColumn> = json(conn, LITE_COLUMNS).await?;
@@ -1160,12 +1172,12 @@ async fn sqlite(conn: &dyn Executor) -> Result<Introspection> {
                 2 | 3 => match lite_generated(&sql, &c.name) {
                     Some(expr) => Some(GeneratedIr { sql: expr, stored: c.hidden == 3 }),
                     None => {
-                        gaps.push(format!("column {}.{} is generated, but its expression was not found in the table text", t.name, c.name));
+                        table_gap(gaps, ignored, &t.name, format!("column {}.{} is generated, but its expression was not found in the table text", t.name, c.name));
                         continue;
                     }
                 },
                 _ => {
-                    gaps.push(format!("column {}.{} is a hidden column; it is left out", t.name, c.name));
+                    table_gap(gaps, ignored, &t.name, format!("column {}.{} is a hidden column; it is left out", t.name, c.name));
                     continue;
                 }
             };
@@ -1290,7 +1302,7 @@ async fn sqlite(conn: &dyn Executor) -> Result<Introspection> {
     for o in others {
         match out.schema.tables.iter_mut().find(|t| t.name == o.table).zip(o.sql.as_deref().and_then(|sql| lite_trigger(sql, &o.table, &o.name))) {
             Some((t, trigger)) => t.triggers.push(trigger),
-            None => gaps.push(format!("trigger {} on {}: it is not in the form MonOrm writes; it is left out", o.name, o.table)),
+            None => table_gap(gaps, ignored, &o.table, format!("trigger {} on {}: it is not in the form MonOrm writes; it is left out", o.name, o.table)),
         }
     }
     for v in views {
@@ -1311,7 +1323,7 @@ async fn sqlite(conn: &dyn Executor) -> Result<Introspection> {
         out.schema.views.push(SqlView { name: v.name, body, columns, ..Default::default() });
     }
     if !out.schema.views.is_empty() {
-        out.schema.version = monorm_core::migrate::model::SNAPSHOT_VERSION;
+        out.schema.version = monorm_core::migrate::model::VIEW_SNAPSHOT_VERSION;
     }
     Ok(out)
 }
@@ -1488,8 +1500,16 @@ pub struct Pull {
 /// A rule that an installed extension claims becomes an attribute of its model, not a gap; the check then compares the database
 /// with the baseline form of the schema, which still holds the rule (see `monorm_core::migrate::baseline_snapshot`).
 pub async fn pull(conn: &dyn Executor, installed: &monorm_core::dsl::Installed) -> Result<Pull> {
+    pull_with(conn, installed, false).await
+}
+
+/// Pull table models with external ownership when requested by the CLI.
+pub async fn pull_with(conn: &dyn Executor, installed: &monorm_core::dsl::Installed, unmanaged: bool) -> Result<Pull> {
     let mut live = introspect(conn).await?;
+    // Migration-producing declarations cannot be recovered on externally owned tables.
+    let installed = if unmanaged { &Default::default() } else { installed };
     for t in &mut live.schema.tables {
+        t.managed = !unmanaged;
         if !t.rls.is_off() {
             let force = if t.rls.forced { " (forced)" } else { "" };
             live.gaps.push(format!("table {} has row-level security{force}; it is not reproduced", t.name));
@@ -1607,21 +1627,45 @@ struct Comparable {
 }
 
 async fn comparable(conn: &dyn Executor, target: &DbSchema) -> Result<Comparable> {
-    let live = introspect(conn).await?;
-    let mut target = target.clone();
+    let ignored: HashSet<_> = target.tables.iter().filter(|t| !t.managed).map(|t| t.name.as_str()).collect();
+    let mut live = introspect_except(conn, &ignored).await?;
+    for table in &mut live.schema.tables {
+        table.managed = !ignored.contains(table.name.as_str());
+    }
+    live.schema.views.retain(|v| !ignored.contains(v.name.as_str()));
+    let live_owned = live.schema.managed_schema();
+    let mut target = target.managed_schema();
     target.dialect = conn.dialect();
-    // a rule that a snapshot records is a live object that introspection leaves out: it is no difference
+    // A rule that a snapshot records is a live object that introspection leaves out.
     for t in &mut target.tables { t.rules.clear(); }
-    let shadow = materialize(conn, &target).await?.schema;
+    let shadow = materialize_for_comparison(conn, &target, &ignored).await?;
     let shadow = DbSchema { extensions: target.extensions.clone(), ..shadow };
-    // Postgres' deparsed text is not always stable when it is parsed again, so the live
-    // schema is also re-created; an object both shadows agree on is the same.
-    let mut live_schema = match materialize(conn, &live.schema).await {
-        Ok(again) => adopt(&live.schema, &again.schema, &shadow),
-        Err(_) => live.schema,
+    // Postgres' deparsed text is not always stable when parsed again.
+    let mut live_schema = match materialize_for_comparison(conn, &live_owned, &ignored).await {
+        Ok(again) => adopt(&live_owned, &again, &shadow),
+        Err(_) => live_owned,
     };
     monorm_core::migrate::reconcile_introspection(&shadow, &mut live_schema);
     Ok(Comparable { live: live_schema, shadow, gaps: live.gaps, disabled_triggers: live.disabled_triggers })
+}
+
+/// A shadow never needs the externally owned tables or their current shape. Compare the
+/// managed constraints that point to them from the original catalog and snapshot records.
+async fn materialize_for_comparison(conn: &dyn Executor, db: &DbSchema, ignored: &HashSet<&str>) -> Result<DbSchema> {
+    if ignored.is_empty() { return Ok(materialize(conn, db).await?.schema); }
+    let mut input = db.clone();
+    let mut external = BTreeMap::new();
+    for table in &mut input.tables {
+        let (foreign, local): (Vec<_>, _) = std::mem::take(&mut table.foreign_keys).into_iter()
+            .partition(|fk| ignored.contains(fk.ref_table.as_str()));
+        table.foreign_keys = local;
+        external.insert(table.name.clone(), foreign);
+    }
+    let mut shadow = materialize(conn, &input).await?.schema;
+    for table in &mut shadow.tables {
+        table.foreign_keys.extend(external.remove(&table.name).unwrap_or_default());
+    }
+    Ok(shadow)
 }
 
 /// What the database holds for one trigger of the schema, or a trigger that the schema does not name.

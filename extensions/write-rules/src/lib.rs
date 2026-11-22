@@ -162,7 +162,7 @@ mod tests {
     fn ddl(mut ir: SchemaIr) -> Result<String, String> {
         prepare(&mut ir)?;
         ir.behavior.declarations.clear();
-        ir.stamp_expression_records();
+        ir.stamp_schema_contract();
         let (ir, schema) = monorm_core::dsl::check(ir)?;
         assert_eq!(ir.behavior.schema_contract_minor, 10);
         Ok(monorm_core::migrate::create_all(&schema)?.join("\n"))

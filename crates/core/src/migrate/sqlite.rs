@@ -75,8 +75,8 @@ fn ordered(views: &[SqlView]) -> Vec<&SqlView> {
 }
 
 pub fn create_all(db: &DbSchema, idempotent: bool) -> Vec<String> {
-    let mut sql = db.tables.iter().map(|t| create_table(t, &t.name, idempotent)).collect::<Vec<_>>();
-    for t in &db.tables {
+    let mut sql = db.tables.iter().filter(|t| t.managed).map(|t| create_table(t, &t.name, idempotent)).collect::<Vec<_>>();
+    for t in db.tables.iter().filter(|t| t.managed) {
         sql.extend(t.indexes.iter().map(|ix| index(&t.name, ix, idempotent)));
         sql.extend(t.triggers.iter().map(|tr| trigger(&t.name, tr, idempotent)));
     }
@@ -102,6 +102,8 @@ pub fn steps(from: &DbSchema, to: &DbSchema, renames: &Renames) -> Result<Vec<St
 
 /// `fills` are the data ops on json columns (`diff::json_key_renames`, `diff::json_backfills`), run after the rebuild.
 pub fn steps_with(from: &DbSchema, to: &DbSchema, renames: &Renames, fills: &[diff::Op]) -> Result<Vec<Step>> {
+    let (ignored, projected) = diff::migration_pair(from, to, renames);
+    let (from, to) = projected.as_ref().map_or((from, to), |(o, n)| (o, n));
     let fills = fills.iter().map(json_fill_sql).collect::<Vec<_>>();
     if from.tables == to.tables {
         // No table changes: only the views that changed drop and come back.
@@ -130,7 +132,11 @@ pub fn steps_with(from: &DbSchema, to: &DbSchema, renames: &Renames, fills: &[di
         sql.push("DROP TABLE __orm_object_guard".into());
         // A view that the snapshot does not hold breaks the rename below and is not ours to drop.
         sql.push("CREATE TEMP TABLE __orm_view_guard (name TEXT CONSTRAINT monorm_unmanaged_view_in_database_declare_it_or_drop_it CHECK (name IS NULL))".into());
-        let known = if from.views.is_empty() { String::new() } else { format!(" AND name NOT IN ({})", from.views.iter().map(|v| super::model::quote_literal(&v.name)).collect::<Vec<_>>().join(", ")) };
+        let mut views: Vec<_> = from.views.iter().map(|v| v.name.as_str()).chain(ignored.iter().copied()).collect();
+        views.sort_unstable();
+        let known = if views.is_empty() { String::new() } else {
+            format!(" AND name NOT IN ({})", views.into_iter().map(super::model::quote_literal).collect::<Vec<_>>().join(", "))
+        };
         sql.push(format!("INSERT INTO __orm_view_guard SELECT name FROM sqlite_schema WHERE type = 'view'{known}"));
         sql.push("DROP TABLE __orm_view_guard".into());
     }

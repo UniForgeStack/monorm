@@ -37,6 +37,9 @@ pub(crate) fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
                     rule.model, rule.name
                 )
             })?;
+        if !model.managed && rule.layer.db() {
+            return Err(format!("extension {} adds database write protection for unmanaged model {}", rule.source, model.name));
+        }
         validate(ir.dialect, model, rule)?;
         if rule.layer.db() && !(ir.dialect == Dialect::Sqlite && rule.skippable) {
             for trigger in triggers(ir.dialect, model, rule, &ir.bypass_roles)? {

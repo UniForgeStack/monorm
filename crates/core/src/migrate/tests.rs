@@ -2672,3 +2672,56 @@ fn a_relation_without_a_constraint_makes_no_foreign_key_and_the_diff_follows_the
     let added = super::plan(&with, &created.snapshot).unwrap();
     assert!(sql(&added.up).iter().any(|s| s.contains("ADD CONSTRAINT \"posts_author_id_fkey\" FOREIGN KEY")), "{:?}", sql(&added.up));
 }
+
+#[test]
+fn unmanaged_migration_tracks_current_shape_and_switches_ownership_without_sql() {
+    let managed = r#"model External {
+ id Int @id
+ value String @unique
+ @@index([value])
+ @@trigger(touch, when: before, operation: [insert], func: "BEGIN RETURN NEW; END;")
+}"#;
+    let external = managed.replace("@@index", "@@managed(false)\n @@index");
+    let checked = |src: &str| crate::dsl::check(crate::dsl::compile(src, None).unwrap()).unwrap().1;
+    let owned = super::plan(&checked(managed), &DbSchema::default()).unwrap();
+    let initial = super::plan(&checked(&external), &DbSchema::default()).unwrap();
+    let handed_off = super::plan(&checked(&external), &owned.snapshot).unwrap();
+    let new_shape = external.replace("value String @unique", "value String @unique\n note String?\n @@check(raw(\"id > 0\"))");
+    let updated = super::plan(&checked(&new_shape), &handed_off.snapshot).unwrap();
+    let reclaimed = super::plan(&checked(&new_shape.replace("@@managed(false)", "")), &updated.snapshot).unwrap();
+
+    for plan in [&initial, &handed_off, &updated, &reclaimed] {
+        for steps in [&plan.up, &plan.down] {
+            assert_eq!(sql(steps), ["-- Unmanaged models are recorded in snapshot.json"]);
+        }
+    }
+    let changed = new_shape.replace("@@managed(false)", "").replace("note String?", "note String?\n extra String?");
+    let next = super::plan(&checked(&changed), &reclaimed.snapshot).unwrap();
+    assert_eq!(sql(&next.up), ["ALTER TABLE \"external\" ADD COLUMN \"extra\" varchar"]);
+}
+
+#[test]
+fn managed_foreign_key_references_an_unmanaged_table() {
+    let mut ir = blog(vec![], json!({}));
+    ir["models"][0]["managed"] = json!(false);
+    let plan = super::plan(&schema(ir), &DbSchema::default()).unwrap();
+    assert_eq!(plan.up.len(), 1);
+    assert!(plan.up[0].sql.contains("CREATE TABLE \"posts\""));
+    assert!(plan.up[0].sql.contains("REFERENCES \"users\""));
+    assert!(!plan.down.iter().any(|step| step.sql.contains("DROP TABLE \"users\"")));
+}
+
+#[test]
+fn database_write_rules_on_unmanaged_models_name_the_extension_and_model() {
+    let mut ir = blog(vec![], json!({}));
+    ir["models"][0]["managed"] = json!(false);
+    ir["behavior"]["schema_contract"] = json!(monorm::extension::SCHEMA_CONTRACT);
+    ir["behavior"]["write_rules"] = json!([{
+        "source": "acme.guard", "model": "User", "name": "protect",
+        "operations": ["delete"], "layer": "db"
+    }]);
+    let error = Schema::from_ir(serde_json::from_value(ir.clone()).unwrap()).err().unwrap();
+    assert!(error.contains("acme.guard") && error.contains("unmanaged model User"), "{error}");
+    ir["behavior"]["write_rules"][0]["layer"] = json!("app");
+    Schema::from_ir(serde_json::from_value(ir).unwrap()).unwrap();
+}

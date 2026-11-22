@@ -713,6 +713,7 @@ fn model_fields(m: &ModelDecl, models: &HashMap<&str, &ModelDecl>, ctx: &Ctx<'_>
         name: m.name.clone(),
         table: m.name.to_lowercase(),
         mapped: m.mapped,
+        managed: true,
         fields: vec![],
         primary_key: vec![],
         pk_name: None,
@@ -731,6 +732,7 @@ fn model_fields(m: &ModelDecl, models: &HashMap<&str, &ModelDecl>, ctx: &Ctx<'_>
     };
     // model-level attributes that aren't schema objects; the rest come after relations
     let mut view = SqlViewIr { body: String::new(), materialized: false, depends_on: vec![] };
+    let mut managed_given = false;
     for a in &m.blocks {
         let text = |a: &Attr| -> Result<String> {
             match a.args.positional.as_slice() {
@@ -743,6 +745,19 @@ fn model_fields(m: &ModelDecl, models: &HashMap<&str, &ModelDecl>, ctx: &Ctx<'_>
             "comment" => ir.comment = Some(text(a)?),
             "renamed_from" => ir.renamed_from = Some(text(a)?),
             "protected_write" => return err(a.pos, format!("{}: @@protected_write was removed; use @@write_rules.protect(layer: app)", m.name)),
+            "managed" => {
+                if m.is_view {
+                    return err(a.pos, format!("{}: @@managed does not apply to a view; a view is always managed", m.name));
+                }
+                if managed_given {
+                    return err(a.pos, format!("{}: @@managed is given twice", m.name));
+                }
+                managed_given = true;
+                match a.args.positional.as_slice() {
+                    [(_, Value::Bool(value))] if a.args.named.is_empty() => ir.managed = *value,
+                    _ => return err(a.pos, format!("{}: @@managed takes true or false; a model is managed by default", m.name)),
+                }
+            }
             "query_set" => ir.query_set = Some(text(a)?),
             "model_methods" => ir.model_methods = Some(text(a)?),
             "materialized" | "depends_on" if !m.is_view => return err(a.pos, format!("{}: @@{} belongs on a `view` block", m.name, a.name)),
@@ -760,6 +775,7 @@ fn model_fields(m: &ModelDecl, models: &HashMap<&str, &ModelDecl>, ctx: &Ctx<'_>
             _ => {}
         }
     }
+    ir.managed = m.managed_override.unwrap_or(ir.managed);
     if m.is_view {
         view.body = m.sql_body.clone().unwrap_or_default();
         ir.sql_view = Some(view);
@@ -2201,7 +2217,7 @@ fn model_block(m: &mut ModelIr, b: &Attr, pending: Option<&Pendings>) -> Result<
             n.finish()?;
             m.partition = Some(partition.ok_or_else(|| super::syntax::Error { pos: b.pos, msg: format!("{what}: give list:, range: or hash:") })?);
         }
-        "map" | "comment" | "renamed_from" | "query_set" | "model_methods" | "materialized" | "depends_on" => {}
+        "map" | "comment" | "renamed_from" | "managed" | "query_set" | "model_methods" | "materialized" | "depends_on" => {}
         "index" => {
             extra_positional(1)?;
             let columns: Vec<IndexColumnIr> = keys(m, pending, b.pos, first, &what, false)?.into_iter().map(|(k, _)| k).collect();

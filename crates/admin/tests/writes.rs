@@ -87,7 +87,7 @@ fn schema() -> Arc<Schema> {
         ] {
             ir.behavior.write_rules.push(serde_json::from_value(rule).unwrap());
         }
-        ir.stamp_expression_records();
+        ir.stamp_schema_contract();
         dsl::check(ir).unwrap().1
     })
 }

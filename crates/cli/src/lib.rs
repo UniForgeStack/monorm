@@ -16,7 +16,7 @@
 //!   migrate [target] [--allow-destructive]
 //!   rollback [--steps N | --to <migration>|zero] [--allow-destructive]
 //!   showmigrations
-//!   pull [-o FILE] [--force]
+//!   pull [-o FILE] [--force] [--unmanaged]
 //!   baseline
 //!   drift
 //!   audit
@@ -95,7 +95,8 @@ const COMMANDS: &str = "  init [dir] [--lang python|typescript] [--tool uv|pip|n
   rollback [--steps N | --to <migration>|zero] [--allow-destructive]
                                            revert applied migrations (default: the last one)
   showmigrations                           list migrations and whether they are applied
-  pull [-o FILE] [--force]                 write the schema file from the live database
+  pull [-o FILE] [--force] [--unmanaged]
+                                           write the schema file from the live database
   baseline                                 make the first migration if there is none and mark
                                            it applied; it does not run (after pull)
   drift                                    compare the database with the last migration's
@@ -142,7 +143,7 @@ struct Args {
     options: Vec<(String, Option<String>)>,
 }
 
-const FLAGS: [&str; 9] = ["--native", "--empty", "--check", "--down", "--force", "--allow-destructive", "--yes", "-h", "--help"];
+const FLAGS: [&str; 10] = ["--native", "--empty", "--check", "--down", "--force", "--unmanaged", "--allow-destructive", "--yes", "-h", "--help"];
 const VALUED: [&str; 22] = ["--models", "--lang", "--tool", "--db", "--ext", "--schema", "--dir", "--url", "-o", "--out", "--import", "--name", "--steps", "--to", "--rename", "--restore", "--query-set", "--model-methods", "--ext-dir", "--app", "--extension", "--extension-module"];
 
 impl Args {
@@ -512,7 +513,7 @@ async fn command(argv: &[String], host: Host) -> Result<i32> {
             match command {
                 "migrate" => args.allow(command, &["--allow-destructive"], 1)?,
                 "rollback" => args.allow(command, &["--steps", "--to", "--force", "--allow-destructive"], 0)?,
-                "pull" => args.allow(command, &["-o", "--out", "--force"], 0)?,
+                "pull" => args.allow(command, &["-o", "--out", "--force", "--unmanaged"], 0)?,
                 _ => args.allow(command, &[], 0)?,
             }
             if command == "pull" {
@@ -824,7 +825,8 @@ async fn database(command: &str, args: &Args, dir: &Path, schema: &Path) -> Resu
             }
             "pull" => {
                 let out = args.opt(&["-o", "--out"]).map(PathBuf::from).unwrap_or_else(|| schema.to_path_buf());
-                let pulled = introspect::pull(&*driver, &args.installed()?).await?;
+                let unmanaged = args.flag("--unmanaged");
+                let pulled = introspect::pull_with(&*driver, &args.installed()?, unmanaged).await?;
                 write(&out, &pulled.schema)?;
                 println!("wrote {}", out.display());
                 for (path, body) in &pulled.views {
@@ -832,7 +834,9 @@ async fn database(command: &str, args: &Args, dir: &Path, schema: &Path) -> Resu
                     write(&file, body)?;
                     println!("wrote {}", file.display());
                 }
-                if pulled.steps.is_empty() && pulled.gaps.is_empty() {
+                if unmanaged && pulled.steps.is_empty() {
+                    println!("Pulled table models are unmanaged.");
+                } else if pulled.steps.is_empty() && pulled.gaps.is_empty() {
                     println!("The schema reproduces the database.");
                 } else if pulled.steps.is_empty() {
                     println!("The schema matches the database, except for what is not reproduced.");

@@ -10,12 +10,25 @@ This page says what stays in Django and what moves.
 
 ## What moves to monorm
 
-* The models you write in `schema.prisma`, and the queries, migrations and tests of those models.
-* A monorm model that points at a user holds the user id as a plain column (or a relation to a model you map onto the Django user table with `@@map("auth_user")`). Read `request.user.id` in the view and pass it to the monorm query. Keep that model out of monorm migrations (`pull` it, do not `makemigrations` it) so Django remains its owner.
+* The queries, migrations and tests for the tables monorm owns.
+* A monorm model can store the user ID as a plain column or declare a relation to an unmanaged model mapped to the Django user table. Read `request.user.id` in the view and pass it to the monorm query.
+
+## monorm models over Django tables
+
+Run `python -m monorm pull --unmanaged` against the Django database. Each pulled
+table model includes `@@managed(false)`. You can also add the attribute by hand
+to a single model, such as one mapped with `@@map("auth_user")`. Generate the
+models and use them for queries and writes while Django continues to migrate the
+tables. Run Django migrations first when a managed monorm table has a foreign
+key to a Django table.
+
+A fresh monorm test database has no unmanaged tables. Run Django migrations or
+create the required tables in the test setup before running queries or applying
+monorm migrations that reference them.
 
 ## Django models over monorm tables
 
-monorm migrations own the tables that you write in `schema.prisma`.
+monorm migrations own the managed tables in `schema.prisma`.
 A Django project reads and writes them through hand-written models.
 There is no generator and no drift check: you keep the Django model equal to the schema.
 

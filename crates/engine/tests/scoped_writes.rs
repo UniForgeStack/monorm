@@ -48,7 +48,7 @@ impl Params for Ctx {
 fn schema() -> Schema {
     let mut ir = dsl::compile(SOURCE, None).unwrap();
     ir.behavior.scoped_fields.push(monorm::writes::ScopedField { source: "test".into(), model: "Order".into(), field: "shop_id".into(), key: "shop".into() });
-    ir.stamp_expression_records();
+    ir.stamp_schema_contract();
     dsl::check(ir).unwrap().1
 }
 

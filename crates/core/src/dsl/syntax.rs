@@ -348,6 +348,7 @@ pub struct Member {
 pub struct ModelDecl {
     /// Explicit `@@map` in the source, before the loader adds import-prefix maps.
     pub mapped: bool,
+    pub managed_override: Option<bool>,
     pub pos: Pos,
     pub name: String,
     pub members: Vec<Member>,
@@ -372,6 +373,12 @@ pub struct EnumDecl {
 
 pub type Props = Vec<(String, Pos, Value)>;
 
+#[derive(Debug, Default)]
+pub struct ImportOptions {
+    pub prefix: String,
+    pub managed: Option<bool>,
+}
+
 #[derive(Debug)]
 pub enum Item {
     Model(ModelDecl),
@@ -383,7 +390,7 @@ pub enum Item {
     Generator { props: Props },
     Function { pos: Pos, name: String, props: Props },
     Partition { pos: Pos, name: String, props: Props, blocks: Vec<Attr> },
-    Import { pos: Pos, path: String, prefix: String },
+    Import { pos: Pos, path: String, options: ImportOptions },
 }
 
 struct Parser<'a> {
@@ -514,18 +521,23 @@ impl<'a> Parser<'a> {
                 }
                 "import" => match self.advance()? {
                     (_, Tok::Str(path)) => {
-                        let mut prefix = String::new();
+                        let mut options = ImportOptions::default();
                         if self.is("(") {
                             let args = self.args()?;
-                            if !args.positional.is_empty() || args.named.len() != 1 || args.named[0].0 != "prefix" {
-                                return err(pos, "schema import takes only prefix: \"...\"");
+                            if !args.positional.is_empty() || args.named.is_empty() {
+                                return err(pos, "schema import takes named prefix and managed options");
                             }
-                            let Value::Str(value) = &args.named[0].2 else {
-                                return err(pos, "schema import prefix must be a string");
-                            };
-                            prefix = value.clone();
+                            for (name, at, value) in args.named {
+                                match (name.as_str(), value) {
+                                    ("prefix", Value::Str(value)) => options.prefix = value,
+                                    ("managed", Value::Bool(value)) => options.managed = Some(value),
+                                    ("prefix", _) => return err(at, "schema import prefix must be a string"),
+                                    ("managed", _) => return err(at, "schema import managed must be true or false"),
+                                    _ => return err(at, format!("unknown schema import option {name}")),
+                                }
+                            }
                         }
-                        items.push(Item::Import { pos, path, prefix });
+                        items.push(Item::Import { pos, path, options });
                     },
                     (p, t) => return err(p, format!("expected a file path string, found {}", describe(&t))),
                 },
@@ -626,7 +638,7 @@ impl<'a> Parser<'a> {
             last_line = start.line;
         }
         let mapped = blocks.iter().any(|a| a.name == "map");
-        Ok(ModelDecl { pos, name, members, blocks, mapped, is_view: false, sql_body: None })
+        Ok(ModelDecl { pos, name, members, blocks, mapped, managed_override: None, is_view: false, sql_body: None })
     }
 
     fn enum_block(&mut self, pos: Pos, name: String) -> Result<EnumDecl> {

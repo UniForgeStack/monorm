@@ -181,6 +181,25 @@ END;
 A model's table is the model name in lower case, or `@@map("name")`.
 `@@comment("...")` and `@@renamed_from("old_table")` set its comment and previous name.
 
+### Unmanaged models
+
+Add `@@managed(false)` to a model whose table another service or tool owns.
+The model is available for queries, writes, relations and client generation.
+A managed model can declare a foreign key to it. monorm creates the constraint
+on the managed table, and the referenced table needs to exist first.
+`@@managed(true)` equals the default. Give `@@managed` once per model.
+
+Migrations keep the model's shape in the snapshot. Adding or removing
+`@@managed(false)` records a change of ownership without running table SQL.
+`makemigrations` writes no SQL for an unmanaged model, but it still writes a
+step that holds only a comment, so the snapshot records the change.
+While the model is unmanaged, schema changes update the snapshot. Once you
+take ownership again, later migrations start from the shape recorded there.
+Database objects contributed by an extension, such as triggers or policies,
+cause a schema error that names the extension and the unmanaged model. Disable
+the database behavior for that model. Runtime query defaults and filters work
+with unmanaged models.
+
 ### Optional schema imports
 
 Prefer a single schema file for an ordinary project. Explicit schema imports are
@@ -216,6 +235,15 @@ A prefix is prepended to default table names, explicit `@@map` names and
 names, explicit constraint/index names and raw SQL are preserved; use unique
 explicit names and write raw SQL with the final table names. Cycles and repeated
 imports, including the same file through different paths, are errors.
+
+A second service can import the same schema with
+`import "billing/schema.prisma" (prefix: "billing_", managed: false)`. Repeat
+the owning service's prefix so both services use the same table names.
+The option applies to every table model in the import, including nested imports.
+The outermost import that sets `managed` wins. With no import option, the model
+attribute decides, and models default to managed. Set `managed: true` on an import
+to take ownership even when the model declares `@@managed(false)`. The same
+options work with `app:` imports.
 
 #### Installed app import
 
@@ -949,7 +977,7 @@ python -m monorm migrate [target] [--allow-destructive]   # apply pending migrat
 python -m monorm rollback [--steps N | --to 0002_x | --to zero] [--force] [--allow-destructive]
 python -m monorm showmigrations
 python -m monorm squashmigrations --to 0005 [--name X]   # fold migrations 1..5 into one folder
-python -m monorm pull [-o schema.prisma] [--force]   # the schema file from a live database
+python -m monorm pull [-o schema.prisma] [--force] [--unmanaged]   # the schema file from a live database
 python -m monorm baseline                       # mark the first migration applied (after pull)
 python -m monorm fmt --native                   # convert supported SQL expressions offline
 python -m monorm drift                          # exit 1 if the database differs from the last snapshot
@@ -1191,6 +1219,16 @@ an index or constraint whose name differs from the generated one gets `name:` / 
 and a foreign key gets `@relation(..., map: "name")`. Model names are the tables in
 PascalCase with `@@map`, a relation field is its key column without `_id`, and the other
 side is `<table>_set` (or `<table>` for a one-to-one).
+
+Use `monorm pull --unmanaged` when another tool runs migrations for the database
+tables. It writes `@@managed(false)` on each pulled table model. Plain `pull`
+omits the attribute. A pulled `view` block stays managed, so `migrate` still
+creates and drops that view; delete the block if another tool owns the view.
+`pull --unmanaged` does not turn a database rule or object into an attribute of an
+installed extension, so a rule that an extension would claim is listed as a `// gap:` line.
+`baseline` records unmanaged models in the migration
+snapshot without running table SQL for them, and `drift` ignores their tables.
+Constraints on managed tables still take part in drift checks.
 
 Then `pull` checks its own result: it creates the pulled schema in a shadow and compares
 it with the database. It prints `The schema reproduces the database.`, or the steps a
