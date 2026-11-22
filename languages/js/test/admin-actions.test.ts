@@ -7,7 +7,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import { action, Admin, AdminConfigError, Context, download, input, message, redirect, type ResourceConfig } from "../src/admin.js";
-import { allowWrites, connect, load, Registry, type Database } from "../src/index.js";
+import { allowWrites, connect, load, param, Registry, type Database } from "../src/index.js";
+import { and, Expression } from "../src/expr.js";
 import { DoesNotExist, ValidationError, VersionConflict } from "../src/errors.js";
 
 const PG_URL = process.env["ORM_TEST_DATABASE_URL"] ?? "postgres://postgres:postgres@localhost/orm_test";
@@ -124,6 +125,108 @@ const post = (client: Loose, name: string, body: unknown, path = ITEMS) => clien
 for (const provider of PROVIDERS) {
   // -- the query set and the placements ---------------------------------------------------------------------------
 
+  test(`a row action checks the signed in owner and audits refusals (${provider})`, () => world(provider, async (w) => {
+    const item = w.models["AItem"];
+    const seen: number[] = [];
+    const own = action(async (ctx, qs) => {
+      seen.push(ctx.count);
+      await qs.update({ qty: item.qty.add(10) });
+    }, { name: "own", placement: "row", can: item.shopId.eq(param("user")) });
+    const client = siteOf(w, [own]).testClient(w.db, { user: SU });
+    const preamble = (await client.get("/admin/api/resources")).queries;
+    const page = await client.get("/admin/api/resources/AItem");
+    assert.equal(page.status, 200, page.text);
+    assert.equal(page.queries, preamble + 1);
+    const { keys, flags } = page.json();
+    assert.deepEqual(Object.fromEntries(keys.map((key: string, i: number) => [key, flags[i]["can:own"]])), {
+      "1": true, "2": true, "3": true, "4": false, "5": false,
+    });
+    const refused = await post(client, "own", { keys: ["4"] });
+    assert.equal(refused.status, 403, refused.text);
+    assert.equal(refused.json().error.kind, "ActionNotAllowed");
+    assert.equal(refused.queries, preamble + 2, JSON.stringify(refused.sql));
+    const missing = await post(client, "own", { keys: ["999"] });
+    assert.equal(missing.status, 404, missing.text);
+    assert.equal(missing.queries, preamble + 1);
+    await item.objects.using(w.db).filter(item.id.eq(2)).update({ shopId: 2 });
+    const stale = await post(client, "own", { keys: ["2"] });
+    assert.deepEqual([stale.status, stale.json().error?.kind, stale.queries], [403, "ActionNotAllowed", preamble + 2]);
+    const allowed = await post(client, "own", { keys: ["1"] });
+    assert.equal(allowed.status, 200, allowed.text);
+    assert.equal(allowed.queries, preamble + 3, JSON.stringify(allowed.sql));
+    assert.deepEqual(seen, [1]);
+    assert.deepEqual(await qtys(w), [["a", 11], ["b", 2], ["c", 3], ["d", 4], ["e", 5]]);
+    assert.deepEqual((await audit(w)).map(([a, res, key]) => [a, res, key]), [
+      ["action_denied", "AItem", "4"], ["action_denied", "AItem", "2"], ["action:own", "AItem", "1"],
+    ]);
+  }));
+
+  test(`action rules combine with change and applies or replace change (${provider})`, () => world(provider, async (w) => {
+    const item = w.models["AItem"];
+    const owner = item.shopId.eq(param("user"));
+    const seen: number[] = [];
+    const run = (options: Parameters<typeof action>[1]) => action(async (ctx, qs) => {
+      seen.push(ctx.count);
+      await qs.update({ qty: item.qty.add(10) });
+      return message(`Updated ${ctx.count}`);
+    }, options);
+    const row = run({ name: "row", placement: "row", can: owner, appliesTo: item.name.ne("b") });
+    const detail = run({ name: "reopen", placement: "detail", can: and(owner, item.status.eq("locked")), replaceChange: true });
+    const submit = run({ name: "submit", placement: "submit" });
+    const bulk = run({ name: "bulk", placement: "bulk", can: owner });
+    const listing = run({ name: "matching", placement: "list", can: owner, replaceChange: true, appliesTo: item.status.eq("locked") });
+    const config = {
+      queryset: item.objects.filter(item.id.gte(param("user")), item.id.lte(4)).prepare(),
+      can: { change: and(owner, item.status.ne("locked")), delete: owner },
+    };
+    const baseline = siteOf(w, [], config).testClient(w.db, { user: SU });
+    const client = siteOf(w, [row, detail, submit, bulk, listing], config).testClient(w.db, { user: SU });
+    const metadata = await client.get("/admin/api/resources");
+    const preamble = metadata.queries;
+    const meta = metadata.json().resources.find((r: Loose) => r.name === "AItem");
+    assert.deepEqual(new Set(meta.can), new Set(["change", "delete", "applies:row", "can:row", "can:reopen", "applies:matching"]));
+    const path = "/admin/api/resources/AItem";
+    const page = await client.get(path);
+    assert.equal(page.status, 200, page.text);
+    assert.equal(page.queries, (await baseline.get(path)).queries);
+    assert.equal(page.queries, preamble + 1);
+    const data = page.json();
+    const flags = Object.fromEntries(data.keys.map((key: string, i: number) => [key, data.flags[i]]));
+    assert.deepEqual([flags["2"]["can:row"], flags["2"]["applies:row"]], [true, false]);
+    assert.deepEqual([flags["3"].change, flags["3"]["can:row"], flags["3"]["can:reopen"]], [false, false, true]);
+    assert.deepEqual([flags["4"].change, flags["4"].delete], [false, false]);
+    const detailResponse = await client.get(`${path}/3`);
+    assert.equal(detailResponse.queries, preamble + 1);
+    assert.deepEqual(detailResponse.json().flags, flags["3"]);
+    for (const [name, key] of [["row", "2"], ["row", "3"], ["submit", "3"]] as const) {
+      const r = await post(client, name, { keys: [key] });
+      assert.deepEqual([r.status, r.json().error?.kind, r.queries], [403, "ActionNotAllowed", preamble + 2], r.text);
+    }
+    const hidden = await post(client, "reopen", { keys: ["5"] });
+    assert.deepEqual([hidden.status, hidden.queries], [404, preamble + 1], hidden.text);
+    for (const [name, body, count] of [
+      ["reopen", { keys: ["3"] }, 1],
+      ["bulk", { keys: ["1", "2", "3", "4"] }, 2],
+      ["matching", {}, 1],
+    ] as const) {
+      const r = await post(client, name, body);
+      assert.equal(r.status, 200, r.text);
+      assert.deepEqual([r.json().count, r.json().result.message, r.queries], [count, `Updated ${count}`, preamble + 3], JSON.stringify(r.sql));
+    }
+    const deleted = await post(client, "bulk_delete", { keys: ["4"] });
+    assert.deepEqual([deleted.status, deleted.json().count, deleted.queries], [200, 0, preamble + 1]);
+    assert.deepEqual(seen, [1, 2, 1]);
+    assert.deepEqual(await qtys(w), [["a", 11], ["b", 12], ["c", 23], ["d", 4], ["e", 5]]);
+    assert.deepEqual((await audit(w)).map(([a, , key, c]) => [a, key, c.action, c.count]), [
+      ["action_denied", "2", "row", undefined],
+      ["action_denied", "3", "row", undefined],
+      ["action_denied", "3", "submit", undefined],
+      ["action:reopen", "3", "reopen", 1],
+      ["action:bulk", "", "bulk", 2],
+      ["action:matching", "", "matching", 1],
+    ]);
+  }));
+
   test(`a bulk action gets the selected rows with the can rule and the result is a message (${provider})`, () => world(provider, async (w) => {
     const item = w.models["AItem"];
     const seen: unknown[] = [];
@@ -227,7 +330,7 @@ for (const provider of PROVIDERS) {
     const page = (await client.get("/admin/api/resources/AItem")).json();
     assert.ok(page.rows.length > 0 && JSON.stringify(page).includes("applies:ship"), JSON.stringify(page));
     assert.equal((await post(client, "ship", { keys: ["1"], inputs: {} })).status, 200);
-    assert.equal((await post(client, "ship", { keys: ["3"], inputs: {} })).status, 404);
+    assert.equal((await post(client, "ship", { keys: ["3"], inputs: {} })).status, 403);
     assert.deepEqual(seen, [["a"]]);
   }));
 
@@ -462,11 +565,22 @@ for (const provider of PROVIDERS) {
   test(`a wrong action config is an admin config error (${provider})`, () => world(provider, async (w) => {
     const badPlace = action(async function badPlace() {}, { placement: "middle" as Loose });
     const twice = action(async function twice() {}, { placement: "bulk", confirm: "x" });
+    class ScopeValue extends Expression<boolean> {
+      ir() { return { t: "scope", name: "tenant" }; }
+    }
+    const item = w.models["AItem"];
+    const badCan = (options: Parameters<typeof action>[1]) => action(async function check() {}, options);
     const cases: [Loose, RegExp][] = [
       [{ actions: [badPlace] }, /placement/],
       [{ actions: [twice, twice] }, /listed twice/],
       [{ actions: [7] }, /an action is a name/],
       [{ bulkDelete: "no" }, /bulkDelete/],
+      [{ actions: [badCan({ replaceChange: true })] }, /replace_change needs can/],
+      [{ actions: [badCan({ can: item.qty })] }, /not a boolean/],
+      [{ actions: [badCan({ can: item.shopId.eq(param("other")) })] }, /takes the param/],
+      [{ actions: [badCan({ can: item.shopId.in(param("user")) })] }, /no in_param/],
+      [{ actions: [badCan({ can: new ScopeValue() })] }, /scope values/],
+      [{ actions: [badCan({ name: "bulk_delete", can: item.qty.gt(0) })] }, /can is not allowed/],
     ];
     for (const [config, text] of cases) {
       const site = new Admin(w.registry);

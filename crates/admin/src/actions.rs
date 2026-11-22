@@ -12,7 +12,8 @@ use axum::http::{StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use base64::Engine as _;
-use monorm_engine::exec::Outcome;
+use monorm_core::dialect::Dialect;
+use monorm_engine::{db::Cell, exec::Outcome};
 use serde_json::{json, Map, Value};
 
 use crate::audit::{self, Entry};
@@ -107,6 +108,40 @@ struct QuerySet {
     filters: Vec<Value>,
     binds: Binds,
     rows: RowScope,
+    /// The rule checked alongside existence for a one-row action.
+    rule: Option<Value>,
+}
+
+impl QuerySet {
+    async fn count(&self, s: &State_, scope: &Scoped, model: &str) -> Result<(bool, usize), ListError> {
+        let Some(rule) = &self.rule else {
+            let mut op = json!({"op": "count", "model": model, "filters": self.filters, "limit": COUNT_CAP + 1});
+            self.rows.apply(&mut op);
+            let n = list::run_count(&s.site, scope.executor(), s.target, op, Binds(self.binds.0.clone())).await? as usize;
+            return Ok((n > 0, n));
+        };
+        // Count visible and eligible rows in one statement for a one-row action.
+        let allowed = match s.target.dialect {
+            Dialect::Postgres => json!({"t": "func", "name": "count", "filter": rule}),
+            Dialect::Sqlite => json!({"t": "func", "name": "sum", "args": [
+                {"t": "case", "whens": [{"cond": rule, "value": {"t": "int", "value": 1}}],
+                 "default": {"t": "int", "value": 0}}
+            ]}),
+        };
+        let mut op = json!({"op": "select", "model": model, "filters": self.filters, "columns": [
+            {"t": "expr", "expr": {"t": "func", "name": "count"}},
+            {"t": "expr", "expr": allowed}
+        ]});
+        self.rows.apply(&mut op);
+        let selected = list::run_select(&s.site, scope.executor(), s.target, op, Binds(self.binds.0.clone())).await?;
+        let count = |i: usize| match selected.rows.cell(0, i, selected.plan.types[i]) {
+            Ok(Cell::BigInt(n)) => Ok(n as usize),
+            Ok(Cell::Null) if i == 1 => Ok(0), // SQLite SUM over no rows.
+            Ok(_) => Err(ListError::Engine("an action count is an integer".into())),
+            Err(e) => Err(ListError::Engine(e.to_string())),
+        };
+        Ok((count(0)? > 0, count(1)?))
+    }
 }
 
 async fn run(s: &State_, o: Open<'_>, name: &str, body: axum::body::Body) -> Response {
@@ -182,16 +217,17 @@ async fn run(s: &State_, o: Open<'_>, name: &str, body: axum::body::Body) -> Res
         Err(e) => return fail(scope, error_response(e)).await,
     };
     let model = s.site.schema.model(resource.model).ir.name.clone();
-    let n = match &set {
-        None => 0,
-        Some(q) => {
-            let mut op = json!({"op": "count", "model": model, "filters": q.filters, "limit": COUNT_CAP + 1});
-            q.rows.apply(&mut op);
-            match list::run_count(&s.site, scope.executor(), s.target, op, Binds(q.binds.0.clone())).await {
-                Ok(n) => n as usize,
-                Err(e) => return fail(scope, error_response(e)).await,
+    let n = if let Some(q) = &set {
+        match q.count(s, &scope, &model).await {
+            Ok((true, 0)) => {
+                let Selection::Keys(keys) = &selection else { unreachable!("a one-row action has a key") };
+                return action_denied(s, scope, &user, resource, name, &key::encode(&keys[0]), &meta).await;
             }
+            Ok((_, allowed)) => allowed,
+            Err(e) => return fail(scope, error_response(e)).await,
         }
+    } else {
+        0
     };
     let capped = n > COUNT_CAP;
     let count = n.min(COUNT_CAP);
@@ -199,14 +235,16 @@ async fn run(s: &State_, o: Open<'_>, name: &str, body: axum::body::Body) -> Res
         if matches!(placement, Placement::Bulk) {
             return fail(scope, Json(json!({"ok": true, "count": 0, "result": {"kind": "message", "message": "No row matched."}})).into_response()).await;
         }
-        return fail(scope, reject(StatusCode::NOT_FOUND, "NotFound", "no such record, or the action does not apply to it")).await;
+        return fail(scope, reject(StatusCode::NOT_FOUND, "NotFound", "no such record")).await;
     }
     if capped && !confirmed {
         let message = format!("more than {COUNT_CAP} rows match: confirm to run on all of them");
         let body = json!({"ok": false, "error": {"kind": "ConfirmLarge", "message": message}, "count": COUNT_CAP, "capped": true});
         return fail(scope, (StatusCode::CONFLICT, Json(body)).into_response()).await;
     }
-    let set = set.unwrap_or(QuerySet { filters: vec![json!({"t": "lit", "v": false})], binds: Binds::default(), rows: RowScope::default() });
+    let mut set = set.unwrap_or(QuerySet { filters: vec![json!({"t": "lit", "v": false})], binds: Binds::default(), rows: RowScope::default(), rule: None });
+    // The host's reads and writes must still match the same rule after the count.
+    set.filters.extend(set.rule.take());
 
     // Files: a temp file for each file input, kept until the host answers.
     let mut audit_values = audit_input_list(inputs_list, &inputs);
@@ -307,6 +345,24 @@ async fn run(s: &State_, o: Open<'_>, name: &str, body: axum::body::Body) -> Res
     drop(temps);
     let done = Done { resource, user: &user, meta: &meta, uri: &uri, name, delete: matches!(kind, Kind::Delete), placement, selection: &selection, count, capped, inputs: audit_values };
     finish(s, done, answer, scope).await
+}
+
+async fn action_denied(s: &State_, scope: Scoped, user: &User, resource: &Resource, name: &str, key: &str, meta: &Meta) -> Response {
+    let entry = Entry {
+        user_key: &user_key_text(user),
+        action: "action_denied",
+        resource: &resource.name,
+        record_key: key,
+        record_label: "",
+        changes: Some(json!({"action": name, "request_id": meta.request_id, "ip": meta.ip, "user_agent": meta.agent})),
+    };
+    if let Err(e) = audit::record(&s.site, scope.executor(), entry).await {
+        return fail(scope, server_error(meta, &e)).await;
+    }
+    if let Err(e) = scope.commit().await {
+        return server_error(meta, &e.message);
+    }
+    reject(StatusCode::FORBIDDEN, "ActionNotAllowed", "You may not run this action on this record")
 }
 
 /// What the summary row of the admin log says.
@@ -456,7 +512,7 @@ fn selection(resource: &Resource, placement: Placement, body: &Map<String, Value
         };
     }
     let types: Vec<_> = resource.key_columns.iter().map(|c| c.ty.ty).collect();
-    let single = !matches!(placement, Placement::Bulk);
+    let single = placement.single();
     match (raw, all) {
         (Some(_), true) => Err("send \"keys\" or \"all\", not both".into()),
         (None, true) if !single => Ok(Selection::All),
@@ -475,24 +531,9 @@ fn selection(resource: &Resource, placement: Placement, body: &Map<String, Value
 /// `None`: the search found no row.
 #[allow(clippy::too_many_arguments)]
 async fn query_set(s: &State_, resource: &Resource, kind: Kind<'_>, reach: &Reach, pins: &[(Column, Value)], selection: &Selection, uri: &Uri, scope: &Scoped) -> Result<Option<QuerySet>, ListError> {
-    let mut rows = list::pin_scope(&reach.rows, pins)?;
-    let rule = match kind {
-        Kind::Delete => "delete",
-        Kind::Custom(_) => "change",
-    };
-    let mut wanted = vec![rule.to_owned()];
-    if let Kind::Custom(a) = kind {
-        if a.applies.is_some() {
-            wanted.push(a.flag());
-        }
-    }
-    for (name, expr) in &resource.can {
-        if wanted.contains(name) {
-            rows.filters.push(expr.clone());
-        }
-    }
+    let rows = list::pin_scope(&reach.rows, pins)?;
     let mut binds = Binds::default();
-    let filters = match selection {
+    let mut filters = match selection {
         Selection::Keys(keys) => {
             let mut items = Vec::new();
             for k in keys {
@@ -516,5 +557,21 @@ async fn query_set(s: &State_, resource: &Resource, kind: Kind<'_>, reach: &Reac
             filters
         }
     };
-    Ok(Some(QuerySet { filters, binds, rows }))
+    let resource_rule = |rule: &str| resource.can.iter().find(|(name, _)| name == rule).map(|(_, expr)| expr);
+    let (permission, applies, single) = match kind {
+        Kind::Delete => (resource_rule("delete"), None, false),
+        Kind::Custom(a) => (a.can.as_ref().or_else(|| resource_rule("change")), a.applies.as_ref(), a.placement.is_some_and(Placement::single)),
+    };
+    let mut rules = rows.bind_rules(permission.into_iter().chain(applies), &mut binds)?;
+    let rule = if single {
+        match rules.len() {
+            0 => None,
+            1 => rules.pop(),
+            _ => Some(json!({"t": "and", "items": rules})),
+        }
+    } else {
+        filters.extend(rules);
+        None
+    };
+    Ok(Some(QuerySet { filters, binds, rows, rule }))
 }

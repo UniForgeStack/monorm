@@ -53,6 +53,16 @@ export interface Target {
   what: string;
 }
 
+/** Why an action is disabled on a saved record. */
+export function actionDisabled(a: api.ActionInfo, rules: readonly string[], flags: api.Flags): string | undefined {
+  const rule = `can:${a.name}`;
+  if (rules.includes(rule) && flags[rule] !== true) return "You may not run this action on this record";
+  if ((a.placement === "submit" || !rules.includes(rule)) && rules.includes("change") && flags.change !== true) {
+    return "This record does not allow change";
+  }
+  if (a.applies && flags[`applies:${a.name}`] !== true) return "This action does not apply to this record";
+}
+
 /** An action as the dialog shows it. The built-in bulk delete has the same shape. */
 export function deleteAction(meta: api.Resource): api.ActionInfo {
   return { name: "bulk_delete", label: "Delete", placement: "bulk", confirm: "This cannot be undone.", inputs: meta.inputs ?? [], applies: false };

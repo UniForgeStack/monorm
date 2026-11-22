@@ -54,6 +54,8 @@ pub struct RowScope {
     /// Filter expressions: a `param` with index `i` reads `values[i]`.
     pub filters: Vec<Value>,
     pub values: Vec<Bind>,
+    /// The signed-in user's key for permission expressions.
+    pub(crate) user_key: Value,
     /// The named read defaults that the request turns off.
     pub without: Vec<String>,
 }
@@ -64,6 +66,27 @@ impl RowScope {
         let base = binds.0.len();
         binds.0.extend(self.values.iter().cloned());
         self.filters.iter().map(|f| shift(f, base)).collect()
+    }
+
+    /// Binds the user slot shared by permission expressions, after the request's filter values.
+    pub(crate) fn bind_rules<'a>(&self, exprs: impl IntoIterator<Item = &'a Value>, binds: &mut Binds) -> Result<Vec<Value>, ListError> {
+        let base = binds.0.len();
+        let mut user_bound = false;
+        exprs.into_iter().map(|expr| {
+            if crate::site::max_param(expr).is_none() {
+                return Ok(expr.clone());
+            }
+            if !user_bound {
+                binds.0.push(crate::server::slot_bind(&self.user_key)?);
+                user_bound = true;
+            }
+            Ok(shift(expr, base))
+        }).collect()
+    }
+
+    fn flag_columns(&self, resource: &Resource, binds: &mut Binds) -> Result<impl Iterator<Item = Value>, ListError> {
+        Ok(self.bind_rules(resource.can.iter().map(|(_, expr)| expr), binds)?
+            .into_iter().map(|expr| json!({"t": "expr", "expr": expr})))
     }
 
     /// Turns the read defaults of the request off in a select or a count.
@@ -823,7 +846,7 @@ pub async fn list(site: &Site, resource: &Resource, conn: &dyn Executor, target:
     let model = &site.schema.model(resource.model).ir.name;
     let selected: Vec<usize> = (0..resource.columns.len()).filter(|i| !batch.contains(i)).collect();
     let mut columns: Vec<Value> = selected.iter().map(|&i| json!({"t": "expr", "expr": col(&resource.columns[i])})).collect();
-    columns.extend(resource.can.iter().map(|(_, expr)| json!({"t": "expr", "expr": expr})));
+    columns.extend(request.scope.flag_columns(resource, &mut binds)?);
     columns.extend(request.labels.iter().map(|&i| json!({"t": "expr", "expr": resource.refs[i].expr})));
     columns.extend(hidden.iter().map(|o| json!({"t": "expr", "expr": col(&o.column)})));
     let mut op = json!({
@@ -973,7 +996,7 @@ pub(crate) async fn read_pinned(site: &Site, resource: &Resource, conn: &dyn Exe
     filters.extend(scope.push(&mut binds));
     let model = &site.schema.model(resource.model).ir.name;
     let mut columns: Vec<Value> = resource.detail.iter().map(|c| json!({"t": "expr", "expr": col(c)})).collect();
-    columns.extend(resource.can.iter().map(|(_, expr)| json!({"t": "expr", "expr": expr})));
+    columns.extend(scope.flag_columns(resource, &mut binds)?);
     let mut op = json!({
         "op": "select",
         "model": model,
@@ -1026,7 +1049,7 @@ pub(crate) async fn read_record(site: &Site, resource: &Resource, conn: &dyn Exe
     filters.extend(scope.push(&mut binds));
     let model = &site.schema.model(resource.model).ir.name;
     let mut columns: Vec<Value> = resource.detail.iter().map(|c| json!({"t": "expr", "expr": col(c)})).collect();
-    columns.extend(resource.can.iter().map(|(_, expr)| json!({"t": "expr", "expr": expr})));
+    columns.extend(scope.flag_columns(resource, &mut binds)?);
     let mut op = json!({
         "op": "select",
         "model": model,

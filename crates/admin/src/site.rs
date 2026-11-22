@@ -607,6 +607,10 @@ impl Placement {
     pub fn name(self) -> &'static str {
         Self::NAMES[self as usize]
     }
+
+    pub(crate) fn single(self) -> bool {
+        matches!(self, Self::Row | Self::Detail | Self::Submit)
+    }
 }
 
 /// The config of one action as a host sends it. An entry with no placement only declares a permission.
@@ -624,6 +628,10 @@ pub struct ActionConfig {
     pub inputs: Vec<crate::hostwrite::InputConfig>,
     /// A prepared filter: the rows that the action applies to.
     pub applies_to: Option<Value>,
+    /// A row permission condition with optional user slot 0.
+    pub can: Option<Value>,
+    #[serde(default)]
+    pub replace_change: bool,
     #[serde(default)]
     pub sync: bool,
     #[serde(default)]
@@ -640,6 +648,8 @@ pub struct Action {
     pub confirm: Option<String>,
     pub inputs: Vec<crate::hostwrite::InputConfig>,
     pub applies: Option<Value>,
+    /// The action's full permission rule, including change unless replaced.
+    pub can: Option<Value>,
     pub sync: bool,
     pub threaded: bool,
 }
@@ -648,6 +658,10 @@ impl Action {
     /// The name of the flag of a row that tells whether `applies_to` holds.
     pub fn flag(&self) -> String {
         format!("applies:{}", self.name)
+    }
+
+    fn can_flag(&self) -> String {
+        format!("can:{}", self.name)
     }
 }
 
@@ -1881,9 +1895,20 @@ fn parse_type(text: &str) -> Option<ColType> {
 
 /// A prepared expression is constant: a parameter or a scope value would have no value at the request.
 fn has_binding(expr: &Value) -> bool {
+    forbidden_binding(expr, false)
+}
+
+fn forbidden_binding(expr: &Value, allow_user: bool) -> bool {
     match expr {
-        Value::Object(map) => matches!(map.get("t").and_then(Value::as_str), Some("param" | "in_param" | "scope")) || map.values().any(has_binding),
-        Value::Array(items) => items.iter().any(has_binding),
+        Value::Object(map) => {
+            let forbidden = match map.get("t").and_then(Value::as_str) {
+                Some("param") => !allow_user || map.get("i").and_then(Value::as_u64) != Some(0),
+                Some("in_param" | "scope") => true,
+                _ => false,
+            };
+            forbidden || map.values().any(|v| forbidden_binding(v, allow_user))
+        }
+        Value::Array(items) => items.iter().any(|v| forbidden_binding(v, allow_user)),
         _ => false,
     }
 }
@@ -2267,13 +2292,7 @@ fn can_rules(schema: &Schema, name: &str, config: &BTreeMap<String, Value>) -> R
     let mut out = Vec::new();
     for rule in CAN_NAMES {
         let Some(expr) = config.get(rule) else { continue };
-        if has_binding(expr) {
-            return err(format!("{name}: can {rule:?}: an expression has no parameters or scope values"));
-        }
-        let ty = probe_type(schema, name, expr).map_err(|e| ConfigError(format!("{name}: can {rule:?}: {e}")))?;
-        if ty.ty != ColType::Bool || ty.array {
-            return err(format!("{name}: can {rule:?}: the expression is not a boolean"));
-        }
+        check_can(schema, name, expr, &format!("{name}: can {rule:?}"))?;
         out.push((rule.to_owned(), expr.clone()));
     }
     if let Some(other) = config.keys().find(|k| !CAN_NAMES.contains(&k.as_str())) {
@@ -2282,19 +2301,38 @@ fn can_rules(schema: &Schema, name: &str, config: &BTreeMap<String, Value>) -> R
     Ok(out)
 }
 
-/// The actions of one resource. An `applies_to` filter becomes a flag after the `can` rules: the list and the detail select it.
+fn check_can(schema: &Schema, model: &str, expr: &Value, what: &str) -> Result<(), ConfigError> {
+    if forbidden_binding(expr, true) {
+        return err(format!("{what}: only param(\"user\") is allowed; no in_param or scope values"));
+    }
+    let plan = probe_with(schema, json_select(model, Some(expr), None), &ProbeParams(1))
+        .map_err(|e| ConfigError(format!("{what}: {e}")))?;
+    if !plan.types.first().is_some_and(|ty| ty.ty == ColType::Bool && !ty.array) {
+        return err(format!("{what}: the expression is not a boolean"));
+    }
+    Ok(())
+}
+
+/// The actions and their flags for list and detail reads.
 fn actions_of(schema: &Schema, name: &str, config: &[ActionConfig], can: &mut Vec<(String, Value)>) -> Result<Vec<Action>, ConfigError> {
     let mut out = Vec::new();
+    let change = can.iter().find(|(rule, _)| rule == "change").map(|(_, expr)| expr.clone());
     for a in config {
         if a.name == BULK_DELETE {
+            if a.can.is_some() {
+                return err(format!("{name}: {BULK_DELETE}: can is not allowed on the built-in action; use the resource delete rule"));
+            }
             return err(format!("{name}: {BULK_DELETE:?} is the name of the built-in action: bulk_delete=False removes it"));
         }
         let placement = match &a.placement {
             Some(p) => Some(Placement::parse(p).ok_or_else(|| ConfigError(format!("{name}: action {:?} has placement {p:?}, not one of {}", a.name, Placement::NAMES.join(", "))))?),
             None => None,
         };
-        if placement.is_none() && (a.confirm.is_some() || !a.inputs.is_empty() || a.applies_to.is_some()) {
-            return err(format!("{name}: action {:?} has no placement: only a placed action takes a confirmation, inputs or applies_to", a.name));
+        if a.replace_change && a.can.is_none() {
+            return err(format!("{name}: action {:?}: replace_change needs can", a.name));
+        }
+        if placement.is_none() && (a.confirm.is_some() || !a.inputs.is_empty() || a.applies_to.is_some() || a.can.is_some()) {
+            return err(format!("{name}: action {:?} has no placement: only a placed action takes a confirmation, inputs, applies_to or can", a.name));
         }
         if let Some(label) = &a.label {
             if label.is_empty() || label.chars().count() > 80 {
@@ -2302,7 +2340,16 @@ fn actions_of(schema: &Schema, name: &str, config: &[ActionConfig], can: &mut Ve
             }
         }
         crate::hostwrite::check_action_inputs(name, &a.name, &a.inputs)?;
-        let action = Action { name: a.name.clone(), label: a.label.clone().unwrap_or_else(|| crate::meta::humanize(&a.name)), placement, permission: a.permission.clone(), confirm: a.confirm.clone(), inputs: a.inputs.clone(), applies: a.applies_to.clone(), sync: a.sync, threaded: a.threaded };
+        let rule = if let Some(expr) = &a.can {
+            check_can(schema, name, expr, &format!("{name}: action {:?}: can", a.name))?;
+            Some(match &change {
+                Some(change) if !a.replace_change => serde_json::json!({"t": "and", "items": [expr, change]}),
+                _ => expr.clone(),
+            })
+        } else {
+            None
+        };
+        let action = Action { name: a.name.clone(), label: a.label.clone().unwrap_or_else(|| crate::meta::humanize(&a.name)), placement, permission: a.permission.clone(), confirm: a.confirm.clone(), inputs: a.inputs.clone(), applies: a.applies_to.clone(), can: rule, sync: a.sync, threaded: a.threaded };
         if let Some(expr) = &a.applies_to {
             if has_binding(expr) {
                 return err(format!("{name}: action {:?}: applies_to has no parameters or scope values", a.name));
@@ -2312,6 +2359,9 @@ fn actions_of(schema: &Schema, name: &str, config: &[ActionConfig], can: &mut Ve
                 return err(format!("{name}: action {:?}: applies_to is not a boolean condition", a.name));
             }
             can.push((action.flag(), expr.clone()));
+        }
+        if let Some(expr) = action.can.as_ref().filter(|_| placement.is_some_and(Placement::single)) {
+            can.push((action.can_flag(), expr.clone()));
         }
         out.push(action);
     }

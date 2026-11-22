@@ -1203,12 +1203,37 @@ test("a list shows the related row as a link, hides a column, switches density, 
   await page.getByText("2 records").waitFor();
   await idle();
 
-  // A row action sits in the row menu.
+  await page.goto(`${base}/admin/Ticket`);
+  await page.getByLabel("Select row 1").check();
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await page.getByRole("alertdialog", { name: "Confirm Close" }).getByRole("button", { name: "Close", exact: true }).click();
+  await page.getByRole("status").filter({ hasText: "Closed 1 tickets" }).waitFor();
+
+  // The closed ticket refuses edits and review, and its reopen action can still run.
+  await page.goto(`${base}/admin/Ticket/1`);
+  const review = page.getByRole("button", { name: "Review", exact: true });
+  await review.waitFor();
+  assert.equal(await review.isDisabled(), true);
+  assert.equal(await review.getAttribute("title"), "You may not run this action on this record");
+  assert.equal(await page.getByRole("button", { name: "Edit", exact: true }).isDisabled(), true);
   await page.goto(`${base}/admin/Ticket`);
   await page.getByRole("cell", { name: "Ticket 1" }).waitFor();
   await page.getByRole("button", { name: "Actions for row 1" }).click();
   await page.getByRole("menuitem", { name: "Reopen" }).click();
   await page.getByRole("status").filter({ hasText: "Reopened" }).waitFor();
+  await page.getByRole("button", { name: "Actions for row 1" }).click();
+  const reopen = page.getByRole("menuitem", { name: "Reopen" });
+  assert.equal(await reopen.getAttribute("aria-disabled"), "true");
+  assert.equal(await reopen.getAttribute("title"), "You may not run this action on this record");
+  await page.keyboard.press("Escape");
+  await page.goto(`${base}/admin/Ticket/1`);
+  await review.waitFor();
+  assert.equal(await review.isEnabled(), true);
+  await page.getByRole("link", { name: "Edit", exact: true }).click();
+  const submit = page.getByRole("button", { name: "Save and mark closed" });
+  await submit.waitFor();
+  assert.equal(await submit.isDisabled(), true);
+  assert.equal(await submit.getAttribute("title"), "You may not run this action on this record");
   await idle();
   assert.deepEqual(problems, []);
   await context.close();

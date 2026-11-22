@@ -162,19 +162,32 @@ export const NOTE_FORM = `export default (React) => function NoteForm({ values, 
 `;
 
 // A bulk action on the selected rows, with a confirmation and a message, and a row action in the row menu.
-export const TICKET = `@action(name="close_tickets", label="Close", placement="bulk", confirm="Close the chosen tickets?")
+export const TICKET = `@action(name="close_tickets", label="Close", placement="bulk", confirm="Close the chosen tickets?", can=Ticket.id > 0, replace_change=True)
 async def close_tickets(ctx, qs):
     await qs.update(status="closed")
     return message(f"Closed {ctx.count} tickets", "success")
 
 
-@action(name="reopen_ticket", label="Reopen", placement="row")
+@action(name="reopen_ticket", label="Reopen", placement="row", can=Ticket.status == "closed", replace_change=True)
 async def reopen_ticket(ctx, qs):
     await qs.update(status="open")
     return message("Reopened", "success")
 
 
-admin.register(Ticket, {"actions": [close_tickets, reopen_ticket]})`;
+@action(label="Review", placement="detail", can=Ticket.status == "open", replace_change=True)
+async def review_ticket(ctx, qs):
+    return message("Reviewed", "success")
+
+
+@action(label="Mark closed", placement="submit", can=Ticket.status == "closed")
+async def mark_closed(ctx, qs):
+    return message("Marked closed", "success")
+
+
+admin.register(Ticket, {
+    "can": {"change": Ticket.status != "closed"},
+    "actions": [close_tickets, reopen_ticket, review_ticket, mark_closed],
+})`;
 
 export const HELD_ROLES = `
 import asyncio, os

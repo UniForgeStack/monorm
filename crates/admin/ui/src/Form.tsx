@@ -10,7 +10,7 @@ import { Chips, FileField, Picker } from "./relations";
 import { ValueControl } from "./controls";
 import { InlineSections, planInlines, startInlines, type InlineState } from "./Inlines";
 import { InputFields, inputBody, startInputs, type InputValues } from "./Inputs";
-import { ActionDialog, needsDialog, request, toast, useFinish } from "./Actions";
+import { actionDisabled, ActionDialog, needsDialog, request, toast, useFinish } from "./Actions";
 import { Alert, Button, message } from "./ui";
 import { Collapsible } from "./components/ui/collapsible";
 import { Label } from "./components/ui/label";
@@ -44,7 +44,7 @@ export function FormPage({ resource, id, zone, site }: { resource: string; id?: 
   return (
     <section>
       {head}
-      <FormBody key={`${q.dataUpdatedAt}:${search}`} meta={meta} columns={columns} cells={cells} rows={id === undefined ? undefined : (q.data as api.Detail).inlines} id={id} zone={zone} site={site} reload={() => q.refetch()} />
+      <FormBody key={`${q.dataUpdatedAt}:${search}`} meta={meta} columns={columns} cells={cells} flags={id === undefined ? undefined : (q.data as api.Detail).flags} rows={id === undefined ? undefined : (q.data as api.Detail).inlines} id={id} zone={zone} site={site} reload={() => q.refetch()} />
     </section>
   );
 }
@@ -169,7 +169,7 @@ function CreateDialog({ target, relation, zone, site, done }: { target: api.Reso
 /** `typed` is set by the form body: true while a field holds a value that the user changed. */
 type Modal = { done: (key: string) => void; cancel: () => void; typed: { current: boolean } };
 
-function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }: { meta: api.Resource; columns: api.Column[]; cells: Record<string, unknown>; rows?: Record<string, api.InlineRows>; id?: string; zone: Zone; site: api.Site | undefined; reload: () => void; modal?: Modal }) {
+function FormBody({ meta, columns, cells, flags, rows, id, zone, site, reload, modal }: { meta: api.Resource; columns: api.Column[]; cells: Record<string, unknown>; flags?: api.Flags; rows?: Record<string, api.InlineRows>; id?: string; zone: Zone; site: api.Site | undefined; reload: () => void; modal?: Modal }) {
   const client = useQueryClient();
   const creating = id === undefined;
   const fields = (meta.form ?? []).flatMap((f) => {
@@ -545,9 +545,12 @@ function FormBody({ meta, columns, cells, rows, id, zone, site, reload, modal }:
           <>
             <Button type="button" variant="plain" disabled={busy} onClick={on("continue")}>Save and continue</Button>
             <Button type="button" variant="plain" disabled={busy} onClick={on("add")}>Save and add another</Button>
-            {submitActions.map((a) => (
-              <Button key={a.name} type="button" variant="plain" disabled={busy} onClick={(e) => { e.preventDefault(); void submit("save", a); }}>Save and {a.label.toLowerCase()}</Button>
-            ))}
+            {submitActions.map((a) => {
+              const reason = creating ? undefined : actionDisabled(a, meta.can ?? [], flags ?? {});
+              return (
+                <Button key={a.name} type="button" variant="plain" disabled={busy || reason !== undefined} title={reason} onClick={(e) => { e.preventDefault(); void submit("save", a); }}>Save and {a.label.toLowerCase()}</Button>
+              );
+            })}
             <Link href={creating ? listBack(meta.name) : detailUrl(meta.name, id)} className="ml-auto text-sm">Cancel</Link>
           </>
         )}

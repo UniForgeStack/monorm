@@ -136,7 +136,7 @@ async fn save_in(s: &State_, c: Call<'_>) -> Response {
             Ok(Some(r)) => r,
             Ok(None) => {
                 // A row that the `queryset` hides is out of reach (403); a row that is not in the table is gone (404).
-                let open = RowScope { without: reach.rows.without.clone(), ..RowScope::default() };
+                let open = RowScope { without: reach.rows.without.clone(), user_key: reach.rows.user_key.clone(), ..RowScope::default() };
                 return match list::read_record(site, resource, c.scope.executor(), s.target, s.viewer(), &row.key, &open, false).await {
                     Ok(Some(_)) => deny(site, c.scope, &c.user, &resource.name, json!({"reason": "queryset", "key": row.raw})).await,
                     Ok(None) => fail(c, reject(StatusCode::NOT_FOUND, "NotFound", &format!("no record {:?}", row.raw))).await,

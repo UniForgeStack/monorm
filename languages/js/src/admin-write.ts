@@ -763,6 +763,10 @@ export interface ActionOptions {
   readonly inputs?: readonly InputDef[];
   /** A condition: the action is off on the rows where it is false, and the query set leaves them out. */
   readonly appliesTo?: unknown;
+  /** A row permission condition that may read `param("user")`. */
+  readonly can?: unknown;
+  /** Use the action's permission condition in place of the resource change rule. */
+  readonly replaceChange?: boolean;
 }
 
 export type ActionFunction = (ctx: Context, qs: Loose) => Promise<ActionResult | string | void | undefined | null> | ActionResult | string | void | undefined | null;

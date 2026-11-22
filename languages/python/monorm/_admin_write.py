@@ -781,6 +781,8 @@ class ActionDef:
         confirm: str | None,
         inputs: tuple[InputDef, ...],
         applies_to: Any,
+        can: Any = None,
+        replace_change: bool = False,
     ) -> None:
         self.fn = fn
         self.name = name
@@ -790,6 +792,8 @@ class ActionDef:
         self.confirm = confirm
         self.inputs = inputs
         self.applies_to = applies_to
+        self.can = can
+        self.replace_change = replace_change
 
 
 def action(
@@ -802,6 +806,8 @@ def action(
     confirm: str | None = None,
     inputs: tuple[InputDef, ...] | list[InputDef] = (),
     applies_to: Any = None,
+    can: Any = None,
+    replace_change: bool = False,
 ) -> Any:
     """Marks a function as an admin action. Use it as a decorator: ``@admin.action(placement="bulk", confirm="Refund these orders?")``.
 
@@ -814,12 +820,13 @@ def action(
     ``placement`` is ``bulk`` (a selection or all rows that match), ``row``, ``detail``, ``list`` (all rows that match the filters of
     the list) or ``submit`` (next to the save button of the form). ``permission`` is the name part of ``<label>.<permission>_<resource>``
     (``permission="refund"``); an action with no ``permission`` needs the manage permission of the resource. ``applies_to`` is a condition: the action is off on the rows where it is false, and the query set leaves them out.
+    ``can`` may read ``param("user")`` and adds to the resource change rule. Set ``replace_change=True`` to use only the action rule.
     ``name`` is the name of the function by default.
     """
 
     def mark(f: Callable[..., Any]) -> Callable[..., Any]:
         n = name or f.__name__
-        setattr(f, _ACTION, ActionDef(f, n, label=label, placement=placement, permission=permission, confirm=confirm, inputs=tuple(inputs), applies_to=applies_to))
+        setattr(f, _ACTION, ActionDef(f, n, label=label, placement=placement, permission=permission, confirm=confirm, inputs=tuple(inputs), applies_to=applies_to, can=can, replace_change=replace_change))
         return f
 
     return mark(fn) if fn is not None else mark

@@ -8,7 +8,7 @@ import { type Zone } from "./format";
 import { Link, navigate, newUrl, rememberList, useSearch } from "./router";
 import { useListEdit } from "./ListEdit";
 import { Table, TableSkeleton } from "./Table";
-import { ActionDialog, deleteAction, needsDialog, useQuick, type Target } from "./Actions";
+import { actionDisabled, ActionDialog, deleteAction, needsDialog, useQuick, type Target } from "./Actions";
 import { buttonVariants } from "./components/ui/button";
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "./components/ui/dropdown-menu";
 import { Input, Select } from "./components/ui/input";
@@ -264,7 +264,7 @@ export function ListView({ resource, zone, meta, params, change, scope }: { reso
           ) : (
             <Table
               select={select}
-              rowActions={rowActions.length > 0 ? (i, key) => <RowMenu actions={rowActions} flags={page.flags?.[i] ?? {}} may={!(meta?.can ?? []).includes("change") || (page.flags?.[i] ?? {}).change === true} label={decodeURIComponent(key)} onRun={(a) => go(a, { keys: [key], scope, what: "this record" })} /> : undefined}
+              rowActions={rowActions.length > 0 ? (i, key) => <RowMenu actions={rowActions} flags={page.flags?.[i] ?? {}} rules={meta?.can ?? []} label={decodeURIComponent(key)} onRun={(a) => go(a, { keys: [key], scope, what: "this record" })} /> : undefined}
               resource={resource}
               columns={page.columns}
               rows={page.rows}
@@ -352,7 +352,7 @@ function ColumnsMenu({ columns, hidden, onChange }: { columns: api.Column[]; hid
 }
 
 /** The actions of one row in a menu. An action that does not fit stays in the menu, off, with the reason. */
-function RowMenu({ actions, flags, may, label, onRun }: { actions: api.ActionInfo[]; flags: Record<string, unknown>; may: boolean; label: string; onRun: (a: api.ActionInfo) => void }) {
+function RowMenu({ actions, flags, rules, label, onRun }: { actions: api.ActionInfo[]; flags: api.Flags; rules: string[]; label: string; onRun: (a: api.ActionInfo) => void }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -362,9 +362,9 @@ function RowMenu({ actions, flags, may, label, onRun }: { actions: api.ActionInf
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         {actions.map((a) => {
-          const fits = !a.applies || flags[`applies:${a.name}`] === true;
+          const reason = actionDisabled(a, rules, flags);
           return (
-            <DropdownMenuItem key={a.name} disabled={!may || !fits} title={!may ? "This record does not allow change" : !fits ? "This action does not apply to this record" : undefined} onSelect={() => onRun(a)}>
+            <DropdownMenuItem key={a.name} disabled={reason !== undefined} title={reason} onSelect={() => onRun(a)}>
               {a.label}
             </DropdownMenuItem>
           );
