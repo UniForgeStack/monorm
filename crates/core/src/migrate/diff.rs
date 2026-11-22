@@ -628,7 +628,8 @@ fn lists_of(shape: &NestedShape, holder: &[String]) -> Vec<bool> {
 
 /// The `json` column of `new` that `old` has under the same (or a renamed) table and column, with the shape of each.
 fn json_columns<'a>(old: &'a DbSchema, new: &'a DbSchema, renames: &'a Renames) -> impl Iterator<Item = (&'a Table, &'a Column, &'a NestedShape, Option<&'a NestedShape>)> {
-    new.tables.iter().flat_map(move |n| {
+    let ignored = unmanaged_tables(old, new, renames);
+    new.tables.iter().filter(move |n| !ignored.contains(n.name.as_str())).flat_map(move |n| {
         let previous = renames.tables.get(&n.name).unwrap_or(&n.name);
         let o = old.tables.iter().find(|o| o.name == n.name || &o.name == previous);
         n.columns.iter().filter_map(move |nc| {
@@ -697,8 +698,53 @@ pub fn json_backfills(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Resu
     Ok(ops)
 }
 
+/// The tables to leave alone on both sides, including a rename paired by the usual hints.
+pub(super) fn unmanaged_tables<'a>(old: &'a DbSchema, new: &'a DbSchema, renames: &Renames) -> HashSet<&'a str> {
+    let mut ignored: HashSet<_> = old.tables.iter().chain(&new.tables)
+        .filter(|t| !t.managed).map(|t| t.name.as_str()).collect();
+    if ignored.is_empty() { return ignored; }
+    for (to, from) in &renames.tables {
+        if old.tables.iter().any(|o| &o.name == to) || new.tables.iter().any(|n| &n.name == from) { continue; }
+        let Some(o) = old.tables.iter().find(|o| &o.name == from) else { continue };
+        let Some(n) = new.tables.iter().find(|n| &n.name == to) else { continue };
+        if !o.managed || !n.managed {
+            ignored.extend([o.name.as_str(), n.name.as_str()]);
+        }
+    }
+    ignored
+}
+
+/// Keep managed foreign keys, including ones that reference a table outside this plan.
+pub(super) fn migration_schema(db: &DbSchema, ignored: &HashSet<&str>) -> DbSchema {
+    let mut schema = db.clone();
+    schema.tables.retain(|t| !ignored.contains(t.name.as_str()));
+    schema.views.retain(|v| !ignored.contains(v.name.as_str()));
+    schema.functions.retain(|f| {
+        let used_by = |t: &Table| f.args.is_empty() && t.triggers.iter().any(|tr| tr.function == f.name);
+        !db.tables.iter().filter(|t| ignored.contains(t.name.as_str())).any(used_by)
+            || schema.tables.iter().any(used_by)
+    });
+    schema.enums.retain(|e| {
+        let ty = e.sql();
+        let array = format!("{ty}[]");
+        let used_by = |t: &Table| t.columns.iter().any(|c| c.ty == ty || c.ty == array || c.ty.trim_end_matches("[]") == e.name);
+        !db.tables.iter().filter(|t| ignored.contains(t.name.as_str())).any(used_by)
+            || schema.tables.iter().any(used_by)
+    });
+    schema
+}
+
+/// The tables to leave alone, and both snapshots without them (`None` when every table is managed).
+pub(super) fn migration_pair<'a>(old: &'a DbSchema, new: &'a DbSchema, renames: &Renames) -> (HashSet<&'a str>, Option<(DbSchema, DbSchema)>) {
+    let ignored = unmanaged_tables(old, new, renames);
+    let projected = (!ignored.is_empty()).then(|| (migration_schema(old, &ignored), migration_schema(new, &ignored)));
+    (ignored, projected)
+}
+
 /// Operations turning `old` into `new`. `renames` maps new names to old ones.
 pub fn diff(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<Vec<Op>, String> {
+    let (_, projected) = migration_pair(old, new, renames);
+    let (old, new) = projected.as_ref().map_or((old, new), |(o, n)| (o, n));
     let ops = diff_tables(old, new, renames)?;
     if old.views.is_empty() && new.views.is_empty() { return Ok(ops); }
     Ok(with_views(old, new, ops))
@@ -1352,7 +1398,8 @@ pub fn check_generated_to_plain(old: &DbSchema, new: &DbSchema, renames: &Rename
     if new.dialect != crate::dialect::Dialect::Postgres {
         return Ok(());
     }
-    for n in &new.tables {
+    let ignored = unmanaged_tables(old, new, renames);
+    for n in new.tables.iter().filter(|t| !ignored.contains(t.name.as_str())) {
         let Some(o) = old.tables.iter().find(|o| o.name == n.name).or_else(|| {
             renames.tables.get(&n.name).and_then(|h| old.tables.iter().find(|o| &o.name == h))
         }) else { continue };
@@ -1370,7 +1417,8 @@ pub fn check_generated_to_plain(old: &DbSchema, new: &DbSchema, renames: &Rename
 }
 
 pub fn check_copies(old: &DbSchema, new: &DbSchema, renames: &Renames) -> Result<(), String> {
-    for n in &new.tables {
+    let ignored = unmanaged_tables(old, new, renames);
+    for n in new.tables.iter().filter(|t| !ignored.contains(t.name.as_str())) {
         let source = old.tables.iter().find(|o| o.name == n.name).or_else(|| {
             renames.tables.get(&n.name).and_then(|h| old.tables.iter().find(|o| &o.name == h)).filter(|o| !new.tables.iter().any(|t| t.name == o.name))
         });

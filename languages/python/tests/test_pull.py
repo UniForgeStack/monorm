@@ -875,3 +875,65 @@ CREATE RULE soft_delete AS ON DELETE TO sdm_x
         assert [s.summary for s in pulled.differences] == []
     finally:
         await db.close()
+
+
+@pytest.mark.parametrize("dialect", ["postgresql", "sqlite"])
+async def test_services_share_unmanaged_models(tmp_path, dialect):
+    postgres = dialect == "postgresql"
+    url = PULL_URL if postgres else f"sqlite://{tmp_path / 'shared.db'}"
+    datasource = f'datasource db {{ provider = "{dialect}" }}\n'
+    (tmp_path / "shared.prisma").write_text("model Account {\n id Int @id\n label String\n}")
+    owner = tmp_path / "owner.prisma"
+    owner.write_text(datasource + 'import "shared.prisma" (prefix: "shared_")\n')
+    consumer = tmp_path / "consumer.prisma"
+    consumer_source = datasource + '''import "shared.prisma" (prefix: "shared_", managed: false)
+model Task {
+  id Int @id
+  account_id Int
+  account Account @relation(fields: [account_id], references: [id])
+}
+'''
+    consumer.write_text(consumer_source)
+    owner_migrations = Migrations(tmp_path / "owner", owner)
+    [initial] = owner_migrations.make()
+    registry = Registry()
+    Account = monorm.load(consumer, registry=registry)["Account"]
+    db = await monorm.connect(url, max_connections=1, default=False, registry=registry)
+    try:
+        if postgres:
+            await db.execute(
+                "DROP SCHEMA IF EXISTS managed_owner CASCADE; DROP SCHEMA IF EXISTS managed_consumer CASCADE; "
+                "CREATE SCHEMA managed_owner; CREATE SCHEMA managed_consumer; SET search_path TO managed_owner"
+            )
+            await Migrator(db, owner_migrations).upgrade()
+            await db.execute("SET search_path TO managed_consumer, managed_owner")
+        else:
+            # SQLite has one namespace. Apply the owner's generated DDL before starting the consumer ledger.
+            await db.execute(initial.up_sql)
+        await db.execute("CREATE INDEX outside_index ON shared_account (label)")
+        consumer_migrations = Migrations(tmp_path / "consumer", consumer)
+        [migration] = consumer_migrations.make()
+        assert 'REFERENCES "shared_account"' in migration.up_sql
+        assert 'CREATE TABLE "shared_account"' not in migration.up_sql
+        await Migrator(db, consumer_migrations).upgrade()
+
+        accounts = Account.objects.using(db)
+        await accounts.insert(id=1, label="shared")
+        assert await accounts.all().update(label="updated") == 1
+        await db.execute("INSERT INTO task (id, account_id) VALUES (1, 1)")
+        with pytest.raises(monorm.IntegrityError):
+            await db.execute("INSERT INTO task (id, account_id) VALUES (2, 99)")
+        consumer.write_text(consumer_source.replace("  id Int @id", "  id Int @id\n  note String?"))
+        consumer_migrations.make()
+        migrator = Migrator(db, consumer_migrations)
+        await migrator.upgrade()
+        drift = await migrator.drift()
+        assert not drift.steps and not drift.gaps, drift
+        index_query = (
+            "SELECT indexname FROM pg_indexes WHERE schemaname = 'managed_owner' AND indexname = 'outside_index'"
+            if postgres else "SELECT name FROM sqlite_schema WHERE name = 'outside_index'"
+        )
+        assert await db._fetch_text(index_query) == [("outside_index",)]
+        assert (await Account.objects.using(db).get()).label == "updated"
+    finally:
+        await db.close()

@@ -249,11 +249,12 @@ impl SchemaIr {
         self.models.iter_mut().chain(self.behavior.storage.iter_mut().flat_map(|s| s.models.iter_mut())).filter(move |m| m.name == name)
     }
 
-    /// Sets the contract major when a record of slice 2c is in use (a hook of point 5 to 7, an `Expr` or
-    /// `ExprHook` write assignment, an `Expr` or `Hook` client default), so that an older engine refuses the IR
-    /// with both versions in the text and not with a parse error.
+    /// Stamps the schema contract that the IR needs, so that an older engine refuses the IR with both
+    /// versions in the text and not with a parse error: the major when a record of slice 2c is in use (a hook of
+    /// point 5 to 7, an `Expr` or `ExprHook` write assignment, an `Expr` or `Hook` client default), and the minor
+    /// for a later field (`generated`, `managed`).
     /// Call it after the generate-time evaluation of expression hooks: that step swaps a binding for an `Expr` record.
-    pub fn stamp_expression_records(&mut self) {
+    pub fn stamp_schema_contract(&mut self) {
         use crate::{extension::SCHEMA_CONTRACT, writes::AssignValue};
         let physical = self.behavior.storage.iter().flat_map(|s| &s.models);
         let defaults = self.models.iter().chain(physical).flat_map(|m| &m.fields)
@@ -314,6 +315,11 @@ impl SchemaIr {
         if self.models.iter().chain(physical).flat_map(|m| &m.relations).any(RelationIr::is_conditioned) {
             self.behavior.schema_contract = SCHEMA_CONTRACT;
             self.behavior.schema_contract_minor = self.behavior.schema_contract_minor.max(9);
+        }
+        let physical = self.behavior.storage.iter().flat_map(|s| &s.models);
+        if self.models.iter().chain(physical).any(|m| !m.managed) {
+            self.behavior.schema_contract = SCHEMA_CONTRACT;
+            self.behavior.schema_contract_minor = self.behavior.schema_contract_minor.max(11);
         }
     }
 
@@ -407,6 +413,9 @@ pub struct ModelIr {
     /// Whether the schema explicitly declares `@@map`, independently of import prefixes.
     #[serde(default, skip_serializing_if = "crate::ir::is_false")]
     pub mapped: bool,
+    /// Whether migrations own the table. Queries and writes use the model either way.
+    #[serde(default = "managed_by_default", skip_serializing_if = "is_true")]
+    pub managed: bool,
     pub fields: Vec<FieldIr>,
     /// `@@id([a, b])`: the key fields in key order. Empty for a one-field `@id`.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
@@ -1096,7 +1105,11 @@ pub enum PolicyCommand {
     Delete,
 }
 
-fn is_true(b: &bool) -> bool { *b }
+/// The serde default of a `managed` flag: a model or table is managed unless it says otherwise.
+pub fn managed_by_default() -> bool { true }
+
+/// The serde `skip_serializing_if` of a flag that is true by default.
+pub fn is_true(b: &bool) -> bool { *b }
 
 /// A row-level security policy. `using` filters the rows that a statement sees; `with_check` tests the rows that it writes.
 #[derive(Deserialize, Serialize, Debug, Clone, PartialEq, Eq)]

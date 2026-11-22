@@ -9,7 +9,7 @@
     python -m monorm rollback [--steps N | --to <migration>|zero]
     python -m monorm showmigrations
     python -m monorm squashmigrations --to <migration> [--name X]
-    python -m monorm pull [-o schema.prisma] [--force]
+    python -m monorm pull [-o schema.prisma] [--force] [--unmanaged]
     python -m monorm baseline
     python -m monorm drift
     python -m monorm init [dir]                        # a starter project; also `uvx monorm init`

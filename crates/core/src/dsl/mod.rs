@@ -125,7 +125,7 @@ impl Loader<'_> {
         (label.to_string(), expr::Span { line: span.line.saturating_sub(start) + 1, ..span })
     }
 
-    fn expand(&mut self, source: &str, origin: &Path, via: &str, prefix: &str, root: bool, owner: Option<&str>) -> Result<Vec<syntax::Item>, String> {
+    fn expand(&mut self, source: &str, origin: &Path, via: &str, options: &syntax::ImportOptions, root: bool, owner: Option<&str>) -> Result<Vec<syntax::Item>, String> {
         let canonical = if origin.exists() {
             origin.canonicalize().map_err(|e| e.to_string())?
         } else {
@@ -149,7 +149,7 @@ impl Loader<'_> {
         let mut out = vec![];
         for mut item in items {
             match &mut item {
-                syntax::Item::Import { pos, path, prefix: local } => {
+                syntax::Item::Import { pos, path, options: local } => {
                     let app = path.strip_prefix("app:").map(str::to_owned);
                     let imported = match &app {
                         Some(name) => {
@@ -168,10 +168,17 @@ impl Loader<'_> {
                         let text = self.overrides.get(&imported.canonicalize().unwrap_or_else(|_| imported.clone())).cloned().map(Ok).unwrap_or_else(|| std::fs::read_to_string(&imported))
                             .map_err(|e| self.located(syntax::Error { pos: *pos, msg: format!("import {path:?}: {e}") }))?;
                         let via = format!("import {path:?} in {}", origin.display());
-                        out.extend(self.expand(&text, &imported, &via, &format!("{prefix}{local}"), false, app.as_deref().or(owner))?);
+                        let child = syntax::ImportOptions {
+                            prefix: format!("{}{}", options.prefix, local.prefix),
+                            managed: options.managed.or(local.managed),
+                        };
+                        out.extend(self.expand(&text, &imported, &via, &child, false, app.as_deref().or(owner))?);
                         continue;
                     }
-                    if !root || !local.is_empty() {
+                    if local.managed.is_some() {
+                        return Err(self.located(syntax::Error { pos: *pos, msg: "managed is only allowed on schema imports".into() }));
+                    }
+                    if !root || !local.prefix.is_empty() {
                         return Err(self.located(syntax::Error { pos: *pos,
                             msg: "extension imports belong in the main schema and cannot have a prefix".into() }));
                     }
@@ -185,6 +192,8 @@ impl Loader<'_> {
                 }
                 syntax::Item::Model(m) => {
                     self.units[index].models.push(m.name.clone());
+                    m.managed_override = options.managed.filter(|_| !m.is_view);
+                    let prefix = &options.prefix;
                     if !prefix.is_empty() {
                         for name in ["map", "renamed_from"] {
                             if let Some(attr) = m.blocks.iter_mut().find(|a| a.name == name) {
@@ -271,7 +280,7 @@ fn compile_project_mode(source: &str, origin: Option<&Path>, update: Option<Iden
 fn compile_project_overlay(source: &str, origin: Option<&Path>, update: Option<IdentityUpdate<'_>>, installed: &Installed, overrides: &std::collections::BTreeMap<PathBuf, String>) -> Result<CompiledProject, String> {
     let mut loader = Loader { overrides, apps: &installed.apps, units: vec![], seen: Default::default(), active: vec![], locations: vec![], lines: 0, sourceless: origin.is_none() };
     let origin = origin.unwrap_or(Path::new("<schema>"));
-    let mut items = loader.expand(source, origin, "the root schema", "", true, None)?;
+    let mut items = loader.expand(source, origin, "the root schema", &Default::default(), true, None)?;
     let sidecars = view_bodies(&mut items, &loader)?;
     let mut declared = std::collections::HashMap::new();
     for item in &items {
@@ -393,6 +402,9 @@ fn compile_project_overlay(source: &str, origin: Option<&Path>, update: Option<I
                 }
             }
         }
+    }
+    if ir.models.iter().any(|m| !m.managed) {
+        ir.stamp_schema_contract();
     }
     crate::identity::validate(&ir, manifests)?;
     let mut inputs: Vec<_> = loader.units.iter().map(|unit| unit.path.clone()).collect();

@@ -43,7 +43,7 @@ async fn a_host_write_sees_the_db_settings_of_the_request() {
             "source": "test", "model": "HsLocked", "name": "protect",
             "operations": ["insert", "update", "delete"], "layer": "app"
         })).unwrap());
-        ir.stamp_expression_records();
+        ir.stamp_schema_contract();
         dsl::check(ir).unwrap().1
     });
     let conn = db::connect(&url, 2).await.unwrap();

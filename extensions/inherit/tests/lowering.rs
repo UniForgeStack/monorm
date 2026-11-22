@@ -745,6 +745,20 @@ fn a_through_template_gives_each_child_its_own_join_model() {
 }
 
 #[test]
+fn a_generated_join_follows_the_ownership_of_its_child() {
+    let mut ir = user_roles();
+    ir.models.iter_mut().find(|m| m.name == "User").unwrap().managed = false;
+    lower(&mut ir).unwrap();
+
+    ir.behavior.declarations.clear();
+    ir.stamp_schema_contract();
+    let schema = monorm_core::schema::Schema::from_ir(ir).unwrap();
+    let sql = monorm_core::migrate::create_all(&schema).unwrap().join("\n");
+    assert!(sql.contains("CREATE TABLE IF NOT EXISTS \"admin_roles\""), "{sql}");
+    assert!(!sql.contains("CREATE TABLE IF NOT EXISTS \"user_roles\""), "{sql}");
+}
+
+#[test]
 fn a_generated_join_model_name_that_exists_is_an_error() {
     let mut ir = user_roles();
     ir.models.push(serde_json::from_value(model("UserRole", vec![key("id")])).unwrap());

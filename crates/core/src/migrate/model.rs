@@ -16,11 +16,12 @@ use serde::{Deserialize, Serialize};
 use crate::ext::Catalog;
 use crate::ir::{
     ColType, ConstraintIr, EnumStorage, Deferrable, FieldIr, ForEach, IndexColumnIr, Nulls, OnDelete, TriggerEvent,
-    TriggerIr, TriggerTiming,
+    TriggerIr, TriggerTiming, is_true, managed_by_default,
 };
 use crate::schema::{Model, Result, Schema};
 
-pub const SNAPSHOT_VERSION: u32 = 5;
+pub const SNAPSHOT_VERSION: u32 = 6;
+pub const VIEW_SNAPSHOT_VERSION: u32 = 5;
 /// Postgres truncates identifiers longer than this (NAMEDATALEN - 1).
 const MAX_IDENT: usize = 63;
 
@@ -48,6 +49,15 @@ pub struct DbSchema {
     /// SQL views and materialized views. An engine older than version 5 would ignore them, so a snapshot with views has version 5.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub views: Vec<SqlView>,
+}
+
+impl DbSchema {
+    /// A schema projected to the objects that migrations own. Foreign keys on managed
+    /// tables keep their targets, including targets outside the projection.
+    pub fn managed_schema(&self) -> Self {
+        let ignored = self.tables.iter().filter(|t| !t.managed).map(|t| t.name.as_str()).collect();
+        super::diff::migration_schema(self, &ignored)
+    }
 }
 
 /// A SQL view or materialized view. The body is the user's `SELECT`; the core renders the DDL around it.
@@ -115,9 +125,12 @@ impl Function {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Table {
     pub name: String,
+    /// Whether SQL migration plans own this table.
+    #[serde(default = "managed_by_default", skip_serializing_if = "is_true")]
+    pub managed: bool,
     /// PostgreSQL's PARTITION BY clause, without the leading keywords.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub partition_by: Option<String>,
@@ -152,6 +165,19 @@ pub struct Table {
     /// that re-adds such a column can fill it; they do not take part in a snapshot comparison.
     #[serde(default, skip_serializing_if = "Backfills::is_empty")]
     pub backfills: Backfills,
+}
+
+// Written by hand because a derived `Default` would make `managed` false, and the snapshot stores only a table that is not managed.
+impl Default for Table {
+    fn default() -> Self {
+        Self {
+            name: String::new(), managed: true, partition_by: None, partition_of: None,
+            comment: None, columns: vec![], primary_key: None, uniques: vec![],
+            checks: vec![], exclusions: vec![], foreign_keys: vec![], indexes: vec![],
+            triggers: vec![], rules: vec![], rls: Default::default(), policies: vec![],
+            backfills: Default::default(),
+        }
+    }
 }
 
 /// A default that the database does not carry (`NestedIr::under_null`): a migration that
@@ -911,7 +937,7 @@ impl Builder<'_> {
     fn table(&mut self, m: &Model) -> Result<Table> {
         let schema = self.schema;
         let t = m.table().to_owned();
-        let mut table = Table { name: t.clone(), comment: m.ir.comment.clone(), ..Default::default() };
+        let mut table = Table { name: t.clone(), managed: m.ir.managed, comment: m.ir.comment.clone(), ..Default::default() };
         if let Some(p) = &m.ir.partition {
             let keys = p.keys.iter().map(|k| match (&k.field, &k.expr) {
                 (Some(f), _) => self.column_of(m, f).map(|c| super::pg::ident(&c)),
@@ -1247,7 +1273,7 @@ pub fn build_with(schema: &Schema, baseline: bool, levels: &[LevelLink], auto: &
         levels,
         auto,
     };
-    let mut db = DbSchema { identities: schema.identities.clone(), dialect: schema.dialect, version: if schema.models.iter().any(|m| m.ir.sql_view.is_some()) { SNAPSHOT_VERSION } else if !schema.partitions.is_empty() { 4 } else if schema.identities.is_some() { 3 } else if schema.dialect.is_postgres() { 1 } else { 2 }, ..Default::default() };
+    let mut db = DbSchema { identities: schema.identities.clone(), dialect: schema.dialect, version: if schema.models.iter().any(|m| !m.ir.managed) { SNAPSHOT_VERSION } else if schema.models.iter().any(|m| m.ir.sql_view.is_some()) { VIEW_SNAPSHOT_VERSION } else if !schema.partitions.is_empty() { 4 } else if schema.identities.is_some() { 3 } else if schema.dialect.is_postgres() { 1 } else { 2 }, ..Default::default() };
     let mut renames = Renames::default();
     let mut tables = BTreeSet::new();
     for m in &schema.models {
@@ -1303,6 +1329,15 @@ pub fn build_with(schema: &Schema, baseline: bool, levels: &[LevelLink], auto: &
         if !tables.insert(table.name.clone()) { return Err(format!("duplicate partition table {}", table.name)); }
         if let Some(old) = &p.objects.renamed_from { renames.tables.insert(table.name.clone(), old.clone()); }
         db.tables.push(table);
+    }
+
+    // Partitions are part of the parent table's storage and follow its ownership.
+    let mut unmanaged: BTreeSet<String> = db.tables.iter().filter(|t| !t.managed).map(|t| t.name.clone()).collect();
+    loop {
+        let children: Vec<_> = db.tables.iter_mut().filter(|t| t.managed && t.partition_of.as_ref().is_some_and(|p| unmanaged.contains(&p.parent)))
+            .map(|t| { t.managed = false; t.name.clone() }).collect();
+        if children.is_empty() { break; }
+        unmanaged.extend(children);
     }
 
     for f in &schema.functions {

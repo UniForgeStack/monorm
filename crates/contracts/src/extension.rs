@@ -5,7 +5,7 @@ use crate::ir::{ColType, SchemaIr, ValueType};
 pub use crate::version::ContractVersion;
 
 /// The IR records. A library of the same major and a lower or equal minor fits.
-pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(5, 10);
+pub const SCHEMA_CONTRACT_VERSION: ContractVersion = ContractVersion::new(5, 11);
 /// The C ABI that `monorm::extension!` writes.
 pub const ABI_VERSION: ContractVersion = ContractVersion::new(0, 2);
 /// The stamps of an IR and an artifact keep the major only.
@@ -1513,7 +1513,7 @@ mod tests {
             "behavior": {"field_adapters": [{"model": "Doc", "field": "msg", "adapter": "a.b.v1", "null_only": true}]},
         })).unwrap();
         assert!(validate_field_adapters(&ir).is_ok());
-        ir.stamp_expression_records();
+        ir.stamp_schema_contract();
         assert_eq!((ir.behavior.schema_contract, ir.behavior.schema_contract_minor), (SCHEMA_CONTRACT, 3));
         assert!(serde_json::to_string(&ir.behavior.field_adapters).unwrap().contains("null_only"));
         ir.behavior.field_adapters[0].field = "doc".into();
@@ -1659,7 +1659,7 @@ mod tests {
                 "models": [{"name": "User", "table": "users", "fields": [{"name": "id", "column": "id", "type": "int", "primary_key": true}, name]}],
                 "behavior": behavior,
             })).unwrap();
-            ir.stamp_expression_records();
+            ir.stamp_schema_contract();
             ir
         };
         let assign = |value: serde_json::Value| serde_json::json!({"write_assignments": [{"source": "acme.lib", "model": "User", "field": "name", "on": ["update"], "value": value}]});
@@ -1678,7 +1678,7 @@ mod tests {
                 {"name": "id", "column": "id", "type": "int", "primary_key": true},
                 {"name": "total", "column": "total", "type": "int", "generated": {"sql": "quantity * price", "stored": true}}]}],
         })).unwrap();
-        generated.stamp_expression_records();
+        generated.stamp_schema_contract();
         assert_eq!((generated.behavior.schema_contract, minor(&generated)), (SCHEMA_CONTRACT, 1));
         assert!(check_requirements(&generated, &Artifact { schema_contract: SCHEMA_CONTRACT, ..Artifact::default() }).is_ok());
         // a fixed condition or a union member needs contract 5.9, in a logical or a physical model; a plain relation keeps the stamp
@@ -1689,7 +1689,7 @@ mod tests {
             } else {
                 serde_json::json!({"models": [model]})
             }).unwrap();
-            ir.stamp_expression_records();
+            ir.stamp_schema_contract();
             ir
         };
         let relation = |extra: serde_json::Value| {
@@ -1714,7 +1714,7 @@ mod tests {
                 "models": [{"name": "User", "table": "users", "fields": [{"name": "id", "column": "id", "type": "int", "primary_key": true}, {"name": "name", "column": "name", "type": "string"}]}],
                 "behavior": {"read_defaults": [{"source": "acme.lib", "name": "query", "model": "User", "filter": filter}]},
             })).unwrap();
-            ir.stamp_expression_records();
+            ir.stamp_schema_contract();
             ir
         };
         let plain = serde_json::json!({"t": "and", "items": [

@@ -33,7 +33,7 @@ fn schema() -> Arc<Schema> {
             "source": "test", "model": "Locked", "name": "protect",
             "operations": ["insert", "update", "delete"], "layer": "app"
         })).unwrap());
-        ir.stamp_expression_records();
+        ir.stamp_schema_contract();
         dsl::check(ir).unwrap().1
     })
 }

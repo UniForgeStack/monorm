@@ -263,3 +263,24 @@ fn audit_reports_each_state_of_a_trigger_and_pull_reads_the_forms_back() {
         assert_eq!(found, states(&[("extra", "unknown"), ("plain", "disabled"), ("seen", "missing"), ("settled", "outdated"), ("touch", "installed")]));
     });
 }
+
+#[test]
+fn postgres_pull_unmanaged_baselines_without_owning_the_tables() {
+    with_database(
+        "CREATE UNLOGGED TABLE accounts (id bigint PRIMARY KEY); CREATE UNLOGGED TABLE jobs (id bigint PRIMARY KEY REFERENCES accounts); INSERT INTO accounts VALUES (1)",
+        |conn, _, _| async move {
+            let pulled = introspect::pull_with(&*conn, &dsl::Installed::new(), true).await.unwrap();
+            assert_eq!(pulled.schema.matches("@@managed(false)").count(), 2, "{}", pulled.schema);
+            let dir = Dir::new("unmanaged");
+            let migrations = make(&dir, &pulled.schema);
+            let first = ddl::files::list(&migrations).unwrap().remove(0);
+            let up = std::fs::read_to_string(first.path.join("up.sql")).unwrap();
+            assert!(!up.contains("CREATE TABLE"), "{up}");
+            migrate::baseline(&*conn, &migrations).await.unwrap();
+            conn.batch("ALTER TABLE accounts ADD COLUMN outside_monorm text".into()).await.unwrap();
+            let drift = introspect::drift(&*conn, &migrations).await.unwrap();
+            assert!(drift.steps.is_empty() && drift.gaps.is_empty(), "{drift:?}");
+            assert_eq!(conn.query_text("SELECT id FROM accounts".into()).await.unwrap(), vec![vec![Some("1".into())]]);
+        },
+    );
+}

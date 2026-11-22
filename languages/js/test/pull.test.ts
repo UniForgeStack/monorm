@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 
-import { MigrationError, Migrations, Migrator, Registry, connect, loads, pull, type Database } from "../src/index.js";
+import { MigrationError, Migrations, Migrator, Registry, connect, load, loads, pull, type Database } from "../src/index.js";
 import { hasExtension } from "./artifact-caps.js";
 import { DATABASE_URL } from "./helpers.js";
 
@@ -560,5 +560,70 @@ test("sqlite pull reads column clauses", async () => {
     assert.equal(user.price, 1.5);
   } finally {
     await db.close();
+  }
+});
+
+test("services share unmanaged models", async () => {
+  for (const dialect of ["postgresql", "sqlite"]) {
+    const dir = mkdtempSync(join(tmpdir(), "monorm-unmanaged-"));
+    const postgres = dialect === "postgresql";
+    const url = postgres ? PULL_URL : `sqlite://${join(dir, "shared.db")}`;
+    const datasource = `datasource db { provider = "${dialect}" }\n`;
+    writeFileSync(join(dir, "shared.prisma"), "model Account {\n id Int @id\n label String\n}");
+    const owner = join(dir, "owner.prisma");
+    writeFileSync(owner, datasource + 'import "shared.prisma" (prefix: "shared_")\n');
+    const consumer = join(dir, "consumer.prisma");
+    const consumerSource = datasource + `import "shared.prisma" (prefix: "shared_", managed: false)
+model Task {
+  id Int @id
+  account_id Int
+  account Account @relation(fields: [account_id], references: [id])
+}
+`;
+    writeFileSync(consumer, consumerSource);
+    const ownerMigrations = new Migrations(join(dir, "owner"), owner);
+    const [initial] = ownerMigrations.make();
+    const registry = new Registry();
+    const Account = load(consumer, { registry })["Account"]!;
+    const db = await connect(url, { maxConnections: 1, default: false, registry });
+    try {
+      if (postgres) {
+        await db.execute("DROP SCHEMA IF EXISTS managed_owner CASCADE; DROP SCHEMA IF EXISTS managed_consumer CASCADE; " +
+          "CREATE SCHEMA managed_owner; CREATE SCHEMA managed_consumer; SET search_path TO managed_owner");
+        await new Migrator(db, ownerMigrations).upgrade();
+        await db.execute("SET search_path TO managed_consumer, managed_owner");
+      } else {
+        // SQLite has one namespace. Apply the owner's generated DDL before starting the consumer ledger.
+        await db.execute(initial!.upSql);
+      }
+      await db.execute("CREATE INDEX outside_index ON shared_account (label)");
+      const consumerMigrations = new Migrations(join(dir, "consumer"), consumer);
+      const [migration] = consumerMigrations.make();
+      assert.ok(migration!.upSql.includes('REFERENCES "shared_account"'));
+      assert.ok(!migration!.upSql.includes('CREATE TABLE "shared_account"'));
+      await new Migrator(db, consumerMigrations).upgrade();
+
+      const accounts = Account.objects.using(db);
+      await accounts.insert({ id: 1, label: "shared" });
+      assert.equal(await accounts.all().update({ label: "updated" }), 1);
+      await db.execute("INSERT INTO task (id, account_id) VALUES (1, 1)");
+      await assert.rejects(() => db.execute("INSERT INTO task (id, account_id) VALUES (2, 99)"));
+      writeFileSync(consumer, consumerSource.replace("  id Int @id", "  id Int @id\n  note String?"));
+      consumerMigrations.make();
+      const migrator = new Migrator(db, consumerMigrations);
+      await migrator.upgrade();
+      const drift = await migrator.drift();
+      assert.deepEqual(drift.steps, []);
+      assert.deepEqual(drift.gaps, []);
+      const indexQuery = postgres
+        ? "SELECT indexname FROM pg_indexes WHERE schemaname = 'managed_owner' AND indexname = 'outside_index'"
+        : "SELECT name FROM sqlite_schema WHERE name = 'outside_index'";
+      assert.deepEqual(await db.fetchText(indexQuery), [["outside_index"]]);
+      const account = await accounts.get();
+      assert.ok(account && "label" in account);
+      assert.equal(account.label, "updated");
+    } finally {
+      await db.close();
+    }
   }
 });

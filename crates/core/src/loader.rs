@@ -14,6 +14,40 @@ use std::path::{Path, PathBuf};
 use std::ffi::c_void;
 use std::sync::{Arc, Mutex, OnceLock};
 
+/// Fail when a library pass of any phase adds or changes a database object of an unmanaged model, and
+/// restore the `managed` flag that an older library drops on an IR round trip.
+fn guard_unmanaged_models(before: &SchemaIr, after: &mut SchemaIr, extension: &str) -> Result<(), String> {
+    fn physical(ir: &SchemaIr) -> &[monorm::ir::ModelIr] {
+        ir.behavior.storage.as_ref().map_or(ir.models.as_slice(), |s| s.models.as_slice())
+    }
+    for model in physical(before).iter().filter(|m| !m.managed) {
+        let error = || format!("extension {extension} adds or changes database objects for unmanaged model {}", model.name);
+        let Some(next) = physical(after).iter().find(|m| m.table == model.table)
+            .or_else(|| physical(after).iter().find(|m| m.name == model.name)) else { continue };
+        let objects = |m: &monorm::ir::ModelIr| serde_json::json!([
+            m.partition, m.indexes, m.constraints, m.triggers, m.rls, m.policies
+        ]);
+        let adds_trigger = after.behavior.added_triggers.iter().any(|a| a.model == model.name
+            && !before.behavior.added_triggers.iter().any(|b| b.model == a.model
+                && serde_json::to_value(&b.trigger).ok() == serde_json::to_value(&a.trigger).ok()));
+        let bound_functions = |schema: &SchemaIr| {
+            serde_json::to_value(schema.functions.iter()
+                .filter(|f| model.triggers.iter().any(|t| t.function.as_deref() == Some(&f.name)))
+                .collect::<Vec<_>>()).expect("function IR serializes")
+        };
+        if objects(model) != objects(next) || adds_trigger
+            || bound_functions(before) != bound_functions(after)
+        {
+            return Err(error());
+        }
+        let table = next.table.clone();
+        for m in after.models.iter_mut().chain(after.behavior.storage.iter_mut().flat_map(|s| &mut s.models)) {
+            if m.table == table { m.managed = false; }
+        }
+    }
+    Ok(())
+}
+
 /// The file that describes an extension package, beside its library.
 pub const MANIFEST_FILE: &str = "monorm-extension.toml";
 
@@ -222,7 +256,9 @@ impl Plan {
                 Some(owner) => {
                     let generated = generated_fields(ir);
                     let relations = conditioned_relations(ir);
-                    *ir = natives[owner].call(owner, &pass.id, ir)?;
+                    let mut lowered = natives[owner].call(owner, &pass.id, ir)?;
+                    guard_unmanaged_models(ir, &mut lowered, owner)?;
+                    *ir = lowered;
                     // A library built before contract 5.1 parses and writes its own `FieldIr`, which has no `generated`.
                     let kept = generated_fields(ir);
                     if let Some((model, field)) = generated.into_iter().find(|key| !kept.contains(key)) {
@@ -247,7 +283,7 @@ impl Plan {
         ir.behavior.schema_contract = SCHEMA_CONTRACT;
         validate_requirements(ir, &self.manifests, language)?;
         self.evaluate_expression_hooks(ir)?;
-        ir.stamp_expression_records();
+        ir.stamp_schema_contract();
         Ok(())
     }
 
@@ -891,6 +927,96 @@ mod tests {
         let error = plan.load().err().unwrap();
         assert!(error.contains("acme.audit") && (error.contains("libnone") || error.contains("none.dll")), "{error}");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    const PHASES: [Phase; 8] = [Phase::Expansion, Phase::Declaration, Phase::Logical, Phase::Storage, Phase::Behavior, Phase::LateBehavior, Phase::Validation, Phase::Generation];
+
+    /// A schema with the unmanaged model `Legacy`; `extra` sets more fields of the model. A phase from `Storage` on has the physical snapshot.
+    fn legacy(extra: serde_json::Value, phase: Phase) -> SchemaIr {
+        let mut model = serde_json::json!({ "name": "Legacy", "table": "legacy", "managed": false, "fields": [] });
+        model.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        let mut ir: SchemaIr = serde_json::from_value(serde_json::json!({ "models": [model] })).unwrap();
+        if phase >= Phase::Storage { ir.behavior.storage = Some(monorm::extension::PhysicalSchema { models: ir.models.clone() }); }
+        ir
+    }
+
+    fn guard(before: &SchemaIr, after: &SchemaIr) -> Result<SchemaIr, String> {
+        let mut after = after.clone();
+        guard_unmanaged_models(before, &mut after, "acme.audit").map(|()| after)
+    }
+
+    #[test]
+    fn a_pass_in_any_phase_cannot_add_an_object_to_an_unmanaged_model() {
+        let trigger = serde_json::json!({ "name": "t", "timing": "after", "events": ["insert"], "function": "f" });
+        let objects = [
+            ("index", serde_json::json!({ "indexes": [{ "columns": [] }] })),
+            ("constraint", serde_json::json!({ "constraints": [{ "kind": "check", "expr": "true" }] })),
+            ("trigger", serde_json::json!({ "triggers": [trigger] })),
+            ("policy", serde_json::json!({ "policies": [{ "name": "p" }] })),
+            ("rls", serde_json::json!({ "rls": { "enabled": true } })),
+            ("partition", serde_json::json!({ "partition": { "strategy": "range", "keys": [] } })),
+        ];
+        for phase in PHASES {
+            for (kind, extra) in &objects {
+                let error = guard(&legacy(serde_json::json!({}), phase), &legacy(extra.clone(), phase)).err()
+                    .unwrap_or_else(|| panic!("a {kind} passed in {phase:?}"));
+                assert!(error.contains("acme.audit") && error.contains("Legacy"), "{error}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_pass_in_any_phase_cannot_change_an_object_that_an_unmanaged_model_has() {
+        let before = serde_json::json!({ "indexes": [{ "columns": [] }] });
+        let after = serde_json::json!({ "indexes": [{ "columns": [], "unique": true }] });
+        for phase in PHASES {
+            assert!(guard(&legacy(before.clone(), phase), &legacy(after.clone(), phase)).is_err(), "{phase:?}");
+        }
+    }
+
+    #[test]
+    fn a_pass_that_adds_a_trigger_record_or_changes_a_bound_function_fails() {
+        let trigger = serde_json::json!({ "name": "t", "timing": "after", "events": ["insert"], "function": "f" });
+        let function = |body: &str| serde_json::json!({ "name": "f", "returns": "trigger", "body": body });
+        for phase in PHASES {
+            let before = legacy(serde_json::json!({}), phase);
+            let mut after = before.clone();
+            after.behavior.added_triggers.push(monorm::extension::AddedTrigger { model: "Legacy".into(), trigger: serde_json::from_value(trigger.clone()).unwrap() });
+            assert!(guard(&before, &after).is_err(), "added trigger in {phase:?}");
+
+            let mut before = legacy(serde_json::json!({ "triggers": [trigger.clone()] }), phase);
+            before.functions.push(serde_json::from_value(function("old")).unwrap());
+            let mut after = before.clone();
+            after.functions = vec![serde_json::from_value(function("new")).unwrap()];
+            assert!(guard(&before, &after).is_err(), "bound function in {phase:?}");
+        }
+    }
+
+    #[test]
+    fn a_pass_that_leaves_an_unmanaged_model_alone_passes_and_an_old_library_gets_the_flag_back() {
+        for phase in PHASES {
+            let before = legacy(serde_json::json!({ "indexes": [{ "columns": [] }] }), phase);
+            let same = guard(&before, &before).unwrap();
+            assert!(same.models.iter().all(|m| !m.managed), "{phase:?}");
+
+            // A library built before contract 5.11 writes the model back without `managed`.
+            let mut dropped = serde_json::to_value(&before).unwrap();
+            dropped["models"][0].as_object_mut().unwrap().remove("managed");
+            if phase >= Phase::Storage { dropped["behavior"]["storage"]["models"][0].as_object_mut().unwrap().remove("managed"); }
+            let dropped: SchemaIr = serde_json::from_value(dropped).unwrap();
+            assert!(dropped.models[0].managed, "the test input lost the flag");
+            let fixed = guard(&before, &dropped).unwrap();
+            assert!(fixed.models.iter().chain(fixed.behavior.storage.iter().flat_map(|s| &s.models)).all(|m| !m.managed), "{phase:?}");
+        }
+    }
+
+    #[test]
+    fn a_managed_model_is_not_guarded() {
+        let mut before = legacy(serde_json::json!({}), Phase::Storage);
+        before.models[0].managed = true;
+        before.behavior.storage.as_mut().unwrap().models[0].managed = true;
+        let after = legacy(serde_json::json!({ "indexes": [{ "columns": [] }] }), Phase::Storage);
+        assert!(guard(&before, &after).is_ok());
     }
 }
 

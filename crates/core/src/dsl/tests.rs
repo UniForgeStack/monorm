@@ -1845,10 +1845,10 @@ fn duration_is_a_scalar_with_no_literal_default_and_no_array() {
     assert!(fails("type T {\n  d Duration\n}\nmodel A {\n  id BigInt @id\n  t T\n}").contains("a type holds no Duration field"));
     assert!(ok(&model("timeout Duration @default(dbgenerated(\"'1 hour'\"))")).models[0].fields[1].default_sql.is_some());
     // An engine of 5.4 cannot parse the type, so the IR carries the minor 5.
-    ir.stamp_expression_records();
+    ir.stamp_schema_contract();
     assert_eq!((ir.behavior.schema_contract, ir.behavior.schema_contract_minor), (monorm::extension::SCHEMA_CONTRACT, 5));
     let mut plain = ok(&model("n Int"));
-    plain.stamp_expression_records();
+    plain.stamp_schema_contract();
     assert_eq!(plain.behavior.schema_contract_minor, 0);
 }
 
@@ -2002,12 +2002,12 @@ fn an_owning_relation_sets_the_flag_and_the_contract_minor() {
     let ir = ok(&owning_src("postgresql", "", "@relation(fields: [spec_id], references: [id], owns: true)"));
     assert!(ir.models.iter().find(|m| m.name == "Guitar").unwrap().relations.iter().find(|r| r.name == "spec").unwrap().owns);
     let mut stamped = ir.clone();
-    stamped.stamp_expression_records();
+    stamped.stamp_schema_contract();
     assert_eq!(stamped.behavior.schema_contract_minor, 6);
     let plain = ok(&owning_src("postgresql", "", "@relation(fields: [spec_id], references: [id])"));
     assert!(!plain.models.iter().flat_map(|m| &m.relations).any(|r| r.owns));
     let mut stamped = plain;
-    stamped.stamp_expression_records();
+    stamped.stamp_schema_contract();
     assert!(stamped.behavior.schema_contract_minor < 6);
 }
 
@@ -2044,7 +2044,7 @@ fn an_owning_relation_keeps_the_scope_of_the_owned_row() {
     let scoped = |model: &str| ScopedField { source: "x".into(), model: model.into(), field: "id".into(), key: "tenant".into() };
     let mut ir = ok(&owning_src("postgresql", "", "@relation(fields: [spec_id], references: [id], owns: true)"));
     ir.behavior.scoped_fields = vec![scoped("Guitar")];
-    ir.stamp_expression_records();
+    ir.stamp_schema_contract();
     let e = check(ir.clone()).err().expect("an error");
     assert!(e.contains("Guitar and Spec must have the same scope keys"), "{e}");
     ir.behavior.scoped_fields = vec![scoped("Guitar"), scoped("Spec")];
@@ -2094,7 +2094,7 @@ fn a_linked_relation_keeps_its_path_and_sets_the_contract_minor() {
     let r = ir.models.iter().find(|m| m.name == "User").unwrap().relations.iter().find(|r| r.name == "commenters").unwrap();
     assert_eq!((r.kind, r.path.clone(), r.foreign_key, r.from.is_empty(), r.constraint), (crate::ir::RelKind::Many, vec!["posts".to_string(), "comments".into(), "author".into()], false, true, true));
     let mut stamped = ir.clone();
-    stamped.stamp_expression_records();
+    stamped.stamp_schema_contract();
     assert_eq!(stamped.behavior.schema_contract_minor, 7);
     check(ir).unwrap();
     let ir = ok(CHAIN);
@@ -2145,10 +2145,10 @@ fn constraint_false_sets_the_flag_and_refuses_the_actions() {
     let r = ir.models.iter().find(|m| m.name == "Guitar").unwrap().relations.iter().find(|r| r.name == "spec").unwrap();
     assert!(!r.constraint && r.foreign_key);
     let mut stamped = ir.clone();
-    stamped.stamp_expression_records();
+    stamped.stamp_schema_contract();
     assert_eq!(stamped.behavior.schema_contract_minor, 7);
     let mut stamped = ok(&owning_src("postgresql", "", plain));
-    stamped.stamp_expression_records();
+    stamped.stamp_schema_contract();
     assert!(stamped.behavior.schema_contract_minor < 7);
     for arg in ["onDelete: Cascade", "onUpdate: Cascade", "deferrable: deferred", "map: \"fk_spec\""] {
         let e = fails(&owning_src("postgresql", "", &format!("@relation(fields: [spec_id], references: [id], constraint: false, {arg})")));
@@ -2212,10 +2212,10 @@ fn a_trigger_takes_the_pgtrigger_arguments() {
     assert_eq!(seven.changes[0].fields, ["title", "stock"]);
     assert!(seven.changes[1].exclude_auto && seven.changes[1].exclude == ["title"]);
     let mut plain = ok(&trigger_schema("postgresql", "", "@@trigger(t, when: before, operation: [insert], func: \"x\")"));
-    plain.stamp_expression_records();
+    plain.stamp_schema_contract();
     assert_eq!(plain.behavior.schema_contract_minor, 0);
     let mut stamped = ok(&trigger_schema("postgresql", "", "@@trigger(t, when: after, operation: [insert], deferrable: immediate, func: f)"));
-    stamped.stamp_expression_records();
+    stamped.stamp_schema_contract();
     assert_eq!(stamped.behavior.schema_contract_minor, 8);
 }
 
@@ -2321,7 +2321,7 @@ fn exclude_auto_drops_the_fields_a_write_assignment_sets() {
     ir.behavior.write_assignments.push(WriteAssignment {
         source: "acme.touch".into(), model: "Item".into(), field: "updated_at".into(), on: vec![WriteKind::Update], value: AssignValue::Now, upsert: UpsertDefault::default(),
     });
-    ir.stamp_expression_records();
+    ir.stamp_schema_contract();
     let (_, schema) = check(ir).unwrap();
     let ddl = crate::migrate::create_all(&schema).unwrap().into_iter().find(|s| s.contains("TRIGGER")).unwrap();
     assert!(ddl.contains("OLD.\"title\"") && !ddl.contains("OLD.\"updated_at\""), "{ddl}");
@@ -2373,4 +2373,85 @@ fn sqlite_refuses_the_postgresql_trigger_features() {
     let (_, schema) = check(ok(&src)).unwrap();
     let ddl = crate::migrate::create_all(&schema).unwrap().join("\n");
     assert!(ddl.contains("WHEN (OLD.\"title\" IS NOT NEW.\"title\")") && !ddl.contains("pg_has_role"), "{ddl}");
+}
+
+#[test]
+fn outermost_managed_import_option_wins() {
+    let dir = std::env::temp_dir().join(format!("monorm-managed-imports-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let root = dir.join("schema.prisma");
+    let app = dir.join("app.prisma");
+    let leaf = dir.join("leaf.prisma");
+    std::fs::write(&leaf, "model Leaf {\n id Int @id\n @@managed(false)\n}").unwrap();
+    let mut installed = Installed::new();
+    installed.apps.insert("example".into(), app.clone());
+    for (inner, options, expected) in [
+        (false, "", vec!["plain"]),
+        (true, " (managed: false)", vec![]),
+        (false, " (managed: true)", vec!["plain", "leaf"]),
+    ] {
+        std::fs::write(&app, format!("import \"leaf.prisma\" (managed: {inner})\nmodel Plain {{ id Int @id }}")).unwrap();
+        let source = format!("import \"app:example\"{options}");
+        let (_, schema) = check(compile_project_with(&source, Some(&root), &installed).unwrap().ir).unwrap();
+        let sql = crate::migrate::create_all(&schema).unwrap().join("\n");
+        for table in ["plain", "leaf"] {
+            assert_eq!(sql.contains(&format!("\"{table}\"")), expected.contains(&table), "{sql}");
+        }
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn managed_options_and_attributes_report_each_misuse() {
+    let model = |attr: &str| format!("model A {{\n id Int @id\n {attr}\n}}");
+    for (attr, expected) in [
+        ("@@managed", "@@managed takes true or false"),
+        ("@@managed(false, true)", "@@managed takes true or false"),
+        ("@@managed(value: false)", "@@managed takes true or false"),
+        ("@@managed(\"no\")", "@@managed takes true or false"),
+        ("@@managed(false)\n @@managed(false)", "@@managed is given twice"),
+        ("@@managed(true)\n @@managed(true)", "@@managed is given twice"),
+        ("@@managed(true)\n @@managed(false)", "@@managed is given twice"),
+        ("@@managed(false)\n @@managed(true)", "@@managed is given twice"),
+    ] {
+        let error = fails(&model(attr));
+        assert!(error.contains(expected), "{attr}: {error}");
+    }
+    let view = views("view V {\n id Int @id\n @@managed(false)\n}\n", &[("views/public/V.sql", "SELECT 1 AS id")]).unwrap_err();
+    assert!(view.contains("@@managed does not apply to a view"), "{view}");
+
+    for (options, expected) in [
+        ("(managed: 1)", "schema import managed must be true or false"),
+        ("(managed: \"no\")", "schema import managed must be true or false"),
+        ("(shadow: true)", "unknown schema import option shadow"),
+        ("(prefix: 1)", "schema import prefix must be a string"),
+        ("()", "schema import takes named prefix and managed options"),
+        ("(true)", "schema import takes named prefix and managed options"),
+    ] {
+        let error = fails(&format!("import \"other.prisma\" {options}"));
+        assert!(error.contains(expected), "{options}: {error}");
+    }
+}
+
+#[test]
+fn managed_true_equals_the_default() {
+    let model = |attr: &str| format!("model A {{\n id Int @id\n {attr}\n}}");
+    let plain = ok(&model(""));
+    let explicit = ok(&model("@@managed(true)"));
+    assert!(explicit.models.iter().all(|m| m.managed));
+    assert_eq!(serde_json::to_value(&plain).unwrap(), serde_json::to_value(&explicit).unwrap());
+    let (_, schema) = check(explicit).unwrap();
+    let sql = crate::migrate::create_all(&schema).unwrap().join("\n");
+    assert!(sql.contains("CREATE TABLE IF NOT EXISTS \"a\""), "{sql}");
+}
+
+#[test]
+fn managed_is_refused_on_an_extension_import() {
+    let dir = std::env::temp_dir().join(format!("monorm-managed-extension-import-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("acme.toml"), "name = \"acme\"\n[types.money]\nsql = \"numeric(12, 2)\"\nvalue = \"text\"\n").unwrap();
+    std::fs::write(dir.join("schema.prisma"), "import \"acme.toml\" (managed: false)\nmodel A {\n id Int @id\n}\n").unwrap();
+    let error = compile_file(&dir.join("schema.prisma")).unwrap_err();
+    assert!(error.contains("managed is only allowed on schema imports"), "{error}");
+    std::fs::remove_dir_all(dir).unwrap();
 }

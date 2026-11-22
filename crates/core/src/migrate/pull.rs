@@ -1178,6 +1178,7 @@ pub fn pull_claims(db: &DbSchema, gaps: &[String], claimed: &[ClaimedRule], obje
             out.push_str(&format!("  {l}\n"));
         }
         let mut attrs = m.attrs.clone();
+        if !m.table.managed { attrs.push("@@managed(false)".into()); }
         if m.name.to_lowercase() != m.table.name {
             attrs.insert(0, format!("@@map({})", quoted(&m.table.name)));
         }

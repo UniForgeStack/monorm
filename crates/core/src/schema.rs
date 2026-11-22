@@ -68,6 +68,7 @@ impl Model {
             name: name.to_owned(),
             table: name.to_owned(),
             mapped: false,
+            managed: true,
             fields,
             primary_key: vec![],
             pk_name: None,

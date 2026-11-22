@@ -137,6 +137,7 @@ struct Prepared {
     current: DbSchema,
     renames: model::Renames,
     identity_changed: bool,
+    unmanaged_changed: bool,
     /// The shape of a json column changed in a way that has no SQL (see [`shape_changed`]).
     shape_changed: bool,
     /// The data ops on json columns that follow the diff in `up`: the key renames, then the fills of new subfields.
@@ -159,12 +160,15 @@ fn prepare(schema: &Schema, previous: &DbSchema, baseline: bool) -> Result<Prepa
         return Err(format!("migration snapshot targets {}, schema targets {}; use a separate migrations directory", previous.dialect.name(), current.dialect.name()));
     }
     let identity_changed = previous.identities != current.identities;
+    // Compare the stored representation: Table equality ignores nested JSON metadata.
+    let unmanaged_state = |db: &DbSchema| serde_json::to_value(db.tables.iter().filter(|t| !t.managed).collect::<Vec<_>>());
+    let unmanaged_changed = unmanaged_state(previous).map_err(|e| e.to_string())? != unmanaged_state(&current).map_err(|e| e.to_string())?;
     let shape_changed = shape_changed(previous, &current);
     let (fills, down_fills) = json_ops(previous, &current, &renames)?;
     diff::check_copies(previous, &current, &renames)?;
     diff::check_generated_to_plain(previous, &current, &renames)?;
     diff::check_copies(&current, previous, &renames.reversed())?;
-    Ok(Prepared { current, renames, identity_changed, shape_changed, fills, down_fills })
+    Ok(Prepared { current, renames, identity_changed, unmanaged_changed, shape_changed, fills, down_fills })
 }
 
 /// The data ops on json columns of the change (key renames, then fills) and of its reverse (key renames).
@@ -203,7 +207,7 @@ fn sqlite_plan(previous: &DbSchema, p: Prepared) -> Result<MigrationPlan> {
     let mut up = sqlite::steps_with(previous, &p.current, &p.renames, &p.fills)?;
     let mut down = sqlite::steps_with(&p.current, previous, &p.renames.reversed(), &p.down_fills)?;
     if p.identity_changed { identity_step(&mut up); identity_step(&mut down); }
-    shape_step(&p, &mut up, &mut down);
+    snapshot_step(&p, &mut up, &mut down);
     Ok(MigrationPlan { up, down, snapshot: p.current, kind: FolderKind::Main })
 }
 
@@ -211,7 +215,7 @@ fn pg_plan(previous: &DbSchema, p: Prepared, up: &[Op], down: &[Op]) -> Migratio
     let mut up = steps(up, &p.current);
     let mut down = steps(down, previous);
     if p.identity_changed { identity_step(&mut up); identity_step(&mut down); }
-    shape_step(&p, &mut up, &mut down);
+    snapshot_step(&p, &mut up, &mut down);
     MigrationPlan { up, down, snapshot: p.current, kind: FolderKind::Main }
 }
 
@@ -269,8 +273,13 @@ fn shape_changed(previous: &DbSchema, current: &DbSchema) -> bool {
     })
 }
 
-/// A change of shape alone gives a plan with no SQL; one comment step makes `make` write the snapshot.
-fn shape_step(p: &Prepared, up: &mut Vec<Step>, down: &mut Vec<Step>) {
+/// A comment step makes `make` write changes to state when there is no SQL.
+fn snapshot_step(p: &Prepared, up: &mut Vec<Step>, down: &mut Vec<Step>) {
+    if p.unmanaged_changed && up.is_empty() {
+        for steps in [&mut *up, &mut *down] {
+            steps.push(Step::new("Record unmanaged models".into(), "-- Unmanaged models are recorded in snapshot.json".into(), None, vec![]));
+        }
+    }
     if p.shape_changed && up.is_empty() {
         for steps in [up, down] {
             steps.push(Step::new("Record the shape of json columns".into(), "-- The shape of a json column is recorded in snapshot.json".into(), None, vec![]));
@@ -282,7 +291,7 @@ fn identity_step(steps: &mut Vec<Step>) {
     steps.push(Step::new("Record frozen ContentType identities".into(), "-- Frozen ContentType identity mapping recorded in snapshot.json".into(), None, vec![]));
 }
 
-/// The whole schema as idempotent DDL (`IF NOT EXISTS` / `OR REPLACE`), for
+/// The managed schema as idempotent DDL (`IF NOT EXISTS` / `OR REPLACE`), for
 /// `create_tables()` in development and tests.
 pub fn create_all(schema: &Schema) -> Result<Vec<String>> {
     let current = snapshot(schema)?;
@@ -316,10 +325,10 @@ pub fn create_statements(db: &DbSchema) -> Vec<String> {
         .collect()
 }
 
-/// Drops every table, enum type and generated function of the schema (`IF EXISTS ... CASCADE`);
+/// Drops the managed tables, enum types and generated functions of the schema (`IF EXISTS ... CASCADE`);
 /// extensions stay.
 pub fn drop_all(schema: &Schema) -> Result<Vec<String>> {
-    let current = snapshot(schema)?;
+    let current = snapshot(schema)?.managed_schema();
     if current.dialect == crate::dialect::Dialect::Sqlite {
         let mut out: Vec<String> = current.views.iter().rev().map(|v| format!("DROP VIEW IF EXISTS {}", pg::ident(&v.name))).collect();
         out.extend(current.tables.iter().rev().map(|t| format!("DROP TABLE IF EXISTS {}", pg::ident(&t.name))));

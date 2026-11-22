@@ -157,6 +157,7 @@ pub fn plan_online(schema: &Schema, previous: &DbSchema) -> Result<Vec<Migration
         super::identity_step(&mut main_up);
         super::identity_step(&mut main_down);
     }
+    if p.unmanaged_changed { super::snapshot_step(&p, &mut main_up, &mut main_down); }
     if !main_up.is_empty() || !main_down.is_empty() {
         plans.push(folder(FolderKind::Main, main_up, main_down, without_indexes(&p.current, &create_names)));
     }
