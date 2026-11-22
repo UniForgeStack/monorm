@@ -112,6 +112,16 @@ model Event {
   @@map("events")
 }
 
+// Display helpers and the date drill-down: a bool icon, badges on a text column, and a date hierarchy on a datetime.
+model Parcel {
+  id     BigInt   @id @default(autoincrement())
+  code   String
+  placed DateTime
+  paid   Boolean  @default(false)
+  state  String   @default("new")
+  @@map("parcels")
+}
+
 model Track {
   id       BigInt @id @default(autoincrement())
   title    String
@@ -205,6 +215,14 @@ async def main():
     await models.Event.objects.insert_many([{"title": "Launch", "day": datetime.date(2026, 3, 4), "at": datetime.time(9, 30, 15), "starts": at, "live": True, "mood": "tense", "extra": {"a": 1}}])
     await models.Event.objects.insert_many([{"title": "Whole minutes", "day": datetime.date(2026, 5, 6), "at": datetime.time(10, 0, 0), "starts": datetime.datetime(2026, 1, 2, 4, 0, 0, tzinfo=datetime.timezone.utc), "mood": "calm"}])
     await models.Gadget.objects.insert_many([{"name": "Widget", "tier": "free"}])
+    utc = datetime.timezone.utc
+    await models.Parcel.objects.insert_many([
+        {"code": "P-2024-03", "placed": datetime.datetime(2024, 3, 5, 12, 0, 0, tzinfo=utc), "paid": True, "state": "shipped"},
+        {"code": "P-2025-03-a", "placed": datetime.datetime(2025, 3, 10, 12, 0, 0, tzinfo=utc), "paid": True, "state": "new"},
+        {"code": "P-2025-03-b", "placed": datetime.datetime(2025, 3, 20, 12, 0, 0, tzinfo=utc), "paid": False, "state": "lost"},
+        {"code": "P-2025-04", "placed": datetime.datetime(2025, 4, 2, 12, 0, 0, tzinfo=utc), "paid": False, "state": "returned"},
+        {"code": "P-2026-01", "placed": datetime.datetime(2026, 1, 8, 12, 0, 0, tzinfo=utc), "paid": True, "state": "shipped"},
+    ])
     await models.Setting.objects.insert_many([{"name": "Welcome", "config": note_pb2.Note(title="hi", priority=3, tags=["a"])}])
     (debut,) = await models.Album.objects.insert_many([{"title": "Debut"}]).returning()
     await models.Track.objects.insert_many([{"title": "Intro", "plays": 1, "album_id": debut.id}])
@@ -243,6 +261,7 @@ export async function startProject() {
   assert.ok(module.includes("admin.register(Event)") && module.includes("admin.register(Gadget)"), "the generated admin.py registers Event and Gadget");
   assert.ok(module.includes("admin.register(Movie)"), "the generated admin.py registers Movie");
   assert.ok(module.includes("admin.register(Shelf)"), "the generated admin.py registers Shelf");
+  assert.ok(module.includes("admin.register(Parcel)"), "the generated admin.py registers Parcel");
   // Movie: the example extension package (a stars widget, a Summary tab, a route and an action).
   cpSync(join(ROOT, "examples", "admin-package"), join(dir, "package"), { recursive: true });
   const withStorage = module
@@ -256,6 +275,8 @@ export async function startProject() {
     .replace("admin.register(Gadget)", 'admin.register(Gadget, {"widgets": {"Tier": "radio"}})')
     // Shelf: its cells edit in the list.
     .replace("admin.register(Shelf)", 'admin.register(Shelf, {"list": {"columns": ["title", "qty"], "editable": ["title", "qty"], "order": [Shelf.id]}})')
+    // Parcel: a bool icon, badges (a value outside the map shows grey) and a date hierarchy.
+    .replace("admin.register(Parcel)", 'admin.register(Parcel, {"list": {"columns": ["code", "placed", "paid", "state"], "order": [Parcel.id], "date_hierarchy": Parcel.placed, "badges": {Parcel.state: {"new": "blue", "shipped": "green", "lost": "red"}}}})')
     .replace("admin.register(Reviewer)", 'admin.register(Reviewer, {"list": {"search": [Reviewer.name]}})')
     .replace("admin.register(Track)", 'admin.register(Track, {"relations": {"reviewer": {}}})')
     .replace("admin.register(Paper)", 'admin.register(Paper, {"relations": {"reviewer": {"create": True}}, "files": {"cover": "media"}})');

@@ -1,6 +1,8 @@
 import { useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import * as api from "./api";
+import { Display } from "./DisplayValue";
+import { shown } from "./display";
 import { cell, type Zone } from "./format";
 import { ListView, useListState } from "./List";
 import { Link, detailUrl, editUrl, listBack, navigate, newUrl } from "./router";
@@ -159,6 +161,12 @@ function DetailTabs({ tabs, current, base }: { tabs: { name: string; title: stri
 }
 const DETAILS = "__details__";
 
+/** The badge of a column that has one; the detail page draws no bool icon. */
+function badged(value: unknown, f: api.Column) {
+  const look = shown(value, f, false);
+  return look ? <Display shown={look} /> : null;
+}
+
 const rowClass = "grid items-baseline gap-1 border-b border-border py-2.5 last:border-b-0 sm:grid-cols-[12rem_1fr] sm:gap-4";
 
 /** The fields of a record as cards: one per section of the resource, or one "Details" card when it has none. What no section names, and the links, go in the last card without a title (or a new "Other" card). */
@@ -166,7 +174,7 @@ function DetailCards({ detail: d, sections, zone }: { detail: api.Detail; sectio
   const row = (f: api.Column, i: number) => (
     <div key={f.label} className={rowClass}>
       <dt className="text-sm text-muted-foreground">{f.title}</dt>
-      <dd className="m-0 break-words">{f.widget === "json" && d.values[i] !== null && typeof d.values[i] === "object" ? <pre className="json-value rounded-md bg-muted p-3">{JSON.stringify(d.values[i], null, 2)}</pre> : (cell(d.values[i], f, zone) || <span className="text-muted-foreground">{f.empty ?? "—"}</span>)}</dd>
+      <dd className="m-0 break-words">{f.widget === "json" && d.values[i] !== null && typeof d.values[i] === "object" ? <pre className="json-value rounded-md bg-muted p-3">{JSON.stringify(d.values[i], null, 2)}</pre> : (badged(d.values[i], f) ?? (cell(d.values[i], f, zone) || <span className="text-muted-foreground">{f.empty ?? "—"}</span>))}</dd>
     </div>
   );
   const links = d.links.map((l) => (

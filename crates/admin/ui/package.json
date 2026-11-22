@@ -7,7 +7,8 @@
   "scripts": {
     "build": "node scripts/shared.mjs && tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
-    "size": "node scripts/size.mjs"
+    "size": "node scripts/size.mjs",
+    "test": "node --test test/"
   },
   "dependencies": {
     "@radix-ui/react-collapsible": "1.1.12",
