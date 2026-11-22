@@ -20,7 +20,7 @@ use crate::key;
 use crate::list::{self, Binds, ListError, ListRequest, Position, RowScope};
 use crate::permissions::{Grants, Op};
 use crate::scope::Scoped;
-use crate::server::{authorize, deny, error_response, finish, found_keys, queryset_rows, reject, Shared, State_, User};
+use crate::server::{authorize, deny, error_response, finish, found_keys, queryset_rows, reject, user_key, Shared, State_, User};
 use crate::sight::Sight;
 use crate::site::{column, err, queryset_of, Column, ConfigError, Queryset, QuerysetConfig, Resource, Source};
 
@@ -181,7 +181,7 @@ fn target_view<'a>(s: &'a State_, relation: &Relation, grants: &Grants) -> Sight
 /// The read defaults that read a scope value are off, as for every route. The admin ignores tenancy.
 pub(crate) async fn offer(s: &State_, relation: &Relation, user: &User, scope: &Scoped, choices: bool) -> Result<RowScope, ListError> {
     let target = target_of(s, relation);
-    let mut rows = RowScope { without: target.scope_defaults.clone(), ..RowScope::default() };
+    let mut rows = RowScope { without: target.scope_defaults.clone(), user_key: user_key(user), ..RowScope::default() };
     if let Some(q) = &target.queryset {
         queryset_rows(s, target, q, user, scope, &mut rows).await?;
     }

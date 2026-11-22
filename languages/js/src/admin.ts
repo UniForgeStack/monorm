@@ -445,10 +445,10 @@ function refName(model: AnyModel, ref: AnyColumn | AnyRelation | string): string
   return state.path.join(".");
 }
 
-/** The engine IR of an expression or a condition. The admin keeps no parameters: a literal goes into the IR itself. */
-function irOf(model: AnyModel, node: unknown, what: string): unknown {
+/** The engine IR of an expression or a condition, with literals inlined. */
+function irOf(model: AnyModel, node: unknown, what: string, userSlot = false): unknown {
   const where = `${model._meta.name}: ${what}`;
-  const params: unknown[] = [];
+  const params: unknown[] = userSlot ? new SlotParams() : [];
   let ir: unknown;
   try {
     const value = node instanceof Condition ? resolveNullRule(node) : node instanceof Expression ? node : asCondition(node);
@@ -456,7 +456,7 @@ function irOf(model: AnyModel, node: unknown, what: string): unknown {
   } catch (e) {
     throw new AdminConfigError(`${where}: ${e instanceof Error ? e.message : String(e)}`);
   }
-  return inlineParams(ir, params, where);
+  return userSlot ? slotIr(ir, params, undefined, where) : inlineParams(ir, params, where);
 }
 
 function inlineParams(ir: unknown, params: readonly unknown[], where: string): unknown {
@@ -552,8 +552,8 @@ function orderName(model: AnyModel, item: AnyColumn | Ordering<any, any>): strin
 
 const SLOTS = ["user"];
 
-/** The IR of a queryset filter: a `param("user")` becomes slot `i`, a literal goes inline. */
-function slotIr(ir: unknown, params: readonly unknown[], slots: string[], where: string): unknown {
+/** The IR of a filter with request slots: a `param("user")` becomes slot `i`, a literal goes inline. */
+function slotIr(ir: unknown, params: readonly unknown[], slots: string[] | undefined, where: string): unknown {
   if (Array.isArray(ir)) return ir.map((item) => slotIr(item, params, slots, where));
   if (ir === null || typeof ir !== "object") return ir;
   const node = ir as Record<string, unknown>;
@@ -561,6 +561,10 @@ function slotIr(ir: unknown, params: readonly unknown[], slots: string[], where:
     const value = params[node["i"] as number];
     if (!(value instanceof Slot)) return inlineParams(node, params, where);
     if (!SLOTS.includes(value.name)) throw new AdminConfigError(`${where}: takes the param 'user', not '${value.name}'`);
+    if (slots === undefined) {
+      if (value.transform !== undefined) throw new AdminConfigError(`${where}: param("user") does not take a transform in a permission rule`);
+      return { t: "param", i: 0 };
+    }
     if (!slots.includes(value.name)) slots.push(value.name);
     return { t: "param", i: slots.indexOf(value.name) };
   }
@@ -645,6 +649,8 @@ function actionsJson(name: string, model: AnyModel, items: unknown): Record<stri
       if (d.confirm !== undefined) entry["confirm"] = d.confirm;
       if (d.inputs !== undefined && d.inputs.length > 0) entry["inputs"] = d.inputs.map((i) => i.json());
       if (d.appliesTo !== undefined) entry["applies_to"] = irOf(model, d.appliesTo, `action '${d.name}' appliesTo`);
+      if (d.can !== undefined) entry["can"] = irOf(model, d.can, `action '${d.name}' can`, true);
+      if (d.replaceChange !== undefined) entry["replace_change"] = d.replaceChange;
     }
     const key = entry["name"] as string;
     if (seen.has(key)) throw new AdminConfigError(`${name}: action '${key}' is listed twice`);
@@ -658,7 +664,7 @@ function canJson(model: AnyModel, rules: CanRules): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [rule, condition] of Object.entries(rules)) {
     if (rule !== "change" && rule !== "delete") throw new AdminConfigError(`${model._meta.name}: can takes 'change' and 'delete', not '${rule}'`);
-    if (condition !== undefined) out[rule] = irOf(model, condition, `can '${rule}'`);
+    if (condition !== undefined) out[rule] = irOf(model, condition, `can '${rule}'`, true);
   }
   return out;
 }

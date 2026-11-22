@@ -9,6 +9,7 @@ import pytest
 import monorm
 from monorm import admin
 from monorm.errors import ValidationError
+from monorm.expr import Expression
 
 PG_URL = os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
 
@@ -113,6 +114,113 @@ async def post(client, action, body, path=ITEMS):
 # -- the query set and the placements ----------------------------------------------------------------------------------
 
 
+async def test_a_row_action_checks_the_signed_in_owner_and_audits_refusals(world):
+    registry, db, models = world
+    item = models["AItem"]
+    seen = []
+
+    @admin.action(placement="row", can=item.shop_id == monorm.param("user"))
+    async def own(ctx, qs):
+        seen.append(ctx.count)
+        await qs.update(qty=item.qty + 10)
+
+    client = site_of(registry, models, own).test_client(db, user=SU)
+    preamble = (await client.get("/admin/api/resources")).queries
+    page = await client.get("/admin/api/resources/AItem")
+    assert page.status == 200, page.text
+    assert page.queries == preamble + 1
+    assert dict(zip(page.json()["keys"], (f["can:own"] for f in page.json()["flags"]))) == {
+        "1": True, "2": True, "3": True, "4": False, "5": False,
+    }
+    refused = await post(client, "own", {"keys": ["4"]})
+    assert refused.status == 403, refused.text
+    assert refused.json()["error"]["kind"] == "ActionNotAllowed"
+    assert refused.queries == preamble + 2, refused.sql
+    missing = await post(client, "own", {"keys": ["999"]})
+    assert missing.status == 404, missing.text
+    assert missing.queries == preamble + 1
+    await item.objects.using(db).filter(item.id == 2).update(shop_id=2)
+    stale = await post(client, "own", {"keys": ["2"]})
+    assert (stale.status, stale.json()["error"]["kind"], stale.queries) == (403, "ActionNotAllowed", preamble + 2)
+    allowed = await post(client, "own", {"keys": ["1"]})
+    assert allowed.status == 200, allowed.text
+    assert allowed.queries == preamble + 3, allowed.sql
+    assert seen == [1]
+    assert await qtys(db, models) == [("a", 11), ("b", 2), ("c", 3), ("d", 4), ("e", 5)]
+    assert [(a, res, key) for a, res, key, _ in await audit(db, models)] == [
+        ("action_denied", "AItem", "4"), ("action_denied", "AItem", "2"), ("action:own", "AItem", "1"),
+    ]
+
+
+async def test_action_rules_combine_with_change_and_applies_or_replace_change(world):
+    registry, db, models = world
+    item = models["AItem"]
+    owner = item.shop_id == monorm.param("user")
+    seen = []
+
+    def run_action(**options):
+        @admin.action(**options)
+        async def run(ctx, qs):
+            seen.append(ctx.count)
+            await qs.update(qty=item.qty + 10)
+            return admin.message(f"Updated {ctx.count}")
+        return run
+
+    actions = [
+        run_action(name="row", placement="row", can=owner, applies_to=item.name != "b"),
+        run_action(name="reopen", placement="detail", can=owner & (item.status == "locked"), replace_change=True),
+        run_action(name="submit", placement="submit"),
+        run_action(name="bulk", placement="bulk", can=owner),
+        run_action(name="matching", placement="list", can=owner, replace_change=True, applies_to=item.status == "locked"),
+    ]
+    config = {
+        "queryset": item.objects.filter(item.id >= monorm.param("user"), item.id <= 4).prepare(),
+        "can": {"change": owner & (item.status != "locked"), "delete": owner},
+    }
+    baseline = site_of(registry, models, item=config).test_client(db, user=SU)
+    client = site_of(registry, models, *actions, item=config).test_client(db, user=SU)
+    metadata = await client.get("/admin/api/resources")
+    preamble = metadata.queries
+    meta = next(r for r in metadata.json()["resources"] if r["name"] == "AItem")
+    assert set(meta["can"]) == {"change", "delete", "applies:row", "can:row", "can:reopen", "applies:matching"}
+    path = "/admin/api/resources/AItem"
+    page = await client.get(path)
+    assert page.status == 200, page.text
+    assert page.queries == (await baseline.get(path)).queries == preamble + 1
+    flags = dict(zip(page.json()["keys"], page.json()["flags"]))
+    assert flags["2"]["can:row"] is True and flags["2"]["applies:row"] is False
+    assert flags["3"]["change"] is False and flags["3"]["can:row"] is False and flags["3"]["can:reopen"] is True
+    assert flags["4"]["change"] is False and flags["4"]["delete"] is False
+    detail_response = await client.get(f"{path}/3")
+    assert detail_response.queries == preamble + 1
+    assert detail_response.json()["flags"] == flags["3"]
+    for action, key in [("row", "2"), ("row", "3"), ("submit", "3")]:
+        r = await post(client, action, {"keys": [key]})
+        assert (r.status, r.json()["error"]["kind"], r.queries) == (403, "ActionNotAllowed", preamble + 2), r.text
+    hidden = await post(client, "reopen", {"keys": ["5"]})
+    assert (hidden.status, hidden.queries) == (404, preamble + 1), hidden.text
+    for action, body, count in [
+        ("reopen", {"keys": ["3"]}, 1),
+        ("bulk", {"keys": ["1", "2", "3", "4"]}, 2),
+        ("matching", {}, 1),
+    ]:
+        r = await post(client, action, body)
+        assert r.status == 200, r.text
+        assert (r.json()["count"], r.json()["result"]["message"], r.queries) == (count, f"Updated {count}", preamble + 3), r.sql
+    delete = await post(client, "bulk_delete", {"keys": ["4"]})
+    assert (delete.status, delete.json()["count"], delete.queries) == (200, 0, preamble + 1)
+    assert seen == [1, 2, 1]
+    assert await qtys(db, models) == [("a", 11), ("b", 12), ("c", 23), ("d", 4), ("e", 5)]
+    assert [(a, key, c["action"], c.get("count")) for a, _, key, c in await audit(db, models)] == [
+        ("action_denied", "2", "row", None),
+        ("action_denied", "3", "row", None),
+        ("action_denied", "3", "submit", None),
+        ("action:reopen", "3", "reopen", 1),
+        ("action:bulk", "", "bulk", 2),
+        ("action:matching", "", "matching", 1),
+    ]
+
+
 async def test_a_bulk_action_gets_the_selected_rows_with_the_can_rule_and_the_result_is_a_message(world):
     registry, db, models = world
     item = models["AItem"]
@@ -212,7 +320,7 @@ async def test_applies_to_flags_the_rows_and_the_query_set_leaves_out_the_rows_i
     page = (await client.get("/admin/api/resources/AItem")).json()
     assert page["rows"] and "applies:ship" in str(page), page
     assert (await post(client, "ship", {"keys": ["1"], "inputs": {}})).status == 200
-    assert (await post(client, "ship", {"keys": ["3"], "inputs": {}})).status == 404
+    assert (await post(client, "ship", {"keys": ["3"], "inputs": {}})).status == 403
     assert seen == [["a"]]
 
 
@@ -476,11 +584,28 @@ def test_a_wrong_action_config_is_an_admin_config_error(world):
     async def twice(ctx, qs):
         pass
 
+    class ScopeValue(Expression[bool]):
+        def _ir(self, ctx):
+            return {"t": "scope", "name": "tenant"}
+
+    item = models["AItem"]
+    def bad_can(**options):
+        @admin.action(**options)
+        async def check(ctx, qs):
+            pass
+        return check
+
     cases = [
         ({"actions": [bad_place]}, "placement"),
         ({"actions": [twice, twice]}, "listed twice"),
         ({"actions": [7]}, "an action is a name"),
         ({"bulk_delete": "no"}, "bulk_delete"),
+        ({"actions": [bad_can(replace_change=True)]}, "replace_change needs can"),
+        ({"actions": [bad_can(can=item.qty)]}, "not a boolean"),
+        ({"actions": [bad_can(can=item.shop_id == monorm.param("other"))]}, "takes the params"),
+        ({"actions": [bad_can(can=item.shop_id.in_(monorm.param("user")))]}, "no in_param"),
+        ({"actions": [bad_can(can=ScopeValue())]}, "scope values"),
+        ({"actions": [bad_can(name="bulk_delete", can=item.qty > 0)]}, "can is not allowed"),
     ]
     for config, text in cases:
         site = admin.Admin(registry)

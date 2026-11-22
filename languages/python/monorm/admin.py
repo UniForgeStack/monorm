@@ -380,9 +380,9 @@ def _name(model: type[Model], ref: Any) -> str:
     return _label(model, ref)
 
 
-def _ir(model: type[Model], node: Any, what: str) -> Any:
-    """The engine IR of an expression or condition. The admin keeps no parameters: a literal goes into the IR itself."""
-    params: list[Any] = []
+def _ir(model: type[Model], node: Any, what: str, *, user_slot: bool = False) -> Any:
+    """The engine IR of an expression or condition, with literals inlined."""
+    params: list[Any] = SlotParams() if user_slot else []
     if isinstance(node, Condition):
         node = resolve_null_rule(node)
     elif not isinstance(node, Expression):
@@ -391,7 +391,8 @@ def _ir(model: type[Model], node: Any, what: str) -> Any:
         ir = node._ir(IRContext(model, params))
     except QueryError as e:
         raise AdminConfigError(f"{model.__name__}: {what}: {e}") from None
-    return _inline(ir, params, f"{model.__name__}: {what}")
+    where = f"{model.__name__}: {what}"
+    return _slot_ir(ir, params, [], where) if user_slot else _inline(ir, params, where)
 
 
 def _inline(ir: Any, params: list[Any], what: str) -> Any:
@@ -545,22 +546,22 @@ def _queryset_name(model: type[Model], tag: str = "") -> str:
 _SLOTS = ("user",)
 
 
-def _slot_ir(model: type[Model], ir: Any, params: list[Any], slots: list[str]) -> Any:
-    """The IR of a queryset filter: a ``param("user")`` becomes slot ``i`` and a literal goes inline."""
+def _slot_ir(ir: Any, params: list[Any], slots: list[str], where: str) -> Any:
+    """The IR of a filter with request slots: a ``param("user")`` becomes slot ``i`` and a literal goes inline."""
     if isinstance(ir, list):
-        return [_slot_ir(model, item, params, slots) for item in ir]
+        return [_slot_ir(item, params, slots, where) for item in ir]
     if not isinstance(ir, dict):
         return ir
     if ir.get("t") == "param":
         value = params[ir["i"]]
         if not isinstance(value, _Slot):
-            return _inline(ir, params, f"{model.__name__}: queryset")
+            return _inline(ir, params, where)
         if value.name not in _SLOTS or value.transform is not None:
-            raise AdminConfigError(f"{model.__name__}: queryset takes the params {', '.join(repr(n) for n in _SLOTS)}, not {value!r}")
+            raise AdminConfigError(f"{where}: takes the params {', '.join(repr(n) for n in _SLOTS)}, not {value!r}")
         if value.name not in slots:
             slots.append(value.name)
         return {"t": "param", "i": slots.index(value.name)}
-    return {k: _slot_ir(model, v, params, slots) for k, v in ir.items()}
+    return {k: _slot_ir(v, params, slots, where) for k, v in ir.items()}
 
 
 def _queryset(model: type[Model], config: Any, tag: str = "") -> tuple[dict[str, Any], list[str] | None]:
@@ -592,7 +593,7 @@ def _queryset(model: type[Model], config: Any, tag: str = "") -> tuple[dict[str,
     except QueryError as e:
         raise AdminConfigError(f"{model.__name__}: queryset: {e}") from None
     slots: list[str] = []
-    irs = [_slot_ir(model, f, params, slots) for f in filters]
+    irs = [_slot_ir(f, params, slots, f"{model.__name__}: queryset") for f in filters]
     filter_ir = irs[0] if len(irs) == 1 else {"t": "and", "items": irs}
     order = [("-" if o.desc else "") + _label(model, o.expr) for o in qs._order if isinstance(o.expr, ColumnRef)]
     if len(order) != len(qs._order):
@@ -621,7 +622,7 @@ def _is_prepared(value: Any) -> bool:
 
 
 def _can(model: type[Model], rules: Mapping[Any, Any]) -> dict[str, Any]:
-    return {name: _ir(model, rule, f"can {name!r}") for name, rule in rules.items()}
+    return {name: _ir(model, rule, f"can {name!r}", user_slot=True) for name, rule in rules.items()}
 
 
 def _key_cells(model: type[Model], row: Any) -> list[Any]:
@@ -953,6 +954,9 @@ def _actions_json(name: str, model: type[Model], items: Any) -> list[dict[str, A
                 entry["inputs"] = [i.json() for i in d.inputs]
             if d.applies_to is not None:
                 entry["applies_to"] = _ir(model, d.applies_to, f"action {d.name!r} applies_to")
+            if d.can is not None:
+                entry["can"] = _ir(model, d.can, f"action {d.name!r} can", user_slot=True)
+            entry["replace_change"] = d.replace_change
         if entry["name"] in seen:
             raise AdminConfigError(f"{name}: action {entry['name']!r} is listed twice")
         seen.add(entry["name"])

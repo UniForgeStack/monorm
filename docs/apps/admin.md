@@ -275,11 +275,11 @@ Use a query set when you can: it costs no host call.
 
 ### `can` rules
 
-`can={"change": expr, "delete": expr}` (`can: { change, delete }` in TypeScript) are conditions of the row.
+`can={"change": expr, "delete": expr}` (`can: { change, delete }` in TypeScript) are conditions of the row. They may read the signed-in user's key through `param("user")`.
 The list and detail queries select them as flags, with no host call.
 Each row of `GET {prefix}/resources/{name}` has an entry in `flags`, the detail has a `flags` object, and the resource metadata has `can`, the names of the rules.
 The UI disables the button of a rule that the record does not allow.
-Only `change` and `delete` are rule names.
+The resource accepts `change` and `delete` as its rule names. Permission rules reject scope values and list parameters.
 A `can` rule does not replace the permission: the user needs both.
 A write checks the rule on the locked row: see [Writes and forms](#writes-and-forms).
 
@@ -1176,11 +1176,27 @@ The function is a plain function: a unit test calls it with a fake `ctx` and a q
 
 Row and bulk actions also show on the [to-many tabs](#to-many-tabs) of the child resource.
 A selection holds the rows of the page. "Select all N matching" selects every row that the filters match, and the request carries the filters of the URL, not a list of keys.
-The query set gets the `queryset` filter of the resource and the `can=` rule (`change`) of the resource, so a row that the user may not change never reaches the function.
-There is no `can` key for one action: every custom action passes the `change` rule of the resource, and bulk delete passes the `delete` rule.
+The query set gets the resource's `queryset` filter and, by default, its `change` rule. An action's optional `can` condition adds another requirement. It can read the signed-in user's key through `param("user")`.
+
+```python
+from monorm import param
+
+@admin.action(placement="row", permission="refund", can=Order.owner_id == param("user"))
+async def refund(ctx, qs):
+    await qs.update(status="refunded")
+
+
+@admin.action(placement="detail", can=Order.status == "closed", replace_change=True)
+async def reopen(ctx, qs):
+    await qs.update(status="open")
+```
+
+`replace_change=True` (`replaceChange: true` in TypeScript) requires `can` and lets the action use its own rule in place of `change`. The action still needs its named permission or the default resource permission, and `applies_to` still applies. Bulk delete uses the resource's `delete` rule.
+
+A row, detail or submit action returns `403 ActionNotAllowed` and records `action_denied` when a visible record fails an action rule. A missing record or one outside the resource's `queryset` returns `404`. Bulk and list actions skip ineligible rows, and `ctx.count` counts eligible rows. A submit action saves the form under the resource's rules first, then checks the action on the saved record. Use a detail action when the record cannot pass the save's `change` rule.
 `qs.batches(n)` reads the rows in batches of `n`.
 A selection of more than 10,000 rows needs a second confirmation: the request answers `409` with `error.kind` `ConfirmLarge`, and the UI asks again. The request that follows carries `confirm_large: true`, and the function then runs on all rows that match, with no upper bound.
-The count and the function do not share a transaction: a row that changes between them can make `ctx.count` differ from the rows in `qs`.
+The action's query set carries the same rules into each read or write. A concurrent change can affect which rows still match after the count.
 
 ### Confirmation, inputs and files
 

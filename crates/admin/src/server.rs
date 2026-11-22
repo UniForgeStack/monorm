@@ -238,7 +238,7 @@ pub(crate) fn without_of(uri: &Uri) -> Vec<String> {
 
 /// The row scope of a child page inside an inline: the `queryset` filter and the read defaults that read a scope value.
 pub(crate) async fn child_rows(s: &State_, resource: &Resource, user: &User, scope: &Scoped) -> Result<RowScope, ListError> {
-    let mut rows = RowScope { without: resource.scope_defaults.clone(), ..RowScope::default() };
+    let mut rows = RowScope { without: resource.scope_defaults.clone(), user_key: user_key(user), ..RowScope::default() };
     if let Some(q) = &resource.queryset {
         queryset_rows(s, resource, q, user, scope, &mut rows).await?;
     }
@@ -264,7 +264,7 @@ pub(crate) async fn reach(s: &State_, resource: &Resource, user: &User, grants: 
             without.push(n);
         }
     }
-    let mut rows = RowScope { without, ..RowScope::default() };
+    let mut rows = RowScope { without, user_key: user_key(user), ..RowScope::default() };
     if let Some(q) = &resource.queryset {
         let built = queryset_rows(s, resource, q, user, &scope, &mut rows).await;
         if let Err(e) = built {

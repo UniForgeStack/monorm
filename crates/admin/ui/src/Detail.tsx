@@ -8,7 +8,7 @@ import { ListView, useListState } from "./List";
 import { Link, detailUrl, editUrl, listBack, navigate, newUrl } from "./router";
 import { InlineRowsView } from "./Inlines";
 import { InputFields, inputBody, startInputs, type InputValues } from "./Inputs";
-import { ActionDialog, needsDialog, useQuick, type Target } from "./Actions";
+import { actionDisabled, ActionDialog, needsDialog, useQuick, type Target } from "./Actions";
 import { PackageTab, widgetCall, widgetStream } from "./Packages";
 import { ConfirmDialog } from "./components/confirm-dialog";
 import { buttonVariants } from "./components/ui/button";
@@ -117,10 +117,9 @@ function RowActions({ meta, id, flags, detail }: { meta: api.Resource; id: strin
             <Button variant="plain" disabled title="This record does not allow change">Edit</Button>
           ))}
         {detailActions.map((a) => {
-          const fits = !a.applies || flags[`applies:${a.name}`] === true;
-          const may = allows("change");
+          const reason = actionDisabled(a, meta.can ?? [], flags);
           return (
-            <Button key={a.name} variant="plain" disabled={!may || !fits} title={!may ? "This record does not allow change" : !fits ? "This action does not apply to this record" : undefined} onClick={() => (needsDialog(a) ? setPending(a) : void quick(a, target))}>
+            <Button key={a.name} variant="plain" disabled={reason !== undefined} title={reason} onClick={() => (needsDialog(a) ? setPending(a) : void quick(a, target))}>
               {a.label}
             </Button>
           );
