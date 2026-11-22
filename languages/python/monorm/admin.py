@@ -23,7 +23,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from json import dumps as _dumps
-from typing import TYPE_CHECKING, Any, Literal, Mapping, Sequence, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Literal, Mapping, Required, Sequence, TypedDict, cast
 
 from . import _native
 from . import _admin_permissions
@@ -42,7 +42,7 @@ if TYPE_CHECKING:
     from .db import Database
     from .model import Registry
 
-__all__ = ["Admin", "AdminConfigError", "AdminResponse", "AdminTestClient", "AggregateColumn", "BrandConfig", "BrandLink", "ThemeConfig", "ActionDef", "ComputedColumn", "Context", "InlineDef", "ListConfig", "NamedChoice", "NamedFilter", "Reply", "ResourceConfig", "RoleSeedReport", "RouteRequest", "Stream", "SyncReport", "action", "check", "download", "inline", "input", "log", "message", "redirect", "refresh", "register", "test_client", "threaded", "url"]
+__all__ = ["Admin", "AdminConfigError", "AdminResponse", "AdminTestClient", "AggregateColumn", "BrandConfig", "BrandLink", "ThemeConfig", "ActionDef", "ComputedColumn", "Context", "DateHierarchy", "InlineDef", "ListConfig", "NamedChoice", "NamedFilter", "Reply", "ResourceConfig", "RoleSeedReport", "RouteRequest", "Stream", "SyncReport", "action", "check", "download", "inline", "input", "log", "message", "redirect", "refresh", "register", "test_client", "threaded", "url"]
 
 DEFAULT_BASE_PATH = "/admin"
 
@@ -67,6 +67,15 @@ class NamedFilter(TypedDict, total=False):
     """The choice that applies when the URL names none. Without it: all rows."""
 
 
+BadgeColour = Literal["grey", "blue", "green", "yellow", "red", "purple"]
+
+
+class DateHierarchy(TypedDict, total=False):
+    field: Required[ColumnRef[Any] | str]
+    counts: bool
+    """``False`` skips the counts: the bar shows the periods of the date range and runs no count statement."""
+
+
 class ComputedColumn(TypedDict, total=False):
     name: str
     """The column name: list it in ``columns`` as a string."""
@@ -79,7 +88,10 @@ class ComputedColumn(TypedDict, total=False):
     function: Callable[[list[Any]], Awaitable[Sequence[Any]]]
     """Instead of ``expr``: ``async def f(keys)`` gets the keys of one page (one call per page) and returns one value per key."""
     sortable: bool
-    """A sort header. It needs ``expr`` and ``nullable=False``."""
+    """A sort header. It needs ``order_by``, or ``expr`` and ``nullable=False``."""
+    order_by: Any
+    """What the sort header orders by: a field of the model or of a to-one relation (``Note.author.name``, not null), or an expression
+    (the column then declares ``nullable=False``). It makes the column sortable, also for ``function``."""
 
 
 class AggregateColumn(TypedDict, total=False):
@@ -106,6 +118,10 @@ class ListConfig(TypedDict, total=False):
     """What an empty value shows in the list."""
     empty_fields: Mapping[ColumnRef[Any] | str, str]
     """What an empty value shows in one column."""
+    badges: Mapping[ColumnRef[Any] | str, Mapping[str | int | bool, BadgeColour]]
+    """A column to a map of value to colour: the list and the detail page show the value as a badge. A value outside the map shows grey."""
+    date_hierarchy: ColumnRef[Any] | str | DateHierarchy
+    """A date or datetime field (one to-one hop allowed, as ``"author.joined"``): a bar over the table drills down year, month and day. It joins ``filters``."""
     tabs: Sequence[RelationPath[Any]]
     """The to-many relations that the detail page shows as tabs. Without it: every one that leads to a resource."""
     order: Sequence[ColumnRef[Any] | Ordering]
@@ -338,7 +354,7 @@ def _form(name: str, form: Any) -> Any:
     raise AdminConfigError(f"{name}: form is a list of sections, or a mapping with create and edit")
 
 
-_LIST_KEYS = {"columns", "order", "page_size", "sortable", "search", "search_with", "filters", "named_filters", "computed", "aggregates", "labels", "empty", "empty_fields", "tabs", "editable"}
+_LIST_KEYS = {"columns", "order", "page_size", "sortable", "search", "search_with", "filters", "named_filters", "computed", "aggregates", "labels", "empty", "empty_fields", "tabs", "editable", "badges", "date_hierarchy"}
 _RESOURCE_KEYS = {"list", "title", "group", "allow", "perms", "label", "field_permissions", "see", "change", "actions", "queryset", "can", "check_messages", "form", "readonly", "widgets", "form_component", "detail_tabs", "relations", "files", "create", "update", "delete", "inputs", "allow_protected_writes", "inlines", "bulk_delete"}
 _BRAND_KEYS = {"name", "logo", "colors", "links", "environment"}
 _THEME_KEYS = {"title", "logo", "color"}
@@ -404,7 +420,15 @@ def _batch_name(model: type[Model], column: str, tag: str = "") -> str:
 def _computed(model: type[Model], items: Sequence[Mapping[str, Any]], tag: str = "") -> list[dict[str, Any]]:
     out = []
     for item in items:
-        entry = {k: v for k, v in item.items() if k not in ("expr", "function")}
+        entry = {k: v for k, v in item.items() if k not in ("expr", "function", "order_by")}
+        if item.get("order_by") is not None:
+            by = item["order_by"]
+            if isinstance(by, ColumnRef):
+                entry["order_by"] = _label(model, by)
+            elif isinstance(by, Expression):
+                entry["order_by"] = _ir(model, by, f"computed {item.get('name')!r} order_by")
+            else:
+                raise AdminConfigError(f"{model.__name__}: computed {item.get('name')!r}: order_by takes a field of {model.__name__} or an expression")
         if (item.get("expr") is None) == (item.get("function") is None):
             raise AdminConfigError(f"{model.__name__}: computed {item.get('name')!r} sets expr or function, one of them")
         if item.get("expr") is not None:
@@ -445,6 +469,16 @@ def _named(model: type[Model], items: Sequence[Mapping[str, Any]]) -> list[dict[
     return out
 
 
+def _date_hierarchy(model: type[Model], value: Any) -> Any:
+    if isinstance(value, Mapping):
+        if unknown := sorted(set(value) - {"field", "counts"}):
+            raise AdminConfigError(f"{model.__name__}: unknown date_hierarchy option {unknown[0]!r}")
+        if "field" not in value:
+            raise AdminConfigError(f"{model.__name__}: date_hierarchy needs a field")
+        return {**value, "field": _name(model, value["field"])}
+    return _name(model, value)
+
+
 def _list(model: type[Model], config: Mapping[str, Any], tag: str = "") -> dict[str, Any]:
     if unknown := sorted(set(config) - _LIST_KEYS):
         raise AdminConfigError(f"{model.__name__}: unknown list option {unknown[0]!r}")
@@ -465,6 +499,10 @@ def _list(model: type[Model], config: Mapping[str, Any], tag: str = "") -> dict[
             out[key] = {_name(model, k): v for k, v in config[key].items()}
     if "empty" in config:
         out["empty"] = config["empty"]
+    if "date_hierarchy" in config:
+        out["date_hierarchy"] = _date_hierarchy(model, config["date_hierarchy"])
+    if "badges" in config:
+        out["badges"] = {_name(model, k): {_badge_value(model, v): colour for v, colour in map_.items()} for k, map_ in config["badges"].items()}
     if "order" in config:
         order = []
         for item in config["order"]:
@@ -485,6 +523,15 @@ def _list(model: type[Model], config: Mapping[str, Any], tag: str = "") -> dict[
     if "search_with" in config:
         out["search_with"] = _search_name(model, tag)
     return out
+
+
+def _badge_value(model: type[Model], value: Any) -> str:
+    """The text of a badge key: an int as decimal text, a bool as ``true`` or ``false``."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (str, int)):
+        return str(value)
+    raise AdminConfigError(f"{model.__name__}: a badge value is a string, an integer or a boolean, not {value!r}")
 
 
 def _search_name(model: type[Model], tag: str = "") -> str:

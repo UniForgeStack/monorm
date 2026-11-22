@@ -277,6 +277,36 @@ struct ListConfig {
     aggregates: Vec<AggregateConfig>,
     /// The to-many relations that the detail page shows as tabs. Default: every one that leads to a resource.
     tabs: Option<Vec<String>>,
+    /// A column name to a map of value (as text) to a colour of the palette: the list and the detail page show the value as a badge.
+    #[serde(default)]
+    badges: BTreeMap<String, BTreeMap<String, String>>,
+    /// A date or datetime field: the list shows a bar of the years, months and days with their row counts.
+    date_hierarchy: Option<DateHierarchyConfig>,
+}
+
+/// `date_hierarchy: "created"` or `date_hierarchy: {field: "created", counts: false}`.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum DateHierarchyConfig {
+    Field(String),
+    Full(DateHierarchyFull),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DateHierarchyFull {
+    field: String,
+    /// False: the bar shows the periods without counts and the route runs no counting statement.
+    counts: Option<bool>,
+}
+
+impl DateHierarchyConfig {
+    fn field(&self) -> &str {
+        match self {
+            DateHierarchyConfig::Field(f) => f,
+            DateHierarchyConfig::Full(f) => &f.field,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -312,8 +342,10 @@ struct ComputedConfig {
     expr: Option<Value>,
     /// The name of a host function: it takes `{"keys": [...]}` for one page and returns one value per key.
     function: Option<String>,
-    /// Whether the column has a sort header. It needs `expr` and `nullable: false`.
+    /// Whether the column has a sort header. It needs `order_by`, or `expr` and `nullable: false`.
     sortable: Option<bool>,
+    /// What the sort header orders by: a field path (a string) or an expression of the engine IR. It makes the column sortable.
+    order_by: Option<Value>,
 }
 
 #[derive(Deserialize)]
@@ -361,9 +393,16 @@ pub struct Column {
     pub nullable: bool,
     pub source: Source,
     pub view: Option<View>,
+    /// The column that orders a list sorted by this one, when it is not this column itself.
+    pub sort: Option<Box<Column>>,
 }
 
 impl Column {
+    /// The column that a sort by this column orders and pages by.
+    pub fn order_by(&self) -> &Column {
+        self.sort.as_deref().unwrap_or(self)
+    }
+
     /// Two cells of this column hold the same value. A JSON view compares numbers by value, so `1` and `1.0` match.
     pub fn same(&self, a: &Value, b: &Value) -> bool {
         match self.view {
@@ -481,9 +520,13 @@ pub struct Resource {
     /// What an empty value shows in the list.
     pub empty: Option<String>,
     pub empty_fields: BTreeMap<String, String>,
+    /// Column label to value (as text) to a colour of the palette.
+    pub badges: BTreeMap<String, BTreeMap<String, String>>,
     /// The filters of the filter bar.
     pub filters: Vec<Filter>,
     pub named_filters: Vec<NamedFilter>,
+    /// The date field of the drill-down bar. It is also a filter, named `field`.
+    pub date_hierarchy: Option<DateHierarchy>,
     /// To-many relations that the detail page shows as tabs.
     pub tabs: Vec<Tab>,
     /// The rows that staff see and touch: its filter joins every read of the resource.
@@ -630,6 +673,15 @@ pub struct Filter {
     /// `status`, `author.name` or `author`: the name in the URL (`f.<name>`).
     pub name: String,
     pub kind: FilterKind,
+}
+
+/// The date field of the drill-down bar.
+#[derive(Debug, Clone)]
+pub struct DateHierarchy {
+    /// The name of the field and of its filter: `created` or `author.joined`.
+    pub field: String,
+    pub column: Column,
+    pub counts: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -1264,6 +1316,7 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
             columns.push(e.clone());
         }
     }
+    let listed: Vec<String> = columns.iter().map(|c| c.label.clone()).collect();
     let mut seen = BTreeSet::new();
     for c in &columns {
         if !seen.insert(c.label.clone()) {
@@ -1319,10 +1372,13 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
     if config.group.as_ref().is_some_and(|g| g.trim().is_empty()) {
         return err(format!("{name}: group is empty"));
     }
+    check_badges(schema, &name, &list.badges, &listed, &columns)?;
     let search = search_fields(schema, idx, &name, list, warnings)?;
     let mut sortable = sortable_columns(schema, idx, &name, list, &columns)?;
     for c in columns.iter().filter(|c| extras.sortable.contains(&c.label)) {
-        sortable.push(Sortable { column: c.clone(), indexed: false });
+        let by = c.order_by();
+        let indexed = by.path.is_empty() && by.source == Source::Field && model.field(&by.field).is_ok_and(|f| leads_btree(&model.ir, f, false));
+        sortable.push(Sortable { column: c.clone(), indexed });
     }
     for key in list.labels.keys().chain(list.empty_fields.keys()) {
         if !columns.iter().any(|c| c.label == *key) && !detail.iter().any(|c| c.label == *key) {
@@ -1334,7 +1390,8 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
             return err(format!("{name}: a label or an empty text has at most 80 characters"));
         }
     }
-    let filters = filter_specs(schema, idx, &name, list)?;
+    let date_hierarchy = date_hierarchy_of(schema, idx, &name, list, warnings)?;
+    let filters = filter_specs(schema, idx, &name, list, date_hierarchy.as_ref())?;
     let named_filters = named_filters(schema, idx, &name, list)?;
     let queryset = queryset_of(schema, idx, &name, config.queryset.as_ref())?;
     let mut can = can_rules(schema, &name, &config.can)?;
@@ -1390,8 +1447,10 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
         labels: list.computed.iter().map(|c| (&c.name, &c.label)).chain(list.aggregates.iter().map(|a| (&a.name, &a.label))).filter_map(|(n, l)| Some((n.clone(), l.clone()?))).chain(list.labels.clone()).collect(),
         empty: list.empty.clone(),
         empty_fields: list.empty_fields.clone(),
+        badges: list.badges.clone(),
         filters,
         named_filters,
+        date_hierarchy,
         tabs: Vec::new(),
         queryset,
         can,
@@ -1605,7 +1664,7 @@ pub(crate) fn column(schema: &Schema, root: usize, spec: &str) -> Result<Column,
     let mut ty = ValueType::scalar(field.ty);
     ty.array = field.array;
     ty.enum_idx = field.enum_idx;
-    Ok(Column { label: spec.to_owned(), path, field: field.name.clone(), ty, nullable: field.nullable, source: Source::Field, view: None })
+    Ok(Column { label: spec.to_owned(), path, field: field.name.clone(), ty, nullable: field.nullable, source: Source::Field, view: None, sort: None })
 }
 
 fn order_column(schema: &Schema, root: usize, field: &str, desc: bool, name: &str) -> Result<OrderColumn, ConfigError> {
@@ -1621,6 +1680,38 @@ fn order_column(schema: &Schema, root: usize, field: &str, desc: bool, name: &st
         return err(format!("{name}: order {field:?}: a field of this type cannot order a list"));
     }
     Ok(OrderColumn { column, desc })
+}
+
+/// The colours of a badge.
+pub const BADGE_COLOURS: [&str; 6] = ["grey", "blue", "green", "yellow", "red", "purple"];
+
+/// `list.badges`: each key is a list column of a type that shows as a badge, each value of its map fits that type, each colour is in the palette.
+fn check_badges(schema: &Schema, name: &str, badges: &BTreeMap<String, BTreeMap<String, String>>, listed: &[String], columns: &[Column]) -> Result<(), ConfigError> {
+    for (label, map) in badges {
+        let Some(c) = columns.iter().find(|c| c.label == *label).filter(|c| listed.contains(&c.label)) else {
+            return err(format!("{name}: badges names {label:?}, which is not a column of the list"));
+        };
+        let enum_values = c.ty.enum_idx.and_then(|i| schema.enums.get(i as usize)).map(|e| e.values.iter().map(|v| v.name.as_str()).collect::<Vec<_>>());
+        let shown = !c.ty.array && c.view.is_none() && (enum_values.is_some() || matches!(c.ty.ty, ColType::String | ColType::Text | ColType::Int | ColType::BigInt | ColType::Bool));
+        if !shown {
+            return err(format!("{name}: badges {label:?}: a {} column has no badge; a badge takes a string, text, enum, int, bigint or bool column", type_name(c)));
+        }
+        for (value, colour) in map {
+            let fits = match (&enum_values, c.ty.ty) {
+                (Some(members), _) => members.contains(&value.as_str()),
+                (None, ColType::Int | ColType::BigInt) => value.parse::<i64>().is_ok_and(|n| n.to_string() == *value),
+                (None, ColType::Bool) => value == "true" || value == "false",
+                _ => true,
+            };
+            if !fits {
+                return err(format!("{name}: badges {label:?}: {value:?} is not a value of the column"));
+            }
+            if !BADGE_COLOURS.contains(&colour.as_str()) {
+                return err(format!("{name}: badges {label:?}: colour {colour:?} is not one of {}", BADGE_COLOURS.join(", ")));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The columns that a sort header may use: own fields in the list that a keyset page can compare.
@@ -1889,16 +1980,23 @@ fn extra_columns(schema: &Schema, idx: usize, name: &str, list: &ListConfig) -> 
             (None, Some(f)) if !f.trim().is_empty() => Source::Batch(f.clone()),
             _ => return err(format!("{name}: computed {:?} sets expr or function, one of them", c.name)),
         };
-        if c.sortable == Some(true) {
+        let sort = match &c.order_by {
+            Some(_) if c.sortable == Some(false) => return err(format!("{name}: computed {:?}: order_by makes the column sortable, and sortable is false", c.name)),
+            Some(by) => Some(Box::new(order_by_column(schema, idx, name, &c.name, by, nullable)?)),
+            None => None,
+        };
+        if sort.is_some() {
+            sortable.push(c.name.clone());
+        } else if c.sortable == Some(true) {
             if matches!(source, Source::Batch(_)) {
-                return err(format!("{name}: computed {:?}: a column of a host function cannot sort; the database does not know its values", c.name));
+                return err(format!("{name}: computed {:?}: a column of a host function cannot sort; the database does not know its values (order_by names a field or an expression to sort by)", c.name));
             }
             if nullable || matches!(declared, ColType::Json | ColType::Decimal) {
                 return err(format!("{name}: computed {:?}: a sort column is not null (set nullable to false) and not json or decimal", c.name));
             }
             sortable.push(c.name.clone());
         }
-        columns.push(Column { label: c.name.clone(), path: Vec::new(), field: c.name.clone(), ty: ValueType::scalar(declared), nullable, source, view: None });
+        columns.push(Column { label: c.name.clone(), path: Vec::new(), field: c.name.clone(), ty: ValueType::scalar(declared), nullable, source, view: None, sort });
     }
     for a in &list.aggregates {
         taken(&columns, &a.name)?;
@@ -1921,7 +2019,7 @@ fn extra_columns(schema: &Schema, idx: usize, name: &str, list: &ListConfig) -> 
             (other, _) => return err(format!("{name}: aggregate {:?}: function {other:?} is not count, sum, min, max or avg", a.name)),
         };
         let found = probe_type(schema, &model.ir.name, &expr).map_err(|e| ConfigError(format!("{name}: aggregate {:?}: {e}", a.name)))?;
-        columns.push(Column { label: a.name.clone(), path: Vec::new(), field: a.name.clone(), ty: found, nullable: a.function != "count", source: Source::Expr(expr), view: None });
+        columns.push(Column { label: a.name.clone(), path: Vec::new(), field: a.name.clone(), ty: found, nullable: a.function != "count", source: Source::Expr(expr), view: None, sort: None });
     }
     for (c, label) in list.computed.iter().map(|c| (&c.name, &c.label)).chain(list.aggregates.iter().map(|a| (&a.name, &a.label))) {
         if label.as_ref().is_some_and(|l| l.trim().is_empty() || l.chars().count() > 80) {
@@ -1931,15 +2029,94 @@ fn extra_columns(schema: &Schema, idx: usize, name: &str, list: &ListConfig) -> 
     Ok(Extras { columns, sortable })
 }
 
+/// The column that `order_by` of a computed column names: a field path (at most one to-one hop) or an expression.
+/// A keyset page compares the value, so it is never NULL and has a type that compares.
+fn order_by_column(schema: &Schema, idx: usize, name: &str, computed: &str, by: &Value, nullable: bool) -> Result<Column, ConfigError> {
+    let who = format!("{name}: computed {computed:?}: order_by");
+    let orderable = |ty: ValueType| !ty.array && ty.enum_idx.is_none() && !matches!(ty.ty, ColType::Json | ColType::Decimal);
+    match by {
+        Value::String(path) => {
+            let col = column(schema, idx, path).map_err(|e| ConfigError(format!("{who}: {}", e.0)))?;
+            if col.path.len() > 1 {
+                return err(format!("{who} {path:?} goes through {} relations; it takes at most one to-one relation", col.path.len()));
+            }
+            if col.nullable {
+                return err(format!("{who} {path:?}: the field is nullable, and a keyset page cannot compare NULLs"));
+            }
+            if !orderable(col.ty) {
+                return err(format!("{who} {path:?}: a field of this type cannot order a list"));
+            }
+            let mut cur = idx;
+            for hop in &col.path {
+                let model = schema.model(cur);
+                let (rel, target) = model.relation(hop).map_err(|e| ConfigError(format!("{who}: {e}")))?;
+                if rel.is_conditioned() {
+                    return err(format!("{who} {path:?}: a relation with fixed conditions or union members cannot order a list"));
+                }
+                if rel.from.iter().any(|f| model.ir.fields.iter().find(|x| x.column == *f || x.name == *f).is_none_or(|x| x.nullable)) {
+                    return err(format!("{who} {path:?}: the relation {hop:?} is optional, so a row can have no value"));
+                }
+                cur = target;
+            }
+            if schema.model(cur).field(&col.field).is_ok_and(|f| f.write_sql.is_some()) {
+                return err(format!("{who} {path:?}: a field of this type cannot order a list"));
+            }
+            Ok(col)
+        }
+        Value::Object(_) => {
+            if has_binding(by) {
+                return err(format!("{who}: an expression has no parameters or scope values"));
+            }
+            if nullable {
+                return err(format!("{who}: an expression needs a column that declares nullable: false"));
+            }
+            let found = probe_type(schema, &schema.model(idx).ir.name, by).map_err(|e| ConfigError(format!("{who}: {e}")))?;
+            if !orderable(found) {
+                return err(format!("{who}: an expression of this type cannot order a list"));
+            }
+            Ok(Column { label: format!("{computed}.sort"), path: Vec::new(), field: computed.to_owned(), ty: found, nullable: false, source: Source::Expr(by.clone()), view: None, sort: None })
+        }
+        _ => err(format!("{who} takes a field path or an expression")),
+    }
+}
+
 /// A field that a filter can compare: not an array, a JSON value or a decimal.
 fn filterable(c: &Column) -> bool {
     !c.ty.array && !matches!(c.ty.ty, ColType::Json | ColType::Decimal)
 }
 
-fn filter_specs(schema: &Schema, idx: usize, name: &str, list: &ListConfig) -> Result<Vec<Filter>, ConfigError> {
+/// The date field of the drill-down bar: a date or datetime field, with one relation hop allowed.
+/// A warning, not an error, when no index leads with it: each count then reads the whole filtered table.
+fn date_hierarchy_of(schema: &Schema, idx: usize, name: &str, list: &ListConfig, warnings: &mut Vec<String>) -> Result<Option<DateHierarchy>, ConfigError> {
+    let Some(config) = &list.date_hierarchy else { return Ok(None) };
+    let field = config.field();
+    let c = column(schema, idx, field).map_err(|e| ConfigError(format!("date_hierarchy: {}", e.0)))?;
+    if c.path.len() > 1 {
+        return err(format!("{name}: date_hierarchy {field:?}: one relation hop is the most"));
+    }
+    if c.ty.array || c.ty.enum_idx.is_some() || !matches!(c.ty.ty, ColType::Date | ColType::DateTime) {
+        return err(format!("{name}: date_hierarchy {field:?}: the field is {}, and date_hierarchy takes a date or datetime field", type_name(&c)));
+    }
+    let mut at = idx;
+    for hop in &c.path {
+        at = schema.model(at).relation(hop).map_err(|e| ConfigError(e.to_string()))?.1;
+    }
+    let model = schema.model(at);
+    if !model.field(&c.field).is_ok_and(|f| leads_btree(&model.ir, f, false)) {
+        warnings.push(format!("{name}: date_hierarchy field {field:?} has no index that leads with it; add an index on it, or each count reads the whole filtered table"));
+    }
+    let counts = match config {
+        DateHierarchyConfig::Field(_) => true,
+        DateHierarchyConfig::Full(f) => f.counts.unwrap_or(true),
+    };
+    Ok(Some(DateHierarchy { field: field.to_owned(), column: c, counts }))
+}
+
+fn filter_specs(schema: &Schema, idx: usize, name: &str, list: &ListConfig, date: Option<&DateHierarchy>) -> Result<Vec<Filter>, ConfigError> {
     let model = schema.model(idx);
     let mut out: Vec<Filter> = Vec::new();
-    for spec in &list.filters {
+    let extra = date.map(|d| d.field.clone()).filter(|f| !list.filters.contains(f));
+    for spec in list.filters.iter().chain(&extra) {
         if out.iter().any(|f| f.name == *spec) {
             return err(format!("{name}: filter {spec:?} is listed twice"));
         }

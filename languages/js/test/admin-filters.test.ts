@@ -275,3 +275,119 @@ for (const provider of PROVIDERS) {
     assert.throws(() => siteOf(w, { columns: [C.body, "big"], computed: big }), (e) => e instanceof AdminConfigError && /safe integer/.test(e.message));
   }));
 }
+
+const JSON_SOURCE = `
+datasource db {
+  provider = "sqlite"
+}
+
+model FltDoc {
+  id   Int    @id
+  name String
+  data Json
+  @@map("flt_docs")
+}
+`;
+
+for (const provider of PROVIDERS) {
+  test(`a badge has text keys for an int and a bool column (${provider})`, () => world(provider, async (w) => {
+    const C = w.Comment;
+    const badges = { rank: { 1: "green", 3: "red" }, "author.active": { true: "green", false: "grey" }, level: { high: "purple" } } as const;
+    const { client } = siteOf(w, { columns: [C.body, C.rank, C.author.active, C.level], badges: badges as never });
+    const resource = await resourceOf(client, "FltComment");
+    assert.deepEqual(resource.columns[1].badge, { "1": "green", "3": "red" });
+    assert.deepEqual(resource.columns[2].badge, { true: "green", false: "grey" });
+    assert.deepEqual(resource.columns[3].badge, { high: "purple" });
+    assert.equal("badge" in resource.columns[0], false);
+    assert.equal((await client.get(COMMENTS)).status, 200);
+  }));
+
+  test(`a badge that does not fit is a build error (${provider})`, () => world(provider, async (w) => {
+    const C = w.Comment;
+    const cases: [ListConfig, RegExp][] = [
+      [{ columns: [C.body], badges: { rank: { 1: "green" } } as never }, /not a column of the list/],
+      [{ columns: [C.body, C.at], badges: { at: { x: "green" } } as never }, /has no badge/],
+      [{ columns: [C.body, C.rank], badges: { rank: { 1: "pink" } } as never }, /colour/],
+      [{ columns: [C.body, C.level], badges: { level: { middle: "blue" } } }, /not a value/],
+      [{ columns: [C.body, C.rank], badges: { rank: { x: "blue" } } }, /not a value/],
+    ];
+    for (const [list, text] of cases) {
+      const site = new Admin(w.registry);
+      site.register(C, { list });
+      site.register(w.Author);
+      assert.throws(() => site.check(), (e) => e instanceof AdminConfigError && text.test(e.message));
+    }
+  }));
+
+  const orderSite = (w: World, orderBy: (C: Loose) => unknown, pageSize = 2) => {
+    const C = w.Comment;
+    const calls: unknown[][] = [];
+    const same = async (keys: readonly unknown[]) => {
+      calls.push([...keys]);
+      return keys.map(() => "same");
+    };
+    const computed = [{ name: "shown", type: "text", nullable: false, function: same, orderBy: orderBy(C) }];
+    return { ...siteOf(w, { columns: [C.body, "shown"], computed: computed as never, pageSize }), calls };
+  };
+
+  test(`a function column sorts by its order by field and the cursor has no gap (${provider})`, () => world(provider, async (w) => {
+    const { client, calls } = orderSite(w, (C) => C.rank);
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    for (let i = 0; i < 2; i++) {
+      const page = await client.get(`${COMMENTS}?sort=-shown${cursor ? `&cursor=${cursor}` : ""}`);
+      assert.equal(page.status, 200, JSON.stringify(page.json()));
+      assert.deepEqual(new Set(page.json().rows.map((r: unknown[]) => r[1])), new Set(["same"]));
+      seen.push(...first(page));
+      cursor = page.json().next;
+    }
+    assert.deepEqual(seen, ["four", "three", "one", "two"]);
+    assert.equal(cursor, null);
+    assert.deepEqual(calls.map((keys) => keys.length), [2, 2], "one host call per page");
+    const plain = await client.get(`${COMMENTS}?sort=-id`);
+    const page = await client.get(`${COMMENTS}?sort=shown`);
+    assert.equal(page.sql.length, plain.sql.length, "the same statements as a plain field sort; the host call is no statement");
+  }));
+
+  test(`an expression order by sorts a computed column (${provider})`, () => world(provider, async (w) => {
+    const C = w.Comment;
+    const computed = [{ name: "shown", type: "text", nullable: false, expr: func.upper(C.body), orderBy: func.length(C.body) }];
+    const { client } = siteOf(w, { columns: [C.body, "shown"], computed: computed as never, pageSize: 3 });
+    const page = await client.get(`${COMMENTS}?sort=shown`);
+    assert.deepEqual(first(page), ["one", "two", "four"]);
+    assert.deepEqual(first(await client.get(`${COMMENTS}?sort=shown&cursor=${page.json().next}`)), ["three"]);
+  }));
+
+  test(`an order by that does not fit is a build error (${provider})`, () => world(provider, async (w) => {
+    const C = w.Comment;
+    const length = func.length(C.body);
+    const cases: [Record<string, unknown>, RegExp | null][] = [
+      [{ expr: length, type: "int", nullable: false, orderBy: C.author.nick }, /nullable/],
+      [{ expr: length, type: "int", nullable: false, orderBy: func.length(C.body) }, null],
+      [{ expr: length, type: "int", nullable: false, orderBy: C.author.name, sortable: false }, /sortable/],
+      [{ expr: length, type: "int", nullable: false, orderBy: "nope" }, /order_by/],
+      [{ expr: length, type: "int", orderBy: length }, /nullable/],
+    ];
+    for (const [column, text] of cases) {
+      const site = new Admin(w.registry);
+      site.register(C, { list: { columns: [C.body], computed: [{ name: "n", ...column } as never] } });
+      site.register(w.Author);
+      if (text === null) { site.check(); continue; }
+      assert.throws(() => site.check(), (e) => e instanceof AdminConfigError && text.test(e.message));
+    }
+  }));
+}
+
+test("a json column takes no badge and no order by", async () => {
+  const registry = new Registry();
+  const Doc = (loads(JSON_SOURCE, { registry }) as Record<string, Loose>)["FltDoc"];
+  const cases: [ListConfig, RegExp][] = [
+    [{ columns: [Doc.name, Doc.data], badges: { data: { x: "blue" } } as never }, /has no badge/],
+    [{ columns: [Doc.name], computed: [{ name: "n", type: "int", nullable: false, expr: func.length(Doc.name), orderBy: Doc.data } as never] }, /cannot order/],
+  ];
+  for (const [list, text] of cases) {
+    const site = new Admin(registry);
+    site.register(Doc, { list });
+    assert.throws(() => site.check(), (e) => e instanceof AdminConfigError && text.test(e.message));
+  }
+});

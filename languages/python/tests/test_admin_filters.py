@@ -298,3 +298,124 @@ async def test_labels_and_empty_texts_reach_the_metadata(world):
     site.register(world.Author)
     with pytest.raises(admin.AdminConfigError, match="not a column or a relation"):
         site.check()
+
+
+def column_of(resource, title):
+    return next(c for c in resource["columns"] if c["title"] == title)
+
+
+async def test_a_badge_has_text_keys_for_an_int_and_a_bool_column(world):
+    C = world.Comment
+    badges = {C.rank: {1: "green", 3: "red"}, C.author.active: {True: "green", False: "grey"}, C.level: {"high": "purple"}}
+    columns = [C.body, C.rank, C.author.active, C.level]
+    _, client = site_of(world, comment={"columns": columns, "badges": badges})
+    resource = next(r for r in (await client.get("/admin/api/resources")).json()["resources"] if r["name"] == "FltComment")
+    assert resource["columns"][1]["badge"] == {"1": "green", "3": "red"}
+    assert resource["columns"][2]["badge"] == {"true": "green", "false": "grey"}
+    assert resource["columns"][3]["badge"] == {"high": "purple"}
+    assert "badge" not in resource["columns"][0]
+    assert (await client.get(COMMENTS)).status == 200
+
+
+async def test_a_badge_that_does_not_fit_is_a_build_error(world):
+    C = world.Comment
+    cases = [
+        ({C.rank: {1: "green"}}, [C.body], "not a column of the list"),
+        ({C.at: {"x": "green"}}, [C.body, C.at], "has no badge"),
+        ({C.rank: {1: "pink"}}, [C.body, C.rank], "colour"),
+        ({C.level: {"middle": "blue"}}, [C.body, C.level], "not a value"),
+        ({C.rank: {"x": "blue"}}, [C.body, C.rank], "not a value"),
+    ]
+    for badges, columns, text in cases:
+        site = admin.Admin(world.registry)
+        site.register(C, {"list": {"columns": columns, "badges": badges}})
+        site.register(world.Author)
+        with pytest.raises(admin.AdminConfigError, match=text):
+            site.check()
+
+
+def order_site(w, order_by, page_size=2, **column):
+    C = w.Comment
+    calls = []
+
+    async def same(keys):
+        calls.append(keys)
+        return ["same"] * len(keys)
+
+    computed = [{"name": "shown", "type": "text", "nullable": False, "function": same, "order_by": order_by(C), **column}]
+    site, client = site_of(w, comment={"columns": [C.body, "shown"], "computed": computed, "page_size": page_size})
+    return client, calls
+
+
+async def test_a_function_column_sorts_by_its_order_by_field_and_the_cursor_has_no_gap(world):
+    client, calls = order_site(world, lambda C: C.rank)
+    seen = []
+    cursor = None
+    for _ in range(2):
+        page = await client.get(f"{COMMENTS}?sort=-shown" + (f"&cursor={cursor}" if cursor else ""))
+        assert page.status == 200, page.json()
+        assert {r[1] for r in page.json()["rows"]} == {"same"}
+        seen += bodies(page)
+        cursor = page.json()["next"]
+    assert seen == ["four", "three", "one", "two"] and cursor is None
+    assert [len(keys) for keys in calls] == [2, 2], "one host call per page"
+    plain = await client.get(f"{COMMENTS}?sort=-id")
+    page = await client.get(f"{COMMENTS}?sort=shown")
+    assert len(page.sql) == len(plain.sql), "the same statements as a plain field sort; the host call is no statement"
+
+
+async def test_an_expression_order_by_sorts_a_computed_column(world):
+    C = world.Comment
+    computed = [{"name": "shown", "type": "text", "nullable": False, "expr": monorm.func.upper(C.body), "order_by": monorm.func.length(C.body)}]
+    _, client = site_of(world, comment={"columns": [C.body, "shown"], "computed": computed, "page_size": 3})
+    page = await client.get(f"{COMMENTS}?sort=shown")
+    assert bodies(page) == ["one", "two", "four"]
+    assert bodies(await client.get(f"{COMMENTS}?sort=shown&cursor={page.json()['next']}")) == ["three"]
+
+
+async def test_an_order_by_that_does_not_fit_is_a_build_error(world):
+    C = world.Comment
+    length = monorm.func.length(C.body)
+    cases = [
+        ({"expr": length, "type": "int", "nullable": False, "order_by": C.author.nick}, "nullable"),
+        ({"expr": length, "type": "int", "nullable": False, "order_by": monorm.func.length(C.body)}, None),
+        ({"expr": length, "type": "int", "nullable": False, "order_by": C.author.name, "sortable": False}, "sortable"),
+        ({"expr": length, "type": "int", "nullable": False, "order_by": "nope"}, "order_by takes"),
+        ({"expr": length, "type": "int", "order_by": length}, "nullable"),
+    ]
+    for column, text in cases:
+        site = admin.Admin(world.registry)
+        site.register(C, {"list": {"columns": [C.body], "computed": [{"name": "n", **column}]}})
+        site.register(world.Author)
+        if text is None:
+            site.check()
+            continue
+        with pytest.raises(admin.AdminConfigError, match=text):
+            site.check()
+
+
+JSON_SOURCE = """
+datasource db {
+  provider = "sqlite"
+}
+
+model FltDoc {
+  id   Int    @id
+  name String
+  data Json
+  @@map("flt_docs")
+}
+"""
+
+
+async def test_a_json_column_takes_no_badge_and_no_order_by():
+    registry = monorm.Registry()
+    Doc = monorm.loads(JSON_SOURCE, registry=registry)["FltDoc"]
+    for config, text in [
+        ({"columns": [Doc.name, Doc.data], "badges": {Doc.data: {"x": "blue"}}}, "has no badge"),
+        ({"columns": [Doc.name], "computed": [{"name": "n", "type": "int", "nullable": False, "expr": monorm.func.length(Doc.name), "order_by": Doc.data}]}, "cannot order"),
+    ]:
+        site = admin.Admin(registry)
+        site.register(Doc, {"list": config})
+        with pytest.raises(admin.AdminConfigError, match=text):
+            site.check()
