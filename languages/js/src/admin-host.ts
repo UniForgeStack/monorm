@@ -7,10 +7,10 @@
  */
 import { randomBytes } from "node:crypto";
 import { authenticate } from "./auth/auth.js";
-import { makePassword } from "./auth/hashers.js";
 import { loadRules, type PasswordRule, validatePassword } from "./auth/password.js";
 import { activeModel } from "./auth/permissions.js";
 import type { Database } from "./db.js";
+import type { Registry } from "./model.js";
 import type { NativeHostDispatch } from "./native.js";
 
 let loaded: { directory: string; rules: Promise<PasswordRule[]> } | undefined;
@@ -41,6 +41,23 @@ function userJson(user: Record<string, any>): Record<string, unknown> {
   };
 }
 
+export function authUserTable(registry: Registry): string | undefined {
+  try {
+    const model = activeModel("User", registry)._meta;
+    return model.relations.has("roles") && model.relations.has("permissions") ? model.table : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function storePassword(user: Record<string, any>, password: string): Promise<unknown> {
+  const errors = await validatePassword(password, user, { rules: await loadPasswordRules() });
+  if (errors.length > 0) return { changed: false, reason: errors.map((e) => e.message).join(" "), errors };
+  user["setPassword"](password);
+  await user["update"]({ password: user["password"] });
+  return { changed: true, password_hash: user["password"] };
+}
+
 export const HOST: Readonly<Record<string, HostFunction>> = {
   async "auth.authenticate"(database, args) {
     const user = await authenticate(args.username, args.password, { using: database, registry: database.registry });
@@ -56,19 +73,18 @@ export const HOST: Readonly<Record<string, HostFunction>> = {
     const user = await User["objects"].using(database).filter(User["id"].eq(args.key)).first();
     if (user === null || user === undefined || !user.isActive) return { changed: false, reason: "the user cannot change the password" };
     if (!user.checkPassword(args.old_password)) return { changed: false, reason: "the old password is wrong" };
-    const errors = await validatePassword(args.new_password, user, { rules: await loadPasswordRules() });
-    // The codes and params reach the browser and the audit row, so a rule must keep the password out of them.
-    if (errors.length > 0) {
-      return { changed: false, reason: errors.map((e) => e.message).join(" "), errors };
-    }
-    user.setPassword(args.new_password);
-    await user.update({ password: user.password });
-    return { changed: true, password_hash: user.password };
+    return storePassword(user, args.new_password);
+  },
+  async "auth.set_password"(database, args) {
+    const User: Record<string, any> = activeModel("User", database.registry);
+    const user = await User["objects"].using(database).filter(User["id"].eq(args.key)).first();
+    if (user === null || user === undefined) return { changed: false, reason: "no such user" };
+    return storePassword(user, args.new_password);
   },
   /**
    * The user of a verified single sign-on login: found by username, else created, and the role membership set to the roles of the claim.
    * An inactive user is returned as it is and nothing changes. A name in `roles` that no role has grants nothing.
-   * A new user gets a random password that nobody knows, so only the single sign-on reaches the account.
+   * A new user gets a random unusable password marker, so only the single sign-on reaches the account.
    */
   async "auth.sso_login"(database, args) {
     const User: Record<string, any> = activeModel("User", database.registry);
@@ -79,7 +95,7 @@ export const HOST: Readonly<Record<string, HostFunction>> = {
     let user = await find();
     const created = user === null || user === undefined;
     if (created) {
-      const row = { username: args.username, email: args.email ?? "", password: makePassword(randomBytes(32).toString("base64url")) };
+      const row = { username: args.username, email: args.email ?? "", password: `!${randomBytes(32).toString("base64url")}` };
       await users.insertMany([row]).onConflict([User["username"]], { update: false });
       user = await find();
     } else if (!user.isActive) {

@@ -61,6 +61,8 @@ pub(crate) fn err<T>(message: String) -> Result<T, ConfigError> {
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct Config {
+    /// The table of the active auth user model, supplied by the binding.
+    user_table: Option<String>,
     /// The path under which the UI and the API live, `/admin` by default.
     base_path: Option<String>,
     /// The path prefix of every API route: `<base_path>/api` by default, and always under `base_path`.
@@ -138,6 +140,8 @@ struct ResourceConfig {
     /// Bulk delete is on by default: `false` removes it from the list.
     #[serde(default = "yes")]
     bulk_delete: bool,
+    #[serde(default)]
+    set_password: bool,
     /// The rows that staff see and touch.
     queryset: Option<QuerysetConfig>,
     /// Per-row rules, `change` and `delete`: prepared expressions that the list and the detail select as flags.
@@ -492,6 +496,7 @@ pub struct Resource {
     pub actions: Vec<Action>,
     /// Bulk delete of the list: on by default.
     pub bulk_delete: bool,
+    pub set_password: bool,
     pub title: String,
     pub group: Option<String>,
     /// The key fields as columns, in key order.
@@ -845,6 +850,9 @@ impl Site {
         let mut warnings = Vec::new();
         for c in &configs {
             let idx = schema.model_idx(&c.model).expect("checked above, or a model of the schema");
+            if c.set_password && config.user_table.as_deref() != Some(schema.model(idx).ir.table.as_str()) {
+                return err(format!("{}: set_password needs the auth user model", c.model));
+            }
             resources.push(resource(&schema, idx, c, strategy, label, &global, &mut warnings)?);
         }
         let mut groups = config.groups.clone();
@@ -1230,7 +1238,7 @@ fn concrete(m: &monorm_core::schema::Model) -> bool {
 
 impl ResourceConfig {
     fn of(model: &str) -> ResourceConfig {
-        ResourceConfig { model: model.to_owned(), list: ListConfig::default(), allow: None, perms: None, label: None, title: None, group: None, field_permissions: Vec::new(), see: BTreeMap::new(), change: BTreeMap::new(), actions: Vec::new(), bulk_delete: true, queryset: None, can: BTreeMap::new(), check_messages: BTreeMap::new(), service: Default::default(), inputs: Vec::new(), allow_protected_writes: false, host_behavior: false, form: None, readonly: Vec::new(), views: BTreeMap::new(), widgets: BTreeMap::new(), form_component: None, detail_tabs: Vec::new(), relations: BTreeMap::new(), files: Vec::new(), inlines: Vec::new() }
+        ResourceConfig { model: model.to_owned(), list: ListConfig::default(), allow: None, perms: None, label: None, title: None, group: None, field_permissions: Vec::new(), see: BTreeMap::new(), change: BTreeMap::new(), actions: Vec::new(), bulk_delete: true, set_password: false, queryset: None, can: BTreeMap::new(), check_messages: BTreeMap::new(), service: Default::default(), inputs: Vec::new(), allow_protected_writes: false, host_behavior: false, form: None, readonly: Vec::new(), views: BTreeMap::new(), widgets: BTreeMap::new(), form_component: None, detail_tabs: Vec::new(), relations: BTreeMap::new(), files: Vec::new(), inlines: Vec::new() }
     }
 }
 
@@ -1409,7 +1417,7 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
     let named_filters = named_filters(schema, idx, &name, list)?;
     let queryset = queryset_of(schema, idx, &name, config.queryset.as_ref())?;
     let mut can = can_rules(schema, &name, &config.can)?;
-    let actions = actions_of(schema, &name, &config.actions, &mut can)?;
+    let actions = actions_of(schema, &name, &config.actions, &mut can, config.set_password)?;
     if let Some(k) = config.check_messages.keys().find(|k| !model.ir.constraints.iter().any(|c| matches!(c, ConstraintIr::Check { name: Some(n), .. } if n == *k))) {
         return err(format!("{name}: check_messages names {k:?}, which is not a named @@check of the model"));
     }
@@ -1444,6 +1452,7 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
         locked: BTreeSet::new(),
         actions,
         bulk_delete: config.bulk_delete,
+        set_password: config.set_password,
         title,
         group: config.group.clone(),
         key_columns,
@@ -2314,10 +2323,24 @@ fn check_can(schema: &Schema, model: &str, expr: &Value, what: &str) -> Result<(
 }
 
 /// The actions and their flags for list and detail reads.
-fn actions_of(schema: &Schema, name: &str, config: &[ActionConfig], can: &mut Vec<(String, Value)>) -> Result<Vec<Action>, ConfigError> {
+fn actions_of(schema: &Schema, name: &str, config: &[ActionConfig], can: &mut Vec<(String, Value)>, set_password: bool) -> Result<Vec<Action>, ConfigError> {
     let mut out = Vec::new();
     let change = can.iter().find(|(rule, _)| rule == "change").map(|(_, expr)| expr.clone());
+    let mut password_rule = None;
     for a in config {
+        if set_password && a.name == crate::set_password::NAME {
+            if a.replace_change {
+                return err(format!("{name}: set_password always requires the resource change rule"));
+            }
+            if let Some(expr) = &a.can {
+                check_can(schema, name, expr, &format!("{name}: set_password: can"))?;
+                password_rule = Some(match &change {
+                    Some(change) => serde_json::json!({"t": "and", "items": [expr, change]}),
+                    None => expr.clone(),
+                });
+            }
+            continue;
+        }
         if a.name == BULK_DELETE {
             if a.can.is_some() {
                 return err(format!("{name}: {BULK_DELETE}: can is not allowed on the built-in action; use the resource delete rule"));
@@ -2361,6 +2384,13 @@ fn actions_of(schema: &Schema, name: &str, config: &[ActionConfig], can: &mut Ve
             can.push((action.flag(), expr.clone()));
         }
         if let Some(expr) = action.can.as_ref().filter(|_| placement.is_some_and(Placement::single)) {
+            can.push((action.can_flag(), expr.clone()));
+        }
+        out.push(action);
+    }
+    if set_password {
+        let action = crate::set_password::action(password_rule);
+        if let Some(expr) = &action.can {
             can.push((action.can_flag(), expr.clone()));
         }
         out.push(action);

@@ -80,9 +80,10 @@ function RowActions({ meta, id, flags, detail }: { meta: api.Resource; id: strin
   const [bad, setBad] = useState<Record<string, string[]>>({});
   const [pending, setPending] = useState<api.ActionInfo | null>(null);
   const quick = useQuick(meta.name, (action) => setPending(action));
-  if (meta.writable === false) return null;
   const target: Target = { keys: [id], what: "this record" };
-  const detailActions = (meta.actions ?? []).filter((a) => a.placement === "detail");
+  const writable = meta.writable !== false;
+  const detailActions = (meta.actions ?? []).filter((a) => a.placement === "detail" && (writable || (a.name === "set_password" && detail.password_target)));
+  if (!writable && detailActions.length === 0) return null;
   const allows = (rule: string) => !(meta.can ?? []).includes(rule) || flags[rule] === true;
   const remove = async () => {
     const loaded: api.Values = {};
@@ -110,7 +111,7 @@ function RowActions({ meta, id, flags, detail }: { meta: api.Resource; id: strin
   return (
     <>
       <div className="actions" role="group" aria-label="Actions">
-        {api.may(meta, "update") &&
+        {writable && api.may(meta, "update") &&
           (allows("change") ? (
             <Link className={buttonVariants({ variant: "outline" })} href={editUrl(meta.name, id)}>Edit</Link>
           ) : (
@@ -124,9 +125,9 @@ function RowActions({ meta, id, flags, detail }: { meta: api.Resource; id: strin
             </Button>
           );
         })}
-        {api.may(meta, "delete") && <Button variant="plain" disabled={!allows("delete") || asking} title={allows("delete") ? undefined : "This record does not allow delete"} onClick={() => setAsking(true)}>Delete</Button>}
+        {writable && api.may(meta, "delete") && <Button variant="plain" disabled={!allows("delete") || asking} title={allows("delete") ? undefined : "This record does not allow delete"} onClick={() => setAsking(true)}>Delete</Button>}
       </div>
-      {pending && <ActionDialog key={pending.name} resource={meta.name} action={pending} target={target} onClose={() => setPending(null)} />}
+      {pending && <ActionDialog key={pending.name} resource={meta.name} action={pending} target={target} passwordTarget={detail.password_target} onClose={() => setPending(null)} />}
       {asking && (
         <ConfirmDialog
           title="Confirm delete"

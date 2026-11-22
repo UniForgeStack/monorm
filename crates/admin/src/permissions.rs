@@ -269,6 +269,9 @@ impl Site {
         if !self.gate(grants) || !self.allows(grants, r, Op::Read) {
             return false;
         }
+        if r.set_password && action.name == crate::set_password::NAME && self.strategy == Strategy::Access {
+            return grants.all && self.allows(grants, r, Op::Update);
+        }
         match &action.permission {
             Some(p) => grants.has(&format!("{}.{p}_{}", r.label, r.key)),
             None => self.allows(grants, r, Op::Update),

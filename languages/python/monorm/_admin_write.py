@@ -84,6 +84,7 @@ def input(
 
     ``type`` is ``text``, ``textarea``, ``number``, ``checkbox`` or ``select`` (``select`` needs ``choices``).
     The value lives for one request and only the service reads it as ``ctx.inputs[name]``.
+    An action also accepts ``file`` and ``password`` controls. The audit row always masks a password control.
     A resource with an input needs a service.
     With ``secret=True`` the audit row stores a mask (``***``) in place of the value.
     """

@@ -49,7 +49,7 @@ export class InputDef {
 }
 
 export interface InputOptions {
-  readonly type?: "text" | "textarea" | "number" | "checkbox" | "select" | "file";
+  readonly type?: "text" | "textarea" | "number" | "checkbox" | "select" | "file" | "password";
   readonly label?: string;
   readonly required?: boolean;
   readonly help?: string;

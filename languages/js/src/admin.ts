@@ -19,7 +19,7 @@ import { createReadStream, createWriteStream } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { HOST, hostDispatch, type HostFunction } from "./admin-host.js";
+import { HOST, authUserTable, hostDispatch, type HostFunction } from "./admin-host.js";
 import * as grants from "./admin-permissions.js";
 import { Reply, routeHost, Stream, type RouteFunction, type RouteRequest } from "./admin-routes.js";
 import { action, actionDef, actionFunction, Context, download, InputDef, input, log, message, PLACEMENTS, redirect, refresh, serviceFunction, viewHost, writerHost, type ActionDef, type ActionFunction, type ActionOptions, type ActionResult, type InlineChanges } from "./admin-write.js";
@@ -260,6 +260,8 @@ export interface ResourceConfig {
   readonly actions?: readonly (string | ActionFunction)[];
   /** `false` removes the bulk delete of the list. It is on by default; it uses the `delete` service and the `can.delete` rule. */
   readonly bulkDelete?: boolean;
+  /** Enable the built-in password action on the active auth user resource. */
+  readonly setPassword?: boolean;
 }
 
 export interface RelationConfig {
@@ -325,7 +327,7 @@ export interface AdminUser {
 const LIST_KEYS = new Set(["columns", "order", "pageSize", "sortable", "search", "searchWith", "filters", "namedFilters", "computed", "aggregates", "labels", "empty", "emptyFields", "tabs", "editable", "badges", "dateHierarchy"]);
 const BRAND_KEYS = new Set(["name", "logo", "colors", "links", "environment"]);
 const THEME_KEYS = new Set(["title", "logo", "color"]);
-const RESOURCE_KEYS = new Set(["queryset", "can", "list", "title", "group", "allow", "perms", "label", "fieldPermissions", "see", "change", "actions", "checkMessages", "form", "readonly", "widgets", "formComponent", "detailTabs", "relations", "files", "create", "update", "delete", "inputs", "allowProtectedWrites", "inlines", "bulkDelete"]);
+const RESOURCE_KEYS = new Set(["queryset", "can", "list", "title", "group", "allow", "perms", "label", "fieldPermissions", "see", "change", "actions", "checkMessages", "form", "readonly", "widgets", "formComponent", "detailTabs", "relations", "files", "create", "update", "delete", "inputs", "allowProtectedWrites", "inlines", "bulkDelete", "setPassword"]);
 
 function widgetsJson(who: string, value: unknown): Record<string, string> {
   if (typeof value !== "object" || value === null || Array.isArray(value) || !Object.values(value).every((v) => typeof v === "string")) {
@@ -622,8 +624,8 @@ function querysetHost(model: AnyModel, fn: QuerysetFunction): HostFunction {
   };
 }
 
-function bulkDeleteJson(model: string, value: unknown): boolean {
-  if (typeof value !== "boolean") throw new AdminConfigError(`${model}: bulkDelete is true or false`);
+function boolOption(model: string, option: string, value: unknown): boolean {
+  if (typeof value !== "boolean") throw new AdminConfigError(`${model}: ${option} is true or false`);
   return value;
 }
 
@@ -963,6 +965,7 @@ const INLINE_PAGE_REFUSED: Readonly<Record<string, string>> = {
   change: "field permissions belong to the registered page of the child",
   actions: "an inline has no actions",
   bulkDelete: "an inline has no bulk delete",
+  setPassword: "an inline has no set password action",
   formComponent: "a replaced form cannot be a row of a table",
   detailTabs: "a detail tab belongs to the registered page of the child",
   allowProtectedWrites: "the opt-in belongs to the registered page of the child",
@@ -1127,6 +1130,7 @@ export class Admin {
       permissions: this.#strategy,
       label: this.#label,
       resources,
+      ...(resources.some((r) => r["set_password"]) ? { user_table: authUserTable(registry) } : {}),
       ...(this.#brand === undefined ? {} : { brand: this.#brand }),
       ...(this.#theme === undefined ? {} : { theme: this.#theme }),
       ...(this.#widgets === undefined || Object.keys(this.#widgets).length === 0 ? {} : { widgets: this.#widgets }),
@@ -1167,7 +1171,8 @@ export class Admin {
       ...(config.see === undefined ? {} : { see: boundJson(model, "see", config.see) }),
       ...(config.change === undefined ? {} : { change: boundJson(model, "change", config.change) }),
       ...(config.actions === undefined ? {} : { actions: actionsJson(model, cls, config.actions) }),
-      ...(config.bulkDelete === undefined ? {} : { bulk_delete: bulkDeleteJson(model, config.bulkDelete) }),
+      ...(config.setPassword === undefined ? {} : { set_password: boolOption(model, "setPassword", config.setPassword) }),
+      ...(config.bulkDelete === undefined ? {} : { bulk_delete: boolOption(model, "bulkDelete", config.bulkDelete) }),
       ...(config.inlines === undefined ? {} : { inlines: inlineDefs(model, config.inlines).map((d) => this.#inlineJson(model, d, registry)) }),
     };
   }

@@ -826,6 +826,24 @@ async fn detail(State(s): Shared, user: Option<Extension<User>>, Path((name, _))
                 Ok(t) => t,
                 Err(r) => return *r,
             };
+            let password_target = if resource.set_password && resource.actions.iter().any(|a| a.name == crate::set_password::NAME && s.site.action_allowed(&grants, &resource, a)) {
+                match (s.viewer(), key.as_slice()) {
+                    (Some(auth), [id]) => match crate::set_password::target(auth, &scope, id).await {
+                        Ok(target) if target.is_object() => {
+                            let sso_only = auth.security.options.oidc.is_some() && auth::password_hash(&target).is_some_and(|hash| hash.starts_with('!'));
+                            Some(json!({"display": target["display"], "sso_only": sso_only}))
+                        }
+                        Ok(_) => None,
+                        Err(e) => {
+                            scope.rollback().await;
+                            return auth::host_error(&e);
+                        }
+                    },
+                    _ => None,
+                }
+            } else {
+                None
+            };
             if let Err(e) = scope.commit().await {
                 return database_error(&e.message);
             }
@@ -845,7 +863,11 @@ async fn detail(State(s): Shared, user: Option<Extension<User>>, Path((name, _))
                     Some(json!({"name": l.name, "title": title, "resource": target.name, "key": key::encode(&parts)}))
                 })
                 .collect();
-            Json(json!({"ok": true, "resource": resource.name, "key": raw, "fields": resource.meta["fields"], "values": values, "flags": record.flags, "links": links, "inlines": inlines})).into_response()
+            let mut body = json!({"ok": true, "resource": resource.name, "key": raw, "fields": resource.meta["fields"], "values": values, "flags": record.flags, "links": links, "inlines": inlines});
+            if let Some(target) = password_target {
+                body["password_target"] = target;
+            }
+            Json(body).into_response()
         }
         Ok(None) => {
             scope.rollback().await;

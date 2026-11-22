@@ -37,6 +37,7 @@ pub mod sight;
 pub mod server;
 pub mod service;
 pub mod site;
+mod set_password;
 pub mod sql;
 pub mod tables;
 pub mod ui;

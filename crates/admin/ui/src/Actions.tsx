@@ -87,7 +87,7 @@ export async function request(resource: string, action: api.ActionInfo, target: 
 }
 
 /** The question before an action: its confirmation text, its inputs and, for a selection over 10,000 rows, a second confirmation. */
-export function ActionDialog({ resource, action, target, onClose, onDone }: { resource: string; action: api.ActionInfo; target: Target; onClose: () => void; onDone?: (target: Target) => void }) {
+export function ActionDialog({ resource, action, target, passwordTarget, onClose, onDone }: { resource: string; action: api.ActionInfo; target: Target; passwordTarget?: api.Detail["password_target"]; onClose: () => void; onDone?: (target: Target) => void }) {
   const finish = useFinish();
   const [ins, setIns] = useState<InputValues>(() => startInputs(action.inputs.filter((d) => d.type !== "file")));
   const [files, setFiles] = useState<Record<string, File | null>>({});
@@ -112,7 +112,9 @@ export function ActionDialog({ resource, action, target, onClose, onDone }: { re
       onClose();
     } catch (e) {
       if (e instanceof api.ApiError && e.kind === "ConfirmLarge") setLarge(true);
-      else {
+      else if (e instanceof api.ApiError && e.kind === "WeakPassword" && action.name === "set_password") {
+        setBad({ new_password: e.body.error?.errors?.map((rule) => rule.message) ?? [message(e)] });
+      } else {
         const body = e instanceof api.ApiError ? e.body : {};
         setBad(body.fields ?? {});
         setProblem(body.form?.length ? body.form : Object.keys(body.fields ?? {}).length > 0 ? [] : [message(e)]);
@@ -121,10 +123,13 @@ export function ActionDialog({ resource, action, target, onClose, onDone }: { re
     }
   };
   const label = action.name === "bulk_delete" ? "Delete" : action.label;
+  const password = action.name === "set_password" && action.inputs.some((input) => input.name === "new_password" && input.type === "password");
   return (
     <ConfirmDialog
       title={`Confirm ${label}`}
-      description={<><strong>{label}</strong> on {target.what}. {action.confirm}</>}
+      description={password
+        ? action.confirm?.replace("{display}", () => passwordTarget?.display || target.what)
+        : <><strong>{label}</strong> on {target.what}. {action.confirm}</>}
       confirm={large ? `Yes, ${label.toLowerCase()} them all` : label}
       destructive={action.name === "bulk_delete"}
       busy={busy}
@@ -132,6 +137,7 @@ export function ActionDialog({ resource, action, target, onClose, onDone }: { re
       onClose={onClose}
     >
       <div className="grid gap-3">
+        {password && passwordTarget?.sso_only && <p>This user signs in with single sign-on. A password gives a second way in.</p>}
         {plain.length > 0 && <InputFields defs={plain} vals={ins} errors={bad} onChange={(n, v) => setIns((s) => ({ ...s, [n]: v }))} scope={`action-${action.name}`} />}
         {action.inputs.filter((d) => d.type === "file").map((d) => (
           <div key={d.name} className={(bad[d.name] ?? []).length > 0 ? "field field-bad" : "field"}>
