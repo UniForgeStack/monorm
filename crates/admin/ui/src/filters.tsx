@@ -6,6 +6,7 @@ import { Badge } from "./components/ui/badge";
 import { Input, Select } from "./components/ui/input";
 import { Collapsible } from "./components/ui/collapsible";
 import { Popover } from "./components/ui/popover";
+import { dayOf, plusDays, writeRange } from "./dates";
 import { type Zone } from "./format";
 import { Button } from "./ui";
 
@@ -332,22 +333,6 @@ const valueOf = (detail: api.Detail | undefined, name: string | null | undefined
   return at < 0 ? undefined : detail?.values[at];
 };
 
-const pad = (n: number) => String(n).padStart(2, "0");
-const dayOf = (d: Date, zone: Zone) =>
-  zone === "utc" ? `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}` : `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-
-/** The instant at which a calendar day starts in the zone, as RFC 3339 in UTC. */
-function startOf(day: string, zone: Zone): string {
-  const [y, m, d] = day.split("-").map(Number) as [number, number, number];
-  const at = zone === "utc" ? new Date(Date.UTC(y, m - 1, d)) : new Date(y, m - 1, d);
-  return at.toISOString().replace(/\.\d{3}Z$/, "Z");
-}
-
-const plusDays = (day: string, n: number) => {
-  const [y, m, d] = day.split("-").map(Number) as [number, number, number];
-  return dayOf(new Date(Date.UTC(y, m - 1, d + n)), "utc");
-};
-
 /** The presets as `[from, to)` calendar days in the zone. `to` is the day after the last day. */
 export function presets(now: Date, zone: Zone): { name: string; from: string; to: string }[] {
   const today = dayOf(now, zone);
@@ -362,19 +347,13 @@ export function presets(now: Date, zone: Zone): { name: string; from: string; to
 /** A date is `YYYY-MM-DD`. A datetime range is `gte` the start of the first day and `lt` the start of the day after the last. */
 function Dates({ filter, params, change, zone }: { filter: api.Filter; params: Params; change: Change; zone: Zone }) {
   const date = filter.kind === "date";
-  const lo = date ? key(filter, "gte") : key(filter, "gte");
+  const lo = key(filter, "gte");
   const hi = date ? key(filter, "lte") : key(filter, "lt");
   const asDay = (v: string | null) => (v ? (date ? v : dayOf(new Date(v), zone)) : "");
   const from = asDay(params.get(lo));
   // A datetime `lt` is the start of the day after the last day: show the last day.
   const to = date ? (params.get(hi) ?? "") : params.get(hi) ? plusDays(dayOf(new Date(params.get(hi) as string), zone), -1) : "";
-  const set = (f: string, t: string) =>
-    change((p) => {
-      p.delete(lo);
-      p.delete(hi);
-      if (f) p.set(lo, date ? f : startOf(f, zone));
-      if (t) p.set(hi, date ? t : startOf(plusDays(t, 1), zone));
-    });
+  const set = (f: string, t: string) => change((p) => writeRange(p, filter.name, date ? "date" : "datetime", zone, f || null, t || null));
   return (
     <div className="flex flex-wrap items-center gap-2">
       <Input type="date" className={small} aria-label={`${filter.title} from`} value={from} onChange={(e) => set(e.target.value, to)} />

@@ -188,6 +188,61 @@ admin.register(Author, {"list": {
 A column name that clashes with a field, or a label or empty text for an unknown field, is a build error.
 In TypeScript the keys are `namedFilters`, `emptyFields`, and `computed` and `aggregates` with the same entries (`func.length(Note.body)`, `Author.comments`); `function` is `async (keys) => values`.
 
+### Date drill-down
+
+`date_hierarchy` (Python) and `dateHierarchy` (TypeScript) puts a bar over the table that narrows the list by year, then by month, then by day:
+
+```python
+admin.register(Order, {"list": {"columns": ["number", "placed"], "date_hierarchy": Order.placed}})
+admin.register(Order, {"list": {"columns": ["number", "placed"], "date_hierarchy": {"field": Order.placed, "counts": False}}})
+```
+
+The field is a date or datetime field, or one field of a to-one relation (`Order.customer.joined`), and one hop is the limit.
+Another type, or an unknown field, is a build error.
+The build adds the field to `filters` when it is missing.
+`check()` warns, in `Site.warnings`, when no index leads with the field.
+
+A click on a period writes the range filter of the field (`f.placed:gte` and `f.placed:lt`, or `:lte` with the last day for a date field), so the view is in the URL and the other filters and the search still apply.
+The bar shows the years first.
+After one year it shows the months, after one month the days, and after one day only the breadcrumb (`All dates › 2025 › March`).
+Another range shows days when it spans 31 days or fewer, and months otherwise.
+The bar shows at most 50 years: older years are one "older" period.
+A period with no row is hidden.
+`counts: False` shows no number, and the bar then runs one statement for the first and last value.
+
+The route is `GET {prefix}/dates/{resource}`.
+It takes the query of a list (`q`, `without`, the filters) and `edges`.
+Without `edges` the answer is `{"min": ..., "max": ...}` (the first and last value, or `null`).
+With `edges` it is `{"counts": [...]}`, one count for each period between two edges.
+`edges` is a comma list of 2 to 61 values in strictly increasing order: RFC 3339 for a datetime field (percent-encode the `+` of an offset) and `YYYY-MM-DD` for a date field.
+A bad list answers `400`, and a field that the user may not see answers `403`.
+Each request runs one statement.
+The metadata of the resource has `date_hierarchy` with `field`, `counts` and `kind` (`null` without the key).
+
+### Display
+
+A bool column shows an icon: a check for true, a cross for false and a dash for `NULL`, each with a text label (`Yes`, `No`, `Empty`) for screen readers.
+`badges` shows the value of a column as a coloured badge, and the same badge shows on the detail page:
+
+```python
+admin.register(Ticket, {"list": {"columns": ["title", "status", "urgent"], "badges": {Ticket.status: {"open": "green", "closed": "grey", "stuck": "red"}}}})
+```
+
+The colours are `grey`, `blue`, `green`, `yellow`, `red` and `purple`.
+Each has a light and a dark variant that keep the text at 4.5:1 contrast or more, and the badge needs no inline style.
+A value that the map does not name shows grey, and `NULL` shows no badge.
+A badge on a bool column replaces the icon.
+The keys are text (`true` and `false` for a bool, the digits for an int).
+The build refuses a column that is not in the list, a column with a view, a colour outside the palette, a type that has no badge (such as a datetime), and an enum value that does not exist.
+The metadata of the column has `badge`, the map.
+In TypeScript the key is `badges` too, with a column as the key.
+
+A computed column sorts when it has `order_by`, a field of the model or an expression (`orderBy` in TypeScript).
+It also makes a `function` column sortable.
+The build refuses an array or enum type, a relation that can be `NULL`, and a field with `write_sql`.
+A user who may not see the `order_by` field gets no sort header on the column.
+The primary key stays the last order column.
+
 ### To-many tabs
 
 The detail page shows each to-many relation as a tab, and the tab is the list of the child resource, with its search, filters and sort.

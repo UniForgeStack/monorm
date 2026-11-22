@@ -1359,3 +1359,100 @@ test("the home page lists the last audit rows", async () => {
   await idle();
   await context.close();
 });
+
+async function signIn(page) {
+  await page.goto(`${base}/admin/-/login`);
+  await page.getByLabel("Username").fill("ann");
+  await page.getByLabel("Password").fill("pw-of-ann");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await page.getByRole("navigation", { name: "Resources" }).waitFor();
+}
+
+// Badges and the bool icon: text contrast of at least 4.5:1 in both themes, and no inline style (the page policy forbids it).
+for (const scheme of ["light", "dark"]) {
+  test(`a list shows a bool as an icon and a column as badges, with readable text (${scheme})`, async () => {
+    const context = await browser.newContext({ timezoneId: ZONE, locale: "en-US", colorScheme: scheme });
+    const page = await context.newPage();
+    const problems = [];
+    page.on("console", (m) => m.type() === "error" && problems.push(`console: ${m.text()}`));
+    page.on("pageerror", (e) => problems.push(`page error: ${e.message}`));
+    page.on("response", (r) => r.status() >= 400 && r.status() !== 401 && problems.push(`HTTP ${r.status()}: ${r.url()}`));
+    await signIn(page);
+    await page.goto(`${base}/admin/Parcel`);
+    await page.getByRole("cell", { name: "P-2024-03" }).waitFor();
+
+    assert.equal(await page.getByRole("img", { name: "Yes" }).count(), 3, "three paid parcels");
+    assert.equal(await page.getByRole("img", { name: "No" }).count(), 2, "two unpaid parcels");
+    const badges = await page.locator("tbody span[class*='badge-']").evaluateAll((els) =>
+      els.map((el) => {
+        const own = getComputedStyle(el);
+        return { text: el.textContent.trim(), tone: [...el.classList].find((c) => c.startsWith("badge-")), fg: own.color, bg: own.backgroundColor, inline: el.hasAttribute("style") };
+      }));
+    assert.deepEqual(badges.map((b) => [b.text, b.tone]), [["shipped", "badge-green"], ["new", "badge-blue"], ["lost", "badge-red"], ["returned", "badge-grey"], ["shipped", "badge-green"]], "a value outside the map is grey");
+    assert.equal(badges.some((b) => b.inline), false, "no inline style");
+    const lum = (css) => {
+      const [r, g, b] = css.match(/[\d.]+/g).slice(0, 3).map((v) => Number(v) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    for (const b of badges) {
+      const [x, y] = [lum(b.fg), lum(b.bg)];
+      const ratio = (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+      assert.ok(ratio >= 4.5, `badge ${b.tone} reads (${scheme}): ${b.fg} on ${b.bg} is ${ratio.toFixed(2)}`);
+    }
+
+    // The detail page shows the same badge.
+    await page.getByRole("link", { name: "P-2024-03" }).click();
+    await page.getByText("shipped").first().waitFor();
+    assert.equal(await page.locator("span.badge-green").filter({ hasText: "shipped" }).count(), 1);
+    assert.deepEqual(problems, []);
+    await context.close();
+  });
+}
+
+test("a date drill-down: a click on a year and then on a month narrows the rows and the chip", async () => {
+  const context = await browser.newContext({ timezoneId: ZONE, locale: "en-US" });
+  const page = await context.newPage();
+  const problems = [];
+  page.on("console", (m) => m.type() === "error" && problems.push(`console: ${m.text()}`));
+  page.on("pageerror", (e) => problems.push(`page error: ${e.message}`));
+  page.on("response", (r) => r.status() >= 400 && r.status() !== 401 && problems.push(`HTTP ${r.status()}: ${r.url()}`));
+  await signIn(page);
+  await page.goto(`${base}/admin/Parcel`);
+  const bar = page.getByRole("group", { name: "Date drill-down" });
+  // The label and the count of each period button, as "label count".
+  const periods = () => bar.locator("ul button").evaluateAll((els) => els.map((el) => [...el.childNodes].map((n) => n.textContent.trim()).filter(Boolean).join(" ")));
+  const codes = async () => (await page.locator("tbody tr td:nth-child(2)").allTextContents()).map((t) => t.trim());
+  const rowsAre = async (expected) => {
+    for (let i = 0; i < 100; i++) {
+      if (JSON.stringify(await codes()) === JSON.stringify(expected)) return;
+      await page.waitForTimeout(100);
+    }
+    assert.deepEqual(await codes(), expected);
+  };
+  await rowsAre(["P-2024-03", "P-2025-03-a", "P-2025-03-b", "P-2025-04", "P-2026-01"]);
+
+  // Years with their counts.
+  await bar.getByRole("button", { name: "2024 1" }).waitFor();
+  assert.deepEqual((await periods()), ["2024 1", "2025 3", "2026 1"]);
+
+  await bar.getByRole("button", { name: "2025 3" }).click();
+  await rowsAre(["P-2025-03-a", "P-2025-03-b", "P-2025-04"]);
+  assert.ok(page.url().includes("f.placed%3Agte") || page.url().includes("f.placed:gte"), `the year writes the range filter: ${page.url()}`);
+  assert.deepEqual((await periods()), ["March 2", "April 1"], "months of the year, without the empty ones");
+  const chips = page.getByRole("list", { name: "Active filters" });
+  assert.match(await chips.innerText(), /Placed/, "the range shows as a chip of the field");
+
+  await bar.getByRole("button", { name: "March 2" }).click();
+  await rowsAre(["P-2025-03-a", "P-2025-03-b"]);
+  assert.deepEqual((await periods()), ["10 1", "20 1"], "days of the month");
+  assert.equal(await bar.getByRole("navigation", { name: "Date breadcrumb" }).getByText("March").count(), 1, "the breadcrumb ends at the month");
+
+  // The breadcrumb goes back, and the back button of the browser too.
+  await bar.getByRole("button", { name: "All dates" }).click();
+  await rowsAre(["P-2024-03", "P-2025-03-a", "P-2025-03-b", "P-2025-04", "P-2026-01"]);
+  await chips.waitFor({ state: "detached" });
+  await page.goBack();
+  await rowsAre(["P-2025-03-a", "P-2025-03-b"]);
+  assert.deepEqual(problems, []);
+  await context.close();
+});

@@ -172,7 +172,7 @@ impl Site {
             .collect();
         v.refs.retain(|f| !hidden.contains(&f.column));
         v.search.retain(|s| !hidden.contains(&s.column.label));
-        v.sortable.retain(|s| !hidden.contains(&s.column.label));
+        v.sortable.retain(|s| !hidden.contains(&s.column.label) && !hidden.contains(&s.column.order_by().label));
         v.filters.retain(|f| match &f.kind {
             FilterKind::Field(c) => !hidden.contains(&c.label),
             FilterKind::Relation { from, .. } => from.iter().all(|c| !hidden.contains(&c.label)),

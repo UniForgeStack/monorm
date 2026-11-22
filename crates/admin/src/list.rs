@@ -4,6 +4,7 @@
 //! number of statements for one row or a hundred. The order ends with the primary key, so
 //! a cursor names exactly one position.
 
+use chrono::Datelike;
 use monorm_core::dialect::{Dialect, Target};
 use monorm_core::ir::{ColType, EnumStorage, Operation, ValueType};
 use monorm_core::schema::Schema;
@@ -231,6 +232,7 @@ pub(crate) fn engine(e: Error) -> ListError {
 fn effective_order(resource: &Resource, sort: Option<&str>) -> Result<(Vec<OrderColumn>, String), ListError> {
     let Some(sort) = sort.map(str::trim).filter(|s| !s.is_empty()) else { return Ok((resource.order.clone(), String::new())) };
     let mut order: Vec<OrderColumn> = Vec::new();
+    let mut names: Vec<&str> = Vec::new();
     let mut text = Vec::new();
     for token in sort.split(',') {
         let (desc, name) = match token.trim().strip_prefix('-') {
@@ -240,10 +242,11 @@ fn effective_order(resource: &Resource, sort: Option<&str>) -> Result<(Vec<Order
         let Some(found) = resource.sortable.iter().find(|s| s.column.label == name) else {
             return Err(ListError::Bad(format!("sort: {name:?} is not a sort column of this list")));
         };
-        if order.iter().any(|o| o.column.label == name) {
+        if names.contains(&name) {
             return Err(ListError::Bad(format!("sort: {name:?} is listed twice")));
         }
-        order.push(OrderColumn { column: found.column.clone(), desc });
+        names.push(name);
+        order.push(OrderColumn { column: found.column.order_by().clone(), desc });
         text.push(format!("{}{name}", if desc { "-" } else { "" }));
     }
     if order.len() > 3 {
@@ -646,6 +649,80 @@ pub async fn count(site: &Site, resource: &Resource, conn: &dyn Executor, target
     Ok(if !exact && n > COUNT_CAP { Total { count: COUNT_CAP, capped: true } } else { Total { count: n, capped: false } })
 }
 
+/// The most edges of one `dates` request: 60 periods, enough for 50 years, 12 months or 31 days.
+pub const MAX_EDGES: usize = 61;
+
+/// One edge of a `dates` request: RFC 3339 for a datetime field, `YYYY-MM-DD` for a date field. It orders by the instant.
+fn edge_bind(ty: ColType, text: &str) -> Result<(i64, Bind), ListError> {
+    match ty {
+        ColType::DateTime => {
+            let at = chrono::DateTime::parse_from_rfc3339(text).map_err(|_| ListError::Bad(format!("edges: {}", parse_error(text, "an RFC 3339 instant (2026-01-31T10:00:00Z)"))))?;
+            Ok((at.timestamp_micros(), Bind::ChronoDateTimeWithTimeZone(Some(at))))
+        }
+        _ => {
+            let day = chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d").map_err(|_| ListError::Bad(format!("edges: {}", parse_error(text, "a date (2026-01-31)"))))?;
+            Ok((i64::from(day.num_days_from_ce()), Bind::ChronoDate(Some(day))))
+        }
+    }
+}
+
+/// The dates of the drill-down bar, in one statement over the rows that the list shows.
+/// Without edges: `{"min", "max"}` of the field. With edges `t0..tn`: `{"counts"}` where `ci` counts the rows with `ti <= field < t(i+1)`.
+/// A row without a value is in no period.
+pub async fn dates(site: &Site, resource: &Resource, conn: &dyn Executor, target: Target, request: &ListRequest, edges: Option<&[String]>) -> Result<Value, ListError> {
+    let Some(dh) = &resource.date_hierarchy else { return Err(ListError::Bad("this list has no date_hierarchy".into())) };
+    let c = &dh.column;
+    let mut binds = Binds::default();
+    let mut parsed = Vec::new();
+    if let Some(edges) = edges {
+        if edges.len() < 2 || edges.len() > MAX_EDGES {
+            return Err(ListError::Bad(format!("edges: 2 to {MAX_EDGES} edges, not {}", edges.len())));
+        }
+        for text in edges {
+            let (order, bind) = edge_bind(c.ty.ty, text.trim())?;
+            if parsed.last().is_some_and(|&(last, _)| last >= order) {
+                return Err(ListError::Bad("edges: the edges must increase".into()));
+            }
+            parsed.push((order, binds.push(bind)));
+        }
+    }
+    let Some(mut filters) = where_filters(site, resource, request, &mut binds)? else {
+        return Ok(match edges {
+            Some(e) => json!({"counts": vec![0; e.len() - 1]}),
+            None => json!({"min": null, "max": null}),
+        });
+    };
+    let column = col(c);
+    let columns = if parsed.is_empty() {
+        vec![json!({"t": "func", "name": "min", "args": [column]}), json!({"t": "func", "name": "max", "args": [column]})]
+    } else {
+        let cmp = |op: &str, edge: &Value| json!({"t": "cmp", "op": op, "l": column, "r": edge});
+        filters.push(cmp("ge", &parsed[0].1));
+        filters.push(cmp("lt", &parsed[parsed.len() - 1].1));
+        parsed
+            .windows(2)
+            .map(|w| {
+                let case = json!({"t": "case", "whens": [{"cond": {"t": "and", "items": [cmp("ge", &w[0].1), cmp("lt", &w[1].1)]}, "value": {"t": "int", "value": 1}}], "default": {"t": "int", "value": 0}});
+                json!({"t": "func", "name": "sum", "args": [case]})
+            })
+            .collect()
+    };
+    let model = &site.schema.model(resource.model).ir.name;
+    let mut op = json!({"op": "select", "model": model, "columns": columns.into_iter().map(|e| json!({"t": "expr", "expr": e})).collect::<Vec<_>>(), "filters": filters});
+    request.scope.apply(&mut op);
+    let selected = run_select(site, conn, target, op, binds).await?;
+    let mut row = Vec::new();
+    for (i, ty) in selected.plan.types.iter().enumerate() {
+        let cell = selected.rows.cell(0, i, *ty).map_err(|e| ListError::Engine(e.to_string()))?;
+        row.push(json::cell(&site.schema, *ty, cell));
+    }
+    Ok(if edges.is_some() {
+        json!({"counts": row.iter().map(|v| v.as_i64().or_else(|| v.as_str().and_then(|t| t.parse().ok())).unwrap_or(0)).collect::<Vec<_>>()})
+    } else {
+        json!({"min": row.first().cloned().unwrap_or(Value::Null), "max": row.get(1).cloned().unwrap_or(Value::Null)})
+    })
+}
+
 /// Whether the rows that this request may see are more than `LARGE_TABLE_ROWS`.
 /// Without a row scope the answer is the table size, and the resource caches it.
 /// A scope changes the rows, so a scoped answer is a capped count of those rows and no cache holds it.
@@ -692,7 +769,7 @@ pub async fn list(site: &Site, resource: &Resource, conn: &dyn Executor, target:
     let limit = page_limit(resource, request)?;
     let (order, sort_text) = effective_order(resource, request.sort.as_deref())?;
     if !sort_text.is_empty() && !resource.sortable_explicit {
-        let indexed = |o: &OrderColumn| resource.sortable.iter().any(|s| s.column.label == o.column.label && s.indexed);
+        let indexed = |o: &OrderColumn| resource.sortable.iter().any(|s| s.column.order_by().label == o.column.label && s.indexed);
         let first = order.iter().find(|o| !resource.key_columns.iter().any(|k| k.label == o.column.label) && !indexed(o));
         if let Some(o) = first.filter(|o| o.column.source == Source::Field) {
             if is_large(site, resource, conn, target, &request.scope).await? {
@@ -702,7 +779,17 @@ pub async fn list(site: &Site, resource: &Resource, conn: &dyn Executor, target:
     }
     let flip = matches!(request.position, Position::Before(_) | Position::Last);
     let used: Vec<OrderColumn> = order.iter().map(|o| OrderColumn { column: o.column.clone(), desc: o.desc != flip }).collect();
-    let positions: Vec<usize> = order.iter().map(|o| resource.columns.iter().position(|c| c.label == o.column.label).unwrap_or(0)).collect();
+    // The cursor reads each order column of a row. One that is no column of the list (the field of a sort by `order_by`) is selected after the labels.
+    let mut hidden: Vec<&OrderColumn> = Vec::new();
+    let positions: Vec<usize> = order
+        .iter()
+        .map(|o| {
+            resource.columns.iter().position(|c| c.label == o.column.label).unwrap_or_else(|| {
+                hidden.push(o);
+                resource.columns.len() + hidden.len() - 1
+            })
+        })
+        .collect();
     let mut binds = Binds::default();
     let mut filters = Vec::new();
     match &request.position {
@@ -738,6 +825,7 @@ pub async fn list(site: &Site, resource: &Resource, conn: &dyn Executor, target:
     let mut columns: Vec<Value> = selected.iter().map(|&i| json!({"t": "expr", "expr": col(&resource.columns[i])})).collect();
     columns.extend(resource.can.iter().map(|(_, expr)| json!({"t": "expr", "expr": expr})));
     columns.extend(request.labels.iter().map(|&i| json!({"t": "expr", "expr": resource.refs[i].expr})));
+    columns.extend(hidden.iter().map(|o| json!({"t": "expr", "expr": col(&o.column)})));
     let mut op = json!({
         "op": "select",
         "model": model,
@@ -758,8 +846,9 @@ pub async fn list(site: &Site, resource: &Resource, conn: &dyn Executor, target:
     let mut flags = Vec::with_capacity(total.min(limit));
     let mut labels = Vec::with_capacity(total.min(limit));
     let after_can = selected.len() + resource.can.len();
+    let after_labels = after_can + request.labels.len();
     for r in 0..total.min(limit) {
-        let mut row = vec![Value::Null; resource.columns.len()];
+        let mut row = vec![Value::Null; resource.columns.len() + hidden.len()];
         let mut rules = serde_json::Map::new();
         let mut names = serde_json::Map::new();
         for (c, ty) in types.iter().enumerate() {
@@ -767,6 +856,7 @@ pub async fn list(site: &Site, resource: &Resource, conn: &dyn Executor, target:
             let value = json::cell(&site.schema, *ty, cell);
             match selected.get(c) {
                 Some(&at) => row[at] = value,
+                None if c >= after_labels => row[resource.columns.len() + c - after_labels] = value,
                 None if c >= after_can => {
                     if !value.is_null() {
                         names.insert(resource.refs[request.labels[c - after_can]].column.clone(), value);
@@ -800,6 +890,9 @@ pub async fn list(site: &Site, resource: &Resource, conn: &dyn Executor, target:
         Position::Before(c) => (last_cursor.or_else(|| Some(c.clone())), more.then_some(first_cursor).flatten()),
         Position::Last => (None, more.then_some(first_cursor).flatten()),
     };
+    for row in rows.iter_mut().filter_map(Value::as_array_mut) {
+        row.truncate(resource.columns.len());
+    }
     let keys = rows.iter().map(|r| key::encode(&resource.key_positions.iter().map(|&p| r[p].clone()).collect::<Vec<_>>())).collect();
     // After the cursors and keys: a cursor and a sort compare the stored bytes.
     let mut cells: Vec<&mut Vec<Value>> = rows.iter_mut().filter_map(Value::as_array_mut).collect();

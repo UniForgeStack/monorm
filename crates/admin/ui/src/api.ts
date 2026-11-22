@@ -15,6 +15,8 @@ export interface Column {
   computed?: boolean;
   /** A foreign key: the resource that the value names. The page carries the row label in `labels`. */
   ref?: { resource: string };
+  /** The value, as text, to a badge colour: the list and the detail page show the value as a badge. */
+  badge?: Record<string, string>;
 }
 
 export interface Filter {
@@ -99,6 +101,8 @@ export interface Resource {
   search: { fields: string[]; custom: boolean };
   filters: Filter[];
   named_filters: NamedFilter[];
+  /** The field of the date drill-down bar over the list, or null. `counts: false` skips the counts of the periods. */
+  date_hierarchy?: { field: string; counts: boolean; kind: "date" | "datetime" } | null;
   tabs: Tab[];
   empty: string | null;
   /** The rules that a row can allow: `change`, `delete`. Each row and detail carries one flag for each. */
@@ -401,6 +405,22 @@ export function count(resource: string, search: string, exact: boolean, scope?: 
   if (exact) to.set("exact", "1");
   const text = to.toString();
   return call<Count>("GET", `/counts/${listPath(resource, scope)}${text ? `?${text}` : ""}`);
+}
+
+/** The first and last value of the date field of the list, or the rows that each period holds when `edges` are given (one count per two edges). */
+export interface Dates {
+  min?: string | null;
+  max?: string | null;
+  counts?: number[];
+}
+
+/** The edges go in the query as one list; `encodeURIComponent` keeps the `+` of an offset. */
+export function dates(resource: string, search: string, edges?: string[]) {
+  const from = new URLSearchParams(search);
+  const keep = [...from].filter(([k]) => k === "q" || k === "without" || k.startsWith("f.") || k.startsWith("n."));
+  const text = keep.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`);
+  if (edges) text.push(`edges=${encodeURIComponent(edges.join(","))}`);
+  return call<Dates>("GET", `/dates/${encodeURIComponent(resource)}${text.length ? `?${text.join("&")}` : ""}`);
 }
 
 /** `without` is the read defaults to switch off, as the URL holds them (`a,b`). */

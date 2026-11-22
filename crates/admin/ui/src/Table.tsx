@@ -4,6 +4,8 @@ import { useMemo, useRef, type KeyboardEvent, type ReactNode } from "react";
 import type { Column } from "./api";
 import { Skeleton } from "./components/ui/skeleton";
 import { Table as KitTable, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./components/ui/table";
+import { Display } from "./DisplayValue";
+import { shown } from "./display";
 import { cell, type Zone } from "./format";
 import { Link, detailUrl } from "./router";
 import { cn } from "./lib/utils";
@@ -73,7 +75,8 @@ export function Table({ resource, columns, rows, keys, zone, labels = NO_LABELS,
             if (i === 0) return <Link href={detailUrl(resource, row.original.key)}>{text}</Link>;
             return targets?.has(c.ref.resource) ? <Link href={detailUrl(c.ref.resource, encodeURIComponent(String(value)))}>{text}</Link> : text;
           }
-          const text = cell(value, c, zone);
+          const look = shown(value, c, true);
+          const text = look ? <Display shown={look} /> : cell(value, c, zone);
           if (i === 0) return <Link href={detailUrl(resource, row.original.key)}>{text || none}</Link>;
           return text || <span className="text-muted-foreground">{none}</span>;
         },

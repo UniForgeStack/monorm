@@ -77,8 +77,22 @@ export interface ComputedColumn {
   readonly expr?: unknown;
   /** Instead of `expr`: `async (keys) => values` gets the keys of one page (one call per page), one value per key. */
   readonly function?: BatchFunction;
-  /** A sort header. It needs `expr` and `nullable: false`. */
+  /** A sort header. It needs `orderBy`, or `expr` and `nullable: false`. */
   readonly sortable?: boolean;
+  /**
+   * What the sort header orders by: a field of the model or of a to-one relation (`Note.author.name`, not null), or an expression
+   * (the column then declares `nullable: false`). It makes the column sortable, also for `function`.
+   */
+  readonly orderBy?: unknown;
+}
+
+export type BadgeColour = "grey" | "blue" | "green" | "yellow" | "red" | "purple";
+
+export interface DateHierarchy {
+  /** A date or datetime field, by path (`"author.joined"`) or column. One to-one hop is the most. */
+  readonly field: AnyColumn | string;
+  /** `false` skips the counts: the bar shows the periods of the date range and runs no count statement. */
+  readonly counts?: boolean;
 }
 
 export type BatchFunction = (keys: readonly any[]) => Promise<readonly unknown[]>;
@@ -107,6 +121,10 @@ export interface ListConfig {
   readonly empty?: string;
   /** What an empty value shows in one column, by path (`"author.name"`) or name. */
   readonly emptyFields?: Readonly<Record<string, string>>;
+  /** A column, by path or name, to a map of value to colour: the list and the detail page show the value as a badge. A value outside the map shows grey. */
+  readonly badges?: Readonly<Record<string, Readonly<Record<string, BadgeColour>>>>;
+  /** A date or datetime field (one to-one hop allowed): a bar over the table drills down year, month and day. It joins `filters`. */
+  readonly dateHierarchy?: AnyColumn | string | DateHierarchy;
   /** The to-many relations that the detail page shows as tabs. Without it: every one that leads to a resource. */
   readonly tabs?: readonly AnyRelation[];
   readonly order?: readonly (AnyColumn | Ordering<any, any>)[];
@@ -304,7 +322,7 @@ export interface AdminUser {
   readonly [key: string]: unknown;
 }
 
-const LIST_KEYS = new Set(["columns", "order", "pageSize", "sortable", "search", "searchWith", "filters", "namedFilters", "computed", "aggregates", "labels", "empty", "emptyFields", "tabs", "editable"]);
+const LIST_KEYS = new Set(["columns", "order", "pageSize", "sortable", "search", "searchWith", "filters", "namedFilters", "computed", "aggregates", "labels", "empty", "emptyFields", "tabs", "editable", "badges", "dateHierarchy"]);
 const BRAND_KEYS = new Set(["name", "logo", "colors", "links", "environment"]);
 const THEME_KEYS = new Set(["title", "logo", "color"]);
 const RESOURCE_KEYS = new Set(["queryset", "can", "list", "title", "group", "allow", "perms", "label", "fieldPermissions", "see", "change", "actions", "checkMessages", "form", "readonly", "widgets", "formComponent", "detailTabs", "relations", "files", "create", "update", "delete", "inputs", "allowProtectedWrites", "inlines", "bulkDelete"]);
@@ -462,14 +480,29 @@ function batchName(model: AnyModel, column: string, tag = ""): string {
   return `column.${model._meta.name}${tag}.${column}`;
 }
 
+function dateHierarchyJson(model: AnyModel, value: AnyColumn | string | DateHierarchy): unknown {
+  if (typeof value === "string" || value instanceof Column) return refName(model, value);
+  const { field, counts, ...rest } = value as DateHierarchy;
+  const extra = Object.keys(rest)[0];
+  if (extra !== undefined) throw new AdminConfigError(`${model._meta.name}: unknown dateHierarchy option '${extra}'`);
+  if (field === undefined) throw new AdminConfigError(`${model._meta.name}: dateHierarchy needs a field`);
+  return { field: refName(model, field), ...(counts !== undefined ? { counts } : {}) };
+}
+
+function orderByJson(model: AnyModel, name: string, by: unknown): unknown {
+  if (by instanceof Column) return label(model, by);
+  return irOf(model, by, `computed '${name}' order_by`);
+}
+
 function computedJson(model: AnyModel, items: readonly ComputedColumn[], tag = ""): unknown[] {
   return items.map((item) => {
     if ((item.expr === undefined) === (item.function === undefined)) {
       throw new AdminConfigError(`${model._meta.name}: computed '${item.name}' sets expr or function, one of them`);
     }
-    const { expr, function: fn, ...rest } = item;
+    const { expr, function: fn, orderBy, ...rest } = item;
     return {
       ...rest,
+      ...(orderBy !== undefined ? { order_by: orderByJson(model, item.name, orderBy) } : {}),
       ...(expr !== undefined ? { expr: irOf(model, expr, `computed '${item.name}'`) } : {}),
       ...(fn !== undefined ? { function: batchName(model, item.name, tag) } : {}),
     };
@@ -646,6 +679,10 @@ function listJson(model: AnyModel, config: ListConfig, tag = ""): Record<string,
   if (config.labels !== undefined) out["labels"] = { ...config.labels };
   if (config.empty !== undefined) out["empty"] = config.empty;
   if (config.emptyFields !== undefined) out["empty_fields"] = { ...config.emptyFields };
+  if (config.dateHierarchy !== undefined) out["date_hierarchy"] = dateHierarchyJson(model, config.dateHierarchy);
+  if (config.badges !== undefined) {
+    out["badges"] = Object.fromEntries(Object.entries(config.badges).map(([column, map]) => [column, { ...map }]));
+  }
   if (config.order !== undefined) out["order"] = config.order.map((item) => orderName(model, item));
   if (config.pageSize !== undefined) out["page_size"] = config.pageSize;
   if (config.sortable !== undefined) out["sortable"] = config.sortable.map((c) => label(model, c));

@@ -57,7 +57,7 @@ pub fn api_with(site: Arc<Site>, conn: Arc<dyn Executor>, auth: Option<AuthConfi
     let prefix = site.prefix.clone();
     let routes = Router::new().route("/resources", get(resources)).route("/resources/{name}", get(rows).post(crate::write::create).patch(crate::listwrite::save)).route("/resources/{name}/{key}", get(detail).patch(crate::write::update).delete(crate::write::destroy)).route("/resources/{name}/{key}/{rel}", get(tab_rows))
         .route("/resources/{name}/{key}/inlines/{inline}", post(crate::inlinewrite::row_create))
-        .route("/resources/{name}/{key}/inlines/{inline}/{row}", patch(crate::inlinewrite::row_update).delete(crate::inlinewrite::row_destroy)).route("/forms/{name}", get(form_module)).route("/counts/{name}", get(counts)).route("/export/{name}", get(crate::export::export)).route("/counts/{name}/{key}/{rel}", get(tab_counts)).route("/autocomplete/{name}/{rel}", get(crate::relations::autocomplete)).route("/links/{name}/{key}/{rel}", get(crate::relations::links)).route("/files/{name}/{key}/{field}", get(crate::files::download).post(crate::files::upload))
+        .route("/resources/{name}/{key}/inlines/{inline}/{row}", patch(crate::inlinewrite::row_update).delete(crate::inlinewrite::row_destroy)).route("/forms/{name}", get(form_module)).route("/counts/{name}", get(counts)).route("/dates/{name}", get(dates)).route("/export/{name}", get(crate::export::export)).route("/counts/{name}/{key}/{rel}", get(tab_counts)).route("/autocomplete/{name}/{rel}", get(crate::relations::autocomplete)).route("/links/{name}/{key}/{rel}", get(crate::relations::links)).route("/files/{name}/{key}/{field}", get(crate::files::download).post(crate::files::upload))
         .route("/routes/{*path}", axum::routing::any(crate::routes::handle))
         .route("/packages/{pkg}/{*file}", get(crate::packages::serve))
         .route("/actions/{name}/{action}", post(crate::actions::on_list))
@@ -335,6 +335,8 @@ pub(crate) struct ListQuery {
     pub(crate) sort: Option<String>,
     pub(crate) q: Option<String>,
     exact: Option<String>,
+    /// `dates` only: the period edges, comma separated.
+    edges: Option<String>,
 }
 
 fn flag(v: &Option<String>) -> bool {
@@ -617,6 +619,50 @@ async fn counts(State(s): Shared, user: Option<Extension<User>>, Path(name): Pat
         Err(r) => return r,
     };
     run_counts(&s, &resource, scope, reach, q, &uri, Vec::new()).await
+}
+
+/// The bar of the date drill-down: the range of the field, or the counts per period, over the rows of the list.
+async fn dates(State(s): Shared, user: Option<Extension<User>>, Path(name): Path<String>, uri: Uri, q: Result<Query<ListQuery>, QueryRejection>) -> Response {
+    let (user, scope, grants) = match authorize(&s, user).await {
+        Ok(t) => t,
+        Err(r) => return *r,
+    };
+    let (scope, resource, reach, (user, _)) = match open_resource_with(&s, user, scope, grants, &name, &uri).await {
+        Ok(t) => t,
+        Err(r) => return *r,
+    };
+    let (scope, q) = match query(scope, q).await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let Some(dh) = &resource.date_hierarchy else {
+        scope.rollback().await;
+        return reject(StatusCode::NOT_FOUND, "NotFound", &format!("{name:?} has no date_hierarchy"));
+    };
+    // A user view drops the filters of the fields that the user may not see.
+    if !resource.filters.iter().any(|f| f.name == dh.field) {
+        return deny(&s.site, scope, &user, &resource.name, json!({"reason": "field", "field": dh.field})).await;
+    }
+    let (filters, named) = match filters_of(&uri) {
+        Ok(f) => f,
+        Err(e) => {
+            scope.rollback().await;
+            return error_response(e);
+        }
+    };
+    let edges: Option<Vec<String>> = q.edges.as_deref().map(|e| e.split(',').map(str::to_owned).collect());
+    let mut request = ListRequest { sort: None, q: q.q, filters, named, scope: reach.rows, ..ListRequest::new(Position::First) };
+    let out = async {
+        list::check_request(&s.site, &resource, &request)?;
+        request.found = found_keys(&s, &resource, &scope, request.q.as_deref()).await?;
+        list::dates(&s.site, &resource, scope.executor(), s.target, &request, edges.as_deref()).await
+    }
+    .await;
+    finish(scope, out, |mut body| {
+        body["ok"] = json!(true);
+        Json(body).into_response()
+    })
+    .await
 }
 
 /// The preamble of a tab route: the parent (read permission), the tab (404), the child (read permission),

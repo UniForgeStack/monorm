@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Columns3, Ellipsis, Inbox, Plus, Rows3, SearchX, X } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import * as api from "./api";
+import { DateBar } from "./DateBar";
 import { FilterChips, FilterPopover, POSITION } from "./filters";
 import { type Zone } from "./format";
 import { Link, navigate, newUrl, rememberList, useSearch } from "./router";
@@ -230,6 +231,7 @@ export function ListView({ resource, zone, meta, params, change, scope }: { reso
         </div>
       </div>
       {meta && <FilterChips meta={meta} params={params} change={change} zone={zone} />}
+      {meta && !scope && <DateBar resource={resource} meta={meta} params={params} change={change} zone={zone} />}
       {!page && rows.isError ? (
         // The toolbar stays: a refused sort, search or filter is undone from it.
         <div className="grid gap-3">

@@ -26,6 +26,12 @@
   --warning: #8a5300;
   --border: #d3d9e1;
   --input: #8892a1;
+  --badge-grey-bg: #e5e7eb; --badge-grey-fg: #1f2937;
+  --badge-blue-bg: #dbeafe; --badge-blue-fg: #1e3a8a;
+  --badge-green-bg: #dcfce7; --badge-green-fg: #14532d;
+  --badge-yellow-bg: #fef3c7; --badge-yellow-fg: #78350f;
+  --badge-red-bg: #fee2e2; --badge-red-fg: #7f1d1d;
+  --badge-purple-bg: #f3e8ff; --badge-purple-fg: #581c87;
   --ring: var(--link);
   --radius: 0.5rem;
   color-scheme: light;
@@ -52,6 +58,12 @@
   --warning: #f2b45a;
   --border: #2c3658;
   --input: #707b99;
+  --badge-grey-bg: #374151; --badge-grey-fg: #f3f4f6;
+  --badge-blue-bg: #1e3a8a; --badge-blue-fg: #dbeafe;
+  --badge-green-bg: #14532d; --badge-green-fg: #dcfce7;
+  --badge-yellow-bg: #78350f; --badge-yellow-fg: #fef3c7;
+  --badge-red-bg: #7f1d1d; --badge-red-fg: #fee2e2;
+  --badge-purple-bg: #581c87; --badge-purple-fg: #f3e8ff;
   color-scheme: dark;
 }
 
@@ -98,6 +110,12 @@
 
 /* The screens that later jobs move onto the kit one by one. */
 @layer components {
+  .badge-grey { background: var(--badge-grey-bg); color: var(--badge-grey-fg); }
+  .badge-blue { background: var(--badge-blue-bg); color: var(--badge-blue-fg); }
+  .badge-green { background: var(--badge-green-bg); color: var(--badge-green-fg); }
+  .badge-yellow { background: var(--badge-yellow-bg); color: var(--badge-yellow-fg); }
+  .badge-red { background: var(--badge-red-bg); color: var(--badge-red-fg); }
+  .badge-purple { background: var(--badge-purple-bg); color: var(--badge-purple-fg); }
   .muted { color: var(--muted-foreground); font-weight: normal; }
   .center { min-height: 100vh; display: grid; place-items: center; padding: 1rem; }
   .field { display: flex; flex-direction: column; gap: .25rem; margin-bottom: 1rem; }
