@@ -37,7 +37,7 @@ export function InputFields({ defs, vals, errors, onChange, scope }: { defs: api
             ) : d.type === "textarea" ? (
               <Textarea {...common} rows={4} value={String(value)} onChange={(e) => onChange(d.name, e.target.value)} />
             ) : (
-              <Input {...common} type="text" inputMode={d.type === "number" ? "decimal" : undefined} value={String(value)} onChange={(e) => onChange(d.name, e.target.value)} />
+              <Input {...common} type={d.type === "password" ? "password" : "text"} autoComplete={d.type === "password" ? "new-password" : undefined} inputMode={d.type === "number" ? "decimal" : undefined} value={String(value)} onChange={(e) => onChange(d.name, e.target.value)} />
             )}
             <div id={`${id}-msg`}>
               {d.help && <p className="m-0 text-sm text-muted-foreground">{d.help}</p>}

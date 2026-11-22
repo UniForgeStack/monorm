@@ -1,7 +1,8 @@
 //! The check every request passes before routing: the session (401 before 404), the Origin check,
 //! the CSRF token and the JSON content type. At each renewal of the session cookie it also asks the host
 //! for the user again and reads the revocation table, so a deactivated user, a demotion, a changed password
-//! and a logout in another process end the session within `renew_after` seconds.
+//! and a logout in another process end the session within `renew_after` seconds. When password
+//! setting is enabled the user is checked on every authenticated request.
 
 use std::sync::Arc;
 
@@ -37,21 +38,23 @@ enum Renewal {
     Ended,
 }
 
-/// Reads the revocation table and the user again, in one short transaction of its own (committed before the handler runs).
+/// Loads the user and, when renewal is due, checks revocation in one short transaction.
 /// An error is the finished 500 response: the cookie stays, and the next request tries again, so a failure never keeps a session alive on its own.
-async fn renew(g: &Guard, s: &Session, request_id: u64) -> Result<Renewal, Response> {
+async fn renew(g: &Guard, s: &Session, request_id: u64, due: bool) -> Result<Renewal, Response> {
     let sec = &g.auth.security;
     let scope = Scoped::begin(g.conn.as_ref()).await.map_err(|e| database_error(&e.message))?;
-    let revoked = match revoke::is_revoked(&g.site, scope.executor(), &s.sid).await {
-        Ok(r) => r,
-        Err(e) => {
+    if due {
+        let revoked = match revoke::is_revoked(&g.site, scope.executor(), &s.sid).await {
+            Ok(r) => r,
+            Err(e) => {
+                scope.rollback().await;
+                return Err(database_error(&e));
+            }
+        };
+        if revoked {
             scope.rollback().await;
-            return Err(database_error(&e));
+            return Ok(Renewal::Ended);
         }
-    };
-    if revoked {
-        scope.rollback().await;
-        return Ok(Renewal::Ended);
     }
     let ctx = CallContext { request_id, scope: json!({}), tx: Some(scope.transaction()) };
     let fresh = match g.auth.bridge.call(USER, json!({"key": s.user["key"]}), ctx).await {
@@ -67,7 +70,7 @@ async fn renew(g: &Guard, s: &Session, request_id: u64) -> Result<Renewal, Respo
     if demoted || !sec.pwd_matches(s, password_hash(&fresh)) {
         return Ok(Renewal::Ended);
     }
-    Ok(Renewal::Live(Session { user, seen: sec.now(), ..s.clone() }))
+    Ok(Renewal::Live(Session { user, seen: if due { sec.now() } else { s.seen }, ..s.clone() }))
 }
 
 const CSRF_HEADER: &str = security::CSRF_HEADER;
@@ -117,11 +120,12 @@ pub async fn guard(State(g): State<Arc<Guard>>, mut req: Request, next: Next) ->
     }
     let mut renewed = false;
     if let Some(s) = &session {
-        if sec.now() - s.seen >= sec.renew_after() {
-            match renew(&g, s, sec.call_id()).await {
+        let due = sec.now() - s.seen >= sec.renew_after();
+        if due || g.site.resources.iter().any(|r| r.set_password) {
+            match renew(&g, s, sec.call_id(), due).await {
                 Ok(Renewal::Live(fresh)) => {
                     session = Some(fresh);
-                    renewed = true;
+                    renewed = due;
                 }
                 Ok(Renewal::Ended) if path == g.login_path => session = None,
                 Ok(Renewal::Ended) => return with_cookies(reject(StatusCode::UNAUTHORIZED, "Unauthorized", "sign in").into_response(), &security::ended_cookies(&g.site.base_path)),

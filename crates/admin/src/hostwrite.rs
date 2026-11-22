@@ -86,8 +86,8 @@ fn text() -> String {
 }
 
 pub const INPUT_KINDS: [&str; 5] = ["text", "textarea", "number", "checkbox", "select"];
-/// An action input may also hold an uploaded file.
-pub const ACTION_INPUT_KINDS: [&str; 6] = ["text", "textarea", "number", "checkbox", "select", "file"];
+/// An action input may also hold a file or a password.
+pub const ACTION_INPUT_KINDS: [&str; 7] = ["text", "textarea", "number", "checkbox", "select", "file", "password"];
 
 impl InputConfig {
     pub fn meta(&self) -> Value {
@@ -101,7 +101,7 @@ pub(crate) fn audit_inputs(r: &Resource, inputs: &Map<String, Value>) -> Map<Str
 }
 
 pub(crate) fn audit_input_list(list: &[InputConfig], inputs: &Map<String, Value>) -> Map<String, Value> {
-    inputs.iter().map(|(k, v)| (k.clone(), if !v.is_null() && list.iter().any(|i| &i.name == k && i.secret) { Value::String(SECRET_MASK.into()) } else { v.clone() })).collect()
+    inputs.iter().map(|(k, v)| (k.clone(), if !v.is_null() && list.iter().any(|i| &i.name == k && (i.secret || i.kind == "password")) { Value::String(SECRET_MASK.into()) } else { v.clone() })).collect()
 }
 
 /// The checks of `Site::build` for the service and the inputs of one resource.

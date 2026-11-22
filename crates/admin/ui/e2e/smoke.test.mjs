@@ -1327,13 +1327,16 @@ test("single sign-on: a user signs in at the provider, gets the roles of the cla
   const idp = await startIdp({ claims: { email: "sso@example.com", roles: ["support"] } });
   const copy = `${dir}-sso`;
   cpSync(dir, copy, { recursive: true });
+  const module = readFileSync(join(copy, "admin.py"), "utf8");
+  assert.ok(module.includes("admin.register(User)"));
+  writeFileSync(join(copy, "admin.py"), module.replace("admin.register(User)", 'admin.register(User, {"set_password": True, "list": {"columns": [User.username]}})'));
   const toml = readFileSync(join(copy, "monorm.toml"), "utf8");
   writeFileSync(join(copy, "monorm.toml"), `${toml.trimEnd()}\n\n[admin.oidc]\nissuer = "${idp.issuer}"\nclient_id = "${CLIENT_ID}"\nhd = "example.com"\n`);
   const env = { ...process.env, PYTHONPATH: ROOT, MONORM_DATABASE_URL: `sqlite://${copy}/app.db`, MONORM_ADMIN_SECRET: SECRET, MONORM_ADMIN_PORT: "0", MONORM_ADMIN_OIDC_CLIENT_SECRET: CLIENT_SECRET };
   const other = spawn(PYTHON, ["-m", "monorm", "admin"], { cwd: copy, env, stdio: ["ignore", "ignore", "pipe"] });
+  let text = "";
   try {
     const url = await new Promise((resolveUrl, reject) => {
-      let text = "";
       other.stderr.on("data", (chunk) => {
         text += chunk;
         const found = /"url":"([^"]+)"/.exec(text);
@@ -1361,7 +1364,51 @@ test("single sign-on: a user signs in at the provider, gets the roles of the cla
     assert.equal(held.stdout.trim(), "support", "the user holds the role that the claim names");
     const cookies = await context.cookies(`${url}/admin/`);
     assert.ok(!cookies.some((c) => c.name === "__Secure-monorm-oidc"), "the flow cookie ends with the callback");
-    await context.close();
+
+    const adminContext = await browser.newContext();
+    try {
+      const adminPage = await adminContext.newPage();
+      await adminPage.goto(`${url}/admin/-/login`);
+      await adminPage.getByLabel("Username").fill("ann");
+      await adminPage.getByLabel("Password", { exact: true }).fill("pw-of-ann");
+      await adminPage.getByRole("button", { name: "Sign in", exact: true }).click();
+      await adminPage.getByRole("navigation", { name: "Resources" }).waitFor();
+      const userKey = (await me.json()).user.key;
+      await adminPage.goto(`${url}/admin/User/${userKey}`);
+      await adminPage.getByRole("button", { name: "Set password", exact: true }).click();
+      const dialog = adminPage.getByRole("alertdialog");
+      await dialog.getByText("Set a new password for sso@example.com? All sessions of this user end.").waitFor();
+      await dialog.getByText("This user signs in with single sign-on. A password gives a second way in.").waitFor();
+      const passwordField = dialog.locator('input[name="new_password"]');
+      const repeatedField = dialog.getByLabel(/^New password again/);
+      for (const field of [passwordField, repeatedField]) {
+        assert.equal(await field.getAttribute("type"), "password");
+        assert.equal(await field.getAttribute("autocomplete"), "new-password");
+        await field.fill("1234");
+      }
+      await dialog.getByRole("button", { name: "Set password", exact: true }).click();
+      await dialog.getByText("This password is too short.", { exact: false }).waitFor();
+      assert.equal(await passwordField.getAttribute("aria-invalid"), "true");
+      const password = "private-sso-reset-password";
+      await passwordField.fill(password);
+      await repeatedField.fill(password);
+      await dialog.getByRole("button", { name: "Set password", exact: true }).click();
+      await dialog.waitFor({ state: "hidden" });
+      assert.equal((await context.request.get(`${url}/admin/api/me`)).status(), 401);
+      await page.goto(`${url}/admin/-/login`);
+      await page.getByLabel("Username").fill("sso@example.com");
+      await page.getByLabel("Password", { exact: true }).fill(password);
+      await page.getByRole("button", { name: "Sign in", exact: true }).click();
+      await page.waitForURL((next) => next.origin === url && next.pathname.replace(/\/$/, "") === "/admin");
+      const passwordSession = await context.request.get(`${url}/admin/api/me`);
+      assert.equal(passwordSession.status(), 200);
+      assert.equal((await passwordSession.json()).user.username, "sso@example.com");
+      assert.ok(text.includes("/admin/api/actions/User/set_password"));
+      assert.ok(!text.includes(password), "the password stays out of the server's request logs");
+    } finally {
+      await adminContext.close();
+      await context.close();
+    }
   } finally {
     other.removeAllListeners("exit");
     other.kill("SIGTERM");

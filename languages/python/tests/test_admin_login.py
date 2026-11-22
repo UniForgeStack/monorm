@@ -389,3 +389,165 @@ async def test_a_missing_or_short_secret_is_a_value_error(world):
     site, db, _ = world
     with pytest.raises(ValueError, match="MONORM_ADMIN_SECRET"):
         await site.test_client(db, secret="short").get(ME)
+
+
+def test_set_password_needs_the_auth_user_model(world):
+    site, _, models = world
+    with pytest.raises(admin.AdminConfigError, match="set_password.*needs the auth user model"):
+        site.register(models["AdminLogEntry"], {"set_password": True})
+        site.check()
+
+
+def test_set_password_action_cannot_replace_the_resource_change_rule(world):
+    site, _, models = world
+    user = models["User"]
+
+    @admin.action(placement="detail", can=user.id > 0, replace_change=True)
+    async def set_password(ctx, qs):
+        raise AssertionError("Rust runs the built-in action")
+
+    site.register(user, {"set_password": True, "actions": [set_password]})
+    with pytest.raises(admin.AdminConfigError, match="set_password always requires the resource change rule"):
+        site.check()
+
+
+async def test_set_password_keeps_the_current_session_and_ends_the_other_sessions(world, capfd):
+    site, db, models = world
+    site.register(models["User"], {"set_password": True})
+    actor = site.test_client(db, secret=SECRET)
+    other = site.test_client(db, secret=SECRET)
+    assert (await actor.login("ann", "pw")).status == 200
+    assert (await other.login("ann", "pw")).status == 200
+    path = "/admin/api/actions/User/set_password"
+    entry = models["AdminLogEntry"]
+    users = models["User"].objects.using(db)
+    old_hash = (await users.filter(models["User"].id == 1).first()).password
+
+    async def reset(first, second, keys=("1",), *, statements):
+        queries = []
+        stop = db.on_query(queries.append)
+        try:
+            reply = await actor.post(path, json={"keys": list(keys), "inputs": {"new_password": first, "new_password_again": second}})
+        finally:
+            stop()
+        assert len(queries) == statements
+        return reply
+
+    assert (await reset("new-password", "different", statements=1)).json()["error"]["kind"] == "PasswordMismatch"
+    assert (await reset("new-password", "new-password", ("1", "2"), statements=1)).status == 400
+    assert [row[1] for row in await audit(db, models)] == ["login", "login"]
+    weak = await reset("password", "password", statements=3)
+    assert (weak.status, weak.json()["error"]["kind"]) == (400, "WeakPassword")
+    assert [e["code"] for e in weak.json()["error"]["errors"]] == ["password_too_common"]
+    assert (await users.filter(models["User"].id == 1).first()).password == old_hash
+    new = "new-private-password"
+    done = await reset(new, new, statements=4)
+    assert done.status == 200, done.text
+    assert new not in done.text
+    assert cookie(done, "__Secure-monorm-session")
+    assert (await actor.get(ME)).status == 200
+    assert (await other.get(ME)).status == 401
+    assert (await users.filter(models["User"].id == 1).first()).check_password(new)
+    rows = await entry.objects.using(db).filter(entry.action.in_(["password_set", "password_set_failed"])).order_by(entry.id)
+    assert [(r.action, r.user_key, r.resource, r.record_key) for r in rows] == [
+        ("password_set_failed", "1", "User", "1"), ("password_set", "1", "User", "1")
+    ]
+    assert rows[0].changes["codes"] == [e["code"] for e in weak.json()["error"]["errors"]]
+    assert all(set(r.changes) <= {"ip", "request_id", "codes"} for r in rows)
+    assert new not in str([r.changes for r in rows])
+    assert all(new not in stream for stream in capfd.readouterr())
+
+
+async def test_set_password_requires_change_and_row_scope_and_guards_superusers(world):
+    site, db, models = world
+    user = models["User"]
+    entry = models["AdminLogEntry"]
+    site.register(user, {
+        "set_password": True,
+        "queryset": user.objects.filter(user.id < 5).prepare(),
+        "can": {"change": user.id != 3},
+    })
+    await site.sync_permissions(db)
+    original = make_password("pw")
+    users = user.objects.using(db)
+    await users.insert_many(
+        [{"username": name, "email": f"{name}@example.com", "password": original} for name in ("staff", "target", "outside")]
+    )
+    perms = models["Permission"]
+    granted = await perms.objects.using(db).filter(perms.codename.in_(["access", "read_user"]))
+    role = (await models["Role"].objects.using(db).insert_many([{"name": "staff"}]).returning())[0]
+    role_permissions = models["RolePermission"].objects.using(db)
+    await role_permissions.insert_many([{"role_id": role.id, "permission_id": p.id} for p in granted])
+    await models["UserRole"].objects.using(db).insert_many([{"user_id": 3, "role_id": role.id}])
+
+    staff = site.test_client(db, secret=SECRET)
+    target = site.test_client(db, secret=SECRET)
+    assert (await staff.login("staff", "pw")).status == 200
+    assert (await target.login("target", "pw")).status == 200
+    password = "staff-issued-password"
+
+    async def reset(key, status, statements):
+        before = (await users.filter(user.id == key).first()).password
+        queries = []
+        stop = db.on_query(queries.append)
+        try:
+            reply = await staff.post("/admin/api/actions/User/set_password", json={
+                "keys": [str(key)], "inputs": {"new_password": password, "new_password_again": password},
+            })
+        finally:
+            stop()
+        assert reply.status == status, reply.text
+        assert len(queries) == statements
+        stored = await users.filter(user.id == key).first()
+        if status == 200:
+            assert stored.check_password(password)
+        else:
+            assert stored.password == before
+
+    await reset(4, 403, 1)
+    change = await perms.objects.using(db).filter(perms.codename == "manage_user").first()
+    await role_permissions.insert_many([{"role_id": role.id, "permission_id": change.id}])
+    await reset(5, 404, 1)
+    await reset(3, 404, 1)
+    await reset(1, 403, 2)
+    await reset(4, 200, 4)
+    assert (await target.get(ME)).status == 401
+    await reset(2, 200, 4)
+    rows = await entry.objects.using(db).order_by(entry.id)
+    assert [(r.action, r.user_key, r.record_key) for r in rows if r.action != "login"] == [
+        ("permission_denied", "3", ""),
+        ("password_set_failed", "3", "1"),
+        ("password_set", "3", "4"),
+        ("password_set", "3", "2"),
+    ]
+
+
+async def test_set_password_applies_the_action_rule_and_counts_the_transaction_queries(world):
+    site, db, models = world
+    user = models["User"]
+    entry = models["AdminLogEntry"]
+
+    @admin.action(placement="detail", can=user.id == 1)
+    async def set_password(ctx, qs):
+        raise AssertionError("Rust runs the built-in action")
+
+    site.register(user, {"set_password": True, "actions": [set_password]})
+    client = site.test_client(db, user={"key": 1, "is_superuser": True})
+    password = "bounded-query-password"
+    path = "/admin/api/actions/User/set_password"
+
+    async def reset(key):
+        return await client.post(path, json={
+            "keys": [key], "inputs": {"new_password": password, "new_password_again": password},
+        })
+
+    preamble = (await client.get("/admin/api/resources")).queries
+    refused = await reset("2")
+    assert (refused.status, refused.queries) == (404, preamble + 1), refused.sql
+    done = await reset("1")
+    assert (done.status, done.queries) == (200, preamble + 5), done.sql
+    users = user.objects.using(db)
+    assert (await users.filter(user.id == 1).first()).check_password(password)
+    assert (await users.filter(user.id == 2).first()).check_password("pw")
+    rows = await entry.objects.using(db)
+    assert [(r.action, r.record_key) for r in rows] == [("password_set", "1")]

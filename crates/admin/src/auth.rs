@@ -30,7 +30,7 @@ pub const CHANGE_PASSWORD: &str = "auth.change_password";
 pub const USER: &str = "auth.user";
 
 const MAX_USERNAME: usize = 150;
-const MAX_PASSWORD: usize = 1024;
+pub(crate) const MAX_PASSWORD: usize = 1024;
 const MAX_BODY: usize = 16 * 1024;
 /// The fields of the user that the session cookie keeps. The password hash is not one of them: the cookie keeps a keyed tag of it.
 const USER_FIELDS: [&str; 4] = ["key", "username", "is_superuser", "display"];
@@ -102,7 +102,7 @@ async fn read_json(req: Request) -> Result<Map<String, Value>, Response> {
 
 // The error is the finished HTTP response, returned at once.
 #[allow(clippy::result_large_err)]
-fn text<'a>(body: &'a Map<String, Value>, key: &str, max: usize) -> Result<&'a str, Response> {
+pub(crate) fn text<'a>(body: &'a Map<String, Value>, key: &str, max: usize) -> Result<&'a str, Response> {
     match body.get(key).and_then(Value::as_str) {
         Some(s) if !s.is_empty() && s.len() <= max => Ok(s),
         _ => Err(reject(StatusCode::BAD_REQUEST, "BadRequest", &format!("`{key}` must be a non-empty string of at most {max} bytes"))),
@@ -163,12 +163,16 @@ impl Ctx {
     }
 }
 
+pub(crate) fn session_cookies(site: &Site, sec: &Security, session: &Session, csrf: &str, response: Response) -> Response {
+    let max_age = sec.remaining(session);
+    let cookies = [security::session_cookie(&site.base_path, &sec.sign_session(session), max_age), security::csrf_cookie(&site.base_path, csrf, max_age)];
+    with_cookies(response, &cookies)
+}
+
 fn session_response(ctx: &Ctx, session: Session) -> Response {
     let sec = &ctx.auth.security;
     let csrf = sec.csrf_token(&session.sid);
-    let max_age = sec.remaining(&session);
-    let cookies = [security::session_cookie(&ctx.site.base_path, &sec.sign_session(&session), max_age), security::csrf_cookie(&ctx.site.base_path, &csrf, max_age)];
-    with_cookies(Json(json!({"ok": true, "user": session.user, "csrf": csrf})).into_response(), &cookies)
+    session_cookies(&ctx.site, sec, &session, &csrf, Json(json!({"ok": true, "user": session.user, "csrf": csrf})).into_response())
 }
 
 /// Which login limit refused an attempt.

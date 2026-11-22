@@ -17,6 +17,7 @@ use monorm_engine::{db::Cell, exec::Outcome};
 use serde_json::{json, Map, Value};
 
 use crate::audit::{self, Entry};
+use crate::auth::SessionInfo;
 use crate::bridge::CallContext;
 use crate::files::{Temp, MAX_UPLOAD};
 use crate::hostwrite::{self, audit_input_list, parse_input_list, InputConfig};
@@ -25,6 +26,7 @@ use crate::key;
 use crate::list::{self, Binds, ListError, ListRequest, Position, RowScope};
 use crate::permissions::{Grants, Op};
 use crate::scope::Scoped;
+use crate::service::ErrorNote;
 use crate::sight::Sight;
 use crate::server::{authorize, deny, error_response, filters_of, found_keys, open_resource_with, open_tab_with, reject, Reach, Shared, State_, User};
 use crate::site::{Action, Column, Placement, Resource, BULK_DELETE, COUNT_CAP};
@@ -36,7 +38,7 @@ const MAX_KEYS: usize = 1000;
 const LOGGED_KEYS: usize = 20;
 
 /// `POST /actions/{name}/{action}`: the action on the rows of a list.
-pub(crate) async fn on_list(State(s): Shared, user: Option<Extension<crate::server::User>>, Path((name, action)): Path<(String, String)>, req: Request) -> Response {
+pub(crate) async fn on_list(State(s): Shared, user: Option<Extension<User>>, session: Option<Extension<SessionInfo>>, Path((name, action)): Path<(String, String)>, req: Request) -> Response {
     let (meta, uri) = meta_of(&s, &req);
     let body = req.into_body();
     let (user, scope, grants) = match authorize(&s, user).await {
@@ -47,7 +49,7 @@ pub(crate) async fn on_list(State(s): Shared, user: Option<Extension<crate::serv
         Ok(x) => x,
         Err(r) => return *r,
     };
-    run(&s, Open { resource, user, grants, scope, reach, pins: Vec::new(), tab: false, meta, uri }, &action, body).await
+    run(&s, Open { resource, user, grants, scope, reach, pins: Vec::new(), tab: false, meta, uri, session: session.map(|Extension(info)| info.0) }, &action, body).await
 }
 
 /// `POST /tab-actions/{name}/{key}/{rel}/{action}`: the action on the rows of a to-many tab. The action is one of the child resource.
@@ -62,7 +64,7 @@ pub(crate) async fn on_tab(State(s): Shared, user: Option<Extension<User>>, Path
         Ok(x) => x,
         Err(r) => return *r,
     };
-    run(&s, Open { resource: related.child, user, grants, scope, reach, pins, tab: true, meta, uri }, &action, body).await
+    run(&s, Open { resource: related.child, user, grants, scope, reach, pins, tab: true, meta, uri, session: None }, &action, body).await
 }
 
 struct Open<'a> {
@@ -75,6 +77,7 @@ struct Open<'a> {
     tab: bool,
     meta: Meta,
     uri: Uri,
+    session: Option<crate::security::Session>,
 }
 
 #[derive(Clone, Copy)]
@@ -98,7 +101,7 @@ impl Selection {
     }
 }
 
-async fn fail(scope: Scoped, response: Response) -> Response {
+pub(crate) async fn fail(scope: Scoped, response: Response) -> Response {
     scope.rollback().await;
     response
 }
@@ -113,6 +116,18 @@ struct QuerySet {
 }
 
 impl QuerySet {
+    async fn lock_target(self, s: &State_, scope: &Scoped, model: &str) -> Result<bool, ListError> {
+        let mut filters = self.filters;
+        filters.extend(self.rule);
+        let mut op = json!({"op": "select", "model": model, "filters": filters, "columns": [{"t": "expr", "expr": {"t": "int", "value": 1}}], "limit": 1});
+        if s.target.dialect == Dialect::Postgres {
+            op["lock"] = json!({"exclusive": true});
+        }
+        self.rows.apply(&mut op);
+        let selected = list::run_select(&s.site, scope.executor(), s.target, op, self.binds).await?;
+        Ok(!selected.rows.is_empty())
+    }
+
     async fn count(&self, s: &State_, scope: &Scoped, model: &str) -> Result<(bool, usize), ListError> {
         let Some(rule) = &self.rule else {
             let mut op = json!({"op": "count", "model": model, "filters": self.filters, "limit": COUNT_CAP + 1});
@@ -145,7 +160,7 @@ impl QuerySet {
 }
 
 async fn run(s: &State_, o: Open<'_>, name: &str, body: axum::body::Body) -> Response {
-    let Open { resource: sight, user, grants, scope, reach, pins, tab, meta, uri } = o;
+    let Open { resource: sight, user, grants, scope, reach, pins, tab, meta, uri, session } = o;
     let resource = &*sight;
     let kind = if name == BULK_DELETE {
         Kind::Delete
@@ -201,6 +216,26 @@ async fn run(s: &State_, o: Open<'_>, name: &str, body: axum::body::Body) -> Res
         Ok(x) => x,
         Err(m) => return fail(scope, reject(StatusCode::BAD_REQUEST, "BadRequest", &m)).await,
     };
+    if resource.set_password && name == crate::set_password::NAME {
+        let (password, keys) = match (&selection, crate::set_password::inputs(&body)) {
+            (Selection::Keys(keys), Ok(password)) => (password, keys),
+            (_, Err(response)) => return fail(scope, response).await,
+            _ => unreachable!("a detail action has exactly one key"),
+        };
+        let set = match query_set(s, resource, kind, &reach, &pins, &selection, &uri, &scope).await {
+            Ok(Some(set)) => set,
+            Ok(None) => return fail(scope, crate::set_password::not_found()).await,
+            Err(e) => return fail(scope, error_response(e)).await,
+        };
+        let model = &s.site.schema.model(resource.model).ir.name;
+        match set.lock_target(s, &scope, model).await {
+            Ok(true) => {}
+            Ok(false) => return fail(scope, crate::set_password::not_found()).await,
+            Err(e) => return fail(scope, error_response(e)).await,
+        }
+        let call = crate::set_password::Call { resource, user: &user, session: session.as_ref(), meta: &meta, key: &keys[0], password };
+        return crate::set_password::run(s, scope, call).await;
+    }
     let mut problems = Problems::default();
     let mut inputs = match parse_input_list(inputs_list, &body, &mut problems) {
         Ok(m) => m,
@@ -247,6 +282,10 @@ async fn run(s: &State_, o: Open<'_>, name: &str, body: axum::body::Body) -> Res
     set.filters.extend(set.rule.take());
 
     // Files: a temp file for each file input, kept until the host answers.
+    let passwords: Vec<String> = inputs_list.iter()
+        .filter(|input| input.kind == "password")
+        .filter_map(|input| inputs.get(&input.name).and_then(Value::as_str).map(str::to_owned))
+        .collect();
     let mut audit_values = audit_input_list(inputs_list, &inputs);
     let mut temps: Vec<Temp> = Vec::new();
     for i in inputs_list.iter().filter(|i| i.kind == "file") {
@@ -331,7 +370,7 @@ async fn run(s: &State_, o: Open<'_>, name: &str, body: axum::body::Body) -> Res
                 if let Some(scope) = held {
                     scope.rollback().await;
                 }
-                return hostwrite::host_failure(&meta, &function, e);
+                return mask_log(hostwrite::host_failure(&meta, &function, e), &passwords);
             }
         };
         match held {
@@ -344,7 +383,17 @@ async fn run(s: &State_, o: Open<'_>, name: &str, body: axum::body::Body) -> Res
     };
     drop(temps);
     let done = Done { resource, user: &user, meta: &meta, uri: &uri, name, delete: matches!(kind, Kind::Delete), placement, selection: &selection, count, capped, inputs: audit_values };
-    finish(s, done, answer, scope).await
+    mask_log(finish(s, done, answer, scope).await, &passwords)
+}
+
+/// Errors from the host can reach the request log as a response note.
+fn mask_log(mut response: Response, passwords: &[String]) -> Response {
+    if let Some(ErrorNote(note)) = response.extensions_mut().get_mut::<ErrorNote>() {
+        for password in passwords {
+            *note = note.replace(password, hostwrite::SECRET_MASK);
+        }
+    }
+    response
 }
 
 async fn action_denied(s: &State_, scope: Scoped, user: &User, resource: &Resource, name: &str, key: &str, meta: &Meta) -> Response {

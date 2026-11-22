@@ -196,7 +196,7 @@ export interface InlineInfo {
 
 export interface InputInfo {
   name: string;
-  type: "text" | "textarea" | "number" | "checkbox" | "select" | "file";
+  type: "text" | "textarea" | "number" | "checkbox" | "select" | "file" | "password";
   label: string;
   required: boolean;
   help: string | null;
@@ -277,6 +277,7 @@ export interface Detail {
   links: { name: string; title: string; resource: string; key: string }[];
   /** The rows of each inline of the record. */
   inlines?: Record<string, InlineRows>;
+  password_target?: { display: string | null; sso_only: boolean };
 }
 
 export interface InlineRows {
@@ -296,6 +297,7 @@ export interface User {
 
 /** The parts of an error answer that a form shows: a message for each field, messages for the form, and the 409 values. */
 export interface ErrorBody {
+  error?: { errors?: { code: string; message: string }[] };
   fields?: Record<string, string[]>;
   form?: string[];
   conflicts?: Record<string, { loaded: unknown; current: unknown }>;

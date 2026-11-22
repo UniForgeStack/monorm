@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { Admin, type AdminResponse, type AdminTestClient } from "../src/admin.js";
+import { action, Admin, type AdminResponse, type AdminTestClient } from "../src/admin.js";
 import { UserMethods, UserQueries, makePassword } from "../src/auth/index.js";
 import { connect, load, Registry, useModelMethods, useQuerySet, type Database } from "../src/index.js";
 
@@ -365,5 +365,158 @@ for (const provider of PROVIDERS) {
 
   test(`a missing or short secret is a value error (${provider})`, () => world(provider, async ({ site, db }) => {
     await assert.rejects(() => site.testClient(db, { secret: "short" }).get(ME), /MONORM_ADMIN_SECRET/);
+  }));
+}
+
+for (const provider of PROVIDERS) {
+  test(`set password needs the auth user model (${provider})`, () => world(provider, async ({ site, models }) => {
+    site.register(models["AdminLogEntry"], { setPassword: true });
+    assert.throws(() => site.check(), /set_password.*needs the auth user model/);
+  }));
+
+  test(`set password action cannot replace the resource change rule (${provider})`, () => world(provider, async ({ site, models }) => {
+    const user = models["User"];
+    const reset = action(async () => { throw new Error("Rust runs the built-in action"); }, {
+      name: "set_password", placement: "detail", can: user.id.gt(0), replaceChange: true,
+    });
+    site.register(user, { setPassword: true, actions: [reset] });
+    assert.throws(() => site.check(), /set_password always requires the resource change rule/);
+  }));
+
+  test(`set password keeps the current session and ends the other sessions (${provider})`, () => world(provider, async ({ site, db, models }) => {
+    const user = models["User"];
+    site.register(user, { setPassword: true });
+    const actor = site.testClient(db, { secret: SECRET });
+    const other = site.testClient(db, { secret: SECRET });
+    assert.equal((await actor.login("ann", "pw")).status, 200);
+    assert.equal((await other.login("ann", "pw")).status, 200);
+    const entry = models["AdminLogEntry"];
+    const users = user.objects.using(db);
+    const getActor = () => users.filter(user.id.eq(1)).first();
+    const oldHash = (await getActor()).password;
+    async function reset(first: string, second: string, statements: number, keys = ["1"]) {
+      let queries = 0;
+      const stop = db.onQuery(() => { queries++; });
+      try {
+        const reply = await actor.post("/admin/api/actions/User/set_password", {
+          json: { keys, inputs: { new_password: first, new_password_again: second } },
+        });
+        assert.equal(queries, statements);
+        return reply;
+      } finally {
+        stop();
+      }
+    }
+
+    const mismatch = await reset("new-password", "different", 1);
+    assert.equal(mismatch.status, 400);
+    assert.equal(mismatch.json().error.kind, "PasswordMismatch");
+    assert.equal((await reset("new-password", "new-password", 1, ["1", "2"])).status, 400);
+    assert.deepEqual((await audit(db, models)).map((row) => row[1]), ["login", "login"]);
+    const weak = await reset("password", "password", 3);
+    assert.equal(weak.status, 400);
+    assert.equal(weak.json().error.kind, "WeakPassword");
+    assert.deepEqual(weak.json().error.errors.map((e: Loose) => e.code), ["password_too_common"]);
+    assert.equal((await getActor()).password, oldHash);
+    const password = "new-private-password";
+    const done = await reset(password, password, 4);
+    assert.equal(done.status, 200, done.text);
+    assert.ok(!done.text.includes(password));
+    assert.ok(done.cookie("__Secure-monorm-session"));
+    assert.equal((await actor.get(ME)).status, 200);
+    assert.equal((await other.get(ME)).status, 401);
+    assert.ok((await getActor()).checkPassword(password));
+    const rows: Loose[] = await entry.objects.using(db).filter(entry.action.in(["password_set", "password_set_failed"])).orderBy(entry.id);
+    assert.deepEqual(rows.map((r) => [r.action, r.userKey, r.resource, r.recordKey]), [
+      ["password_set_failed", "1", "User", "1"], ["password_set", "1", "User", "1"],
+    ]);
+    assert.deepEqual(rows[0].changes.codes, weak.json().error.errors.map((e: Loose) => e.code));
+    assert.ok(rows.every((r) => Object.keys(r.changes).every((name) => ["ip", "request_id", "codes"].includes(name))));
+    assert.ok(!JSON.stringify(rows.map((r) => r.changes)).includes(password));
+  }));
+
+  test(`set password requires change and row scope and guards superusers (${provider})`, () => world(provider, async ({ site, db, models }) => {
+    const user = models["User"];
+    const entry = models["AdminLogEntry"];
+    site.register(user, {
+      setPassword: true,
+      queryset: user.objects.filter(user.id.lt(5)).prepare(),
+      can: { change: user.id.ne(3) },
+    });
+    await site.syncPermissions(db);
+    const original = makePassword("pw");
+    const users = user.objects.using(db);
+    await users.insertMany(["staff", "target", "outside"].map((name) => ({ username: name, email: `${name}@example.com`, password: original })));
+    const perms = models["Permission"];
+    const granted: Loose[] = await perms.objects.using(db).filter(perms.codename.in(["access", "read_user"]));
+    const [role] = await models["Role"].objects.using(db).insertMany([{ name: "staff" }]).returning();
+    const rolePermissions = models["RolePermission"].objects.using(db);
+    await rolePermissions.insertMany(granted.map((p) => ({ roleId: role.id, permissionId: p.id })));
+    await models["UserRole"].objects.using(db).insertMany([{ userId: 3, roleId: role.id }]);
+
+    const staff = site.testClient(db, { secret: SECRET });
+    const target = site.testClient(db, { secret: SECRET });
+    assert.equal((await staff.login("staff", "pw")).status, 200);
+    assert.equal((await target.login("target", "pw")).status, 200);
+    const password = "staff-issued-password";
+    async function reset(key: number, status: number, statements: number) {
+      const get = () => users.filter(user.id.eq(key)).first();
+      const before = (await get()).password;
+      let queries = 0;
+      const stop = db.onQuery(() => { queries++; });
+      try {
+        const reply = await staff.post("/admin/api/actions/User/set_password", {
+          json: { keys: [String(key)], inputs: { new_password: password, new_password_again: password } },
+        });
+        assert.equal(reply.status, status, reply.text);
+        assert.equal(queries, statements);
+      } finally {
+        stop();
+      }
+      const stored = await get();
+      if (status === 200) assert.ok(stored.checkPassword(password));
+      else assert.equal(stored.password, before);
+    }
+
+    await reset(4, 403, 1);
+    const change = await perms.objects.using(db).filter(perms.codename.eq("manage_user")).first();
+    await rolePermissions.insertMany([{ roleId: role.id, permissionId: change.id }]);
+    await reset(5, 404, 1);
+    await reset(3, 404, 1);
+    await reset(1, 403, 2);
+    await reset(4, 200, 4);
+    assert.equal((await target.get(ME)).status, 401);
+    await reset(2, 200, 4);
+    const rows: Loose[] = await entry.objects.using(db).orderBy(entry.id);
+    assert.deepEqual(rows.filter((r) => r.action !== "login").map((r) => [r.action, r.userKey, r.recordKey]), [
+      ["permission_denied", "3", ""],
+      ["password_set_failed", "3", "1"],
+      ["password_set", "3", "4"],
+      ["password_set", "3", "2"],
+    ]);
+  }));
+
+  test(`set password applies the action rule and counts the transaction queries (${provider})`, () => world(provider, async ({ site, db, models }) => {
+    const user = models["User"];
+    const entry = models["AdminLogEntry"];
+    const reset = action(async () => { throw new Error("Rust runs the built-in action"); }, {
+      name: "set_password", placement: "detail", can: user.id.eq(1),
+    });
+    site.register(user, { setPassword: true, actions: [reset] });
+    const client = site.testClient(db, { user: { key: 1, is_superuser: true } });
+    const password = "bounded-query-password";
+    const run = (key: string) => client.post("/admin/api/actions/User/set_password", {
+      json: { keys: [key], inputs: { new_password: password, new_password_again: password } },
+    });
+    const preamble = (await client.get("/admin/api/resources")).queries;
+    const refused = await run("2");
+    assert.deepEqual([refused.status, refused.queries], [404, preamble + 1], JSON.stringify(refused.sql));
+    const done = await run("1");
+    assert.deepEqual([done.status, done.queries], [200, preamble + 5], JSON.stringify(done.sql));
+    const users = user.objects.using(db);
+    assert.ok((await users.filter(user.id.eq(1)).first()).checkPassword(password));
+    assert.ok((await users.filter(user.id.eq(2)).first()).checkPassword("pw"));
+    const rows: Loose[] = await entry.objects.using(db);
+    assert.deepEqual(rows.map((r) => [r.action, r.recordKey]), [["password_set", "1"]]);
   }));
 }

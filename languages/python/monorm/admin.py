@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any, Literal, Mapping, Required, Sequence, Typ
 
 from . import _native
 from . import _admin_permissions
-from ._admin_host import HOST as _HOST
+from ._admin_host import HOST as _HOST, auth_user_table
 from . import _admin_routes
 from ._admin_routes import Reply, RouteFunction, RouteRequest, Stream
 from ._duration import format_duration
@@ -197,6 +197,7 @@ class ResourceConfig(TypedDict, total=False):
     """Functions that ``@admin.action(...)`` marked (a button where staff need it), or names such as ``"refund"`` that only declare
     the permission ``<label>.<action>_<resource>``."""
     bulk_delete: bool
+    set_password: bool
     """``False`` removes the bulk delete of the list. It is on by default; it needs the delete permission, and a ``delete`` service gets the query set."""
     queryset: Any
     """The rows that staff see: a prepared query set (``Model.objects.filter(Model.owner == param("user")).prepare()``) whose
@@ -260,6 +261,7 @@ _INLINE_PAGE_REFUSED = {
     "change": "field permissions belong to the registered page of the child",
     "actions": "an inline has no actions",
     "bulk_delete": "an inline has no bulk delete",
+    "set_password": "an inline has no set password action",
     "form_component": "a replaced form cannot be a row of a table",
     "detail_tabs": "a detail tab belongs to the registered page of the child",
     "allow_protected_writes": "the opt-in belongs to the registered page of the child",
@@ -355,7 +357,7 @@ def _form(name: str, form: Any) -> Any:
 
 
 _LIST_KEYS = {"columns", "order", "page_size", "sortable", "search", "search_with", "filters", "named_filters", "computed", "aggregates", "labels", "empty", "empty_fields", "tabs", "editable", "badges", "date_hierarchy"}
-_RESOURCE_KEYS = {"list", "title", "group", "allow", "perms", "label", "field_permissions", "see", "change", "actions", "queryset", "can", "check_messages", "form", "readonly", "widgets", "form_component", "detail_tabs", "relations", "files", "create", "update", "delete", "inputs", "allow_protected_writes", "inlines", "bulk_delete"}
+_RESOURCE_KEYS = {"list", "title", "group", "allow", "perms", "label", "field_permissions", "see", "change", "actions", "queryset", "can", "check_messages", "form", "readonly", "widgets", "form_component", "detail_tabs", "relations", "files", "create", "update", "delete", "inputs", "allow_protected_writes", "inlines", "bulk_delete", "set_password"}
 _BRAND_KEYS = {"name", "logo", "colors", "links", "environment"}
 _THEME_KEYS = {"title", "logo", "color"}
 Strategy = Literal["page", "model", "access"]
@@ -1161,6 +1163,10 @@ class Admin:
                 resource["views"] = views
         if "actions" in config:
             resource["actions"] = _actions_json(name, model, config["actions"])
+        if "set_password" in config:
+            if not isinstance(config["set_password"], bool):
+                raise AdminConfigError(f"{name}: set_password is True or False")
+            resource["set_password"] = config["set_password"]
         if "bulk_delete" in config:
             if not isinstance(config["bulk_delete"], bool):
                 raise AdminConfigError(f"{name}: bulk_delete is True or False")
@@ -1200,9 +1206,11 @@ class Admin:
     def _inline_models(self) -> dict[str, type[Model]]:
         return {d.model.__name__: d.model for parent, (_, config) in self._resources.items() for d in _inline_defs(parent, config.get("inlines", ()))}
 
-    def _config_json(self) -> str:
+    def _config_json(self, registry: Registry | None = None) -> str:
         resources = [self._resource_json(name, model, config) for name, (model, config) in self._resources.items()]
         out: dict[str, Any] = {"base_path": self.base_path, "permissions": self._strategy, "label": self._label, "resources": resources}
+        if any(r.get("set_password") for r in resources):
+            out["user_table"] = auth_user_table(self._registry if registry is None else registry)
         if self.prefix is not None:
             out["prefix"] = self.prefix
         if self._brand is not None:
@@ -1257,7 +1265,7 @@ class Admin:
     def _site(self, registry: Registry) -> _native.AdminSite:
         schema = registry._native if registry._native is not None else registry.prepare()
         try:
-            return _native.admin_site(schema, self._config_json())
+            return _native.admin_site(schema, self._config_json(registry))
         except ValueError as e:
             raise AdminConfigError(str(e)) from None
 
