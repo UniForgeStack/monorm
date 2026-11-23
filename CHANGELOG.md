@@ -4,7 +4,9 @@ All notable changes are listed here, in the [Keep a Changelog](https://keepachan
 
 ## [Unreleased]
 
-## [0.1.3] - 2026-11-23
+## [0.1.4] - 2026-11-24
+
+- 0.1.3 was tagged, but its release build failed and nothing was published. 0.1.4 holds the same changes, listed below.
 
 - Admin frames: `frames` on a resource shows another service's page in a detail tab, `frame_cards` (`frameCards` in TypeScript) puts fixed URLs on the home page, and `frame_origins` lists the origins the admin may frame (a `frame-src` entry in the UI policy). A sibling admin publishes a read-only detail tab with `embeds`: a page at `<base>/-/embed/{name}` for chosen ancestors and the route `GET {prefix}/embeds/{name}`, which needs the read grant, the queryset and the field permissions of the framed admin. A placeholder that follows a relation (`{owner.name}`) needs the read grant on the target resource and its `see` permission. `GET {prefix}/site` is a new name for the metadata of `GET {prefix}/resources`; the UI reads it, and both routes stay. New `fieldsets` on a resource (a named group of detail fields, and the tab of an embed). Breaking (alpha): the key of the details tab is now `details:default` (it was `__details__`). [Frames](docs/apps/admin.md#frame-tabs-home-cards-and-embed-pages)
 
