@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import * as api from "./api";
+import { FrameView } from "./Frame";
 import { Display } from "./DisplayValue";
 import { shown } from "./display";
 import { cell, type Zone } from "./format";
@@ -31,27 +32,42 @@ export function DetailPage({ resource, id, zone, site }: { resource: string; id:
   const tab = tabs.find((t) => t.name === chosen);
   const packageTabs = meta?.package_tabs ?? [];
   const packageTab = tab ? undefined : packageTabs.find((t) => t.name === chosen);
+  const fieldsets = meta?.fieldsets ?? [];
+  const fieldset = fieldsets.find((t) => t.name === chosen);
+  const frames = d.frames ?? [];
+  const frame = frames.find((f) => f.name === chosen);
+  const active = tab ?? packageTab ?? fieldset ?? frame;
+  const allTabs = [...fieldsets, ...tabs, ...packageTabs, ...frames];
   const target = tab && site?.resources.find((r) => r.name === tab.target);
   return (
     <section>
       <p><Link href={listBack(resource)}>← {meta?.title ?? resource}</Link></p>
       <h1>{meta?.title ?? resource} <span className="muted">{decodeURIComponent(d.key)}</span></h1>
       {meta?.writable === false && <p className="muted" role="note">Read-only here: {meta.read_only_reason}</p>}
-      {!tab && !packageTab && meta && <RowActions meta={meta} id={id} flags={d.flags ?? {}} detail={d} />}
-      {!tab && !packageTab && meta?.bypass && meta.bypass.length > 0 && <div className="toolbar"><Bypass names={meta.bypass} params={params} change={change} /></div>}
-      {tabs.length + packageTabs.length > 0 && <DetailTabs tabs={[...tabs, ...packageTabs]} current={tab?.name ?? packageTab?.name ?? null} base={detailUrl(resource, id)} />}
+      {!active && meta && <RowActions meta={meta} id={id} flags={d.flags ?? {}} detail={d} />}
+      {!active && meta?.bypass && meta.bypass.length > 0 && <div className="toolbar"><Bypass names={meta.bypass} params={params} change={change} /></div>}
+      {allTabs.length > 0 && <DetailTabs tabs={allTabs} current={active?.name ?? null} base={detailUrl(resource, id)} />}
       {tab && target && api.may(target, "create") && <AddOnTab tab={tab} detail={d} />}
       {packageTab && site ? (
-        <PackageTab key={packageTab.name} site={site} name={packageTab.name} resource={resource} id={id} record={Object.fromEntries(d.fields.map((f, i) => [f.label, d.values[i]]))} call={widgetCall} stream={widgetStream} />
+        <PackageTab key={packageTab.name} site={site} name={packageTab.name} embedded={false} resource={resource} id={id} record={Object.fromEntries(d.fields.map((f, i) => [f.label, d.values[i]]))} call={widgetCall} stream={widgetStream} />
       ) : tab && target ? (
         // One list per tab: the key resets the state of the list when the tab changes.
         <ListView key={tab.name} resource={tab.target} zone={zone} meta={target} params={params} change={change} scope={{ resource, key: id, rel: tab.name }} />
+      ) : frame ? (
+        <FrameView key={frame.name} frame={frame} />
+      ) : fieldset ? (
+        <DetailCards detail={fieldsetDetail(d, fieldset.fields)} sections={undefined} zone={zone} title={fieldset.title} />
       ) : (
         <DetailCards detail={d} sections={meta?.sections?.edit} zone={zone} />
       )}
-      {!tab && !packageTab && meta && <InlineRowsView meta={meta} rows={d.inlines} zone={zone} />}
+      {!active && meta && <InlineRowsView meta={meta} rows={d.inlines} zone={zone} />}
     </section>
   );
+}
+
+function fieldsetDetail(detail: api.Detail, fields: string[]) {
+  const indices = fields.map((name) => detail.fields.findIndex((field) => field.label === name)).filter((i) => i >= 0);
+  return { fields: indices.map((i) => detail.fields[i]!), values: indices.map((i) => detail.values[i]), links: [] };
 }
 
 /** The values of the open record that "Add" on a tab carries to the form of the new child record. */
@@ -159,7 +175,7 @@ function DetailTabs({ tabs, current, base }: { tabs: { name: string; title: stri
     </Tabs>
   );
 }
-const DETAILS = "__details__";
+const DETAILS = "details:default";
 
 /** The badge of a column that has one; the detail page draws no bool icon. */
 function badged(value: unknown, f: api.Column) {
@@ -170,7 +186,7 @@ function badged(value: unknown, f: api.Column) {
 const rowClass = "grid items-baseline gap-1 border-b border-border py-2.5 last:border-b-0 sm:grid-cols-[12rem_1fr] sm:gap-4";
 
 /** The fields of a record as cards: one per section of the resource, or one "Details" card when it has none. What no section names, and the links, go in the last card without a title (or a new "Other" card). */
-function DetailCards({ detail: d, sections, zone }: { detail: api.Detail; sections: api.Section[] | undefined; zone: Zone }) {
+export function DetailCards({ detail: d, sections, zone, title = "Details" }: { detail: Pick<api.Detail, "fields" | "values" | "links">; sections: api.Section[] | undefined; zone: Zone; title?: string }) {
   const row = (f: api.Column, i: number) => (
     <div key={f.label} className={rowClass}>
       <dt className="text-sm text-muted-foreground">{f.title}</dt>
@@ -194,7 +210,7 @@ function DetailCards({ detail: d, sections, zone }: { detail: api.Detail; sectio
   const last = [...cards].reverse().find((c) => c.plain);
   if (rest.length > 0) {
     if (last) last.rows.push(...rest);
-    else cards.push({ title: cards.length === 0 ? "Details" : "Other", plain: true, rows: rest });
+    else cards.push({ title: cards.length === 0 ? title : "Other", plain: true, rows: rest });
   }
   return (
     <>

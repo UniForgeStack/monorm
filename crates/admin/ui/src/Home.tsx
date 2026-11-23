@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { FolderOpen, History } from "lucide-react";
+import { FrameView } from "./Frame";
 import * as api from "./api";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "./components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./components/ui/table";
@@ -39,6 +40,12 @@ export function Home({ site, zone }: { site: api.Site | undefined; zone: Zone })
           </Card>
         ))}
       </div>
+      {site.frame_cards?.map((frame) => (
+        <Card key={frame.name}>
+          <CardHeader><CardTitle>{frame.title}</CardTitle></CardHeader>
+          <CardContent><FrameView frame={frame} /></CardContent>
+        </Card>
+      ))}
       {byName.has(LOG) && <Recent zone={zone} />}
     </div>
   );

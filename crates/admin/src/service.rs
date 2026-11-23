@@ -82,11 +82,10 @@ pub fn service(site: Arc<Site>, conn: Arc<dyn Executor>, options: Options) -> Ro
         .with_state((conn.clone(), options.draining.clone()));
     let login_path = format!("{}/login", site.prefix);
     let (guard_site, guard_conn) = (site.clone(), conn.clone());
-    let (base, prefix) = (site.base_path.clone(), site.prefix.clone());
-    let packages = !site.packages.is_empty();
+    let ui_site = site.clone();
     let page = move |req: Request| {
-        let (base, prefix) = (base.clone(), prefix.clone());
-        async move { ui::respond(req.method(), req.uri().path(), &base, &prefix, packages) }
+        let site = ui_site.clone();
+        async move { ui::respond(req.method(), req.uri().path(), &site) }
     };
     let sso = options.auth.as_ref().and_then(|auth| crate::oidc::routes(auth, site.clone(), conn.clone()));
     let mut app = health.merge(server::api_with(site, conn, options.auth.clone()));
@@ -109,9 +108,14 @@ pub fn service(site: Arc<Site>, conn: Arc<dyn Executor>, options: Options) -> Ro
 pub fn with_security_headers(app: Router) -> Router {
     app.layer(middleware::from_fn(|req: Request, next: Next| async move {
         let mut response = next.run(req).await;
+        let embed = response.extensions_mut().remove::<ui::EmbedDocument>();
         let headers = response.headers_mut();
         headers.entry("content-security-policy").or_insert(HeaderValue::from_static(CSP));
-        headers.insert("x-frame-options", HeaderValue::from_static("DENY"));
+        match embed {
+            None => headers.insert("x-frame-options", HeaderValue::from_static("DENY")),
+            Some(ui::EmbedDocument::SelfOnly) => headers.insert("x-frame-options", HeaderValue::from_static("SAMEORIGIN")),
+            Some(ui::EmbedDocument::AllowedOrigins) => headers.remove("x-frame-options"),
+        };
         headers.insert("referrer-policy", HeaderValue::from_static("same-origin"));
         headers.entry("cache-control").or_insert(HeaderValue::from_static("no-store"));
         headers.insert("x-content-type-options", HeaderValue::from_static("nosniff"));

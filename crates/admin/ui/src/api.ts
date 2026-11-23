@@ -86,6 +86,7 @@ export interface Section {
 export interface Resource {
   name: string;
   /** Package detail tabs of the detail page: the name `<package>.<tab>`, the title and the module path. */
+  fieldsets?: { name: string; title: string; fields: string[] }[];
   package_tabs?: { name: string; title: string; module: string }[];
   title: string;
   group: string | null;
@@ -236,6 +237,7 @@ export interface Site {
   /** The major version of the widget contract of this admin. */
   admin_major: number;
   packages: PackageInfo[];
+  frame_cards?: Frame[];
 }
 
 /** One flag for each `can` rule of the resource: whether the rule holds for the row. */
@@ -268,6 +270,27 @@ export interface Count {
   capped: boolean;
 }
 
+export interface Frame {
+  name: string;
+  title: string;
+  url: string | null;
+  sandbox: string;
+  height: string;
+  referrer_policy: "same-origin" | "no-referrer";
+}
+
+export interface Embed {
+  title: string;
+  key: string;
+  tab: {
+    fields: Column[];
+    values: unknown[];
+    name?: string;
+    resource?: string;
+    package?: Pick<PackageInfo, "name" | "tabs" | "styles"> & { admin_major: number };
+  };
+}
+
 export interface Detail {
   resource: string;
   key: string;
@@ -277,6 +300,7 @@ export interface Detail {
   links: { name: string; title: string; resource: string; key: string }[];
   /** The rows of each inline of the record. */
   inlines?: Record<string, InlineRows>;
+  frames?: Frame[];
   password_target?: { display: string | null; sso_only: boolean };
 }
 
@@ -392,6 +416,8 @@ export async function routeJson(method: string, path: string, body?: unknown): P
 /** Where the module of a custom form comes from: the same origin, so the CSP allows it. */
 export const formModuleUrl = (resource: string) => `${base}/forms/${encodeURIComponent(resource)}`;
 export const site = () => call<Site>("GET", "/resources");
+
+export const embed = (name: string, search: string) => call<Embed>("GET", `/embeds/${encodeURIComponent(name)}${search}`);
 
 const listPath = (resource: string, scope?: Scope) =>
   scope ? `${encodeURIComponent(scope.resource)}/${scope.key}/${encodeURIComponent(scope.rel)}` : encodeURIComponent(resource);

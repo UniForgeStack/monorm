@@ -1051,6 +1051,7 @@ dependencies = [
  "jsonwebtoken",
  "monorm-core",
  "monorm-engine",
+ "percent-encoding",
  "reqwest",
  "ring",
  "sea-query",
@@ -1060,6 +1061,7 @@ dependencies = [
  "subtle",
  "tokio",
  "tower",
+ "url",
  "uuid",
 ]
 

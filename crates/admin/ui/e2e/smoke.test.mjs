@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { cpSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, request } from "node:http";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 
@@ -65,6 +66,76 @@ test("sign in, open a list and a detail page", async () => {
   await page.getByRole("heading", { name: /Author/ }).waitFor();
   assert.deepEqual(problems, []);
   await context.close();
+});
+
+test("a frame tab shows the sibling admin's read-only embed with its own session", { timeout: 120_000 }, async () => {
+  const front = await startProject({ frame: true });
+  let sibling, proxy, context;
+  try {
+    sibling = await startProject({ embed: true });
+    proxy = createServer((incoming, outgoing) => {
+      const upstream = incoming.url.startsWith("/identity/admin") ? sibling.base : front.base;
+      const forwarded = request(new URL(incoming.url, upstream), { method: incoming.method, headers: incoming.headers }, (response) => {
+        outgoing.writeHead(response.statusCode, response.headers);
+        response.pipe(outgoing);
+      });
+      forwarded.on("error", () => outgoing.destroy());
+      incoming.pipe(forwarded);
+    });
+    await new Promise((resolve) => proxy.listen(0, "127.0.0.1", resolve));
+    const origin = `http://localhost:${proxy.address().port}`;
+    context = await browser.newContext();
+    const page = await context.newPage();
+    const problems = [];
+    page.on("pageerror", (error) => problems.push(error.message));
+    page.on("console", (msg) => {
+      if (msg.type() === "error" && !msg.text().includes("status of 401")) problems.push(msg.text());
+    });
+    const signIn = async (page, path) => {
+      await page.goto(`${origin}${path}/-/login`);
+      await page.getByLabel("Username").fill("ann");
+      await page.getByLabel("Password").fill("pw-of-ann");
+      await page.getByRole("button", { name: "Sign in" }).click();
+      await page.getByRole("navigation", { name: "Resources" }).waitFor();
+    };
+    await signIn(page, "/admin");
+    await page.goto(`${origin}/admin/Book/1`);
+    const tab = page.getByRole("tab", { name: "Identity health" });
+    await tab.waitFor();
+    assert.equal(await page.locator("iframe").count(), 0);
+    await tab.click();
+    const iframe = page.locator('iframe[title="Identity health"]');
+    assert.equal(await iframe.getAttribute("sandbox"), "allow-scripts allow-same-origin");
+    assert.equal(await iframe.getAttribute("referrerpolicy"), "same-origin");
+    assert.equal(await iframe.evaluate((frame) => frame.style.height), "65vh");
+    const view = iframe.contentFrame();
+    const signInLink = view.getByRole("link", { name: "Sign in to Identity" });
+    await signInLink.waitFor();
+    assert.equal(await signInLink.getAttribute("target"), "_blank");
+    assert.equal(await view.locator("form").count(), 0);
+
+    const login = await context.newPage();
+    await signIn(login, "/identity/admin");
+    await login.close();
+    await page.reload();
+    await view.getByRole("heading", { name: "Book health" }).waitFor();
+    assert.equal(await view.getByText("First", { exact: true }).count(), 1);
+    assert.equal(await view.getByRole("navigation").count(), 0);
+    assert.equal(await view.getByRole("button").count(), 0);
+    assert.equal(await view.locator("form").count(), 0);
+    const fallback = page.getByRole("link", { name: "Open in new tab" });
+    assert.equal(await fallback.getAttribute("href"), "/identity/admin/-/embed/book_health?id=1");
+    assert.equal(await fallback.getAttribute("target"), "_blank");
+    assert.deepEqual(problems, []);
+  } finally {
+    await context?.close();
+    proxy?.closeAllConnections();
+    await new Promise((resolve) => proxy ? proxy.close(resolve) : resolve());
+    for (const app of [front, sibling].filter(Boolean)) {
+      app.server.kill("SIGTERM");
+      rmSync(app.dir, { recursive: true, force: true });
+    }
+  }
 });
 
 test("the shell: home, sidebar filter, theme toggle, keyboard focus, kit import and sign out", async () => {

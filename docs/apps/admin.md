@@ -1383,7 +1383,8 @@ The module has the same two exports as a widget, and its default component gets 
 | `resource` | The resource name. |
 | `id` | The key of the record, URL-encoded as in the address. |
 | `record` | The loaded field labels and values of the record. |
-| `call`, `stream` | As for a widget. |
+| `call`, `stream` | As for a widget. In an embed these helpers accept only GET. |
+| `embedded` | Whether the component is in a read-only embed page. |
 
 The tab title is the part of the name after the dot, in the same readable form as other titles (`order_notes` is `Order notes`).
 A tab of a package that does not exist is a build error.
@@ -1394,6 +1395,59 @@ A tab of a package that does not exist is a build error.
 `rating.py` is for a Python project and `rating.mjs` for a TypeScript project, and both serve the same `rating/` directory.
 Each has one function, `install(admin, Movie)`.
 The tests run it through the test client on SQLite and PostgreSQL, and the [browser smoke test](#browser-smoke-test) opens the widget and the tab.
+
+## Frame tabs, home cards and embed pages
+
+A frame tab shows another service's page next to a record. A frame card shows a fixed URL on the home page.
+The parent admin lists the origins it may frame.
+
+```python
+site = Admin(
+    frame_origins=["'self'", "https://charts.example.com"],
+    frame_cards=[{"name": "operations", "title": "Operations", "url": "https://charts.example.com/ops"}],
+)
+site.register(Shop, {
+    "frames": [{
+        "name": "identity", "title": "Identity health", "height": "70vh",
+        "url": "/identity/admin/-/embed/shop_health?domain={domain}",
+    }],
+})
+```
+
+TypeScript uses `frameOrigins`, `frameCards`, and `frames`. Both bindings take `name`, `title`, `url`, and optional `height` (default `70vh`).
+Use root-relative URLs with `"'self'"` for sibling admins on the same origin. An absolute URL needs an exact HTTPS origin from the list. HTTP is available for `localhost`, `127.0.0.1`, and `[::1]`. Origins have no trailing slash.
+A field placeholder fills an entire path segment or query value. It can follow one to-one relation, such as `{owner.domain}`.
+The server percent-encodes values. A null or hidden field makes the frame unavailable. Home cards have fixed URLs.
+
+Frames default to `allow-scripts allow-same-origin`. Turn either off with `scripts: false` or `same_origin: false` (`sameOrigin` in TypeScript).
+The optional `sandbox` list adds `allow-forms`, `allow-popups`, `allow-popups-to-escape-sandbox`, or `allow-downloads`.
+Treat same-origin scripts as trusted. With the default flags they can remove the sandbox, which only guards against accidental navigation.
+The parent page always offers an **Open in new tab** link. To let links inside the iframe open an unsandboxed tab, configure both popup flags explicitly.
+
+The sibling admin can publish one read-only detail tab at `<base>/-/embed/{name}`.
+
+```python
+identity = Admin(
+    base_path="/identity/admin",
+    embeds={
+        "shop_health": {
+            "resource": "Shop", "tab": "health", "lookup": "domain", "ancestors": ["'self'"],
+        },
+    },
+)
+identity.register(Shop, {
+    "fieldsets": [{"name": "health", "title": "Health", "fields": ["state", "checked_at"]}],
+})
+```
+
+TypeScript uses the same `embeds` and `fieldsets` keys, with `basePath` for the site's base path.
+The lookup field must have a single-field unique constraint or primary key. The request uses the framed admin's own session, read permission, queryset and field permissions.
+A signed-out visitor gets a sign-in link to the framed admin. The session cookies support same-origin and same-site framing.
+Only the named embed document accepts its configured ancestors. Its API route (`GET {prefix}/embeds/{name}?{lookup}=<value>`) returns the tab's data with the standard API headers.
+
+To expose a package tab, register it as `{"module": "summary.js", "embeddable": True}` in Python or `{ module: "summary.js", embeddable: true }` in TypeScript.
+The resource must list the package tab normally. When its component receives `embedded: true`, it must hide write controls and forms, and open links in new tabs.
+Only opt in trusted read-only components and custom GET routes.
 
 ## The UI
 
@@ -1408,6 +1462,7 @@ The UI path is the `base_path` setting, and the page paths below show the defaul
 | Path | Page |
 |---|---|
 | `/admin` | The home page: a card for each navigation group with its pages, and the last 10 audit-log rows that the user may see (only when the user may read `AdminLogEntry`). |
+| `/admin/-/embed/{name}` | A named read-only detail tab. |
 | `/admin/-/login`, `/admin/-/password` | Sign in, and change the password. Sign out, the theme and the time zone are in the user menu of the header. |
 | `/admin/{resource}` | The list. The first column links to the record, and a foreign key column shows the label of the related record as a link. Search, filters, sort, page and page size are in the query string, so a reload, a link and the back button return to the same view. |
 | `/admin/{resource}/{key}` | The record: its fields, a link for each to-one relation, and a tab for each to-many relation (`?tab={relation}`). It has Edit and Delete. |

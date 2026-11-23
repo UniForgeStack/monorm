@@ -250,10 +250,10 @@ function run(dir, args, env) {
 }
 
 /** Build the project in a new temporary directory, start the admin on a free port, and resolve with `{ dir, server, base }`. */
-export async function startProject() {
+export async function startProject({ frame = false, embed = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "monorm-admin-smoke-"));
   // The built-in apps import from the source tree when `monorm` is an editable install; the root makes that path resolve.
-  const env = { ...process.env, PYTHONPATH: ROOT, MONORM_DATABASE_URL: `sqlite://${dir}/app.db`, MONORM_ADMIN_SECRET: SECRET, MONORM_ADMIN_PORT: "0" };
+  const env = { ...process.env, PYTHONPATH: ROOT, MONORM_DATABASE_URL: `sqlite://${dir}/app.db`, MONORM_ADMIN_SECRET: embed ? SECRET + "-identity" : SECRET, MONORM_ADMIN_PORT: "0" };
   writeFileSync(join(dir, "schema.prisma"), SCHEMA);
   writeFileSync(join(dir, "seed.py"), SEED);
   // The generated message classes of the proto field, and the map from the package to its module.
@@ -265,7 +265,12 @@ export async function startProject() {
   assert.ok(module.includes("admin.register(Book)"), "the generated admin.py registers Book");
   assert.ok(module.includes("admin.register(Note)"), "the generated admin.py registers Note");
   // Book: a section layout with a collapsed section. Note: a custom form from a module file.
-  const book = 'admin.register(Book, {"list": {"search": [Book.title], "filters": [Book.author]}, "form": [{"title": "Basics", "fields": ["title", "created_at"]}, {"title": "More", "fields": ["author_id"], "collapsed": True}]})';
+  let book = 'admin.register(Book, {"list": {"search": [Book.title], "filters": [Book.author]}, "form": [{"title": "Basics", "fields": ["title", "created_at"]}, {"title": "More", "fields": ["author_id"], "collapsed": True}]})';
+  if (frame) {
+    book = book.replace('{"list":', '{"frames": [{"name": "identity", "title": "Identity health", "url": "/identity/admin/-/embed/book_health?id={id}", "height": "65vh"}], "list":');
+  } else if (embed) {
+    book = book.replace('{"list":', '{"fieldsets": [{"name": "health", "title": "Book health", "fields": ["title"]}], "list":');
+  }
   writeFileSync(join(dir, "note-form.js"), NOTE_FORM);
   // Paper: a picker over Reviewer (with a create modal) and a file field in a memory store.
   assert.ok(module.includes("admin.register(Reviewer)") && module.includes("admin.register(Paper)"), "the generated admin.py registers Reviewer and Paper");
@@ -277,11 +282,17 @@ export async function startProject() {
   assert.ok(module.includes("admin.register(Parcel)"), "the generated admin.py registers Parcel");
   // Movie: the example extension package (a stars widget, a Summary tab, a route and an action).
   cpSync(join(ROOT, "examples", "admin-package"), join(dir, "package"), { recursive: true });
+  const options = ['storage=Registry({"media": AsyncOperator("memory")})'];
+  if (frame) options.push(`frame_origins=["'self'"]`);
+  if (embed) {
+    options.push('base_path="/identity/admin"', 'brand={"name": "Identity"}');
+    options.push(`embeds={"book_health": {"resource": "Book", "lookup": "id", "tab": "health", "ancestors": ["'self'"]}}`);
+  }
   const withStorage = module
     .replace("from monorm.admin import Admin\n", "from monorm.admin import Admin, inline\nfrom monorm_file_storage import Registry\nfrom opendal import AsyncOperator\n")
     // Album: its Track rows as an inline that saves with the album.
     .replace("admin.register(Album)", 'admin.register(Album, {"inlines": [inline(Track)]})')
-    .replace("admin = Admin()", 'admin = Admin(storage=Registry({"media": AsyncOperator("memory")}))')
+    .replace("admin = Admin()", `admin = Admin(${options.join(", ")})`)
     .replace("from monorm.admin import Admin, inline\n", "from monorm.admin import Admin, inline, action, message\n")
     .replace("admin.register(Ticket)", TICKET)
     .replace("admin.register(Movie)", "import sys\nsys.path.insert(0, str(__import__('pathlib').Path(__file__).parent / 'package'))\nfrom rating import install\n\ninstall(admin, Movie)")

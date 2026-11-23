@@ -26,9 +26,33 @@ pub fn import_map(base: &str) -> String {
     )
 }
 
-fn csp_with_map(map: &str) -> String {
-    let hash = B64.encode(Sha256::digest(map.as_bytes()));
-    CSP.replacen("script-src 'self'", &format!("script-src 'self' 'sha256-{hash}'"), 1)
+pub(crate) fn policy(base: &str, packages: bool, origins: &[String]) -> Result<HeaderValue, crate::site::ConfigError> {
+    let mut csp = CSP.to_owned();
+    if packages {
+        let hash = B64.encode(Sha256::digest(import_map(base).as_bytes()));
+        csp = csp.replacen("script-src 'self'", &format!("script-src 'self' 'sha256-{hash}'"), 1);
+    }
+    if !origins.is_empty() {
+        csp.push_str("; frame-src ");
+        csp.push_str(&origins.join(" "));
+    }
+    header_policy(&csp)
+}
+
+pub(crate) fn with_ancestors(csp: &HeaderValue, ancestors: &str) -> Result<HeaderValue, crate::site::ConfigError> {
+    let csp = csp.to_str().map_err(|e| crate::site::ConfigError(e.to_string()))?;
+    header_policy(&csp.replacen("frame-ancestors 'none'", &format!("frame-ancestors {ancestors}"), 1))
+}
+
+fn header_policy(csp: &str) -> Result<HeaderValue, crate::site::ConfigError> {
+    HeaderValue::from_str(csp).map_err(|e| crate::site::ConfigError(format!("invalid UI CSP: {e}")))
+}
+
+/// Only the server-rendered embed document may override the default X-Frame-Options.
+#[derive(Clone)]
+pub(crate) enum EmbedDocument {
+    SelfOnly,
+    AllowedOrigins,
 }
 
 /// True for the base path and the paths below it that are not API paths. `/bundler/adminx` is outside `/bundler/admin`.
@@ -81,40 +105,52 @@ fn reply_with(content_type: &'static str, cache: &'static str, body: Vec<u8>, cs
 
 /// The index page. With `packages`, the import map goes first in `<head>`, before any module script, and the policy allows its hash.
 /// The asset URLs of the built page are relative (`./assets/...`); they become absolute under `base`, so a deep link and the bare base path load the same files.
-fn index(base: &str, prefix: &str, packages: bool) -> Option<Response> {
+fn index(site: &crate::Site, embed: Option<&crate::frames::Embed>) -> Option<Response> {
+    let base = &site.base_path;
     let mut page = std::str::from_utf8(file("index.html")?)
         .ok()?
-        .replace(PLACEHOLDER, &escape(prefix))
+        .replace(PLACEHOLDER, &escape(&site.prefix))
         .replace(BASE_PLACEHOLDER, &escape(base))
         .replace("src=\"./", &format!("src=\"{}/", escape(base)))
         .replace("href=\"./", &format!("href=\"{}/", escape(base)));
-    if !packages {
-        return Some(reply("text/html; charset=utf-8", "no-store", page.into_bytes()));
+    if !site.packages.is_empty() {
+        let map = import_map(base);
+        page = page.replacen("<head>", &format!("<head>\n    <script type=\"importmap\">{map}</script>"), 1);
     }
-    let map = import_map(base);
-    page = page.replacen("<head>", &format!("<head>\n    <script type=\"importmap\">{map}</script>"), 1);
-    let csp = HeaderValue::from_str(&csp_with_map(&map)).ok()?;
-    Some(reply_with("text/html; charset=utf-8", "no-store", page.into_bytes(), csp))
+    let csp = embed.map_or(&site.ui_csp, |embed| &embed.csp);
+    if embed.is_some() {
+        let name = escape(site.brand["name"].as_str().unwrap_or("Admin"));
+        page = page.replacen("<head>", &format!("<head>\n    <meta name=\"monorm-admin-embed\" content=\"{name}\">"), 1);
+    }
+    let mut response = reply_with("text/html; charset=utf-8", "no-store", page.into_bytes(), csp.clone());
+    if let Some(embed) = embed {
+        response.extensions_mut().insert(if embed.self_only { EmbedDocument::SelfOnly } else { EmbedDocument::AllowedOrigins });
+    }
+    Some(response)
 }
 
 /// The answer for `path` (inside the base path, not an API path), or a JSON 404 when no UI is built in.
-/// `packages` is true when the site has extension packages: the page then carries the import map.
-pub fn respond(method: &Method, path: &str, base: &str, prefix: &str, packages: bool) -> Response {
-    if !matches!(*method, Method::GET | Method::HEAD) || !is_ui(path, base, prefix) {
+pub fn respond(method: &Method, path: &str, site: &crate::Site) -> Response {
+    if !matches!(*method, Method::GET | Method::HEAD) || !is_ui(path, &site.base_path, &site.prefix) {
         return crate::server::reject(StatusCode::NOT_FOUND, "NotFound", "no such path");
     }
-    let rest = path.strip_prefix(base).unwrap_or_default().trim_start_matches('/');
-    let found = if rest.is_empty() || rest == "index.html" {
-        index(base, prefix, packages)
-    } else if let Some(bytes) = file(rest) {
+    let rest = path.strip_prefix(site.base_path.as_str()).unwrap_or_default();
+    // Only the exact route gets embed headers. Other path spellings must not render a frameable document.
+    let found = if rest == "/-/embed" {
+        None
+    } else if let Some(name) = rest.strip_prefix("/-/embed/") {
+        site.embeds.get(name).and_then(|embed| index(site, Some(embed)))
+    } else if rest.is_empty() || rest == "/" || rest == "/index.html" {
+        index(site, None)
+    } else if let Some(bytes) = file(rest.trim_start_matches('/')) {
         // The shared React modules keep their name across releases: no long cache.
-        let cache = if rest.starts_with("shared/") { "no-cache" } else { "public, max-age=31536000, immutable" };
+        let cache = if rest.starts_with("/shared/") { "no-cache" } else { "public, max-age=31536000, immutable" };
         Some(reply(mime(rest), cache, bytes.to_vec()))
-    } else if rest.starts_with("assets/") || (!rest.contains('/') && rest.contains('.')) {
+    } else if rest.starts_with("/assets/") || (!rest[1..].contains('/') && rest.contains('.')) {
         // A missing file is a 404: a page route has no dot in its first segment.
         None
     } else {
-        index(base, prefix, packages)
+        index(site, None)
     };
     found.unwrap_or_else(|| crate::server::reject(StatusCode::NOT_FOUND, "NotFound", "no such path"))
 }

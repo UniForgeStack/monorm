@@ -58,6 +58,8 @@ pub fn api_with(site: Arc<Site>, conn: Arc<dyn Executor>, auth: Option<AuthConfi
     let routes = Router::new().route("/resources", get(resources)).route("/resources/{name}", get(rows).post(crate::write::create).patch(crate::listwrite::save)).route("/resources/{name}/{key}", get(detail).patch(crate::write::update).delete(crate::write::destroy)).route("/resources/{name}/{key}/{rel}", get(tab_rows))
         .route("/resources/{name}/{key}/inlines/{inline}", post(crate::inlinewrite::row_create))
         .route("/resources/{name}/{key}/inlines/{inline}/{row}", patch(crate::inlinewrite::row_update).delete(crate::inlinewrite::row_destroy)).route("/forms/{name}", get(form_module)).route("/counts/{name}", get(counts)).route("/dates/{name}", get(dates)).route("/export/{name}", get(crate::export::export)).route("/counts/{name}/{key}/{rel}", get(tab_counts)).route("/autocomplete/{name}/{rel}", get(crate::relations::autocomplete)).route("/links/{name}/{key}/{rel}", get(crate::relations::links)).route("/files/{name}/{key}/{field}", get(crate::files::download).post(crate::files::upload))
+        .route("/site", get(resources))
+        .route("/embeds/{name}", get(embed))
         .route("/routes/{*path}", axum::routing::any(crate::routes::handle))
         .route("/packages/{pkg}/{*file}", get(crate::packages::serve))
         .route("/actions/{name}/{action}", post(crate::actions::on_list))
@@ -161,6 +163,10 @@ pub(crate) async fn deny(site: &Site, scope: Scoped, user: &User, resource: &str
         }
         Err(_) => scope.rollback().await,
     }
+    forbidden()
+}
+
+fn forbidden() -> Response {
     reject(StatusCode::FORBIDDEN, "Forbidden", "you do not have the permission for this")
 }
 
@@ -179,6 +185,10 @@ pub(crate) async fn begin_scope(s: &State_) -> Result<Scoped, String> {
 
 /// The preamble of every route: the user (401), a scope, the grants of the user and the site gate (403).
 pub(crate) async fn authorize(s: &State_, user: Option<Extension<User>>) -> Result<(User, Scoped, Grants), Box<Response>> {
+    authorize_with(s, user, true).await
+}
+
+async fn authorize_with(s: &State_, user: Option<Extension<User>>, audit_denial: bool) -> Result<(User, Scoped, Grants), Box<Response>> {
     let user = require_user(user)?;
     let scope = begin_scope(s).await.map_err(|m| Box::new(database_error(&m)))?;
     let grants = match permissions::load(&s.site, scope.executor(), &user.0).await {
@@ -189,6 +199,10 @@ pub(crate) async fn authorize(s: &State_, user: Option<Extension<User>>) -> Resu
         }
     };
     if !s.site.gate(&grants) {
+        if !audit_denial {
+            scope.rollback().await;
+            return Err(Box::new(forbidden()));
+        }
         return Err(Box::new(deny(&s.site, scope, &user, "", json!({"needs": [permissions::GATE]})).await));
     }
     Ok((user, scope, grants))
@@ -314,7 +328,7 @@ async fn resources(State(s): Shared, user: Option<Extension<User>>) -> Response 
         close_host_forms(&mut meta);
     }
     let visible: Vec<&str> = meta["resources"].as_array().map(|a| a.iter().filter_map(|r| r["name"].as_str()).collect()).unwrap_or_default();
-    Json(json!({"ok": true, "brand": s.site.brand, "nav": s.site.nav(&visible), "resources": meta["resources"], "permissions": meta["permissions"], "admin_major": crate::packages::ADMIN_MAJOR, "packages": s.site.packages.meta()})).into_response()
+    Json(json!({"ok": true, "brand": s.site.brand, "nav": s.site.nav(&visible), "resources": meta["resources"], "permissions": meta["permissions"], "admin_major": crate::packages::ADMIN_MAJOR, "packages": s.site.packages.meta(), "frame_cards": s.site.frame_cards})).into_response()
 }
 
 /// With no host, a resource whose write needs host code cannot save: say so in its form metadata.
@@ -818,10 +832,20 @@ async fn detail(State(s): Shared, user: Option<Extension<User>>, Path((name, _))
         Ok(t) => t,
         Err(r) => return *r,
     };
-    match list::detail(&s.site, &resource, scope.executor(), s.target, s.viewer(), &key, &reach.rows).await {
+    let mut projection = resource.detail.clone();
+    for column in resource.frames.iter().flat_map(|frame| frame.columns()) {
+        if !projection.iter().any(|c| c.label == column.label) && crate::frames::visible(&s.site, &resource, &grants, column) {
+            projection.push(column.clone());
+        }
+    }
+    match list::read_projection(&s.site, &resource, scope.executor(), s.target, s.viewer(), list::RecordFilter::Key(&key), &reach.rows, false, &projection, true).await {
         Ok(Some(record)) => {
             let mut values = record.cells;
-            crate::sight::redact_row(&resource, &resource.detail, &mut values);
+            crate::sight::redact_row(&resource, &projection, &mut values);
+            let frames: Vec<_> = resource.frames.iter().map(|frame| frame.payload(&s.site.base_path, |column| {
+                projection.iter().position(|c| c.label == column.label).map(|i| &values[i])
+            })).collect();
+            values.truncate(resource.detail.len());
             let (scope, inlines) = match inline_rows(&s, &resource, &user, &grants, &key, &reach, scope).await {
                 Ok(t) => t,
                 Err(r) => return *r,
@@ -863,7 +887,7 @@ async fn detail(State(s): Shared, user: Option<Extension<User>>, Path((name, _))
                     Some(json!({"name": l.name, "title": title, "resource": target.name, "key": key::encode(&parts)}))
                 })
                 .collect();
-            let mut body = json!({"ok": true, "resource": resource.name, "key": raw, "fields": resource.meta["fields"], "values": values, "flags": record.flags, "links": links, "inlines": inlines});
+            let mut body = json!({"ok": true, "resource": resource.name, "key": raw, "fields": resource.meta["fields"], "values": values, "flags": record.flags, "links": links, "inlines": inlines, "frames": frames});
             if let Some(target) = password_target {
                 body["password_target"] = target;
             }
@@ -878,6 +902,72 @@ async fn detail(State(s): Shared, user: Option<Extension<User>>, Path((name, _))
             error_response(e)
         }
     }
+}
+
+/// One scoped record and one read-only detail tab. Embed URLs have no default bypass controls.
+async fn embed(State(s): Shared, user: Option<Extension<User>>, Path(name): Path<String>, uri: Uri) -> Response {
+    use crate::frames::EmbedTab;
+
+    let (user, scope, grants) = match authorize_with(&s, user, false).await {
+        Ok(t) => t,
+        Err(r) => return *r,
+    };
+    let no_record = || reject(StatusCode::NOT_FOUND, "NotFound", "no such record");
+    let Some(embed) = s.site.embeds.get(&name) else {
+        scope.rollback().await;
+        return reject(StatusCode::NOT_FOUND, "NotFound", "no such embed");
+    };
+    let Some(resource) = s.site.sight(&embed.resource, &grants) else {
+        scope.rollback().await;
+        return no_record();
+    };
+    if !resource.allow.contains(&Op::Read) || !s.site.allows(&grants, &resource, Op::Read) {
+        scope.rollback().await;
+        return forbidden();
+    }
+    // Looking up a hidden value would let a reader test guesses about it.
+    if resource.hidden.contains(&embed.lookup.label) {
+        scope.rollback().await;
+        return no_record();
+    }
+    let mut values = form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes())
+        .filter_map(|(name, value)| (name == embed.lookup.label).then_some(value));
+    let lookup = match (values.next(), values.next()) {
+        (Some(value), None) => value,
+        _ => {
+            scope.rollback().await;
+            return reject(StatusCode::BAD_REQUEST, "BadRequest", &format!("supply one {:?} query value", embed.lookup.label));
+        }
+    };
+    let (scope, reach) = match reach(&s, &resource, &user, &grants, Vec::new(), scope).await {
+        Ok(t) => t,
+        Err(r) => return *r,
+    };
+    let mut projection = resource.key_columns.clone();
+    let key_len = projection.len();
+    let (title, fields) = match &embed.tab {
+        EmbedTab::Fields(set) => (
+            set.title.clone().unwrap_or_else(|| crate::meta::humanize(&set.name)),
+            set.fields.iter().filter_map(|name| resource.detail.iter().find(|c| &c.label == name)).cloned().collect::<Vec<_>>(),
+        ),
+        EmbedTab::Package { title, .. } => (title.clone(), resource.detail.clone()),
+    };
+    projection.extend(fields.iter().cloned());
+    let selected = list::read_projection(&s.site, &resource, scope.executor(), s.target, s.viewer(), list::RecordFilter::Lookup(&embed.lookup, &lookup), &reach.rows, false, &projection, false).await;
+    finish(scope, selected, |record| {
+        let Some(record) = record else { return no_record() };
+        let key = key::encode(&record.cells[..key_len]);
+        let mut values = record.cells[key_len..].to_vec();
+        crate::sight::redact_row(&resource, &fields, &mut values);
+        let metadata: Vec<_> = fields.iter().filter_map(|c| resource.meta["fields"].as_array()?.iter().find(|f| f["label"] == c.label).cloned()).collect();
+        let mut tab = json!({"fields": metadata, "values": values});
+        if let EmbedTab::Package { name, .. } = &embed.tab {
+            tab["package"] = s.site.packages.tab_package(name);
+            tab["name"] = json!(name);
+            tab["resource"] = json!(resource.name);
+        }
+        Json(json!({"title": title, "key": key, "tab": tab})).into_response()
+    }).await
 }
 
 pub(crate) fn database_error(message: &str) -> Response {
