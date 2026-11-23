@@ -1041,15 +1041,43 @@ pub async fn detail(site: &Site, resource: &Resource, conn: &dyn Executor, targe
 /// `detail`; with `lock` the select takes the row lock of a write (`FOR UPDATE`, PostgreSQL only: SQLite has no row locks).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn read_record(site: &Site, resource: &Resource, conn: &dyn Executor, target: Target, viewer: Option<&AuthConfig>, key: &[Value], scope: &RowScope, lock: bool) -> Result<Option<Record>, ListError> {
-    if key.len() != resource.key_columns.len() {
-        return Err(ListError::Bad("the key does not fit this resource".into()));
-    }
+    read_projection(site, resource, conn, target, viewer, RecordFilter::Key(key), scope, lock, &resource.detail, true).await
+}
+
+pub(crate) enum RecordFilter<'a> {
+    Key(&'a [Value]),
+    Lookup(&'a Column, &'a str),
+}
+
+/// The common one-row select. Embed reads pass only the projected visible fields and key, with no action rules.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn read_projection(
+    site: &Site, resource: &Resource, conn: &dyn Executor, target: Target, viewer: Option<&AuthConfig>,
+    filter: RecordFilter<'_>, scope: &RowScope, lock: bool, projection: &[Column], rules: bool,
+) -> Result<Option<Record>, ListError> {
     let mut binds = Binds::default();
-    let mut filters = vec![key_filter(resource, key, &mut binds)?];
+    let predicate = match filter {
+        RecordFilter::Key(key) => {
+            if key.len() != resource.key_columns.len() {
+                return Err(ListError::Bad("the key does not fit this resource".into()));
+            }
+            key_filter(resource, key, &mut binds)?
+        }
+        RecordFilter::Lookup(column, text) => {
+            let bound = match column.ty.ty {
+                ColType::Decimal | ColType::Bytes => json::bind(column.ty.ty, &json!(text)),
+                _ => filter_bind(&site.schema, column.ty, text),
+            }.map_err(ListError::Bad)?;
+            json!({"t": "cmp", "op": "eq", "l": col(column), "r": binds.push(bound)})
+        }
+    };
+    let mut filters = vec![predicate];
     filters.extend(scope.push(&mut binds));
     let model = &site.schema.model(resource.model).ir.name;
-    let mut columns: Vec<Value> = resource.detail.iter().map(|c| json!({"t": "expr", "expr": col(c)})).collect();
-    columns.extend(scope.flag_columns(resource, &mut binds)?);
+    let mut columns: Vec<Value> = projection.iter().map(|c| json!({"t": "expr", "expr": col(c)})).collect();
+    if rules {
+        columns.extend(scope.flag_columns(resource, &mut binds)?);
+    }
     let mut op = json!({
         "op": "select",
         "model": model,
@@ -1070,13 +1098,13 @@ pub(crate) async fn read_record(site: &Site, resource: &Resource, conn: &dyn Exe
     for (c, ty) in selected.plan.types.iter().enumerate() {
         let cell = selected.rows.cell(0, c, *ty).map_err(|e| ListError::Engine(e.to_string()))?;
         let value = json::cell(&site.schema, *ty, cell);
-        match resource.detail.get(c) {
+        match projection.get(c) {
             Some(_) => cells.push(value),
             None => {
-                flags.insert(resource.can[c - resource.detail.len()].0.clone(), json!(value.as_bool().unwrap_or(false)));
+                flags.insert(resource.can[c - projection.len()].0.clone(), json!(value.as_bool().unwrap_or(false)));
             }
         }
     }
-    crate::view::convert_rows(viewer, model, &resource.detail, &mut [&mut cells]).await?;
+    crate::view::convert_rows(viewer, model, projection, &mut [&mut cells]).await?;
     Ok(Some(Record { cells, flags: Value::Object(flags) }))
 }

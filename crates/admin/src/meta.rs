@@ -308,6 +308,7 @@ pub fn resource(schema: &Schema, r: &Resource, builds: &AtomicUsize) -> Value {
         "named_filters": r.named_filters.iter().map(|n| json!({"name": n.name, "title": n.label, "default": n.default, "choices": n.choices.iter().map(|c| json!({"name": c.name, "title": c.label})).collect::<Vec<_>>()})).collect::<Vec<_>>(),
         "date_hierarchy": r.date_hierarchy.as_ref().map(|d| json!({"field": d.field, "counts": d.counts, "kind": if d.column.ty.ty == monorm_core::ir::ColType::Date { "date" } else { "datetime" }})),
         "tabs": r.tabs.iter().map(|t| json!({"name": t.name, "title": r.labels.get(&t.name).cloned().unwrap_or_else(|| humanize(&t.name)), "target": t.target, "prefill": prefill(schema, r, t)})).collect::<Vec<_>>(),
+        "fieldsets": r.fieldsets.iter().map(|f| json!({"name": f.name, "title": f.title.clone().unwrap_or_else(|| humanize(&f.name)), "fields": f.fields})).collect::<Vec<_>>(),
         "package_tabs": r.package_tabs.iter().map(|t| json!({"name": t.name, "title": t.title, "module": t.module})).collect::<Vec<_>>(),
         "inlines": r.inlines.iter().map(|i| inline(schema, i)).collect::<Vec<_>>(),
         "empty": r.empty,

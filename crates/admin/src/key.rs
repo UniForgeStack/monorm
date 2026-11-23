@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 /// The default base path: the path of the SPA under which the pages live. The API prefix is a separate setting.
 pub const DEFAULT_BASE: &str = "/admin";
 
-fn text(v: &Value) -> String {
+pub(crate) fn text(v: &Value) -> String {
     match v {
         Value::String(s) => s.clone(),
         Value::Null => String::new(),
@@ -17,7 +17,7 @@ fn text(v: &Value) -> String {
     }
 }
 
-fn escape(s: &str) -> String {
+pub(crate) fn escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {
         if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {

@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { LayoutDashboard } from "lucide-react";
+import { EmbedPage, embedSite } from "./Embed";
 import { Shell } from "./Shell";
 import * as api from "./api";
 import { buttonVariants } from "./components/ui/button";
@@ -9,6 +10,10 @@ import { BASE, LOGIN_URL, navigate, parse, usePath } from "./router";
 import { Alert, Button, Card, Field, message } from "./ui";
 
 export function App() {
+  return embedSite === null ? <FullAdmin /> : <EmbedPage siteName={embedSite} />;
+}
+
+function FullAdmin() {
   const path = usePath();
   const route = parse(path);
   const client = useQueryClient();

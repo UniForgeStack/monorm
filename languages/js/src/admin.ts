@@ -210,6 +210,8 @@ export interface ResourceConfig {
   readonly formComponent?: string;
   /** Package detail tabs, each `"<package>.<tab>"`: the detail page shows them after the relation tabs. See `Admin.package`. */
   readonly detailTabs?: readonly string[];
+  readonly frames?: readonly FrameConfig[];
+  readonly fieldsets?: readonly Fieldset[];
   /**
    * The relation fields that the form edits, by relation name. A to-one relation becomes a picker with keyset autocomplete;
    * a many-to-many relation (through a join model) becomes chips. The target of each needs a text column that names a row.
@@ -289,6 +291,38 @@ export interface FormSection {
   readonly collapsed?: boolean;
 }
 
+export interface FrameConfig {
+  readonly name: string;
+  readonly title: string;
+  readonly url: string;
+  readonly sandbox?: readonly string[];
+  readonly scripts?: boolean;
+  readonly sameOrigin?: boolean;
+  readonly height?: string;
+}
+
+export interface Fieldset {
+  readonly name: string;
+  readonly fields: readonly string[];
+  readonly title?: string;
+}
+
+export interface EmbedConfig {
+  readonly resource: string;
+  readonly tab: string;
+  readonly lookup: string;
+  readonly ancestors: readonly string[];
+}
+
+export interface PackageTabConfig {
+  readonly module: string;
+  readonly embeddable?: boolean;
+}
+
+function frameJson({ sameOrigin, ...frame }: FrameConfig): Record<string, unknown> {
+  return { ...frame, same_origin: sameOrigin };
+}
+
 export interface AdminOptions {
   /** The URL path of the whole admin (`/admin` by default), for a gateway that passes the full path. The API prefix is `<basePath>/api` unless `prefix` sets another one under it. */
   readonly basePath?: string;
@@ -307,6 +341,9 @@ export interface AdminOptions {
   readonly widgets?: Readonly<Record<string, string>>;
   /** The order of the navigation groups; a resource names one of them with `group`. */
   readonly groups?: readonly string[];
+  readonly frameOrigins?: readonly string[];
+  readonly frameCards?: readonly FrameConfig[];
+  readonly embeds?: Readonly<Record<string, EmbedConfig>>;
   /** The time limit in seconds of each request's database statements (15 by default, 0 for none). */
   readonly statementTimeout?: number;
   /** The `Registry` of the file storage (`extensions/file-storage`) that holds the files of the `files` fields. */
@@ -327,7 +364,7 @@ export interface AdminUser {
 const LIST_KEYS = new Set(["columns", "order", "pageSize", "sortable", "search", "searchWith", "filters", "namedFilters", "computed", "aggregates", "labels", "empty", "emptyFields", "tabs", "editable", "badges", "dateHierarchy"]);
 const BRAND_KEYS = new Set(["name", "logo", "colors", "links", "environment"]);
 const THEME_KEYS = new Set(["title", "logo", "color"]);
-const RESOURCE_KEYS = new Set(["queryset", "can", "list", "title", "group", "allow", "perms", "label", "fieldPermissions", "see", "change", "actions", "checkMessages", "form", "readonly", "widgets", "formComponent", "detailTabs", "relations", "files", "create", "update", "delete", "inputs", "allowProtectedWrites", "inlines", "bulkDelete", "setPassword"]);
+const RESOURCE_KEYS = new Set(["queryset", "can", "list", "title", "group", "allow", "perms", "label", "fieldPermissions", "see", "change", "actions", "checkMessages", "form", "readonly", "widgets", "formComponent", "detailTabs", "frames", "fieldsets", "relations", "files", "create", "update", "delete", "inputs", "allowProtectedWrites", "inlines", "bulkDelete", "setPassword"]);
 
 function widgetsJson(who: string, value: unknown): Record<string, string> {
   if (typeof value !== "object" || value === null || Array.isArray(value) || !Object.values(value).every((v) => typeof v === "string")) {
@@ -968,6 +1005,8 @@ const INLINE_PAGE_REFUSED: Readonly<Record<string, string>> = {
   setPassword: "an inline has no set password action",
   formComponent: "a replaced form cannot be a row of a table",
   detailTabs: "a detail tab belongs to the registered page of the child",
+  frames: "a frame tab belongs to the registered page of the child",
+  fieldsets: "a fieldset belongs to the registered page of the child",
   allowProtectedWrites: "the opt-in belongs to the registered page of the child",
 };
 
@@ -1045,6 +1084,9 @@ export class Admin {
   readonly #theme: ThemeConfig | undefined;
   readonly #widgets: Record<string, string> | undefined;
   readonly #groups: string[];
+  readonly #frameOrigins: readonly string[] | undefined;
+  readonly #frameCards: readonly FrameConfig[] | undefined;
+  readonly #embeds: Readonly<Record<string, EmbedConfig>> | undefined;
   readonly #statementTimeout: number;
   readonly #storage: FileStorage | undefined;
   readonly #routes = new Map<string, { method: string; path: string; fn: RouteFunction; permission: string | undefined }>();
@@ -1070,6 +1112,9 @@ export class Admin {
     this.#theme = options.theme;
     this.#widgets = options.widgets === undefined ? undefined : widgetsJson("widgets", options.widgets);
     this.#groups = [...(options.groups ?? [])];
+    this.#frameOrigins = options.frameOrigins;
+    this.#frameCards = options.frameCards;
+    this.#embeds = options.embeds;
     const timeout = options.statementTimeout ?? 15;
     if (!(timeout >= 0) || !Number.isFinite(timeout)) throw new AdminConfigError("statementTimeout is a number of seconds, 0 or more (0 sets no limit)");
     this.#statementTimeout = timeout;
@@ -1101,7 +1146,7 @@ export class Admin {
    * The admin reads the files once and refuses a package for another major version. A package adds its routes and actions
    * with `route` and `action` itself: it is a function `install(admin)` that calls this method too.
    */
-  package(name: string, directory: string, options: { readonly widgets?: Readonly<Record<string, string>>; readonly forms?: Readonly<Record<string, string>>; readonly tabs?: Readonly<Record<string, string>>; readonly styles?: readonly string[]; readonly adminMajor?: number } = {}): void {
+  package(name: string, directory: string, options: { readonly widgets?: Readonly<Record<string, string>>; readonly forms?: Readonly<Record<string, string>>; readonly tabs?: Readonly<Record<string, string | PackageTabConfig>>; readonly styles?: readonly string[]; readonly adminMajor?: number } = {}): void {
     if (this.#packages.has(name)) throw new AdminConfigError(`the package '${name}' is added twice`);
     this.#packages.set(name, { name, admin_major: options.adminMajor ?? 1, dir: resolvePath(directory), widgets: { ...options.widgets }, forms: { ...options.forms }, tabs: { ...options.tabs }, styles: [...(options.styles ?? [])] });
     this.#planned = null;
@@ -1135,6 +1180,9 @@ export class Admin {
       ...(this.#theme === undefined ? {} : { theme: this.#theme }),
       ...(this.#widgets === undefined || Object.keys(this.#widgets).length === 0 ? {} : { widgets: this.#widgets }),
       ...(this.#groups.length === 0 ? {} : { groups: this.#groups }),
+      frame_origins: this.#frameOrigins,
+      frame_cards: this.#frameCards?.map(frameJson),
+      embeds: this.#embeds,
       ...(this.#packages.size === 0 ? {} : { packages: [...this.#packages.values()] }),
       ...(this.#routes.size === 0 ? {} : { routes: [...this.#routes.values()].map((r) => ({ method: r.method, path: r.path, ...(r.permission === undefined ? {} : { permission: r.permission }) })) }),
       ...(this.#statementTimeout === 15 ? {} : { statement_timeout_ms: Math.round(this.#statementTimeout * 1000) }),
@@ -1158,6 +1206,8 @@ export class Admin {
       ...(config.widgets === undefined ? {} : { widgets: widgetsJson(`${model}: widgets`, config.widgets) }),
       ...(config.formComponent === undefined ? {} : { form_component: formComponentJson(model, config.formComponent) }),
       ...(config.detailTabs === undefined ? {} : { detail_tabs: [...config.detailTabs] }),
+      frames: config.frames?.map(frameJson),
+      fieldsets: config.fieldsets,
       ...(config.relations === undefined ? {} : { relations: relationsJson(model, cls, registry, config.relations) }),
       ...(config.files === undefined ? {} : { files: this.#filesOf(model, config.files) }),
       ...(list === undefined ? {} : { list }),

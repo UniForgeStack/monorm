@@ -39,9 +39,24 @@ pub struct PackageConfig {
     pub forms: BTreeMap<String, String>,
     /// Detail tabs: a name to a module that the detail page shows as a tab.
     #[serde(default)]
-    pub tabs: BTreeMap<String, String>,
+    pub tabs: BTreeMap<String, TabConfig>,
     #[serde(default)]
     pub styles: Vec<String>,
+}
+
+#[derive(Deserialize, Clone, Debug)]
+#[serde(untagged)]
+pub enum TabConfig {
+    Module(String),
+    Options(TabOptions),
+}
+
+#[derive(Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct TabOptions {
+    module: String,
+    #[serde(default)]
+    embeddable: bool,
 }
 
 /// A loaded package: the declared names and every `.js`, `.mjs` and `.css` file of its directory, in memory.
@@ -55,6 +70,7 @@ pub struct Package {
     pub tabs: BTreeMap<String, String>,
     pub styles: Vec<String>,
     files: BTreeMap<String, Vec<u8>>,
+    embeddable: std::collections::BTreeSet<String>,
 }
 
 /// The packages of a site.
@@ -118,7 +134,22 @@ impl Packages {
                 }
                 Ok(out)
             };
-            let (widgets, forms, tabs) = (named("widget", &c.widgets)?, named("form", &c.forms)?, named("tab", &c.tabs)?);
+            let (widgets, forms) = (named("widget", &c.widgets)?, named("form", &c.forms)?);
+            let mut tabs = BTreeMap::new();
+            let mut embeddable = std::collections::BTreeSet::new();
+            for (name, config) in &c.tabs {
+                check_name("tab name", name)?;
+                let module = match config {
+                    TabConfig::Module(module) => module,
+                    TabConfig::Options(options) => {
+                        if options.embeddable {
+                            embeddable.insert(name.clone());
+                        }
+                        &options.module
+                    }
+                };
+                tabs.insert(name.clone(), url(&declared(&files, &who, &format!("tab {name:?}"), module)?));
+            }
             let mut styles = Vec::new();
             for file in &c.styles {
                 let clean = declared(&files, &who, "styles", file)?;
@@ -127,7 +158,7 @@ impl Packages {
                 }
                 styles.push(url(&clean));
             }
-            out.push(Package { name: c.name.clone(), admin_major: c.admin_major, widgets, forms, tabs, styles, files });
+            out.push(Package { name: c.name.clone(), admin_major: c.admin_major, widgets, forms, tabs, styles, files, embeddable });
         }
         Ok(Packages(out))
     }
@@ -156,6 +187,16 @@ impl Packages {
     pub fn tab(&self, full: &str) -> Option<&str> {
         let (p, t) = self.split(full)?;
         p.tabs.get(t).map(String::as_str)
+    }
+
+    pub(crate) fn embeddable(&self, full: &str) -> bool {
+        self.split(full).is_some_and(|(p, name)| p.embeddable.contains(name))
+    }
+
+    pub(crate) fn tab_package(&self, full: &str) -> Value {
+        self.split(full).map_or(Value::Null, |(p, name)| {
+            json!({"name": p.name, "admin_major": p.admin_major, "tabs": {name: p.tabs.get(name)}, "styles": p.styles})
+        })
     }
 
     /// The `packages` entry of the resources answer.

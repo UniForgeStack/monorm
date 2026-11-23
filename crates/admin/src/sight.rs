@@ -160,6 +160,9 @@ impl Site {
         v.order_positions = v.order.iter().map(|o| at(&o.column.label)).collect();
         v.key_positions = v.key_columns.iter().map(|k| at(&k.label)).collect();
         v.detail.retain(|c| !hidden.contains(&c.label));
+        for set in &mut v.fieldsets {
+            set.fields.retain(|name| !hidden.contains(name));
+        }
         v.links = page
             .links
             .iter()

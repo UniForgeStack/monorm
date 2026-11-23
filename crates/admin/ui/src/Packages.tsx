@@ -34,7 +34,7 @@ type Module = { default?: unknown; adminMajor?: unknown };
 const styled = new Set<string>();
 
 /** Adds the stylesheets of a package to the page, once. They load from this origin, so `style-src 'self'` allows them. */
-function useStyles(pkg: api.PackageInfo | undefined) {
+function useStyles(pkg: Pick<api.PackageInfo, "styles"> | undefined) {
   useEffect(() => {
     for (const path of pkg?.styles ?? []) {
       if (styled.has(path)) continue;
@@ -93,6 +93,8 @@ export function PackageWidget({ site, w, ...props }: { site: api.Site; w: string
 
 /** What a detail tab gets: the record that the page shows and the two ways to call a custom route. */
 export interface TabProps {
+  /** An embeddable tab hides all writes and forms when this is true. */
+  embedded: boolean;
   resource: string;
   /** The key of the record, URL-encoded as in the address. */
   id: string;
@@ -103,7 +105,7 @@ export interface TabProps {
 }
 
 /** A detail tab from a package: a component on the detail page. It reads its data from a custom route with `call`. No iframe is involved. */
-export function PackageTab({ site, name, ...props }: { site: api.Site; name: string } & TabProps) {
+export function PackageTab({ site, name, ...props }: { site: Pick<api.Site, "admin_major"> & { packages: Pick<api.PackageInfo, "name" | "tabs" | "styles">[] }; name: string } & TabProps) {
   const [pkgName, item] = name.split(".", 2);
   const pkg = site.packages?.find((p) => p.name === pkgName);
   const path = pkg && item !== undefined ? pkg.tabs[item] : undefined;

@@ -23,7 +23,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from json import dumps as _dumps
-from typing import TYPE_CHECKING, Any, Literal, Mapping, Required, Sequence, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Literal, Mapping, NotRequired, Required, Sequence, TypedDict, cast
 
 from . import _native
 from . import _admin_permissions
@@ -42,7 +42,7 @@ if TYPE_CHECKING:
     from .db import Database
     from .model import Registry
 
-__all__ = ["Admin", "AdminConfigError", "AdminResponse", "AdminTestClient", "AggregateColumn", "BrandConfig", "BrandLink", "ThemeConfig", "ActionDef", "ComputedColumn", "Context", "DateHierarchy", "InlineDef", "ListConfig", "NamedChoice", "NamedFilter", "Reply", "ResourceConfig", "RoleSeedReport", "RouteRequest", "Stream", "SyncReport", "action", "check", "download", "inline", "input", "log", "message", "redirect", "refresh", "register", "test_client", "threaded", "url"]
+__all__ = ["Admin", "AdminConfigError", "AdminResponse", "AdminTestClient", "AggregateColumn", "BrandConfig", "BrandLink", "ThemeConfig", "ActionDef", "ComputedColumn", "Context", "DateHierarchy", "EmbedConfig", "Fieldset", "FrameConfig", "InlineDef", "ListConfig", "NamedChoice", "NamedFilter", "PackageTabConfig", "Reply", "ResourceConfig", "RoleSeedReport", "RouteRequest", "Stream", "SyncReport", "action", "check", "download", "inline", "input", "log", "message", "redirect", "refresh", "register", "test_client", "threaded", "url"]
 
 DEFAULT_BASE_PATH = "/admin"
 
@@ -174,6 +174,34 @@ class SectionConfig(TypedDict, total=False):
     """A collapsed section starts closed. It needs a ``title``."""
 
 
+class FrameConfig(TypedDict):
+    name: str
+    title: str
+    url: str
+    sandbox: NotRequired[Sequence[str]]
+    scripts: NotRequired[bool]
+    same_origin: NotRequired[bool]
+    height: NotRequired[str]
+
+
+class Fieldset(TypedDict):
+    name: str
+    fields: Sequence[str]
+    title: NotRequired[str]
+
+
+class EmbedConfig(TypedDict):
+    resource: str
+    tab: str
+    lookup: str
+    ancestors: Sequence[str]
+
+
+class PackageTabConfig(TypedDict):
+    module: str
+    embeddable: NotRequired[bool]
+
+
 class ResourceConfig(TypedDict, total=False):
     list: ListConfig
     title: str
@@ -216,6 +244,8 @@ class ResourceConfig(TypedDict, total=False):
     """The widget of a field (``"blurb": "textarea"``), of a nested path (``"Geo.lat"``) or of a type (``"Text"``, an enum name).
     A field beats a path, a path beats a type; the site ``widgets`` come last."""
     detail_tabs: Sequence[str]
+    frames: Sequence[FrameConfig]
+    fieldsets: Sequence[Fieldset]
     """Package detail tabs, each ``"<package>.<tab>"``: the detail page shows them after the relation tabs. See :meth:`Admin.package`."""
     form_component: str | os.PathLike[str]
     """The path of a JavaScript module that replaces the whole form: ``export default (React) => function Form(props) {...}``.
@@ -264,6 +294,8 @@ _INLINE_PAGE_REFUSED = {
     "set_password": "an inline has no set password action",
     "form_component": "a replaced form cannot be a row of a table",
     "detail_tabs": "a detail tab belongs to the registered page of the child",
+    "frames": "a frame tab belongs to the registered page of the child",
+    "fieldsets": "a fieldset belongs to the registered page of the child",
     "allow_protected_writes": "the opt-in belongs to the registered page of the child",
 }
 
@@ -357,7 +389,7 @@ def _form(name: str, form: Any) -> Any:
 
 
 _LIST_KEYS = {"columns", "order", "page_size", "sortable", "search", "search_with", "filters", "named_filters", "computed", "aggregates", "labels", "empty", "empty_fields", "tabs", "editable", "badges", "date_hierarchy"}
-_RESOURCE_KEYS = {"list", "title", "group", "allow", "perms", "label", "field_permissions", "see", "change", "actions", "queryset", "can", "check_messages", "form", "readonly", "widgets", "form_component", "detail_tabs", "relations", "files", "create", "update", "delete", "inputs", "allow_protected_writes", "inlines", "bulk_delete", "set_password"}
+_RESOURCE_KEYS = {"list", "title", "group", "allow", "perms", "label", "field_permissions", "see", "change", "actions", "queryset", "can", "check_messages", "form", "readonly", "widgets", "form_component", "detail_tabs", "frames", "fieldsets", "relations", "files", "create", "update", "delete", "inputs", "allow_protected_writes", "inlines", "bulk_delete", "set_password"}
 _BRAND_KEYS = {"name", "logo", "colors", "links", "environment"}
 _THEME_KEYS = {"title", "logo", "color"}
 Strategy = Literal["page", "model", "access"]
@@ -1006,6 +1038,9 @@ class Admin:
         theme: ThemeConfig | None = None,
         widgets: Mapping[str, str] | None = None,
         groups: Sequence[str] = (),
+        frame_origins: Sequence[str] = (),
+        frame_cards: Sequence[FrameConfig] = (),
+        embeds: Mapping[str, EmbedConfig] | None = None,
         statement_timeout: float = 15.0,
         storage: Any = None,
     ) -> None:
@@ -1024,6 +1059,9 @@ class Admin:
         self._theme = dict(theme) if theme else None
         self._widgets = _widgets(None, widgets) if widgets else None
         self._groups = list(groups)
+        self._frame_origins = list(frame_origins)
+        self._frame_cards = list(frame_cards)
+        self._embeds = dict(embeds or {})
         self._planned: tuple[object, _native.AdminSite] | None = None
         self._strategy = permissions
         self._label = label
@@ -1042,7 +1080,7 @@ class Admin:
         *,
         widgets: Mapping[str, str] | None = None,
         forms: Mapping[str, str] | None = None,
-        tabs: Mapping[str, str] | None = None,
+        tabs: Mapping[str, str | PackageTabConfig] | None = None,
         styles: Sequence[str] = (),
         admin_major: int = 1,
     ) -> None:
@@ -1137,6 +1175,10 @@ class Admin:
             if isinstance(names, str) or not all(isinstance(n, str) for n in names):
                 raise AdminConfigError(f"{name}: detail_tabs is a list of package tab names")
             resource["detail_tabs"] = list(names)
+        if "frames" in config:
+            resource["frames"] = list(config["frames"])
+        if "fieldsets" in config:
+            resource["fieldsets"] = list(config["fieldsets"])
         if "relations" in config:
             resource["relations"] = _relations(name, model, config["relations"])
         if "files" in config:
@@ -1223,6 +1265,12 @@ class Admin:
             out["groups"] = self._groups
         if self._statement_timeout != 15.0:
             out["statement_timeout_ms"] = round(self._statement_timeout * 1000)
+        if self._frame_origins:
+            out["frame_origins"] = self._frame_origins
+        if self._frame_cards:
+            out["frame_cards"] = self._frame_cards
+        if self._embeds:
+            out["embeds"] = self._embeds
         if self._packages:
             out["packages"] = list(self._packages.values())
         if self._routes:

@@ -94,6 +94,12 @@ struct Config {
     /// Extension packages: static widgets, form modules and styles under `<prefix>/packages/`.
     #[serde(default)]
     packages: Vec<crate::packages::PackageConfig>,
+    #[serde(default)]
+    frame_origins: Vec<String>,
+    #[serde(default)]
+    frame_cards: Vec<crate::frames::FrameConfig>,
+    #[serde(default)]
+    embeds: BTreeMap<String, crate::frames::EmbedConfig>,
 }
 
 /// The rows a resource shows to staff.
@@ -178,6 +184,10 @@ struct ResourceConfig {
     /// Package detail tabs (`<package>.<tab>`) that the detail page shows after the relation tabs.
     #[serde(default)]
     detail_tabs: Vec<String>,
+    #[serde(default)]
+    frames: Vec<crate::frames::FrameConfig>,
+    #[serde(default)]
+    fieldsets: Vec<crate::frames::Fieldset>,
     /// Relation fields with a picker (to-one) or chips (many-to-many), by relation name.
     #[serde(default)]
     relations: BTreeMap<String, crate::relations::RelationConfig>,
@@ -560,6 +570,8 @@ pub struct Resource {
     pub inlines: Vec<Inline>,
     /// The package tabs of the detail page.
     pub package_tabs: Vec<PackageTab>,
+    pub(crate) frames: Vec<crate::frames::Frame>,
+    pub(crate) fieldsets: Vec<crate::frames::Fieldset>,
     tabs_config: Option<Vec<String>>,
     /// Whether the table is large, and when it was read.
     large: Arc<Mutex<Option<(Instant, bool)>>>,
@@ -795,6 +807,9 @@ pub struct Site {
     pub routes: Vec<crate::routes::Route>,
     /// The loaded extension packages.
     pub packages: crate::packages::Packages,
+    pub(crate) ui_csp: axum::http::HeaderValue,
+    pub(crate) frame_cards: Vec<Value>,
+    pub(crate) embeds: BTreeMap<String, crate::frames::Embed>,
     pub(crate) meta_builds: AtomicUsize,
     /// The user views of the pages that bind fields: one for each page and set of granted names.
     pub(crate) views: Mutex<Views>,
@@ -826,6 +841,10 @@ impl Site {
         let label = config.label.as_deref().unwrap_or("admin");
         check_name("label", label)?;
         let packages = crate::packages::Packages::build(&config.packages)?;
+        let origins = crate::frames::origins(&config.frame_origins)?;
+        let ui_csp = crate::ui::policy(&base_path, !packages.is_empty(), &origins)?;
+        let frame_cards = crate::frames::build(&config.frame_cards, &origins, &base_path, None)?
+            .iter().map(|f| f.payload(&base_path, |_| None)).collect();
         let global = crate::form::global(&schema, packages.clone(), &config.widgets)?;
         let explicit = !config.resources.is_empty();
         let mut configs: Vec<ResourceConfig> = if explicit {
@@ -853,7 +872,10 @@ impl Site {
             if c.set_password && config.user_table.as_deref() != Some(schema.model(idx).ir.table.as_str()) {
                 return err(format!("{}: set_password needs the auth user model", c.model));
             }
-            resources.push(resource(&schema, idx, c, strategy, label, &global, &mut warnings)?);
+            let mut built = resource(&schema, idx, c, strategy, label, &global, &mut warnings)?;
+            built.frames = crate::frames::build(&c.frames, &origins, &base_path, Some((&schema, idx)))?;
+            crate::frames::check_fieldsets(&built)?;
+            resources.push(built);
         }
         let mut groups = config.groups.clone();
         for g in &groups {
@@ -888,6 +910,12 @@ impl Site {
         }
         let tabs: Vec<Vec<Tab>> = (0..resources.len()).map(|i| tabs_of(&schema, &resources, i)).collect::<Result<_, _>>()?;
         for (r, t) in resources.iter_mut().zip(tabs) {
+            let mut names: BTreeSet<&str> = t.iter().map(|t| t.name.as_str()).chain(r.package_tabs.iter().map(|t| t.name.as_str())).collect();
+            for name in r.fieldsets.iter().map(|f| f.name.as_str()).chain(r.frames.iter().map(|f| f.name())) {
+                if !names.insert(name) {
+                    return err(format!("{}: duplicate detail tab {name:?}", r.name));
+                }
+            }
             r.tabs = t;
         }
         for (r, c) in configs.iter().enumerate() {
@@ -925,7 +953,8 @@ impl Site {
             0 => None,
             ms => Some(Duration::from_millis(ms)),
         };
-        let mut site = Site { schema, base_path, prefix, strategy, resources, brand, groups, statement_timeout, export_idle_timeout, warnings, routes: Vec::new(), packages, meta_builds, views: Mutex::new(Default::default()) };
+        let mut site = Site { schema, base_path, prefix, strategy, resources, brand, groups, statement_timeout, export_idle_timeout, warnings, routes: Vec::new(), packages, ui_csp, frame_cards, embeds: BTreeMap::new(), meta_builds, views: Mutex::new(Default::default()) };
+        site.embeds = crate::frames::build_embeds(&config.embeds, &site)?;
         site.routes = crate::routes::build(&config.routes, &site)?;
         if let Some(role) = added.role {
             // The picker lists the names of the site, the names of the routes included, so it waits for the routes.
@@ -1238,7 +1267,7 @@ fn concrete(m: &monorm_core::schema::Model) -> bool {
 
 impl ResourceConfig {
     fn of(model: &str) -> ResourceConfig {
-        ResourceConfig { model: model.to_owned(), list: ListConfig::default(), allow: None, perms: None, label: None, title: None, group: None, field_permissions: Vec::new(), see: BTreeMap::new(), change: BTreeMap::new(), actions: Vec::new(), bulk_delete: true, set_password: false, queryset: None, can: BTreeMap::new(), check_messages: BTreeMap::new(), service: Default::default(), inputs: Vec::new(), allow_protected_writes: false, host_behavior: false, form: None, readonly: Vec::new(), views: BTreeMap::new(), widgets: BTreeMap::new(), form_component: None, detail_tabs: Vec::new(), relations: BTreeMap::new(), files: Vec::new(), inlines: Vec::new() }
+        ResourceConfig { model: model.to_owned(), list: ListConfig::default(), allow: None, perms: None, label: None, title: None, group: None, field_permissions: Vec::new(), see: BTreeMap::new(), change: BTreeMap::new(), actions: Vec::new(), bulk_delete: true, set_password: false, queryset: None, can: BTreeMap::new(), check_messages: BTreeMap::new(), service: Default::default(), inputs: Vec::new(), allow_protected_writes: false, host_behavior: false, form: None, readonly: Vec::new(), views: BTreeMap::new(), widgets: BTreeMap::new(), form_component: None, detail_tabs: Vec::new(), frames: Vec::new(), fieldsets: Vec::new(), relations: BTreeMap::new(), files: Vec::new(), inlines: Vec::new() }
     }
 }
 
@@ -1488,6 +1517,8 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
         files,
         inlines: Vec::new(),
         package_tabs,
+        frames: Vec::new(),
+        fieldsets: config.fieldsets.clone(),
         tabs_config: list.tabs.clone(),
         large: Arc::new(Mutex::new(None)),
     })

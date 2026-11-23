@@ -15,6 +15,7 @@ pub mod csv;
 pub mod export;
 pub mod files;
 pub mod form;
+mod frames;
 pub mod guard;
 pub mod hostwrite;
 pub mod inlinewrite;
