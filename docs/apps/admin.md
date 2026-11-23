@@ -1416,7 +1416,7 @@ site.register(Shop, {
 
 TypeScript uses `frameOrigins`, `frameCards`, and `frames`. Both bindings take `name`, `title`, `url`, and optional `height` (default `70vh`).
 Use root-relative URLs with `"'self'"` for sibling admins on the same origin. An absolute URL needs an exact HTTPS origin from the list. HTTP is available for `localhost`, `127.0.0.1`, and `[::1]`. Origins have no trailing slash.
-A field placeholder fills an entire path segment or query value. It can follow one to-one relation, such as `{owner.domain}`.
+A field placeholder fills an entire path segment or query value. It can follow one to-one relation, such as `{owner.domain}`; the user then needs the read grant on the target resource and its `see` permission for that field.
 The server percent-encodes values. A null or hidden field makes the frame unavailable. Home cards have fixed URLs.
 
 Frames default to `allow-scripts allow-same-origin`. Turn either off with `scripts: false` or `same_origin: false` (`sameOrigin` in TypeScript).
