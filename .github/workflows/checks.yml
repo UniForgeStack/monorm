@@ -103,14 +103,14 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - run: uv venv --python "$PYTHON" .venv && uv pip install --python .venv/bin/python pytest 'pytest-asyncio>=1.1' pydantic 'protobuf>=7.36.2' mypy pyright maturin
+      - run: uv venv --python "$PYTHON" .venv && uv pip install --python .venv/bin/python pytest pytest-xdist 'pytest-asyncio>=1.1' pydantic 'protobuf>=7.36.2' mypy pyright maturin
       - run: echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
       - run: python languages/python/packaging/stage.py
       - run: maturin develop
       # The extension-package tests compile TypeScript with languages/js/node_modules/.bin/tsc.
       - run: npm install
         working-directory: languages/js
-      - run: python -m pytest -q
+      - run: python -m pytest -q -n 4
       - run: mypy --strict languages/python/monorm && pyright languages/python/monorm
       - run: python -m pytest -q apps/auth/python/tests
       - run: python extensions/inherit/tests/public/python.py

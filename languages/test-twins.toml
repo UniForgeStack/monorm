@@ -51,6 +51,7 @@
 "definition::class_declarations_require_preparation_and_keep_previous_snapshot" = "one-language: reason: 'Python-only: class-declared models and Registry.prepare()'."
 "definition::migrations_prepare_class_declarations" = "one-language: reason: 'Python-only: class-declared models and Registry.prepare()'."
 # languages/python/tests/test_driver.py
+"driver::native_database_error_round_trips_through_pickle" = "one-language: Python requires an importable exception module for pickle"
 # languages/python/tests/test_explain_fetch.py
 # languages/python/tests/test_expressions.py
 # languages/python/tests/test_ext.py

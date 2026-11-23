@@ -1,9 +1,12 @@
 """The native Postgres driver: URLs and TLS modes, transaction safety."""
 
+import pickle
+
 import pytest
 from conftest import DATABASE_URL
 
 import monorm
+from monorm import _native
 
 BASE = DATABASE_URL.split("?", 1)[0]
 
@@ -23,6 +26,13 @@ async def own():
 
 async def probe_count(own_db) -> int:
     return int((await own_db._fetch_text("SELECT count(*)::text FROM driver_probe"))[0][0])
+
+
+def test_native_database_error_round_trips_through_pickle():
+    assert _native.DatabaseError.__module__ == "monorm._native"
+    error = pickle.loads(pickle.dumps(_native.DatabaseError("connection failed")))
+    assert type(error) is _native.DatabaseError
+    assert error.args == ("connection failed",)
 
 
 async def test_unknown_url_scheme():
