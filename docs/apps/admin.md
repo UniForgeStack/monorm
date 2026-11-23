@@ -457,6 +457,8 @@ It ends the session (`401`, and the cookies are cleared) when:
 - the user was a superuser and is not any more;
 - the password hash changed. The cookie holds an HMAC of the hash, never the hash.
 
+A site that registers a resource with `set_password: true` checks the user on every authenticated request, not only at the renewal, so a changed password ends a session at its next request. This costs one short transaction and one `auth.user` host call for each request, for every user of the site.
+
 So a change shows at the next renewal, not at once. The delay is at most `idle_timeout / 4` (at most 60 seconds).
 A logout or a password change ends the session in the same process at once, and in another process at its next renewal.
 A password change ends every other session of the user at the next renewal of each, and gives the changed session a new id, with a new CSRF token in the answer (`{"ok": true, "user", "csrf"}`).

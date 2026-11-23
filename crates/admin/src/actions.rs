@@ -228,6 +228,13 @@ async fn run(s: &State_, o: Open<'_>, name: &str, body: axum::body::Body) -> Res
             Err(e) => return fail(scope, error_response(e)).await,
         };
         let model = &s.site.schema.model(resource.model).ir.name;
+        // A visible row that a rule refuses is 403 with an audit row; a row out of scope is 404.
+        match set.count(s, &scope, model).await {
+            Ok((true, 0)) => return action_denied(s, scope, &user, resource, name, &key::encode(&keys[0]), &meta).await,
+            Ok((false, _)) => return fail(scope, crate::set_password::not_found()).await,
+            Ok(_) => {}
+            Err(e) => return fail(scope, error_response(e)).await,
+        }
         match set.lock_target(s, &scope, model).await {
             Ok(true) => {}
             Ok(false) => return fail(scope, crate::set_password::not_found()).await,

@@ -482,7 +482,7 @@ for (const provider of PROVIDERS) {
     const change = await perms.objects.using(db).filter(perms.codename.eq("manage_user")).first();
     await rolePermissions.insertMany([{ roleId: role.id, permissionId: change.id }]);
     await reset(5, 404, 1);
-    await reset(3, 404, 1);
+    await reset(3, 403, 1);
     await reset(1, 403, 2);
     await reset(4, 200, 4);
     assert.equal((await target.get(ME)).status, 401);
@@ -490,6 +490,7 @@ for (const provider of PROVIDERS) {
     const rows: Loose[] = await entry.objects.using(db).orderBy(entry.id);
     assert.deepEqual(rows.filter((r) => r.action !== "login").map((r) => [r.action, r.userKey, r.recordKey]), [
       ["permission_denied", "3", ""],
+      ["action_denied", "3", "3"],
       ["password_set_failed", "3", "1"],
       ["password_set", "3", "4"],
       ["password_set", "3", "2"],
@@ -510,13 +511,13 @@ for (const provider of PROVIDERS) {
     });
     const preamble = (await client.get("/admin/api/resources")).queries;
     const refused = await run("2");
-    assert.deepEqual([refused.status, refused.queries], [404, preamble + 1], JSON.stringify(refused.sql));
+    assert.deepEqual([refused.status, refused.queries], [403, preamble + 2], JSON.stringify(refused.sql));
     const done = await run("1");
-    assert.deepEqual([done.status, done.queries], [200, preamble + 5], JSON.stringify(done.sql));
+    assert.deepEqual([done.status, done.queries], [200, preamble + 6], JSON.stringify(done.sql));
     const users = user.objects.using(db);
     assert.ok((await users.filter(user.id.eq(1)).first()).checkPassword(password));
     assert.ok((await users.filter(user.id.eq(2)).first()).checkPassword("pw"));
     const rows: Loose[] = await entry.objects.using(db);
-    assert.deepEqual(rows.map((r) => [r.action, r.recordKey]), [["password_set", "1"]]);
+    assert.deepEqual(rows.map((r) => [r.action, r.recordKey]), [["action_denied", "2"], ["password_set", "1"]]);
   }));
 }
