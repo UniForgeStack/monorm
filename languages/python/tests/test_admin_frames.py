@@ -59,6 +59,8 @@ async def world(request, tmp_path):
         await models["User"].objects.using(db).insert_many([
             {"username": "reader", "email": "reader@example.com", "password": "unused"},
             {"username": "denied", "email": "denied@example.com", "password": "unused"},
+            {"username": "hopper", "email": "hopper@example.com", "password": "unused"},
+            {"username": "linked", "email": "linked@example.com", "password": "unused"},
         ])
         await models["FrameOwner"].objects.using(db).insert_many([{"id": 1, "name": "Private owner"}])
         await models["FrameItem"].objects.using(db).insert_many([
@@ -237,3 +239,14 @@ async def test_frame_detail_and_embed_obey_permissions_and_scope(world, tmp_path
     assert (await reader.get(f"{EMBED}?domain=one&domain=two")).status == 400
     assert await models["AdminLogEntry"].objects.using(db).count() == 0
     assert await item.objects.using(db).count() == 3
+
+
+async def test_frame_relation_hop_needs_the_read_grant_of_the_target(world):
+    _, models, db = world
+    site = build(world, {"frame_origins": ["'self'"]}, {"frames": [{**frame("/identity?owner={owner.name}"), "name": "owner"}]})
+    await site.sync_permissions(db)
+    see = ["admin.access", "admin.manage_frameitem", "admin.see_owner_name"]
+    hopper = site.test_client(db, user={"key": await grant(db, models, "hopper", see)})
+    linked = site.test_client(db, user={"key": await grant(db, models, "linked", [*see, "admin.manage_frameowner"])})
+    assert (await hopper.get(f"{ITEMS}/1")).json()["frames"][0]["url"] is None
+    assert (await linked.get(f"{ITEMS}/1")).json()["frames"][0]["url"] == "/identity?owner=Private+owner"

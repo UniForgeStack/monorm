@@ -239,7 +239,7 @@ test("the shell: home, sidebar filter, theme toggle, keyboard focus, kit import 
 test("the site theme reaches the page: brand colour, accent surface and logo", async () => {
   const { context, page } = await signedIn();
   // The metadata route is stubbed with a theme; the Rust side of the theme has its own tests.
-  await page.route(/\/api\/resources$/, async (route) => {
+  await page.route(/\/api\/site$/, async (route) => {
     const response = await route.fetch();
     const body = await response.json();
     body.brand = { ...body.brand, name: "Acme", logo: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='8'/%3E", colors: { primary: "#7c3aed", accent: "#0b7a5b" } };

@@ -417,10 +417,13 @@ pub(crate) fn visible(site: &Site, resource: &Resource, grants: &crate::permissi
     let Ok((_, target)) = site.schema.model(resource.model).relation(hop) else {
         return false;
     };
-    site.resources.iter().find(|r| r.model == target).is_none_or(|page| {
-        page.see
-            .get(&column.field)
-            .is_none_or(|permission| grants.has(&format!("{}.{permission}", page.label)))
+    // A target that no page registers cannot be checked: hide it.
+    site.resources.iter().find(|r| r.model == target).is_some_and(|page| {
+        site.allows(grants, page, crate::permissions::Op::Read)
+            && page
+                .see
+                .get(&column.field)
+                .is_none_or(|permission| grants.has(&format!("{}.{permission}", page.label)))
     })
 }
 
@@ -472,6 +475,16 @@ mod tests {
             assert_eq!(template.render("/admin", |_| Some(&value)), None);
         }
         assert_eq!(template.render("/admin", |_| None), None);
+    }
+
+    #[test]
+    fn own_api_prefix_is_never_an_allowed_frame_path() {
+        // `Site` always puts the API prefix under the base path.
+        for path in ["/admin/api/resources/X", "/admin/api", "/admin/v1/export/X", "/admin/%61pi/site"] {
+            assert!(!allowed_path(path, "/admin"), "{path}");
+        }
+        assert!(allowed_path("/admin/-/embed/health", "/admin"));
+        assert!(allowed_path("/administrator/x", "/admin"));
     }
 
     #[test]

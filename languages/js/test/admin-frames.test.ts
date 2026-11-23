@@ -65,6 +65,8 @@ async function withWorld(provider: string, run: (world: World) => Promise<void>)
     await models["User"].objects.using(db).insertMany([
       { username: "reader", email: "reader@example.com", password: "unused" },
       { username: "denied", email: "denied@example.com", password: "unused" },
+      { username: "hopper", email: "hopper@example.com", password: "unused" },
+      { username: "linked", email: "linked@example.com", password: "unused" },
     ]);
     await models["FrameOwner"].objects.using(db).insertMany([{ id: 1, name: "Private owner" }]);
     await models["FrameItem"].objects.using(db).insertMany([
@@ -254,5 +256,17 @@ for (const provider of ["sqlite", "postgres"]) {
     assert.equal((await reader.get(`${EMBED}?domain=one&domain=two`)).status, 400);
     assert.equal(Number(await w.models["AdminLogEntry"].objects.using(w.db).count()), 0);
     assert.equal(Number(await item.objects.using(w.db).count()), 3);
+  }));
+}
+
+for (const provider of ["sqlite", "postgres"]) {
+  test(`frame relation hop needs the read grant of the target (${provider})`, () => withWorld(provider, async (w) => {
+    const site = build(w, { frameOrigins: ["'self'"] }, { frames: [frame("/identity?owner={owner.name}", { name: "owner" })] });
+    await site.syncPermissions(w.db);
+    const see = ["admin.access", "admin.manage_frameitem", "admin.see_owner_name"];
+    const hopper = site.testClient(w.db, { user: { key: await grant(w, "hopper", see) } });
+    const linked = site.testClient(w.db, { user: { key: await grant(w, "linked", [...see, "admin.manage_frameowner"]) } });
+    assert.equal((await hopper.get(`${ITEMS}/1`)).json().frames[0].url, null);
+    assert.equal((await linked.get(`${ITEMS}/1`)).json().frames[0].url, "/identity?owner=Private+owner");
   }));
 }
