@@ -10,6 +10,7 @@ no outside extension ships a musl library, so the outside-extension checks are l
 """
 import glob
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -112,7 +113,12 @@ def project(name, *packages):
     path = work / name
     path.mkdir()
     (path / "package.json").write_text('{"private":true,"type":"module"}\n')
-    run(npm, "install", "--ignore-scripts", "--no-audit", "--no-fund", *packages, cwd=path)
+    # npm runs on the host, so it must pick the native optional dependencies of the container platform.
+    target = []
+    if docker:
+        cpu = "arm64" if platform.machine().lower() in ("arm64", "aarch64") else "x64"
+        target = ["--os=linux", f"--cpu={cpu}", f"--libc={'musl' if 'alpine' in docker else 'glibc'}"]
+    run(npm, "install", "--ignore-scripts", "--no-audit", "--no-fund", *target, *packages, cwd=path)
     return path
 
 
