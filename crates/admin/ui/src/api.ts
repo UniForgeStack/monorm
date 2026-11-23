@@ -394,7 +394,7 @@ export async function session(): Promise<Session> {
 export const login = (username: string, password: string) => call<{ user: User }>("POST", "/login", { username, password });
 export const logout = () => call<object>("POST", "/logout", {});
 export const changePassword = (old_password: string, new_password: string) => call<object>("POST", "/password", { old_password, new_password });
-/** The URL of a package file: the path that `/resources` gives, under the API prefix. */
+/** The URL of a package file: the path that `/site` gives, under the API prefix. */
 export const packageUrl = (path: string) => `${base}/${path}`;
 
 /** A custom route (`<prefix>/routes/<path>`) with the session and the CSRF token. The answer is the raw response: a route is not an admin call. */
@@ -415,7 +415,7 @@ export async function routeJson(method: string, path: string, body?: unknown): P
 
 /** Where the module of a custom form comes from: the same origin, so the CSP allows it. */
 export const formModuleUrl = (resource: string) => `${base}/forms/${encodeURIComponent(resource)}`;
-export const site = () => call<Site>("GET", "/resources");
+export const site = () => call<Site>("GET", "/site");
 
 export const embed = (name: string, search: string) => call<Embed>("GET", `/embeds/${encodeURIComponent(name)}${search}`);
 
