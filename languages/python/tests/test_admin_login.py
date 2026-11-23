@@ -508,7 +508,7 @@ async def test_set_password_requires_change_and_row_scope_and_guards_superusers(
     change = await perms.objects.using(db).filter(perms.codename == "manage_user").first()
     await role_permissions.insert_many([{"role_id": role.id, "permission_id": change.id}])
     await reset(5, 404, 1)
-    await reset(3, 404, 1)
+    await reset(3, 403, 1)
     await reset(1, 403, 2)
     await reset(4, 200, 4)
     assert (await target.get(ME)).status == 401
@@ -516,6 +516,7 @@ async def test_set_password_requires_change_and_row_scope_and_guards_superusers(
     rows = await entry.objects.using(db).order_by(entry.id)
     assert [(r.action, r.user_key, r.record_key) for r in rows if r.action != "login"] == [
         ("permission_denied", "3", ""),
+        ("action_denied", "3", "3"),
         ("password_set_failed", "3", "1"),
         ("password_set", "3", "4"),
         ("password_set", "3", "2"),
@@ -543,11 +544,11 @@ async def test_set_password_applies_the_action_rule_and_counts_the_transaction_q
 
     preamble = (await client.get("/admin/api/resources")).queries
     refused = await reset("2")
-    assert (refused.status, refused.queries) == (404, preamble + 1), refused.sql
+    assert (refused.status, refused.queries) == (403, preamble + 2), refused.sql
     done = await reset("1")
-    assert (done.status, done.queries) == (200, preamble + 5), done.sql
+    assert (done.status, done.queries) == (200, preamble + 6), done.sql
     users = user.objects.using(db)
     assert (await users.filter(user.id == 1).first()).check_password(password)
     assert (await users.filter(user.id == 2).first()).check_password("pw")
     rows = await entry.objects.using(db)
-    assert [(r.action, r.record_key) for r in rows] == [("password_set", "1")]
+    assert [(r.action, r.record_key) for r in rows] == [("action_denied", "2"), ("password_set", "1")]
