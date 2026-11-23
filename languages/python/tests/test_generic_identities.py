@@ -21,6 +21,7 @@ def generate(path):
         pytest.param(
             os.environ.get("ORM_TEST_DATABASE_URL", ""),
             "postgresql",
+            id="postgresql",
             marks=pytest.mark.skipif(
                 not os.environ.get("ORM_TEST_DATABASE_URL"),
                 reason="set ORM_TEST_DATABASE_URL for PostgreSQL acceptance",
@@ -89,6 +90,7 @@ def test_missing_stale_or_conflicting_manifest_fails_before_definition(tmp_path)
         pytest.param(
             os.environ.get("ORM_TEST_DATABASE_URL", ""),
             "postgresql",
+            id="postgresql",
             marks=pytest.mark.skipif(
                 not os.environ.get("ORM_TEST_DATABASE_URL"),
                 reason="set ORM_TEST_DATABASE_URL for PostgreSQL acceptance",

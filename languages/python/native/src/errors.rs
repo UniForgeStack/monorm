@@ -6,64 +6,64 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use pyo3::PyErr;
 
-create_exception!(_native, DatabaseError, PyException, "Error reported by the database or driver.");
+create_exception!(monorm._native, DatabaseError, PyException, "Error reported by the database or driver.");
 create_exception!(
-    _native,
+    monorm._native,
     IntegrityError,
     DatabaseError,
     "Unique, foreign key, check, exclusion or not-null violation."
 );
 create_exception!(
-    _native,
+    monorm._native,
     LockNotAvailable,
     DatabaseError,
     "A row lock taken with `nowait` (or a lock timeout) found the rows locked."
 );
 create_exception!(
-    _native,
+    monorm._native,
     TransactionAborted,
     DatabaseError,
     "A statement or commit ran in a transaction that an earlier error aborted; `__cause__` is that error."
 );
 create_exception!(
-    _native,
+    monorm._native,
     TransactionTimeoutError,
     DatabaseError,
     "The deadline of a transaction passed; `outcome` is `\"rolled_back\"` or `\"unknown\"`."
 );
-create_exception!(_native, QueryError, PyValueError, "The query IR does not match the schema.");
-create_exception!(_native, SchemaError, PyValueError, "The schema file or IR is invalid.");
-create_exception!(_native, SchemaWarning, PyUserWarning, "A schema expression compiles, but probably does not do what it says.");
+create_exception!(monorm._native, QueryError, PyValueError, "The query IR does not match the schema.");
+create_exception!(monorm._native, SchemaError, PyValueError, "The schema file or IR is invalid.");
+create_exception!(monorm._native, SchemaWarning, PyUserWarning, "A schema expression compiles, but probably does not do what it says.");
 create_exception!(
-    _native,
+    monorm._native,
     MigrationError,
     PyException,
     "The migrations directory and the database's migration history disagree."
 );
 
 create_exception!(
-    _native,
+    monorm._native,
     ScopeMissing,
     QueryError,
     "A statement needs a scope value the scope has not set. `model` and `key` say which."
 );
 
 create_exception!(
-    _native,
+    monorm._native,
     ScopeMismatch,
     QueryError,
     "A write sets a scope column to a value other than the scope value. `model`, `key`, `expected` and `actual` say what."
 );
 
 create_exception!(
-    _native,
+    monorm._native,
     ReadOnlyModel,
     PyException,
     "An ORM write to a SQL view model; a view is read-only."
 );
 
 create_exception!(
-    _native,
+    monorm._native,
     WriteProtected,
     PyException,
     "An application or database write rule refused a write."
