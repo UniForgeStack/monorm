@@ -4,6 +4,14 @@ All notable changes are listed here, in the [Keep a Changelog](https://keepachan
 
 ## [Unreleased]
 
+- Admin display: a bool column shows an icon by default (check, cross, dash, each with a text label). Breaking change: every bool column in a list and on a detail page looks different; a `badges` entry on the column replaces the icon. `badges` maps a column value to one of six colours, in the list and on the detail page. `order_by` makes a computed or `function` column sortable. [Display](docs/apps/admin.md#display)
+
+- Admin lists accept `date_hierarchy` (`dateHierarchy` in TypeScript): a bar that narrows the list by year, month and day, with the new route `GET {prefix}/dates/{resource}`. [Date drill-down](docs/apps/admin.md#date-drill-down)
+
+- Admin built-in action `set_password` (`set_password: true` on the resource of the auth user model): an actor with the `change` permission sets the password of another user, records `password_set`, and ends every session of the target user. A superuser target needs a superuser actor. Cost: a site with this action loads the user through `auth.user` in one short transaction on every authenticated request, not only at the renewal. [Renewal](docs/apps/admin.md#renewal-when-a-change-takes-effect)
+
+- Models accept `@@managed(false)` for a table that another service owns: queries, writes and relations work, and migrations record the shape and write no table SQL. `pull --unmanaged` imports such models. Schema contract 5.11. [Unmanaged models](docs/schema/schema.md#unmanaged-models)
+
 - Admin actions accept a row permission condition through `can`, including `param("user")`. The rule adds to the resource's `change` rule by default, and `replace_change=True` (`replaceChange: true` in TypeScript) uses it in place of `change`. Resource `change` and `delete` rules also accept the user parameter. Breaking change for row, detail and submit actions: a visible row that fails an action rule now returns `403 ActionNotAllowed` and records `action_denied`. [Action placements](docs/apps/admin.md#placements)
 
 - Generic relations in Python and TypeScript support batched `load()`, target assignment, typed `of()` filters, reverse query sets, and generated target unions. Loads apply read defaults and scope per target model. Assignment changes the type and key fields in memory; `load()` of one target (`Tag.target.of(Post)`) is a `QueryError`. The Rust client does not support union or conditioned relations, and the admin refuses them. Schema contract 5.9. [Generic relations](docs/schema/generic-identities.md#use)
