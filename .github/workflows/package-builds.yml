@@ -146,7 +146,7 @@ jobs:
             rustup target add "${{ matrix.target }}"
             flags="--zig --target ${{ matrix.target }} --compatibility musllinux_1_2"
           elif [ "$RUNNER_OS" = Linux ]; then flags="--zig --compatibility manylinux_2_28"; else flags="--compatibility pypi"; fi
-          maturin build --release $flags --interpreter python --out target/wheels
+          maturin build --release $flags --interpreter "python${{ matrix.python }}" --out target/wheels
       - run: python languages/python/packaging/check-wheel.py $(ls target/wheels/monorm-*.whl)
         shell: bash
       - if: runner.os == 'Linux'
