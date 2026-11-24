@@ -87,6 +87,30 @@ Point that variable at a separate, disposable database: the setup's tables are d
 The runners reject a `~~~` fence with `run`, an unclosed fence, and an unknown `docs-test` key or `db` value.
 The normal Python and Node test suites run these examples; Bun runs the TypeScript examples too.
 
+### Admin UI build and browser test
+
+To build the admin UI, run `npm install && npm run build` in `crates/admin/ui` and commit `dist`.
+`npm run size` prints the first-load size against the budget of 300 KB gzip.
+CI rebuilds the UI and fails when the committed `dist` differs (Node 24).
+
+`crates/admin/ui/e2e` holds the first browser suite of the repository.
+It starts a real `python -m monorm admin` process on SQLite (it makes a temporary project, migrates, and seeds a user and two rows), signs in, sorts a list, searches it, opens a record, adds, changes and deletes a record through the forms, saves an inline row and a new inline row with their parent, edits two cells on two rows of a list and saves them, shows a refused cell, opens a section layout and a custom form, opens a widget and a detail tab of the example package (it saves through the widget and reads the route of the tab), and fails on any console error, CSP violation or failed request.
+The driver is Playwright (`playwright` 1.65.0, pinned) with `node:test`.
+Playwright downloads a browser, so the install is not part of the default `npm install` of any package.
+Run it from a checkout, with the `monorm` wheel installed in the active Python (`maturin develop`):
+
+```
+cd crates/admin/ui/e2e
+npm install
+npm run install-browser     # downloads Chromium, once
+npm test
+```
+
+One more case starts a second admin with `base_path = "/bundler/admin"` and signs in and opens a list there.
+A last case starts a fake OpenID provider (`fake-idp.mjs`, on a loopback port) and an admin with `[admin.oidc]`: a login with no `hd` claim shows the domain message, and a login with the claim signs in the user with the role of the claim.
+`MONORM_PYTHON` names another Python than `python`.
+In a source checkout the built-in apps import from the repository, so the test sets `PYTHONPATH` to the repository root.
+
 ## Pull requests
 
 - One concern for each pull request. Keep the change small enough to review at once.
