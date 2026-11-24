@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any, Unpack
 
 from .errors import QueryError
 from .expr import IR, Expression, IRContext, _Ctes
+from .nested import NestedGroup
 from .query import QuerySet
 
 if TYPE_CHECKING:
@@ -36,24 +37,56 @@ if TYPE_CHECKING:
 
     AnySelect = Select[Unpack[tuple[Any, ...]]]
 
-__all__ = ["Cte", "CteColumn"]
+__all__ = ["Cte", "CteColumn", "CteGroup"]
 
 
 class CteColumn(Expression[Any]):
     """``cte.c.<name>``: a column of a CTE."""
 
-    __slots__ = ("_cte", "_name")
+    __slots__ = ("_cte", "_name", "_text")
 
-    def __init__(self, cte: Cte, name: str) -> None:
+    def __init__(self, cte: Cte, name: str, text: str | None = None) -> None:
         self._cte = cte
         self._name = name
+        self._text = text or name
 
     def _ir(self, ctx: IRContext) -> IR:
         ctx.use_cte(self._cte)
         return {"t": "cte_col", "cte": self._cte.name, "name": self._name}
 
     def __repr__(self) -> str:
-        return f"{self._cte.name}.c.{self._name}"
+        return f"{self._cte.name}.c.{self._text}"
+
+
+class CteGroup(CteColumn):
+    """``cte.c.<group>``: the subfield columns of a ``columns`` group, by path. The group has no column of its own."""
+
+    __slots__ = ("_leaves", "_prefix")
+
+    def __init__(self, cte: Cte, text: str, leaves: dict[tuple[str, ...], str], prefix: tuple[str, ...] = ()) -> None:
+        super().__init__(cte, text)
+        self._leaves = leaves
+        self._prefix = prefix
+
+    def __getattr__(self, name: str) -> CteColumn | CteGroup:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return self[name]
+
+    def __getitem__(self, name: str) -> CteColumn | CteGroup:  # type: ignore[override]
+        here = (*self._prefix, name)
+        if here in self._leaves:
+            return CteColumn(self._cte, self._leaves[here], f"{self._text}.{name}")
+        if any(k[: len(here)] == here for k in self._leaves):
+            return CteGroup(self._cte, f"{self._text}.{name}", self._leaves, here)
+        have = sorted({k[len(self._prefix)] for k in self._leaves if k[: len(self._prefix)] == self._prefix})
+        raise AttributeError(f"{self._cte.name}.c.{self._text} has no subfield {name!r}; it has {', '.join(have)}")
+
+    def __dir__(self) -> Iterable[str]:
+        return sorted({k[len(self._prefix)] for k in self._leaves if k[: len(self._prefix)] == self._prefix})
+
+    def _ir(self, ctx: IRContext) -> IR:
+        raise QueryError(f"{self._cte.name}.c.{self._text} is a group of columns: read a subfield ({self._cte.name}.c.{self._text}.<name>)")
 
 
 class _Columns:
@@ -62,15 +95,16 @@ class _Columns:
     def __init__(self, cte: Cte) -> None:
         self._cte = cte
 
-    def __getattr__(self, name: str) -> CteColumn:
+    def __getattr__(self, name: str) -> CteColumn | CteGroup:
         if name.startswith("_"):
             raise AttributeError(name)
         return self[name]
 
-    def __getitem__(self, name: str) -> CteColumn:
+    def __getitem__(self, name: str) -> CteColumn | CteGroup:
         if name not in self._cte.columns:
             raise AttributeError(f"CTE {self._cte.name} has no column {name!r}; it has {', '.join(self._cte.columns)}")
-        return CteColumn(self._cte, name)
+        group = self._cte.groups.get(name)
+        return CteGroup(self._cte, name, group) if group is not None else CteColumn(self._cte, name)
 
     def __dir__(self) -> Iterable[str]:
         return list(self._cte.columns)
@@ -82,7 +116,7 @@ class Cte:
     has the model's columns) or ``cte.select(...)``. ``cte.c.<name>`` are its columns.
     """
 
-    __slots__ = ("name", "columns", "c", "_query", "_recursive", "_distinct", "_materialized", "_model")
+    __slots__ = ("name", "columns", "groups", "c", "_query", "_recursive", "_distinct", "_materialized", "_model")
 
     def __init__(
         self,
@@ -103,16 +137,23 @@ class Cte:
             if query._prefetch or query._related or query._lock is not None:
                 raise QueryError("a CTE's query can't load relations or lock")
             self._model = query.model
-            self.columns: tuple[str, ...] = query.model._meta.field_names
+            self.columns: tuple[str, ...] = query.model._meta.public_names
         else:
             self._model = query._qs.model if any(isinstance(i, type) for i in query._items) else None
             cols: list[str] = []
             for item, n in zip(query._items, query._names):
-                cols.extend(query._qs.model._meta.field_names if isinstance(item, type) else (n,))
+                cols.extend(query._qs.model._meta.public_names if isinstance(item, type) else (n,))
             dupes = sorted({n for n in cols if cols.count(n) > 1})
             if dupes:
                 raise ValueError(f"CTE {name} has several columns named {', '.join(dupes)}; label them")
             self.columns = tuple(cols)
+        # A ``columns`` group is no column of the CTE: its leaves are, read by group path.
+        self.groups: dict[str, dict[tuple[str, ...], str]] = {}
+        if self._model is not None:
+            meta = self._model._meta
+            for g in meta.nested.values():
+                if isinstance(g, NestedGroup) and g.name in self.columns:
+                    self.groups[g.name] = {tuple(path): leaf for leaf, path in g.leaves}
         self.c = _Columns(self)
         self._distinct = distinct
         self._materialized = materialized

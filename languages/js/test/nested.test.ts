@@ -176,6 +176,26 @@ for (const kind of ["postgres", "sqlite"] as const) {
       assert.equal(rows[2].geo, null);
     });
 
+    scenario("a cte of the model exposes group paths, not leaf names", async (w, S, q) => {
+      await seed(w, S);
+      const c = S.objects.cte("shops");
+      if (model === "JShop") {
+        assert.deepEqual(Object.keys(c.c).sort(), ["address", "id"]);
+        return;
+      }
+      assert.deepEqual(Object.keys(c.c).sort(), ["address", "id"]);
+      assert.equal(c.c.addressCity, undefined);
+      const rows = await c.select({ id: c.c.id, city: c.c.address.city, lat: c.c.address.geo.lat }).orderBy(c.c.id).using(w.db);
+      assert.deepEqual(rows, [
+        { id: 1, city: "Oslo", lat: 1.5 },
+        { id: 2, city: "Bergen", lat: 9 },
+        { id: 3, city: "Tromso", lat: null },
+        { id: 4, city: null, lat: null },
+      ]);
+      assert.deepEqual(await S.objects.using(w.db).from(c).filter(c.c.address.city.eq("Bergen")).all().then((r: Any) => r.map((s: Any) => s.id)), [2]);
+      await assert.rejects(async () => c.select({ whole: c.c.address }).using(w.db).all(), /group of columns/);
+    });
+
     scenario("leaf names are hidden", async (w, S, q) => {
       await seed(w, S);
       const s = await q.get(S.id.eq(1));

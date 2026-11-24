@@ -19,7 +19,7 @@
 
 import { QueryError } from "./errors.js";
 import { Ctes, Expression, IRContext, type CteLike, type IR, type Source } from "./expr.js";
-import type { ModelSpec } from "./meta.js";
+import type { FieldMeta, ModelSpec } from "./meta.js";
 import type { ModelMeta } from "./model.js";
 import { QuerySet, registerCte, type CteOptions } from "./query.js";
 import { makeSelect, type CteColumnsOf, type ItemsOuter, type ItemsParams, type Select, type SelectRow } from "./select.js";
@@ -47,14 +47,51 @@ export class CteColumn<T, N extends string> extends Expression<T, N, {}> {
   }
 }
 
+/** A nested value (`columns` or `json` group): the generated value classes have both members. */
+type NestedValueLike = { equals(other: unknown): boolean; toJSON(): Record<string, unknown> };
+type IsAny<T> = 0 extends 1 & T ? true : false;
+
+/** One CTE column: a group of a `columns` storage also gives one member per subfield (`c.address.city`). */
+export type CteField<T, N extends string> =
+  IsAny<T> extends true
+    ? CteColumn<T, N>
+    : [NonNullable<T>] extends [NestedValueLike]
+      ? CteColumn<T, N> & {
+          readonly [K in Exclude<keyof NonNullable<T>, "equals" | "toJSON">]-?: CteField<NonNullable<T>[K] | (null extends T ? null : never), N>;
+        }
+      : CteColumn<T, N>;
+
 /** The columns of a CTE, typed. */
-export type CteColumns<N extends string, C> = { readonly [K in keyof C]-?: CteColumn<C[K], N> };
+export type CteColumns<N extends string, C> = { readonly [K in keyof C]-?: CteField<C[K], N> };
+
+/** `cte.c.<group>`: the subfield columns of a `columns` group, by path. The group has no column of its own. */
+class CteGroup<N extends string> extends CteColumn<unknown, N> {
+  override ir(): IR {
+    throw new QueryError(`${this.toString()} is a group of columns: read a subfield (${this.toString()}.<name>)`);
+  }
+}
+
+function cteGroup<N extends string>(cte: Cte<N, unknown, ModelSpec | null>, name: string, leaves: readonly FieldMeta[]): CteGroup<N> {
+  const root = new CteGroup(cte, name, name);
+  const attach = (node: object, prefix: readonly string[], text: string): void => {
+    const heads = new Set(leaves.filter((l) => prefix.every((p, i) => l.leaf!.path[i] === p) && l.leaf!.path.length > prefix.length).map((l) => l.leaf!.path[prefix.length]!));
+    for (const h of heads) {
+      const here = [...prefix, h];
+      const leaf = leaves.find((l) => l.leaf!.path.length === here.length && here.every((p, i) => l.leaf!.path[i] === p));
+      const member = leaf ? new CteColumn(cte, leaf.ir, `${text}.${h}`) : new CteGroup(cte, name, `${text}.${h}`);
+      if (!leaf) attach(member, here, `${text}.${h}`);
+      Object.defineProperty(node, h, { value: member, enumerable: true });
+    }
+  };
+  attach(root, [], name);
+  return root;
+}
 
 /** The CTE as its own recursive part sees it: its columns read anywhere in that part
  * (they put the CTE in `FROM`). */
 export interface CteSelf<N extends string, C> {
   readonly name: N;
-  readonly c: { readonly [K in keyof C]-?: CteColumn<C[K], never> };
+  readonly c: CteColumns<never, C>;
 }
 
 type CteSpec<N extends string> = { name: N; row: never; data: never; insert: never; update: never; updateRow: never; pk: never };
@@ -91,9 +128,18 @@ export class Cte<N extends string, C, M extends ModelSpec | null> implements Sou
       throw new TypeError(`CTE name ${JSON.stringify(name)} must be an identifier`);
     }
     const columns = new Map<string, string>();
+    // A `columns` group is not a column of the CTE: its leaves are, named by group path.
+    const groups = new Map<string, readonly FieldMeta[]>();
     const addModel = (meta: ModelMeta): void => {
-      for (const f of meta.fieldList) {
-        add(f.name, f.ir);
+      for (const f of meta.publicList) {
+        if (f.nested?.storage === "columns") {
+          const leaves = meta.fieldList.filter((l) => l.leaf?.group === f.name);
+          groups.set(f.name, leaves);
+          add(f.name, f.ir);
+          for (const l of leaves) add(`${f.name}.${l.leaf!.path.join(".")}`, l.ir);
+        } else {
+          add(f.name, f.ir);
+        }
       }
     };
     const add = (ts: string, col: string): void => {
@@ -122,7 +168,9 @@ export class Cte<N extends string, C, M extends ModelSpec | null> implements Sou
     this.columns = columns;
     const c: Record<string, CteColumn<unknown, N>> = {};
     for (const [ts, col] of columns) {
-      c[ts] = new CteColumn(this as never, col, ts);
+      if (ts.includes(".")) continue;
+      const leaves = groups.get(ts);
+      c[ts] = leaves ? cteGroup(this as never, ts, leaves) : new CteColumn(this as never, col, ts);
     }
     this.c = Object.freeze(c) as never;
     this.recursivePart = options.recursive?.(this as never);
