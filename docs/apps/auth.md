@@ -117,7 +117,7 @@ It does not change `last_login`.
 It returns a list of errors, and an empty list means the password is good.
 It does not raise for a weak password.
 `create_user` and `set_password` do not call it, because a script or an import may need a weak password.
-The admin password change calls it, and so should your own forms and commands.
+The admin password change and the admin action that sets the password of another user call it, and so should your own forms and commands. See [Set the password of another user](admin.md#set-the-password-of-another-user).
 
 ```python
 from monorm_auth import validate_password
