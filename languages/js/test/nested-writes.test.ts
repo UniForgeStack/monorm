@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { connect, loads, Registry, type Database } from "../src/index.js";
+import { keepMicros } from "../src/date-micros.js";
 import { DATABASE_URL } from "./helpers.js";
 
 const SCHEMA = `
@@ -30,6 +31,15 @@ model Event {
 model EventCols {
   id Int   @id
   d  Dated
+}
+
+type Moment {
+  at DateTime
+}
+
+model Clock {
+  id Int    @id
+  m  Moment @storage(json)
 }
 `;
 
@@ -94,5 +104,22 @@ for (const kind of ["postgres", "sqlite"] as const) {
     assert.deepEqual(days, ["2024-01-02", "2024-01-02"]);
     const cols = await classes.EventCols.objects.using(db).get(classes.EventCols.id.eq(1));
     assert.equal(cols.d.day.toISOString().slice(0, 10), "2024-01-02");
+  });
+
+  scenario("a datetime subfield is stored as fixed-width utc text that sorts by time", async ({ db, classes }) => {
+    const at = (iso: string, micros = 0): Date => {
+      const d = new Date(iso);
+      keepMicros(d, micros);
+      return d;
+    };
+    const times = [at("2024-01-02T03:04:05.123Z", 456), at("2024-01-02T03:04:05Z"), at("2024-01-02T03:04:05.000Z", 1), at("2023-12-31T23:59:59.999Z", 999)];
+    await classes.Clock.objects.using(db).insertMany(times.map((t, id) => ({ id, m: { at: t } })));
+    const rows = await db.fetchText("SELECT id, m FROM clock");
+    const texts = new Map(rows.map(([id, doc]) => [Number(id), (JSON.parse(doc!) as { at: string }).at]));
+    for (const t of texts.values()) assert.match(t, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z$/);
+    const byText = [...texts.keys()].sort((a, b) => (texts.get(a)! < texts.get(b)! ? -1 : 1));
+    assert.deepEqual(byText, [3, 1, 2, 0]);
+    assert.equal(texts.get(1), "2024-01-02T03:04:05.000000Z");
+    assert.equal(texts.get(2), "2024-01-02T03:04:05.000001Z");
   });
 }
