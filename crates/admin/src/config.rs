@@ -17,6 +17,7 @@ use monorm_core::settings::Settings;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::error::{code, settings as st, AdminError};
 use crate::oidc::OidcSettings;
 use crate::security::{Security, SecurityOptions};
 use crate::serve::ServeConfig;
@@ -53,35 +54,35 @@ const KEYS: [&str; 12] = ["app", "setup", "host", "port", "timeout", "db_setting
 
 impl Config {
     /// Reads the settings of the project in `dir`. `env` reads one environment variable.
-    pub fn load(dir: &Path, env: impl Fn(&str) -> Option<String>) -> Result<Config, String> {
-        let settings = Settings::load(dir)?;
+    pub fn load(dir: &Path, env: impl Fn(&str) -> Option<String>) -> Result<Config, AdminError> {
+        let settings = Settings::load(dir).map_err(|e| st(code::SETTINGS_FILE, e))?;
         Config::from_settings(&settings, env)
     }
 
-    pub fn from_settings(settings: &Settings, env: impl Fn(&str) -> Option<String>) -> Result<Config, String> {
+    pub fn from_settings(settings: &Settings, env: impl Fn(&str) -> Option<String>) -> Result<Config, AdminError> {
         let place = match settings.source() {
             Some(source) => format!("{}: ", source.file()),
             None => String::new(),
         };
         let Some(section) = settings.section("admin") else {
-            return Err(format!("{place}no admin settings: run `admin init`, or add an `[admin]` section with `app = \"module:attr\"`"));
+            return Err(st(code::SETTINGS_MISSING, format!("{place}no admin settings: run `admin init`, or add an `[admin]` section with `app = \"module:attr\"`")));
         };
         let Value::Object(table) = section else {
-            return Err(format!("{place}`admin` must be a table"));
+            return Err(st(code::SETTINGS_INVALID, format!("{place}`admin` must be a table")));
         };
         if let Some(key) = table.keys().find(|k| !KEYS.contains(&k.as_str())) {
-            return Err(format!("{place}`admin.{key}` is not a setting; the keys are {}", KEYS.join(", ")));
+            return Err(st(code::SETTINGS_UNKNOWN_KEY, format!("{place}`admin.{key}` is not a setting; the keys are {}", KEYS.join(", "))));
         }
         let text = |key: &str| match table.get(key) {
             None => Ok(None),
             Some(Value::String(s)) => Ok(Some(s.clone())),
-            Some(_) => Err(format!("{place}`admin.{key}` must be a string")),
+            Some(_) => Err(st(code::SETTINGS_INVALID, format!("{place}`admin.{key}` must be a string"))),
         };
-        let app = text("app")?.ok_or_else(|| format!("{place}`admin.app` is not set: it names the admin object, as `module:attr`"))?;
+        let app = text("app")?.ok_or_else(|| st(code::SETTINGS_MISSING, format!("{place}`admin.app` is not set: it names the admin object, as `module:attr`")))?;
         for (key, value) in [("app", Some(&app)), ("setup", text("setup")?.as_ref())] {
             if let Some(value) = value {
                 if !value.contains(':') || value.starts_with(':') || value.ends_with(':') {
-                    return Err(format!("{place}`admin.{key}` must be `module:name`, not {value:?}"));
+                    return Err(st(code::SETTINGS_INVALID, format!("{place}`admin.{key}` must be `module:name`, not {value:?}")));
                 }
             }
         }
@@ -90,17 +91,17 @@ impl Config {
             None => text("host")?.unwrap_or_else(|| DEFAULT_HOST.into()),
         };
         let port = match env("MONORM_ADMIN_PORT").filter(|v| !v.is_empty()) {
-            Some(port) => port.parse().map_err(|_| format!("MONORM_ADMIN_PORT must be a port number, not {port:?}"))?,
+            Some(port) => port.parse().map_err(|_| st(code::SETTINGS_INVALID, format!("MONORM_ADMIN_PORT must be a port number, not {port:?}")))?,
             None => match table.get("port") {
                 None => DEFAULT_PORT,
-                Some(v) => v.as_u64().and_then(|p| u16::try_from(p).ok()).ok_or_else(|| format!("{place}`admin.port` must be a port number"))?,
+                Some(v) => v.as_u64().and_then(|p| u16::try_from(p).ok()).ok_or_else(|| st(code::SETTINGS_INVALID, format!("{place}`admin.port` must be a port number")))?,
             },
         };
         let timeout_ms = match table.get("timeout") {
             None => DEFAULT_TIMEOUT_MS,
             Some(v) => match v.as_f64() {
                 Some(seconds) if seconds > 0.0 && seconds.is_finite() => (seconds * 1000.0).round() as u64,
-                _ => return Err(format!("{place}`admin.timeout` must be a number of seconds above 0")),
+                _ => return Err(st(code::SETTINGS_INVALID, format!("{place}`admin.timeout` must be a number of seconds above 0"))),
             },
         };
         let db_settings = match table.get("db_settings") {
@@ -109,16 +110,16 @@ impl Config {
                 .iter()
                 .map(|(k, v)| match v {
                     Value::String(s) => Ok((k.clone(), s.clone())),
-                    _ => Err(format!("{place}`admin.db_settings.{k}` must be a string")),
+                    _ => Err(st(code::SETTINGS_INVALID, format!("{place}`admin.db_settings.{k}` must be a string"))),
                 })
                 .collect::<Result<_, _>>()?,
-            Some(_) => return Err(format!("{place}`admin.db_settings` must be a table of strings")),
+            Some(_) => return Err(st(code::SETTINGS_INVALID, format!("{place}`admin.db_settings` must be a table of strings"))),
         };
         let seconds = |key: &str, default: u64| match table.get(key) {
             None => Ok(default),
             Some(v) => match v.as_u64() {
                 Some(n) if n > 0 && i64::try_from(n).is_ok() => Ok(n),
-                _ => Err(format!("{place}`admin.{key}` must be a whole number of seconds above 0")),
+                _ => Err(st(code::SETTINGS_INVALID, format!("{place}`admin.{key}` must be a whole number of seconds above 0"))),
             },
         };
         let origins = match table.get("origins") {
@@ -127,10 +128,10 @@ impl Config {
                 .iter()
                 .map(|v| match v.as_str() {
                     Some(o) if is_origin(o) => Ok(o.trim_end_matches('/').to_string()),
-                    _ => Err(format!("{place}`admin.origins` must hold origins such as \"https://admin.example.com\"")),
+                    _ => Err(st(code::SETTINGS_INVALID, format!("{place}`admin.origins` must hold origins such as \"https://admin.example.com\""))),
                 })
                 .collect::<Result<_, _>>()?,
-            Some(_) => return Err(format!("{place}`admin.origins` must be a list of origins")),
+            Some(_) => return Err(st(code::SETTINGS_INVALID, format!("{place}`admin.origins` must be a list of origins"))),
         };
         let trusted_proxies = match table.get("trusted_proxies") {
             None => Vec::new(),
@@ -138,25 +139,25 @@ impl Config {
                 .iter()
                 .map(|v| match v.as_str().and_then(|a| a.parse::<IpAddr>().ok()) {
                     Some(ip) => Ok(ip.to_string()),
-                    None => Err(format!("{place}`admin.trusted_proxies` must hold IP addresses such as \"10.0.0.1\"")),
+                    None => Err(st(code::SETTINGS_INVALID, format!("{place}`admin.trusted_proxies` must hold IP addresses such as \"10.0.0.1\""))),
                 })
                 .collect::<Result<_, _>>()?,
-            Some(_) => return Err(format!("{place}`admin.trusted_proxies` must be a list of IP addresses")),
+            Some(_) => return Err(st(code::SETTINGS_INVALID, format!("{place}`admin.trusted_proxies` must be a list of IP addresses"))),
         };
         let idle_timeout_secs = seconds("idle_timeout", DEFAULT_IDLE_SECS)?;
         let session_timeout_secs = seconds("session_timeout", DEFAULT_SESSION_SECS)?;
-        let base_path = text("base_path")?.map(|b| crate::site::normalize_base(&b).map_err(|e| format!("{place}`admin.base_path`: {e}"))).transpose()?;
+        let base_path = text("base_path")?.map(|b| crate::site::normalize_base(&b).map_err(|e| st(code::SETTINGS_INVALID, format!("{place}`admin.base_path`: {e}")))).transpose()?;
         let oidc = match table.get("oidc") {
             None => None,
             Some(value @ Value::Object(map)) => {
                 if map.contains_key("client_secret") {
-                    return Err(format!("{place}`admin.oidc.client_secret` is not a setting: set the environment variable MONORM_ADMIN_OIDC_CLIENT_SECRET"));
+                    return Err(st(code::SETTINGS_SECRET, format!("{place}`admin.oidc.client_secret` is not a setting: set the environment variable MONORM_ADMIN_OIDC_CLIENT_SECRET")));
                 }
-                let mut settings = OidcSettings::from_value(value).map_err(|e| format!("{place}`admin.{e}"))?;
+                let mut settings = OidcSettings::from_value(value).map_err(|e| st(code::SETTINGS_INVALID, format!("{place}`admin.{e}")))?;
                 settings.client_secret = env("MONORM_ADMIN_OIDC_CLIENT_SECRET").filter(|v| !v.is_empty());
                 Some(settings)
             }
-            Some(_) => return Err(format!("{place}`admin.oidc` must be a table")),
+            Some(_) => return Err(st(code::SETTINGS_INVALID, format!("{place}`admin.oidc` must be a table"))),
         };
         Ok(Config { app, setup: text("setup")?, host, port, timeout_ms, db_settings, idle_timeout_secs, session_timeout_secs, origins, trusted_proxies, base_path, oidc })
     }
@@ -170,9 +171,9 @@ impl Config {
     }
 
     /// The session signing and limits. `secret` is the value of `MONORM_ADMIN_SECRET`.
-    pub fn security(&self, secret: Option<&str>) -> Result<Arc<Security>, String> {
+    pub fn security(&self, secret: Option<&str>) -> Result<Arc<Security>, AdminError> {
         let secs = |n: u64| i64::try_from(n).unwrap_or(i64::MAX);
-        let trusted_proxies = self.trusted_proxies.iter().map(|a| a.parse::<IpAddr>().map_err(|_| format!("`admin.trusted_proxies` holds {a:?}, which is not an IP address"))).collect::<Result<_, _>>()?;
+        let trusted_proxies = self.trusted_proxies.iter().map(|a| a.parse::<IpAddr>().map_err(|_| st(code::SETTINGS_INVALID, format!("`admin.trusted_proxies` holds {a:?}, which is not an IP address")))).collect::<Result<_, _>>()?;
         let options = SecurityOptions { idle_secs: secs(self.idle_timeout_secs), absolute_secs: secs(self.session_timeout_secs), origins: self.origins.clone(), trusted_proxies, oidc: self.oidc.clone() };
         security_with(secret, options)
     }
@@ -189,28 +190,28 @@ impl Config {
 }
 
 /// The signing and limits for `secret` and `options`; the one place that words the missing-secret error.
-pub fn security_with(secret: Option<&str>, options: SecurityOptions) -> Result<Arc<Security>, String> {
+pub fn security_with(secret: Option<&str>, options: SecurityOptions) -> Result<Arc<Security>, AdminError> {
     let Some(secret) = secret.filter(|s| !s.is_empty()) else {
-        return Err("MONORM_ADMIN_SECRET is not set: it signs the login sessions, so set it to a random string of at least 32 characters (for example `openssl rand -hex 32`)".into());
+        return Err(st(code::SETTINGS_SECRET, "MONORM_ADMIN_SECRET is not set: it signs the login sessions, so set it to a random string of at least 32 characters (for example `openssl rand -hex 32`)"));
     };
-    Security::new(secret.as_bytes(), options)
+    Security::new(secret.as_bytes(), options).map_err(|e| st(code::SETTINGS_INVALID, e))
 }
 
 /// The session options of a JSON object with the keys `idle_timeout`, `session_timeout` (seconds), `origins` and `trusted_proxies`;
 /// a missing key takes its default. This is what a test client gives in place of the `[admin]` settings.
-pub fn security_options(json: &str) -> Result<SecurityOptions, String> {
-    let value: Value = serde_json::from_str(json).map_err(|e| format!("session options are not JSON: {e}"))?;
+pub fn security_options(json: &str) -> Result<SecurityOptions, AdminError> {
+    let value: Value = serde_json::from_str(json).map_err(|e| st(code::SETTINGS_INVALID, format!("session options are not JSON: {e}")))?;
     let Value::Object(map) = value else {
-        return Err("session options must be an object".into());
+        return Err(st(code::SETTINGS_INVALID, "session options must be an object"));
     };
     if let Some(key) = map.keys().find(|k| !["idle_timeout", "session_timeout", "origins", "trusted_proxies", "oidc"].contains(&k.as_str())) {
-        return Err(format!("`{key}` is not a session option; the keys are idle_timeout, session_timeout, origins, trusted_proxies, oidc"));
+        return Err(st(code::SETTINGS_UNKNOWN_KEY, format!("`{key}` is not a session option; the keys are idle_timeout, session_timeout, origins, trusted_proxies, oidc")));
     }
     let seconds = |key: &str, default: u64| match map.get(key) {
         None => Ok(default as i64),
         Some(v) => match v.as_u64() {
-            Some(n) if n > 0 => i64::try_from(n).map_err(|_| format!("`{key}` is too large")),
-            _ => Err(format!("`{key}` must be a whole number of seconds above 0")),
+            Some(n) if n > 0 => i64::try_from(n).map_err(|_| st(code::SETTINGS_INVALID, format!("`{key}` is too large"))),
+            _ => Err(st(code::SETTINGS_INVALID, format!("`{key}` must be a whole number of seconds above 0"))),
         },
     };
     let origins = match map.get("origins") {
@@ -219,20 +220,20 @@ pub fn security_options(json: &str) -> Result<SecurityOptions, String> {
             .iter()
             .map(|v| match v.as_str() {
                 Some(o) if is_origin(o) => Ok(o.trim_end_matches('/').to_string()),
-                _ => Err("`origins` must hold origins such as \"https://admin.example.com\"".to_string()),
+                _ => Err(st(code::SETTINGS_INVALID, "`origins` must hold origins such as \"https://admin.example.com\"")),
             })
             .collect::<Result<_, _>>()?,
-        Some(_) => return Err("`origins` must be a list of origins".into()),
+        Some(_) => return Err(st(code::SETTINGS_INVALID, "`origins` must be a list of origins")),
     };
     let trusted_proxies = match map.get("trusted_proxies") {
         None => Vec::new(),
         Some(Value::Array(list)) => list
             .iter()
-            .map(|v| v.as_str().and_then(|a| a.parse::<IpAddr>().ok()).ok_or_else(|| "`trusted_proxies` must hold IP addresses such as \"10.0.0.1\"".to_string()))
+            .map(|v| v.as_str().and_then(|a| a.parse::<IpAddr>().ok()).ok_or_else(|| st(code::SETTINGS_INVALID, "`trusted_proxies` must hold IP addresses such as \"10.0.0.1\"")))
             .collect::<Result<_, _>>()?,
-        Some(_) => return Err("`trusted_proxies` must be a list of IP addresses".into()),
+        Some(_) => return Err(st(code::SETTINGS_INVALID, "`trusted_proxies` must be a list of IP addresses")),
     };
-    let oidc = map.get("oidc").filter(|v| !v.is_null()).map(OidcSettings::from_value).transpose()?;
+    let oidc = map.get("oidc").filter(|v| !v.is_null()).map(OidcSettings::from_value).transpose().map_err(|e| st(code::SETTINGS_INVALID, e))?;
     Ok(SecurityOptions { idle_secs: seconds("idle_timeout", DEFAULT_IDLE_SECS)?, absolute_secs: seconds("session_timeout", DEFAULT_SESSION_SECS)?, origins, trusted_proxies, oidc })
 }
 
@@ -313,7 +314,7 @@ mod tests {
             ("[admin]\napp = \"a:b\"\n[admin.db_settings]\nk = 1\n", "`admin.db_settings.k` must be a string"),
         ] {
             let d = dir("wrong", "monorm.toml", text);
-            let e = Config::load(&d, no_env).unwrap_err();
+            let e = Config::load(&d, no_env).unwrap_err().message;
             assert!(e.starts_with("monorm.toml: ") && e.contains(needle), "{e}");
         }
     }
@@ -321,15 +322,15 @@ mod tests {
     #[test]
     fn no_admin_section_says_how_to_add_one() {
         let d = dir("none", "monorm.toml", "schema = \"schema.prisma\"\n");
-        assert!(Config::load(&d, no_env).unwrap_err().contains("run `admin init`"));
-        let e = Config::load(&d, |k| (k == "MONORM_ADMIN_PORT").then(|| "x".to_string())).unwrap_err();
+        assert!(Config::load(&d, no_env).unwrap_err().message.contains("run `admin init`"));
+        let e = Config::load(&d, |k| (k == "MONORM_ADMIN_PORT").then(|| "x".to_string())).unwrap_err().message;
         assert!(e.contains("no admin settings"), "{e}");
     }
 
     #[test]
     fn a_bad_port_variable_is_an_error() {
         let d = dir("badenv", "monorm.toml", "[admin]\napp = \"a:b\"\n");
-        let e = Config::load(&d, |k| (k == "MONORM_ADMIN_PORT").then(|| "x".to_string())).unwrap_err();
+        let e = Config::load(&d, |k| (k == "MONORM_ADMIN_PORT").then(|| "x".to_string())).unwrap_err().message;
         assert!(e.contains("MONORM_ADMIN_PORT"), "{e}");
     }
 
@@ -352,7 +353,7 @@ mod tests {
         let c = Config::load(&dir("base-set", "monorm.toml", "[admin]\napp = \"a:b\"\nbase_path = \"/bundler/admin/\"\n"), no_env).unwrap();
         assert_eq!(c.base_path.as_deref(), Some("/bundler/admin"));
         for (text, needle) in [("base_path = \"admin\"", "must start with /"), ("base_path = \"/\"", "is empty"), ("base_path = \"/a b\"", "use letters, digits"), ("base_path = 3", "must be a string")] {
-            let e = Config::load(&dir("base-bad", "monorm.toml", &format!("[admin]\napp = \"a:b\"\n{text}\n")), no_env).unwrap_err();
+            let e = Config::load(&dir("base-bad", "monorm.toml", &format!("[admin]\napp = \"a:b\"\n{text}\n")), no_env).unwrap_err().message;
             assert!(e.contains("`admin.base_path`") && e.contains(needle), "{e}");
         }
     }
@@ -365,7 +366,7 @@ mod tests {
             ("[admin]\napp = \"a:b\"\norigins = [\"admin.example.com\"]\n", "`admin.origins`"),
             ("[admin]\napp = \"a:b\"\norigins = \"https://a.b\"\n", "`admin.origins`"),
         ] {
-            let e = Config::load(&dir("session-wrong", "monorm.toml", text), no_env).unwrap_err();
+            let e = Config::load(&dir("session-wrong", "monorm.toml", text), no_env).unwrap_err().message;
             assert!(e.contains(needle), "{e}");
         }
     }
@@ -374,8 +375,8 @@ mod tests {
     fn the_secret_must_have_32_bytes() {
         let d = dir("secret", "monorm.toml", "[admin]\napp = \"a:b\"\n");
         let c = Config::load(&d, no_env).unwrap();
-        assert!(c.security(None).unwrap_err().contains("MONORM_ADMIN_SECRET"));
-        assert!(c.security(Some("short")).unwrap_err().contains("at least 32 bytes"));
+        assert!(c.security(None).unwrap_err().message.contains("MONORM_ADMIN_SECRET"));
+        assert!(c.security(Some("short")).unwrap_err().message.contains("at least 32 bytes"));
         assert!(c.security(Some(&"x".repeat(32))).is_ok());
     }
 
@@ -394,7 +395,7 @@ mod tests {
             (r#"{"origins": ["a.example"]}"#, "must hold origins"),
             (r#"{"origins": ["https://a.example/path"]}"#, "must hold origins"),
         ] {
-            let e = security_options(text).unwrap_err();
+            let e = security_options(text).unwrap_err().message;
             assert!(e.contains(needle), "{text}: {e}");
         }
     }
@@ -402,7 +403,7 @@ mod tests {
     #[test]
     fn a_missing_or_short_secret_names_the_variable() {
         for secret in [None, Some(""), Some("short")] {
-            let e = security_with(secret, SecurityOptions::default()).err().unwrap();
+            let e = security_with(secret, SecurityOptions::default()).err().unwrap().message;
             assert!(e.contains("MONORM_ADMIN_SECRET") || e.contains("32 bytes"), "{e}");
         }
         assert!(security_with(Some(&"s".repeat(32)), SecurityOptions::default()).is_ok());

@@ -17,7 +17,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::server::{authorize, reject, Shared, User};
-use crate::site::{check_name, err, ConfigError};
+use crate::error::{code, Fault};
+use crate::site::{check_name, err_code};
 
 /// The major version of the widget contract. A package built for another major version does not load.
 pub const ADMIN_MAJOR: u32 = 1;
@@ -77,8 +78,8 @@ pub struct Package {
 #[derive(Debug, Clone, Default)]
 pub struct Packages(Vec<Package>);
 
-fn walk(root: &FsPath, dir: &FsPath, out: &mut BTreeMap<String, Vec<u8>>, total: &mut usize, who: &str) -> Result<(), ConfigError> {
-    let mut entries: Vec<_> = fs::read_dir(dir).map_err(|e| ConfigError(format!("{who}: {}: {e}", dir.display())))?.filter_map(Result::ok).map(|e| e.path()).collect();
+fn walk(root: &FsPath, dir: &FsPath, out: &mut BTreeMap<String, Vec<u8>>, total: &mut usize, who: &str) -> Result<(), Fault> {
+    let mut entries: Vec<_> = fs::read_dir(dir).map_err(|e| Fault::new(code::PACKAGE, format!("{who}: {}: {e}", dir.display())))?.filter_map(Result::ok).map(|e| e.path()).collect();
     entries.sort();
     for p in entries {
         if p.is_dir() {
@@ -89,12 +90,12 @@ fn walk(root: &FsPath, dir: &FsPath, out: &mut BTreeMap<String, Vec<u8>>, total:
             continue;
         }
         // The size is known before the read, so a huge file never loads.
-        let size = fs::metadata(&p).map_err(|e| ConfigError(format!("{who}: {}: {e}", p.display())))?.len() as usize;
+        let size = fs::metadata(&p).map_err(|e| Fault::new(code::PACKAGE, format!("{who}: {}: {e}", p.display())))?.len() as usize;
         *total += size;
         if size > MAX_FILE || *total > MAX_TOTAL || out.len() >= MAX_FILES {
-            return err(format!("{who}: too large: at most {MAX_FILES} files, {MAX_FILE} bytes each and {MAX_TOTAL} bytes in all"));
+            return err_code(code::PACKAGE, format!("{who}: too large: at most {MAX_FILES} files, {MAX_FILE} bytes each and {MAX_TOTAL} bytes in all"));
         }
-        let bytes = fs::read(&p).map_err(|e| ConfigError(format!("{who}: {}: {e}", p.display())))?;
+        let bytes = fs::read(&p).map_err(|e| Fault::new(code::PACKAGE, format!("{who}: {}: {e}", p.display())))?;
         let rel = p.strip_prefix(root).unwrap_or(&p).to_string_lossy().replace('\\', "/");
         out.insert(rel, bytes);
     }
@@ -102,31 +103,31 @@ fn walk(root: &FsPath, dir: &FsPath, out: &mut BTreeMap<String, Vec<u8>>, total:
 }
 
 /// A declared file name: a relative path with no `..`, found among the loaded files.
-fn declared(files: &BTreeMap<String, Vec<u8>>, who: &str, what: &str, file: &str) -> Result<String, ConfigError> {
+fn declared(files: &BTreeMap<String, Vec<u8>>, who: &str, what: &str, file: &str) -> Result<String, Fault> {
     let clean = file.trim_start_matches("./");
     if clean.split('/').any(|s| s == ".." || s.is_empty()) || !files.contains_key(clean) {
-        return err(format!("{who}: {what} names {file:?}, which is not a .js, .mjs or .css file under the package directory"));
+        return err_code(code::PACKAGE, format!("{who}: {what} names {file:?}, which is not a .js, .mjs or .css file under the package directory"));
     }
     Ok(clean.to_owned())
 }
 
 impl Packages {
-    pub fn build(configs: &[PackageConfig]) -> Result<Packages, ConfigError> {
+    pub fn build(configs: &[PackageConfig]) -> Result<Packages, Fault> {
         let mut out: Vec<Package> = Vec::new();
         for c in configs {
             let who = format!("package {:?}", c.name);
             check_name("package name", &c.name)?;
             if out.iter().any(|p| p.name == c.name) {
-                return err(format!("{who}: registered twice"));
+                return err_code(code::PACKAGE, format!("{who}: registered twice"));
             }
             if c.admin_major != ADMIN_MAJOR {
-                return err(format!("{who} is built for admin major {}; this admin is major {ADMIN_MAJOR}", c.admin_major));
+                return err_code(code::PACKAGE, format!("{who} is built for admin major {}; this admin is major {ADMIN_MAJOR}", c.admin_major));
             }
             let root = FsPath::new(&c.dir);
             let mut files = BTreeMap::new();
             walk(root, root, &mut files, &mut 0, &who)?;
             let url = |file: &str| format!("packages/{}/{file}", c.name);
-            let named = |kind: &str, map: &BTreeMap<String, String>| -> Result<BTreeMap<String, String>, ConfigError> {
+            let named = |kind: &str, map: &BTreeMap<String, String>| -> Result<BTreeMap<String, String>, Fault> {
                 let mut out = BTreeMap::new();
                 for (name, file) in map {
                     check_name(&format!("{kind} name"), name)?;
@@ -154,7 +155,7 @@ impl Packages {
             for file in &c.styles {
                 let clean = declared(&files, &who, "styles", file)?;
                 if !clean.ends_with(".css") {
-                    return err(format!("{who}: styles names {file:?}, which is not a .css file"));
+                    return err_code(code::PACKAGE, format!("{who}: styles names {file:?}, which is not a .css file"));
                 }
                 styles.push(url(&clean));
             }

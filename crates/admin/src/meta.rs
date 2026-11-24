@@ -10,7 +10,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::list::{is_text, ranged};
-use crate::site::{err, Column, ConfigError, Filter, FilterKind, Resource, Source};
+use crate::error::Fault;
+use crate::site::{err, Column, Filter, FilterKind, Resource, Source};
 
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
@@ -58,7 +59,7 @@ fn color_ok(c: &str) -> bool {
 }
 
 /// The brand as the UI reads it. A wrong value is a config error that names the setting.
-pub fn brand(config: Option<&BrandConfig>, theme: Option<&ThemeConfig>) -> Result<Value, ConfigError> {
+pub fn brand(config: Option<&BrandConfig>, theme: Option<&ThemeConfig>) -> Result<Value, Fault> {
     let default = BrandConfig::default();
     let c = config.unwrap_or(&default);
     let no_theme = ThemeConfig::default();

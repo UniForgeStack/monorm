@@ -328,7 +328,7 @@ fn build(routes: Value, extra: Value) -> Result<Site, String> {
     for (k, v) in extra.as_object().unwrap() {
         config[k] = v.clone();
     }
-    Site::build(schema(), &config.to_string()).map_err(|e| e.0)
+    Site::build(schema(), &config.to_string()).map_err(|e| e.message)
 }
 
 #[test]

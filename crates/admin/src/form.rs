@@ -10,7 +10,8 @@ use serde_json::{json, Value};
 
 use crate::packages::Packages;
 use crate::permissions::Op;
-use crate::site::{err, Column, ConfigError};
+use crate::error::Fault;
+use crate::site::{config_err, err, err_in, Column};
 use crate::write::{has_default, writable};
 
 /// The widgets that the admin has built in.
@@ -197,14 +198,14 @@ fn classify(schema: &Schema, own: Option<(&str, &[&Column])>, key: &str) -> Resu
 }
 
 /// The keys of a widget config, checked: each names something, and its widget exists and fits it.
-fn keys(schema: &Schema, packages: &Packages, own: Option<(&str, &[&Column])>, widgets: &BTreeMap<String, String>, who: &str) -> Result<Vec<(Key, String)>, ConfigError> {
+fn keys(schema: &Schema, packages: &Packages, own: Option<(&str, &[&Column])>, widgets: &BTreeMap<String, String>, who: &str) -> Result<Vec<(Key, String)>, Fault> {
     let mut out: Vec<(Key, String)> = Vec::new();
     for (key, widget) in widgets {
         let custom = packages.has_widget(widget);
         if !custom && !WIDGETS.contains(&widget.as_str()) {
             return err(format!("{who}: widgets has {widget:?} for {key:?}, not one of {} and not a widget of a package", WIDGETS.join(", ")));
         }
-        let (k, ty) = classify(schema, own, key).map_err(|m| ConfigError(format!("{who}: widgets key {key:?} {m}")))?;
+        let (k, ty) = classify(schema, own, key).map_err(|m| config_err(format!("{who}: widgets key {key:?} {m}")))?;
         // A package widget edits any value: the package decides what it shows and sends.
         let ok = custom
             || match ty {
@@ -223,31 +224,31 @@ fn keys(schema: &Schema, packages: &Packages, own: Option<(&str, &[&Column])>, w
 }
 
 /// The global `widgets` of the site, checked against the schema.
-pub fn global(schema: &Schema, packages: Packages, widgets: &BTreeMap<String, String>) -> Result<Global, ConfigError> {
+pub fn global(schema: &Schema, packages: Packages, widgets: &BTreeMap<String, String>) -> Result<Global, Fault> {
     let keys = keys(schema, &packages, None, widgets, "widgets")?;
     Ok(Global { keys, packages })
 }
 
-fn sections(name: &str, which: &str, layout: Option<&Value>, fields: &[&Column]) -> Result<Vec<Section>, ConfigError> {
+fn sections(name: &str, which: &str, layout: Option<&Value>, fields: &[&Column]) -> Result<Vec<Section>, Fault> {
     let mut out = Vec::new();
     let mut seen = BTreeSet::new();
     for s in layout.map(|v| v.as_array().map(Vec::as_slice).unwrap_or_default()).unwrap_or_default() {
-        let c: SectionConfig = serde_json::from_value(s.clone()).map_err(|e| ConfigError(format!("{name}: form {which}: {e}")))?;
+        let c: SectionConfig = serde_json::from_value(s.clone()).map_err(|e| config_err(format!("{name}: form {which}: {e}")))?;
         if c.fields.is_empty() {
-            return err(format!("{name}: form {which}: a section has no fields"));
+            return err_in(name, format!("form {which}: a section has no fields"));
         }
         if c.title.as_ref().is_some_and(|t| t.trim().is_empty() || t.chars().count() > 80) {
-            return err(format!("{name}: form {which}: a title has 1 to 80 characters"));
+            return err_in(name, format!("form {which}: a title has 1 to 80 characters"));
         }
         if c.collapsed && c.title.is_none() {
-            return err(format!("{name}: form {which}: a collapsed section needs a title"));
+            return err_in(name, format!("form {which}: a collapsed section needs a title"));
         }
         for f in &c.fields {
             if !fields.iter().any(|d| &d.label == f) {
-                return err(format!("{name}: form {which}: {f:?} is not a field of the form"));
+                return err_in(name, format!("form {which}: {f:?} is not a field of the form"));
             }
             if !seen.insert(f.clone()) {
-                return err(format!("{name}: form {which}: {f:?} is in two places"));
+                return err_in(name, format!("form {which}: {f:?} is in two places"));
             }
         }
         out.push(Section { title: c.title, fields: c.fields, collapsed: c.collapsed, other: false });
@@ -260,17 +261,17 @@ fn sections(name: &str, which: &str, layout: Option<&Value>, fields: &[&Column])
 }
 
 /// The form of one resource, checked. `detail` is the detail columns of the resource.
-pub fn build(schema: &Schema, idx: usize, name: &str, detail: &[Column], allow: &[Op], config: &FormConfig, global: &Global) -> Result<FormSpec, ConfigError> {
+pub fn build(schema: &Schema, idx: usize, name: &str, detail: &[Column], allow: &[Op], config: &FormConfig, global: &Global) -> Result<FormSpec, Fault> {
     let model = schema.model(idx);
     let fields: Vec<&Column> = detail.iter().filter(|c| writable(c)).collect();
 
     let mut readonly = BTreeSet::new();
     for n in &config.readonly {
         let Some(c) = fields.iter().find(|c| &c.label == n) else {
-            return err(format!("{name}: readonly names {n:?}, which is not a field of the form"));
+            return err_in(name, format!("readonly names {n:?}, which is not a field of the form"));
         };
         if allow.contains(&Op::Create) && model.field(&c.field).is_ok_and(|f| !f.nullable && !has_default(f)) {
-            return err(format!("{name}: {n:?} is read-only and required with no default, so a new record cannot get a value"));
+            return err_in(name, format!("{n:?} is read-only and required with no default, so a new record cannot get a value"));
         }
         readonly.insert(n.clone());
     }
@@ -280,15 +281,15 @@ pub fn build(schema: &Schema, idx: usize, name: &str, detail: &[Column], allow: 
         Some(Value::Array(_)) => (config.form.as_ref(), config.form.as_ref()),
         Some(Value::Object(o)) => {
             if let Some(k) = o.keys().find(|k| !matches!(k.as_str(), "create" | "edit")) {
-                return err(format!("{name}: form has {k:?}, not one of create, edit"));
+                return err_in(name, format!("form has {k:?}, not one of create, edit"));
             }
             (o.get("create"), o.get("edit"))
         }
-        Some(_) => return err(format!("{name}: form is a list of sections, or an object with create and edit")),
+        Some(_) => return err_in(name, "form is a list of sections, or an object with create and edit".to_string()),
     };
     for (which, v) in [("create", create), ("edit", edit)] {
         if v.is_some_and(|v| !v.is_array()) {
-            return err(format!("{name}: form {which} is a list of sections"));
+            return err_in(name, format!("form {which} is a list of sections"));
         }
     }
     let create = sections(name, "create", create, &fields)?;
@@ -318,9 +319,9 @@ pub fn build(schema: &Schema, idx: usize, name: &str, detail: &[Column], allow: 
     let module = config.component.as_deref().and_then(|c| global.packages.form(c)).map(str::to_owned);
     let component = match &config.component {
         Some(path) if module.is_none() => {
-            let text = std::fs::read_to_string(path).map_err(|e| ConfigError(format!("{name}: form_component {path:?}: {e}")))?;
+            let text = std::fs::read_to_string(path).map_err(|e| config_err(format!("{name}: \u{1}form_component\u{2} {path:?}: {e}")))?;
             if text.trim().is_empty() || text.len() > COMPONENT_MAX {
-                return err(format!("{name}: form_component {path:?} must hold 1 byte to {COMPONENT_MAX} bytes of JavaScript"));
+                return err_in(name, format!("\u{1}form_component\u{2} {path:?} must hold 1 byte to {COMPONENT_MAX} bytes of JavaScript"));
             }
             Some(text)
         }

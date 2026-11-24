@@ -22,7 +22,8 @@ use crate::permissions::{Grants, Op};
 use crate::scope::Scoped;
 use crate::server::{authorize, deny, error_response, finish, found_keys, queryset_rows, reject, user_key, Shared, State_, User};
 use crate::sight::Sight;
-use crate::site::{column, err, queryset_of, Column, ConfigError, Queryset, QuerysetConfig, Resource, Source};
+use crate::error::Fault;
+use crate::site::{config_err, column, err, queryset_of, Column, Queryset, QuerysetConfig, Resource, Source};
 
 /// The rows that one autocomplete call returns when the call sets no limit, and the most it returns.
 const PICK_PAGE: usize = 20;
@@ -89,7 +90,7 @@ fn plain_text(c: &Column) -> bool {
 }
 
 /// The picker and chip settings of a resource, checked against the target resources.
-pub(crate) fn build(schema: &Schema, resources: &[Resource], r: &Resource, config: &std::collections::BTreeMap<String, RelationConfig>) -> Result<Vec<Relation>, ConfigError> {
+pub(crate) fn build(schema: &Schema, resources: &[Resource], r: &Resource, config: &std::collections::BTreeMap<String, RelationConfig>) -> Result<Vec<Relation>, Fault> {
     let model = schema.model(r.model);
     let mut out = Vec::new();
     for (name, c) in config {
@@ -147,7 +148,7 @@ pub(crate) fn build(schema: &Schema, resources: &[Resource], r: &Resource, confi
                 relation.field = field.name.clone();
             }
             (RelKind::Many, Some(t)) => {
-                let join = schema.model_idx(&t.model).map_err(|_| ConfigError(format!("{at}: unknown join model {:?}", t.model)))?;
+                let join = schema.model_idx(&t.model).map_err(|_| config_err(format!("{at}: unknown join model {:?}", t.model)))?;
                 let jm = schema.model(join);
                 if let Some(why) = crate::write::model_read_only_reason(schema, join) {
                     return err(format!("{at}: the join model {} is read-only in the admin: {why}", t.model));
