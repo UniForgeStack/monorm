@@ -1,6 +1,6 @@
 /** Static checks of the generated nested types; never run. */
 
-import type { IndexRef } from "../../src/index.js";
+import type { CteColumn, IndexRef } from "../../src/index.js";
 import { Address, Geo, Opt, Plain, Shop, Slugged, Tagged, Titled, Wrap, Wrapped, type AddressPatch } from "../nested/models.js";
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
@@ -59,4 +59,17 @@ export async function indexes() {
   Slugged.indexes.slugged_id_idx;
   // @ts-expect-error a model without a unique index has no indexes member
   Plain.indexes;
+}
+
+export function cteGroupPaths() {
+  const c = Shop.objects.cte("shops");
+  same<typeof c.c.id, CteColumn<number, "shops">>();
+  same<typeof c.c.address.city, CteColumn<string | null, "shops">>();
+  same<typeof c.c.address.geo.lat, CteColumn<number | null, "shops">>();
+  same<typeof c.c.address.opened, CteColumn<Date | null, "shops">>();
+  // @ts-expect-error the physical leaf name is not a CTE column
+  c.c.addressCity;
+  const p = Plain.objects.cte("plains");
+  same<typeof p.c.g.lat, CteColumn<number, "plains">>();
+  Shop.objects.cte("chain", { recursive: (self) => Shop.objects.filter(Shop.id.eq(self.c.address.floor.add(1))) });
 }

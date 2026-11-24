@@ -4,6 +4,8 @@ All notable changes are listed here, in the [Keep a Changelog](https://keepachan
 
 ## [Unreleased]
 
+- TypeScript: `cte` of a whole model with a `columns` group now exposes group paths (`c.address.city`, `c.address.geo.lat`) as `select` does, in types and at run time. Breaking (alpha): the physical leaf names (`c.addressCity`) are gone, and `c.address` itself is no column: read a subfield. The same holds in Python (`c.address.city`; `Cte.columns` lists `address`, not `address_city`). A `json` group stays one column.
+
 ## [0.1.4] - 2026-11-24
 
 - 0.1.3 was tagged, but its release build failed and nothing was published. 0.1.4 holds the same changes, listed below.

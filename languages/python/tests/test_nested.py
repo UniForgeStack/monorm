@@ -11,7 +11,7 @@ from decimal import Decimal
 import pytest
 
 import monorm
-from monorm import DecodeError, _native
+from monorm import DecodeError, QueryError, _native
 
 PG_URL = os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
 
@@ -373,3 +373,19 @@ def test_nested_types_in_a_non_empty_registry():
     monorm.loads(SQLITE + "model Plain { id Int @id }", registry=registry)
     classes = monorm.loads(SQLITE + SCHEMA, registry=registry)
     assert classes["CShop"].address.city._select_name() == "address_city"
+
+
+async def test_a_cte_of_the_model_exposes_group_paths_not_leaf_names(shop):
+    q, S, classes, db = shop
+    await seed(shop)
+    c = S.objects.cte("shops")
+    assert c.columns == ("id", "address")
+    if S.__name__ == "JShop":
+        return
+    with pytest.raises(AttributeError, match="address_city"):
+        c.c.address_city
+    rows = await c.select(c.c.id, c.c.address.city.label("city"), c.c.address.geo.lat.label("lat")).order_by(c.c.id).using(db)
+    assert [tuple(r) for r in rows] == [(1, "Oslo", 1.5), (2, "Bergen", 9.0), (3, "Tromso", None), (4, None, None)]
+    assert [s.id for s in await S.objects.using(db).from_(c).filter(c.c.address.city == "Bergen")] == [2]
+    with pytest.raises(QueryError, match="group of columns"):
+        await c.select(c.c.address).using(db)
