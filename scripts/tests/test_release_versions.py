@@ -27,7 +27,7 @@ def run(script: str, *args: str) -> subprocess.CompletedProcess:
 
 def copy_sites(root: Path):
     paths = [path for pattern, *_ in versions.TEXT_SITES for path in ROOT.glob(pattern)]
-    for path in [*paths, *(ROOT / name for name in versions.JSON_SITES)]:
+    for path in [*paths, *(ROOT / name for name in versions.JSON_SITES), *versions.generated_files(ROOT)]:
         target = root / path.relative_to(ROOT)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, target)
@@ -119,6 +119,25 @@ class VersionsTest(unittest.TestCase):
         result = self.check("0.1.0", "--allow-tbd")
         self.assertEqual(result.returncode, 1)
         self.assertIn("languages/js/package-lock.json: 0.1.1", result.stdout)
+
+    def test_the_generated_models_lock_the_manifest_hash_of_each_extension(self):
+        self.assertTrue(list(versions.generated_files(self.root)), "the copy holds generated models")
+        self.assertEqual(self.check("0.1.0", "--allow-tbd").returncode, 0)
+
+    def test_a_stale_manifest_hash_in_a_generated_model_fails_and_is_named(self):
+        manifest = self.root / "extensions/proto/monorm-extension.toml"
+        manifest.write_text(manifest.read_text() + "# edited\n")
+        result = self.check("0.1.0", "--allow-tbd")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("languages/js/test/proto/es/models.ts: monorm.proto stamp is stale", result.stdout)
+
+    def test_set_restamps_the_generated_models_after_a_manifest_change(self):
+        manifest = self.root / "extensions/proto/monorm-extension.toml"
+        manifest.write_text(manifest.read_text() + "# edited\n")
+        self.set("0.1.0")
+        self.assertEqual(self.check("0.1.0", "--allow-tbd").returncode, 0)
+        digest = versions.manifests(self.root)["monorm.proto"][1]
+        self.assertIn(f'"manifest_hash":"{digest}"', (self.root / "languages/js/test/proto/es/models.ts").read_text())
 
     def test_check_without_a_version_takes_the_one_in_pyproject(self):
         self.set("0.1.0rc1")

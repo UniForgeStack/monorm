@@ -9,10 +9,12 @@ usage: versions.py check [<version>] [--allow-tbd] [--root <dir>]
 `<version>` is `0.1.0`, or a release candidate in either form: `0.1.0rc1` (PEP 440) or `0.1.0-rc.1` (semver).
 Python sites hold the PEP 440 form. The npm, Cargo, extension manifest and native metadata sites hold the semver form.
 `check` without a version takes the one in the root `pyproject.toml`.
+`set` also rewrites the extension version and manifest hash in the committed generated models; `check` fails on a stale one.
 `check` also needs a `## [<semver>]` heading in CHANGELOG.md, except for a release candidate.
 `show` prints the version of the root `pyproject.toml` in the semver form.
 `tag` prints the version of a release tag, `v0.1.0` or `v0.1.0-rc.1`, and fails for any other tag, such as `v0.1.0rc1`.
 """
+import hashlib
 import json
 import re
 import sys
@@ -44,6 +46,49 @@ JSON_SITES = [
     "languages/js/package-lock.json",
     "languages/js/create-monorm/package.json",
 ]
+# Committed generated models lock the version and the manifest hash of each extension they use.
+GENERATED = ["languages/js/test/**/models*.ts", "examples/**/models*.ts"]
+STAMP = re.compile(r'"(monorm\.[\w.-]+)":\{"version":"([^"]*)","manifest_hash":"([0-9a-f]{64})"')
+
+
+def manifests(root: Path) -> dict[str, tuple[str, str]]:
+    """Extension id -> (version, sha256 of the manifest text)."""
+    found = {}
+    for path in sorted(root.glob("extensions/*/monorm-extension.toml")):
+        text = path.read_text()
+        ident = re.search(r'^id = "([^"]+)"', text, re.M)
+        version = re.search(VERSION_LINE, text, re.M)
+        if ident and version:
+            found[ident[1]] = (version[1], hashlib.sha256(text.encode()).hexdigest())
+    return found
+
+
+def generated_files(root: Path):
+    for pattern in GENERATED:
+        for path in sorted(root.glob(pattern)):
+            if "node_modules" not in path.parts and STAMP.search(path.read_text()):
+                yield path
+
+
+def stale_stamps(root: Path) -> list[str]:
+    known = manifests(root)
+    wrong = []
+    for path in generated_files(root):
+        for ident, version, digest in STAMP.findall(path.read_text()):
+            if ident in known and (version, digest) != known[ident]:
+                wrong.append(f"{path.relative_to(root).as_posix()}: {ident} stamp is stale; run `monorm generate`")
+    return wrong
+
+
+def restamp(root: Path) -> None:
+    known = manifests(root)
+
+    def fix(m):
+        version, digest = known.get(m[1], (m[2], m[3]))
+        return f'"{m[1]}":{{"version":"{version}","manifest_hash":"{digest}"'
+
+    for path in generated_files(root):
+        path.write_text(STAMP.sub(fix, path.read_text()))
 
 
 def parse(text: str) -> tuple[str, int | None]:
@@ -109,6 +154,7 @@ def read_all(root: Path) -> list[tuple[str, str, str]]:
 def check(version: str, root: Path, allow_tbd: bool) -> int:
     wanted = forms(version)
     wrong = [f"{file}: {value} (want {wanted[form]})" for file, form, value in read_all(root) if value != wanted[form]]
+    wrong += stale_stamps(root)
     _, rc = parse(version)
     if rc is None:
         heading = re.search(rf"^## \[{re.escape(wanted['semver'])}\](.*)$", (root / "CHANGELOG.md").read_text(), re.M)
@@ -130,6 +176,7 @@ def set_all(version: str, root: Path) -> int:
         for container, key in json_slots(data):
             container[key] = wanted["semver"]
         path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    restamp(root)
     print(f"set every site to {version}")
     return 0
 
