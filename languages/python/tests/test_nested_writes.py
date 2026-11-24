@@ -1,7 +1,9 @@
-"""A JSON-stored nested type takes no dynamic default; a `date` subfield stores a date."""
+"""A JSON-stored nested type takes no dynamic default; a `date` subfield stores a date; a DateTime subfield is stored as fixed-width UTC text."""
 
 import datetime as dt
+import json
 import os
+import re
 
 import pytest
 
@@ -38,6 +40,17 @@ model EventCols {
 }
 """
 
+MOMENT = """
+type Moment {
+  at DateTime
+}
+
+model Clock {
+  id Int    @id
+  m  Moment @storage(json)
+}
+"""
+
 SQLITE = 'datasource db { provider = "sqlite" }\n'
 WHEN = dt.datetime(2024, 1, 2, 3, 4, 5, tzinfo=dt.UTC)
 
@@ -45,7 +58,7 @@ WHEN = dt.datetime(2024, 1, 2, 3, 4, 5, tzinfo=dt.UTC)
 @pytest.fixture(params=["postgres", "sqlite"])
 async def world(request):
     registry = monorm.Registry()
-    schema = COLUMNS + DAY
+    schema = COLUMNS + DAY + MOMENT
     if request.param == "sqlite":
         classes = monorm.loads(SQLITE + schema, registry=registry)
         db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
@@ -95,3 +108,21 @@ async def test_a_datetime_for_a_date_subfield_is_stored_as_a_date(world):
     await EventCols.objects.using(db).insert(id=1, d={"day": WHEN})
     assert {e.id: e.d.day for e in await Event.objects.using(db).order_by(Event.id)} == {1: WHEN.date(), 2: WHEN.date()}
     assert (await EventCols.objects.using(db).get(EventCols.id == 1)).d.day == WHEN.date()
+
+
+async def test_a_datetime_subfield_is_stored_as_fixed_width_utc_text_that_sorts_by_time(world):
+    db, classes = world
+    plus3 = dt.timezone(dt.timedelta(hours=3))
+    times = [
+        dt.datetime(2024, 1, 2, 3, 4, 5, 123456, tzinfo=dt.UTC),
+        dt.datetime(2024, 1, 2, 3, 4, 5, tzinfo=dt.UTC),
+        dt.datetime(2024, 1, 2, 6, 4, 5, 1, tzinfo=plus3),
+        dt.datetime(2023, 12, 31, 23, 59, 59, 999999, tzinfo=dt.UTC),
+    ]
+    await classes["Clock"].objects.using(db).insert_many([{"id": i, "m": {"at": t}} for i, t in enumerate(times)])
+    rows = await db.fetch("SELECT id, m FROM clock")
+    texts = {r["id"]: (json.loads(r["m"]) if isinstance(r["m"], str) else r["m"])["at"] for r in rows}
+    assert all(re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z", t) for t in texts.values())
+    assert sorted(texts, key=texts.get) == sorted(texts, key=lambda i: times[i].astimezone(dt.UTC))
+    assert texts[1] == "2024-01-02T03:04:05.000000Z"
+    assert texts[2] == "2024-01-02T03:04:05.000001Z"
