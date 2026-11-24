@@ -1215,9 +1215,9 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   /**
    * @internal
    * `guard: false` skips the unfiltered-write check. `updateMany()` needs it: its rows
-   * set the keys, so the query set has no filter by design.
+   * set the keys, so the query set has no filter by design. Only `update()` (`joins`) runs on a query set with `join()`.
    */
-  mutationIr(op: string, params: unknown[], values?: object, guard = true): IR {
+  mutationIr(op: string, params: unknown[], values?: object, guard = true, joins = false): IR {
     this.assertStandalone();
     this.assertNoLoad(op);
     const s = this.state;
@@ -1227,15 +1227,23 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     if (s.lock) {
       throw new QueryError(`${op}() locks the rows it changes; drop lock()`);
     }
-    if (s.from || s.joins.length) {
+    if (s.from || (s.joins.length && !joins)) {
       throw new QueryError(`${op}() writes the model's table; it can't run on a query set with from() or join()`);
     }
+    // An inner join keeps only the rows that match; an outer join and a relation path in SET keep every row.
+    const narrowed = s.joins.some(([, , outer]) => !outer);
     // A filter that is always true (`and()` of no conditions) writes every row, as no filter does.
-    if (guard && !s.everyRow && s.filters.every((f) => constantTruth(f) === true) && !resolve(s.db).allowUnfilteredWrites) {
+    if (guard && !s.everyRow && !narrowed && s.filters.every((f) => constantTruth(f) === true) && !resolve(s.db).allowUnfilteredWrites) {
       throw new UnfilteredWriteError(op, this.meta.name);
     }
     const ctx = new IRContext(this.meta, params);
     const ir: IR = { op, model: this.meta.name, filters: s.filters.map((f) => f.ir(ctx)) };
+    if (s.joins.length) {
+      ir["joins"] = s.joins.map(([cte, on, isOuter]) => {
+        ctx.useCte(cte as unknown as CteLike);
+        return { cte: cte.name, on: on.ir(ctx), outer: isOuter };
+      });
+    }
     if (s.withoutDefaults) ir["without_defaults"] = s.withoutDefaults;
     if (s.withoutRootFilter) ir["without_root_filter"] = true;
     if (values !== undefined) {
@@ -1551,7 +1559,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     if (adapted) values = adapted.checked as M["update"];
     return new WriteStatement<M, P>(this.meta, (names, returning) => this.updateValues(values, returning, names), (names, returning) => {
       const params: unknown[] = [];
-      const ir = this.mutationIr("update", params, values);
+      const ir = this.mutationIr("update", params, values, true, true);
       if (!(ir["set"] as unknown[]).length) return emptyInspection();
       if (returning) ir["returning"] = true;
       if (returning && names) ir["model_fields"] = names;
@@ -1562,7 +1570,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   private heldUpdate(values: M["update"], returning: boolean, names: readonly string[] | undefined): PreparedWrite<unknown> {
     this.db();
     const params = new SlotParams();
-    const ir = this.mutationIr("update", params, values);
+    const ir = this.mutationIr("update", params, values, true, true);
     const empty = !(ir["set"] as unknown[]).length;
     if (returning) {
       ir["returning"] = true;
@@ -1573,7 +1581,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
 
   private async updateValues(values: M["update"], returning: boolean, names?: readonly string[]): Promise<number | M["row"][]> {
     const params: unknown[] = [];
-    const ir = this.mutationIr("update", params, values);
+    const ir = this.mutationIr("update", params, values, true, true);
     if (!(ir["set"] as unknown[]).length) {
       return returning ? [] : 0;
     }
@@ -1592,7 +1600,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   private prepareUpdateWith(values: M["update"], guard: boolean): PreparedUpdate<M> {
     this.db();
     const params: unknown[] = [];
-    const ir = this.mutationIr("update", params, values, guard);
+    const ir = this.mutationIr("update", params, values, guard, guard);
     const unique = call(() => this.meta.registry.native().uniqueRowUpdate(...withScope(JSON.stringify(ir), params), allowedWrites()));
     return { unique, execute: (data = values, options = {}) => this.updateValues(data, options.returning ?? false, options.fields) };
   }

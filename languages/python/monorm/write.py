@@ -813,7 +813,7 @@ class Update(_SetStatement[M]):
     @classmethod
     def build(cls, qs: QuerySet[M], values: Mapping[str, Any]) -> Update[M]:
         params = SlotParams()
-        ir = qs._mutation_ir("update", params, values)
+        ir = qs._mutation_ir("update", params, values, joins=True)
         return cls(qs, ir if ir["set"] else None, params)
 
 

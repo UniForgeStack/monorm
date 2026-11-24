@@ -156,6 +156,9 @@ export class BoundQuerySet<M extends ModelSpec, R = Instance<M>, S extends strin
   /** @internal Run the write `op` builds on the query set of the objects' rows and fill the objects from the rows it returns; `extra` fields are read back for a partial object too. */
   async _write(op: (qs: QuerySet<ModelSpec>) => WriteStatement<ModelSpec>, extra: readonly string[] = []): Promise<R[]> {
     const { meta } = this;
+    if (this.inner.state.joins.length > 0) {
+      throw new QueryError("a bound write changes the rows of its objects; it can't run on a query set with join()");
+    }
     const first = this.distinct();
     const query = this.inner.using(this.database()).filter(this.keyFilter(first) as never);
     let names: string[] | undefined;

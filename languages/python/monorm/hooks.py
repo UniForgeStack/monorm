@@ -88,7 +88,7 @@ def _prepare_update(qs: QuerySet[M], values: Mapping[str, Any], *, guard: bool) 
 
     resolve(qs._db)
     params: list[Any] = []
-    ir = qs._mutation_ir("update", params, values, guard=guard)
+    ir = qs._mutation_ir("update", params, values, guard=guard, joins=guard)
     op, params = _with_scope(json.dumps(ir), params)
     unique: bool = qs.model._meta.registry.native().unique_row_update(op, params, list(allowed_writes()))
     return PreparedUpdate(qs, values, unique)

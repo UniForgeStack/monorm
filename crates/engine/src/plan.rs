@@ -30,7 +30,7 @@ use sea_query::{
 use crate::error::{query_err, Error, Result};
 use crate::params::Params;
 use monorm_core::ir::{
-    Annotation, ArithOp, Assignment, Bypass, CmpOp, ColType, Count, Cte, Delete, Expr, FieldIr, Frame, FrameKind, Lock, Nulls, Operation, Order, ParamRef,
+    Annotation, ArithOp, Assignment, Bypass, CmpOp, ColType, Count, Cte, CteJoin, Delete, Expr, FieldIr, Frame, FrameKind, Lock, Nulls, Operation, Order, ParamRef,
     JsonKey, NestedStorage, Prefetch, RelKind, RelationCondition, RelationIr, RelationSide, Select, SelectItem, Update, ValueType, When,
 };
 use monorm_core::dialect::{Capabilities, Dialect, Target};
@@ -40,7 +40,7 @@ use monorm_core::writes::{AssignValue, WriteKind as AssignKind};
 mod compound;
 mod nested;
 mod update;
-use update::RowUpdate;
+use update::{FromItem, FromJoin, RowUpdate};
 
 const NULL_ONLY_USE: &str = "a field that holds opaque bytes (such as a proto field) can only be tested with IS NULL or IS NOT NULL";
 const COMPUTED_READ_ONLY_USE: &str = "computed fields cannot be filtered, ordered, aggregated, or used in expressions";
@@ -1071,6 +1071,9 @@ impl<'s> Planner<'s> {
                 let virt = derive_ctes(schema, target, &q.with, params)?;
                 let mut p = Planner::new(schema, &virt, target, &q.model, None, params, vec![], 0)?;
                 if crate::multi_table::is_multi_table(schema, &q.model)? {
+                    if !q.joins.is_empty() {
+                        return Err(Error::query("update() on a multi-table model can't read a join"));
+                    }
                     let mut select = crate::multi_table::matched_select(schema, &q.model, q.without_defaults.clone(), q.without_root_filter)?;
                     select.filters = q.filters.clone(); select.with = q.with.clone();
                     let mut matched = p.build_select(&select)?.stmt;
@@ -1164,11 +1167,10 @@ impl<'s> Planner<'s> {
         &self.scopes[0].alias
     }
 
-    /// Takes note of what `q` declares for its expressions: joined CTEs, named windows.
-    fn enter(&mut self, q: &Select) -> Result<()> {
-        self.policy_bypass = q.without_defaults.clone();
+    /// Takes note of the CTEs a query joins: their columns are readable.
+    fn enter_joins(&mut self, joins: &[CteJoin]) -> Result<()> {
         self.joined.clear();
-        for j in &q.joins {
+        for j in joins {
             let idx = self.model_idx(&j.cte)?;
             if idx < self.schema.models.len() {
                 return Err(Error::query(format!("join() takes a CTE, {:?} is a model", j.cte)));
@@ -1178,6 +1180,13 @@ impl<'s> Planner<'s> {
             }
             self.joined.push(j.cte.clone());
         }
+        Ok(())
+    }
+
+    /// Takes note of what `q` declares for its expressions: joined CTEs, named windows.
+    fn enter(&mut self, q: &Select) -> Result<()> {
+        self.policy_bypass = q.without_defaults.clone();
+        self.enter_joins(&q.joins)?;
         self.windows = q.windows.iter().map(|w| w.name.clone()).collect();
         for w in &self.windows {
             if w.is_empty() || !w.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
@@ -3616,6 +3625,9 @@ impl<'s> Planner<'s> {
             crate::scoped::check_set(root, &a.field, assigned(&a.value), self.params)?;
         }
         let (set, nested) = self.nested_sets(&q.set)?;
+        self.policy_bypass = q.without_defaults.clone();
+        self.enter_joins(&q.joins)?;
+        self.update_sources(&mut stmt, q, &set)?;
         let values = self.set_values(&set)?;
         self.update_assignments(&mut stmt, &set, values)?;
         for (column, v) in nested {
@@ -3633,12 +3645,99 @@ impl<'s> Planner<'s> {
         self.require(self.caps.returning, "update().returning()")?;
         let shape = self.return_shape(q.model_fields.as_deref(), &q.without_defaults)?;
         let positions = shape_positions(root, shape.as_ref());
+        // A joined source can repeat a column name: read the target's.
+        let qualify = stmt.has_from();
         stmt.returning(Query::returning().exprs(positions.iter().map(|pos| {
             let f = &root.fields()[pos];
             if root.computed(pos) { return SExpr::cust("NULL"); }
-            returning_col(f)
+            if qualify { read_col(root.table(), f) } else { returning_col(f) }
         })));
         Ok((stmt, Some((positions.iter().map(|pos| root.fields()[pos].value_type()).collect(), shape))))
+    }
+
+    /// Whether the to-one `path` from the root always gives one related row: each hop is a
+    /// foreign key on non-null columns, with no extra condition and no default filter of the
+    /// target. Such a hop reads as an inner join; any other hop keeps the row and gives NULL.
+    fn inner_path(&self, path: &[String]) -> bool {
+        let mut model = self.root;
+        for hop in path {
+            let m = self.model(model);
+            let Ok((rel, target)) = m.relation(hop) else { return false };
+            if rel.kind != RelKind::One || !rel.path.is_empty() || rel.through.is_some() || !rel.conditions.is_empty() || !rel.foreign_key || m.relation_union(hop).is_some() {
+                return false;
+            }
+            if !rel.from.iter().all(|f| m.field(f).is_ok_and(|f| !f.nullable)) {
+                return false;
+            }
+            if self.active_filter(self.model(target), &self.policy_bypass).is_some() || self.view_filter(target, "").is_some() {
+                return false;
+            }
+            model = target;
+        }
+        true
+    }
+
+    /// The `FROM` of an update: the joined CTEs and the to-one relations its `SET` values read.
+    /// All inner sources are plain `FROM` items linked in `WHERE`. When one source must keep
+    /// rows without a match (`outer`, a nullable relation), PostgreSQL does not let a `FROM`
+    /// join reference the target: the update then joins the target again (`FROM t AS r LEFT JOIN ...`)
+    /// and matches it by its key.
+    fn update_sources(&mut self, stmt: &mut RowUpdate, q: &Update, set: &[Assignment]) -> Result<()> {
+        let mut paths: Vec<Vec<String>> = vec![];
+        let (mut refs, mut has_not) = (vec![], false);
+        for a in set {
+            col_paths(&a.value, &mut refs, &mut has_not);
+        }
+        for p in refs.into_iter().filter(|p| !p.is_empty()) {
+            if !paths.iter().any(|x| x == p) {
+                paths.push(p.to_vec());
+            }
+        }
+        if q.joins.is_empty() && paths.is_empty() {
+            return Ok(());
+        }
+        let root = self.model(self.root);
+        let table = root.table().to_owned();
+        let self_join = q.joins.iter().any(|j| j.outer) || paths.iter().any(|p| !self.inner_path(p));
+        let root_alias = self.root_alias().to_owned();
+        if self_join {
+            if root.key.is_empty() {
+                return Err(Error::query("update() with an outer join or a nullable relation needs a primary key"));
+            }
+            let alias = self.alias("r");
+            self.scopes[0].alias = alias;
+        }
+        let mark = self.joins.len();
+        let built = (|| {
+            for p in &paths {
+                self.ensure_join(p, "update()").map_err(|e| {
+                    let to_many = <str>::contains(&e.to_string(), "to-many");
+                    if to_many { Error::query("a to-many relation can't give one value; use an aggregate or a CTE with group_by") } else { e }
+                })?;
+            }
+            q.joins.iter().map(|j| self.cond(&j.on)).collect::<Result<Vec<_>>>()
+        })();
+        let join_alias = std::mem::replace(&mut self.scopes[0].alias, root_alias);
+        let ons = built?;
+        let relations: Vec<(String, String, SExpr)> = self.joins[mark..].iter().map(|(s, on)| (self.model(s.model).table().to_owned(), s.alias.clone(), on.clone())).collect();
+        if self_join {
+            let mut joins: Vec<FromJoin> = q.joins.iter().zip(ons).map(|(j, on)| FromJoin { outer: j.outer, table: j.cte.clone(), alias: None, on }).collect();
+            joins.extend(relations.into_iter().map(|(table, alias, on)| FromJoin { outer: true, table, alias: Some(alias), on }));
+            stmt.from_item(FromItem { table: table.clone(), alias: Some(join_alias.clone()), joins });
+            for k in self.model(self.root).key_fields() {
+                stmt.and_where(col(&table, &k.column).eq(col(&join_alias, &k.column)));
+            }
+        } else {
+            for (j, on) in q.joins.iter().zip(ons) {
+                stmt.from_item(FromItem { table: j.cte.clone(), alias: None, joins: vec![] });
+                stmt.and_where(on);
+            }
+            for (table, alias, on) in relations {
+                stmt.from_item(FromItem { table, alias: Some(alias), joins: vec![] });
+                stmt.and_where(on);
+            }
+        }
+        Ok(())
     }
 
     /// The root's returned rows with the hook-computed fields of their columns (point 5).

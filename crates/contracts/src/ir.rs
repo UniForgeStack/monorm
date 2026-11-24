@@ -1644,6 +1644,9 @@ pub struct Update {
     pub with: Vec<Cte>,
     #[serde(default)]
     pub filters: Vec<Expr>,
+    /// CTEs joined to the updated rows: their columns are readable in `set` and `filters`.
+    #[serde(default)]
+    pub joins: Vec<CteJoin>,
     pub set: Vec<Assignment>,
     /// Return the updated rows (`model_fields`, else the default selection) instead of a row count.
     #[serde(default)]

@@ -341,7 +341,7 @@ test("joining a CTE", async () => {
     .orderBy(User.name)
     .all();
   assert.deepEqual(both, [{ name: "Alice", views: 75n, c: 1n }, { name: "Bob", views: 100n, c: 1n }]);
-  await assert.rejects(User.objects.join(totals, totals.c.authorId.eq(User.id)).update({ name: "x" }), /can't run on a query set with from\(\)/);
+  await assert.rejects(User.objects.join(totals, totals.c.authorId.eq(User.id)).delete(), /can't run on a query set with from\(\)/);
   assert.throws(() => User.objects.join(totals, totals.c.authorId.eq(User.id)).join(totals, totals.c.n.gt(0)), /already read/);
 });
 

@@ -351,7 +351,7 @@ class PendingUpdate(_AdaptedWrite, Update[Any]):
             prepare_update(qs, checked)
         self.operation = PreparedWrite(pending)
         params: list[Any] = []
-        super().__init__(qs, qs._mutation_ir("update", params, checked), params)
+        super().__init__(qs, qs._mutation_ir("update", params, checked, joins=True), params)
 
     def _returning(self, names: list[str] | None) -> Returning[Any]:
         self._used = True
