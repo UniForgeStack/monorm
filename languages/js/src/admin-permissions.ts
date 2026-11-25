@@ -6,6 +6,7 @@
 import { activeModel as activeAuthModel, splitPerm, syncPermissions } from "./auth/permissions.js";
 import type { Database } from "./db.js";
 import type { Registry } from "./model.js";
+import { native } from "./native.js";
 
 /** What `Admin.syncPermissions` did. */
 export interface SyncReport {
@@ -21,32 +22,6 @@ export interface RoleSeedReport {
   readonly rolesCreated: readonly string[];
   /** Role and permission pairs that the call added. */
   readonly grants: number;
-}
-
-/** `*` and `?` glob over `<label>.<codename>`. `[` and `]` are an error: Python `fnmatch` reads them as a class. */
-function glob(pattern: string, whole: string, role: string): RegExp {
-  if (/[[\]]/.test(pattern)) throw new Error(`role '${role}': the pattern '${whole}' has [ or ]; a glob here has only * and ?`);
-  const escaped = pattern.replace(/[.+^${}()|\\]/g, "\\$&").replaceAll("*", ".*").replaceAll("?", ".");
-  return new RegExp(`^${escaped}$`, "s");
-}
-
-/**
- * The names that `patterns` select, in the order of `names`.
- * A leading `-` removes what the patterns before it added. A pattern that matches no name is an error.
- */
-export function resolvePatternGrants(patterns: readonly string[], names: readonly string[], role: string): string[] {
-  const chosen = new Set<string>();
-  for (const pattern of patterns) {
-    const remove = pattern.startsWith("-");
-    const re = glob(remove ? pattern.slice(1) : pattern, pattern, role);
-    const hits = names.filter((n) => re.test(n));
-    if (hits.length === 0) throw new Error(`role '${role}': the pattern '${pattern}' matches no permission name of the site`);
-    for (const n of hits) {
-      if (remove) chosen.delete(n);
-      else chosen.add(n);
-    }
-  }
-  return names.filter((n) => chosen.has(n));
 }
 
 function activeModel(name: string, registry: Registry): ReturnType<typeof activeAuthModel> {
@@ -75,7 +50,7 @@ export async function seed(
 ): Promise<RoleSeedReport> {
   const roleNames = Object.keys(roles);
   if (roleNames.length === 0) return { rolesCreated: [], grants: 0 };
-  const wanted = new Map(roleNames.map((role) => [role, resolvePatternGrants(roles[role]!, names, role)]));
+  const wanted = new Map(roleNames.map((role) => [role, native().adminRoleGrants([...roles[role]!], [...names], role)]));
   const Role = activeModel("Role", registry);
   const Permission = activeModel("Permission", registry);
   const Through = activeModel("RolePermission", registry);

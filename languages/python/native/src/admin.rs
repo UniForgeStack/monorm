@@ -359,9 +359,16 @@ fn admin_site(schema: &Bound<'_, PySchema>, config_json: &str) -> PyResult<Admin
     Ok(AdminSite { site: Arc::new(site), handles })
 }
 
+/// The names that the glob `patterns` of `role` select, in the order of `names`. Raises `ValueError` with a `code`.
+#[pyfunction]
+fn admin_role_grants(patterns: Vec<String>, names: Vec<String>, role: &str) -> PyResult<Vec<String>> {
+    monorm_admin::permissions::role_grants(&patterns, &names, role).map_err(admin_error)
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(admin_site, m)?)?;
     m.add_function(wrap_pyfunction!(admin_settings, m)?)?;
+    m.add_function(wrap_pyfunction!(admin_role_grants, m)?)?;
     m.add_class::<AdminSite>()?;
     m.add_class::<AdminServer>()?;
     m.add_class::<AdminRouter>()?;

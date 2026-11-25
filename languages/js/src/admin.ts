@@ -1390,7 +1390,7 @@ export class Admin {
     try {
       return await grants.seed(this.#roles, site.permissions, database, database.registry);
     } catch (e) {
-      throw new AdminConfigError(e instanceof Error ? e.message : String(e));
+      throw adminError(e);
     }
   }
 

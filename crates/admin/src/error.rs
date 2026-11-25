@@ -33,6 +33,7 @@ pub mod code {
     pub const ROUTE: &str = "config.route";
     pub const FRAME: &str = "config.frame";
     pub const PATH: &str = "config.path";
+    pub const ROLE_GRANT: &str = "config.role_grant";
     /// The `settings` class: the `[admin]` settings and the secret.
     pub const SETTINGS: &str = "settings";
     pub const SETTINGS_FILE: &str = "settings.file";

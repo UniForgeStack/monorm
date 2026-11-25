@@ -7,7 +7,6 @@ import { join } from "node:path";
 import { test } from "node:test";
 
 import { Admin, AdminConfigError } from "../src/admin.js";
-import { resolvePatternGrants } from "../src/admin-permissions.js";
 import { UserMethods, UserQueries, makePassword } from "../src/auth/index.js";
 import { connect, load, Registry, useModelMethods, useQuerySet, type Database } from "../src/index.js";
 
@@ -233,10 +232,9 @@ for (const provider of PROVIDERS) {
     const typo = new Admin(registry, { roles: { support: ["orders.*"] } });
     typo.register(models["Role"]);
     await assert.rejects(typo.seedRoles(db), (e: Error) => e instanceof AdminConfigError && e.message.includes("matches no permission name"));
-    const names = ["admin.access", "admin.read_role"];
-    assert.deepEqual(resolvePatternGrants(["admin.*", "-admin.acce??"], names, "r"), ["admin.read_role"]);
-    assert.throws(() => resolvePatternGrants(["admin.READ_*"], names, "r"), /matches no permission name/);
-    assert.throws(() => resolvePatternGrants(["admin.[ar]*"], names, "r"), /has \[ or \]/);
+    const brackets = new Admin(registry, { roles: { support: ["admin.[ar]*"] } });
+    brackets.register(models["Role"]);
+    await assert.rejects(brackets.seedRoles(db), (e: Error) => e instanceof AdminConfigError && e.message.includes("has [ or ]") && (e as AdminConfigError).code === "config.role_grant");
     const unsynced = new Admin(registry, { roles: { support: ["admin.read_role"] } });
     unsynced.register(models["Role"]);
     await assert.rejects(unsynced.seedRoles(db), (e: Error) => e instanceof AdminConfigError && e.message.includes("sync-permissions"));

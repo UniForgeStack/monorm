@@ -239,3 +239,28 @@ async fn the_grants_cost_one_statement_for_a_user_and_none_for_a_superuser() {
     get(&site, conn.clone(), "/admin/api/resources", json!({"key": 1})).await;
     assert_eq!(count(&trace), superuser + 1);
 }
+
+fn strings(v: &[&str]) -> Vec<String> {
+    v.iter().map(|s| s.to_string()).collect()
+}
+
+#[test]
+fn role_globs_add_remove_and_keep_the_order_of_the_names() {
+    let names = strings(&["admin.access", "admin.read_role", "orders.view_order"]);
+    let got = monorm_admin::permissions::role_grants(&strings(&["admin.*", "-admin.acce??"]), &names, "r").unwrap();
+    assert_eq!(got, strings(&["admin.read_role"]));
+    let all = monorm_admin::permissions::role_grants(&strings(&["orders.*", "admin.*"]), &names, "r").unwrap();
+    assert_eq!(all, names);
+}
+
+#[test]
+fn a_role_glob_that_matches_nothing_or_has_brackets_is_an_error_with_a_code() {
+    let names = strings(&["admin.access", "admin.read_role"]);
+    let e = monorm_admin::permissions::role_grants(&strings(&["admin.READ_*"]), &names, "r").unwrap_err();
+    assert_eq!(e.code, "config.role_grant");
+    assert_eq!(e.message, "role 'r': the pattern 'admin.READ_*' matches no permission name of the site");
+    let e = monorm_admin::permissions::role_grants(&strings(&["admin.[ar]*"]), &names, "r").unwrap_err();
+    assert_eq!(e.message, "role 'r': the pattern 'admin.[ar]*' has [ or ]; a glob here has only * and ?");
+    let e = monorm_admin::permissions::role_grants(&strings(&["admin.*", "-orders.*"]), &names, "r").unwrap_err();
+    assert!(e.message.contains("'-orders.*' matches no permission name"));
+}

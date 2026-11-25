@@ -1386,7 +1386,7 @@ class Admin:
         try:
             return await _admin_permissions.seed(self._roles, site.permissions, db)
         except ValueError as e:
-            raise AdminConfigError(str(e)) from None
+            raise _admin_error(e) from None
 
     def test_client(
         self,

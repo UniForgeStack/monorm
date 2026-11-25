@@ -12,6 +12,7 @@ use monorm_engine::db::{Cell, Executor};
 use sea_query::Value;
 use serde_json::{json, Value as Json};
 
+use crate::error::{code, AdminError, Fault, Spelling};
 use crate::json;
 use crate::site::{Inline, Resource, Site};
 use crate::sql::{mark, Table};
@@ -91,6 +92,42 @@ impl Grants {
     pub fn has_any(&self, names: &[String]) -> bool {
         self.all || names.iter().any(|n| self.names.contains(n))
     }
+}
+
+/// Whether `glob` (`*` any run, `?` one character) matches the whole of `name`.
+fn glob_matches(glob: &[char], name: &[char]) -> bool {
+    match glob.split_first() {
+        None => name.is_empty(),
+        Some(('*', rest)) => (0..=name.len()).any(|i| glob_matches(rest, &name[i..])),
+        Some((c, rest)) => name.split_first().is_some_and(|(n, tail)| (*c == '?' || c == n) && glob_matches(rest, tail)),
+    }
+}
+
+/// The names that the `patterns` of `role` select, in the order of `names`.
+/// A pattern is a glob over `<label>.<codename>` with `*` and `?`. A leading `-` removes what the patterns before it added.
+/// A pattern that matches no name is an error, as is one with `[` or `]`.
+pub fn role_grants(patterns: &[String], names: &[String], role: &str) -> Result<Vec<String>, AdminError> {
+    let fail = |text: String| Fault::new(code::ROLE_GRANT, text).render(Spelling::Snake);
+    let mut chosen: BTreeSet<&str> = BTreeSet::new();
+    for pattern in patterns {
+        let (remove, glob) = pattern.strip_prefix('-').map_or((false, pattern.as_str()), |g| (true, g));
+        if glob.contains(['[', ']']) {
+            return Err(fail(format!("role '{role}': the pattern '{pattern}' has [ or ]; a glob here has only * and ?")));
+        }
+        let glob: Vec<char> = glob.chars().collect();
+        let hits: Vec<&str> = names.iter().map(String::as_str).filter(|n| glob_matches(&glob, &n.chars().collect::<Vec<_>>())).collect();
+        if hits.is_empty() {
+            return Err(fail(format!("role '{role}': the pattern '{pattern}' matches no permission name of the site")));
+        }
+        for n in hits {
+            if remove {
+                chosen.remove(n);
+            } else {
+                chosen.insert(n);
+            }
+        }
+    }
+    Ok(names.iter().filter(|n| chosen.contains(n.as_str())).cloned().collect())
 }
 
 /// The permission that switches the named read default `default` off: `<label>.bypass_<default>_<key>`.
