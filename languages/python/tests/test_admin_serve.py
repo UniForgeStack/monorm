@@ -129,6 +129,46 @@ def test_the_base_path_of_the_settings_file_wins_over_the_option_of_the_object(t
     assert run_to_end(proc)[0] == 0
 
 
+SWITCHER_TOML = (
+    '[admin]\napp = "admin:admin"\n\n[admin.switcher]\ncurrent = "shop"\n\n'
+    '[[admin.switcher.services]]\nkey = "shop"\ntitle = "Shop"\n\n'
+    '[[admin.switcher.services]]\nkey = "ops"\ntitle = "Ops"\nurl = "https://ops.example.com/admin"\n\n'
+    '[admin.switcher.build]\ncommit = "${SWITCHER_TEST_COMMIT}"\n'
+)
+
+
+def test_the_switcher_table_of_the_settings_file_reaches_the_admin_and_merges_with_the_code(tmp_path, monkeypatch):
+    url = project(tmp_path, monkeypatch)
+    source = (tmp_path / "admin.py").read_text()
+    (tmp_path / "monorm.toml").write_text(SWITCHER_TOML)
+    # the file sets the services and the commit, the code sets another build key: no clash, the server starts
+    (tmp_path / "admin.py").write_text(source.replace("admin = Admin()", 'admin = Admin(switcher={"build": {"tree": "fedcba9876543210"}})'))
+    proc = start(tmp_path, url, SWITCHER_TEST_COMMIT="0123456789abcdef")
+    try:
+        assert get(f"{listening(proc)}/readyz")[0] == 200
+    finally:
+        proc.send_signal(signal.SIGTERM)
+    assert run_to_end(proc)[0] == 0
+    # the same key in the code and in the file is an error that names it
+    (tmp_path / "admin.py").write_text(source.replace("admin = Admin()", 'admin = Admin(switcher={"current": "ops"})'))
+    proc = start(tmp_path, url, SWITCHER_TEST_COMMIT="0123456789abcdef")
+    code, err = run_to_end(proc)
+    assert code != 0 and "switcher.current" in err and "set it in one place" in err, err
+    # the error path of a build key follows the spelling of the host
+    (tmp_path / "monorm.toml").write_text(SWITCHER_TOML + 'built_at = "t1"\n')
+    (tmp_path / "admin.py").write_text(source.replace("admin = Admin()", 'admin = Admin(switcher={"build": {"built_at": "t2"}})'))
+    proc = start(tmp_path, url, SWITCHER_TEST_COMMIT="0123456789abcdef")
+    code, err = run_to_end(proc)
+    assert code != 0 and "switcher.build.built_at is set" in err, err
+    (tmp_path / "monorm.toml").write_text(SWITCHER_TOML)
+    # a wrong value of the file is checked in Rust
+    (tmp_path / "admin.py").write_text(source)
+    (tmp_path / "monorm.toml").write_text(SWITCHER_TOML.replace('current = "shop"', 'current = "missing"'))
+    proc = start(tmp_path, url, SWITCHER_TEST_COMMIT="0123456789abcdef")
+    code, err = run_to_end(proc)
+    assert code != 0 and 'switcher.services["shop"]' in err, err
+
+
 def test_two_processes_run_side_by_side_on_one_database(tmp_path, monkeypatch):
     url = project(tmp_path, monkeypatch)
     first, second = start(tmp_path, url), start(tmp_path, url)
