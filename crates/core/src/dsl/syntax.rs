@@ -405,6 +405,8 @@ struct Parser<'a> {
     in_model: bool,
     /// The first token that starts on a later line than the token before it, or spans lines.
     first_break: Option<Pos>,
+    /// Inside a `datasource` block: an object key may be followed by `=`, as the keys of the block are.
+    eq_keys: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -413,7 +415,7 @@ impl<'a> Parser<'a> {
         let mut lexer = Lexer { chars: source.chars().peekable(), rest: source, pos: Pos { line, col: 1, len: 0 } };
         let (pos, tok) = lexer.next()?;
         let end = lexer.pos;
-        Ok(Parser { lexer, tok, pos, end, prev_end: Pos::default(), in_model: false, first_break: None })
+        Ok(Parser { lexer, tok, pos, end, prev_end: Pos::default(), in_model: false, first_break: None, eq_keys: false })
     }
 
     /// `start` with the source length up to the end of the last consumed token.
@@ -490,8 +492,10 @@ impl<'a> Parser<'a> {
                 }
                 "datasource" => {
                     self.ident("a datasource name")?;
-                    let props = self.props("datasource")?;
-                    items.push(Item::Datasource { pos, props });
+                    self.eq_keys = true;
+                    let props = self.props("datasource");
+                    self.eq_keys = false;
+                    items.push(Item::Datasource { pos, props: props? });
                 }
                 // Prisma's own generators (`prisma-client-js`, ...) may share the file.
                 "generator" => {
@@ -722,7 +726,7 @@ impl<'a> Parser<'a> {
                 (_, Tok::Ident(s) | Tok::Str(s)) => s,
                 (p, t) => return err(p, format!("expected a key, found {}", describe(&t))),
             };
-            self.expect(":")?;
+            if self.eq_keys && self.is("=") { self.advance()?; } else { self.expect(":")?; }
             let v = self.value()?;
             if out.iter().any(|(k, _, _)| *k == key) {
                 return err(pos, format!("key {key} given twice"));

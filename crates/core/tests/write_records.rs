@@ -173,12 +173,31 @@ fn the_engine_hands_out_the_setting_names_of_scope() {
     let mut ir: monorm_core::ir::SchemaIr = serde_json::from_value(json!({"dialect": "postgres", "models": [], "behavior": {"schema_contract": 5}})).unwrap();
     assert!(!serde_json::to_string(&ir).unwrap().contains("scope_settings"), "the default is not written");
     ir.behavior.published_scope_keys = serde_json::from_value(keys["published_scope_keys"].clone()).unwrap();
-    ir.scope_settings.overrides.insert("shop".into(), "tenant.shop".into());
+    ir.scope_settings.prefix = "tenant".into();
     ir.scope_settings.bypass = "tenant.bypass".into();
     let json = serde_json::to_string(&ir).unwrap();
     let schema = monorm_core::schema::Schema::from_ir(monorm_core::ir::SchemaIr::from_json(&json).unwrap()).unwrap();
-    assert_eq!(schema.published_scope_settings().collect::<Vec<_>>(), [("shop", "tenant.shop".to_owned()), ("user", "scope.user".to_owned())]);
+    assert_eq!(schema.published_scope_settings().collect::<Vec<_>>(), [("shop", "tenant.shop".to_owned()), ("user", "tenant.user".to_owned())]);
     assert_eq!(schema.bypass_setting(), "tenant.bypass");
+}
+
+#[test]
+fn the_bypass_text_is_the_key_list_or_the_value_that_opens_every_key() {
+    let keys = json!({"published_scope_keys": [{"source": "ext-a", "key": "shop"}, {"source": "ext-a", "key": "user"}]});
+    let list = prepare(keys.clone()).unwrap();
+    assert!(!list.bypass_is_value());
+    assert_eq!(list.bypass_text(&["user".into(), "shop".into()]).unwrap(), "{shop,user}");
+    assert_eq!(list.bypass_text(&["shop".into()]).unwrap(), "{shop}");
+    let mut ir: monorm_core::ir::SchemaIr = serde_json::from_value(json!({"dialect": "postgres", "models": [], "behavior": {"schema_contract": 5}})).unwrap();
+    ir.behavior.published_scope_keys = serde_json::from_value(keys["published_scope_keys"].clone()).unwrap();
+    ir.scope_settings.bypass = "tenant.bypass".into();
+    ir.scope_settings.bypass_value = "on".into();
+    let json = serde_json::to_string(&ir).unwrap();
+    let value = monorm_core::schema::Schema::from_ir(monorm_core::ir::SchemaIr::from_json(&json).unwrap()).unwrap();
+    assert!(value.bypass_is_value());
+    assert_eq!(value.bypass_text(&["shop".into(), "user".into()]).unwrap(), "on");
+    let err = value.bypass_text(&["shop".into()]).unwrap_err();
+    assert!(err.contains("opens only some") && err.contains("user"), "{err}");
 }
 
 #[test]

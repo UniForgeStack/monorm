@@ -256,25 +256,40 @@ pub const BYPASS_SETTING: &str = "monorm.bypass";
 #[derive(Deserialize, Serialize, Debug, Default, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ScopeSettingsIr {
-    /// The setting of a key that is not the default `scope.<key>`.
-    #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
-    pub overrides: BTreeMap<String, String>,
-    /// The setting that lists the open keys; empty means `monorm.bypass`.
+    /// The datasource's `scope_prefix`: the setting of key `k` is `<prefix>.k`. Empty means `scope.<k>` and the typed
+    /// comparison. A prefix also selects the list form: a value is `,`-separated text.
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub prefix: String,
+    /// The setting that lists the open keys, or that holds `bypass_value`; empty means `monorm.bypass`.
     #[serde(skip_serializing_if = "String::is_empty", default)]
     pub bypass: String,
+    /// The value of the bypass setting that opens every key. Empty means the key-list form.
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub bypass_value: String,
+    /// The datasource's `scope_role_check`: the bypass branch of the scope policy also needs a role of `bypass_roles`.
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub role_check: bool,
 }
 
 impl ScopeSettingsIr {
-    pub fn is_default(&self) -> bool { self.overrides.is_empty() && self.bypass.is_empty() }
+    pub fn is_default(&self) -> bool { *self == Self::default() }
 
     /// The setting that holds the value of scope key `key`.
     pub fn key_setting(&self, key: &str) -> String {
-        self.overrides.get(key).cloned().unwrap_or_else(|| format!("{SCOPE_SETTING_PREFIX}{key}"))
+        if self.prefix.is_empty() { format!("{SCOPE_SETTING_PREFIX}{key}") } else { format!("{}.{key}", self.prefix) }
     }
 
-    /// The setting that lists the keys an `unscoped` block opens.
+    /// True when a key value is `,`-separated text, so that one key can hold a list.
+    pub fn list_form(&self) -> bool { !self.prefix.is_empty() }
+
+    /// The setting that lists the keys an `unscoped` block opens, or that holds the bypass value.
     pub fn bypass_setting(&self) -> &str {
         if self.bypass.is_empty() { BYPASS_SETTING } else { &self.bypass }
+    }
+
+    /// The value that opens every key, when the bypass has the value form.
+    pub fn bypass_value(&self) -> Option<&str> {
+        (!self.bypass_value.is_empty()).then_some(self.bypass_value.as_str())
     }
 }
 
@@ -355,6 +370,11 @@ impl SchemaIr {
         if self.models.iter().chain(physical).any(|m| !m.managed) {
             self.behavior.schema_contract = SCHEMA_CONTRACT;
             self.behavior.schema_contract_minor = self.behavior.schema_contract_minor.max(11);
+        }
+        // Contract 5.12 holds `scope_settings`. An engine of 5.11 would read every scope setting at its default name.
+        if !self.scope_settings.is_default() {
+            self.behavior.schema_contract = SCHEMA_CONTRACT;
+            self.behavior.schema_contract_minor = self.behavior.schema_contract_minor.max(12);
         }
     }
 

@@ -656,7 +656,7 @@ mod tests {
         };
         let default = build(ScopeSettingsIr::default());
         assert!(default.contains("current_setting('scope.user', true)"), "{default}");
-        let renamed = build(ScopeSettingsIr { overrides: [("user".to_owned(), "tenant.user".to_owned())].into(), bypass: String::new() });
+        let renamed = build(ScopeSettingsIr { prefix: "tenant".into(), ..Default::default() });
         assert!(renamed.contains("current_setting('tenant.user', true)") && !renamed.contains("scope.user"), "{renamed}");
     }
 

@@ -642,6 +642,7 @@ fn datasource_block(ir: &mut SchemaIr, pos: Pos, props: &Props) -> Result<()> {
             }
         }
     }
+    scope_settings(ir, &mut n)?;
     if let Some((p, v)) = n.get("extensions") {
         let Value::List(list) = v else { return err(p, "datasource: extensions takes a list, e.g. [postgis, citext]") };
         for (p, v) in list {
@@ -663,6 +664,38 @@ fn datasource_block(ir: &mut SchemaIr, pos: Pos, props: &Props) -> Result<()> {
         }
     }
     n.finish()
+}
+
+/// The datasource keys `scope_prefix`, `scope_bypass` and `scope_role_check`. A key at its default leaves the IR unchanged.
+fn scope_settings<'a>(ir: &mut SchemaIr, n: &mut Named<'a>) -> Result<()> {
+    if let Some((p, v)) = n.get("scope_prefix") {
+        match v {
+            Value::Str(prefix) if !prefix.is_empty() => ir.scope_settings.prefix = prefix.clone(),
+            _ => return err(p, r#"datasource: scope_prefix is a non-empty string, e.g. "tenant""#),
+        }
+    }
+    if let Some((p, v)) = n.get("scope_bypass") {
+        const FORM: &str = r#"datasource: scope_bypass is { setting = "tenant.bypass", value = "on" }"#;
+        let Value::Object(fields) = v else { return err(p, FORM) };
+        let (mut setting, mut value) = (None, None);
+        for (key, fp, fv) in fields {
+            let slot = match key.as_str() {
+                "setting" => &mut setting,
+                "value" => &mut value,
+                other => return err(*fp, format!("datasource: scope_bypass has no key `{other}`; it takes `setting` and `value`")),
+            };
+            match fv {
+                Value::Str(text) if !text.is_empty() => *slot = Some(text.clone()),
+                _ => return err(*fp, format!("datasource: scope_bypass `{key}` is a non-empty string")),
+            }
+        }
+        match (setting, value) {
+            (Some(setting), Some(value)) => (ir.scope_settings.bypass, ir.scope_settings.bypass_value) = (setting, value),
+            _ => return err(p, FORM),
+        }
+    }
+    ir.scope_settings.role_check = n.bool("scope_role_check")?;
+    Ok(())
 }
 
 fn function(pos: Pos, name: &str, props: &Props) -> Result<FunctionIr> {
