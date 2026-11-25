@@ -217,7 +217,7 @@ scenario("a moved and deleted row archives its children only while the setting i
   assert.deepEqual(await stamped(db, "sd_strap"), [2]);
 });
 
-scenario("a rule of the other orm on a monorm table lets a hard delete remove the row", async (w) => {
+scenario("a rule of the other ORM on a monorm table lets a hard delete remove the row", async (w) => {
   const { db, m } = w;
   await seed(w);
   await db.execute(SPEC_RULE);

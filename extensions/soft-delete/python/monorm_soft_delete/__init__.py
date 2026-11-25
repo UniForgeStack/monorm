@@ -41,7 +41,8 @@ def _deleted_at(model: Any) -> ColumnRef[Any]:
 class SoftDeleteQuerySet(QuerySet[ModelT]):
     def hard_delete(self) -> Delete[ModelT]:
         """``DELETE`` every matching row. In database mode, the trigger soft-deletes a live
-        row, so this deletes only rows that are already soft-deleted."""
+        row, so this deletes only rows that are already soft-deleted. With ``hard_delete_setting``
+        in the datasource the statement sets that setting, and a live row is deleted too."""
         _deleted_at(self._model)
         return hard_delete_statement(self.without_defaults(_DEFAULT))
 
@@ -101,7 +102,8 @@ class SoftDeleteBoundQuerySet(BoundQuerySet[ModelT]):
 class SoftDeleteInstance:
     async def hard_delete(self: ModelLike) -> None:
         """``DELETE ... WHERE pk = ...`` also for a soft-delete model. In database mode,
-        the trigger soft-deletes a live row; a soft-deleted row is deleted."""
+        the trigger soft-deletes a live row, unless the datasource has ``hard_delete_setting``;
+        a soft-deleted row is deleted."""
         bound: SoftDeleteBoundQuerySet[Any] = cast(Any, self.qs().without_defaults(_DEFAULT))
         await bound.hard_delete()
 

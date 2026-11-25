@@ -152,6 +152,14 @@ if lost:
     sys.exit(1)
 ```
 
+### The hard delete setting
+
+The datasource key `hard_delete_setting = "<name>"` (PostgreSQL) names a setting that another ORM already reads to delete for real.
+`hard_delete()` sends `set_config('<name>', 'on', true)` with the `DELETE`, and the triggers that archive a row skip when it is `'on'`: `soft_delete`, cascade, guard (with its `_cascade` copy) and sweep.
+The revive and owned revive triggers keep running.
+A `@@managed(false)` soft-delete model needs the key (also on SQLite) and gets no object from this extension.
+It does not cascade from an unmanaged parent: the other ORM keeps that. See [Schema extensions](../../docs/extensions/schema-extensions.md#the-hard-delete-setting).
+
 ### Runtime hooks
 
 * The engine rewrites a delete to an update: effect `behavior.delete_rewrites`.

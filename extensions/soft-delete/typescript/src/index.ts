@@ -31,7 +31,8 @@ export function softDeleteQuerySet<B extends QuerySetCtor>(Base: B) {
     /**
      * `DELETE` every matching row also for a model with `@@soft_delete.deleted_at`. In
      * database mode, the trigger soft-deletes a live row, so this deletes only rows that are
-     * already soft-deleted.
+     * already soft-deleted. With `hard_delete_setting` in the datasource the statement sets that
+     * setting, and a live row is deleted too.
      */
     hardDelete<T extends AnyQuerySet>(this: T): WriteOf<T> {
       deletedAt(this);
@@ -91,7 +92,7 @@ export function softDeleteBoundQuerySet<B extends BoundQuerySetCtor>(Base: B) {
 type InstanceLike = { readonly pk: unknown; qs(): { withoutDefaults(name: never): { hardDelete(): Promise<unknown> } } };
 
 export class SoftDeleteInstance {
-  /** `DELETE ... WHERE pk = ...` also for a soft-delete model; in database mode, the trigger soft-deletes a live row. */
+  /** `DELETE ... WHERE pk = ...` also for a soft-delete model; in database mode, the trigger soft-deletes a live row, unless the datasource has `hard_delete_setting`. */
   async hardDelete(this: InstanceLike): Promise<void> {
     // A held instance applies no scope filter: its primary key names the row.
     await this.qs().withoutDefaults(DEFAULT).hardDelete();

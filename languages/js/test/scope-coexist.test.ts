@@ -256,7 +256,7 @@ model Order {
   }
 });
 
-scenario("two permissive policies are ored with the policy of the other orm", async (w) => {
+scenario("two permissive policies are ored with the policy of another mapper", async (w) => {
   await seed(w);
   await w.owner.execute("CREATE POLICY tenant_scope ON co_js_orders USING (shop_id = 2)");
   const app = await w.connectAs("app");
