@@ -182,7 +182,7 @@ impl Site {
         });
         v.files.retain(|f| !hidden.contains(f));
         v.editable.retain(|f| !hidden.contains(f) && !locked.contains(f));
-        v.relations.retain(|r| r.field.is_empty() || !hidden.contains(&r.field));
+        v.relations.retain(|r| r.needs().iter().all(|n| !hidden.contains(*n)));
         for sections in [&mut v.form.create, &mut v.form.edit] {
             for s in sections.iter_mut() {
                 s.fields.retain(|f| !hidden.contains(f));

@@ -802,6 +802,22 @@ Without them the start fails.
 The picker applies the `queryset` filter of the target.
 It ignores tenancy and the `can` rules: `can` is a flag of one row, not a filter of a read.
 
+**Links.**
+A relation with fixed conditions or union members has no picker, because one key does not name one target.
+Examples are `target` and `tags` of the generic extension.
+Name it in `relations` with an empty entry (`target: {}`) and the admin shows it as a read-only link:
+- A to-one union (`target`) shows a link to the page of the related row.
+ The type column of the row selects the member.
+ The list shows the link when the list has the type column too.
+- A to-many relation with conditions (`tags`) shows a list of links on the detail page.
+ The list holds 200 links at most, and the page says when more exist.
+
+A link writes nothing.
+The entry takes no `label`, `choices` or `create`: the build refuses them.
+Each union member must be a resource, and the member that is not a resource shows no link.
+A link applies the `queryset` of the target and the read permission of the user.
+A row that the user may not read shows no link.
+
 **`choices=`.**
 `choices` takes a prepared query set of the target.
 It limits the picker, and the server checks it again on a write: a value outside it is a `422` for the field.

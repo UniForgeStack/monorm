@@ -15,6 +15,8 @@ export interface Column {
   computed?: boolean;
   /** A foreign key: the resource that the value names. The page carries the row label in `labels`. */
   ref?: { resource: string };
+  /** A key that names a record of the resource that the value of another column selects (a union link). */
+  ref_by?: { column: string; targets: Record<string, string> };
   /** The value, as text, to a badge colour: the list and the detail page show the value as a badge. */
   badge?: Record<string, string>;
 }
@@ -96,6 +98,8 @@ export interface Resource {
   /** The label of the column that names a record, or none when the resource has no text column for it. */
   name_column: string | null;
   links: { name: string; title: string; target: string }[];
+  /** The read-only relations (fixed conditions or union members): the page lists their rows as links. */
+  linked?: { name: string; title: string; many: boolean }[];
   page_size: number;
   max_page_size: number;
   sortable: { column: string; indexed: boolean }[];
@@ -524,3 +528,7 @@ export function upload(resource: string, key: string, field: string, file: File)
   form.append("file", file);
   return call<{ key: string; value: unknown }>("POST", `/files/${encodeURIComponent(resource)}/${key}/${encodeURIComponent(field)}`, form);
 }
+
+/** The rows that a read-only relation of the record `key` leads to (at most 200), each with the resource that holds it. */
+export const linked = (resource: string, key: string, rel: string) =>
+  call<{ items: (Option & { resource: string })[]; truncated: boolean }>("GET", `/links/${encodeURIComponent(resource)}/${key}/${encodeURIComponent(rel)}`);

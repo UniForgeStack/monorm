@@ -58,7 +58,10 @@ export function DetailPage({ resource, id, zone, site }: { resource: string; id:
       ) : fieldset ? (
         <DetailCards detail={fieldsetDetail(d, fieldset.fields)} sections={undefined} zone={zone} title={fieldset.title} />
       ) : (
-        <DetailCards detail={d} sections={meta?.sections?.edit} zone={zone} />
+        <>
+          <DetailCards detail={d} sections={meta?.sections?.edit} zone={zone} />
+          {(meta?.linked ?? []).length > 0 && <LinkedCard resource={resource} id={id} rels={meta?.linked ?? []} />}
+        </>
       )}
       {!active && meta && <InlineRowsView meta={meta} rows={d.inlines} zone={zone} />}
     </section>
@@ -181,6 +184,35 @@ const DETAILS = "details:default";
 function badged(value: unknown, f: api.Column) {
   const look = shown(value, f, false);
   return look ? <Display shown={look} /> : null;
+}
+
+/** The read-only relations of a record: one row each, with a link to every related record. */
+function LinkedCard({ resource, id, rels }: { resource: string; id: string; rels: NonNullable<api.Resource["linked"]> }) {
+  return (
+    <Card className="mb-4" role="region" aria-label="Related records">
+      <CardContent>
+        <dl className="m-0">{rels.map((r) => <LinkedRow key={r.name} resource={resource} id={id} rel={r} />)}</dl>
+      </CardContent>
+    </Card>
+  );
+}
+
+function LinkedRow({ resource, id, rel }: { resource: string; id: string; rel: { name: string; title: string } }) {
+  const q = useQuery({ queryKey: ["linked", resource, id, rel.name], queryFn: () => api.linked(resource, id, rel.name), retry: false });
+  const items = q.data?.items ?? [];
+  return (
+    <div className={rowClass}>
+      <dt className="text-sm text-muted-foreground">{rel.title}</dt>
+      <dd className="m-0 break-words">
+        {q.isError ? <span className="text-muted-foreground">—</span> : items.length === 0 ? <span className="text-muted-foreground">{q.data ? "—" : "Loading…"}</span> : (
+          <ul className="m-0 list-none p-0">
+            {items.map((o) => <li key={`${o.resource}:${o.value}`}><Link href={detailUrl(o.resource, encodeURIComponent(String(o.value)))}>{o.label}</Link></li>)}
+            {q.data?.truncated && <li className="text-muted-foreground">…</li>}
+          </ul>
+        )}
+      </dd>
+    </div>
+  );
 }
 
 const rowClass = "grid items-baseline gap-1 border-b border-border py-2.5 last:border-b-0 sm:grid-cols-[12rem_1fr] sm:gap-4";

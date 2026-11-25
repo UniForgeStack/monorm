@@ -42,6 +42,11 @@ fn enum_label(schema: &Schema, ty: ValueType, n: i64) -> Option<String> {
     e.values.iter().find(|v| v.value.as_i64() == Some(n)).map(|v| v.name.clone())
 }
 
+/// A stored value as a row cell shows it: an integer-stored enum value is its schema name.
+pub fn shown(schema: &Schema, ty: ValueType, v: &Value) -> Value {
+    v.as_i64().and_then(|n| enum_label(schema, ty, n)).map_or_else(|| v.clone(), Value::String)
+}
+
 /// A cursor value, as the JSON of a row cell, as a bind value of the column type.
 pub fn bind(ty: ColType, v: &Value) -> Result<Bind, String> {
     let bad = || format!("a cursor value {v} is not a {ty:?}");

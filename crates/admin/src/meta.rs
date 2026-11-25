@@ -1,6 +1,7 @@
 //! What the UI reads about a site: the brand and, for each resource, titles, widgets and links.
 //! `Site::build` runs this once; a request only clones the result.
 
+use crate::relations::Linked;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -183,6 +184,10 @@ fn list_column(schema: &Schema, r: &Resource, c: &Column) -> Value {
     if let Some(badge) = r.badges.get(&c.label) {
         out["badge"] = json!(badge);
     }
+    // The key of a union link names its record by the value of the type column.
+    if let Some(Linked::Union { type_column, members, .. }) = r.relations.iter().filter_map(|x| x.linked.as_ref()).find(|l| matches!(l, Linked::Union { key, .. } if key.label == c.label)) {
+        out["ref_by"] = json!({"column": type_column.label, "targets": members.iter().map(|m| (m.value.as_str().map_or_else(|| m.value.to_string(), str::to_owned), json!(m.target))).collect::<serde_json::Map<_, _>>()});
+    }
     out
 }
 
@@ -304,6 +309,7 @@ pub fn resource(schema: &Schema, r: &Resource, builds: &AtomicUsize) -> Value {
         "key": r.key_columns.iter().map(|c| c.label.clone()).collect::<Vec<_>>(),
         "name_column": crate::site::name_of(r).map(|c| c.label.clone()),
         "fields": r.detail.iter().map(|c| list_column(schema, r, c)).collect::<Vec<_>>(),
+        "linked": r.relations.iter().filter_map(|x| x.linked.as_ref().map(|l| json!({"name": x.name, "title": humanize(&x.name), "many": matches!(l, Linked::Many { .. })}))).collect::<Vec<_>>(),
         "links": r.links.iter().map(|l| json!({"name": l.name, "title": humanize(&l.name), "target": l.target})).collect::<Vec<_>>(),
         "filters": r.filters.iter().map(|f| filter(schema, r, f)).collect::<Vec<_>>(),
         "named_filters": r.named_filters.iter().map(|n| json!({"name": n.name, "title": n.label, "default": n.default, "choices": n.choices.iter().map(|c| json!({"name": c.name, "title": c.label})).collect::<Vec<_>>()})).collect::<Vec<_>>(),
