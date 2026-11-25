@@ -9,13 +9,13 @@ use crate::actions::fail;
 use crate::audit::{self, Entry};
 use crate::auth::{self, AuthConfig, MAX_PASSWORD};
 use crate::bridge::{BridgeError, CallContext};
-use crate::hostwrite::InputConfig;
 use crate::scope::Scoped;
 use crate::security::Session;
 use crate::server::{reject, State_, User};
 use crate::site::{Action, Placement, Resource};
 use crate::write::{server_error, user_key_text, Meta};
 use crate::{key, revoke};
+use crate::site_config::{InputConfig};
 
 pub(crate) const NAME: &str = "set_password";
 const SET_PASSWORD: &str = "auth.set_password";

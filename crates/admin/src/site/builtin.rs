@@ -5,8 +5,9 @@ use monorm_core::ir::RelKind;
 use monorm_core::schema::Schema;
 use serde_json::{json, Value};
 
-use super::{concrete, ResourceConfig};
+use super::{concrete};
 use crate::site::Queryset;
+use crate::site_config::{ResourceConfig};
 
 /// The navigation group of the built-in pages (the audit log, the roles, the permissions and the users). A page that the config gives another group keeps it.
 pub(super) const GROUP: &str = "Users and access";

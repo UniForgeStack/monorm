@@ -23,7 +23,8 @@ use crate::scope::Scoped;
 use crate::server::{authorize, deny, error_response, finish, found_keys, queryset_rows, reject, user_key, Shared, State_, User};
 use crate::sight::Sight;
 use crate::error::Fault;
-use crate::site::{config_err, column, err, queryset_of, Column, Queryset, QuerysetConfig, Resource, Source};
+use crate::site::{config_err, column, err, queryset_of, Column, Queryset, Resource, Source};
+use crate::site_config::{QuerysetConfig, RelationConfig};
 
 /// The rows that one autocomplete call returns when the call sets no limit, and the most it returns.
 const PICK_PAGE: usize = 20;
@@ -31,19 +32,6 @@ const PICK_MAX: usize = 50;
 /// The most links that the chips of one record load, and the most keys in one side of a write.
 pub(crate) const LINKS_CAP: usize = 200;
 pub(crate) const LINKS_PER_WRITE: usize = 500;
-
-/// The config of one relation field of a resource.
-#[derive(Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct RelationConfig {
-    /// The rows of the target that the field accepts, on top of the `queryset` of the target.
-    choices: Option<QuerysetConfig>,
-    /// The form offers a modal that creates a record of the target.
-    #[serde(default)]
-    create: bool,
-    /// The text column of the target that names a row in the picker. By default the first text column.
-    label: Option<String>,
-}
 
 /// A picker or chips named by the text column `label`, with the `choices` filter when there is one.
 pub(crate) fn picker(label: &str, choices: Option<Value>) -> RelationConfig {

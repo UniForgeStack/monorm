@@ -11,7 +11,6 @@ use monorm_core::schema::Schema;
 use monorm_engine::plan::{Plan, Planner};
 use monorm_engine::params::null_of;
 use monorm_engine::{Params, Result as EngineResult};
-use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
 mod builtin;
@@ -19,9 +18,10 @@ mod builtin;
 use crate::error::{code, opt, AdminError, Fault, PathPart, Spelling};
 use crate::form::FormConfig;
 use crate::key;
-use crate::meta::{self, BrandConfig, ThemeConfig};
+use crate::meta;
 use crate::permissions::{Op, Strategy};
 use crate::site_config::{self, Handles};
+use crate::site_config::{Config, QuerysetConfig, ResourceConfig, ListConfig, DateHierarchyConfig, ActionConfig};
 
 pub const DEFAULT_PAGE_SIZE: usize = 25;
 pub const MAX_PAGE_SIZE: usize = 200;
@@ -96,173 +96,6 @@ fn parse_fault(e: serde_json::Error) -> Fault {
     Fault::new(code, format!("invalid admin config: {marked}"))
 }
 
-#[derive(Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-struct Config {
-    /// How the host spells an option key in an error text: `snake` (default) or `camel`. `Site::build` reads it first.
-    #[allow(dead_code)] // `Site::build` reads it before this parse; the field only lets the key through `deny_unknown_fields`.
-    spelling: Option<Spelling>,
-    /// The table of the active auth user model, supplied by the binding.
-    user_table: Option<String>,
-    /// The path under which the UI and the API live, `/admin` by default.
-    base_path: Option<String>,
-    /// The path prefix of every API route: `<base_path>/api` by default, and always under `base_path`.
-    prefix: Option<String>,
-    /// `page` (default), `model` or `access`.
-    permissions: Option<String>,
-    /// The label of the permission names, `admin` by default.
-    label: Option<String>,
-    /// The name, logo, colors, header links and environment label of the UI.
-    brand: Option<BrandConfig>,
-    /// The title, logo and brand colour of the UI: the short form of `brand`.
-    theme: Option<ThemeConfig>,
-    /// The navigation groups in order. A resource with a `group` must name one of them.
-    #[serde(default)]
-    groups: Vec<String>,
-    /// The registered resources. None: every concrete model is a read-only resource.
-    #[serde(default)]
-    resources: Vec<ResourceConfig>,
-    /// The time limit of each statement of a request, in ms (PostgreSQL). 0: none. Default 15000.
-    statement_timeout_ms: Option<u64>,
-    /// How long an export waits for the client to take the next chunk, in ms. 0: no limit. Default 30000.
-    export_idle_timeout_ms: Option<u64>,
-    /// Widgets for every resource: `Model.field`, `Type.subfield`, or a type name, to a widget name.
-    #[serde(default)]
-    widgets: BTreeMap<String, String>,
-    /// Custom routes under `<prefix>/routes/`.
-    #[serde(default)]
-    routes: Vec<crate::routes::RouteConfig>,
-    /// Extension packages: static widgets, form modules and styles under `<prefix>/packages/`.
-    #[serde(default)]
-    packages: Vec<crate::packages::PackageConfig>,
-    #[serde(default)]
-    frame_origins: Vec<String>,
-    #[serde(default)]
-    frame_cards: Vec<crate::frames::FrameConfig>,
-    #[serde(default)]
-    embeds: BTreeMap<String, crate::frames::EmbedConfig>,
-}
-
-/// The rows a resource shows to staff.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct QuerysetConfig {
-    /// A prepared filter. A `param` with index `i` reads `slots[i]`.
-    pub(crate) filter: Option<Value>,
-    /// What each parameter holds at a request: `user` (the key of the staff user).
-    #[serde(default)]
-    pub(crate) slots: Vec<String>,
-    /// A host function that returns `{"filter": expr}` at each request, instead of `filter`.
-    pub(crate) function: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ResourceConfig {
-    model: String,
-    #[serde(default)]
-    list: ListConfig,
-    /// The operations that the resource offers, for every user: `read`, `create`, `update`, `delete`.
-    allow: Option<Vec<String>>,
-    /// Page levels: `read`, `manage` and, to split delete from manage, `delete`.
-    perms: Option<Vec<String>>,
-    /// Overrides the site label in the names of this resource.
-    label: Option<String>,
-    /// The name in the navigation and the page heading. The model name, spaced, by default.
-    title: Option<String>,
-    /// The navigation group of the resource.
-    group: Option<String>,
-    /// Names of field permissions (`see_cost`): `<label>.<name>`.
-    #[serde(default)]
-    field_permissions: Vec<String>,
-    /// Field to permission name: only a user with that name sees the field. A bound name is declared as a field permission.
-    #[serde(default)]
-    see: BTreeMap<String, String>,
-    /// Field to permission name: only a user with that name changes the field, the others see it read-only.
-    #[serde(default)]
-    change: BTreeMap<String, String>,
-    /// Actions: a permission name (`<label>.<action>_<resource>`), a placement, a confirmation and inputs.
-    #[serde(default)]
-    actions: Vec<ActionConfig>,
-    /// Bulk delete is on by default: `false` removes it from the list.
-    #[serde(default = "yes")]
-    bulk_delete: bool,
-    #[serde(default)]
-    set_password: bool,
-    /// The rows that staff see and touch.
-    queryset: Option<QuerysetConfig>,
-    /// Per-row rules, `change` and `delete`: prepared expressions that the list and the detail select as flags.
-    #[serde(default)]
-    can: BTreeMap<String, Value>,
-    /// The text of a form message for a named `@@check`: the name of the constraint, then the text.
-    #[serde(default)]
-    check_messages: BTreeMap<String, String>,
-    /// Host functions that run the writes: `create`, `update`, `delete`, each with `sync` for a plain Python function.
-    #[serde(default)]
-    service: crate::hostwrite::ServiceConfig,
-    /// Controls that a form shows next to the fields. Only a service reads them.
-    #[serde(default)]
-    inputs: Vec<crate::hostwrite::InputConfig>,
-    /// The resource opts in to writes of a protected model.
-    #[serde(default)]
-    allow_protected_writes: bool,
-    /// The model has host behavior that the host knows (a field adapter): its writes run through the host.
-    #[serde(default)]
-    host_behavior: bool,
-    /// Sections: a list, or `{create, edit}` with a list for each form. A field that no section names goes last.
-    form: Option<Value>,
-    /// Fields that the form shows and a request cannot write.
-    #[serde(default)]
-    readonly: Vec<String>,
-    /// Bytes fields that the host shows as another value: the field to `json` (the host converts both ways) or `text` (read-only).
-    #[serde(default)]
-    views: BTreeMap<String, String>,
-    /// Widgets of this resource: a field, `Type.subfield`, or a type name, to a widget name.
-    #[serde(default)]
-    widgets: BTreeMap<String, String>,
-    /// The path of a JavaScript module that replaces the form.
-    form_component: Option<String>,
-    /// Package detail tabs (`<package>.<tab>`) that the detail page shows after the relation tabs.
-    #[serde(default)]
-    detail_tabs: Vec<String>,
-    #[serde(default)]
-    frames: Vec<crate::frames::FrameConfig>,
-    #[serde(default)]
-    fieldsets: Vec<crate::frames::Fieldset>,
-    /// Relation fields with a picker (to-one) or chips (many-to-many), by relation name.
-    #[serde(default)]
-    relations: BTreeMap<String, crate::relations::RelationConfig>,
-    /// Json fields that hold an uploaded file: the form uploads and downloads them.
-    #[serde(default)]
-    files: Vec<String>,
-    /// To-many relations whose rows the detail page edits in place. `Site::build` merges the page of the child into each one.
-    #[serde(default)]
-    inlines: Vec<InlineConfig>,
-}
-
-/// The wrapper of an inline: what a page cannot say. `page` holds the page keys that the wrapper overrides, merged over the registered page of the child model.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct InlineConfig {
-    model: String,
-    /// The to-many relation of the parent that leads to the child model. Needed when more than one does.
-    via: Option<String>,
-    /// `with_parent` (default): the rows save with the parent in one change set. `row`: each row saves alone.
-    save: Option<String>,
-    /// The name of a permission (`<label>.<name>`) that replaces the write permission of the parent.
-    permission: Option<String>,
-    /// `table` (default) or `stacked`.
-    style: Option<String>,
-    /// The most rows an inline shows and holds. Default 20, at most 200.
-    max: Option<usize>,
-    label: Option<String>,
-    #[serde(default)]
-    collapsed: bool,
-    /// Whether a row can be deleted. Default true.
-    delete: Option<bool>,
-    page: Option<Box<ResourceConfig>>,
-}
-
 pub const DEFAULT_INLINE_MAX: usize = 20;
 pub const MAX_INLINE_MAX: usize = 200;
 
@@ -293,68 +126,6 @@ pub struct Inline {
     pub link: Option<String>,
 }
 
-#[derive(Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-struct ListConfig {
-    /// Field names; `author.name` reaches a field through to-one relations. A computed or aggregate column is named here too.
-    columns: Option<Vec<String>>,
-    /// Field names of the model, `-created_at` for descending.
-    order: Option<Vec<String>>,
-    page_size: Option<usize>,
-    /// Field names of the model that the search box reads.
-    search: Option<Vec<String>>,
-    /// The name of a host function that replaces the search: it takes the text and returns keys.
-    search_with: Option<String>,
-    /// Field names whose cells the list edits in place: list columns that are scalar fields of the model.
-    #[serde(default)]
-    editable: Vec<String>,
-    /// Field names that the sort headers may use. Default: the list columns that can sort.
-    sortable: Option<Vec<String>>,
-    /// The title of a column, by column name.
-    #[serde(default)]
-    labels: BTreeMap<String, String>,
-    /// What an empty value shows in every column of the list.
-    empty: Option<String>,
-    /// What an empty value shows in one column, by column name.
-    #[serde(default)]
-    empty_fields: BTreeMap<String, String>,
-    /// Fields that the filter bar offers: a field, `author.name` (a field of a to-one relation) or a to-one relation.
-    #[serde(default)]
-    filters: Vec<String>,
-    /// Filters made of prepared expressions: one choice at a time.
-    #[serde(default)]
-    named_filters: Vec<NamedFilterConfig>,
-    /// Columns that a SQL expression or a host function computes.
-    #[serde(default)]
-    computed: Vec<ComputedConfig>,
-    /// Columns that count or sum the rows of a to-many relation.
-    #[serde(default)]
-    aggregates: Vec<AggregateConfig>,
-    /// The to-many relations that the detail page shows as tabs. Default: every one that leads to a resource.
-    tabs: Option<Vec<String>>,
-    /// A column name to a map of value (as text) to a colour of the palette: the list and the detail page show the value as a badge.
-    #[serde(default)]
-    badges: BTreeMap<String, BTreeMap<String, String>>,
-    /// A date or datetime field: the list shows a bar of the years, months and days with their row counts.
-    date_hierarchy: Option<DateHierarchyConfig>,
-}
-
-/// `date_hierarchy: "created"` or `date_hierarchy: {field: "created", counts: false}`.
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum DateHierarchyConfig {
-    Field(String),
-    Full(DateHierarchyFull),
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DateHierarchyFull {
-    field: String,
-    /// False: the bar shows the periods without counts and the route runs no counting statement.
-    counts: Option<bool>,
-}
-
 impl DateHierarchyConfig {
     fn field(&self) -> &str {
         match self {
@@ -362,59 +133,6 @@ impl DateHierarchyConfig {
             DateHierarchyConfig::Full(f) => &f.field,
         }
     }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct NamedFilterConfig {
-    name: String,
-    label: Option<String>,
-    choices: Vec<NamedChoiceConfig>,
-    /// The choice that applies when the URL names none. None: all rows.
-    default: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct NamedChoiceConfig {
-    name: String,
-    label: Option<String>,
-    /// The condition, as an expression of the engine IR.
-    expr: Value,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ComputedConfig {
-    name: String,
-    label: Option<String>,
-    /// The declared type: `int`, `bigint`, `float`, `bool`, `string`, `text`, `datetime`, `date`, `uuid`, `json` or `decimal`.
-    #[serde(rename = "type")]
-    ty: String,
-    /// Whether the value may be null. Default: true.
-    nullable: Option<bool>,
-    /// A SQL expression, as an expression of the engine IR.
-    expr: Option<Value>,
-    /// The name of a host function: it takes `{"keys": [...]}` for one page and returns one value per key.
-    function: Option<String>,
-    /// Whether the column has a sort header. It needs `order_by`, or `expr` and `nullable: false`.
-    sortable: Option<bool>,
-    /// What the sort header orders by: a field path (a string) or an expression of the engine IR. It makes the column sortable.
-    order_by: Option<Value>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AggregateConfig {
-    name: String,
-    label: Option<String>,
-    /// A to-many relation of the model.
-    relation: String,
-    /// `count`, `sum`, `min`, `max` or `avg`.
-    #[serde(rename = "fn")]
-    function: String,
-    /// A field of the related model: every function but `count` needs one.
-    field: Option<String>,
 }
 
 /// Where the value of a column comes from.
@@ -592,9 +310,9 @@ pub struct Resource {
     /// The text that a failed named `@@check` shows in the form.
     pub check_messages: BTreeMap<String, String>,
     /// The host functions that run the writes.
-    pub service: crate::hostwrite::ServiceConfig,
+    pub service: crate::site_config::ServiceConfig,
     /// The controls of the form that only a service reads.
-    pub inputs: Vec<crate::hostwrite::InputConfig>,
+    pub inputs: Vec<crate::site_config::InputConfig>,
     /// The resource writes a protected model, by its own opt-in.
     pub allow_protected: bool,
     /// The host reports host behavior that the schema does not show.
@@ -612,7 +330,7 @@ pub struct Resource {
     /// The package tabs of the detail page.
     pub package_tabs: Vec<PackageTab>,
     pub(crate) frames: Vec<crate::frames::Frame>,
-    pub(crate) fieldsets: Vec<crate::frames::Fieldset>,
+    pub(crate) fieldsets: Vec<crate::site_config::Fieldset>,
     tabs_config: Option<Vec<String>>,
     /// Whether the table is large, and when it was read.
     large: Arc<Mutex<Option<(Instant, bool)>>>,
@@ -671,31 +389,6 @@ impl Placement {
     }
 }
 
-/// The config of one action as a host sends it. An entry with no placement only declares a permission.
-#[derive(Deserialize, Clone, Debug)]
-#[serde(deny_unknown_fields)]
-pub struct ActionConfig {
-    pub name: String,
-    pub label: Option<String>,
-    pub placement: Option<String>,
-    /// The permission name `<label>.<permission>_<resource>`. None: the action needs `manage`.
-    pub permission: Option<String>,
-    /// The text of the confirmation. None: no confirmation.
-    pub confirm: Option<String>,
-    #[serde(default)]
-    pub inputs: Vec<crate::hostwrite::InputConfig>,
-    /// A prepared filter: the rows that the action applies to.
-    pub applies_to: Option<Value>,
-    /// A row permission condition with optional user slot 0.
-    pub can: Option<Value>,
-    #[serde(default)]
-    pub replace_change: bool,
-    #[serde(default)]
-    pub sync: bool,
-    #[serde(default)]
-    pub threaded: bool,
-}
-
 /// One action of a resource, checked.
 #[derive(Debug, Clone)]
 pub struct Action {
@@ -704,7 +397,7 @@ pub struct Action {
     pub placement: Option<Placement>,
     pub permission: Option<String>,
     pub confirm: Option<String>,
-    pub inputs: Vec<crate::hostwrite::InputConfig>,
+    pub inputs: Vec<crate::site_config::InputConfig>,
     pub applies: Option<Value>,
     /// The action's full permission rule, including change unless replaced.
     pub can: Option<Value>,
@@ -721,10 +414,6 @@ impl Action {
     fn can_flag(&self) -> String {
         format!("can:{}", self.name)
     }
-}
-
-fn yes() -> bool {
-    true
 }
 
 /// The per-row rules. Each one is a flag of a row.

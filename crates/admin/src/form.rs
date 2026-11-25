@@ -5,7 +5,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use monorm_core::ir::{ColType, FieldIr, ValueType};
 use monorm_core::schema::Schema;
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::packages::Packages;
@@ -13,6 +12,7 @@ use crate::permissions::Op;
 use crate::error::Fault;
 use crate::site::{config_err, err, err_in, Column};
 use crate::write::{has_default, writable};
+use crate::site_config::{SectionConfig};
 
 /// The widgets that the admin has built in.
 pub const WIDGETS: [&str; 12] = ["text", "textarea", "number", "date", "datetime", "checkbox", "select", "radio", "json", "list", "email", "url"];
@@ -27,15 +27,6 @@ pub struct FormConfig {
     pub readonly: Vec<String>,
     pub widgets: BTreeMap<String, String>,
     pub component: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SectionConfig {
-    title: Option<String>,
-    fields: Vec<String>,
-    #[serde(default)]
-    collapsed: bool,
 }
 
 #[derive(Debug, Clone)]

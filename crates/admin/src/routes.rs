@@ -18,7 +18,6 @@ use axum::{Extension, Json};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine;
 use http_body_util::channel::{Channel, Sender};
-use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
 use crate::bridge::CallContext;
@@ -28,6 +27,7 @@ use crate::service::{ErrorNote, Logger, RequestId};
 use crate::error::{code, Fault};
 use crate::site::{check_name, Site, err_code};
 use crate::write::{meta_of, Meta, MAX_BODY};
+use crate::site_config::{RouteConfig};
 
 /// The methods of a custom route.
 pub const METHODS: [&str; 5] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
@@ -36,15 +36,6 @@ pub const NEXT: &str = "route.__next";
 pub const CLOSE: &str = "route.__close";
 /// How many chunks wait for the client while the host makes the next one.
 const WAITING_CHUNKS: usize = 2;
-
-/// One route as the host sends it: `permission` is a full name, `<label>.<name>`.
-#[derive(Deserialize, Clone, Debug)]
-#[serde(deny_unknown_fields)]
-pub struct RouteConfig {
-    pub method: String,
-    pub path: String,
-    pub permission: Option<String>,
-}
 
 #[derive(Debug, Clone, PartialEq)]
 enum Seg {

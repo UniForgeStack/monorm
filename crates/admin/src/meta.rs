@@ -2,51 +2,16 @@
 //! `Site::build` runs this once; a request only clones the result.
 
 use crate::relations::Linked;
-use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use monorm_core::ir::ColType;
 use monorm_core::schema::Schema;
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::list::{is_text, ranged};
 use crate::error::Fault;
 use crate::site::{err, Column, Filter, FilterKind, Resource, Source};
-
-#[derive(Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct BrandConfig {
-    /// The name in the header and the page title. `Admin` by default.
-    name: Option<String>,
-    /// The URL of the logo image.
-    logo: Option<String>,
-    /// `primary` and `accent`, as `#rgb` or `#rrggbb`.
-    #[serde(default)]
-    colors: BTreeMap<String, String>,
-    /// Links in the header.
-    #[serde(default)]
-    links: Vec<LinkConfig>,
-    /// A short label such as `staging`, shown in the header.
-    environment: Option<String>,
-}
-
-/// The short form of the look of a site: the title, the logo and the brand colour. It sets the same values as `brand`
-/// (`title` is `brand.name`, `color` is `brand.colors.primary`); a value in both is a config error.
-#[derive(Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct ThemeConfig {
-    title: Option<String>,
-    logo: Option<String>,
-    color: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LinkConfig {
-    label: String,
-    url: String,
-}
+use crate::site_config::{BrandConfig, ThemeConfig};
 
 /// A link target that a page may use: a path on this host or an `http` or `https` URL.
 fn url_ok(url: &str) -> bool {

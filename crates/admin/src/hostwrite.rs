@@ -13,7 +13,6 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use monorm_core::schema::Schema;
 use monorm_core::writes::AssignValue;
-use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
 use crate::audit::{self, Entry};
@@ -26,25 +25,7 @@ use crate::server::{reach, reject, State_, User};
 use crate::error::Fault;
 use crate::site::{err, err_in, Column, Resource};
 use crate::write::{audit_changes, conflicts, finish, list_failure, server_error, write_audit_with, Call, Problems};
-
-/// One service function of a resource. `sync` is a plain Python function; it runs in a thread.
-#[derive(Deserialize, Default, Clone, Debug)]
-#[serde(deny_unknown_fields)]
-pub struct ServiceOp {
-    #[serde(default)]
-    pub sync: bool,
-    /// A sync function that the author marked as threaded: it runs in a thread, and its async database calls go through `ctx.run`.
-    #[serde(default)]
-    pub threaded: bool,
-}
-
-#[derive(Deserialize, Default, Clone, Debug)]
-#[serde(deny_unknown_fields)]
-pub struct ServiceConfig {
-    pub create: Option<ServiceOp>,
-    pub update: Option<ServiceOp>,
-    pub delete: Option<ServiceOp>,
-}
+use crate::site_config::{InputConfig, ServiceConfig, ServiceOp};
 
 impl ServiceConfig {
     pub fn get(&self, op: Op) -> Option<&ServiceOp> {
@@ -61,30 +42,8 @@ impl ServiceConfig {
     }
 }
 
-/// A control that the form shows next to the fields. Only a service reads its value.
-#[derive(Deserialize, Clone, Debug)]
-#[serde(deny_unknown_fields)]
-pub struct InputConfig {
-    pub name: String,
-    #[serde(rename = "type", default = "text")]
-    pub kind: String,
-    pub label: Option<String>,
-    #[serde(default)]
-    pub required: bool,
-    pub help: Option<String>,
-    #[serde(default)]
-    pub choices: Vec<String>,
-    /// The audit row stores a mask, not the value.
-    #[serde(default)]
-    pub secret: bool,
-}
-
 /// What the audit row stores for the value of a secret input.
 pub const SECRET_MASK: &str = "***";
-
-fn text() -> String {
-    "text".into()
-}
 
 pub const INPUT_KINDS: [&str; 5] = ["text", "textarea", "number", "checkbox", "select"];
 /// An action input may also hold a file or a password.
