@@ -384,6 +384,7 @@ for (const provider of PROVIDERS) {
           download: download("out.txt", "hello", "text/plain"),
           text: "plain text",
           bad: 42,
+          object: 10n,
         };
         return results[ctx.inputs["kind"] as string] as Loose;
       },
@@ -397,6 +398,7 @@ for (const provider of PROVIDERS) {
     assert.deepEqual((await run("text")).json().result, { kind: "message", message: "plain text", level: "info" });
     assert.deepEqual((await run(null)).json().result, { kind: "refresh" });
     assert.equal((await run("bad")).status, 500);
+    assert.equal((await run("object")).status, 500, "a result that is not JSON is a server error too");
   }));
 
   test(`validation errors and missing rows of an action map to the status of a write (${provider})`, () => world(provider, async (w) => {

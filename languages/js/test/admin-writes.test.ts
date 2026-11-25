@@ -216,21 +216,17 @@ for (const provider of PROVIDERS) {
     const site = new Admin(w.registry);
     site.register(Locked, { allowProtectedWrites: true } as never);
     const client = site.testClient(w.db, { user: SU });
-    const entry = w.models["AdminLogEntry"];
-    const root: Loose = entry.objects;
-    root.using = (db: Database) => {
-      const qs: Loose = Object.getPrototypeOf(root).using.call(root, db);
-      qs.insert = (values: unknown) => {
-        const written: PromiseLike<unknown> = Object.getPrototypeOf(qs).insert.call(qs, values);
-        return { then: (ok: never, fail: never) => Promise.resolve(written).then(() => { throw new Error("the host fails after the audit row"); }).then(ok, fail) };
-      };
-      return qs;
+    const db: Loose = w.db;
+    const adminLog: (entry: string) => Promise<number> = db.adminLog.bind(db);
+    db.adminLog = async (entry: string) => {
+      await adminLog(entry);
+      throw new Error("the host fails after the audit row");
     };
     try {
       const failed = await client.patch(`${LOCKED}/1`, { json: { set: { x: 2 }, loaded: { x: 1 } } });
       assert.ok(failed.status >= 500, failed.text);
     } finally {
-      delete root.using;
+      delete db.adminLog;
     }
     assert.equal((await Locked.objects.using(w.db).first()).x, 1);
     assert.deepEqual(await audit(w), []);
@@ -241,32 +237,18 @@ for (const provider of PROVIDERS) {
     assert.deepEqual(rows[0].changes.diff, { x: { from: 1, to: 3 } });
   }));
 
-  test(`a concurrent edit between the load and the save is a 409 with the default writer (${provider})`, () => world(provider, async (w) => {
+  test(`a stale loaded value is a 409 with the default writer and the other edit stays (${provider})`, () => world(provider, async (w) => {
     const Locked = w.models["WLocked"];
     await allowWrites([Locked], () => Locked.objects.using(w.db).insertMany([{ x: 1 }]));
     const site = new Admin(w.registry);
     site.register(Locked, { allowProtectedWrites: true } as never);
     const client = site.testClient(w.db, { user: SU });
-    // The writer reads the compared columns with `select`, so the other edit hooks the `read` of that select.
-    let owner: Loose = Object.getPrototypeOf(Locked.objects.select({ id: Locked.id }));
-    while (!Object.prototype.hasOwnProperty.call(owner, "read")) owner = Object.getPrototypeOf(owner);
-    const original = Object.getOwnPropertyDescriptor(owner, "read") as PropertyDescriptor;
-    // The other edit lands in the transaction, before the writer compares.
-    Object.defineProperty(owner, "read", {
-      ...original,
-      value: async function (this: Loose, ...args: unknown[]) {
-        Object.defineProperty(owner, "read", original);
-        await Locked.objects.using(this.qs.state.db).filter(Locked.id.eq(1)).update({ x: 9 });
-        return original.value.apply(this, args);
-      },
-    });
-    try {
-      const r = await client.patch(`${LOCKED}/1`, { json: { set: { x: 2 }, loaded: { x: 1 } } });
-      assert.equal(r.status, 409, r.text);
-    } finally {
-      Object.defineProperty(owner, "read", original);
-    }
-    assert.equal((await Locked.objects.using(w.db).first()).x, 1, "the whole write rolled back, with the other edit");
+    // The other edit lands after the form loaded x = 1 and before the save. The row lock itself is checked on PostgreSQL in crates/admin/tests/hostwrites.rs.
+    await allowWrites([Locked], () => Locked.objects.using(w.db).filter(Locked.id.eq(1)).update({ x: 9 }));
+    const r = await client.patch(`${LOCKED}/1`, { json: { set: { x: 2 }, loaded: { x: 1 } } });
+    assert.equal(r.status, 409, r.text);
+    assert.deepEqual(r.json().conflicts.x, { loaded: 1, current: 9 });
+    assert.equal((await Locked.objects.using(w.db).first()).x, 9, "the other edit stays");
     assert.deepEqual(await audit(w), []);
   }));
 

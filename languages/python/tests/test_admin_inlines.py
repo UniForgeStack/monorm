@@ -307,6 +307,20 @@ async def test_a_host_child_row_write_keeps_the_registered_queryset_when_the_wra
     assert (await note.objects.using(db).filter(note.id == hidden.id).first()).body == "HIDDEN"
 
 
+async def test_a_host_child_row_write_keeps_the_registered_can_rule_when_the_wrapper_overrides_it(world):
+    registry, db, models = world
+    note = models["INote"]
+    register_field_adapter(note, "body", Upper())
+    await note.objects.using(db).insert_many([{"order_id": 1, "body": "LOCKED"}])
+    locked = await note.objects.using(db).filter(note.body == "LOCKED").first()
+    order = {"inlines": [admin.inline(note, save="row", page={"can": {"change": note.id > 0, "delete": note.id > 0}})]}
+    client = site_of(registry, models, order, note={"can": {"change": note.body != "LOCKED", "delete": note.body != "LOCKED"}}).test_client(db, user=SU)
+    r = await client.patch(f"{ORDER}/1/inlines/notes/{locked.id}", json={"set": {"body": "seen"}, "loaded": {"body": "LOCKED"}})
+    assert r.status == 404, r.text
+    assert (await client.delete(f"{ORDER}/1/inlines/notes/{locked.id}")).status == 404
+    assert (await note.objects.using(db).filter(note.id == locked.id).first()).body == "LOCKED"
+
+
 async def test_a_wrapper_computed_and_search_override_get_their_own_tagged_host_functions_and_leave_the_page_of_the_child_alone(world):
     registry, db, models = world
     line = models["IOrderLine"]

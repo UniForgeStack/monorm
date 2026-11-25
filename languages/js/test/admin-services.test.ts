@@ -227,6 +227,25 @@ for (const provider of PROVIDERS) {
     assert.equal((await client.patch(`${NOTES}/1`, { json: { ...body, loaded: { title: "First" } } })).status, 403);
   }));
 
+  test(`a service query set carries the scope of the write (${provider})`, () => world(provider, async (w) => {
+    const Note = w.models["SNote"];
+    const seen: Record<string, number> = {};
+    const scoped: ResourceConfig = {
+      async update(_ctx, qs, changes) {
+        seen["before"] = await qs.count();
+        await qs.update(changes);
+        seen["after"] = await qs.count();
+      },
+      queryset: Note.objects.filter(Note.owner.eq(param("user"))).prepare(),
+      can: { change: Note.title.ne("Zed") },
+    };
+    const client = siteOf(w, scoped).testClient(w.db, { user: SU });
+    const r = await client.patch(`${NOTES}/1`, { json: { set: { title: "Zed" }, loaded: { title: "First" } } });
+    assert.equal(r.status, 200, r.text);
+    assert.deepEqual(seen, { before: 1, after: 0 });
+    assert.equal((await Note.objects.using(w.db).filter(Note.id.eq(1)).first())!.title, "Zed");
+  }));
+
   test(`a service that fails after ctx audit leaves no row and no audit row (${provider})`, () => world(provider, async (w) => {
     const Note = w.models["SNote"];
     const config: ResourceConfig = {
@@ -307,6 +326,9 @@ for (const provider of PROVIDERS) {
     const rows = await audit(w);
     assert.deepEqual(rows.map((e) => [e.userKey, e.action, e.resource, e.recordKey, e.recordLabel]), [["5", "export", "SNote", "3", "Q3"], ["9", "purge", "", "", ""]]);
     assert.deepEqual(rows[0].changes, { rows: 10 });
+    // A Date goes through toJSON and a bigint becomes its text.
+    await log("odd", { user: 1, changes: { at: new Date("2026-01-01T01:02:03Z"), big: 10n }, using: w.db });
+    assert.deepEqual((await audit(w)).at(-1)!.changes, { at: "2026-01-01T01:02:03.000Z", big: "10" });
   }));
 
   test(`a service audit on a key that needs escaping gets the rust key text and the label (${provider})`, () => world(provider, async (w) => {

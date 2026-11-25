@@ -1,6 +1,9 @@
 """Admin writes through the bridge: host behavior, the protected opt-in, services, ``ctx``, inputs and ``admin.log``, on PostgreSQL and SQLite."""
 
+import datetime
+import decimal
 import os
+import uuid
 
 import pytest
 
@@ -224,6 +227,24 @@ async def test_a_service_runs_with_the_queryset_filter_and_the_can_rule_on_its_q
     assert (await client.patch(f"{NOTES}/1", json={**body, "loaded": {"title": "First"}})).status == 403
 
 
+async def test_a_service_query_set_carries_the_scope_of_the_write(world):
+    registry, db, models = world
+    note = models["SNote"]
+    seen = {}
+
+    async def update(ctx, qs, changes):
+        seen["before"] = await qs.count()
+        await qs.update(**changes)
+        seen["after"] = await qs.count()
+
+    config = {"update": update, "queryset": note.objects.filter(note.owner == param("user")).prepare(), "can": {"change": note.title != "Zed"}}
+    client = site_of(registry, models, config).test_client(db, user=SU)
+    r = await client.patch(f"{NOTES}/1", json={"set": {"title": "Zed"}, "loaded": {"title": "First"}})
+    assert r.status == 200, r.text
+    assert seen == {"before": 1, "after": 0}
+    assert (await note.objects.using(db).filter(note.id == 1).first()).title == "Zed"
+
+
 async def test_a_threaded_sync_service_gets_plain_values_and_runs_database_calls_through_ctx_run(world):
     registry, db, models = world
     note = models["SNote"]
@@ -352,6 +373,9 @@ async def test_admin_log_lets_host_code_write_an_audit_row_in_the_open_transacti
     rows = await audit(db, models)
     assert [(r.user_key, r.action, r.resource, r.record_key, r.record_label) for r in rows] == [("5", "export", "SNote", "3", "Q3"), ("9", "purge", "", "", "")]
     assert rows[0].changes == {"rows": 10}
+    # A value that is not JSON is stored as its text (the model JSON field refuses it).
+    await admin.log("odd", user=1, changes={"at": datetime.datetime(2026, 1, 1, 1, 2, 3), "price": decimal.Decimal("1.50"), "id": uuid.UUID(int=5)}, using=db)
+    assert (await audit(db, models))[-1].changes == {"at": "2026-01-01 01:02:03", "price": "1.50", "id": "00000000-0000-0000-0000-000000000005"}
 
 
 def test_a_service_object_with_an_async_call_is_not_sync_and_the_log_reads_one_key_rule_of_a_user():

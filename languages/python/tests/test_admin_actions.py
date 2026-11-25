@@ -381,6 +381,7 @@ async def test_a_result_is_a_message_a_redirect_a_download_or_a_refresh_and_a_ba
             "download": admin.download("out.txt", "hello", "text/plain"),
             "text": "plain text",
             "bad": 42,
+            "object": object(),
         }.get(kind)
 
     client = site_of(registry, models, show).test_client(db, user=SU)
@@ -394,6 +395,7 @@ async def test_a_result_is_a_message_a_redirect_a_download_or_a_refresh_and_a_ba
     assert (await run("text")).json()["result"] == {"kind": "message", "message": "plain text", "level": "info"}
     assert (await run(None)).json()["result"] == {"kind": "refresh"}
     assert (await run("bad")).status == 500
+    assert (await run("object")).status == 500, "a result that is not JSON is a server error too"
 
 
 async def test_validation_errors_and_missing_rows_of_an_action_map_to_the_status_of_a_write(world):

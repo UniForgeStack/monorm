@@ -299,6 +299,19 @@ for (const provider of PROVIDERS) {
     assert.equal((await Note.objects.using(w.db).filter(Note.id.eq(hidden.id)).first()).body, "HIDDEN");
   }));
 
+  test(`a host child row write keeps the registered can rule when the wrapper overrides it (${provider})`, () => world(provider, async (w) => {
+    const Note = w.models["INote"];
+    registerFieldAdapter(Note._meta, "body", upper);
+    await Note.objects.using(w.db).insertMany([{ orderId: 1, body: "LOCKED" }]);
+    const locked = await Note.objects.using(w.db).filter(Note.body.eq("LOCKED")).first();
+    const parent = { inlines: [inline(Note, { save: "row", page: { can: { change: Note.id.gt(0), delete: Note.id.gt(0) } } })] };
+    const client = siteOf(w, parent, {}, { can: { change: Note.body.ne("LOCKED"), delete: Note.body.ne("LOCKED") } }).testClient(w.db, { user: SU });
+    const r = await client.patch(`${ORDER}/1/inlines/notes/${locked.id}`, { json: { set: { body: "seen" }, loaded: { body: "LOCKED" } } });
+    assert.equal(r.status, 404, r.text);
+    assert.equal((await client.delete(`${ORDER}/1/inlines/notes/${locked.id}`)).status, 404);
+    assert.equal((await Note.objects.using(w.db).filter(Note.id.eq(locked.id)).first()).body, "LOCKED");
+  }));
+
   test(`a wrapper computed and search override get their own tagged host functions and leave the page of the child alone (${provider})`, () => world(provider, async (w) => {
     const Line = w.models["IOrderLine"];
     const calls = { page: 0, inline: 0, pageSearch: 0, inlineSearch: 0 };

@@ -1513,6 +1513,17 @@ impl Engine {
         env.spawn_future(async move { conn.query_text(sql).await.map_err(db_tagged) })
     }
 
+    /// Writes one admin log row on `tx` (the connection when null) and returns its id; Rust builds the SQL.
+    #[cfg(feature = "admin")]
+    #[napi]
+    pub fn admin_log<'env>(&self, env: &'env Env, entry_json: String, tx: Option<&Transaction>) -> napi::Result<PromiseRaw<'env, i64>> {
+        let (conn, schema) = (self.conn(tx), self.schema.clone());
+        env.spawn_future(async move {
+            let entry: serde_json::Value = serde_json::from_str(&entry_json).map_err(query_err)?;
+            monorm_admin::hostwrite::log_entry(&schema, conn.as_ref(), &entry).await.map_err(query_err)
+        })
+    }
+
     #[napi]
     pub fn create_tables<'env>(&self, env: &'env Env) -> napi::Result<PromiseRaw<'env, ()>> {
         let stmts = migrate::create_all(&self.schema).map_err(schema_err)?;

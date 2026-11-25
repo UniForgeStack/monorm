@@ -282,6 +282,7 @@ export interface NativeEngine extends NativeInspector {
   explain(opJson: string, params: unknown[], analyze: boolean, tx: NativeTransaction | null, trace?: NativeTrace | null): Promise<string>;
   fetch(sql: string, params: unknown[], tx: NativeTransaction | null, trace?: NativeTrace | null): Promise<Record<string, unknown>[]>;
   fetchText(sql: string, tx: NativeTransaction | null): Promise<(string | null)[][]>;
+  adminLog(entryJson: string, tx: NativeTransaction | null): Promise<number>;
   executeScript(statements: string[], tx: NativeTransaction | null): Promise<void>;
   migrationStatus(dir: string): Promise<string>;
   migrateUp(dir: string, target: string | null, allowDestructive: boolean, ops?: string | null): Promise<string[]>;

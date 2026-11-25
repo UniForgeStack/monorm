@@ -11,13 +11,12 @@ import { fieldAdapter, FieldAdapterError, type FieldAdapter } from "./adapters.j
 import { Decimal } from "./decimal.js";
 import { Duration } from "./duration.js";
 import { DoesNotExist, ValidationError, VersionConflict } from "./errors.js";
-import { asCondition, Condition, Expression, IRContext, resolveNullRule, Slot, SlotParams } from "./expr.js";
+import { Condition, IRContext } from "./expr.js";
 import type { FieldMeta, ModelSpec } from "./meta.js";
 import type { ModelClass, ModelMeta } from "./model.js";
 import { parseTime } from "./date-micros.js";
 import { parseDateTime } from "./nested.js";
 import { allowWrites } from "./protection.js";
-import { Prepared } from "./query.js";
 
 type AnyModel = ModelClass<ModelSpec>;
 type Loose = any;
@@ -187,8 +186,8 @@ export class Context {
       // Under the admin the row keeps a blank key text: Rust writes it from `auditKeys`, the only place that encodes a key.
       // A context built by hand (a unit test) has no Rust: its row holds the plain key values joined with `,`.
       const text = this.byAdmin || scalars === null ? "" : scalars.join(",");
-      const row = await writeLog(this.database, userKey(this.user), action, resource, text, "", extra);
-      this.auditKeys.push({ id: Number(row.id), key: scalars });
+      const id = await writeLog(this.database, userKey(this.user), action, resource, text, "", extra);
+      this.auditKeys.push({ id, key: scalars });
     }
   }
 }
@@ -258,14 +257,15 @@ function scalarKey(value: unknown): unknown {
   return value;
 }
 
-async function writeLog(db: Database, user: string, action: string, resource: string, recordKey: string, label: string, changes: Readonly<Record<string, unknown>> | null): Promise<Loose> {
-  let entry: Loose;
+async function writeLog(db: Database, user: string, action: string, resource: string, recordKey: string, label: string, changes: Readonly<Record<string, unknown>> | null): Promise<number> {
   try {
-    entry = db.registry.get("AdminLogEntry").model;
+    db.registry.get("AdminLogEntry");
   } catch {
     throw new Error("the admin log needs the AdminLogEntry model: import the admin app schema");
   }
-  return entry.objects.using(db).insert({ userKey: user, action, resource, recordKey, recordLabel: label, changes });
+  const entry = { user_key: user, action, resource, record_key: recordKey, record_label: label, changes };
+  const text = JSON.stringify(entry, (_key, v) => (typeof v === "bigint" ? v.toString() : v));
+  return db.adminLog(text);
 }
 
 // -- values from the JSON of the request ---------------------------------------------------------------------------
@@ -320,16 +320,6 @@ export function viewOf(adapter: FieldAdapter, stored: Uint8Array | null | undefi
   return `${stored.byteLength} bytes`;
 }
 
-/** The compare of the Rust core (`json::same_json`): numbers compare by value, so `1` and `1.0` match. */
-export function sameJson(a: unknown, b: unknown): boolean {
-  if (Array.isArray(a) || Array.isArray(b)) return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((x, i) => sameJson(x, b[i]));
-  if (typeof a === "object" && a !== null && typeof b === "object" && b !== null) {
-    const ka = Object.keys(a);
-    return ka.length === Object.keys(b).length && ka.every((k) => k in b && sameJson((a as Loose)[k], (b as Loose)[k]));
-  }
-  return a === b;
-}
-
 /**
  * The values of a request (JSON, by schema name) as the values of the model: by field name, with dates, big integers and decimals.
  * A view field takes the value of its JSON. A JSON that the adapter refuses throws {@link ViewError} with `strict`, else stays JSON.
@@ -359,63 +349,15 @@ export function decodeValues(meta: ModelMeta, values: Readonly<Record<string, un
 
 // -- the filters of the resource -----------------------------------------------------------------------------------
 
-/** The filter of a prepared `queryset`, with the user key put into its `param("user")`. */
-class Bound extends Condition<any, any> {
-  constructor(
-    private readonly conditions: readonly Condition<any, any>[],
-    private readonly user: unknown,
-  ) {
-    super();
-  }
-
-  ir(ctx: IRContext): Loose {
-    const inner = new SlotParams();
-    const irs = this.conditions.map((c) => (resolveNullRule(c) as Expression<unknown>).ir(new IRContext(ctx.root, inner)));
-    return this.remap(irs.length === 1 ? irs[0] : { t: "and", items: irs }, inner, ctx.params);
-  }
-
-  private remap(ir: Loose, inner: readonly unknown[], params: unknown[]): Loose {
-    if (Array.isArray(ir)) return ir.map((i) => this.remap(i, inner, params));
-    if (ir === null || typeof ir !== "object") return ir;
-    if (ir["t"] === "param") {
-      let value = inner[ir["i"]];
-      if (value instanceof Slot) {
-        if (value.name !== "user") throw new Error(`the queryset takes the param 'user', not '${value.name}'`);
-        value = this.user;
-      }
-      params.push(value);
-      return { ...ir, i: params.length - 1 };
-    }
-    return Object.fromEntries(Object.entries(ir).map(([k, v]) => [k, this.remap(v, inner, params)]));
-  }
-}
-
-/** The conditions the admin applies to one write: the `queryset` of the user and the `can` rule of the operation. */
-async function resourceFilters(config: Loose, user: Loose, op: string): Promise<Condition<any, any>[]> {
-  const out: Condition<any, any>[] = [];
-  const scope = config.queryset;
-  if (scope instanceof Prepared) out.push(new Bound((scope as Loose)["qs"].state.filters, user?.key));
-  else if (typeof scope === "function") {
-    const found = await scope(user);
-    for (const c of Array.isArray(found) ? found : [found]) if (c !== undefined && c !== null) out.push(toCondition(c));
-  }
-  const rule = config.can?.[op === "update" ? "change" : op === "delete" ? "delete" : ""];
-  if (rule !== undefined && rule !== null) out.push(toCondition(rule));
-  return out;
-}
-
-function toCondition(node: unknown): Condition<any, any> {
-  return (node instanceof Condition ? node : node instanceof Expression ? node : asCondition(node)) as Condition<any, any>;
-}
-
-function oneRow(model: Loose, db: Database, key: Readonly<Record<string, unknown>>, filters: readonly Condition<any, any>[]): Loose {
+/** The row of `key` inside the scope that Rust sent (the `queryset` of the user and the `can` rule of the operation). */
+function oneRow(model: Loose, db: Database, key: Readonly<Record<string, unknown>>, args: Loose): Loose {
   const meta: ModelMeta = model._meta;
   const conditions = Object.entries(key).map(([name, value]) => {
     const field = meta.fieldByIr.get(name);
     if (field === undefined) throw new Error(`${meta.name} has no field ${name}`);
     return model[field.name].eq(decodeOne(field, value));
   });
-  return model.objects.using(db).filter(...conditions, ...filters);
+  return querySet(model, db, args.scope).filter(...conditions);
 }
 
 // -- the envelope --------------------------------------------------------------------------------------------------
@@ -496,62 +438,21 @@ function guarded<T>(model: AnyModel, args: Loose, run: () => Promise<T>): Promis
   return args.allow_protected ? allowWrites([model], run) : run();
 }
 
-/** The compare of the Rust core (`json::same`): a decimal compares by number, so `5` and `5.00` match. */
-function same(type: string, stored: unknown, loaded: unknown): boolean {
-  if (type === "decimal" && stored instanceof Decimal && loaded instanceof Decimal) return stored.equals(loaded);
-  if (stored instanceof Date && loaded instanceof Date) return stored.getTime() === loaded.getTime();
-  if (stored instanceof Duration && loaded instanceof Duration) return stored.equals(loaded);
-  if (stored === loaded) return true;
-  if (stored === null || stored === undefined || loaded === null || loaded === undefined) return false;
-  if (stored instanceof Uint8Array && loaded instanceof Uint8Array) return Buffer.from(stored).equals(Buffer.from(loaded));
-  if (typeof stored === "object" || typeof loaded === "object") return JSON.stringify(stored) === JSON.stringify(loaded);
-  return String(stored) === String(loaded);
-}
-
 /** The stored bytes of a loaded value, or `undefined` when the field stores something else. */
 function storedBytes(value: unknown): Uint8Array | undefined {
   return value instanceof Uint8Array ? value : undefined;
 }
 
-/**
- * Reads the row under a lock and compares the loaded values of the `compare` fields with it. `null` when the row is gone, else the stored values of the compared fields and of `extra`.
- * The compare runs in the write transaction, so a concurrent edit between the load and the save is a `VersionConflict`.
- * It selects the columns, so a field adapter does not decode them: a row with a value that does not decode still compares.
- */
-async function checkLoaded(meta: ModelMeta, qs: Loose, args: Loose, extra: readonly string[]): Promise<Record<string, unknown> | null> {
-  const loadedJson: Record<string, unknown> = args.loaded ?? {};
-  const names: string[] = (args.compare ?? []).filter((n: string) => n in loadedJson);
-  const fieldOf = (n: string): FieldMeta | undefined => meta.fieldByIr.get(n);
+/** Reads the row of the scope: its key and the `extra` fields, as stored. `null` when the row is gone. It selects the columns, so a field adapter does not decode them: a row with a value that does not decode still reads. */
+async function readRow(meta: ModelMeta, qs: Loose, extra: readonly string[]): Promise<Record<string, unknown> | null> {
   const columns = new Map<string, FieldMeta>();
   for (const f of meta.key) columns.set(f.name, f);
-  for (const n of [...names, ...extra]) {
-    const field = fieldOf(n);
+  for (const n of extra) {
+    const field = meta.fieldByIr.get(n);
     if (field !== undefined) columns.set(field.name, field);
   }
   const items = Object.fromEntries([...columns].map(([name, field]) => [name, meta.column(field)]));
-  const row = await (args.lock ? qs.lock() : qs).select(items).first();
-  if (row === null || row === undefined) return null;
-  const viewOfName = (n: string): FieldAdapter | undefined => {
-    const field = fieldOf(n);
-    return field === undefined ? undefined : viewAdapter(meta, field.name);
-  };
-  const loaded = decodeValues(meta, Object.fromEntries(names.filter((n) => viewOfName(n) === undefined).map((n) => [n, loadedJson[n]])));
-  for (const n of names) {
-    const field = fieldOf(n);
-    const name = field?.name ?? n;
-    const view = viewOfName(n);
-    if (view !== undefined) {
-      // The form loaded the JSON view of the stored bytes: compare the view of the stored bytes now.
-      if (!sameJson(viewOf(view, storedBytes(row[name])), loadedJson[n])) throw new VersionConflict(`${meta.name} ${JSON.stringify(args.key)} was changed since the form loaded`);
-      continue;
-    }
-    let current = row[name];
-    let wanted = loaded[name];
-    // An adapted field shows a decoded value; the form loaded its stored bytes (base64), so compare those.
-    if (fieldAdapter(meta, name) !== undefined && storedBytes(current) !== undefined && typeof wanted === "string") wanted = Buffer.from(wanted, "base64");
-    if (!same(field?.type ?? "", current, wanted)) throw new VersionConflict(`${meta.name} ${JSON.stringify(args.key)} was changed since the form loaded`);
-  }
-  return row;
+  return (await qs.select(items).first()) ?? null;
 }
 
 /**
@@ -579,12 +480,11 @@ function checkLossless(meta: ModelMeta, row: Record<string, unknown>, values: Re
 }
 
 /** The audit row of a default write, inside the write transaction. Answers its id. Rust sends the key text of an update and a delete; the admin sets the label, the key text of a create and the diff after it reads the record, by the id that this function answers. */
-async function writeAudit(database: Database, meta: ModelMeta, args: Loose): Promise<unknown> {
+async function writeAudit(database: Database, meta: ModelMeta, args: Loose): Promise<number> {
   const changes: Record<string, unknown> = { request_id: args.request_id ?? "", inputs: { ...(args.audit_inputs ?? {}) }, service: false };
   if (args.ip !== undefined && args.ip !== null) changes["ip"] = args.ip;
   if (args.user_agent !== undefined && args.user_agent !== null) changes["user_agent"] = args.user_agent;
-  const entry = await writeLog(database, userKey(args.user ?? {}), args.op, args.resource || meta.name, args.key_text ?? "", "", changes);
-  return entry.id;
+  return writeLog(database, userKey(args.user ?? {}), args.op, args.resource || meta.name, args.key_text ?? "", "", changes);
 }
 
 /** A row of an `update_rows` call answered a failure: it ends the loop and rolls the transaction back. */
@@ -626,9 +526,9 @@ function perRow(fn: HostFunction): HostFunction {
 /**
  * The host function `admin.write`'s share for one model: a query-set write with the filters of the resource.
  *
- * It runs in one transaction: the compare of the loaded values, the write and the audit row commit or roll back together.
+ * Rust compares the loaded values (with the row lock) before the call. The write and the audit row commit or roll back together.
  */
-export function defaultWriter(model: AnyModel, config: Loose): HostFunction {
+export function defaultWriter(model: AnyModel): HostFunction {
   const meta = model._meta;
   return perRow(async (database, args) => {
     const bulk = Array.isArray(args.filters);
@@ -648,8 +548,8 @@ export function defaultWriter(model: AnyModel, config: Loose): HostFunction {
             const key = keyJson(meta, created);
             return { ok: true, key, audited: true, audit_id: await writeAudit(database, meta, args) };
           }
-          const qs = oneRow(model, database, args.key, await resourceFilters(config, args.user, op));
-          const row = await checkLoaded(meta, qs, args, op === "update" ? Object.keys(values) : []);
+          const qs = oneRow(model, database, args.key, args);
+          const row = await readRow(meta, qs, op === "update" ? Object.keys(values) : []);
           if (row === null) return { ok: false, kind: "not_found" };
           if (op === "update") checkLossless(meta, row, values);
           const done = op === "update" ? (Object.keys(values).length > 0 ? await qs.update(values) : await qs.exists()) : await qs.delete();
@@ -666,7 +566,7 @@ export function defaultWriter(model: AnyModel, config: Loose): HostFunction {
 }
 
 /** The host function of one service function (`service.<Resource>.<op>`). */
-export function serviceFunction(model: AnyModel, config: Loose, op: string, fn: (...args: any[]) => unknown, models: ReadonlyMap<string, AnyModel> = new Map()): HostFunction {
+export function serviceFunction(model: AnyModel, op: string, fn: (...args: any[]) => unknown, models: ReadonlyMap<string, AnyModel> = new Map()): HostFunction {
   const meta = model._meta;
   return perRow(async (database, args) => {
     const ctx = contextOf(database, args, meta, models);
@@ -677,7 +577,7 @@ export function serviceFunction(model: AnyModel, config: Loose, op: string, fn: 
       const values = bulk ? {} : decodeValues(meta, args.values ?? {}, true);
       result = await guarded(model, args, async () => {
         if (op === "create") return await fn(ctx, values);
-        const qs = bulk ? querySet(model, database, args) : oneRow(model, database, args.key, await resourceFilters(config, args.user, op));
+        const qs = bulk ? querySet(model, database, args) : oneRow(model, database, args.key, args);
         return await (op === "update" ? fn(ctx, qs, values) : fn(ctx, qs));
       });
     } catch (e) {
@@ -699,8 +599,8 @@ export function serviceFunction(model: AnyModel, config: Loose, op: string, fn: 
  * `models` are the child models of the inlines: one with no page of its own gets a writer with no filters.
  */
 export function writerHost(resources: ReadonlyMap<string, { readonly model: AnyModel; readonly config: Loose }>, models: ReadonlyMap<string, AnyModel> = new Map()): HostFunction {
-  const writers = new Map<string, HostFunction>([...models].map(([name, model]) => [name, defaultWriter(model, {})] as const));
-  for (const [name, { model, config }] of resources) writers.set(name, defaultWriter(model, config));
+  const writers = new Map<string, HostFunction>([...models].map(([name, model]) => [name, defaultWriter(model)] as const));
+  for (const [name, { model }] of resources) writers.set(name, defaultWriter(model));
   return async (database, args) => {
     const writer = writers.get(args.model);
     if (writer === undefined) throw new Error(`no admin resource ${String(args.model)}`);
@@ -853,13 +753,6 @@ export function querySet(model: Loose, database: Database, args: Loose): Loose {
   return qs;
 }
 
-function resultJson(result: unknown): Record<string, unknown> {
-  if (result === undefined || result === null) return refresh();
-  if (typeof result === "string") return message(result);
-  if (typeof result === "object" && "kind" in (result as object)) return { ...(result as Record<string, unknown>) };
-  throw new TypeError("an action returns nothing, a message string or one of message, redirect, download and refresh");
-}
-
 /** The host function of one action (`action.<Resource>.<name>`). */
 export function actionFunction(model: AnyModel, config: Loose, def: ActionDef, models: ReadonlyMap<string, AnyModel> = new Map()): HostFunction {
   const meta = model._meta;
@@ -873,12 +766,7 @@ export function actionFunction(model: AnyModel, config: Loose, def: ActionDef, m
       if (envelope === undefined) throw e;
       return envelope;
     }
-    let shown: Record<string, unknown>;
-    try {
-      shown = resultJson(result);
-    } catch (e) {
-      return { ok: false, kind: "error", message: `the action ${def.name} of ${meta.name}: ${e instanceof Error ? e.message : String(e)}` };
-    }
-    return { ok: true, audited: ctx.audited, audit_keys: ctx.auditKeys, result: shown };
+    // Rust checks the kind of the result (`actions.rs::result_of`).
+    return { ok: true, audited: ctx.audited, audit_keys: ctx.auditKeys, result };
   };
 }
