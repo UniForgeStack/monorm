@@ -39,6 +39,7 @@ pub mod server;
 pub mod service;
 pub mod error;
 pub mod site;
+pub mod site_config;
 mod set_password;
 pub mod sql;
 pub mod tables;

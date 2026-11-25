@@ -92,7 +92,7 @@ async def _serve(config: dict[str, Any]) -> int:
     try:
         site = admin._site(db._registry)
         try:
-            server = await site.serve(db._engine, json.dumps(config), db, admin._host(), os.environ.get("MONORM_ADMIN_SECRET"))
+            server = await site.serve(db._engine, json.dumps(config), db, admin._host(site.handles), os.environ.get("MONORM_ADMIN_SECRET"))
         except ValueError as e:
             raise _SettingsError(str(e)) from None
         loop = asyncio.get_running_loop()

@@ -1,6 +1,7 @@
 //! The admin service (feature `admin`): `monorm-admin` planned from the prepared schema and
 //! called in memory. This file only converts between JS values and the crate's JSON.
 
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use monorm_admin::{AuthConfig, BoxFuture, BridgeError, CallContext, Config, HostBridge, Logger, Routed, Server, Site};
@@ -59,6 +60,7 @@ fn auth_config(dispatch: Function<'_, Args, Promise<String>>, security: Result<A
 #[napi]
 pub struct AdminSite {
     site: Arc<Site>,
+    handles: BTreeMap<String, String>,
 }
 
 #[napi(object)]
@@ -82,6 +84,12 @@ impl AdminSite {
     #[napi(getter)]
     pub fn permissions(&self) -> Vec<String> {
         self.site.permission_names()
+    }
+
+    /// The host name that Rust gave to each local function id of the config.
+    #[napi(getter)]
+    pub fn handles(&self) -> HashMap<String, String> {
+        self.handles.clone().into_iter().collect()
     }
 
     /// The warnings of the config, for example a search field that no index serves.
@@ -314,6 +322,6 @@ pub fn admin_settings(dir: String) -> napi::Result<String, String> {
 /// Plans the resources: throws the precise text of a wrong config, with its `code`.
 #[napi]
 pub fn admin_site(schema: &JsSchema, config_json: String) -> napi::Result<AdminSite, String> {
-    let site = Site::build(schema.inner.clone(), &config_json).map_err(admin_error)?;
-    Ok(AdminSite { site: Arc::new(site) })
+    let (site, handles) = Site::build_with_handles(schema.inner.clone(), &config_json).map_err(admin_error)?;
+    Ok(AdminSite { site: Arc::new(site), handles })
 }

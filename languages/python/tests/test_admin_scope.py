@@ -204,3 +204,17 @@ async def test_a_bad_queryset_or_can_rule_is_a_config_error(world):
     ]:
         with pytest.raises(admin.AdminConfigError):
             site_of(world, bad).check()
+
+
+async def test_rust_refuses_a_queryset_with_its_code_and_the_hint(world):
+    Item = world.Item
+    cases = [
+        ({"queryset": Item.objects.filter(Item.rank > 1).order_by(Item.rank + 1).limit(2).prepare()}, "config.unsupported", "queryset takes a filter and an order; it does not take a slice"),
+        ({"queryset": Item.objects.without_defaults().filter(Item.rank > 1).prepare()}, "config.unsupported", "it does not take without_defaults()"),
+        ({"queryset": "all"}, "config.invalid_value", "Model.objects.filter(...).prepare()"),
+    ]
+    for config, code, text in cases:
+        with pytest.raises(admin.AdminConfigError) as e:
+            site_of(world, config).check()
+        assert e.value.code == code
+        assert text in str(e.value)

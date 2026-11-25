@@ -22,6 +22,7 @@ import os
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from functools import partial
 from json import dumps as _dumps
 from typing import TYPE_CHECKING, Any, Literal, Mapping, NotRequired, Required, Sequence, TypedDict, cast
 
@@ -338,10 +339,6 @@ class InlineDef:
         self.delete = delete
         self.page: Mapping[str, Any] = dict(page or {})
 
-    def tag(self, parent: str) -> str:
-        """The suffix of the host function names of the page keys that this wrapper overrides."""
-        return f"@{parent}.{self.model.__name__}" + (f".{self.via}" if self.via else "")
-
 
 def inline(
     model: type[Model],
@@ -471,11 +468,22 @@ def _inline(ir: Any, params: list[Any], what: str) -> Any:
     return {k: _inline(v, params, what) for k, v in ir.items()}
 
 
-def _batch_name(model: type[Model], column: str, tag: str = "") -> str:
-    return f"column.{model.__name__}{tag}.{column}"
+class _Fns:
+    """The host functions of one config: a local id for each, sent as ``{"$fn": id}``. Rust names them and returns the table."""
+
+    def __init__(self) -> None:
+        self._makers: dict[str, Callable[[], Callable[[Any, dict[str, Any]], Awaitable[Any]]]] = {}
+
+    def register(self, maker: Callable[[], Callable[[Any, dict[str, Any]], Awaitable[Any]]]) -> dict[str, str]:
+        key = f"f{len(self._makers)}"
+        self._makers[key] = maker
+        return {"$fn": key}
+
+    def host(self, handles: Mapping[str, str]) -> dict[str, Any]:
+        return {name: self._makers[key]() for key, name in handles.items()}
 
 
-def _computed(model: type[Model], items: Sequence[Mapping[str, Any]], tag: str = "") -> list[dict[str, Any]]:
+def _computed(model: type[Model], items: Sequence[Mapping[str, Any]], fns: _Fns) -> list[dict[str, Any]]:
     out = []
     for item in items:
         entry = {k: v for k, v in item.items() if k not in ("expr", "function", "order_by")}
@@ -492,7 +500,7 @@ def _computed(model: type[Model], items: Sequence[Mapping[str, Any]], tag: str =
         if item.get("expr") is not None:
             entry["expr"] = _ir(model, item["expr"], f"computed {item.get('name')!r}")
         else:
-            entry["function"] = _batch_name(model, str(item["name"]), tag)
+            entry["function"] = fns.register(partial(_batch_host, model, item["function"]))
         out.append(entry)
     return out
 
@@ -537,7 +545,7 @@ def _date_hierarchy(model: type[Model], value: Any) -> Any:
     return _name(model, value)
 
 
-def _list(model: type[Model], config: Mapping[str, Any], tag: str = "") -> dict[str, Any]:
+def _list(model: type[Model], config: Mapping[str, Any], fns: _Fns) -> dict[str, Any]:
     if unknown := sorted(set(config) - _LIST_KEYS):
         raise AdminConfigError(f"{model.__name__}: unknown list option {unknown[0]!r}")
     out: dict[str, Any] = {}
@@ -549,7 +557,7 @@ def _list(model: type[Model], config: Mapping[str, Any], tag: str = "") -> dict[
     if "named_filters" in config:
         out["named_filters"] = _named(model, config["named_filters"])
     if "computed" in config:
-        out["computed"] = _computed(model, config["computed"], tag)
+        out["computed"] = _computed(model, config["computed"], fns)
     if "aggregates" in config:
         out["aggregates"] = _aggregates(model, config["aggregates"])
     for key in ("labels", "empty_fields"):
@@ -579,7 +587,7 @@ def _list(model: type[Model], config: Mapping[str, Any], tag: str = "") -> dict[
         if key in config:
             out[key] = [_label(model, c) for c in config[key]]
     if "search_with" in config:
-        out["search_with"] = _search_name(model, tag)
+        out["search_with"] = fns.register(partial(_search_host, model, config["search_with"]))
     return out
 
 
@@ -590,14 +598,6 @@ def _badge_value(model: type[Model], value: Any) -> str:
     if isinstance(value, (str, int)):
         return str(value)
     raise AdminConfigError(f"{model.__name__}: a badge value is a string, an integer or a boolean, not {value!r}")
-
-
-def _search_name(model: type[Model], tag: str = "") -> str:
-    return f"search.{model.__name__}{tag}"
-
-
-def _queryset_name(model: type[Model], tag: str = "") -> str:
-    return f"queryset.{model.__name__}{tag}"
 
 
 _SLOTS = ("user",)
@@ -621,28 +621,26 @@ def _slot_ir(ir: Any, params: list[Any], slots: list[str], where: str) -> Any:
     return {k: _slot_ir(v, params, slots, where) for k, v in ir.items()}
 
 
-def _queryset(model: type[Model], config: Any, tag: str = "") -> tuple[dict[str, Any], list[str] | None]:
-    """The queryset of a resource as config JSON, and the order it sets (column names) or None."""
+def _queryset(model: type[Model], config: Any, fns: _Fns) -> dict[str, Any]:
+    """The queryset of a resource on the wire: ``$fn`` for a function, ``$qs`` for a prepared query set. Rust checks both."""
     from .query import Prepared
 
     if callable(config) and not isinstance(config, Prepared):
-        return {"function": _queryset_name(model, tag)}, None
+        return fns.register(partial(_queryset_host, model, cast(Callable[..., Awaitable[Any]], config)))
     if not isinstance(config, Prepared):
-        raise AdminConfigError(f"{model.__name__}: queryset takes a prepared query set (Model.objects.filter(...).prepare()) or an async function")
+        return {"$host": type(config).__name__}
     qs = config._qs
-    if qs.model is not model:
-        raise AdminConfigError(f"{model.__name__}: queryset is a query set of {qs.model.__name__}")
-    for what, used in (
-        ("load()", qs._loads or qs._model_fields is not None or qs._related or qs._prefetch),
-        ("a slice", qs._limit is not None or qs._offset is not None),
-        ("from_() or join()", qs._from is not None or qs._joins),
-        ("lock()", qs._lock is not None),
-        ("without_defaults()", qs._without_defaults),
-    ):
-        if used:
-            raise AdminConfigError(f"{model.__name__}: queryset takes a filter and an order; it does not take {what}")
-    if not qs._filters:
-        raise AdminConfigError(f"{model.__name__}: queryset needs a filter")
+    body: dict[str, Any] = {
+        "model": qs.model.__name__,
+        "load": bool(qs._loads or qs._model_fields is not None or qs._related or qs._prefetch),
+        "slice": qs._limit is not None or qs._offset is not None,
+        "join": qs._from is not None or bool(qs._joins),
+        "lock": qs._lock is not None,
+        "without_defaults": bool(qs._without_defaults),
+    }
+    if qs.model is not model or not qs._filters or any(body[flag] for flag in ("load", "slice", "join", "lock", "without_defaults")):
+        # Rust refuses it with its code; building the filter first would raise a binding text before it.
+        return {"$qs": body}
     params = SlotParams()
     ctx = IRContext(model, params)
     try:
@@ -651,11 +649,13 @@ def _queryset(model: type[Model], config: Any, tag: str = "") -> tuple[dict[str,
         raise AdminConfigError(f"{model.__name__}: queryset: {e}") from None
     slots: list[str] = []
     irs = [_slot_ir(f, params, slots, f"{model.__name__}: queryset") for f in filters]
-    filter_ir = irs[0] if len(irs) == 1 else {"t": "and", "items": irs}
+    body["filter"] = irs[0] if len(irs) == 1 else {"t": "and", "items": irs}
+    body["slots"] = slots
     order = [("-" if o.desc else "") + _label(model, o.expr) for o in qs._order if isinstance(o.expr, ColumnRef)]
     if len(order) != len(qs._order):
         raise AdminConfigError(f"{model.__name__}: queryset order takes columns")
-    return {"filter": filter_ir, "slots": slots}, order or None
+    body["order"] = order
+    return {"$qs": body}
 
 
 def _queryset_host(model: type[Model], function: Callable[..., Awaitable[Any]]) -> Callable[[Any, dict[str, Any]], Awaitable[Any]]:
@@ -744,7 +744,7 @@ def _key_json(key: Any) -> Any:
 _RELATION_KEYS = {"label", "create", "choices"}
 
 
-def _relations(name: str, model: type[Model], value: Any) -> dict[str, Any]:
+def _relations(name: str, model: type[Model], value: Any, fns: _Fns) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise AdminConfigError(f"{name}: relations maps a relation name to its options")
     out: dict[str, Any] = {}
@@ -766,11 +766,7 @@ def _relations(name: str, model: type[Model], value: Any) -> dict[str, Any]:
                 raise AdminConfigError(f"{name}: relations[{rel_name!r}].create is True or False")
             entry["create"] = options["create"]
         if "choices" in options:
-            from .query import Prepared
-
-            if not isinstance(options["choices"], Prepared):
-                raise AdminConfigError(f"{name}: relations[{rel_name!r}].choices takes a prepared query set of the target")
-            entry["choices"], _ = _queryset(relation.target, options["choices"])
+            entry["choices"] = _queryset(relation.target, options["choices"], fns)
         out[rel_name] = entry
     return out
 
@@ -1089,6 +1085,7 @@ class Admin:
         self._frame_cards = list(frame_cards)
         self._embeds = dict(embeds or {})
         self._planned: tuple[object, _native.AdminSite] | None = None
+        self._fns = _Fns()
         self._strategy = permissions
         self._label = label
         self._roles = {name: list(patterns) for name, patterns in (roles or {}).items()}
@@ -1157,18 +1154,13 @@ class Admin:
         self._resources[model.__name__] = (model, config)
         self._planned = None
 
-    def _resource_json(self, name: str, model: type[Model], config: Mapping[str, Any], tag: str = "") -> dict[str, Any]:
-        """The config JSON of one page. ``tag`` names the host functions of an inline wrapper's overrides."""
+    def _resource_json(self, name: str, model: type[Model], config: Mapping[str, Any], fns: _Fns) -> dict[str, Any]:
+        """The config JSON of one page."""
         resource: dict[str, Any] = {"model": name}
         if "list" in config:
-            resource["list"] = _list(model, config["list"], tag)
+            resource["list"] = _list(model, config["list"], fns)
         if "queryset" in config:
-            resource["queryset"], order = _queryset(model, config["queryset"], tag)
-            if order is not None:
-                listing = resource.setdefault("list", {})
-                if "order" in listing:
-                    raise AdminConfigError(f"{name}: the order is in the queryset or in the list, not in both")
-                listing["order"] = order
+            resource["queryset"] = _queryset(model, config["queryset"], fns)
         if "can" in config:
             resource["can"] = _can(model, config["can"])
         if "check_messages" in config:
@@ -1206,7 +1198,7 @@ class Admin:
         if "fieldsets" in config:
             resource["fieldsets"] = list(config["fieldsets"])
         if "relations" in config:
-            resource["relations"] = _relations(name, model, config["relations"])
+            resource["relations"] = _relations(name, model, config["relations"], fns)
         if "files" in config:
             resource["files"] = list(_files(name, config["files"]))
             if self._storage is None:
@@ -1245,37 +1237,27 @@ class Admin:
                 value = raw[key]
                 resource[key] = value if isinstance(value, str) else list(value)
         if "inlines" in config:
-            resource["inlines"] = [self._inline_json(name, d) for d in _inline_defs(name, config["inlines"])]
+            resource["inlines"] = [self._inline_json(name, d, fns) for d in _inline_defs(name, config["inlines"])]
         return resource
 
-    def _inline_json(self, parent: str, d: InlineDef) -> dict[str, Any]:
+    def _inline_json(self, parent: str, d: InlineDef, fns: _Fns) -> dict[str, Any]:
         _check_inline_page(parent, d)
         child = d.model.__name__
         out: dict[str, Any] = {"model": child, "save": d.save, "style": d.style, "max": d.max, "collapsed": d.collapsed, "delete": d.delete}
         for key in ("via", "permission", "label"):
             if (value := getattr(d, key)) is not None:
                 out[key] = value
-        page = self._resource_json(child, d.model, d.page, d.tag(parent))
+        page = self._resource_json(child, d.model, d.page, fns)
         if len(page) > 1:
             out["page"] = page
         return out
-
-    def _pages(self) -> list[tuple[type[Model], Mapping[str, Any], str]]:
-        """Every page the site builds: the registered ones, and the page keys that an inline wrapper overrides. Each with its host function tag."""
-        pages: list[tuple[type[Model], Mapping[str, Any], str]] = []
-        for parent, (model, config) in self._resources.items():
-            pages.append((model, config, ""))
-            for d in _inline_defs(parent, config.get("inlines", ())):
-                if d.page:
-                    _check_inline_page(parent, d)
-                    pages.append((d.model, d.page, d.tag(parent)))
-        return pages
 
     def _inline_models(self) -> dict[str, type[Model]]:
         return {d.model.__name__: d.model for parent, (_, config) in self._resources.items() for d in _inline_defs(parent, config.get("inlines", ()))}
 
     def _config_json(self, registry: Registry | None = None) -> str:
-        resources = [self._resource_json(name, model, config) for name, (model, config) in self._resources.items()]
+        self._fns = fns = _Fns()
+        resources = [self._resource_json(name, model, config, fns) for name, (model, config) in self._resources.items()]
         out: dict[str, Any] = {"base_path": self.base_path, "permissions": self._strategy, "label": self._label, "resources": resources}
         if any(r.get("set_password") for r in resources):
             out["user_table"] = auth_user_table(self._registry if registry is None else registry)
@@ -1303,21 +1285,12 @@ class Admin:
             out["routes"] = [{"method": m, "path": p, **({"permission": perm} if perm else {})} for (m, p), (_, perm) in self._routes.items()]
         return json.dumps(out)
 
-    def _host(self) -> dict[str, Any]:
-        """The host functions: login, the ``search_with`` function of each resource and the function of each computed column."""
+    def _host(self, handles: Mapping[str, str] | None = None) -> dict[str, Any]:
+        """The host functions: login, the functions of the config under the names that Rust gave them, and the writes, services, actions, files and routes."""
+        if handles is None:
+            handles = self._site(self._registry).handles
         host: dict[str, Any] = dict(_HOST)
-        for model, config, tag in self._pages():
-            listing = config.get("list", {})
-            scope = config.get("queryset")
-            if scope is not None and callable(scope) and not _is_prepared(scope):
-                host[_queryset_name(model, tag)] = _queryset_host(model, cast(Callable[..., Awaitable[Any]], scope))
-            search = listing.get("search_with")
-            if search is not None:
-                host[_search_name(model, tag)] = _search_host(model, search)
-            for column in listing.get("computed", ()):
-                function = column.get("function")
-                if function is not None:
-                    host[_batch_name(model, column.get("name", ""), tag)] = _batch_host(model, function)
+        host.update(self._fns.host(handles))
         models = self._inline_models()
         host["admin.write"] = writer_host(self._resources, models)
         host["admin.view"] = view_host({**models, **{m.__name__: m for m, _ in self._resources.values()}})
@@ -1411,7 +1384,8 @@ class Admin:
         from .db import resolve
 
         db = resolve(database)
-        return AdminTestClient(self._site(db._registry), db, user, secret=secret, settings=settings, ip=ip, host=self._host())
+        site = self._site(db._registry)
+        return AdminTestClient(site, db, user, secret=secret, settings=settings, ip=ip, host=self._host(site.handles))
 
 
 _default = Admin()

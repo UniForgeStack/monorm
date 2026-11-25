@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 const ADMIN: &str = include_str!("../../../apps/admin/schema.prisma");
 
 fn schema() -> Arc<Schema> {
-    let source = format!("datasource db {{\n  provider = \"sqlite\"\n}}\n\nmodel Note {{\n  id Int @id\n}}\n{ADMIN}");
+    let source = format!("datasource db {{\n  provider = \"sqlite\"\n}}\n\nmodel Note {{\n  id Int @id\n}}\n\nmodel Author {{\n  id Int @id @default(autoincrement())\n  name String\n  books Book[]\n}}\n\nmodel Book {{\n  id Int @id @default(autoincrement())\n  author_id Int\n  title String\n  author Author @relation(fields: [author_id], references: [id])\n}}\n{ADMIN}");
     Arc::new(dsl::check(dsl::compile(&source, None).unwrap()).unwrap().1)
 }
 
@@ -67,4 +67,111 @@ fn a_settings_error_has_the_settings_class() {
     assert_eq!(security_options("[]").err().unwrap().code, code::SETTINGS_INVALID);
     assert_eq!(security_options("{\"x\": 1}").err().unwrap().code, code::SETTINGS_UNKNOWN_KEY);
     let _ = std::fs::remove_dir_all(dir);
+}
+
+fn positive() -> Value {
+    json!({"t": "cmp", "op": "gt", "l": {"t": "col", "path": [], "name": "id"}, "r": {"t": "int", "value": 0}})
+}
+
+fn qs(extra: Value) -> Value {
+    let mut body = json!({"model": "Note", "filter": positive(), "slots": []});
+    body.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+    json!({"$qs": body})
+}
+
+fn note(page: Value) -> Value {
+    let mut resource = json!({"model": "Note"});
+    resource.as_object_mut().unwrap().extend(page.as_object().unwrap().clone());
+    json!({"resources": [resource]})
+}
+
+#[test]
+fn a_prepared_query_set_lowers_to_a_filter_and_its_order_moves_to_the_list() {
+    let config = note(json!({"queryset": qs(json!({"order": ["-id"]}))})).to_string();
+    let (site, handles) = Site::build_with_handles(schema(), &config).unwrap();
+    assert!(handles.is_empty());
+    let note = site.resources.iter().find(|r| r.name == "Note").unwrap();
+    assert!(note.queryset.is_some());
+    assert!(note.order[0].desc, "the order of the query set is the order of the list");
+}
+
+#[test]
+fn a_queryset_refusal_has_the_code_the_path_and_the_text() {
+    for (flag, what) in [("load", "load()"), ("slice", "a slice"), ("join", "from_() or join()"), ("lock", "lock()"), ("without_defaults", "without_defaults()")] {
+        let e = build(note(json!({"queryset": qs(json!({flag: true}))})));
+        assert_eq!((e.code, e.path), (code::UNSUPPORTED, vec![PathPart::Model("Note".into())]), "{flag}");
+        assert_eq!(e.message, format!("Note: queryset takes a filter and an order; it does not take {what}"));
+    }
+    let mut camel = note(json!({"queryset": qs(json!({"join": true}))}));
+    camel["spelling"] = json!("camel");
+    assert_eq!(build(camel).message, "Note: queryset takes a filter and an order; it does not take from() or join()");
+    let mut camel = note(json!({"queryset": qs(json!({"without_defaults": true}))}));
+    camel["spelling"] = json!("camel");
+    assert_eq!(build(camel).message, "Note: queryset takes a filter and an order; it does not take withoutDefaults()");
+    let e = build(note(json!({"queryset": {"$qs": {"model": "Note", "filter": null}}})));
+    assert_eq!((e.code, e.message.as_str()), (code::INVALID_VALUE, "Note: queryset needs a filter"));
+    let e = build(note(json!({"queryset": {"$qs": {"model": "Other", "filter": positive()}}})));
+    assert_eq!(e.message, "Note: queryset is a query set of Other");
+}
+
+#[test]
+fn the_order_is_in_the_queryset_or_in_the_list_not_in_both() {
+    let e = build(note(json!({"queryset": qs(json!({"order": ["id"]})), "list": {"order": ["id"]}})));
+    assert_eq!((e.code, e.message.as_str()), (code::INVALID_VALUE, "Note: the order is in the queryset or in the list, not in both"));
+}
+
+#[test]
+fn a_wrong_tag_names_the_hint_in_the_spelling_of_the_host() {
+    let e = build(note(json!({"queryset": {"$nope": 1}})));
+    assert_eq!(e.message, "Note: queryset takes a prepared query set (Model.objects.filter(...).prepare()) or an async function");
+    let e = build(json!({"spelling": "camel", "resources": [{"model": "Note", "queryset": 5}]}));
+    assert!(e.message.contains("prepared query set"), "{}", e.message);
+    let e = build(note(json!({"queryset": {"$host": "str"}})));
+    assert_eq!((e.code, e.message.as_str()), (code::INVALID_VALUE, "Note: queryset takes a prepared query set (Model.objects.filter(...).prepare()) or an async function"));
+    let e = build(note(json!({"list": {"search_with": {"$host": "str"}}})));
+    assert!(e.message.contains("is not a host function"), "{}", e.message);
+}
+
+#[test]
+fn a_host_function_gets_its_name_from_rust() {
+    let config = note(json!({
+        "queryset": {"$fn": "q1"},
+        "list": {"search_with": {"$fn": "s1"}, "computed": [{"name": "double", "type": "int", "nullable": false, "function": {"$fn": "c1"}}]},
+    }));
+    let (_, handles) = Site::build_with_handles(schema(), &config.to_string()).unwrap();
+    let names: Vec<_> = handles.iter().map(|(k, v)| format!("{k}={v}")).collect();
+    assert_eq!(names, ["c1=column.Note.double", "q1=queryset.Note", "s1=search.Note"]);
+}
+
+fn book(relations: Value) -> Value {
+    json!({"resources": [{"model": "Author", "list": {"search": ["name"]}}, {"model": "Book", "relations": relations}]})
+}
+
+#[test]
+fn relation_choices_takes_a_query_set_of_the_target() {
+    let body = |model: &str| json!({"$qs": {"model": model, "filter": positive(), "slots": []}});
+    let e = build(book(json!({"author": {"choices": body("Book")}})));
+    assert_eq!((e.code, e.message.as_str()), (code::INVALID_VALUE, "Book: relation \"author\": choices is a query set of Book, not of Author"));
+    for choices in [json!({"$fn": "f0"}), json!("all"), json!(5), json!({"$host": "str"})] {
+        let e = build(book(json!({"author": {"choices": choices}})));
+        assert_eq!(e.message, "Book: relation \"author\": choices takes a prepared query set of the target", "{choices}");
+    }
+    let ok = Site::build(schema(), &book(json!({"author": {"choices": body("Author")}})).to_string());
+    assert!(ok.is_ok(), "{:?}", ok.err());
+}
+
+#[test]
+fn an_inline_page_function_gets_the_inline_tag_in_its_name() {
+    let config = json!({"resources": [{"model": "Author", "inlines": [{"model": "Book", "page": {"model": "Book", "list": {"search_with": {"$fn": "s1"}}}}]}, {"model": "Book"}]});
+    let (_, handles) = Site::build_with_handles(schema(), &config.to_string()).unwrap();
+    assert_eq!(handles.get("s1").map(String::as_str), Some("search.Book@Author.Book"));
+}
+
+#[test]
+fn two_functions_with_one_host_name_are_refused() {
+    let page = |id: &str| json!({"model": "Book", "page": {"model": "Book", "list": {"search_with": {"$fn": id}}}});
+    let config = json!({"resources": [{"model": "Author", "inlines": [page("s1"), page("s2")]}, {"model": "Book"}]});
+    let e = build(config);
+    assert_eq!(e.code, code::INVALID_VALUE);
+    assert!(e.message.contains("two host functions get the name \"search.Book@Author.Book\""), "{}", e.message);
 }
