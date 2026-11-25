@@ -75,6 +75,11 @@ export function Table({ resource, columns, rows, keys, zone, labels = NO_LABELS,
             if (i === 0) return <Link href={detailUrl(resource, row.original.key)}>{text}</Link>;
             return targets?.has(c.ref.resource) ? <Link href={detailUrl(c.ref.resource, encodeURIComponent(String(value)))}>{text}</Link> : text;
           }
+          if (c.ref_by && value !== null && value !== undefined && typeof value !== "object") {
+            const at = columns.findIndex((x) => x.label === c.ref_by!.column);
+            const target = at < 0 ? undefined : c.ref_by.targets[String(row.original.cells[at])];
+            if (target && targets?.has(target)) return <Link href={detailUrl(target, encodeURIComponent(String(value)))}>{cell(value, c, zone)}</Link>;
+          }
           const look = shown(value, c, true);
           const text = look ? <Display shown={look} /> : cell(value, c, zone);
           if (i === 0) return <Link href={detailUrl(resource, row.original.key)}>{text || none}</Link>;
