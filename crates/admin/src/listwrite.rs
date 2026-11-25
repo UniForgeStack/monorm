@@ -19,7 +19,7 @@ use crate::hostwrite::{self, Prepared};
 use crate::list::{self, RowScope};
 use crate::server::{deny, reach, reject, Shared, State_, User};
 use crate::permissions::Op;
-use crate::site::{Resource, MAX_PAGE_SIZE};
+use crate::site::{MAX_PAGE_SIZE, Resource};
 use crate::write::{self, Call, Problems, RowFailure};
 
 /// One row of the request: the key as sent and decoded, the values to set and the values the page loaded.

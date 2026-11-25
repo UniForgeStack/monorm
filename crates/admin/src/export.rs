@@ -21,7 +21,7 @@ use crate::permissions::Grants;
 use crate::list::{self, ListError, ListRequest, Page, Position};
 use crate::server::{authorize, begin_scope, database_error, error_response, fill_batch, filters_of, found_keys, open_resource_with, query, ListQuery, Shared, State_, User};
 use crate::service::{Logger, RequestId};
-use crate::site::{Resource, EXPORT_BATCH};
+use crate::site::{EXPORT_BATCH, Resource};
 use crate::write::user_key_text;
 
 /// How many CSV chunks wait for the client while the next batch is read.

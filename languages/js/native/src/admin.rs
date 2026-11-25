@@ -49,9 +49,9 @@ impl HostBridge for NodeBridge {
 }
 
 /// The login state of a served or in-memory router. The dispatch function is weak: it does not keep Node alive.
-fn auth_config(dispatch: Function<'_, Args, Promise<String>>, security: Result<Arc<monorm_admin::Security>, String>) -> napi::Result<AuthConfig> {
-    let security = security.map_err(napi::Error::from_reason)?;
-    let dispatch = dispatch.build_threadsafe_function::<Args>().callee_handled::<false>().weak::<true>().build()?;
+fn auth_config(dispatch: Function<'_, Args, Promise<String>>, security: Result<Arc<monorm_admin::Security>, monorm_admin::AdminError>) -> napi::Result<AuthConfig, String> {
+    let security = security.map_err(admin_error)?;
+    let dispatch = dispatch.build_threadsafe_function::<Args>().callee_handled::<false>().weak::<true>().build().map_err(status_error)?;
     Ok(AuthConfig { security, bridge: Arc::new(NodeBridge { dispatch: Arc::new(dispatch) }) })
 }
 
@@ -142,7 +142,7 @@ impl AdminSite {
         let conn = monorm_engine::trace::wrap(driver, trace.map(|t| &t.0));
         let site = self.site.clone();
         // The secret only numbers the host calls: no login runs on this path.
-        let auth = dispatch.map(|d| auth_config(d, monorm_admin::security_with(Some("in-memory client: no login runs on this path"), Default::default()))).transpose()?;
+        let auth = dispatch.map(|d| auth_config(d, monorm_admin::security_with(Some("in-memory client: no login runs on this path"), Default::default()))).transpose().map_err(|e| napi::Error::from_reason(e.reason))?;
         env.spawn_future(async move {
             let (status, text) = monorm_admin::call_body(site, conn, &method, &path, user, auth, body.as_deref()).await;
             Ok(AdminResponse { status: u32::from(status), body: text })
@@ -168,7 +168,7 @@ impl AdminSite {
         let driver: Arc<dyn Executor> = engine.driver.clone();
         let conn = monorm_engine::trace::wrap(driver, trace.map(|t| &t.0));
         let site = self.site.clone();
-        let auth = dispatch.map(|d| auth_config(d, monorm_admin::security_with(Some("in-memory client: no login runs on this path"), Default::default()))).transpose()?;
+        let auth = dispatch.map(|d| auth_config(d, monorm_admin::security_with(Some("in-memory client: no login runs on this path"), Default::default()))).transpose().map_err(|e| napi::Error::from_reason(e.reason))?;
         let body = match (content_type, data) {
             (Some(kind), Some(bytes)) => Some((kind, bytes.to_vec())),
             (None, None) => None,
@@ -190,8 +190,8 @@ impl AdminSite {
         secret: Option<String>,
         options_json: String,
         trace: Option<&Trace>,
-    ) -> napi::Result<AdminRouter> {
-        let options = monorm_admin::security_options(&options_json).map_err(napi::Error::from_reason)?;
+    ) -> napi::Result<AdminRouter, String> {
+        let options = monorm_admin::security_options(&options_json).map_err(admin_error)?;
         let auth = auth_config(dispatch, monorm_admin::security_with(secret.as_deref(), options))?;
         let security = auth.security.clone();
         let driver: Arc<dyn Executor> = engine.driver.clone();
@@ -210,8 +210,8 @@ impl AdminSite {
         settings_json: String,
         dispatch: Function<'env, Args, Promise<String>>,
         secret: Option<String>,
-    ) -> napi::Result<PromiseRaw<'env, AdminServer>> {
-        let config: Config = serde_json::from_str(&settings_json).map_err(|e| napi::Error::from_reason(format!("settings are not JSON: {e}")))?;
+    ) -> napi::Result<PromiseRaw<'env, AdminServer>, String> {
+        let config: Config = serde_json::from_str(&settings_json).map_err(|e| napi::Error::new("settings.invalid_value".to_string(), format!("settings are not JSON: {e}")))?;
         let config = config.with_env_secret(|name| std::env::var(name).ok());
         let mut serve_config = config.serve_config();
         serve_config.auth = Some(auth_config(dispatch, config.security(secret.as_deref()))?);
@@ -221,6 +221,7 @@ impl AdminSite {
             let server = monorm_admin::serve(site, driver, serve_config, Logger::stderr()).await.map_err(napi::Error::from_reason)?;
             Ok(AdminServer { server: Arc::new(server) })
         })
+        .map_err(status_error)
     }
 }
 
@@ -293,16 +294,26 @@ impl AdminServer {
     }
 }
 
-/// The `[admin]` settings of the project in `dir`, as JSON. Throws the text of a wrong setting.
-#[napi]
-pub fn admin_settings(dir: String) -> napi::Result<String> {
-    let config = Config::load(std::path::Path::new(&dir), |name| std::env::var(name).ok()).map_err(napi::Error::from_reason)?;
-    serde_json::to_string(&config).map_err(|e| napi::Error::from_reason(e.to_string()))
+/// The error of a wrong config or wrong settings: the text is the reason and the `code` property holds the code (`config.*` or `settings.*`).
+fn admin_error(e: monorm_admin::AdminError) -> napi::Error<String> {
+    napi::Error::new(e.code.to_string(), e.message)
 }
 
-/// Plans the resources: throws the precise text of a wrong config.
+/// An error that has no admin code keeps its text and gets a generic code.
+fn status_error(e: napi::Error) -> napi::Error<String> {
+    napi::Error::new("GenericFailure".to_string(), e.reason.to_string())
+}
+
+/// The `[admin]` settings of the project in `dir`, as JSON. Throws the text of a wrong setting, with its `code`.
 #[napi]
-pub fn admin_site(schema: &JsSchema, config_json: String) -> napi::Result<AdminSite> {
-    let site = Site::build(schema.inner.clone(), &config_json).map_err(|e| napi::Error::from_reason(e.to_string()))?;
+pub fn admin_settings(dir: String) -> napi::Result<String, String> {
+    let config = Config::load(std::path::Path::new(&dir), |name| std::env::var(name).ok()).map_err(admin_error)?;
+    serde_json::to_string(&config).map_err(|e| napi::Error::new("settings.invalid_value".to_string(), e.to_string()))
+}
+
+/// Plans the resources: throws the precise text of a wrong config, with its `code`.
+#[napi]
+pub fn admin_site(schema: &JsSchema, config_json: String) -> napi::Result<AdminSite, String> {
+    let site = Site::build(schema.inner.clone(), &config_json).map_err(admin_error)?;
     Ok(AdminSite { site: Arc::new(site) })
 }

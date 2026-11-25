@@ -143,7 +143,7 @@ for (const provider of PROVIDERS) {
       [{ widgets: { title: "slider" } }, "not one of"],
       [{ widgets: { pages: "checkbox" } }, "does not fit"],
       [{ readonly: ["title"] }, "read-only and required with no default"],
-      [{ formComponent: "/no/such/file.js" }, "form_component"],
+      [{ formComponent: "/no/such/file.js" }, "formComponent"],
     ];
     for (const [config, match] of cases) {
       assert.throws(() => siteOf(w, config).check(), (e: unknown) => e instanceof AdminConfigError && e.message.includes(match), JSON.stringify(config));

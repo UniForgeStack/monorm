@@ -23,7 +23,8 @@ use crate::list;
 use crate::permissions::Op;
 use crate::scope::Scoped;
 use crate::server::{reach, reject, State_, User};
-use crate::site::{err, Column, ConfigError, Resource};
+use crate::error::Fault;
+use crate::site::{err, err_in, Column, Resource};
 use crate::write::{audit_changes, conflicts, finish, list_failure, server_error, write_audit_with, Call, Problems};
 
 /// One service function of a resource. `sync` is a plain Python function; it runs in a thread.
@@ -105,31 +106,31 @@ pub(crate) fn audit_input_list(list: &[InputConfig], inputs: &Map<String, Value>
 }
 
 /// The checks of `Site::build` for the service and the inputs of one resource.
-pub fn check_config(name: &str, detail: &[Column], service: &ServiceConfig, inputs: &[InputConfig]) -> Result<(), ConfigError> {
+pub fn check_config(name: &str, detail: &[Column], service: &ServiceConfig, inputs: &[InputConfig]) -> Result<(), Fault> {
     if !inputs.is_empty() && !service.any() {
-        return err(format!("{name}: inputs need a service (create, update or delete): only a service reads an input"));
+        return err_in(name, "inputs need a service (create, update or delete): only a service reads an input".to_string());
     }
     for (op, s) in [("create", &service.create), ("update", &service.update), ("delete", &service.delete)] {
         if s.as_ref().is_some_and(|s| s.sync && !s.threaded) {
-            return err(format!("{name}: the {op} service is a sync function. It runs in a thread, so it cannot use the async database API of the transaction. Make it async, or mark it with admin.threaded(...): it then runs in a thread, and its async database calls go through ctx.run(...)"));
+            return err_in(name, format!("the {op} service is a sync function. It runs in a thread, so it cannot use the async database API of the transaction. Make it async, or mark it with admin.threaded(...): it then runs in a thread, and its async database calls go through ctx.run(...)"));
         }
     }
     let mut seen: Vec<&str> = Vec::new();
     for i in inputs {
         if i.name.is_empty() || !i.name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-            return err(format!("{name}: input {:?} has a name of letters, digits and _", i.name));
+            return err_in(name, format!("input {:?} has a name of letters, digits and _", i.name));
         }
         if seen.contains(&i.name.as_str()) {
-            return err(format!("{name}: input {:?} is declared twice", i.name));
+            return err_in(name, format!("input {:?} is declared twice", i.name));
         }
         if detail.iter().any(|d| d.label == i.name) {
-            return err(format!("{name}: input {:?} has the name of a field", i.name));
+            return err_in(name, format!("input {:?} has the name of a field", i.name));
         }
         if !INPUT_KINDS.contains(&i.kind.as_str()) {
-            return err(format!("{name}: input {:?} has type {:?}, not one of {}", i.name, i.kind, INPUT_KINDS.join(", ")));
+            return err_in(name, format!("input {:?} has type {:?}, not one of {}", i.name, i.kind, INPUT_KINDS.join(", ")));
         }
         if (i.kind == "select") == i.choices.is_empty() {
-            return err(format!("{name}: input {:?}: choices go with the type select, and only with it", i.name));
+            return err_in(name, format!("input {:?}: choices go with the type select, and only with it", i.name));
         }
         seen.push(&i.name);
     }
@@ -137,7 +138,7 @@ pub fn check_config(name: &str, detail: &[Column], service: &ServiceConfig, inpu
 }
 
 /// The checks of the inputs of one action.
-pub fn check_action_inputs(resource: &str, action: &str, inputs: &[InputConfig]) -> Result<(), ConfigError> {
+pub fn check_action_inputs(resource: &str, action: &str, inputs: &[InputConfig]) -> Result<(), Fault> {
     let mut seen: Vec<&str> = Vec::new();
     for i in inputs {
         let at = format!("{resource}: action {action:?}: input {:?}", i.name);

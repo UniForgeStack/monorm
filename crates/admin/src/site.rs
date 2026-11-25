@@ -1,7 +1,6 @@
 //! `Site::build`: the resources of an admin, checked against the prepared schema.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -17,6 +16,7 @@ use serde_json::{json, Map, Value};
 
 mod builtin;
 
+use crate::error::{code, opt, AdminError, Fault, PathPart, Spelling};
 use crate::form::FormConfig;
 use crate::key;
 use crate::meta::{self, BrandConfig, ThemeConfig};
@@ -39,28 +39,68 @@ const LARGE_TTL: Duration = Duration::from_secs(300);
 /// The longest search text.
 pub const MAX_SEARCH_LEN: usize = 200;
 
-/// A wrong config: the text names the model and the field.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConfigError(pub String);
-
 /// The user views of the resources: the key is the index of the resource and which bound names the user holds.
 pub(crate) type Views = std::collections::HashMap<(usize, Vec<bool>), Arc<Resource>>;
 
-impl fmt::Display for ConfigError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
+/// A wrong config. The code comes from the wording of the text: the rule that the text names, else `config.invalid_value`.
+pub(crate) fn config_err(message: String) -> Fault {
+    let has = |needles: &[&str]| needles.iter().any(|n| message.contains(n));
+    let code = if has(&["unknown model"]) {
+        code::UNKNOWN_MODEL
+    } else if has(&["unknown field", "is not a field", "not a field of", "is not a column"]) {
+        code::UNKNOWN_FIELD
+    } else if has(&["is not a relation", "has no relation", "no to-many relation", "unknown join model"]) {
+        code::RELATION_UNKNOWN
+    } else if has(&["twice", "duplicate"]) {
+        code::DUPLICATE
+    } else if has(&["does not support", "do not support", "does not take"]) {
+        code::UNSUPPORTED
+    } else if message.starts_with("prefix ") || message.contains("\u{1}base_path\u{2}") {
+        code::PATH
+    } else {
+        code::INVALID_VALUE
+    };
+    Fault::new(code, message)
 }
 
-impl std::error::Error for ConfigError {}
+/// A wrong config of the kind `code`, such as `config.route`.
+pub(crate) fn err_code<T>(code: &'static str, message: String) -> Result<T, Fault> {
+    Err(Fault::new(code, message))
+}
 
-pub(crate) fn err<T>(message: String) -> Result<T, ConfigError> {
-    Err(ConfigError(message))
+pub(crate) fn err<T>(message: String) -> Result<T, Fault> {
+    Err(config_err(message))
+}
+
+/// A wrong config of the model `model`: the model leads the path and the text.
+pub(crate) fn err_in<T>(model: &str, message: String) -> Result<T, Fault> {
+    Err(config_err(message).under(PathPart::Model(model.to_owned())))
+}
+
+/// The fault of a config that does not parse. Each name that serde quotes is an option key of the wire.
+fn parse_fault(e: serde_json::Error) -> Fault {
+    let text = e.to_string();
+    let code = if text.starts_with("unknown field") { code::UNKNOWN_OPTION } else { code::INVALID_VALUE };
+    let mut marked = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(open) = rest.find('`') {
+        let Some(len) = rest[open + 1..].find('`') else { break };
+        let name = &rest[open + 1..open + 1 + len];
+        marked.push_str(&rest[..open + 1]);
+        marked.push_str(&if name.chars().all(|c| c.is_ascii_lowercase() || c == '_') { opt(name) } else { name.to_owned() });
+        marked.push('`');
+        rest = &rest[open + 2 + len..];
+    }
+    marked.push_str(rest);
+    Fault::new(code, format!("invalid admin config: {marked}"))
 }
 
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 struct Config {
+    /// How the host spells an option key in an error text: `snake` (default) or `camel`. `Site::build` reads it first.
+    #[allow(dead_code)] // `Site::build` reads it before this parse; the field only lets the key through `deny_unknown_fields`.
+    spelling: Option<Spelling>,
     /// The table of the active auth user model, supplied by the binding.
     user_table: Option<String>,
     /// The path under which the UI and the API live, `/admin` by default.
@@ -816,13 +856,19 @@ pub struct Site {
 }
 
 impl Site {
-    pub fn build(schema: Arc<Schema>, config_json: &str) -> Result<Site, ConfigError> {
+    /// Plans the resources. The text of a wrong config spells the option keys as the `spelling` key of the config says, `snake` by default.
+    pub fn build(schema: Arc<Schema>, config_json: &str) -> Result<Site, AdminError> {
+        let spelling = serde_json::from_str::<Value>(config_json).ok().and_then(|v| v.get("spelling").cloned()).and_then(|v| serde_json::from_value::<Spelling>(v).ok()).unwrap_or_default();
+        Site::plan(schema, config_json).map_err(|fault| fault.render(spelling))
+    }
+
+    fn plan(schema: Arc<Schema>, config_json: &str) -> Result<Site, Fault> {
         let mut config: Config = if config_json.trim().is_empty() {
             Config::default()
         } else {
-            let mut value: Value = serde_json::from_str(config_json).map_err(|e| ConfigError(format!("invalid admin config: {e}")))?;
+            let mut value: Value = serde_json::from_str(config_json).map_err(|e| Fault::new(code::INVALID_JSON, format!("invalid admin config: {e}")))?;
             merge_inline_pages(&mut value)?;
-            serde_json::from_value(value).map_err(|e| ConfigError(format!("invalid admin config: {e}")))?
+            serde_json::from_value(value).map_err(parse_fault)?
         };
         let base_path = normalize_base(config.base_path.as_deref().unwrap_or(key::DEFAULT_BASE))?;
         let prefix = match config.prefix.as_deref() {
@@ -836,7 +882,7 @@ impl Site {
         }
         let strategy = match config.permissions.as_deref() {
             None => Strategy::Page,
-            Some(text) => Strategy::parse(text).ok_or_else(|| ConfigError(format!("permissions {text:?} is not \"page\", \"model\" or \"access\"")))?,
+            Some(text) => Strategy::parse(text).ok_or_else(|| config_err(format!("permissions {text:?} is not \"page\", \"model\" or \"access\"")))?,
         };
         let label = config.label.as_deref().unwrap_or("admin");
         check_name("label", label)?;
@@ -855,7 +901,7 @@ impl Site {
         if explicit {
             let mut seen = BTreeSet::new();
             for r in &configs {
-                let idx = schema.model_idx(&r.model).map_err(|_| ConfigError(format!("unknown model {:?}", r.model)))?;
+                let idx = schema.model_idx(&r.model).map_err(|_| config_err(format!("unknown model {:?}", r.model)))?;
                 if !concrete(schema.model(idx)) {
                     return err(format!("{}: not a concrete model, so not a resource", r.model));
                 }
@@ -870,7 +916,7 @@ impl Site {
         for c in &configs {
             let idx = schema.model_idx(&c.model).expect("checked above, or a model of the schema");
             if c.set_password && config.user_table.as_deref() != Some(schema.model(idx).ir.table.as_str()) {
-                return err(format!("{}: set_password needs the auth user model", c.model));
+                return err(format!("{}: \u{1}set_password\u{2} needs the auth user model", c.model));
             }
             let mut built = resource(&schema, idx, c, strategy, label, &global, &mut warnings)?;
             built.frames = crate::frames::build(&c.frames, &origins, &base_path, Some((&schema, idx)))?;
@@ -889,7 +935,7 @@ impl Site {
         }
         for r in &resources {
             match (&r.group, groups.is_empty()) {
-                (Some(g), false) if !groups.contains(g) => return err(format!("{}: group {g:?} is not in groups", r.name)),
+                (Some(g), false) if !groups.contains(g) => return err_in(&r.name, format!("group {g:?} is not in groups")),
                 (Some(g), true) if !seen_group(&resources, g, &r.name) => groups.push(g.clone()),
                 _ => {}
             }
@@ -913,7 +959,7 @@ impl Site {
             let mut names: BTreeSet<&str> = t.iter().map(|t| t.name.as_str()).chain(r.package_tabs.iter().map(|t| t.name.as_str())).collect();
             for name in r.fieldsets.iter().map(|f| f.name.as_str()).chain(r.frames.iter().map(|f| f.name())) {
                 if !names.insert(name) {
-                    return err(format!("{}: duplicate detail tab {name:?}", r.name));
+                    return err_in(&r.name, format!("duplicate detail tab {name:?}"));
                 }
             }
             r.tabs = t;
@@ -945,7 +991,7 @@ impl Site {
         }
         let brand = meta::brand(config.brand.as_ref(), config.theme.as_ref())?;
         let statement_timeout = match config.statement_timeout_ms.unwrap_or(DEFAULT_STATEMENT_TIMEOUT_MS) {
-            ms if ms > MAX_STATEMENT_TIMEOUT_MS => return err(format!("statement_timeout_ms is {ms}, at most {MAX_STATEMENT_TIMEOUT_MS}")),
+            ms if ms > MAX_STATEMENT_TIMEOUT_MS => return err(format!("\u{1}statement_timeout_ms\u{2} is {ms}, at most {MAX_STATEMENT_TIMEOUT_MS}")),
             0 => None,
             ms => Some(Duration::from_millis(ms)),
         };
@@ -1037,7 +1083,7 @@ pub(crate) fn field_columns(schema: &Schema, model: usize, names: &[String]) -> 
 }
 
 /// Gives each inline the page of its child model: the registered page without its own inlines, with the keys of the wrapper's `page` laid over it, top level key by key.
-fn merge_inline_pages(config: &mut Value) -> Result<(), ConfigError> {
+fn merge_inline_pages(config: &mut Value) -> Result<(), Fault> {
     let Some(resources) = config.get("resources").and_then(Value::as_array).cloned() else { return Ok(()) };
     let mut merged = resources.clone();
     for (r, parent) in resources.iter().enumerate() {
@@ -1079,7 +1125,7 @@ fn merge_inline_pages(config: &mut Value) -> Result<(), ConfigError> {
 }
 
 /// The to-many relation of `parent` that an inline named: `via`, or the only one that leads to the child model.
-fn inline_relation<'a>(schema: &'a Schema, parent: &Resource, child: usize, via: Option<&str>, at: &str) -> Result<&'a monorm_core::ir::RelationIr, ConfigError> {
+fn inline_relation<'a>(schema: &'a Schema, parent: &Resource, child: usize, via: Option<&str>, at: &str) -> Result<&'a monorm_core::ir::RelationIr, Fault> {
     let pm = schema.model(parent.model);
     let child_name = &schema.model(child).ir.name;
     let leads = |rel: &monorm_core::ir::RelationIr| rel.kind == RelKind::Many && rel.through.is_none() && rel.path.is_empty() && !rel.is_conditioned() && matches!(pm.relation(&rel.name), Ok((_, t)) if t == child);
@@ -1107,12 +1153,12 @@ fn inline_relation<'a>(schema: &'a Schema, parent: &Resource, child: usize, via:
 
 /// The inlines of resource `i`: the page of each child with its wrapper, checked.
 #[allow(clippy::too_many_arguments)]
-fn inlines_of(schema: &Schema, resources: &[Resource], i: usize, config: &ResourceConfig, strategy: Strategy, site_label: &str, global: &crate::form::Global, warnings: &mut Vec<String>) -> Result<Vec<Inline>, ConfigError> {
+fn inlines_of(schema: &Schema, resources: &[Resource], i: usize, config: &ResourceConfig, strategy: Strategy, site_label: &str, global: &crate::form::Global, warnings: &mut Vec<String>) -> Result<Vec<Inline>, Fault> {
     let parent = &resources[i];
     let mut out: Vec<Inline> = Vec::new();
     for c in &config.inlines {
         let at = format!("{}: inline {}", parent.name, c.model);
-        let child = schema.model_idx(&c.model).map_err(|_| ConfigError(format!("{at}: unknown model")))?;
+        let child = schema.model_idx(&c.model).map_err(|_| config_err(format!("{at}: unknown model")))?;
         if !concrete(schema.model(child)) {
             return err(format!("{at}: not a concrete model"));
         }
@@ -1192,7 +1238,7 @@ fn inlines_of(schema: &Schema, resources: &[Resource], i: usize, config: &Resour
 
 /// The tabs of resource `i`: the to-many relations that lead to a resource, and are not a many-to-many.
 /// A relation with fixed conditions or union members has no tab: the tab and its "Add" prefill read only `from` and `to`.
-fn tabs_of(schema: &Schema, resources: &[Resource], i: usize) -> Result<Vec<Tab>, ConfigError> {
+fn tabs_of(schema: &Schema, resources: &[Resource], i: usize) -> Result<Vec<Tab>, Fault> {
     let r = &resources[i];
     let model = schema.model(r.model);
     let usable = |rel: &monorm_core::ir::RelationIr| -> Option<String> {
@@ -1212,13 +1258,13 @@ fn tabs_of(schema: &Schema, resources: &[Resource], i: usize) -> Result<Vec<Tab>
         Some(names) => {
             for n in names {
                 let Some(rel) = model.ir.relations.iter().find(|rel| rel.name == *n) else {
-                    return err(format!("{}: tabs has {n:?}, which is not a relation", r.name));
+                    return err_in(&r.name, format!("tabs has {n:?}, which is not a relation"));
                 };
                 let Some(target) = usable(rel) else {
-                    return err(format!("{}: tab {n:?} needs a to-many relation (not a many-to-many, no fixed conditions or union members) to a resource", r.name));
+                    return err_in(&r.name, format!("tab {n:?} needs a to-many relation (not a many-to-many, no fixed conditions or union members) to a resource"));
                 };
                 if out.iter().any(|t: &Tab| t.name == *n) {
-                    return err(format!("{}: tab {n:?} is listed twice", r.name));
+                    return err_in(&r.name, format!("tab {n:?} is listed twice"));
                 }
                 out.push(Tab { name: rel.name.clone(), target });
             }
@@ -1227,7 +1273,7 @@ fn tabs_of(schema: &Schema, resources: &[Resource], i: usize) -> Result<Vec<Tab>
     Ok(out)
 }
 
-fn normalize_prefix(prefix: &str, base: &str) -> Result<String, ConfigError> {
+fn normalize_prefix(prefix: &str, base: &str) -> Result<String, Fault> {
     let trimmed = prefix.trim_end_matches('/');
     if !trimmed.is_empty() && !trimmed.starts_with('/') {
         return err(format!("prefix {prefix:?} must start with /"));
@@ -1243,19 +1289,19 @@ fn normalize_prefix(prefix: &str, base: &str) -> Result<String, ConfigError> {
 }
 
 /// The base path: one leading `/`, no trailing `/`, plain segments. The text goes into a `Set-Cookie` header, a JSON import map and HTML.
-pub fn normalize_base(base: &str) -> Result<String, ConfigError> {
+pub fn normalize_base(base: &str) -> Result<String, Fault> {
     let trimmed = base.trim_end_matches('/');
     if trimmed.is_empty() {
-        return err(format!("base_path {base:?} is empty: name a path such as \"/admin\" (the health routes keep the root)"));
+        return err(format!("\u{1}base_path\u{2} {base:?} is empty: name a path such as \"/admin\" (the health routes keep the root)"));
     }
     if !trimmed.starts_with('/') {
-        return err(format!("base_path {base:?} must start with /"));
+        return err(format!("\u{1}base_path\u{2} {base:?} must start with /"));
     }
     if let Some(bad) = trimmed.chars().find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '/' | '-' | '.' | '_' | '~'))) {
-        return err(format!("base_path {base:?} holds {bad:?}: use letters, digits and - . _ ~ between slashes"));
+        return err(format!("\u{1}base_path\u{2} {base:?} holds {bad:?}: use letters, digits and - . _ ~ between slashes"));
     }
     if trimmed[1..].split('/').any(|s| s.is_empty() || s == "." || s == "..") {
-        return err(format!("base_path {base:?} has an empty or dot segment"));
+        return err(format!("\u{1}base_path\u{2} {base:?} has an empty or dot segment"));
     }
     Ok(trimmed.to_owned())
 }
@@ -1272,7 +1318,7 @@ impl ResourceConfig {
 }
 
 /// A part of a permission name: lowercase letters, digits and `_`, so `.` stays the label separator.
-pub(crate) fn check_name(what: &str, text: &str) -> Result<(), ConfigError> {
+pub(crate) fn check_name(what: &str, text: &str) -> Result<(), Fault> {
     let ok = !text.is_empty() && text.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
     if ok { Ok(()) } else { err(format!("{what} {text:?} must be lowercase letters, digits and _")) }
 }
@@ -1284,13 +1330,13 @@ struct PermissionOptions {
     split_delete: bool,
 }
 
-fn permission_options(name: &str, config: &ResourceConfig, field_names: &[String], strategy: Strategy, site_label: &str) -> Result<PermissionOptions, ConfigError> {
+fn permission_options(name: &str, config: &ResourceConfig, field_names: &[String], strategy: Strategy, site_label: &str) -> Result<PermissionOptions, Fault> {
     let label = config.label.clone().unwrap_or_else(|| site_label.to_owned());
     check_name("label", &label)?;
     let mut allow = Vec::new();
     for text in config.allow.clone().unwrap_or_else(|| Op::ALL.iter().map(|o| o.name().to_owned()).collect()) {
         let Some(op) = Op::parse(&text) else {
-            return err(format!("{name}: allow has {text:?}, not one of read, create, update, delete"));
+            return err_in(name, format!("allow has {text:?}, not one of read, create, update, delete"));
         };
         if !allow.contains(&op) {
             allow.push(op);
@@ -1299,33 +1345,33 @@ fn permission_options(name: &str, config: &ResourceConfig, field_names: &[String
     let mut split_delete = false;
     if let Some(levels) = &config.perms {
         if strategy != Strategy::Page {
-            return err(format!("{name}: perms applies to the page strategy only"));
+            return err_in(name, "perms applies to the page strategy only".to_string());
         }
         for level in levels {
             match level.as_str() {
                 "read" | "manage" => {}
                 "delete" => split_delete = true,
-                other => return err(format!("{name}: perms has {other:?}, not one of read, manage, delete")),
+                other => return err_in(name, format!("perms has {other:?}, not one of read, manage, delete")),
             }
         }
         if !levels.iter().any(|l| l == "read") || !levels.iter().any(|l| l == "manage") {
-            return err(format!("{name}: perms must name read and manage"));
+            return err_in(name, "perms must name read and manage".to_string());
         }
     }
     if strategy == Strategy::Access && (!field_names.is_empty() || config.actions.iter().any(|a| a.permission.is_some())) {
-        return err(format!("{name}: field and action names need the page or model strategy"));
+        return err_in(name, "field and action names need the page or model strategy".to_string());
     }
     // An unnamed action needs `update`, and the access strategy has no such grant: every staff user would run it.
     if strategy == Strategy::Access {
         if let Some(a) = config.actions.iter().find(|a| a.permission.is_none()) {
-            return err(format!("{name}: action {:?} has no permission, and the access strategy has no grant to check: use the page or model strategy", a.name));
+            return err_in(name, format!("action {:?} has no permission, and the access strategy has no grant to check: use the page or model strategy", a.name));
         }
     }
     let mut seen = BTreeSet::new();
     for n in field_names {
         check_name(&format!("{name}: permission name"), n)?;
         if !seen.insert(n) {
-            return err(format!("{name}: permission name {n:?} is declared twice"));
+            return err_in(name, format!("permission name {n:?} is declared twice"));
         }
     }
     let mut actions = BTreeSet::new();
@@ -1333,18 +1379,18 @@ fn permission_options(name: &str, config: &ResourceConfig, field_names: &[String
         if let Some(p) = &a.permission {
             check_name(&format!("{name}: permission name"), p)?;
             if field_names.contains(p) {
-                return err(format!("{name}: permission name {p:?} is declared twice"));
+                return err_in(name, format!("permission name {p:?} is declared twice"));
             }
         }
         check_name(&format!("{name}: action"), &a.name)?;
         if !actions.insert(&a.name) {
-            return err(format!("{name}: action {:?} is declared twice", a.name));
+            return err_in(name, format!("action {:?} is declared twice", a.name));
         }
     }
     Ok(PermissionOptions { label, allow, split_delete })
 }
 
-fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Strategy, site_label: &str, global: &crate::form::Global, warnings: &mut Vec<String>) -> Result<Resource, ConfigError> {
+fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Strategy, site_label: &str, global: &crate::form::Global, warnings: &mut Vec<String>) -> Result<Resource, Fault> {
     let list = &config.list;
     let model = schema.model(idx);
     let name = model.ir.name.clone();
@@ -1358,7 +1404,7 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
     let extras = extra_columns(schema, idx, &name, list)?;
     let extra = |n: &str| extras.columns.iter().find(|e| e.label == n).cloned();
     let mut columns = match &list.columns {
-        Some(names) if names.is_empty() => return err(format!("{name}: list.columns is empty")),
+        Some(names) if names.is_empty() => return err_in(&name, "\u{1}list.columns\u{2} is empty".to_string()),
         Some(names) => names.iter().map(|n| extra(n).map_or_else(|| column(schema, idx, n), Ok)).collect::<Result<Vec<_>, _>>()?,
         None => model.ir.fields.iter().filter(|f| listable(f)).map(|f| column(schema, idx, &f.name)).collect::<Result<Vec<_>, _>>()?,
     };
@@ -1371,7 +1417,7 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
     let mut seen = BTreeSet::new();
     for c in &columns {
         if !seen.insert(c.label.clone()) {
-            return err(format!("{name}: column {:?} is listed twice", c.label));
+            return err_in(&name, format!("column {:?} is listed twice", c.label));
         }
     }
     let mut order = Vec::new();
@@ -1400,28 +1446,28 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
     }
     let page_size = list.page_size.unwrap_or(DEFAULT_PAGE_SIZE);
     if page_size == 0 || page_size > MAX_PAGE_SIZE {
-        return err(format!("{name}: list.page_size is {page_size}, between 1 and {MAX_PAGE_SIZE}"));
+        return err_in(&name, format!("\u{1}list.page_size\u{2} is {page_size}, between 1 and {MAX_PAGE_SIZE}"));
     }
     let key = name.to_lowercase();
     let mut key_columns = Vec::new();
     let mut key_positions = Vec::new();
     for k in model.key_fields() {
         let c = column(schema, idx, &k.name)?;
-        key_positions.push(columns.iter().position(|o| o.label == c.label).ok_or_else(|| ConfigError(format!("{name}: the key field {:?} is not a column", k.name)))?);
+        key_positions.push(columns.iter().position(|o| o.label == c.label).ok_or_else(|| config_err(format!("{name}: the key field {:?} is not a column", k.name)))?);
         key_columns.push(c);
     }
     let mut detail = model.ir.fields.iter().filter(|f| listable(f)).map(|f| column(schema, idx, &f.name)).collect::<Result<Vec<_>, _>>()?;
     if !config.views.is_empty() && !config.host_behavior {
-        return err(format!("{name}: views needs host_behavior: the host converts a view field and writes it"));
+        return err_in(&name, "views needs \u{1}host_behavior\u{2}: the host converts a view field and writes it".to_string());
     }
     let text_views = apply_views(&name, model, &config.views, &mut [&mut columns, &mut detail])?;
     let title = match &config.title {
-        Some(t) if t.trim().is_empty() || t.chars().count() > 80 => return err(format!("{name}: title has 1 to 80 characters")),
+        Some(t) if t.trim().is_empty() || t.chars().count() > 80 => return err_in(&name, "title has 1 to 80 characters".to_string()),
         Some(t) => t.clone(),
         None => meta::humanize(&name),
     };
     if config.group.as_ref().is_some_and(|g| g.trim().is_empty()) {
-        return err(format!("{name}: group is empty"));
+        return err_in(&name, "group is empty".to_string());
     }
     check_badges(schema, &name, &list.badges, &listed, &columns)?;
     let search = search_fields(schema, idx, &name, list, warnings)?;
@@ -1433,12 +1479,12 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
     }
     for key in list.labels.keys().chain(list.empty_fields.keys()) {
         if !columns.iter().any(|c| c.label == *key) && !detail.iter().any(|c| c.label == *key) {
-            return err(format!("{name}: labels and empty_fields name {key:?}, which is not a column"));
+            return err_in(&name, format!("labels and \u{1}empty_fields\u{2} name {key:?}, which is not a column"));
         }
     }
     for text in list.labels.values().chain(list.empty_fields.values()).chain(&list.empty) {
         if text.chars().count() > 80 {
-            return err(format!("{name}: a label or an empty text has at most 80 characters"));
+            return err_in(&name, "a label or an empty text has at most 80 characters".to_string());
         }
     }
     let date_hierarchy = date_hierarchy_of(schema, idx, &name, list, warnings)?;
@@ -1448,7 +1494,7 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
     let mut can = can_rules(schema, &name, &config.can)?;
     let actions = actions_of(schema, &name, &config.actions, &mut can, config.set_password)?;
     if let Some(k) = config.check_messages.keys().find(|k| !model.ir.constraints.iter().any(|c| matches!(c, ConstraintIr::Check { name: Some(n), .. } if n == *k))) {
-        return err(format!("{name}: check_messages names {k:?}, which is not a named @@check of the model"));
+        return err_in(&name, format!("\u{1}check_messages\u{2} names {k:?}, which is not a named @@check of the model"));
     }
     crate::hostwrite::check_config(&name, &detail, &config.service, &config.inputs)?;
     check_bindings(&name, config, &columns, &detail, &key_columns)?;
@@ -1456,7 +1502,7 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
     let editable = editable_of(&name, list, &columns, &key_columns, &detail, &form, &allow, config, model)?;
     let mut package_tabs = Vec::new();
     for full in &config.detail_tabs {
-        let Some(module) = global.packages.tab(full) else { return err(format!("{name}: detail_tabs names {full:?}, which is not a tab of a package")) };
+        let Some(module) = global.packages.tab(full) else { return err_in(&name, format!("\u{1}detail_tabs\u{2} names {full:?}, which is not a tab of a package")) };
         package_tabs.push(PackageTab { name: full.clone(), title: crate::meta::humanize(full.split_once('.').map_or(full, |(_, t)| t)), module: module.to_owned() });
     }
     let scope_defaults = scope_default_names(model);
@@ -1526,30 +1572,30 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
 
 /// `list.editable` names list columns that are scalar fields the update form writes, on a page that allows `update` and asks no required input.
 #[allow(clippy::too_many_arguments)]
-fn editable_of(name: &str, list: &ListConfig, columns: &[Column], key_columns: &[Column], detail: &[Column], form: &crate::form::FormSpec, allow: &[Op], config: &ResourceConfig, model: &monorm_core::schema::Model) -> Result<Vec<String>, ConfigError> {
+fn editable_of(name: &str, list: &ListConfig, columns: &[Column], key_columns: &[Column], detail: &[Column], form: &crate::form::FormSpec, allow: &[Op], config: &ResourceConfig, model: &monorm_core::schema::Model) -> Result<Vec<String>, Fault> {
     let mut out: Vec<String> = Vec::new();
     for f in &list.editable {
-        let Some(column) = columns.iter().find(|c| c.label == *f) else { return err(format!("{name}: list.editable names {f:?}, which is not a column of the list")) };
+        let Some(column) = columns.iter().find(|c| c.label == *f) else { return err_in(name, format!("\u{1}list.editable\u{2} names {f:?}, which is not a column of the list")) };
         if out.contains(f) {
-            return err(format!("{name}: list.editable lists {f:?} twice"));
+            return err_in(name, format!("\u{1}list.editable\u{2} lists {f:?} twice"));
         }
         if key_columns.iter().any(|k| k.label == *f) {
-            return err(format!("{name}: list.editable names {f:?}, a key field: a row names its record with the key"));
+            return err_in(name, format!("\u{1}list.editable\u{2} names {f:?}, a key field: a row names its record with the key"));
         }
         if config.files.contains(f) {
-            return err(format!("{name}: list.editable names {f:?}, a file field: upload it on the detail page"));
+            return err_in(name, format!("\u{1}list.editable\u{2} names {f:?}, a file field: upload it on the detail page"));
         }
         if column.view.is_some() {
-            return err(format!("{name}: list.editable names {f:?}, a field that the host shows as another value: edit it on the detail page"));
+            return err_in(name, format!("\u{1}list.editable\u{2} names {f:?}, a field that the host shows as another value: edit it on the detail page"));
         }
         if !crate::write::writable(column) {
-            return err(format!("{name}: list.editable names {f:?}, which is not a scalar field of the model (a relation, computed or aggregate column cannot be edited in the list)"));
+            return err_in(name, format!("\u{1}list.editable\u{2} names {f:?}, which is not a scalar field of the model (a relation, computed or aggregate column cannot be edited in the list)"));
         }
         if form.readonly.contains(f) {
-            return err(format!("{name}: list.editable names {f:?}, a read-only field of the update form"));
+            return err_in(name, format!("\u{1}list.editable\u{2} names {f:?}, a read-only field of the update form"));
         }
         if !detail.iter().any(|d| d.label == *f) {
-            return err(format!("{name}: list.editable names {f:?}, a field that the update form does not write"));
+            return err_in(name, format!("\u{1}list.editable\u{2} names {f:?}, a field that the update form does not write"));
         }
         out.push(f.clone());
     }
@@ -1557,28 +1603,28 @@ fn editable_of(name: &str, list: &ListConfig, columns: &[Column], key_columns: &
         return Ok(out);
     }
     if !allow.contains(&Op::Update) {
-        return err(format!("{name}: list.editable needs the page to allow update"));
+        return err_in(name, "\u{1}list.editable\u{2} needs the page to allow update".to_string());
     }
     if config.service.update.is_some() && config.inputs.iter().any(|i| i.required) {
-        return err(format!("{name}: list.editable cannot save through an update service that asks a required input: the list has no input to give"));
+        return err_in(name, "\u{1}list.editable\u{2} cannot save through an update service that asks a required input: the list has no input to give".to_string());
     }
     // The page carries the list columns only, and a save sends them as `loaded`: the guard fields must be among them.
     if let Some(g) = crate::write::guard_labels(model, detail).into_iter().find(|g| !columns.iter().any(|c| c.label == *g)) {
-        return err(format!("{name}: list.editable needs the guard field {g:?} among the list columns: a save sends the loaded value of each column"));
+        return err_in(name, format!("\u{1}list.editable\u{2} needs the guard field {g:?} among the list columns: a save sends the loaded value of each column"));
     }
     Ok(out)
 }
 
 /// `see` and `change` name a column or a field of the page, never a key field: a row names its record with the key.
-fn check_bindings(name: &str, config: &ResourceConfig, columns: &[Column], detail: &[Column], key_columns: &[Column]) -> Result<(), ConfigError> {
+fn check_bindings(name: &str, config: &ResourceConfig, columns: &[Column], detail: &[Column], key_columns: &[Column]) -> Result<(), Fault> {
     for (what, map) in [("see", &config.see), ("change", &config.change)] {
         for (field, permission) in map {
             let known = if what == "see" { columns.iter().chain(detail).any(|c| c.label == *field) } else { detail.iter().any(|c| c.label == *field) };
             if !known {
-                return err(format!("{name}: {what} names {field:?}, which is not {}", if what == "see" { "a column or a field" } else { "a field of the form" }));
+                return err_in(name, format!("{what} names {field:?}, which is not {}", if what == "see" { "a column or a field" } else { "a field of the form" }));
             }
             if key_columns.iter().any(|k| k.label == *field) {
-                return err(format!("{name}: {what} names the key field {field:?}: a row names its record with the key"));
+                return err_in(name, format!("{what} names the key field {field:?}: a row names its record with the key"));
             }
             check_name(&format!("{name}: {what} permission name"), permission)?;
         }
@@ -1587,21 +1633,21 @@ fn check_bindings(name: &str, config: &ResourceConfig, columns: &[Column], detai
 }
 
 /// The Json fields of a resource that hold an uploaded file.
-fn files_of(schema: &Schema, idx: usize, name: &str, files: &[String]) -> Result<Vec<String>, ConfigError> {
+fn files_of(schema: &Schema, idx: usize, name: &str, files: &[String]) -> Result<Vec<String>, Fault> {
     let model = schema.model(idx);
     let mut out: Vec<String> = Vec::new();
     for f in files {
-        let Some(field) = model.ir.fields.iter().find(|x| x.name == *f) else { return err(format!("{name}: files has {f:?}, which is not a field")) };
+        let Some(field) = model.ir.fields.iter().find(|x| x.name == *f) else { return err_in(name, format!("files has {f:?}, which is not a field")) };
         if field.ty != ColType::Json || field.array || field.enum_idx.is_some() || !field.nullable || field.generated.is_some() {
-            return err(format!("{name}: files {f:?} must be a nullable Json field that the database does not generate"));
+            return err_in(name, format!("files {f:?} must be a nullable Json field that the database does not generate"));
         }
         if out.contains(f) {
-            return err(format!("{name}: files lists {f:?} twice"));
+            return err_in(name, format!("files lists {f:?} twice"));
         }
         out.push(f.clone());
     }
     if !out.is_empty() && model.key_fields().len() != 1 {
-        return err(format!("{name}: files needs a resource with a single-column key"));
+        return err_in(name, "files needs a resource with a single-column key".to_string());
     }
     Ok(out)
 }
@@ -1669,17 +1715,17 @@ fn listable(f: &monorm_core::ir::FieldIr) -> bool {
 }
 
 /// Marks the columns of the view fields and gives them the type of the shown value. Answers the labels of the read-only ones.
-fn apply_views(name: &str, model: &monorm_core::schema::Model, views: &BTreeMap<String, String>, sets: &mut [&mut Vec<Column>]) -> Result<Vec<String>, ConfigError> {
+fn apply_views(name: &str, model: &monorm_core::schema::Model, views: &BTreeMap<String, String>, sets: &mut [&mut Vec<Column>]) -> Result<Vec<String>, Fault> {
     let mut read_only = Vec::new();
     for (field, mode) in views {
-        let Some(f) = model.ir.fields.iter().find(|f| &f.name == field) else { return err(format!("{name}: views names {field:?}, which is not a field")) };
+        let Some(f) = model.ir.fields.iter().find(|f| &f.name == field) else { return err_in(name, format!("views names {field:?}, which is not a field")) };
         if f.ty != ColType::Bytes || f.array {
-            return err(format!("{name}: views names {field:?}, which is not a Bytes field"));
+            return err_in(name, format!("views names {field:?}, which is not a Bytes field"));
         }
         let (view, shown) = match mode.as_str() {
             "json" => (View::Json, ColType::Json),
             "text" => (View::Text, ColType::String),
-            other => return err(format!("{name}: views gives {field:?} the mode {other:?}, not json or text")),
+            other => return err_in(name, format!("views gives {field:?} the mode {other:?}, not json or text")),
         };
         if view == View::Text {
             read_only.push(field.clone());
@@ -1693,7 +1739,7 @@ fn apply_views(name: &str, model: &monorm_core::schema::Model, views: &BTreeMap<
 }
 
 /// A column from `author.name`: each name before the last is a to-one relation.
-pub(crate) fn column(schema: &Schema, root: usize, spec: &str) -> Result<Column, ConfigError> {
+pub(crate) fn column(schema: &Schema, root: usize, spec: &str) -> Result<Column, Fault> {
     let model_name = &schema.model(root).ir.name;
     let mut parts: Vec<&str> = spec.split('.').collect();
     let field_name = parts.pop().unwrap_or_default();
@@ -1702,10 +1748,10 @@ pub(crate) fn column(schema: &Schema, root: usize, spec: &str) -> Result<Column,
     for hop in parts {
         let m = schema.model(cur);
         let Ok((rel, target)) = m.relation(hop) else {
-            return err(format!("{model_name}: unknown field {spec:?}: {} has no relation {hop:?}", m.ir.name));
+            return err_in(model_name, format!("unknown field {spec:?}: {} has no relation {hop:?}", m.ir.name));
         };
         if rel.kind == RelKind::Many {
-            return err(format!("{model_name}: list column {spec:?} goes through the to-many relation {hop:?}; a column reads one value per row"));
+            return err_in(model_name, format!("list column {spec:?} goes through the to-many relation {hop:?}; a column reads one value per row"));
         }
         path.push(hop.to_owned());
         cur = target;
@@ -1713,7 +1759,7 @@ pub(crate) fn column(schema: &Schema, root: usize, spec: &str) -> Result<Column,
     let m = schema.model(cur);
     let Some(field) = m.ir.fields.iter().find(|f| f.name == field_name) else {
         let hint = if m.relation(field_name).is_ok() { format!(": {field_name:?} is a relation, name one of its fields") } else { String::new() };
-        return err(format!("{model_name}: unknown field {spec:?}{hint}"));
+        return err_in(model_name, format!("unknown field {spec:?}{hint}"));
     };
     let mut ty = ValueType::scalar(field.ty);
     ty.array = field.array;
@@ -1721,17 +1767,17 @@ pub(crate) fn column(schema: &Schema, root: usize, spec: &str) -> Result<Column,
     Ok(Column { label: spec.to_owned(), path, field: field.name.clone(), ty, nullable: field.nullable, source: Source::Field, view: None, sort: None })
 }
 
-fn order_column(schema: &Schema, root: usize, field: &str, desc: bool, name: &str) -> Result<OrderColumn, ConfigError> {
+fn order_column(schema: &Schema, root: usize, field: &str, desc: bool, name: &str) -> Result<OrderColumn, Fault> {
     if field.contains('.') {
-        return err(format!("{name}: order {field:?}: order takes a field of {name}, not of a related model"));
+        return err_in(name, format!("order {field:?}: order takes a field of {name}, not of a related model"));
     }
     let column = column(schema, root, field)?;
-    let f = schema.model(root).field(field).map_err(|e| ConfigError(e.to_string()))?;
+    let f = schema.model(root).field(field).map_err(|e| config_err(e.to_string()))?;
     if column.nullable {
-        return err(format!("{name}: order {field:?}: the field is nullable, and a keyset page cannot compare NULLs"));
+        return err_in(name, format!("order {field:?}: the field is nullable, and a keyset page cannot compare NULLs"));
     }
     if column.ty.array || column.ty.enum_idx.is_some() || matches!(column.ty.ty, ColType::Json | ColType::Decimal) || f.write_sql.is_some() {
-        return err(format!("{name}: order {field:?}: a field of this type cannot order a list"));
+        return err_in(name, format!("order {field:?}: a field of this type cannot order a list"));
     }
     Ok(OrderColumn { column, desc })
 }
@@ -1740,15 +1786,15 @@ fn order_column(schema: &Schema, root: usize, field: &str, desc: bool, name: &st
 pub const BADGE_COLOURS: [&str; 6] = ["grey", "blue", "green", "yellow", "red", "purple"];
 
 /// `list.badges`: each key is a list column of a type that shows as a badge, each value of its map fits that type, each colour is in the palette.
-fn check_badges(schema: &Schema, name: &str, badges: &BTreeMap<String, BTreeMap<String, String>>, listed: &[String], columns: &[Column]) -> Result<(), ConfigError> {
+fn check_badges(schema: &Schema, name: &str, badges: &BTreeMap<String, BTreeMap<String, String>>, listed: &[String], columns: &[Column]) -> Result<(), Fault> {
     for (label, map) in badges {
         let Some(c) = columns.iter().find(|c| c.label == *label).filter(|c| listed.contains(&c.label)) else {
-            return err(format!("{name}: badges names {label:?}, which is not a column of the list"));
+            return err_in(name, format!("badges names {label:?}, which is not a column of the list"));
         };
         let enum_values = c.ty.enum_idx.and_then(|i| schema.enums.get(i as usize)).map(|e| e.values.iter().map(|v| v.name.as_str()).collect::<Vec<_>>());
         let shown = !c.ty.array && c.view.is_none() && (enum_values.is_some() || matches!(c.ty.ty, ColType::String | ColType::Text | ColType::Int | ColType::BigInt | ColType::Bool));
         if !shown {
-            return err(format!("{name}: badges {label:?}: a {} column has no badge; a badge takes a string, text, enum, int, bigint or bool column", type_name(c)));
+            return err_in(name, format!("badges {label:?}: a {} column has no badge; a badge takes a string, text, enum, int, bigint or bool column", type_name(c)));
         }
         for (value, colour) in map {
             let fits = match (&enum_values, c.ty.ty) {
@@ -1758,10 +1804,10 @@ fn check_badges(schema: &Schema, name: &str, badges: &BTreeMap<String, BTreeMap<
                 _ => true,
             };
             if !fits {
-                return err(format!("{name}: badges {label:?}: {value:?} is not a value of the column"));
+                return err_in(name, format!("badges {label:?}: {value:?} is not a value of the column"));
             }
             if !BADGE_COLOURS.contains(&colour.as_str()) {
-                return err(format!("{name}: badges {label:?}: colour {colour:?} is not one of {}", BADGE_COLOURS.join(", ")));
+                return err_in(name, format!("badges {label:?}: colour {colour:?} is not one of {}", BADGE_COLOURS.join(", ")));
             }
         }
     }
@@ -1769,7 +1815,7 @@ fn check_badges(schema: &Schema, name: &str, badges: &BTreeMap<String, BTreeMap<
 }
 
 /// The columns that a sort header may use: own fields in the list that a keyset page can compare.
-fn sortable_columns(schema: &Schema, idx: usize, name: &str, list: &ListConfig, columns: &[Column]) -> Result<Vec<Sortable>, ConfigError> {
+fn sortable_columns(schema: &Schema, idx: usize, name: &str, list: &ListConfig, columns: &[Column]) -> Result<Vec<Sortable>, Fault> {
     let model = schema.model(idx);
     let named: Vec<String> = match &list.sortable {
         Some(names) => names.clone(),
@@ -1782,12 +1828,12 @@ fn sortable_columns(schema: &Schema, idx: usize, name: &str, list: &ListConfig, 
         match ok {
             Ok(o) => {
                 if !columns.iter().any(|c| c.label == o.column.label) {
-                    return err(format!("{name}: sortable {field:?} is not a list column"));
+                    return err_in(name, format!("sortable {field:?} is not a list column"));
                 }
                 if out.iter().any(|s: &Sortable| s.column.label == o.column.label) {
-                    return err(format!("{name}: sortable {field:?} is listed twice"));
+                    return err_in(name, format!("sortable {field:?} is listed twice"));
                 }
-                let f = model.field(&field).map_err(|e| ConfigError(e.to_string()))?;
+                let f = model.field(&field).map_err(|e| config_err(e.to_string()))?;
                 out.push(Sortable { column: o.column, indexed: leads_btree(&model.ir, f, false) });
             }
             Err(e) if explicit => return Err(e),
@@ -1849,23 +1895,23 @@ fn fulltext_config(m: &ModelIr, f: &FieldIr) -> Option<String> {
 
 /// The search fields of a resource, each with the mode that its indexes serve. A field that no index serves is a warning;
 /// a field of a type that no mode fits is an error.
-fn search_fields(schema: &Schema, idx: usize, name: &str, list: &ListConfig, warnings: &mut Vec<String>) -> Result<Vec<SearchField>, ConfigError> {
+fn search_fields(schema: &Schema, idx: usize, name: &str, list: &ListConfig, warnings: &mut Vec<String>) -> Result<Vec<SearchField>, Fault> {
     let model = schema.model(idx);
     let mut out: Vec<SearchField> = Vec::new();
     for field in list.search.clone().unwrap_or_default() {
         if field.contains('.') {
-            return err(format!("{name}: search {field:?}: search takes a field of {name}, not of a related model"));
+            return err_in(name, format!("search {field:?}: search takes a field of {name}, not of a related model"));
         }
         if out.iter().any(|s| s.column.field == field) {
-            return err(format!("{name}: search {field:?} is listed twice"));
+            return err_in(name, format!("search {field:?} is listed twice"));
         }
         let column = column(schema, idx, &field)?;
-        let f = model.field(&field).map_err(|e| ConfigError(e.to_string()))?;
+        let f = model.field(&field).map_err(|e| config_err(e.to_string()))?;
         let ty = column.ty;
         let text = matches!(ty.ty, ColType::String | ColType::Text) && !ty.array && ty.enum_idx.is_none();
         let exact = matches!(ty.ty, ColType::Int | ColType::BigInt | ColType::Uuid) && !ty.array && ty.enum_idx.is_none();
         if f.write_sql.is_some() && !text || !(text || exact) {
-            return err(format!("{name}: search {field:?}: no search strategy fits a {} field; search takes text, integer and uuid fields", type_name(&column)));
+            return err_in(name, format!("search {field:?}: no search strategy fits a {} field; search takes text, integer and uuid fields", type_name(&column)));
         }
         let postgres = schema.dialect == Dialect::Postgres;
         let btree = leads_btree(&model.ir, f, true);
@@ -1888,10 +1934,10 @@ fn search_fields(schema: &Schema, idx: usize, name: &str, list: &ListConfig, war
         out.push(SearchField { column, default, text, fulltext, indexed });
     }
     if list.search_with.is_some() && !out.is_empty() {
-        return err(format!("{name}: search and search_with are two ways to search; set one"));
+        return err_in(name, "search and \u{1}search_with\u{2} are two ways to search; set one".to_string());
     }
     if list.search_with.as_ref().is_some_and(|n| n.trim().is_empty()) {
-        return err(format!("{name}: search_with is empty"));
+        return err_in(name, "\u{1}search_with\u{2} is empty".to_string());
     }
     Ok(out)
 }
@@ -2012,41 +2058,41 @@ fn same_type(declared: ColType, found: ColType) -> bool {
     declared == found || matches!((declared, found), (ColType::String, ColType::Text) | (ColType::Text, ColType::String))
 }
 
-fn extra_columns(schema: &Schema, idx: usize, name: &str, list: &ListConfig) -> Result<Extras, ConfigError> {
+fn extra_columns(schema: &Schema, idx: usize, name: &str, list: &ListConfig) -> Result<Extras, Fault> {
     let model = schema.model(idx);
     let mut columns: Vec<Column> = Vec::new();
     let mut sortable = Vec::new();
-    let taken = |columns: &[Column], n: &str| -> Result<(), ConfigError> {
+    let taken = |columns: &[Column], n: &str| -> Result<(), Fault> {
         if !ident_ok(n) {
-            return err(format!("{name}: column name {n:?} has 1 to 40 letters, digits and _"));
+            return err_in(name, format!("column name {n:?} has 1 to 40 letters, digits and _"));
         }
         if model.ir.fields.iter().any(|f| f.name == n) || model.ir.relations.iter().any(|r| r.name == n) || columns.iter().any(|c| c.label == n) {
-            return err(format!("{name}: computed column {n:?} has the name of a field, a relation or another computed column"));
+            return err_in(name, format!("computed column {n:?} has the name of a field, a relation or another computed column"));
         }
         Ok(())
     };
     for c in &list.computed {
         taken(&columns, &c.name)?;
         let Some(declared) = parse_type(&c.ty) else {
-            return err(format!("{name}: computed {:?}: type {:?} is not int, bigint, float, bool, string, text, datetime, date, uuid, json or decimal", c.name, c.ty));
+            return err_in(name, format!("computed {:?}: type {:?} is not int, bigint, float, bool, string, text, datetime, date, uuid, json or decimal", c.name, c.ty));
         };
         let nullable = c.nullable.unwrap_or(true);
         let source = match (&c.expr, &c.function) {
             (Some(expr), None) => {
                 if has_binding(expr) {
-                    return err(format!("{name}: computed {:?}: an expression has no parameters or scope values", c.name));
+                    return err_in(name, format!("computed {:?}: an expression has no parameters or scope values", c.name));
                 }
-                let found = probe_type(schema, &model.ir.name, expr).map_err(|e| ConfigError(format!("{name}: computed {:?}: {e}", c.name)))?;
+                let found = probe_type(schema, &model.ir.name, expr).map_err(|e| config_err(format!("{name}: computed {:?}: {e}", c.name)))?;
                 if found.array || found.enum_idx.is_some() || !same_type(declared, found.ty) {
-                    return err(format!("{name}: computed {:?}: declared {declared:?}, but the expression is {:?}{}", c.name, found.ty, if found.array { " array" } else { "" }));
+                    return err_in(name, format!("computed {:?}: declared {declared:?}, but the expression is {:?}{}", c.name, found.ty, if found.array { " array" } else { "" }));
                 }
                 Source::Expr(expr.clone())
             }
             (None, Some(f)) if !f.trim().is_empty() => Source::Batch(f.clone()),
-            _ => return err(format!("{name}: computed {:?} sets expr or function, one of them", c.name)),
+            _ => return err_in(name, format!("computed {:?} sets expr or function, one of them", c.name)),
         };
         let sort = match &c.order_by {
-            Some(_) if c.sortable == Some(false) => return err(format!("{name}: computed {:?}: order_by makes the column sortable, and sortable is false", c.name)),
+            Some(_) if c.sortable == Some(false) => return err_in(name, format!("computed {:?}: \u{1}order_by\u{2} makes the column sortable, and sortable is false", c.name)),
             Some(by) => Some(Box::new(order_by_column(schema, idx, name, &c.name, by, nullable)?)),
             None => None,
         };
@@ -2054,10 +2100,10 @@ fn extra_columns(schema: &Schema, idx: usize, name: &str, list: &ListConfig) -> 
             sortable.push(c.name.clone());
         } else if c.sortable == Some(true) {
             if matches!(source, Source::Batch(_)) {
-                return err(format!("{name}: computed {:?}: a column of a host function cannot sort; the database does not know its values (order_by names a field or an expression to sort by)", c.name));
+                return err_in(name, format!("computed {:?}: a column of a host function cannot sort; the database does not know its values (\u{1}order_by\u{2} names a field or an expression to sort by)", c.name));
             }
             if nullable || matches!(declared, ColType::Json | ColType::Decimal) {
-                return err(format!("{name}: computed {:?}: a sort column is not null (set nullable to false) and not json or decimal", c.name));
+                return err_in(name, format!("computed {:?}: a sort column is not null (set nullable to false) and not json or decimal", c.name));
             }
             sortable.push(c.name.clone());
         }
@@ -2066,29 +2112,29 @@ fn extra_columns(schema: &Schema, idx: usize, name: &str, list: &ListConfig) -> 
     for a in &list.aggregates {
         taken(&columns, &a.name)?;
         let Ok((rel, target)) = model.relation(&a.relation) else {
-            return err(format!("{name}: aggregate {:?}: {} has no relation {:?}", a.name, model.ir.name, a.relation));
+            return err_in(name, format!("aggregate {:?}: {} has no relation {:?}", a.name, model.ir.name, a.relation));
         };
         if rel.kind != RelKind::Many {
-            return err(format!("{name}: aggregate {:?}: {:?} is a to-one relation; an aggregate reads a to-many relation", a.name, a.relation));
+            return err_in(name, format!("aggregate {:?}: {:?} is a to-one relation; an aggregate reads a to-many relation", a.name, a.relation));
         }
         let expr = match (a.function.as_str(), &a.field) {
             ("count", None) => serde_json::json!({"t": "func", "name": "count", "rel": [a.relation]}),
-            ("count", Some(_)) => return err(format!("{name}: aggregate {:?}: count takes no field", a.name)),
+            ("count", Some(_)) => return err_in(name, format!("aggregate {:?}: count takes no field", a.name)),
             ("sum" | "min" | "max" | "avg", Some(field)) => {
                 if schema.model(target).field(field).is_err() {
-                    return err(format!("{name}: aggregate {:?}: {} has no field {field:?}", a.name, schema.model(target).ir.name));
+                    return err_in(name, format!("aggregate {:?}: {} has no field {field:?}", a.name, schema.model(target).ir.name));
                 }
                 serde_json::json!({"t": "func", "name": a.function, "args": [{"t": "col", "path": [a.relation], "name": field}]})
             }
-            ("sum" | "min" | "max" | "avg", None) => return err(format!("{name}: aggregate {:?}: {} needs a field", a.name, a.function)),
-            (other, _) => return err(format!("{name}: aggregate {:?}: function {other:?} is not count, sum, min, max or avg", a.name)),
+            ("sum" | "min" | "max" | "avg", None) => return err_in(name, format!("aggregate {:?}: {} needs a field", a.name, a.function)),
+            (other, _) => return err_in(name, format!("aggregate {:?}: function {other:?} is not count, sum, min, max or avg", a.name)),
         };
-        let found = probe_type(schema, &model.ir.name, &expr).map_err(|e| ConfigError(format!("{name}: aggregate {:?}: {e}", a.name)))?;
+        let found = probe_type(schema, &model.ir.name, &expr).map_err(|e| config_err(format!("{name}: aggregate {:?}: {e}", a.name)))?;
         columns.push(Column { label: a.name.clone(), path: Vec::new(), field: a.name.clone(), ty: found, nullable: a.function != "count", source: Source::Expr(expr), view: None, sort: None });
     }
     for (c, label) in list.computed.iter().map(|c| (&c.name, &c.label)).chain(list.aggregates.iter().map(|a| (&a.name, &a.label))) {
         if label.as_ref().is_some_and(|l| l.trim().is_empty() || l.chars().count() > 80) {
-            return err(format!("{name}: the label of {c:?} has 1 to 80 characters"));
+            return err_in(name, format!("the label of {c:?} has 1 to 80 characters"));
         }
     }
     Ok(Extras { columns, sortable })
@@ -2096,12 +2142,12 @@ fn extra_columns(schema: &Schema, idx: usize, name: &str, list: &ListConfig) -> 
 
 /// The column that `order_by` of a computed column names: a field path (at most one to-one hop) or an expression.
 /// A keyset page compares the value, so it is never NULL and has a type that compares.
-fn order_by_column(schema: &Schema, idx: usize, name: &str, computed: &str, by: &Value, nullable: bool) -> Result<Column, ConfigError> {
+fn order_by_column(schema: &Schema, idx: usize, name: &str, computed: &str, by: &Value, nullable: bool) -> Result<Column, Fault> {
     let who = format!("{name}: computed {computed:?}: order_by");
     let orderable = |ty: ValueType| !ty.array && ty.enum_idx.is_none() && !matches!(ty.ty, ColType::Json | ColType::Decimal);
     match by {
         Value::String(path) => {
-            let col = column(schema, idx, path).map_err(|e| ConfigError(format!("{who}: {}", e.0)))?;
+            let col = column(schema, idx, path).map_err(|e| Fault { text: format!("computed {computed:?}: order_by: {}", e.text), ..e })?;
             if col.path.len() > 1 {
                 return err(format!("{who} {path:?} goes through {} relations; it takes at most one to-one relation", col.path.len()));
             }
@@ -2114,7 +2160,7 @@ fn order_by_column(schema: &Schema, idx: usize, name: &str, computed: &str, by: 
             let mut cur = idx;
             for hop in &col.path {
                 let model = schema.model(cur);
-                let (rel, target) = model.relation(hop).map_err(|e| ConfigError(format!("{who}: {e}")))?;
+                let (rel, target) = model.relation(hop).map_err(|e| config_err(format!("{who}: {e}")))?;
                 if rel.is_conditioned() {
                     return err(format!("{who} {path:?}: a relation with fixed conditions or union members cannot order a list"));
                 }
@@ -2135,7 +2181,7 @@ fn order_by_column(schema: &Schema, idx: usize, name: &str, computed: &str, by: 
             if nullable {
                 return err(format!("{who}: an expression needs a column that declares nullable: false"));
             }
-            let found = probe_type(schema, &schema.model(idx).ir.name, by).map_err(|e| ConfigError(format!("{who}: {e}")))?;
+            let found = probe_type(schema, &schema.model(idx).ir.name, by).map_err(|e| config_err(format!("{who}: {e}")))?;
             if !orderable(found) {
                 return err(format!("{who}: an expression of this type cannot order a list"));
             }
@@ -2152,19 +2198,19 @@ fn filterable(c: &Column) -> bool {
 
 /// The date field of the drill-down bar: a date or datetime field, with one relation hop allowed.
 /// A warning, not an error, when no index leads with it: each count then reads the whole filtered table.
-fn date_hierarchy_of(schema: &Schema, idx: usize, name: &str, list: &ListConfig, warnings: &mut Vec<String>) -> Result<Option<DateHierarchy>, ConfigError> {
+fn date_hierarchy_of(schema: &Schema, idx: usize, name: &str, list: &ListConfig, warnings: &mut Vec<String>) -> Result<Option<DateHierarchy>, Fault> {
     let Some(config) = &list.date_hierarchy else { return Ok(None) };
     let field = config.field();
-    let c = column(schema, idx, field).map_err(|e| ConfigError(format!("date_hierarchy: {}", e.0)))?;
+    let c = column(schema, idx, field).map_err(|e| Fault { text: format!("{}: {}", opt("date_hierarchy"), e.text), ..e })?;
     if c.path.len() > 1 {
-        return err(format!("{name}: date_hierarchy {field:?}: one relation hop is the most"));
+        return err_in(name, format!("\u{1}date_hierarchy\u{2} {field:?}: one relation hop is the most"));
     }
     if c.ty.array || c.ty.enum_idx.is_some() || !matches!(c.ty.ty, ColType::Date | ColType::DateTime) {
-        return err(format!("{name}: date_hierarchy {field:?}: the field is {}, and date_hierarchy takes a date or datetime field", type_name(&c)));
+        return err_in(name, format!("\u{1}date_hierarchy\u{2} {field:?}: the field is {}, and \u{1}date_hierarchy\u{2} takes a date or datetime field", type_name(&c)));
     }
     let mut at = idx;
     for hop in &c.path {
-        at = schema.model(at).relation(hop).map_err(|e| ConfigError(e.to_string()))?.1;
+        at = schema.model(at).relation(hop).map_err(|e| config_err(e.to_string()))?.1;
     }
     let model = schema.model(at);
     if !model.field(&c.field).is_ok_and(|f| leads_btree(&model.ir, f, false)) {
@@ -2177,54 +2223,54 @@ fn date_hierarchy_of(schema: &Schema, idx: usize, name: &str, list: &ListConfig,
     Ok(Some(DateHierarchy { field: field.to_owned(), column: c, counts }))
 }
 
-fn filter_specs(schema: &Schema, idx: usize, name: &str, list: &ListConfig, date: Option<&DateHierarchy>) -> Result<Vec<Filter>, ConfigError> {
+fn filter_specs(schema: &Schema, idx: usize, name: &str, list: &ListConfig, date: Option<&DateHierarchy>) -> Result<Vec<Filter>, Fault> {
     let model = schema.model(idx);
     let mut out: Vec<Filter> = Vec::new();
     let extra = date.map(|d| d.field.clone()).filter(|f| !list.filters.contains(f));
     for spec in list.filters.iter().chain(&extra) {
         if out.iter().any(|f| f.name == *spec) {
-            return err(format!("{name}: filter {spec:?} is listed twice"));
+            return err_in(name, format!("filter {spec:?} is listed twice"));
         }
         if !spec.contains('.') && model.relation(spec).is_ok() {
             out.push(Filter { name: spec.clone(), kind: relation_filter(schema, idx, name, spec)? });
             continue;
         }
-        let c = column(schema, idx, spec).map_err(|e| ConfigError(e.0.replace("list column", "filter")))?;
+        let c = column(schema, idx, spec).map_err(|e| Fault { text: e.text.replace("list column", "filter"), ..e })?;
         if !filterable(&c) {
-            return err(format!("{name}: filter {spec:?}: a filter does not take an array, json or decimal field"));
+            return err_in(name, format!("filter {spec:?}: a filter does not take an array, json or decimal field"));
         }
         out.push(Filter { name: spec.clone(), kind: FilterKind::Field(c) });
     }
     for n in list.named_filters.iter().map(|f| &f.name) {
         if out.iter().any(|f| f.name == *n) {
-            return err(format!("{name}: named filter {n:?} has the name of a filter"));
+            return err_in(name, format!("named filter {n:?} has the name of a filter"));
         }
     }
     Ok(out)
 }
 
 /// A to-one relation as a filter: the foreign key fields on the model compare with a key of the target.
-fn relation_filter(schema: &Schema, idx: usize, name: &str, spec: &str) -> Result<FilterKind, ConfigError> {
+fn relation_filter(schema: &Schema, idx: usize, name: &str, spec: &str) -> Result<FilterKind, Fault> {
     let model = schema.model(idx);
-    let (rel, target_idx) = model.relation(spec).map_err(|e| ConfigError(e.to_string()))?;
+    let (rel, target_idx) = model.relation(spec).map_err(|e| config_err(e.to_string()))?;
     if rel.kind != RelKind::One {
-        return err(format!("{name}: filter {spec:?}: a filter takes a to-one relation, and {spec:?} is to-many"));
+        return err_in(name, format!("filter {spec:?}: a filter takes a to-one relation, and {spec:?} is to-many"));
     }
     if rel.is_conditioned() {
-        return err(format!("{name}: filter {spec:?}: a relation with fixed conditions or union members is not a filter"));
+        return err_in(name, format!("filter {spec:?}: a relation with fixed conditions or union members is not a filter"));
     }
     let target = schema.model(target_idx);
     let keys = target.key_fields();
     if rel.to.len() != keys.len() {
-        return err(format!("{name}: filter {spec:?}: the relation does not lead to the key of {}", target.ir.name));
+        return err_in(name, format!("filter {spec:?}: the relation does not lead to the key of {}", target.ir.name));
     }
     let (mut from, mut key) = (Vec::new(), Vec::new());
     for k in &keys {
         let Some(n) = rel.to.iter().position(|t| *t == k.column || *t == k.name) else {
-            return err(format!("{name}: filter {spec:?}: the relation does not lead to the key of {}", target.ir.name));
+            return err_in(name, format!("filter {spec:?}: the relation does not lead to the key of {}", target.ir.name));
         };
         let Some(f) = model.ir.fields.iter().find(|f| f.column == rel.from[n] || f.name == rel.from[n]) else {
-            return err(format!("{name}: filter {spec:?}: the foreign key field {:?} is not a field", rel.from[n]));
+            return err_in(name, format!("filter {spec:?}: the foreign key field {:?} is not a field", rel.from[n]));
         };
         from.push(column(schema, idx, &f.name)?);
         key.push(column(schema, target_idx, &k.name)?);
@@ -2232,31 +2278,31 @@ fn relation_filter(schema: &Schema, idx: usize, name: &str, spec: &str) -> Resul
     Ok(FilterKind::Relation { target: target.ir.name.clone(), from, key })
 }
 
-fn named_filters(schema: &Schema, idx: usize, name: &str, list: &ListConfig) -> Result<Vec<NamedFilter>, ConfigError> {
+fn named_filters(schema: &Schema, idx: usize, name: &str, list: &ListConfig) -> Result<Vec<NamedFilter>, Fault> {
     let model = schema.model(idx);
     let mut out: Vec<NamedFilter> = Vec::new();
     for f in &list.named_filters {
         if !ident_ok(&f.name) || out.iter().any(|o| o.name == f.name) {
-            return err(format!("{name}: named filter {:?} has 1 to 40 letters, digits and _, and a name of its own", f.name));
+            return err_in(name, format!("named filter {:?} has 1 to 40 letters, digits and _, and a name of its own", f.name));
         }
         if f.choices.is_empty() {
-            return err(format!("{name}: named filter {:?} has no choices", f.name));
+            return err_in(name, format!("named filter {:?} has no choices", f.name));
         }
         let mut choices: Vec<NamedChoice> = Vec::new();
         for c in &f.choices {
             if !ident_ok(&c.name) || c.name == "all" || choices.iter().any(|o| o.name == c.name) {
-                return err(format!("{name}: named filter {:?}: choice {:?} has 1 to 40 letters, digits and _, is not \"all\" (that is every row) and has a name of its own", f.name, c.name));
+                return err_in(name, format!("named filter {:?}: choice {:?} has 1 to 40 letters, digits and _, is not \"all\" (that is every row) and has a name of its own", f.name, c.name));
             }
             if has_binding(&c.expr) {
-                return err(format!("{name}: named filter {:?}: choice {:?}: an expression has no parameters or scope values", f.name, c.name));
+                return err_in(name, format!("named filter {:?}: choice {:?}: an expression has no parameters or scope values", f.name, c.name));
             }
             let key = model.key_fields().first().map(|k| serde_json::json!({"t": "col", "path": [], "name": k.name}));
-            probe(schema, json_select(&model.ir.name, key.as_ref(), Some(&c.expr))).map_err(|e| ConfigError(format!("{name}: named filter {:?}: choice {:?}: {e}", f.name, c.name)))?;
+            probe(schema, json_select(&model.ir.name, key.as_ref(), Some(&c.expr))).map_err(|e| config_err(format!("{name}: named filter {:?}: choice {:?}: {e}", f.name, c.name)))?;
             choices.push(NamedChoice { name: c.name.clone(), label: c.label.clone().unwrap_or_else(|| meta::humanize(&c.name)), expr: c.expr.clone() });
         }
         if let Some(d) = &f.default {
             if !choices.iter().any(|c| c.name == *d) {
-                return err(format!("{name}: named filter {:?}: default {d:?} is not a choice", f.name));
+                return err_in(name, format!("named filter {:?}: default {d:?} is not a choice", f.name));
             }
         }
         out.push(NamedFilter { name: f.name.clone(), label: f.label.clone().unwrap_or_else(|| meta::humanize(&f.name)), choices, default: f.default.clone() });
@@ -2270,40 +2316,40 @@ pub(crate) fn scope_default_names(model: &monorm_core::schema::Model) -> Vec<Str
 }
 
 /// The name of a host function: letters, digits, `_`, `.`, `:` and `-`, at most 80 characters.
-fn check_function(what: &str, name: &str) -> Result<(), ConfigError> {
+fn check_function(what: &str, name: &str) -> Result<(), Fault> {
     let ok = !name.is_empty() && name.chars().count() <= 80 && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ':' | '-'));
     if ok { Ok(()) } else { err(format!("{what} {name:?} is not a function name")) }
 }
 
-pub(crate) fn queryset_of(schema: &Schema, idx: usize, name: &str, config: Option<&QuerysetConfig>) -> Result<Option<Queryset>, ConfigError> {
+pub(crate) fn queryset_of(schema: &Schema, idx: usize, name: &str, config: Option<&QuerysetConfig>) -> Result<Option<Queryset>, Fault> {
     let Some(q) = config else { return Ok(None) };
     let mut slots = Vec::new();
     for s in &q.slots {
         slots.push(match s.as_str() {
             "user" => Slot::User,
-            other => return err(format!("{name}: queryset slot {other:?} is not \"user\"")),
+            other => return err_in(name, format!("queryset slot {other:?} is not \"user\"")),
         });
     }
     match (&q.filter, &q.function) {
-        (Some(_), Some(_)) => return err(format!("{name}: queryset has a filter or a function, not both")),
+        (Some(_), Some(_)) => return err_in(name, "queryset has a filter or a function, not both".to_string()),
         (None, Some(f)) => {
             check_function(&format!("{name}: queryset.function"), f)?;
             if !slots.is_empty() {
-                return err(format!("{name}: a queryset function takes no slots: it gets the user"));
+                return err_in(name, "a queryset function takes no slots: it gets the user".to_string());
             }
         }
         (Some(f), None) => {
             let model = &schema.model(idx).ir.name;
             let key = schema.model(idx).key_fields().first().map(|k| serde_json::json!({"t": "col", "path": [], "name": k.name}));
-            probe_with(schema, json_select(model, key.as_ref(), Some(f)), &ProbeParams(slots.len())).map_err(|e| ConfigError(format!("{name}: queryset filter: {e}")))?;
+            probe_with(schema, json_select(model, key.as_ref(), Some(f)), &ProbeParams(slots.len())).map_err(|e| config_err(format!("{name}: queryset filter: {e}")))?;
             if has_scope(f) {
-                return err(format!("{name}: queryset filter: a scope value has no value in the admin"));
+                return err_in(name, "queryset filter: a scope value has no value in the admin".to_string());
             }
             if let Some(i) = max_param(f).filter(|&i| i >= slots.len()) {
-                return err(format!("{name}: queryset filter: parameter {i} has no slot"));
+                return err_in(name, format!("queryset filter: parameter {i} has no slot"));
             }
         }
-        (None, None) => return err(format!("{name}: queryset has a filter or a function")),
+        (None, None) => return err_in(name, "queryset has a filter or a function".to_string()),
     }
     Ok(Some(Queryset { filter: q.filter.clone(), slots, function: q.function.clone() }))
 }
@@ -2328,7 +2374,7 @@ pub(crate) fn max_param(expr: &Value) -> Option<usize> {
     }
 }
 
-fn can_rules(schema: &Schema, name: &str, config: &BTreeMap<String, Value>) -> Result<Vec<(String, Value)>, ConfigError> {
+fn can_rules(schema: &Schema, name: &str, config: &BTreeMap<String, Value>) -> Result<Vec<(String, Value)>, Fault> {
     let mut out = Vec::new();
     for rule in CAN_NAMES {
         let Some(expr) = config.get(rule) else { continue };
@@ -2336,17 +2382,17 @@ fn can_rules(schema: &Schema, name: &str, config: &BTreeMap<String, Value>) -> R
         out.push((rule.to_owned(), expr.clone()));
     }
     if let Some(other) = config.keys().find(|k| !CAN_NAMES.contains(&k.as_str())) {
-        return err(format!("{name}: can has {other:?}, not one of {}", CAN_NAMES.join(", ")));
+        return err_in(name, format!("can has {other:?}, not one of {}", CAN_NAMES.join(", ")));
     }
     Ok(out)
 }
 
-fn check_can(schema: &Schema, model: &str, expr: &Value, what: &str) -> Result<(), ConfigError> {
+fn check_can(schema: &Schema, model: &str, expr: &Value, what: &str) -> Result<(), Fault> {
     if forbidden_binding(expr, true) {
         return err(format!("{what}: only param(\"user\") is allowed; no in_param or scope values"));
     }
     let plan = probe_with(schema, json_select(model, Some(expr), None), &ProbeParams(1))
-        .map_err(|e| ConfigError(format!("{what}: {e}")))?;
+        .map_err(|e| config_err(format!("{what}: {e}")))?;
     if !plan.types.first().is_some_and(|ty| ty.ty == ColType::Bool && !ty.array) {
         return err(format!("{what}: the expression is not a boolean"));
     }
@@ -2354,14 +2400,14 @@ fn check_can(schema: &Schema, model: &str, expr: &Value, what: &str) -> Result<(
 }
 
 /// The actions and their flags for list and detail reads.
-fn actions_of(schema: &Schema, name: &str, config: &[ActionConfig], can: &mut Vec<(String, Value)>, set_password: bool) -> Result<Vec<Action>, ConfigError> {
+fn actions_of(schema: &Schema, name: &str, config: &[ActionConfig], can: &mut Vec<(String, Value)>, set_password: bool) -> Result<Vec<Action>, Fault> {
     let mut out = Vec::new();
     let change = can.iter().find(|(rule, _)| rule == "change").map(|(_, expr)| expr.clone());
     let mut password_rule = None;
     for a in config {
         if set_password && a.name == crate::set_password::NAME {
             if a.replace_change {
-                return err(format!("{name}: set_password always requires the resource change rule"));
+                return err_in(name, "\u{1}set_password\u{2} always requires the resource change rule".to_string());
             }
             if let Some(expr) = &a.can {
                 check_can(schema, name, expr, &format!("{name}: set_password: can"))?;
@@ -2374,23 +2420,23 @@ fn actions_of(schema: &Schema, name: &str, config: &[ActionConfig], can: &mut Ve
         }
         if a.name == BULK_DELETE {
             if a.can.is_some() {
-                return err(format!("{name}: {BULK_DELETE}: can is not allowed on the built-in action; use the resource delete rule"));
+                return err_in(name, format!("{BULK_DELETE}: can is not allowed on the built-in action; use the resource delete rule"));
             }
-            return err(format!("{name}: {BULK_DELETE:?} is the name of the built-in action: bulk_delete=False removes it"));
+            return err_in(name, format!("{BULK_DELETE:?} is the name of the built-in action: bulk_delete=False removes it"));
         }
         let placement = match &a.placement {
-            Some(p) => Some(Placement::parse(p).ok_or_else(|| ConfigError(format!("{name}: action {:?} has placement {p:?}, not one of {}", a.name, Placement::NAMES.join(", "))))?),
+            Some(p) => Some(Placement::parse(p).ok_or_else(|| config_err(format!("{name}: action {:?} has placement {p:?}, not one of {}", a.name, Placement::NAMES.join(", "))))?),
             None => None,
         };
         if a.replace_change && a.can.is_none() {
-            return err(format!("{name}: action {:?}: replace_change needs can", a.name));
+            return err_in(name, format!("action {:?}: \u{1}replace_change\u{2} needs can", a.name));
         }
         if placement.is_none() && (a.confirm.is_some() || !a.inputs.is_empty() || a.applies_to.is_some() || a.can.is_some()) {
-            return err(format!("{name}: action {:?} has no placement: only a placed action takes a confirmation, inputs, applies_to or can", a.name));
+            return err_in(name, format!("action {:?} has no placement: only a placed action takes a confirmation, inputs, \u{1}applies_to\u{2} or can", a.name));
         }
         if let Some(label) = &a.label {
             if label.is_empty() || label.chars().count() > 80 {
-                return err(format!("{name}: action {:?}: the label has 1 to 80 characters", a.name));
+                return err_in(name, format!("action {:?}: the label has 1 to 80 characters", a.name));
             }
         }
         crate::hostwrite::check_action_inputs(name, &a.name, &a.inputs)?;
@@ -2406,11 +2452,11 @@ fn actions_of(schema: &Schema, name: &str, config: &[ActionConfig], can: &mut Ve
         let action = Action { name: a.name.clone(), label: a.label.clone().unwrap_or_else(|| crate::meta::humanize(&a.name)), placement, permission: a.permission.clone(), confirm: a.confirm.clone(), inputs: a.inputs.clone(), applies: a.applies_to.clone(), can: rule, sync: a.sync, threaded: a.threaded };
         if let Some(expr) = &a.applies_to {
             if has_binding(expr) {
-                return err(format!("{name}: action {:?}: applies_to has no parameters or scope values", a.name));
+                return err_in(name, format!("action {:?}: \u{1}applies_to\u{2} has no parameters or scope values", a.name));
             }
-            let ty = probe_type(schema, name, expr).map_err(|e| ConfigError(format!("{name}: action {:?}: applies_to: {e}", a.name)))?;
+            let ty = probe_type(schema, name, expr).map_err(|e| config_err(format!("{name}: action {:?}: \u{1}applies_to\u{2}: {e}", a.name)))?;
             if ty.ty != ColType::Bool || ty.array {
-                return err(format!("{name}: action {:?}: applies_to is not a boolean condition", a.name));
+                return err_in(name, format!("action {:?}: \u{1}applies_to\u{2} is not a boolean condition", a.name));
             }
             can.push((action.flag(), expr.clone()));
         }

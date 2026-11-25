@@ -195,7 +195,7 @@ for (const provider of PROVIDERS) {
     const E = w.Event;
     const cases: [unknown, RegExp][] = [
       [E.title, /takes a date or datetime/],
-      ["nope", /date_hierarchy/],
+      ["nope", /dateHierarchy/],
       [{ counts: true }, /needs a field/],
     ];
     for (const [hierarchy, text] of cases) {

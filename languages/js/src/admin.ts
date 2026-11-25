@@ -38,11 +38,33 @@ export const DEFAULT_BASE_PATH = "/admin";
 /** The config names an unknown field, a list column through a to-many relation, or a bad value. */
 export class AdminConfigError extends ORMError {
   override name = "AdminConfigError";
+  /** Which rule failed: `config.<rule>`, such as `config.unknown_field`. */
+  code = "config.invalid_value";
+
+  constructor(message: string, code?: string) {
+    super(message);
+    if (code !== undefined) this.code = code;
+  }
 }
 
 /** A wrong setting or a missing or short `MONORM_ADMIN_SECRET`: `monorm admin` exits with code 2. */
 export class AdminSettingsError extends ORMError {
   override name = "AdminSettingsError";
+  /** `settings.<rule>`, such as `settings.secret`. */
+  code = "settings.invalid_value";
+
+  constructor(message: string, code?: string) {
+    super(message);
+    if (code !== undefined) this.code = code;
+  }
+}
+
+/** The error class of an error the native module threw: its `code` picks the class. */
+export function adminError(e: unknown): AdminConfigError | AdminSettingsError {
+  const code = e instanceof Error ? (e as { code?: unknown }).code : undefined;
+  const message = e instanceof Error ? e.message : String(e);
+  if (typeof code === "string" && code.startsWith("settings.")) return new AdminSettingsError(message, code);
+  return new AdminConfigError(message, typeof code === "string" && code.startsWith("config") ? code : undefined);
 }
 
 type AnyColumn = Column<any, any, any, any>;
@@ -893,9 +915,14 @@ export class AdminTestClient {
       const events = trace.take();
       return new AdminResponse(status, body, events.length, [], events.map((e) => e.sql));
     }
-    this.#router ??= call(() =>
-      this.site.client(this.database.engine, hostDispatch(this.database, this.host), login.secret, JSON.stringify(login.settings ?? {}), null),
-    );
+    try {
+      this.#router ??= call(() =>
+        this.site.client(this.database.engine, hostDispatch(this.database, this.host), login.secret, JSON.stringify(login.settings ?? {}), null),
+      );
+    } catch (e) {
+      const code = e instanceof Error ? (e as { code?: unknown }).code : undefined;
+      throw typeof code === "string" && /^(config|settings)(\.|$)/.test(code) ? adminError(e) : e;
+    }
     const sent = new Map<string, string>([["host", "localhost"]]);
     for (const [k, v] of Object.entries(options.headers ?? {})) sent.set(k.toLowerCase(), v);
     if (this.cookies.size > 0) sent.set("cookie", [...this.cookies].map(([k, v]) => `${k}=${v}`).join("; "));
@@ -1170,6 +1197,7 @@ export class Admin {
   #configJson(registry: Registry): string {
     const resources = [...this.#resources].map(([model, { model: cls, config }]) => this.#resourceJson(model, cls, config, "", registry));
     return JSON.stringify({
+      spelling: "camel",
       base_path: this.basePath,
       ...(this.prefix === undefined ? {} : { prefix: this.prefix }),
       permissions: this.#strategy,
@@ -1329,7 +1357,7 @@ export class Admin {
       return call(() => native().adminSite(schema, this.#configJson(registry)));
     } catch (e) {
       if (e instanceof AdminConfigError) throw e;
-      throw new AdminConfigError(e instanceof Error ? e.message : String(e));
+      throw adminError(e);
     }
   }
 
@@ -1396,7 +1424,8 @@ export class Admin {
     try {
       started = site.serve(database.engine, settingsJson, hostDispatch(database, this.#host()), secret);
     } catch (e) {
-      throw new AdminSettingsError(e instanceof Error ? e.message : String(e));
+      const err = adminError(e);
+      throw err instanceof AdminSettingsError ? err : new AdminSettingsError(err.message);
     }
     return wait(() => started);
   }

@@ -42,13 +42,36 @@ if TYPE_CHECKING:
     from .db import Database
     from .model import Registry
 
-__all__ = ["Admin", "AdminConfigError", "AdminResponse", "AdminTestClient", "AggregateColumn", "BrandConfig", "BrandLink", "ThemeConfig", "ActionDef", "ComputedColumn", "Context", "DateHierarchy", "EmbedConfig", "Fieldset", "FrameConfig", "InlineDef", "ListConfig", "NamedChoice", "NamedFilter", "PackageTabConfig", "Reply", "ResourceConfig", "RoleSeedReport", "RouteRequest", "Stream", "SyncReport", "action", "check", "download", "inline", "input", "log", "message", "redirect", "refresh", "register", "test_client", "threaded", "url"]
+__all__ = ["Admin", "AdminConfigError", "AdminSettingsError", "AdminResponse", "AdminTestClient", "AggregateColumn", "BrandConfig", "BrandLink", "ThemeConfig", "ActionDef", "ComputedColumn", "Context", "DateHierarchy", "EmbedConfig", "Fieldset", "FrameConfig", "InlineDef", "ListConfig", "NamedChoice", "NamedFilter", "PackageTabConfig", "Reply", "ResourceConfig", "RoleSeedReport", "RouteRequest", "Stream", "SyncReport", "action", "check", "download", "inline", "input", "log", "message", "redirect", "refresh", "register", "test_client", "threaded", "url"]
 
 DEFAULT_BASE_PATH = "/admin"
 
 
 class AdminConfigError(ValueError):
-    """The admin config names an unknown field, a list column through a to-many relation, or a bad value."""
+    """The admin config names an unknown field, a list column through a to-many relation, or a bad value.
+
+    ``code`` says which rule failed: ``config.<rule>`` for a wrong site config, such as ``config.unknown_field``."""
+
+    code: str
+
+    def __init__(self, message: str, code: str = "config.invalid_value") -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class AdminSettingsError(AdminConfigError):
+    """The ``[admin]`` settings, the session options or the secret are wrong. ``code`` is ``settings.<rule>``, such as ``settings.secret``."""
+
+    def __init__(self, message: str, code: str = "settings.invalid_value") -> None:
+        super().__init__(message, code)
+
+
+def _admin_error(e: ValueError) -> AdminConfigError:
+    """The error class of a ``ValueError`` that the native module raised: its ``code`` attribute picks the class."""
+    code = getattr(e, "code", None)
+    if not isinstance(code, str):
+        return AdminConfigError(str(e))
+    return (AdminSettingsError if code.startswith("settings.") else AdminConfigError)(str(e), code)
 
 
 class NamedChoice(TypedDict, total=False):
@@ -886,7 +909,10 @@ class AdminTestClient:
             return AdminResponse(status, body, len(events), sql=tuple(e[0] for e in events), content=body.encode())
         router = self._router
         if router is None:
-            router = self._router = self._site.client(self._database._engine, self._database, self._host, self._secret, self._options)
+            try:
+                router = self._router = self._site.client(self._database._engine, self._database, self._host, self._secret, self._options)
+            except ValueError as e:
+                raise _admin_error(e) from None
         sent: dict[str, str] = {"host": "localhost", **{k.lower(): v for k, v in (headers or {}).items()}}
         if self.cookies:
             sent["cookie"] = "; ".join(f"{k}={v}" for k, v in self.cookies.items())
@@ -1315,7 +1341,7 @@ class Admin:
         try:
             return _native.admin_site(schema, self._config_json(registry))
         except ValueError as e:
-            raise AdminConfigError(str(e)) from None
+            raise _admin_error(e) from None
 
     def check(self) -> list[str]:
         """Raises :class:`AdminConfigError` when the config does not fit the schema. Needs no database.
@@ -1381,7 +1407,7 @@ class Admin:
         """``user=`` is the in-memory path with no login. ``secret=`` (at least 32 bytes) runs the router with login;
         ``settings`` then takes ``idle_timeout`` and ``session_timeout`` (whole seconds), ``origins``, ``trusted_proxies``,
         ``base_path`` and ``oidc`` (``issuer``, ``client_id``, ``client_secret``, ``roles_claim``, ``scopes``, ``hd``).
-        A wrong secret raises ``ValueError`` at the first request."""
+        A wrong secret or setting raises :class:`AdminSettingsError` (a ``ValueError``) at the first request."""
         from .db import resolve
 
         db = resolve(database)

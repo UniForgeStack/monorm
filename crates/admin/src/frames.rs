@@ -8,7 +8,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use url::{Origin, Url};
 
-use crate::site::{check_name, column, err, Column, ConfigError, Resource, Site};
+use crate::error::{code, Fault};
+use crate::site::{check_name, column, Column, Resource, Site, err_code};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -80,7 +81,7 @@ struct Template {
     path: Vec<Option<String>>,
 }
 
-pub(crate) fn origins(values: &[String]) -> Result<Vec<String>, ConfigError> {
+pub(crate) fn origins(values: &[String]) -> Result<Vec<String>, Fault> {
     values
         .iter()
         .map(|value| {
@@ -88,7 +89,7 @@ pub(crate) fn origins(values: &[String]) -> Result<Vec<String>, ConfigError> {
                 return Ok(value.clone());
             }
             let bad = || {
-                ConfigError(format!(
+                Fault::new(code::FRAME, format!(
                     "invalid frame origin {value:?}: use 'self' or an exact HTTPS origin (HTTP only for loopback)"
                 ))
             };
@@ -136,8 +137,8 @@ fn allowed_path(path: &str, base: &str) -> bool {
 }
 
 impl Template {
-    fn build(raw: &str, origins: &[String], base: &str, model: Option<(&Schema, usize)>) -> Result<Self, ConfigError> {
-        let bad = || ConfigError(format!("invalid frame URL template {raw:?}"));
+    fn build(raw: &str, origins: &[String], base: &str, model: Option<(&Schema, usize)>) -> Result<Self, Fault> {
+        let bad = || Fault::new(code::FRAME, format!("invalid frame URL template {raw:?}"));
         if raw.bytes().any(|b| b.is_ascii_whitespace() || b.is_ascii_control() || b == b'\\') {
             return Err(bad());
         }
@@ -158,7 +159,7 @@ impl Template {
         };
         let query = raw[end..].strip_prefix('?').map(|q| q.split('#').next().unwrap_or_default());
         let mut fields = BTreeMap::new();
-        let mut add = |offset: usize, value: &str, segment: bool| -> Result<(), ConfigError> {
+        let mut add = |offset: usize, value: &str, segment: bool| -> Result<(), Fault> {
             if !value.contains(['{', '}']) {
                 return Ok(());
             }
@@ -167,10 +168,10 @@ impl Template {
                 .and_then(|v| v.strip_suffix('}'))
                 .filter(|v| !v.contains(['{', '}']))
                 .ok_or_else(bad)?;
-            let (schema, model) = model.ok_or_else(|| ConfigError("frame cards cannot have placeholders".into()))?;
+            let (schema, model) = model.ok_or_else(|| Fault::new(code::FRAME, "frame cards cannot have placeholders"))?;
             let c = column(schema, model, field)?;
             if c.path.len() > 1 || c.ty.array || c.ty.ty == ColType::Json {
-                return err(format!("frame field {field:?} must be scalar and may use at most one relation hop"));
+                return err_code(code::FRAME, format!("frame field {field:?} must be scalar and may use at most one relation hop"));
             }
             fields.insert(offset, (value.len(), if segment { Part::Segment(c) } else { Part::Query(c) }));
             Ok(())
@@ -222,12 +223,12 @@ impl Template {
             || checked.password().is_some()
             || (!relative && raw[..path_start].contains('@'))
         {
-            return err(format!(
+            return err_code(code::FRAME, format!(
                 "frame URL {raw:?} requires {source} in frame_origins and cannot contain credentials"
             ));
         }
         if relative && !allowed_path(checked.path(), base) {
-            return err(format!("frame URL {raw:?} points into this admin outside /-/embed/"));
+            return err_code(code::FRAME, format!("frame URL {raw:?} points into this admin outside /-/embed/"));
         }
         let path: Vec<_> = checked
             .path_segments()
@@ -302,14 +303,14 @@ impl Frame {
     }
 }
 
-pub(crate) fn build(configs: &[FrameConfig], origins: &[String], base: &str, model: Option<(&Schema, usize)>) -> Result<Vec<Frame>, ConfigError> {
+pub(crate) fn build(configs: &[FrameConfig], origins: &[String], base: &str, model: Option<(&Schema, usize)>) -> Result<Vec<Frame>, Fault> {
     let mut seen = BTreeSet::new();
     configs
         .iter()
         .map(|c| {
             check_name("frame name", &c.name)?;
             if !seen.insert(&c.name) || c.title.trim().is_empty() {
-                return err(format!("frame {:?} needs a unique name and a title", c.name));
+                return err_code(code::FRAME, format!("frame {:?} needs a unique name and a title", c.name));
             }
             let mut sandbox = Vec::new();
             if c.scripts.unwrap_or(true) {
@@ -323,7 +324,7 @@ pub(crate) fn build(configs: &[FrameConfig], origins: &[String], base: &str, mod
                     flag.as_str(),
                     "allow-forms" | "allow-popups" | "allow-popups-to-escape-sandbox" | "allow-downloads"
                 ) {
-                    return err(format!("frame {:?}: sandbox flag {flag:?} is not allowed", c.name));
+                    return err_code(code::FRAME, format!("frame {:?}: sandbox flag {flag:?} is not allowed", c.name));
                 }
                 if !sandbox.contains(&flag.as_str()) {
                     sandbox.push(flag);
@@ -341,12 +342,12 @@ pub(crate) fn build(configs: &[FrameConfig], origins: &[String], base: &str, mod
         .collect()
 }
 
-pub(crate) fn check_fieldsets(resource: &Resource) -> Result<(), ConfigError> {
+pub(crate) fn check_fieldsets(resource: &Resource) -> Result<(), Fault> {
     let mut names = BTreeSet::new();
     for set in &resource.fieldsets {
         check_name("fieldset name", &set.name)?;
         if !names.insert(&set.name) || set.fields.is_empty() || set.title.as_ref().is_some_and(|title| title.trim().is_empty()) {
-            return err(format!(
+            return err_code(code::FRAME, format!(
                 "{}: fieldset {:?} needs a unique name and at least one field",
                 resource.name, set.name
             ));
@@ -354,7 +355,7 @@ pub(crate) fn check_fieldsets(resource: &Resource) -> Result<(), ConfigError> {
         let mut fields = BTreeSet::new();
         for name in &set.fields {
             if !fields.insert(name) || !resource.detail.iter().any(|c| &c.label == name) {
-                return err(format!(
+                return err_code(code::FRAME, format!(
                     "{}: fieldset {:?} has an unknown or repeated field {name:?}",
                     resource.name, set.name
                 ));
@@ -364,10 +365,10 @@ pub(crate) fn check_fieldsets(resource: &Resource) -> Result<(), ConfigError> {
     Ok(())
 }
 
-pub(crate) fn build_embeds(configs: &BTreeMap<String, EmbedConfig>, site: &Site) -> Result<BTreeMap<String, Embed>, ConfigError> {
+pub(crate) fn build_embeds(configs: &BTreeMap<String, EmbedConfig>, site: &Site) -> Result<BTreeMap<String, Embed>, Fault> {
     configs.iter().map(|(name, c)| {
         check_name("embed name", name)?;
-        let invalid = |message: &str| ConfigError(format!("embed {name:?}: {message}"));
+        let invalid = |message: &str| Fault::new(code::FRAME, format!("embed {name:?}: {message}"));
         // The prepared schema has one model namespace. The optional app prefix is a config label.
         let model_name = match c.resource.split_once('.') {
             Some((app, model)) => {

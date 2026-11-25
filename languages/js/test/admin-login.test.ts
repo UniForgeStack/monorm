@@ -371,7 +371,7 @@ for (const provider of PROVIDERS) {
 for (const provider of PROVIDERS) {
   test(`set password needs the auth user model (${provider})`, () => world(provider, async ({ site, models }) => {
     site.register(models["AdminLogEntry"], { setPassword: true });
-    assert.throws(() => site.check(), /set_password.*needs the auth user model/);
+    assert.throws(() => site.check(), /setPassword.*needs the auth user model/);
   }));
 
   test(`set password action cannot replace the resource change rule (${provider})`, () => world(provider, async ({ site, models }) => {
@@ -380,7 +380,7 @@ for (const provider of PROVIDERS) {
       name: "set_password", placement: "detail", can: user.id.gt(0), replaceChange: true,
     });
     site.register(user, { setPassword: true, actions: [reset] });
-    assert.throws(() => site.check(), /set_password always requires the resource change rule/);
+    assert.throws(() => site.check(), /setPassword always requires the resource change rule/);
   }));
 
   test(`set password keeps the current session and ends the other sessions (${provider})`, () => world(provider, async ({ site, db, models }) => {

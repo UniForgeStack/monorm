@@ -26,7 +26,7 @@ pub fn import_map(base: &str) -> String {
     )
 }
 
-pub(crate) fn policy(base: &str, packages: bool, origins: &[String]) -> Result<HeaderValue, crate::site::ConfigError> {
+pub(crate) fn policy(base: &str, packages: bool, origins: &[String]) -> Result<HeaderValue, crate::error::Fault> {
     let mut csp = CSP.to_owned();
     if packages {
         let hash = B64.encode(Sha256::digest(import_map(base).as_bytes()));
@@ -39,13 +39,13 @@ pub(crate) fn policy(base: &str, packages: bool, origins: &[String]) -> Result<H
     header_policy(&csp)
 }
 
-pub(crate) fn with_ancestors(csp: &HeaderValue, ancestors: &str) -> Result<HeaderValue, crate::site::ConfigError> {
-    let csp = csp.to_str().map_err(|e| crate::site::ConfigError(e.to_string()))?;
+pub(crate) fn with_ancestors(csp: &HeaderValue, ancestors: &str) -> Result<HeaderValue, crate::error::Fault> {
+    let csp = csp.to_str().map_err(|e| crate::site::config_err(e.to_string()))?;
     header_policy(&csp.replacen("frame-ancestors 'none'", &format!("frame-ancestors {ancestors}"), 1))
 }
 
-fn header_policy(csp: &str) -> Result<HeaderValue, crate::site::ConfigError> {
-    HeaderValue::from_str(csp).map_err(|e| crate::site::ConfigError(format!("invalid UI CSP: {e}")))
+fn header_policy(csp: &str) -> Result<HeaderValue, crate::error::Fault> {
+    HeaderValue::from_str(csp).map_err(|e| crate::site::config_err(format!("invalid UI CSP: {e}")))
 }
 
 /// Only the server-rendered embed document may override the default X-Frame-Options.

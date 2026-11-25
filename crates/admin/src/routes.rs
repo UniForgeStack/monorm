@@ -25,7 +25,8 @@ use crate::bridge::CallContext;
 use crate::permissions::Strategy;
 use crate::server::{authorize, deny, reject, Shared, State_, User};
 use crate::service::{ErrorNote, Logger, RequestId};
-use crate::site::{check_name, err, ConfigError, Site};
+use crate::error::{code, Fault};
+use crate::site::{check_name, Site, err_code};
 use crate::write::{meta_of, Meta, MAX_BODY};
 
 /// The methods of a custom route.
@@ -94,10 +95,10 @@ impl Route {
     }
 }
 
-fn parse_path(at: &str, path: &str) -> Result<Vec<Seg>, ConfigError> {
+fn parse_path(at: &str, path: &str) -> Result<Vec<Seg>, Fault> {
     let path = path.strip_prefix('/').unwrap_or(path);
     if path.is_empty() {
-        return err(format!("{at}: the path is empty"));
+        return err_code(code::ROUTE, format!("{at}: the path is empty"));
     }
     let mut out = Vec::new();
     let mut names = BTreeSet::new();
@@ -105,20 +106,20 @@ fn parse_path(at: &str, path: &str) -> Result<Vec<Seg>, ConfigError> {
         if let Some(name) = part.strip_prefix('{').and_then(|p| p.strip_suffix('}')) {
             check_name(&format!("{at}: parameter"), name)?;
             if !names.insert(name) {
-                return err(format!("{at}: parameter {name:?} is used twice"));
+                return err_code(code::ROUTE, format!("{at}: parameter {name:?} is used twice"));
             }
             out.push(Seg::Param(name.to_owned()));
         } else if !part.is_empty() && part.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'~' | b'-')) && part != "." && part != ".." {
             out.push(Seg::Lit(part.to_owned()));
         } else {
-            return err(format!("{at}: path segment {part:?} must be letters, digits, _ . ~ - or a {{parameter}}"));
+            return err_code(code::ROUTE, format!("{at}: path segment {part:?} must be letters, digits, _ . ~ - or a {{parameter}}"));
         }
     }
     Ok(out)
 }
 
 /// Checks the routes of a config. A name that does not belong to a known label is an error, so a typo never opens or closes a route silently.
-pub(crate) fn build(configs: &[RouteConfig], site: &Site) -> Result<Vec<Route>, ConfigError> {
+pub(crate) fn build(configs: &[RouteConfig], site: &Site) -> Result<Vec<Route>, Fault> {
     let labels = site.labels();
     let mut out: Vec<Route> = Vec::new();
     let mut shapes = BTreeSet::new();
@@ -126,18 +127,18 @@ pub(crate) fn build(configs: &[RouteConfig], site: &Site) -> Result<Vec<Route>, 
         let at = format!("route {} {}", c.method, c.path);
         let method = c.method.to_ascii_uppercase();
         if !METHODS.contains(&method.as_str()) {
-            return err(format!("{at}: the method is GET, POST, PUT, PATCH or DELETE"));
+            return err_code(code::ROUTE, format!("{at}: the method is GET, POST, PUT, PATCH or DELETE"));
         }
         let segments = parse_path(&at, &c.path)?;
         let permission = match &c.permission {
             None => None,
-            Some(_) if site.strategy == Strategy::Access => return err(format!("{at}: permission needs the page or model strategy: the access strategy has no grant to check")),
+            Some(_) if site.strategy == Strategy::Access => return err_code(code::ROUTE, format!("{at}: permission needs the page or model strategy: the access strategy has no grant to check")),
             Some(full) => {
                 let Some((label, name)) = full.split_once('.') else {
-                    return err(format!("{at}: permission {full:?} is not <label>.<name>"));
+                    return err_code(code::ROUTE, format!("{at}: permission {full:?} is not <label>.<name>"));
                 };
                 if !labels.iter().any(|l| l == label) {
-                    return err(format!("{at}: permission {full:?} has an unknown label {label:?}; known labels: {}", labels.join(", ")));
+                    return err_code(code::ROUTE, format!("{at}: permission {full:?} has an unknown label {label:?}; known labels: {}", labels.join(", ")));
                 }
                 check_name(&format!("{at}: permission name"), name)?;
                 Some(full.clone())
@@ -145,7 +146,7 @@ pub(crate) fn build(configs: &[RouteConfig], site: &Site) -> Result<Vec<Route>, 
         };
         let route = Route { method, path: c.path.strip_prefix('/').unwrap_or(&c.path).to_owned(), segments, permission };
         if !shapes.insert(route.shape()) {
-            return err(format!("{at}: another route has the same method and path shape"));
+            return err_code(code::ROUTE, format!("{at}: another route has the same method and path shape"));
         }
         out.push(route);
     }

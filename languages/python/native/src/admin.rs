@@ -104,8 +104,8 @@ impl HostBridge for PyBridge {
 }
 
 /// The login state of a served or in-memory router: the signing secret, the session options, the host.
-fn auth_config(py: Python<'_>, database: Bound<'_, PyAny>, host: Bound<'_, PyDict>, security: Result<Arc<monorm_admin::Security>, String>) -> PyResult<AuthConfig> {
-    let security = security.map_err(PyValueError::new_err)?;
+fn auth_config(py: Python<'_>, database: Bound<'_, PyAny>, host: Bound<'_, PyDict>, security: Result<Arc<monorm_admin::Security>, monorm_admin::AdminError>) -> PyResult<AuthConfig> {
+    let security = security.map_err(admin_error)?;
     Ok(AuthConfig { security, bridge: Arc::new(PyBridge::new(py, database, host)?) })
 }
 
@@ -244,7 +244,7 @@ impl AdminSite {
         options_json: String,
         trace: Option<&Bound<'py, Trace>>,
     ) -> PyResult<AdminRouter> {
-        let options = monorm_admin::security_options(&options_json).map_err(PyValueError::new_err)?;
+        let options = monorm_admin::security_options(&options_json).map_err(admin_error)?;
         let security = monorm_admin::security_with(secret.as_deref(), options);
         let auth = auth_config(py, database, host, security)?;
         let security = auth.security.clone();
@@ -328,17 +328,26 @@ impl AdminServer {
     }
 }
 
-/// The `[admin]` settings of the project in `dir`, as JSON. Raises `ValueError` with the text of a wrong setting.
+/// A `ValueError` with the text of a wrong config or wrong settings and the `code` attribute (`config.*` or `settings.*`).
+fn admin_error(e: monorm_admin::AdminError) -> PyErr {
+    let err = PyValueError::new_err(e.message);
+    Python::attach(|py| {
+        let _ = err.value(py).setattr("code", e.code);
+    });
+    err
+}
+
+/// The `[admin]` settings of the project in `dir`, as JSON. Raises `ValueError` with the text of a wrong setting, and its `code`.
 #[pyfunction]
 fn admin_settings(dir: &str) -> PyResult<String> {
-    let config = Config::load(std::path::Path::new(dir), |name| std::env::var(name).ok()).map_err(PyValueError::new_err)?;
+    let config = Config::load(std::path::Path::new(dir), |name| std::env::var(name).ok()).map_err(admin_error)?;
     serde_json::to_string(&config).map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
-/// Plans the resources: raises `ValueError` with the precise text of a wrong config.
+/// Plans the resources: raises `ValueError` with the precise text of a wrong config, and its `code`.
 #[pyfunction]
 fn admin_site(schema: &Bound<'_, PySchema>, config_json: &str) -> PyResult<AdminSite> {
-    let site = Site::build(schema.get().inner.clone(), config_json).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let site = Site::build(schema.get().inner.clone(), config_json).map_err(admin_error)?;
     Ok(AdminSite { site: Arc::new(site) })
 }
 

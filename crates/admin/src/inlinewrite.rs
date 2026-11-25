@@ -18,7 +18,7 @@ use crate::hostwrite::{by_field, key_object};
 use crate::list::{self, RowScope};
 use crate::permissions::Op;
 use crate::server::{authorize, child_rows, deny, error_response, segment, reach, reject, Reach, Shared, State_, User};
-use crate::site::{Column, Inline, InlineSave, Resource, MAX_INLINE_MAX};
+use crate::site::{Column, Inline, InlineSave, MAX_INLINE_MAX, Resource};
 use crate::write::{self, Call, Pin, Problems};
 
 /// Why a change set stops: a reply to send after a rollback, or a refusal to audit.
