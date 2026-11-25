@@ -53,6 +53,24 @@ fn binary() {
 }
 
 #[test]
+fn squashmigrations_writes_one_file_that_replaces_the_range() {
+    let dir = std::env::temp_dir().join(format!("monorm-cli-squash-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("schema.prisma"), SCHEMA).unwrap();
+    assert!(monorm(&dir, &["makemigrations", "--name", "start"]).status.success());
+    std::fs::write(dir.join("schema.prisma"), format!("{SCHEMA}\nmodel Tag {{\n  id   BigInt @id @default(autoincrement())\n  name String\n}}\n")).unwrap();
+    assert!(monorm(&dir, &["makemigrations", "--name", "tags"]).status.success());
+    assert_eq!(monorm(&dir, &["squashmigrations"]).status.code(), Some(2));
+    let squash = monorm(&dir, &["squashmigrations", "--to", "2"]);
+    assert!(squash.status.success(), "{}", text(&squash.stderr));
+    assert!(text(&squash.stdout).contains("replaces 2 migrations"), "{}", text(&squash.stdout));
+    let squashed = std::fs::read_to_string(dir.join("migrations/0001_squashed_0002.json")).unwrap();
+    assert!(squashed.contains("\"replaces\"") && squashed.contains("0002_tags"), "{squashed}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_warning_prints_with_its_file_line_and_column() {
     let dir = std::env::temp_dir().join(format!("monorm-cli-warning-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
