@@ -1227,6 +1227,17 @@ impl Engine {
         })
     }
 
+    /// Writes one admin log row on `tx` (the connection when None) and returns its id; Rust builds the SQL.
+    #[cfg(feature = "admin")]
+    #[pyo3(signature = (entry_json, tx = None))]
+    fn admin_log<'py>(&self, py: Python<'py>, entry_json: String, tx: Option<&Bound<'py, Transaction>>) -> PyResult<Bound<'py, PyAny>> {
+        let (conn, schema) = (self.conn(tx), self.schema.clone());
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let entry: serde_json::Value = serde_json::from_str(&entry_json).map_err(|e| query_err(e.to_string()))?;
+            monorm_admin::hostwrite::log_entry(&schema, conn.as_ref(), &entry).await.map_err(query_err)
+        })
+    }
+
     fn create_tables<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         let stmts = migrate::create_all(&self.schema).map_err(schema_err)?;
         let conn = self.conn(None);

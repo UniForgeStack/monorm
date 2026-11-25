@@ -1368,7 +1368,7 @@ class Admin:
         for model, config in self._resources.values():
             for op in ("create", "update", "delete"):
                 if (fn := cast("Mapping[str, Any]", config).get(op)) is not None:
-                    host[f"service.{model.__name__}.{op}"] = service_function(model, config, op, fn, models)
+                    host[f"service.{model.__name__}.{op}"] = service_function(model, op, fn, models)
         for model, config in self._resources.values():
             for item in config.get("actions", ()):
                 if (d := action_def(item)) is not None and d.fn is not None:

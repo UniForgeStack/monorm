@@ -599,7 +599,7 @@ Without a `ctx.audit()` call, the admin server writes the audit row after the se
 With a call, the row commits with the service transaction and the admin server adds none.
 
 The default writer (`admin.write`) runs in the transaction of the request.
-It compares the loaded values, writes the record and writes the audit row in that one transaction.
+The admin server compares the loaded values before it calls the host function; the function writes the record and the audit row in that same transaction.
 On PostgreSQL the compare holds a row lock (`SELECT ... FOR UPDATE`).
 SQLite has no row lock: every transaction holds the whole-database write lock (`BEGIN IMMEDIATE`), so a second writer waits for the first.
 A failed write leaves no audit row, a good write leaves exactly one, and two staff users who save at the same time cannot overwrite each other: the second one gets `409`.

@@ -567,6 +567,11 @@ export class Database {
     return this.send((tx, trace) => this.engine.fetch(sql, params, tx, trace));
   }
 
+  /** One admin log row, written by Rust on the current transaction. `entry` is its JSON; answers the id. */
+  adminLog(entry: string): Promise<number> {
+    return wait(() => this.engine.adminLog(entry, this.tx()));
+  }
+
   /** Raw query whose columns are all read as text. For tooling (migrations). */
   fetchText(sql: string): Promise<(string | null)[][]> {
     return wait(() => this.engine.fetchText(sql, this.tx()));

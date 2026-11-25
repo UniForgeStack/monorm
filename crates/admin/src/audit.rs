@@ -1,6 +1,7 @@
 //! One row of the admin log (`AdminLogEntry`) for an event of the admin itself: a login, a failed login, a password change.
 
-use monorm_engine::db::Executor;
+use monorm_engine::db::{Cell, Executor};
+use monorm_core::schema::Schema;
 use sea_query::Value;
 use serde_json::Value as Json;
 
@@ -19,14 +20,19 @@ pub struct Entry<'a> {
 /// Inserts the row on `conn` (the request transaction, so the row commits with the request).
 /// The `at` column keeps its database default.
 pub async fn record(site: &Site, conn: &dyn Executor, entry: Entry<'_>) -> Result<(), String> {
-    let table = Table::of(site, "AdminLogEntry")?;
+    insert(&site.schema, conn, entry).await.map(|_| ())
+}
+
+/// Inserts the row like `record` and returns its id.
+pub async fn insert(schema: &Schema, conn: &dyn Executor, entry: Entry<'_>) -> Result<i64, String> {
+    let table = Table::in_schema(schema, "AdminLogEntry")?;
     let names = ["user_key", "action", "resource", "record_key", "record_label", "changes"];
     let mut columns = Vec::new();
     for name in names {
         columns.push(table.column(name)?);
     }
     let marks: Vec<String> = (1..=names.len()).map(|i| mark(conn.dialect(), i)).collect();
-    let sql = format!("INSERT INTO {} ({}) VALUES ({})", table.quoted(), columns.join(", "), marks.join(", "));
+    let sql = format!("INSERT INTO {} ({}) VALUES ({}) RETURNING {}", table.quoted(), columns.join(", "), marks.join(", "), table.column("id")?);
     let args = vec![
         Value::from(entry.user_key.to_string()),
         Value::from(entry.action.to_string()),
@@ -35,7 +41,15 @@ pub async fn record(site: &Site, conn: &dyn Executor, entry: Entry<'_>) -> Resul
         Value::from(entry.record_label.to_string()),
         Value::from(entry.changes),
     ];
-    conn.execute(sql, args).await.map(|_| ()).map_err(|e| e.message)
+    let rows = conn.fetch(sql, args).await.map_err(|e| e.message)?;
+    if rows.len() != 1 {
+        return Err("the insert of the admin log row returned no id".to_string());
+    }
+    match rows.cell(0, 0).map_err(|e| e.message)? {
+        Cell::Int(id) => Ok(i64::from(id)),
+        Cell::BigInt(id) => Ok(id),
+        _ => Err("the id of the admin log row is not an integer".to_string()),
+    }
 }
 
 /// Sets the label of the rows of one record that a host wrote with no label (`ctx.audit()`). Rows with a label stay.

@@ -625,6 +625,10 @@ class Database:
     async def _fetch_text(self, sql: str) -> list[tuple[str | None, ...]]:
         return await self._engine.fetch_text(sql, self._tx())
 
+    async def _admin_log(self, entry: str) -> int:
+        """One admin log row, written by Rust on the current transaction. ``entry`` is its JSON; answers the id."""
+        return int(await self._engine.admin_log(entry, self._tx()))
+
     async def create_tables(self) -> None:
         """Create the whole schema (extensions, tables, constraints, indexes, functions,
         triggers) with ``IF NOT EXISTS`` / ``OR REPLACE`` DDL, in one transaction.

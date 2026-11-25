@@ -14,6 +14,7 @@ import contextvars
 import datetime
 import decimal
 import inspect
+import json
 import re
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
@@ -22,8 +23,8 @@ from typing import Any, TypeVar, cast
 from ._duration import format_duration, parse_duration
 from .adapters import _ADAPTERS as _adapters
 from .adapters import FieldAdapterError
-from .errors import DoesNotExist, QueryError, ValidationError, VersionConflict
-from .expr import Condition, IRContext, SlotParams, _Slot, resolve_null_rule
+from .errors import DoesNotExist, ValidationError, VersionConflict
+from .expr import Condition, IRContext
 from .protection import allow_writes
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -192,8 +193,8 @@ class Context:
             # Under the admin the row keeps a blank key text: Rust writes it from `audit_keys`, the only place that encodes a key.
             # A context built by hand (a unit test) has no Rust: its row holds the plain key values joined with `,`.
             text = "" if self._by_admin or not parts else ",".join(parts)
-            row = await _write_log(self.database, _user_key(self.user), act, resource, text, "", extra)
-            self._audit_keys.append({"id": int(row.id), "key": parts})
+            row_id = await _write_log(self.database, _user_key(self.user), act, resource, text, "", extra)
+            self._audit_keys.append({"id": row_id, "key": parts})
 
 
 async def _as_coroutine(awaitable: Awaitable[Any]) -> Any:
@@ -261,15 +262,14 @@ async def log(
     await _write_log(db, "" if key is None else str(key), action, resource, record_key if isinstance(record_key, str) else _key_scalar(record_key), label, dict(changes) if changes else None)
 
 
-async def _write_log(db: Any, user_key: str, action: str, resource: str, record_key: str, label: str, changes: Mapping[str, Any] | None) -> Any:
-    registry = db._registry
+async def _write_log(db: Any, user_key: str, action: str, resource: str, record_key: str, label: str, changes: Mapping[str, Any] | None) -> int:
+    """Writes one audit row through Rust (``hostwrite::log_entry``) on the current transaction. Answers its id."""
     try:
-        entry_model = registry.get("AdminLogEntry")
+        db._registry.get("AdminLogEntry")
     except Exception:
         raise RuntimeError("the admin log needs the AdminLogEntry model: import the admin app schema") from None
-    return await entry_model.objects.using(db).insert(
-        user_key=user_key, action=action, resource=resource, record_key=record_key, record_label=label, changes=None if changes is None else dict(changes)
-    )
+    entry = {"user_key": user_key, "action": action, "resource": resource, "record_key": record_key, "record_label": label, "changes": None if changes is None else dict(changes)}
+    return cast(int, await db._admin_log(json.dumps(entry, default=str)))
 
 
 # -- values from the JSON of the request -----------------------------------------------------------------------------
@@ -334,19 +334,6 @@ def view_of(adapter: Any, stored: Any) -> Any:
     return f"{len(data)} bytes"
 
 
-def same_json(a: Any, b: Any) -> bool:
-    """The compare of the Rust core (`json::same_json`): numbers compare by value, so `1` and `1.0` match."""
-    if isinstance(a, bool) or isinstance(b, bool):
-        return isinstance(a, bool) and isinstance(b, bool) and a == b
-    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
-        return bool(a == b)
-    if isinstance(a, dict) and isinstance(b, dict):
-        return a.keys() == b.keys() and all(same_json(a[k], b[k]) for k in a)
-    if isinstance(a, list) and isinstance(b, list):
-        return len(a) == len(b) and all(same_json(x, y) for x, y in zip(a, b, strict=True))
-    return bool(a == b)
-
-
 def decode_values(model: Any, values: Mapping[str, Any], strict: bool = False) -> dict[str, Any]:
     """The values of a request (JSON, by field name) as Python values of the fields.
 
@@ -376,62 +363,10 @@ def decode_values(model: Any, values: Mapping[str, Any], strict: bool = False) -
 # -- the filters of the resource -------------------------------------------------------------------------------------
 
 
-class _Bound(Condition):
-    """The filter of a prepared ``queryset``, with the user key put into its ``param("user")``."""
-
-    __slots__ = ("conditions", "user_key")
-
-    def __init__(self, conditions: list[Condition], user_key: Any) -> None:
-        self.conditions = conditions
-        self.user_key = user_key
-
-    def _ir(self, ctx: IRContext) -> Any:
-        inner = SlotParams()
-        irs = [resolve_null_rule(c)._ir(IRContext(ctx.root, inner)) for c in self.conditions]
-        ir = irs[0] if len(irs) == 1 else {"t": "and", "items": irs}
-        return self._remap(ir, inner, ctx.params)
-
-    def _remap(self, ir: Any, inner: list[Any], params: list[Any]) -> Any:
-        if isinstance(ir, list):
-            return [self._remap(i, inner, params) for i in ir]
-        if not isinstance(ir, dict):
-            return ir
-        if ir.get("t") == "param":
-            value = inner[ir["i"]]
-            if isinstance(value, _Slot):
-                if value.name != "user":
-                    raise ValueError(f"the queryset takes the param 'user', not {value.name!r}")
-                value = self.user_key
-            params.append(value)
-            return {**ir, "i": len(params) - 1}
-        return {k: self._remap(v, inner, params) for k, v in ir.items()}
-
-    def __repr__(self) -> str:
-        return f"queryset({self.conditions!r})"
-
-
-async def _resource_filters(config: Mapping[str, Any], user: Mapping[str, Any], op: str) -> list[Any]:
-    """The conditions the admin applies to one write: the ``queryset`` of the user and the ``can=`` rule of the operation."""
-    from .expr import Expression
-    from .query import Prepared
-
-    out: list[Any] = []
-    scope = config.get("queryset")
-    if isinstance(scope, Prepared):
-        out.append(_Bound(list(scope._qs._filters), user.get("key")))
-    elif scope is not None:
-        found = await scope(dict(user))
-        out.extend([found] if isinstance(found, (Condition, Expression)) else list(found or ()))
-    rule = config.get("can", {}).get({"update": "change", "delete": "delete"}.get(op, ""))
-    if rule is not None:
-        out.append(rule)
-    return out
-
-
-def _one_row(model: Any, db: Any, key: Mapping[str, Any], filters: list[Any]) -> Any:
+def _one_row(model: Any, db: Any, key: Mapping[str, Any], args: Mapping[str, Any]) -> Any:
+    """The row of ``key`` inside the scope that Rust sent (the ``queryset`` of the user and the ``can`` rule of the operation)."""
     fields = model._meta.fields
-    qs = model.objects.using(db).filter(*[getattr(model, name) == _decode(fields[name].type_name, value) for name, value in key.items()])
-    return qs.filter(*filters) if filters else qs
+    return _query_set(model, db, args["scope"]).filter(*[getattr(model, name) == _decode(fields[name].type_name, value) for name, value in key.items()])
 
 
 # -- the envelope ----------------------------------------------------------------------------------------------------
@@ -489,52 +424,9 @@ def _context(database: Any, args: Mapping[str, Any], model: Any, models: Mapping
     return ctx
 
 
-def _same(type_name: str, stored: Any, loaded: Any) -> bool:
-    """The compare of the Rust core (`json::same`): a decimal compares by number, so `5` and `5.00` match."""
-    if stored == loaded:
-        return True
-    if stored is None or loaded is None:
-        return False
-    if type_name == "decimal":
-        try:
-            return bool(decimal.Decimal(str(stored)) == decimal.Decimal(str(loaded)))
-        except decimal.InvalidOperation:
-            return False
-    return str(stored) == str(loaded)
-
-
 def _raw(row: Any, name: str) -> Any:
     """The stored value of a loaded field: a field adapter decodes on a read, and a value that does not decode must still compare."""
     return row.__dict__[name] if name in row.__dict__ else getattr(row, name)
-
-
-async def _check_loaded(model: Any, qs: Any, args: Mapping[str, Any]) -> Any:
-    """Reads the row (under a lock where the database has one) and compares the loaded values of the ``compare`` fields with it. None when the row is gone, else the row.
-
-    The compare runs in the write transaction, so a concurrent edit between the load and the save is a ``VersionConflict``.
-    It reads the stored value of an adapted field, so a row with a value that does not decode still compares."""
-    names = [n for n in args.get("compare") or [] if n in (args.get("loaded") or {})]
-    row = await (qs.lock() if args.get("lock") else qs).first()
-    if row is None:
-        return None
-    loaded = decode_values(model, {n: args["loaded"][n] for n in names if _view_adapter(model, n) is None})
-    fields = model._meta.fields
-    adapters = _adapters.get(model) or {}
-    for n in names:
-        if (adapter := _view_adapter(model, n)) is not None:
-            # The form loaded the JSON view of the stored bytes: compare the view of the stored bytes now.
-            if not same_json(view_of(adapter, _stored_bytes(_raw(row, n))), args["loaded"][n]):
-                raise VersionConflict(f"{model.__name__} {args.get('key')!r} was changed since the form loaded")
-            continue
-        # An adapted field shows a decoded value; the form loaded its stored bytes (base64), so compare those.
-        current = _raw(row, n)
-        if n in adapters and (stored := _stored_bytes(current)) is not None:
-            current = stored
-            if isinstance(loaded[n], str):
-                loaded[n] = base64.b64decode(loaded[n], validate=True)
-        if not _same(fields[n].type_name if n in fields else "", current, loaded[n]):
-            raise VersionConflict(f"{model.__name__} {args.get('key')!r} was changed since the form loaded")
-    return row
 
 
 def _stored_bytes(value: Any) -> bytes | None:
@@ -566,8 +458,7 @@ async def _write_audit(database: Any, model: Any, args: Mapping[str, Any]) -> in
     for name in ("ip", "user_agent"):
         if args.get(name) is not None:
             changes[name] = args[name]
-    entry = await _write_log(database, _user_key(args.get("user") or {}), args["op"], args.get("resource") or model.__name__, args.get("key_text") or "", "", changes)
-    return int(entry.id)
+    return await _write_log(database, _user_key(args.get("user") or {}), args["op"], args.get("resource") or model.__name__, args.get("key_text") or "", "", changes)
 
 
 class _RowFailed(Exception):
@@ -602,15 +493,14 @@ def per_row(fn: Callable[[Any, dict[str, Any]], Awaitable[Any]]) -> Callable[[An
     return call
 
 
-def default_writer(model: Any, config: Mapping[str, Any]) -> Callable[[Any, dict[str, Any]], Awaitable[Any]]:
+def default_writer(model: Any) -> Callable[[Any, dict[str, Any]], Awaitable[Any]]:
     """The host function ``admin.write``'s share for one model: a query-set write with the filters of the resource.
 
-    It runs in one transaction: the compare of the loaded values, the write and the audit row commit or roll back together."""
+    Rust compares the loaded values (with the row lock) before the call. The write and the audit row commit or roll back together."""
 
     async def write(database: Any, args: dict[str, Any]) -> Any:
         op = args["op"]
         bulk = "filters" in args
-        user = args.get("user") or {}
         protect = allow_writes(model) if args.get("allow_protected") else contextlib.nullcontext()
         try:
             # A bulk delete sends a query set: `values` are the binds of its filters, not field values.
@@ -624,8 +514,8 @@ def default_writer(model: Any, config: Mapping[str, Any]) -> Callable[[Any, dict
                     if op == "create":
                         created = await model.objects.using(database).insert(**values)
                         return {"ok": True, "key": _key_json(model, created), "audited": True, "audit_id": await _write_audit(database, model, args)}
-                    qs = _one_row(model, database, args["key"], await _resource_filters(config, user, op))
-                    row = await _check_loaded(model, qs, args)
+                    qs = _one_row(model, database, args["key"], args)
+                    row = await qs.first()
                     if row is None:
                         return {"ok": False, "kind": "not_found"}
                     if op == "update":
@@ -651,14 +541,13 @@ def default_writer(model: Any, config: Mapping[str, Any]) -> Callable[[Any, dict
     return per_row(write)
 
 
-def service_function(model: Any, config: Mapping[str, Any], op: str, fn: Callable[..., Any], models: Mapping[str, Any] | None = None) -> Callable[[Any, dict[str, Any]], Awaitable[Any]]:
+def service_function(model: Any, op: str, fn: Callable[..., Any], models: Mapping[str, Any] | None = None) -> Callable[[Any, dict[str, Any]], Awaitable[Any]]:
     """The host function of one service function (``service.<Resource>.<op>``)."""
     sync = is_sync(fn)
 
     async def call(database: Any, args: dict[str, Any]) -> Any:
         ctx = _context(database, args, model, models)
         ctx._loop = asyncio.get_running_loop()
-        user = args.get("user") or {}
         protect = allow_writes(model) if args.get("allow_protected") else contextlib.nullcontext()
         try:
             # A bulk delete sends a query set: `values` are the binds of its filters, not field values.
@@ -670,7 +559,7 @@ def service_function(model: Any, config: Mapping[str, Any], op: str, fn: Callabl
                     if "filters" in args:
                         qs = _query_set(model, database, args)
                     else:
-                        qs = _one_row(model, database, args["key"], await _resource_filters(config, user, op))
+                        qs = _one_row(model, database, args["key"], args)
                     arguments = (ctx, qs, values) if op == "update" else (ctx, qs)
                 if sync:
                     # The worker thread needs the context variables (the protected-write opt-in) of this task.
@@ -708,8 +597,8 @@ def writer_host(resources: Mapping[str, tuple[Any, Mapping[str, Any]]], models: 
     """The host function ``admin.write``: one function for every resource, chosen by the model name of the call.
 
     ``models`` are the child models of the inlines: one with no page of its own gets a writer with no filters."""
-    writers = {name: default_writer(model, {}) for name, model in (models or {}).items()}
-    writers.update({name: default_writer(model, config) for name, (model, config) in resources.items()})
+    writers = {name: default_writer(model) for name, model in (models or {}).items()}
+    writers.update({name: default_writer(model) for name, (model, _config) in resources.items()})
 
     async def write(database: Any, args: dict[str, Any]) -> Any:
         return await writers[args["model"]](database, args)
@@ -758,14 +647,9 @@ def refresh() -> dict[str, Any]:
     return {"kind": "refresh"}
 
 
-def _result_json(result: Any) -> dict[str, Any]:
-    if result is None:
-        return refresh()
-    if isinstance(result, str):
-        return message(result)
-    if isinstance(result, Mapping) and "kind" in result:
-        return dict(result)
-    raise TypeError("an action returns None, a message string or one of admin.message, admin.redirect, admin.download and admin.refresh")
+def _result_json(result: Any) -> Any:
+    """The result of an action as JSON: a result object stays a dict. Rust checks the kind (``actions.rs::result_of``)."""
+    return dict(result) if isinstance(result, Mapping) else result
 
 
 class ActionDef:
@@ -934,10 +818,6 @@ def action_function(model: Any, config: Mapping[str, Any], d: ActionDef, models:
             if inspect.iscoroutine(result):
                 result.close()
             return {"ok": False, "kind": "sync_service", "message": f"the action {d.name} of {model.__name__} is a threaded sync function that returned an awaitable: run the async database calls with ctx.run(...)"}
-        try:
-            shown = _result_json(result)
-        except TypeError as e:
-            return {"ok": False, "kind": "error", "message": f"the action {d.name} of {model.__name__}: {e}"}
-        return {"ok": True, "audited": ctx._audited, "audit_keys": ctx._audit_keys, "result": shown}
+        return {"ok": True, "audited": ctx._audited, "audit_keys": ctx._audit_keys, "result": _result_json(result)}
 
     return call

@@ -1386,7 +1386,7 @@ export class Admin {
       }
       for (const op of ["create", "update", "delete"] as const) {
         const fn = config[op];
-        if (fn !== undefined) host[`service.${name}.${op}`] = serviceFunction(model, config, op, fn, models);
+        if (fn !== undefined) host[`service.${name}.${op}`] = serviceFunction(model, op, fn, models);
       }
     }
     const files = new Map<string, string>();

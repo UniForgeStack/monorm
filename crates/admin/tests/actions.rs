@@ -290,6 +290,20 @@ async fn the_four_results_are_checked() {
 }
 
 #[tokio::test]
+async fn a_text_result_is_a_message_and_a_result_of_no_kind_is_a_server_error() {
+    let w = world(json!({})).await;
+    w.answer(json!({"ok": true, "result": "Done"}));
+    assert_eq!(w.touch().await.1["result"], json!({"kind": "message", "message": "Done", "level": "info"}));
+    w.answer(json!({"ok": true, "result": null}));
+    assert_eq!(w.touch().await.1["result"], json!({"kind": "refresh"}));
+    for bad in [json!(5), json!({"note": "x"}), json!([1])] {
+        w.answer(json!({"ok": true, "result": bad}));
+        let (status, out) = w.touch().await;
+        assert_eq!((status, &out["error"]["kind"]), (500, &json!("ServerError")), "{bad}");
+    }
+}
+
+#[tokio::test]
 async fn host_failures_map_to_the_kinds_of_a_host_write() {
     let w = world(json!({})).await;
     w.answer(json!({"ok": false, "kind": "not_found"}));

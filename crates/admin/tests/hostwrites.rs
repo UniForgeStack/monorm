@@ -23,6 +23,19 @@ model Locked {
   id Int @id @default(autoincrement())
   x  Int
 }
+
+model Shelf {
+  id    Int    @id @default(autoincrement())
+  name  String
+  slots Slot[]
+}
+
+model Slot {
+  id       Int    @id @default(autoincrement())
+  shelf_id Int
+  label    String
+  shelf    Shelf  @relation(fields: [shelf_id], references: [id])
+}
 "#;
 
 fn schema() -> Arc<Schema> {
@@ -33,12 +46,23 @@ fn schema() -> Arc<Schema> {
             "source": "test", "model": "Locked", "name": "protect",
             "operations": ["insert", "update", "delete"], "layer": "app"
         })).unwrap());
+        // A read default that reads `scope.tenant`: the admin reads with it off, so a write scope names it in `without`.
+        ir.behavior.read_defaults.push(serde_json::from_value(serde_json::json!({
+            "source": "test", "name": "tenant", "model": "Book",
+            "filter": {"t": "cmp", "op": "eq", "l": {"t": "col", "path": [], "name": "pages"}, "r": {"t": "scope", "name": "tenant"}}
+        })).unwrap());
         ir.stamp_schema_contract();
         dsl::check(ir).unwrap().1
     })
 }
 
+/// The filter of the `slot_scope` queryset function of the `Slot` page: no `Slot` has the label `hidden`.
+fn slot_scope_filter() -> Value {
+    json!({"t": "cmp", "op": "ne", "l": {"t": "col", "path": [], "name": "label"}, "r": {"t": "text", "value": "hidden"}})
+}
+
 /// The host answers by function name: it writes the row itself, as host code would, or answers a canned envelope.
+/// The queryset function `slot_scope` always answers its filter.
 struct Host {
     seen: Mutex<Vec<(String, Value)>>,
     conn: Arc<dyn Executor>,
@@ -47,14 +71,17 @@ struct Host {
 
 impl HostBridge for Host {
     fn call(&self, name: &str, payload: Value, ctx: CallContext) -> BoxFuture<Result<Value, BridgeError>> {
-        // The default writer runs in the transaction of the request; a service owns its transactions.
-        assert_eq!(ctx.tx.is_some(), name == "admin.write", "only the default writer gets the transaction of the request");
+        // The default writer and a queryset function run in the transaction of the request; a service owns its transactions.
+        assert_eq!(ctx.tx.is_some(), name == "admin.write" || name == "slot_scope", "only the default writer and a queryset function get the transaction of the request");
         let tx = ctx.tx.clone();
         self.seen.lock().unwrap().push((name.to_owned(), payload.clone()));
         let canned = self.answer.lock().unwrap().clone();
         let conn = self.conn.clone();
         let name = name.to_owned();
         Box::pin(async move {
+            if name == "slot_scope" {
+                return Ok(json!({"filter": slot_scope_filter()}));
+            }
             if let Some(answer) = canned {
                 return Ok(answer);
             }
@@ -340,4 +367,158 @@ fn a_wrong_input_declaration_is_a_build_error() {
     assert!(with(json!({"name": "a b"})).contains("letters, digits"));
     assert!(with(json!({"name": "a", "type": "tree"})).contains("not one of"));
     assert!(with(json!({"name": "a", "type": "select"})).contains("choices"));
+}
+
+fn locked_x_is_not(value: i64) -> Value {
+    json!({"$ir": {"t": "cmp", "op": "ne", "l": {"t": "col", "path": [], "name": "x"}, "r": {"t": "int", "value": value}}})
+}
+
+#[tokio::test]
+async fn the_default_writer_gets_the_row_scope_and_no_lock_or_compare_flag() {
+    let w = world(json!({"resources": [{"model": "Locked", "allow_protected_writes": true, "can": {"change": locked_x_is_not(7)}}]})).await;
+    w.conn.batch("INSERT INTO \"Locked\" (id, x) VALUES (1, 1)".into()).await.unwrap();
+    w.answer(json!({"ok": true, "key": {"id": 1}, "audited": false}));
+    let (status, out) = w.send("PATCH", "/resources/Locked/1", json!({"set": {"x": 2}, "loaded": {"x": 1}})).await;
+    assert_eq!(status, 200, "{out}");
+    let (name, payload) = &w.seen()[0];
+    assert_eq!(name, "admin.write");
+    let scope = &payload["scope"];
+    assert_eq!(scope["filters"].as_array().map(Vec::len), Some(1), "the can rule of the change: {scope}");
+    assert_eq!(scope["without"], json!([]));
+    assert!(scope["values"].is_array());
+    assert!(payload.get("lock").is_none() && payload.get("compare").is_none(), "Rust compares the version before the call: {payload}");
+    // A create has no row to scope.
+    w.answer(json!({"ok": true, "key": {"id": 2}, "audited": false}));
+    w.send("POST", "/resources/Locked", json!({"set": {"x": 3}})).await;
+    assert!(w.seen()[1].1["scope"].is_null());
+}
+
+#[tokio::test]
+async fn a_delete_gets_the_scope_of_the_delete_rule_and_not_the_change_rule() {
+    let w = world(json!({"resources": [{"model": "Locked", "allow_protected_writes": true, "can": {"delete": locked_x_is_not(7), "change": locked_x_is_not(1)}}]})).await;
+    w.conn.batch("INSERT INTO \"Locked\" (id, x) VALUES (1, 1)".into()).await.unwrap();
+    w.answer(json!({"ok": true, "audited": false}));
+    let (status, out) = w.send("DELETE", "/resources/Locked/1", json!({})).await;
+    assert_eq!(status, 200, "a row the change rule refuses can still be deleted: {out}");
+    let (name, payload) = &w.seen()[0];
+    assert_eq!((name.as_str(), &payload["op"]), ("admin.write", &json!("delete")));
+    assert_eq!(payload["scope"]["filters"].as_array().map(Vec::len), Some(1), "the delete rule: {payload}");
+    assert_eq!(payload["scope"]["without"], json!([]));
+}
+
+fn book_pages_is_not(value: i64) -> Value {
+    json!({"$ir": {"t": "cmp", "op": "ne", "l": {"t": "col", "path": [], "name": "pages"}, "r": {"t": "int", "value": value}}})
+}
+
+#[tokio::test]
+async fn a_list_save_sends_each_row_the_scope_of_the_change_rule() {
+    let book = json!({"model": "Book", "list": {"columns": ["title", "pages"], "editable": ["title", "pages"], "order": ["id"]}, "service": {"update": {}}, "can": {"change": book_pages_is_not(7)}});
+    let w = world(json!({"resources": [book]})).await;
+    w.answer(json!({"ok": true, "results": [{"ok": true}]}));
+    let (status, out) = w.send("PATCH", "/resources/Book", json!({"rows": [{"key": "1", "set": {"title": "Second"}, "loaded": {"title": "First"}}]})).await;
+    assert_eq!(status, 200, "{out}");
+    let (name, payload) = &w.seen()[0];
+    assert_eq!((name.as_str(), &payload["op"]), ("service.Book.update", &json!("update_rows")));
+    let scope = &payload["rows"][0]["scope"];
+    assert_eq!(scope["filters"].as_array().map(Vec::len), Some(1), "the can rule of the change: {scope}");
+    assert_eq!(scope["without"], json!(["tenant"]));
+}
+
+#[tokio::test]
+async fn a_row_scope_names_the_read_defaults_that_are_off_in_without() {
+    let w = world(json!({"resources": [book_with_service()]})).await;
+    w.answer(json!({"ok": true}));
+    let body = json!({"set": {"title": "Second"}, "loaded": {"title": "First"}, "inputs": {"reason": "typo"}});
+    let (status, out) = w.send("PATCH", "/resources/Book/1", body).await;
+    assert_eq!(status, 200, "{out}");
+    let scope = &w.seen()[0].1["scope"];
+    assert_eq!(scope["without"], json!(["tenant"]), "the host must read the row without the tenant default: {scope}");
+}
+
+#[tokio::test]
+async fn an_inline_row_write_keeps_the_queryset_function_of_the_registered_page_of_its_model() {
+    let slot = json!({"model": "Slot", "queryset": {"function": "slot_scope"}, "service": {"update": {}}});
+    // The wrapper has its own queryset: the function of the registered page of `Slot` reaches the scope only by the pinned path.
+    let own = json!({"t": "cmp", "op": "ne", "l": {"t": "col", "path": [], "name": "label"}, "r": {"t": "text", "value": "wrapper"}});
+    let shelf = json!({"model": "Shelf", "inlines": [{"model": "Slot", "save": "row", "page": {"queryset": {"filter": own}}}]});
+    let w = world(json!({"resources": [shelf, slot]})).await;
+    w.conn.batch("INSERT INTO \"Shelf\" (id, name) VALUES (1, 'S'); INSERT INTO \"Slot\" (id, shelf_id, label) VALUES (1, 1, 'a')".into()).await.unwrap();
+    w.answer(json!({"ok": true}));
+    let (status, out) = w.send("PATCH", "/resources/Shelf/1/inlines/slots/1", json!({"set": {"label": "b"}, "loaded": {"label": "a"}})).await;
+    assert_eq!(status, 200, "{out}");
+    let seen = w.seen();
+    let write = seen.iter().find(|(n, _)| n == "service.Slot.update").expect("the service ran");
+    let filters = write.1["scope"]["filters"].as_array().unwrap();
+    assert!(filters.contains(&own), "the filter of the wrapper: {filters:?}");
+    assert!(filters.contains(&slot_scope_filter()), "the filter of the registered queryset function is in the scope: {filters:?}");
+}
+
+#[tokio::test]
+async fn a_stale_loaded_value_is_a_409_before_the_default_writer_runs() {
+    let w = world(json!({"resources": [{"model": "Locked", "allow_protected_writes": true}]})).await;
+    w.conn.batch("INSERT INTO \"Locked\" (id, x) VALUES (1, 9)".into()).await.unwrap();
+    let (status, out) = w.send("PATCH", "/resources/Locked/1", json!({"set": {"x": 2}, "loaded": {"x": 1}})).await;
+    assert_eq!(status, 409, "{out}");
+    assert_eq!(out["conflicts"]["x"], json!({"loaded": 1, "current": 9}));
+    assert!(w.seen().is_empty(), "the host is not called for a stale form");
+    assert!(w.audit().await.is_empty());
+}
+
+#[tokio::test]
+async fn a_row_outside_the_can_rule_is_not_written_and_the_host_is_not_called() {
+    let w = world(json!({"resources": [{"model": "Locked", "allow_protected_writes": true, "can": {"change": locked_x_is_not(1)}}]})).await;
+    w.conn.batch("INSERT INTO \"Locked\" (id, x) VALUES (1, 1)".into()).await.unwrap();
+    let (status, _) = w.send("PATCH", "/resources/Locked/1", json!({"set": {"x": 2}, "loaded": {"x": 1}})).await;
+    assert!(status == 403 || status == 404, "{status}");
+    assert!(w.seen().is_empty());
+}
+
+#[tokio::test]
+async fn a_host_log_row_goes_in_by_log_entry_and_answers_its_id() {
+    let w = world(json!({"resources": [{"model": "Locked"}]})).await;
+    let schema = w.site.schema.clone();
+    let entry = json!({"user_key": "7", "action": "export", "resource": "Locked", "record_key": "1", "record_label": "one", "changes": {"rows": 3}});
+    let first = monorm_admin::hostwrite::log_entry(&schema, w.conn.as_ref(), &entry).await.unwrap();
+    let second = monorm_admin::hostwrite::log_entry(&schema, w.conn.as_ref(), &json!({"action": "note"})).await.unwrap();
+    assert_eq!((first, second), (1, 2));
+    let rows = w.rows("SELECT id, user_key, action, resource, record_key, record_label, changes FROM \"AdminLogEntry\" ORDER BY id").await;
+    let text = |c: &Option<String>| c.clone().unwrap();
+    assert_eq!(rows[0].iter().map(text).collect::<Vec<_>>(), ["1", "7", "export", "Locked", "1", "one", "{\"rows\":3}"]);
+    assert_eq!((rows[1][1].clone().unwrap(), rows[1][2].clone().unwrap(), rows[1][6].clone()), (String::new(), "note".to_string(), None), "a missing text is blank, no changes is NULL");
+    let wrong = monorm_admin::hostwrite::log_entry(&schema, w.conn.as_ref(), &json!({"user_key": 7, "action": "note"})).await;
+    assert!(wrong.unwrap_err().contains("expected a string"), "a number as a text is refused, not stored as a blank text");
+}
+
+/// The version check of a host write reads the row with `FOR UPDATE` on the request transaction (PostgreSQL only):
+/// a writer that holds the row makes the save wait, and the save then sees the held writer's value as a 409.
+#[tokio::test]
+async fn the_version_check_of_a_host_write_waits_for_a_row_lock_on_postgres() {
+    let Ok(url) = std::env::var("ORM_RUST_TEST_POSTGRES_URL") else {
+        eprintln!("skipped: ORM_RUST_TEST_POSTGRES_URL is not set");
+        return;
+    };
+    let source = format!("{}\n{ADMIN}", MODELS.replace("\"sqlite\"", "\"postgresql\""));
+    let schema = Arc::new(dsl::check(dsl::compile(&source, None).unwrap()).unwrap().1);
+    let conn = db::connect(&url, 4).await.unwrap();
+    conn.batch("DROP TABLE IF EXISTS book, locked, shelf, slot, adminlogentry, userpreference, adminsessionrevocation".into()).await.unwrap();
+    for step in migrate::plan(&schema, &Default::default()).unwrap().up {
+        conn.batch(step.sql).await.unwrap();
+    }
+    conn.batch("INSERT INTO locked (id, x) VALUES (1, 1)".into()).await.unwrap();
+    let site = Arc::new(Site::build(schema, &json!({"resources": [{"model": "Locked", "allow_protected_writes": true}]}).to_string()).unwrap());
+    let host = Arc::new(Host { seen: Mutex::new(Vec::new()), conn: conn.clone(), answer: Mutex::new(Some(json!({"ok": true, "key": {"id": 1}, "audited": false}))) });
+    let w = Arc::new(World { site, conn: conn.clone(), host });
+    let other = conn.begin().await.unwrap();
+    other.batch("SELECT x FROM locked WHERE id = 1 FOR UPDATE".into()).await.unwrap();
+    let save = tokio::spawn({
+        let w = w.clone();
+        async move { w.send("PATCH", "/resources/Locked/1", json!({"set": {"x": 2}, "loaded": {"x": 1}})).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert!(!save.is_finished(), "the save waits for the row lock");
+    other.batch("UPDATE locked SET x = 9 WHERE id = 1".into()).await.unwrap();
+    other.commit().await.unwrap();
+    let (status, out) = save.await.unwrap();
+    assert_eq!((status, &out["conflicts"]["x"]), (409, &json!({"loaded": 1, "current": 9})), "{out}");
+    assert!(w.seen().is_empty(), "the host is not called after a stale check");
 }

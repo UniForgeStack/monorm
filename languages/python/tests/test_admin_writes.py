@@ -215,20 +215,14 @@ async def test_a_failed_host_write_leaves_no_audit_row_and_a_good_one_leaves_exa
     assert rows[0].changes["diff"] == {"x": {"from": 1, "to": 3}}
 
 
-async def test_a_concurrent_edit_between_the_load_and_the_save_is_a_409_with_the_default_writer(world, monkeypatch):
-    from monorm import _admin_write
-
+async def test_a_stale_loaded_value_is_a_409_with_the_default_writer_and_the_other_edit_stays(world):
     client, db, models = await opened(world)
-    check = _admin_write._check_loaded
-
-    async def edited_first(model, qs, args):
-        await qs.update(x=9)
-        return await check(model, qs, args)
-
-    monkeypatch.setattr(_admin_write, "_check_loaded", edited_first)
+    with monorm.allow_writes(models["WLocked"]):
+        await models["WLocked"].objects.using(db).filter(models["WLocked"].id == 1).update(x=9)  # the other edit, after the form loaded x=1
     r = await client.patch(f"{LOCKED}/1", json={"set": {"x": 2}, "loaded": {"x": 1}})
     assert r.status == 409, r.text
-    assert (await models["WLocked"].objects.using(db).first()).x == 1, "the whole write rolled back, with the other edit"
+    assert r.json()["conflicts"]["x"] == {"loaded": 1, "current": 9}
+    assert (await models["WLocked"].objects.using(db).first()).x == 9, "the other edit stays"
     assert await audit(db, models) == []
 
 

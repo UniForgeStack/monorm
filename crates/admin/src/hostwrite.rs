@@ -208,6 +208,31 @@ pub(crate) struct Prepared {
     pub compared: Vec<String>,
     /// The checked change set of the inlines (`with_parent`): the rows the service writes with the record.
     pub inlines: Option<Value>,
+    /// The row scope of an update or a delete (`scope_payload`); a create has none.
+    pub scope: Option<Value>,
+}
+
+/// The row scope of a write on one record as the host takes it: the filters of the `queryset` and the `can=` rule of the operation,
+/// their values and the read defaults that are off. The host turns it into a query set and adds the key.
+/// An inline row (`pinned`) also keeps the `queryset` and the `can=` rule of the registered page of its model: the wrapper can widen its own.
+pub(crate) async fn scope_payload(s: &State_, c: &Call<'_>, resource: &Resource, rows: &list::RowScope, op: Op, pinned: bool) -> Result<Value, list::ListError> {
+    let mut binds = list::Binds::default();
+    let mut filters = rows.push(&mut binds);
+    let registered = s.site.resources.iter().find(|r| pinned && r.model == resource.model);
+    if let Some(q) = registered.and_then(|r| r.queryset.as_ref()) {
+        let mut own = list::RowScope::default();
+        crate::server::queryset_rows(s, resource, q, &c.user, &c.scope, &mut own).await?;
+        filters.extend(own.push(&mut binds));
+    }
+    let rule = match op {
+        Op::Update => "change",
+        Op::Delete => "delete",
+        _ => "",
+    };
+    for r in std::iter::once(resource).chain(registered) {
+        filters.extend(rows.bind_rules(r.can.iter().filter(|(name, _)| name == rule).map(|(_, expr)| expr), &mut binds)?);
+    }
+    Ok(json!({"filters": filters, "values": binds.0.iter().map(crate::json::bind_tagged).collect::<Vec<_>>(), "without": rows.without}))
 }
 
 /// A map by form label as a map by field name.
@@ -230,8 +255,7 @@ pub(crate) fn payload_of(s: &State_, resource: &Resource, user: &User, meta: &cr
         "key_text": p.key.as_ref().map(|k| key::encode(k)),
         "values": by_field(resource, &p.values),
         "loaded": by_field(resource, &p.loaded),
-        "lock": s.site.schema.dialect == monorm_core::dialect::Dialect::Postgres,
-        "compare": p.compared.iter().map(|l| resource.detail.iter().find(|d| &d.label == l).map_or_else(|| l.clone(), |d| d.field.clone())).collect::<Vec<_>>(),
+        "scope": p.scope,
         "inputs": p.inputs,
         "audit_inputs": audit_inputs(resource, &p.inputs),
         "inlines": p.inlines,
@@ -476,7 +500,24 @@ async fn conflict(s: &State_, c: Call<'_>, p: &Prepared) -> Response {
     (StatusCode::CONFLICT, Json(json!({"ok": false, "error": {"kind": "Conflict", "message": "the record changed since the form loaded"}, "conflicts": found, "current": current}))).into_response()
 }
 
-/// An audit row of host code outside a request: `admin.log(...)`.
-pub async fn log_entry(site: &crate::site::Site, conn: &dyn monorm_engine::db::Executor, user_key: &str, action: &str, resource: &str, record_key: &str, changes: Option<Value>) -> Result<(), String> {
-    audit::record(site, conn, Entry { user_key, action, resource, record_key, record_label: "", changes }).await
+/// An audit row of host code (`ctx.audit()`, `admin.log(...)`): inserts it on `conn`, the current transaction, and returns its id.
+/// The key text and the label of a `ctx.audit()` row come later (`audit::set_keys`, `audit::fill_label`).
+pub async fn log_entry(schema: &monorm_core::schema::Schema, conn: &dyn monorm_engine::db::Executor, entry: &Value) -> Result<i64, String> {
+    /// A missing text is blank; a value of a wrong type is an error, not a blank text.
+    #[derive(serde::Deserialize)]
+    struct Wire {
+        #[serde(default)]
+        user_key: String,
+        #[serde(default)]
+        action: String,
+        #[serde(default)]
+        resource: String,
+        #[serde(default)]
+        record_key: String,
+        #[serde(default)]
+        record_label: String,
+        changes: Option<Value>,
+    }
+    let w: Wire = serde_json::from_value(entry.clone()).map_err(|e| format!("the admin log entry: {e}"))?;
+    audit::insert(schema, conn, Entry { user_key: &w.user_key, action: &w.action, resource: &w.resource, record_key: &w.record_key, record_label: &w.record_label, changes: w.changes }).await
 }

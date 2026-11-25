@@ -447,7 +447,7 @@ async fn finish(s: &State_, d: Done<'_>, answer: Value, scope: Scoped) -> Respon
         Ok(r) => r,
         Err(m) => {
             scope.rollback().await;
-            return server_error(d.meta, &m);
+            return server_error(d.meta, &format!("the action {} of {}: {m}", d.name, d.resource.name));
         }
     };
     if let Err(m) = audit::set_keys(&s.site, scope.executor(), &answer).await {
@@ -516,9 +516,15 @@ fn failed(meta: &Meta, answer: &Value) -> Response {
     }
 }
 
-/// The result of an action as one of four kinds. A missing result means a refresh.
+/// The result of an action as one of four kinds. A missing result means a refresh, a string is a message.
 fn result_of(v: Option<&Value>) -> Result<Value, String> {
     let Some(v) = v.filter(|v| !v.is_null()) else { return Ok(json!({"kind": "refresh"})) };
+    if let Some(text) = v.as_str() {
+        return Ok(json!({"kind": "message", "message": text, "level": "info"}));
+    }
+    if v.get("kind").is_none() {
+        return Err("an action returns None, a message string or one of admin.message, admin.redirect, admin.download and admin.refresh".into());
+    }
     let text = |name: &str| v.get(name).and_then(Value::as_str).map(str::to_owned).ok_or_else(|| format!("the result needs a text {name:?}"));
     match v.get("kind").and_then(Value::as_str) {
         Some("refresh") => Ok(json!({"kind": "refresh"})),
