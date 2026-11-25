@@ -21,7 +21,7 @@ use crate::key;
 use crate::meta;
 use crate::permissions::{Op, Strategy};
 use crate::site_config::{self, Handles};
-use crate::site_config::{Config, QuerysetConfig, ResourceConfig, ListConfig, DateHierarchyConfig, ActionConfig};
+use crate::site_config::{Config, SwitcherConfig, QuerysetConfig, ResourceConfig, ListConfig, DateHierarchyConfig, ActionConfig};
 
 pub const DEFAULT_PAGE_SIZE: usize = 25;
 pub const MAX_PAGE_SIZE: usize = 200;
@@ -268,6 +268,8 @@ pub struct Resource {
     pub set_password: bool,
     pub title: String,
     pub group: Option<String>,
+    /// A lucide icon name for the navigation item.
+    pub icon: Option<String>,
     /// The key fields as columns, in key order.
     pub key_columns: Vec<Column>,
     /// Positions of the key columns in `columns`: a row names its record with them.
@@ -527,6 +529,8 @@ pub struct Site {
     pub brand: serde_json::Value,
     /// The navigation groups in order.
     pub groups: Vec<String>,
+    /// A lucide icon name for each group, checked against `groups`.
+    pub group_icons: BTreeMap<String, String>,
     /// The time limit of each statement of a request. None: no limit.
     pub statement_timeout: Option<Duration>,
     /// How long an export waits for the client to take the next chunk before it stops. None: no limit.
@@ -686,7 +690,16 @@ impl Site {
         for r in &mut resources {
             r.meta = meta::resource(&schema, r, &meta_builds);
         }
-        let brand = meta::brand(config.brand.as_ref(), config.theme.as_ref())?;
+        for (g, icon) in &config.group_icons {
+            if !groups.contains(g) {
+                return err(format!("\u{1}group_icons\u{2}: {g:?} is not in groups"));
+            }
+            if !meta::icon_ok(icon) {
+                return err(format!("\u{1}group_icons\u{2}: icon {icon:?} of {g:?} must be a lucide icon name such as \"book-open\""));
+            }
+        }
+        let switcher = SwitcherConfig::merge(config.switcher.as_ref(), config.switcher_file.as_ref()).or_else(err)?;
+        let brand = meta::brand(config.brand.as_ref(), config.theme.as_ref(), switcher.as_ref())?;
         let statement_timeout = match config.statement_timeout_ms.unwrap_or(DEFAULT_STATEMENT_TIMEOUT_MS) {
             ms if ms > MAX_STATEMENT_TIMEOUT_MS => return err(format!("\u{1}statement_timeout_ms\u{2} is {ms}, at most {MAX_STATEMENT_TIMEOUT_MS}")),
             0 => None,
@@ -696,7 +709,7 @@ impl Site {
             0 => None,
             ms => Some(Duration::from_millis(ms)),
         };
-        let mut site = Site { schema, base_path, prefix, strategy, resources, brand, groups, statement_timeout, export_idle_timeout, warnings, routes: Vec::new(), packages, ui_csp, frame_cards, embeds: BTreeMap::new(), meta_builds, views: Mutex::new(Default::default()) };
+        let mut site = Site { schema, base_path, prefix, strategy, resources, brand, groups, group_icons: config.group_icons.clone(), statement_timeout, export_idle_timeout, warnings, routes: Vec::new(), packages, ui_csp, frame_cards, embeds: BTreeMap::new(), meta_builds, views: Mutex::new(Default::default()) };
         site.embeds = crate::frames::build_embeds(&config.embeds, &site)?;
         site.routes = crate::routes::build(&config.routes, &site)?;
         if let Some(role) = added.role {
@@ -727,7 +740,11 @@ impl Site {
         for g in &self.groups {
             let names = pick(Some(g));
             if !names.is_empty() {
-                out.push(serde_json::json!({"group": g, "resources": names}));
+                let mut entry = serde_json::json!({"group": g, "resources": names});
+                if let Some(icon) = self.group_icons.get(g) {
+                    entry["icon"] = serde_json::json!(icon);
+                }
+                out.push(entry);
             }
         }
         serde_json::Value::Array(out)
@@ -1010,7 +1027,7 @@ fn concrete(m: &monorm_core::schema::Model) -> bool {
 
 impl ResourceConfig {
     fn of(model: &str) -> ResourceConfig {
-        ResourceConfig { model: model.to_owned(), list: ListConfig::default(), allow: None, perms: None, label: None, title: None, group: None, field_permissions: Vec::new(), see: BTreeMap::new(), change: BTreeMap::new(), actions: Vec::new(), bulk_delete: true, set_password: false, queryset: None, can: BTreeMap::new(), check_messages: BTreeMap::new(), service: Default::default(), inputs: Vec::new(), allow_protected_writes: false, host_behavior: false, form: None, readonly: Vec::new(), views: BTreeMap::new(), widgets: BTreeMap::new(), form_component: None, detail_tabs: Vec::new(), frames: Vec::new(), fieldsets: Vec::new(), relations: BTreeMap::new(), files: Vec::new(), inlines: Vec::new() }
+        ResourceConfig { model: model.to_owned(), list: ListConfig::default(), allow: None, perms: None, label: None, title: None, group: None, icon: None, field_permissions: Vec::new(), see: BTreeMap::new(), change: BTreeMap::new(), actions: Vec::new(), bulk_delete: true, set_password: false, queryset: None, can: BTreeMap::new(), check_messages: BTreeMap::new(), service: Default::default(), inputs: Vec::new(), allow_protected_writes: false, host_behavior: false, form: None, readonly: Vec::new(), views: BTreeMap::new(), widgets: BTreeMap::new(), form_component: None, detail_tabs: Vec::new(), frames: Vec::new(), fieldsets: Vec::new(), relations: BTreeMap::new(), files: Vec::new(), inlines: Vec::new() }
     }
 }
 
@@ -1166,6 +1183,9 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
     if config.group.as_ref().is_some_and(|g| g.trim().is_empty()) {
         return err_in(&name, "group is empty".to_string());
     }
+    if let Some(icon) = config.icon.as_ref().filter(|i| !meta::icon_ok(i)) {
+        return err_in(&name, format!("icon {icon:?} must be a lucide icon name such as \"book-open\""));
+    }
     check_badges(schema, &name, &list.badges, &listed, &columns)?;
     let search = search_fields(schema, idx, &name, list, warnings)?;
     let mut sortable = sortable_columns(schema, idx, &name, list, &columns)?;
@@ -1227,6 +1247,7 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
         set_password: config.set_password,
         title,
         group: config.group.clone(),
+        icon: config.icon.clone(),
         key_columns,
         key_positions,
         detail,
