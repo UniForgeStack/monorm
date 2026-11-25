@@ -9,6 +9,7 @@ pub mod actions;
 pub mod audit;
 pub mod auth;
 pub mod bridge;
+pub mod builder;
 pub mod catalog;
 pub mod config;
 pub mod csv;
@@ -48,6 +49,7 @@ pub mod view;
 pub mod write;
 
 pub use auth::AuthConfig;
+pub use builder::AdminConfigBuilder;
 pub use bridge::{BoxFuture, BridgeError, CallContext, HostBridge};
 pub use config::{security_options, security_with, Config};
 pub use inproc::{Reply, Routed};

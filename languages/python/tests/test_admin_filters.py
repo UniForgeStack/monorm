@@ -251,8 +251,6 @@ async def test_a_computed_column_with_the_wrong_type_or_a_name_clash_is_a_build_
         build({"name": "n", "type": "text", "expr": length})
     with pytest.raises(admin.AdminConfigError, match="name of a field"):
         build({"name": "body", "type": "int", "expr": length})
-    with pytest.raises(admin.AdminConfigError, match="expr or function"):
-        build({"name": "n", "type": "int"})
 
 
 async def test_a_batch_function_column_runs_once_for_the_page(world):

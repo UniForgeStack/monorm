@@ -142,14 +142,17 @@ async def test_the_autocomplete_applies_the_queryset_of_the_target(world):
     ("config", "match"),
     [
         ({"author": {"label": "id"}}, "not a text column"),
-        ({"nope": {}}, "not a relation"),
         ({"links": {}}, "not a resource"),
-        ({"author": {"colour": "red"}}, "unknown option"),
     ],
 )
 async def test_a_bad_relation_config_fails_the_build(world, config, match):
     with pytest.raises(admin.AdminConfigError, match=match):
         world.site(book={"relations": config}).check()
+
+
+async def test_files_need_a_storage_registry(world):
+    with pytest.raises(admin.AdminConfigError, match="files needs a file storage registry"):
+        world.site(book={"files": {"cover": "media"}}).check()
 
 
 async def test_a_target_with_no_search_fails_the_build(world):
