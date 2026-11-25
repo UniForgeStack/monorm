@@ -191,6 +191,48 @@ impl Child {
     }
 }
 
+/// A direct soft-delete child of a cascade relation: the foreign key that the guard trigger watches.
+/// `keys` pairs a child column with the referenced parent column.
+struct Guard { model: String, relation: String, table: String, soft: String, pk: Vec<String>, fields: Vec<String>, keys: Vec<(String, String)>, parent_table: String, parent_soft: String }
+
+impl Guard {
+    /// The stamp of the parent row that the foreign key of `NEW` points to: `NULL` for a live or a missing parent.
+    fn parent_stamp(&self) -> String {
+        let link: Vec<String> = self.keys.iter().map(|(key, to)| format!("p.{} = NEW.{}", ident(to), ident(key))).collect();
+        format!("(SELECT p.{} FROM {} p WHERE {})", ident(&self.parent_soft), ident(&self.parent_table), link.join(" AND "))
+    }
+}
+
+/// A live row that is inserted under, or moved to, a soft-deleted parent takes the stamp of the parent.
+/// PostgreSQL: one `BEFORE INSERT OR UPDATE OF <foreign key>` trigger that sets the field of `NEW`.
+/// SQLite: a `BEFORE` trigger cannot change `NEW`, so an `AFTER INSERT` and an `AFTER UPDATE OF <foreign key>` trigger stamp the row.
+fn guard_triggers(dialect: Dialect, g: &Guard) -> Result<Vec<TriggerIr>, String> {
+    let (soft, name) = (ident(&g.soft), format!("soft_delete_guard_{}", g.relation));
+    match dialect {
+        Dialect::Postgres => Ok(vec![TriggerIr { name, timing: TriggerTiming::Before, events: vec![TriggerEvent::Insert, TriggerEvent::Update], update_of: g.fields.clone(),
+            when: Some(format!("NEW.{soft} IS NULL")), body: Some(format!("BEGIN NEW.{soft} := {}; RETURN NEW; END;", g.parent_stamp())), ..Default::default() }]),
+        Dialect::Sqlite => {
+            if g.pk.is_empty() { return Err(format!("{} has no primary key", g.model)); }
+            let pk = g.pk.iter().map(|k| format!("{0} = NEW.{0}", ident(k))).collect::<Vec<_>>().join(" AND ");
+            let stamp = g.parent_stamp();
+            let (when, body) = (format!("NEW.{soft} IS NULL AND {stamp} IS NOT NULL"), format!("UPDATE {} SET {soft} = {stamp} WHERE {pk}", ident(&g.table)));
+            let after = |name: String, event, update_of: Vec<String>| TriggerIr { name, timing: TriggerTiming::After, events: vec![event], update_of, when: Some(when.clone()), body: Some(body.clone()), ..Default::default() };
+            Ok(vec![after(name.clone(), TriggerEvent::Insert, vec![]), after(format!("{name}_update"), TriggerEvent::Update, g.fields.clone())])
+        }
+    }
+}
+
+/// PostgreSQL: the `BEFORE` guard sets the stamp inside the write, so the `AFTER UPDATE OF <soft field>` cascade of the moved row does not fire
+/// and its own children stay live. This `AFTER UPDATE OF <foreign key>` trigger runs the body of that cascade for a live row that the guard stamped.
+/// SQLite needs none: its `AFTER` guard updates the stamp, and that update fires the cascade.
+fn moved_row_cascade(dialect: Dialect, model: &ModelIr, g: &Guard) -> Option<TriggerIr> {
+    if dialect != Dialect::Postgres { return None; }
+    let cascade = model.triggers.iter().find(|t| t.name == "soft_delete_cascade")?;
+    let soft = ident(&g.soft);
+    Some(TriggerIr { name: format!("soft_delete_guard_{}_cascade", g.relation), timing: TriggerTiming::After, events: vec![TriggerEvent::Update], update_of: g.fields.clone(),
+        when: Some(format!("OLD.{soft} IS NULL AND NEW.{soft} IS NOT NULL")), body: cascade.body.clone(), ..Default::default() })
+}
+
 /// The row is live: its soft-delete field is `NULL`.
 fn live(field: &str) -> serde_json::Value { Expr::is_null(Expr::col(field), false).to_json() }
 
@@ -420,8 +462,14 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
         ir.behavior.delete_rewrites.push(DeleteRewrite { source: SOURCE.into(), model: s.model.clone(), field: s.field.clone(), guard: live(&s.field) });
     }
     let dialect = ir.dialect;
+    let mut all_guards = vec![];
     for s in roles.iter().filter(|s| s.mode == Mode::Database && added.contains(&s.model)) {
         // Children: soft-delete models, and the levels of a composed model with a soft-delete root, with a cascading foreign key to this model.
+        let (parent_table, parent_soft, parent_columns) = {
+            let parent = ir.models.iter().find(|m| m.name == s.model).ok_or_else(|| format!("unknown model {}", s.model))?;
+            (parent.table.clone(), column(parent, &s.field)?.to_owned(), parent.fields.iter().map(|f| (f.name.clone(), f.column.clone())).collect::<Vec<_>>())
+        };
+        let mut guards = vec![];
         let mut children = vec![];
         for child in &ir.models {
             let composed = composed_root(ir, &child.name);
@@ -448,6 +496,13 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
                     }
                     _ => None,
                 };
+                // A level of a composed model keeps its flag on the root row, and a proxy shares the table of its root: neither gets a guard.
+                if via.is_none() && composed.is_none() && !ir.behavior.model_views.iter().any(|v| v.model == child.name) {
+                    let referenced = r.to.iter().map(|f| parent_columns.iter().find(|(n, _)| n == f).map(|(_, c)| c.clone()).ok_or_else(|| format!("{} has no field {f}", s.model))).collect::<Result<Vec<_>, String>>()?;
+                    let pk = child.key_fields().iter().map(|k| column(child, k).map(str::to_owned)).collect::<Result<Vec<_>, String>>()?;
+                    guards.push(Guard { model: child.name.clone(), relation: r.name.clone(), table: child.table.clone(), soft: column(soft_model, &child_field.field)?.to_owned(), pk,
+                        fields: r.from.clone(), keys: keys.iter().cloned().zip(referenced).collect(), parent_table: parent_table.clone(), parent_soft: parent_soft.clone() });
+                }
                 children.push((Child { table: soft_model.table.clone(), soft: column(soft_model, &child_field.field)?.to_owned(), version, keys: vec![], via }, keys, r.to.clone()));
             }
         }
@@ -467,6 +522,18 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
                 t.replaces_rule = s.rule.clone();
                 model.push_trigger(t)?;
             }
+        }
+        for g in &guards {
+            for model in ir.models_named_mut(&g.model) {
+                for t in guard_triggers(dialect, g)? { model.push_trigger(t)?; }
+            }
+        }
+        all_guards.extend(guards);
+    }
+    // After every cascade trigger exists: a moved row that the guard stamps passes the stamp on to its own children.
+    for g in &all_guards {
+        for model in ir.models_named_mut(&g.model) {
+            if let Some(t) = moved_row_cascade(dialect, model, g) { model.push_trigger(t)?; }
         }
     }
     owning_triggers(ir, &roles, &added)?;
@@ -792,7 +859,9 @@ mod tests {
             assert_eq!(revive.when.as_deref(), Some("OLD.\"deleted\" IS NOT NULL AND NEW.\"deleted\" IS NULL"));
             assert_eq!(revive.body.as_deref(), Some("BEGIN UPDATE \"books\" SET \"deleted\" = NULL, \"lock\" = \"lock\" + 1 WHERE \"writer\" = NEW.\"id\" AND \"deleted\" = OLD.\"deleted\"; RETURN NULL; END;"));
         }
-        assert_eq!(ir.models[1].triggers.len(), 1);
+        // Book gets the delete trigger of its own soft delete and the guard of its cascade relation.
+        let names: Vec<_> = ir.models[1].triggers.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["soft_delete_guard_author", "soft_delete"]);
         let up = migration(&ir);
         assert!(up.contains(&"CREATE TRIGGER \"soft_delete\" BEFORE DELETE ON \"authors\" FOR EACH ROW WHEN (OLD.\"deleted\" IS NULL AND pg_trigger_depth() = 0) EXECUTE FUNCTION \"authors_soft_delete\"()".to_owned()), "{up:?}");
         assert!(up.contains(&"CREATE TRIGGER \"soft_delete_cascade\" AFTER UPDATE OF \"deleted\" ON \"authors\" FOR EACH ROW WHEN (OLD.\"deleted\" IS NULL AND NEW.\"deleted\" IS NOT NULL) EXECUTE FUNCTION \"authors_soft_delete_cascade\"()".to_owned()), "{up:?}");
@@ -884,6 +953,149 @@ mod tests {
         for name in ["soft_delete_cascade", "soft_delete_revive"] {
             assert!(trigger(&ir, "Author", name).body.as_deref().unwrap().contains(r#"UPDATE "books""#), "{name}");
         }
+    }
+
+    #[test]
+    fn a_cascade_child_gets_a_guard_on_its_foreign_key() {
+        let mut ir = bare("postgres", "database");
+        prepared(&mut ir).unwrap();
+        let guard = trigger(&ir, "Book", "soft_delete_guard_author");
+        assert_eq!((guard.timing, guard.events.clone(), guard.update_of.clone()), (TriggerTiming::Before, vec![TriggerEvent::Insert, TriggerEvent::Update], vec!["author_id".to_owned()]));
+        assert_eq!(guard.when.as_deref(), Some("NEW.\"deleted\" IS NULL"));
+        assert_eq!(guard.body.as_deref(), Some("BEGIN NEW.\"deleted\" := (SELECT p.\"deleted\" FROM \"authors\" p WHERE p.\"id\" = NEW.\"writer\"); RETURN NEW; END;"));
+        let up = migration(&ir);
+        assert!(up.contains(&"CREATE TRIGGER \"soft_delete_guard_author\" BEFORE INSERT OR UPDATE OF \"writer\" ON \"books\" FOR EACH ROW WHEN (NEW.\"deleted\" IS NULL) EXECUTE FUNCTION \"books_soft_delete_guard_author\"()".to_owned()), "{up:?}");
+        // Note has no soft delete: the cascade skips it, so it gets no guard either.
+        assert!(ir.models[2].triggers.is_empty());
+    }
+
+    #[test]
+    fn keep_child_rows_gives_the_relation_no_guard() {
+        let mut ir = bare("postgres", "database");
+        ir.behavior.declarations.push(keep_rows("Book", "author", 12));
+        ir.behavior.declarations.push(keep_rows("Note", "author", 13));
+        prepared(&mut ir).unwrap();
+        assert!(ir.models[1].triggers.iter().all(|t| !t.name.starts_with("soft_delete_guard")));
+    }
+
+    #[test]
+    fn application_mode_adds_no_guard() {
+        let mut ir = schema("postgres", "application");
+        prepared(&mut ir).unwrap();
+        assert!(ir.behavior.storage.as_ref().unwrap().models.iter().all(|m| m.triggers.is_empty()));
+    }
+
+    #[test]
+    fn a_proxy_of_a_child_gets_no_second_guard() {
+        let mut ir = schema("postgres", "database");
+        monorm::extension::capture_storage(&mut ir).unwrap();
+        ir.behavior.lowered_models.push("BookView".into());
+        let mut view: ModelIr = ir.models[1].clone();
+        view.name = "BookView".into();
+        ir.models.push(view);
+        ir.behavior.model_views.push(monorm::extension::ModelView { model: "BookView".into(), source: "Book".into(), root: "Book".into(), row_filter: None, insert_table: None });
+        prepared(&mut ir).unwrap();
+        assert!(ir.models[3].triggers.is_empty());
+        let books: Vec<_> = ir.behavior.storage.as_ref().unwrap().models.iter().filter(|m| m.table == "books").collect();
+        assert_eq!((books.len(), books[0].triggers.iter().filter(|t| t.name.starts_with("soft_delete_guard")).count()), (1, 1));
+    }
+
+    #[test]
+    fn sqlite_guard_stamps_a_row_under_or_moved_to_a_deleted_parent() {
+        let mut ir = schema("sqlite", "database");
+        prepared(&mut ir).unwrap();
+        let names: Vec<_> = ir.models[1].triggers.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["soft_delete_guard_author", "soft_delete_guard_author_update", "soft_delete"]);
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        for statement in migration(&ir) { db.execute_batch(&statement).unwrap(); }
+        db.execute_batch("INSERT INTO authors (id, rev) VALUES (1, 0), (2, 0);
+            UPDATE authors SET deleted = '2020-01-01 00:00:00.000' WHERE id = 1").unwrap();
+        db.execute_batch("INSERT INTO books (id, writer, lock) VALUES (1, 1, 0), (2, 2, 0);
+            INSERT INTO books (id, writer, lock, deleted) VALUES (3, 1, 0, '2021-01-01 00:00:00.000')").unwrap();
+        let stamp = |id: i64| db.query_row("SELECT deleted FROM books WHERE id = ?", [id], |r| r.get::<_, Option<String>>(0)).unwrap();
+        assert_eq!(stamp(1).as_deref(), Some("2020-01-01 00:00:00.000"), "inserted under a deleted parent");
+        assert_eq!(stamp(2), None, "inserted under a live parent");
+        assert_eq!(stamp(3).as_deref(), Some("2021-01-01 00:00:00.000"), "a row with its own stamp keeps it");
+        db.execute("UPDATE books SET writer = 1 WHERE id = 2", []).unwrap();
+        assert_eq!(stamp(2).as_deref(), Some("2020-01-01 00:00:00.000"), "moved to a deleted parent");
+        db.execute_batch("UPDATE books SET deleted = NULL WHERE id = 2; UPDATE books SET writer = 2 WHERE id = 2").unwrap();
+        assert_eq!(stamp(2), None, "moved to a live parent");
+    }
+
+    /// Author (soft) <- Book (soft) <- Page (soft): `bare`, plus Page, with the soft delete field added to Page.
+    fn with_pages(dialect: &str) -> SchemaIr {
+        let named = |model: &str, line: u32| at(model, line, serde_json::json!(["deleted"]), serde_json::json!({"mode": "database"}), None);
+        let mut ir = declared(dialect, vec![named("Author", 3), named("Book", 9), named("Page", 15)]);
+        model(&mut ir, serde_json::json!({"name": "Page", "table": "pages", "fields": [
+            {"name": "id", "column": "id", "type": "int", "primary_key": true}, {"name": "book_id", "column": "book_id", "type": "int"}, {"name": "version", "column": "ver", "type": "int"}],
+            "relations": [{"name": "book", "kind": "one", "target": "Book", "from": "book_id", "to": "id", "foreign_key": true, "on_delete": "cascade"}]}));
+        monorm::extension::capture_storage(&mut ir).unwrap();
+        add_fields(&mut ir).unwrap();
+        ir.behavior.storage = None;
+        ir
+    }
+
+    #[test]
+    fn postgres_stamps_the_children_of_a_row_that_the_guard_moves_under_a_deleted_parent() {
+        let mut ir = with_pages("postgres");
+        prepared(&mut ir).unwrap();
+        let cascade = trigger(&ir, "Book", "soft_delete_cascade");
+        let moved = trigger(&ir, "Book", "soft_delete_guard_author_cascade");
+        assert_eq!((moved.timing, moved.events.clone(), moved.update_of.clone()), (TriggerTiming::After, vec![TriggerEvent::Update], vec!["author_id".to_owned()]));
+        assert_eq!(moved.when.as_deref(), Some("OLD.\"deleted\" IS NULL AND NEW.\"deleted\" IS NOT NULL"));
+        assert_eq!(moved.body, cascade.body);
+        assert!(moved.body.as_deref().unwrap().contains(r#"UPDATE "pages""#));
+        let up = migration(&ir);
+        assert!(up.contains(&"CREATE TRIGGER \"soft_delete_guard_author_cascade\" AFTER UPDATE OF \"writer\" ON \"books\" FOR EACH ROW WHEN (OLD.\"deleted\" IS NULL AND NEW.\"deleted\" IS NOT NULL) EXECUTE FUNCTION \"books_soft_delete_guard_author_cascade\"()".to_owned()), "{up:?}");
+        // A child without children of its own has no cascade to run, and SQLite stamps through its own cascade trigger.
+        let mut plain = bare("postgres", "database");
+        prepared(&mut plain).unwrap();
+        assert!(plain.models[1].triggers.iter().all(|t| t.name != "soft_delete_guard_author_cascade"));
+        let mut lite = with_pages("sqlite");
+        prepared(&mut lite).unwrap();
+        assert!(lite.models.iter().all(|m| m.triggers.iter().all(|t| !t.name.ends_with("_cascade") || t.name == "soft_delete_cascade")));
+    }
+
+    #[test]
+    fn sqlite_stamps_the_children_of_a_row_that_the_guard_moves_under_a_deleted_parent() {
+        let mut ir = with_pages("sqlite");
+        prepared(&mut ir).unwrap();
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        for statement in migration(&ir) { db.execute_batch(&statement).unwrap(); }
+        db.execute_batch("INSERT INTO authors (id, rev) VALUES (1, 0), (2, 0); UPDATE authors SET deleted = '2020-01-01 00:00:00.000' WHERE id = 1;
+            INSERT INTO books (id, writer, lock) VALUES (1, 2, 0); INSERT INTO pages (id, book_id, ver) VALUES (1, 1, 0);
+            UPDATE books SET writer = 1 WHERE id = 1").unwrap();
+        let stamp = |table: &str| db.query_row(&format!("SELECT deleted FROM {table} WHERE id = 1"), [], |r| r.get::<_, Option<String>>(0)).unwrap();
+        assert_eq!((stamp("books").as_deref(), stamp("pages").as_deref()), (Some("2020-01-01 00:00:00.000"), Some("2020-01-01 00:00:00.000")));
+    }
+
+    #[test]
+    fn a_composite_foreign_key_is_matched_column_by_column_in_the_guard() {
+        let mut ir = bare("postgres", "database");
+        let field = |name: &str, column: &str| serde_json::from_value(serde_json::json!({"name": name, "column": column, "type": "int"})).unwrap();
+        ir.models[0].fields.push(field("region", "reg"));
+        ir.models[1].fields.push(field("region", "book_reg"));
+        ir.models[1].relations[0].from = vec!["author_id".into(), "region".into()];
+        ir.models[1].relations[0].to = vec!["id".into(), "region".into()];
+        prepared(&mut ir).unwrap();
+        let guard = trigger(&ir, "Book", "soft_delete_guard_author");
+        assert_eq!(guard.update_of, ["author_id", "region"]);
+        assert_eq!(guard.body.as_deref(), Some("BEGIN NEW.\"deleted\" := (SELECT p.\"deleted\" FROM \"authors\" p WHERE p.\"id\" = NEW.\"writer\" AND p.\"reg\" = NEW.\"book_reg\"); RETURN NEW; END;"));
+    }
+
+    #[test]
+    fn a_self_referencing_cascade_relation_guards_its_own_table() {
+        let mut ir = bare("sqlite", "database");
+        ir.models[0].fields.push(serde_json::from_value(serde_json::json!({"name": "parent_id", "column": "parent_id", "type": "int", "nullable": true})).unwrap());
+        ir.models[0].relations.push(serde_json::from_value(serde_json::json!({"name": "parent", "kind": "one", "target": "Author", "from": "parent_id", "to": "id", "foreign_key": true, "on_delete": "cascade"})).unwrap());
+        prepared(&mut ir).unwrap();
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        for statement in migration(&ir) { db.execute_batch(&statement).unwrap(); }
+        db.execute_batch("INSERT INTO authors (id, rev) VALUES (1, 0); UPDATE authors SET deleted = '2020-01-01 00:00:00.000' WHERE id = 1;
+            INSERT INTO authors (id, rev, parent_id) VALUES (2, 0, 1), (3, 0, NULL)").unwrap();
+        let stamp = |id: i64| db.query_row("SELECT deleted FROM authors WHERE id = ?", [id], |r| r.get::<_, Option<String>>(0)).unwrap();
+        assert_eq!(stamp(2).as_deref(), Some("2020-01-01 00:00:00.000"), "a child author under a deleted author");
+        assert_eq!(stamp(3), None, "a root author has no parent");
     }
 
     #[test]

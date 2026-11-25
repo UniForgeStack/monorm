@@ -272,16 +272,11 @@ async def test_a_hard_delete_of_a_soft_deleted_parent_leaves_no_orphan(dialect):
         await authors.insert_many([{"id": 1}])
         assert await authors.filter(Author.id == 1).delete() == 1
         await books.insert_many([{"id": 1, "author_id": 1}])
+        # the guard stamps the book, so the hard delete of the author removes it on both databases
         author = await authors.all_with_deleted().get(Author.id == 1)
-        if dialect == "postgres":
-            await author.hard_delete()
-            assert await books.all_with_deleted().count() == 0
-            assert await authors.all_with_deleted().count() == 0
-        else:
-            with pytest.raises(Exception, match="FOREIGN KEY constraint failed"):
-                await author.hard_delete()
-            assert await books.all_with_deleted().count() == 1
-            assert await authors.all_with_deleted().count() == 1
+        await author.hard_delete()
+        assert await books.all_with_deleted().count() == 0
+        assert await authors.all_with_deleted().count() == 0
     finally:
         await db.drop_tables()
         await db.close()

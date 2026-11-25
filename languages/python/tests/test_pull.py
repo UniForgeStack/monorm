@@ -624,7 +624,11 @@ async def test_pull_moves_a_soft_delete_rule_to_triggers(tmp_path):
         assert any("rule sdm_o_keep" in g for g in pulled.gaps)
         assert any("rule soft_delete_related_sdm_c" in g for g in pulled.gaps)
         assert not any("rule soft_delete " in g or "rule sdm_d_soft_delete" in g for g in pulled.gaps)
-        assert not pulled.differences
+        # the legacy database has no guard for a child under a deleted parent: the move adds it for the cascade child sdm_d
+        assert [s.summary for s in pulled.differences] == ["create or replace function sdm_d_soft_delete_guard_t()", "create trigger soft_delete_guard_t on sdm_d"]
+        # a baseline records the schema as the database, so the guard goes in by hand
+        for step in pulled.differences:
+            await db.execute(step.sql)
 
         schema = tmp_path / "schema.prisma"
         pulled.write(schema)
