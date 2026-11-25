@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import datetime
 import json
-import math
 import os
 import uuid
 from collections.abc import Awaitable, Callable
@@ -32,7 +31,7 @@ from ._admin_host import HOST as _HOST, auth_user_table
 from . import _admin_routes
 from ._admin_routes import Reply, RouteFunction, RouteRequest, Stream
 from ._duration import format_duration
-from ._admin_write import _PLACEMENTS, ActionDef, Context, InputDef, action, action_def, action_function, admin_mode_of, download, input, is_sync, is_threaded, log, message, redirect, refresh, service_function, threaded, view_host, writer_host
+from ._admin_write import ActionDef, Context, InputDef, action, action_def, action_function, admin_mode_of, download, input, is_sync, is_threaded, log, message, redirect, refresh, service_function, threaded, view_host, writer_host
 from ._admin_permissions import RoleSeedReport, SyncReport
 from .adapters import _ADAPTERS as _adapters
 from .errors import QueryError
@@ -73,6 +72,14 @@ def _admin_error(e: ValueError) -> AdminConfigError:
     if not isinstance(code, str):
         return AdminConfigError(str(e))
     return (AdminSettingsError if code.startswith("settings.") else AdminConfigError)(str(e), code)
+
+
+def _admin_call(fn: Callable[..., Any], *args: Any) -> Any:
+    """Calls a native admin function and raises its refusal as an :class:`AdminConfigError`."""
+    try:
+        return fn(*args)
+    except ValueError as e:
+        raise _admin_error(e) from None
 
 
 class NamedChoice(TypedDict, total=False):
@@ -331,8 +338,6 @@ class ResourceConfig(TypedDict, total=False):
     The inline takes the registered page of the child model; ``admin.inline(..., page={...})`` overrides page keys."""
 
 
-_INLINE_SAVE = ("with_parent", "row")
-_INLINE_STYLE = ("table", "stacked")
 # A page key that an inline wrapper cannot override, with the reason.
 _INLINE_PAGE_SAVE_REASON = "a service writes one record: an inline row is written by the page of the parent (with_parent) or by the page of the child (row)"
 _INLINE_PAGE_REFUSED = {
@@ -396,10 +401,7 @@ def inline(
     (``"edit_lines"`` becomes ``<label>.edit_lines``) that replaces the write permission of the parent. ``max`` is the row cap (1 to 200). ``page`` overrides page keys of the child:
     ``queryset``, ``can``, ``list``, ``form``, ``readonly``, ``widgets``, ``relations``, ``inputs`` and ``check_messages``.
     """
-    if save not in _INLINE_SAVE:
-        raise AdminConfigError(f"inline {model.__name__}: save is one of {', '.join(_INLINE_SAVE)}")
-    if style not in _INLINE_STYLE:
-        raise AdminConfigError(f"inline {model.__name__}: style is one of {', '.join(_INLINE_STYLE)}")
+    _admin_call(_native.AdminConfigBuilder.check_inline, model.__name__, save, style)
     return InlineDef(model, via, save, permission, style, max, label, collapsed, delete, page)
 
 
@@ -423,9 +425,8 @@ def _widgets(name: str | None, value: Any) -> dict[str, str]:
 def _section(name: str, s: Any) -> dict[str, Any]:
     if not isinstance(s, Mapping) or not isinstance(s.get("fields"), (list, tuple)) or not all(isinstance(f, str) for f in s["fields"]):
         raise AdminConfigError(f"{name}: a form section is {{'title': ..., 'fields': [...]}}")
-    if unknown := sorted(set(s) - {"title", "fields", "collapsed"}):
-        raise AdminConfigError(f"{name}: unknown section option {unknown[0]!r}")
-    out: dict[str, Any] = {"fields": list(s["fields"])}
+    out: dict[str, Any] = {k: None for k in s}
+    out["fields"] = list(s["fields"])
     if "title" in s:
         out["title"] = s["title"]
     if "collapsed" in s:
@@ -444,31 +445,8 @@ def _form(name: str, form: Any) -> Any:
     raise AdminConfigError(f"{name}: form is a list of sections, or a mapping with create and edit")
 
 
-_LIST_KEYS = {"columns", "order", "page_size", "sortable", "search", "search_with", "filters", "named_filters", "computed", "aggregates", "labels", "empty", "empty_fields", "tabs", "editable", "badges", "date_hierarchy"}
 _RESOURCE_KEYS = {"list", "title", "group", "icon", "allow", "perms", "label", "field_permissions", "see", "change", "actions", "queryset", "can", "check_messages", "form", "readonly", "widgets", "form_component", "detail_tabs", "frames", "fieldsets", "relations", "files", "create", "update", "delete", "inputs", "allow_protected_writes", "inlines", "bulk_delete", "set_password"}
-_BRAND_KEYS = {"name", "logo", "colors", "links", "environment", "environment_level"}
-_SWITCHER_KEYS = {"current", "services", "build"}
-_THEME_KEYS = {"title", "logo", "color"}
 Strategy = Literal["page", "model", "access"]
-
-
-def _label(model: type[Model], ref: ColumnRef[Any]) -> str:
-    if ref._root is not model:
-        raise AdminConfigError(f"{ref!r} belongs to {ref._root.__name__}, not to {model.__name__}")
-    return ".".join((*ref._path, ref._field.name))
-
-
-def _name(model: type[Model], ref: Any) -> str:
-    """A column name: a string (a computed or aggregate column), a column or a relation of ``model``."""
-    if isinstance(ref, str):
-        return ref
-    if isinstance(ref, RelationPath):
-        if ref._root is not model:
-            raise AdminConfigError(f"{ref!r} belongs to {ref._root.__name__}, not to {model.__name__}")
-        return ".".join(ref._path)
-    if not isinstance(ref, ColumnRef):
-        raise AdminConfigError(f"{model.__name__}: {ref!r} is not a column or a relation")
-    return _label(model, ref)
 
 
 def _ir(model: type[Model], node: Any, what: str, *, wire: bool = False) -> Any:
@@ -594,11 +572,9 @@ def _computed(model: type[Model], items: Sequence[Mapping[str, Any]], fns: _Fns)
         entry = {k: v for k, v in item.items() if k not in ("expr", "function", "order_by")}
         if item.get("order_by") is not None:
             entry["order_by"] = _host(model, "list.computed.order_by", item["order_by"], f"computed {item.get('name')!r} order_by")
-        if (item.get("expr") is None) == (item.get("function") is None):
-            raise AdminConfigError(f"{model.__name__}: computed {item.get('name')!r} sets expr or function, one of them")
         if item.get("expr") is not None:
             entry["expr"] = _host(model, "list.computed.expr", item["expr"], f"computed {item.get('name')!r}")
-        else:
+        if item.get("function") is not None:
             entry["function"] = _host(model, "list.computed.function", item["function"], fns=fns, maker=partial(_batch_host, model, item["function"]))
         out.append(entry)
     return out
@@ -630,18 +606,14 @@ def _named(model: type[Model], items: Sequence[Mapping[str, Any]]) -> list[dict[
 
 def _date_hierarchy(model: type[Model], value: Any) -> Any:
     if isinstance(value, Mapping):
-        if unknown := sorted(set(value) - {"field", "counts"}):
-            raise AdminConfigError(f"{model.__name__}: unknown date_hierarchy option {unknown[0]!r}")
-        if "field" not in value:
-            raise AdminConfigError(f"{model.__name__}: date_hierarchy needs a field")
-        return {**value, "field": _host(model, "list.date_hierarchy.field", value["field"])}
+        field = {"field": _host(model, "list.date_hierarchy.field", value["field"])} if "field" in value else {}
+        return {**value, **field}
     return _host(model, "list.date_hierarchy", value)
 
 
 def _list(model: type[Model], config: Mapping[str, Any], fns: _Fns) -> dict[str, Any]:
-    if unknown := sorted(set(config) - _LIST_KEYS):
-        raise AdminConfigError(f"{model.__name__}: unknown list option {unknown[0]!r}")
-    out: dict[str, Any] = {}
+    # Every key goes as None first so that Rust names an unknown key; a known key is replaced below.
+    out: dict[str, Any] = {k: None for k in config}
     if "columns" in config:
         out["columns"] = [_host(model, "list.columns", c) for c in config["columns"]]
     for key in ("filters", "tabs", "editable"):
@@ -655,13 +627,13 @@ def _list(model: type[Model], config: Mapping[str, Any], fns: _Fns) -> dict[str,
         out["aggregates"] = _aggregates(model, config["aggregates"])
     for key in ("labels", "empty_fields"):
         if key in config:
-            out[key] = {_name(model, k): v for k, v in config[key].items()}
+            out[key] = [[_ref(k), v] for k, v in config[key].items()]
     if "empty" in config:
         out["empty"] = config["empty"]
     if "date_hierarchy" in config:
         out["date_hierarchy"] = _date_hierarchy(model, config["date_hierarchy"])
     if "badges" in config:
-        out["badges"] = {_name(model, k): {_badge_value(model, v): colour for v, colour in map_.items()} for k, map_ in config["badges"].items()}
+        out["badges"] = [[_ref(k), {_badge_value(model, v): colour for v, colour in map_.items()}] for k, map_ in config["badges"].items()]
     if "order" in config:
         out["order"] = [_host(model, "list.order", item) for item in config["order"]]
     if "page_size" in config:
@@ -798,32 +770,19 @@ def _key_json(key: Any) -> Any:
     return _key_value(key)
 
 
-_RELATION_KEYS = {"label", "create", "choices"}
-
-
-def _relations(name: str, model: type[Model], value: Any, fns: _Fns) -> dict[str, Any]:
+def _relations(name: str, model: type[Model], value: Any, fns: _Fns) -> Any:
+    """The ``relations`` option on the wire. Rust checks the names, the option keys and the value types."""
     if not isinstance(value, Mapping):
-        raise AdminConfigError(f"{name}: relations maps a relation name to its options")
+        return value
     out: dict[str, Any] = {}
     for rel_name, options in value.items():
         relation = model._meta.relations.get(rel_name) if isinstance(rel_name, str) else None
-        if relation is None:
-            raise AdminConfigError(f"{name}: relations has {rel_name!r}, which is not a relation of the model")
         if not isinstance(options, Mapping):
-            raise AdminConfigError(f"{name}: relations[{rel_name!r}] is a mapping of options")
-        if unknown := sorted(set(options) - _RELATION_KEYS):
-            raise AdminConfigError(f"{name}: relations[{rel_name!r}] has an unknown option {unknown[0]!r}")
-        entry: dict[str, Any] = {}
-        if "label" in options:
-            if not isinstance(options["label"], str):
-                raise AdminConfigError(f"{name}: relations[{rel_name!r}].label is a column name")
-            entry["label"] = options["label"]
-        if "create" in options:
-            if not isinstance(options["create"], bool):
-                raise AdminConfigError(f"{name}: relations[{rel_name!r}].create is True or False")
-            entry["create"] = options["create"]
+            out[rel_name] = options
+            continue
+        entry = dict(options)
         if "choices" in options:
-            entry["choices"] = _host(relation.target, "relations.choices", options["choices"], fns=fns)
+            entry["choices"] = _host(relation.target if relation else model, "relations.choices", options["choices"], fns=fns)
         out[rel_name] = entry
     return out
 
@@ -1038,12 +997,11 @@ def _inline_defs(name: str, items: Any) -> list[InlineDef]:
     return out
 
 
-def _actions_json(name: str, model: type[Model], items: Any) -> list[dict[str, Any]]:
+def _actions_json(name: str, model: type[Model], items: Any, fn_entry: Callable[[ActionDef], dict[str, Any]]) -> list[dict[str, Any]]:
     """The action entries of a resource: a name declares a permission, a marked function is a button."""
     if isinstance(items, str):
         raise AdminConfigError(f"{name}: actions is a list")
     out: list[dict[str, Any]] = []
-    seen: set[str] = set()
     for item in items:
         d = action_def(item)
         if d is None:
@@ -1051,13 +1009,9 @@ def _actions_json(name: str, model: type[Model], items: Any) -> list[dict[str, A
                 raise AdminConfigError(f"{name}: an action is a name or a function that @admin.action marked, not {item!r}")
             entry: dict[str, Any] = {"name": item, "permission": item}
         else:
-            if d.fn is None or not callable(d.fn):
-                raise AdminConfigError(f"{name}: action {d.name!r} needs a function")
-            if d.placement not in _PLACEMENTS:
-                raise AdminConfigError(f"{name}: action {d.name!r}: placement is one of {', '.join(_PLACEMENTS)}")
             if not all(isinstance(i, InputDef) for i in d.inputs):
                 raise AdminConfigError(f"{name}: action {d.name!r}: inputs is a list of admin.input(...) controls")
-            entry = {"name": d.name, "placement": d.placement, "sync": is_sync(d.fn), "threaded": is_threaded(d.fn)}
+            entry = {"name": d.name, "placement": d.placement, **fn_entry(d)}
             if d.permission is not None:
                 entry["permission"] = d.permission
             for key in ("label", "confirm"):
@@ -1070,9 +1024,6 @@ def _actions_json(name: str, model: type[Model], items: Any) -> list[dict[str, A
             if d.can is not None:
                 entry["can"] = _host(model, "actions.can", d.can, f"action {d.name!r} can")
             entry["replace_change"] = d.replace_change
-        if entry["name"] in seen:
-            raise AdminConfigError(f"{name}: action {entry['name']!r} is listed twice")
-        seen.add(entry["name"])
         out.append(entry)
     return out
 
@@ -1127,24 +1078,12 @@ class Admin:
         storage: Any = None,
     ) -> None:
         self._storage = storage
-        if not math.isfinite(statement_timeout) or statement_timeout < 0:
-            raise AdminConfigError("statement_timeout is a number of seconds, 0 or more (0 sets no limit)")
-        self._statement_timeout = statement_timeout
         self._registry = registry
         self.prefix = prefix
         self.base_path = base_path
-        if unknown := sorted(set(brand or {}) - _BRAND_KEYS):
-            raise AdminConfigError(f"unknown brand option {unknown[0]!r}")
-        self._brand = dict(brand) if brand else None
-        if unknown := sorted(set(theme or {}) - _THEME_KEYS):
-            raise AdminConfigError(f"unknown theme option {unknown[0]!r}")
-        self._theme = dict(theme) if theme else None
         self._widgets = _widgets(None, widgets) if widgets else None
         self._groups = list(groups)
         self._group_icons = dict(group_icons) if group_icons else None
-        if unknown := sorted(set(switcher or {}) - _SWITCHER_KEYS):
-            raise AdminConfigError(f"unknown switcher option {unknown[0]!r}")
-        self._switcher = dict(switcher) if switcher else None
         self.switcher_settings: Mapping[str, Any] | None = None  # the `[admin.switcher]` table of monorm.toml, set by the serve mode
         self._frame_origins = list(frame_origins)
         self._frame_cards = list(frame_cards)
@@ -1154,9 +1093,13 @@ class Admin:
         self._strategy = permissions
         self._label = label
         self._roles = {name: list(patterns) for name, patterns in (roles or {}).items()}
-        for name, patterns in self._roles.items():
-            if isinstance(patterns, str) or not all(isinstance(p, str) for p in patterns):
-                raise AdminConfigError(f"roles[{name!r}] must be a list of patterns")
+        options = {k: dict(v) for k, v in (("brand", brand), ("theme", theme), ("switcher", switcher)) if v}
+        self._builder: _native.AdminConfigBuilder = _admin_call(
+            _native.AdminConfigBuilder,
+            json.dumps(options),
+            float(statement_timeout),
+            json.dumps({name: patterns if isinstance(patterns, str) else list(patterns) for name, patterns in (roles or {}).items()}),
+        )
         self._resources: dict[str, tuple[type[Model], ResourceConfig]] = {}
         self._routes: dict[tuple[str, str], tuple[RouteFunction, str | None]] = {}
         self._packages: dict[str, dict[str, Any]] = {}
@@ -1180,17 +1123,21 @@ class Admin:
         The admin reads the files once and refuses a package for another major version. A package adds its routes and actions
         with ``route`` and ``action`` itself: it is a function ``install(admin)`` that calls this method too.
         """
-        if name in self._packages:
-            raise AdminConfigError(f"the package {name!r} is added twice")
-        self._packages[name] = {
-            "name": name,
-            "admin_major": admin_major,
-            "dir": os.path.abspath(os.fspath(directory)),
-            "widgets": dict(widgets or {}),
-            "forms": dict(forms or {}),
-            "tabs": dict(tabs or {}),
-            "styles": list(styles),
-        }
+        _admin_call(
+            self._builder.package,
+            name,
+            json.dumps(
+                {
+                    "name": name,
+                    "admin_major": admin_major,
+                    "dir": os.path.abspath(os.fspath(directory)),
+                    "widgets": dict(widgets or {}),
+                    "forms": dict(forms or {}),
+                    "tabs": dict(tabs or {}),
+                    "styles": list(styles),
+                }
+            ),
+        )
         self._planned = None
 
     def route(self, method: str, path: str, fn: RouteFunction, *, permission: str | None = None) -> None:
@@ -1201,26 +1148,32 @@ class Admin:
         ``permission`` is a full name (``<label>.<name>``) that a user needs besides ``admin.access``; it shows in ``permissions``.
         Rust runs the session, CSRF and the permission check first: no session is a 401 and a missing permission a 403.
         """
-        if not callable(fn):
-            raise AdminConfigError("a route needs a function: route(method, path, fn)")
-        key = (method.upper(), path.removeprefix("/"))
-        if key in self._routes:
-            raise AdminConfigError(f"the route {key[0]} {key[1]} is registered twice")
-        self._routes[key] = (fn, permission)
+        _admin_call(self._builder.route, method, path, permission, callable(fn))
+        self._routes[(method.upper(), path.removeprefix("/"))] = (fn, permission)
         self._planned = None
 
     def register(self, model: type[Model], config: ResourceConfig | None = None) -> None:
         """Makes ``model`` a resource. Once any model is registered, only registered models are resources."""
-        if model.__name__ in self._resources:
-            raise AdminConfigError(f"{model.__name__} is already registered")
         config = config or {}
-        if unknown := sorted(set(config) - _RESOURCE_KEYS):
-            raise AdminConfigError(f"{model.__name__}: unknown option {unknown[0]!r}")
+        _admin_call(self._builder.register, model.__name__, list(config))
         self._resources[model.__name__] = (model, config)
         self._planned = None
 
-    def _resource_json(self, name: str, model: type[Model], config: Mapping[str, Any], fns: _Fns) -> dict[str, Any]:
-        """The config JSON of one page."""
+    def _fn_entry(self, fns: _Fns, fn: Any, top: bool, maker: Callable[[], Any]) -> dict[str, Any]:
+        """A service or action function on the wire. A resource sends ``$fn`` with the two flags beside it; an inline page sends the flags alone. A value that is not callable is ``$host``."""
+        if not callable(fn):
+            return {"$host": type(fn).__name__}
+        flags = {"sync": is_sync(fn), "threaded": is_threaded(fn)}
+        return {**fns.register(maker), **flags} if top else flags
+
+    def _service_host(self, model: type[Model], op: str, fn: Any) -> Any:
+        return service_function(model, op, fn, self._inline_models())
+
+    def _action_host(self, model: type[Model], config: Mapping[str, Any], d: ActionDef) -> Any:
+        return action_function(model, cast("ResourceConfig", config), d, self._inline_models())
+
+    def _resource_json(self, name: str, model: type[Model], config: Mapping[str, Any], fns: _Fns, top: bool = True) -> dict[str, Any]:
+        """The config JSON of one page. ``top`` is false for the page of an inline."""
         resource: dict[str, Any] = {"model": name}
         if "list" in config:
             resource["list"] = _list(model, config["list"], fns)
@@ -1265,15 +1218,11 @@ class Admin:
         if "relations" in config:
             resource["relations"] = _relations(name, model, config["relations"], fns)
         if "files" in config:
-            resource["files"] = list(_files(name, config["files"]))
-            if self._storage is None:
-                raise AdminConfigError(f"{name}: files needs the storage option of Admin (a monorm_file_storage Registry)")
+            files = config["files"]
+            resource["files"] = list(files) if isinstance(files, Mapping) else files
         services = {op: fn for op in ("create", "update", "delete") if (fn := config.get(op)) is not None}
         if services:
-            for op, fn in services.items():
-                if not callable(fn):
-                    raise AdminConfigError(f"{name}: {op} is a service function (ctx, ...)")
-            resource["service"] = {op: {"sync": is_sync(fn), "threaded": is_threaded(fn)} for op, fn in services.items()}
+            resource["service"] = {op: self._fn_entry(fns, fn, top, partial(self._service_host, model, op, fn)) for op, fn in services.items()}
         if "inputs" in config:
             defs = config["inputs"]
             if isinstance(defs, (str, InputDef)) or not all(isinstance(d, InputDef) for d in defs):
@@ -1287,14 +1236,14 @@ class Admin:
             if views:
                 resource["views"] = views
         if "actions" in config:
-            resource["actions"] = _actions_json(name, model, config["actions"])
+            def action_fn(d: ActionDef) -> dict[str, Any]:
+                value = self._fn_entry(fns, d.fn, top, partial(self._action_host, model, config, d))
+                return {"function": value} if "$fn" in value or "$host" in value else value
+
+            resource["actions"] = _actions_json(name, model, config["actions"], action_fn)
         if "set_password" in config:
-            if not isinstance(config["set_password"], bool):
-                raise AdminConfigError(f"{name}: set_password is True or False")
             resource["set_password"] = config["set_password"]
         if "bulk_delete" in config:
-            if not isinstance(config["bulk_delete"], bool):
-                raise AdminConfigError(f"{name}: bulk_delete is True or False")
             resource["bulk_delete"] = config["bulk_delete"]
         raw: dict[str, Any] = dict(config)
         for key in ("title", "group", "icon", "allow", "perms", "label", "field_permissions"):
@@ -1312,7 +1261,7 @@ class Admin:
         for key in ("via", "permission", "label"):
             if (value := getattr(d, key)) is not None:
                 out[key] = value
-        page = self._resource_json(child, d.model, d.page, fns)
+        page = self._resource_json(child, d.model, d.page, fns, top=False)
         if len(page) > 1:
             out["page"] = page
         return out
@@ -1328,32 +1277,22 @@ class Admin:
             out["user_table"] = auth_user_table(self._registry if registry is None else registry)
         if self.prefix is not None:
             out["prefix"] = self.prefix
-        if self._brand is not None:
-            out["brand"] = self._brand
-        if self._theme is not None:
-            out["theme"] = self._theme
         if self._widgets:
             out["widgets"] = self._widgets
         if self._groups:
             out["groups"] = self._groups
         if self._group_icons:
             out["group_icons"] = self._group_icons
-        if self._switcher is not None:
-            out["switcher"] = self._switcher
         if self.switcher_settings:
             out["switcher_file"] = self.switcher_settings
-        if self._statement_timeout != 15.0:
-            out["statement_timeout_ms"] = round(self._statement_timeout * 1000)
         if self._frame_origins:
             out["frame_origins"] = self._frame_origins
         if self._frame_cards:
             out["frame_cards"] = self._frame_cards
         if self._embeds:
             out["embeds"] = self._embeds
-        if self._packages:
-            out["packages"] = list(self._packages.values())
-        if self._routes:
-            out["routes"] = [{"method": m, "path": p, **({"permission": perm} if perm else {})} for (m, p), (_, perm) in self._routes.items()]
+        if self._storage is not None:
+            out["storage"] = True
         return json.dumps(out)
 
     def _host(self, handles: Mapping[str, str] | None = None) -> dict[str, Any]:
@@ -1365,14 +1304,6 @@ class Admin:
         models = self._inline_models()
         host["admin.write"] = writer_host(self._resources, models)
         host["admin.view"] = view_host({**models, **{m.__name__: m for m, _ in self._resources.values()}})
-        for model, config in self._resources.values():
-            for op in ("create", "update", "delete"):
-                if (fn := cast("Mapping[str, Any]", config).get(op)) is not None:
-                    host[f"service.{model.__name__}.{op}"] = service_function(model, op, fn, models)
-        for model, config in self._resources.values():
-            for item in config.get("actions", ()):
-                if (d := action_def(item)) is not None and d.fn is not None:
-                    host[f"action.{model.__name__}.{d.name}"] = action_function(model, config, d, models)
         files = {(model.__name__, field): storage for model, config in self._resources.values() for field, storage in _files(model.__name__, config.get("files", {})).items()}
         if files:
             host.update(_file_host(self._storage, files))
@@ -1383,7 +1314,7 @@ class Admin:
     def _site(self, registry: Registry) -> _native.AdminSite:
         schema = registry._native if registry._native is not None else registry.prepare()
         try:
-            return _native.admin_site(schema, self._config_json(registry))
+            return self._builder.build(schema, self._config_json(registry))
         except ValueError as e:
             raise _admin_error(e) from None
 

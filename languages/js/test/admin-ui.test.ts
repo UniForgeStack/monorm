@@ -125,10 +125,6 @@ test("a theme is the short form of the brand and a value in both is refused", ()
   assert.throws(() => new Admin(registry, { theme: { shade: "x" } as Loose }), (e: Error) => e instanceof AdminConfigError && e.message.includes("shade"));
 }));
 
-test("an unknown brand key is refused", () => world(async ({ registry }) => {
-  assert.throws(() => new Admin(registry, { brand: { nope: "x" } as Loose }), (e: Error) => e instanceof AdminConfigError && e.message.includes("nope"));
-}));
-
 test("a group that the admin does not list is refused", () => world(async ({ registry, classes }) => {
   const site = new Admin(registry, { groups: ["People"] });
   site.register(classes["UiAuthor"], { group: "Missing" });

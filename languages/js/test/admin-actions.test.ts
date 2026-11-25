@@ -565,7 +565,7 @@ for (const provider of PROVIDERS) {
   }));
 
   test(`a wrong action config is an admin config error (${provider})`, () => world(provider, async (w) => {
-    const badPlace = action(async function badPlace() {}, { placement: "middle" as Loose });
+    const bad_place = action(async function bad_place() {}, { placement: "middle" as Loose });
     const twice = action(async function twice() {}, { placement: "bulk", confirm: "x" });
     class ScopeValue extends Expression<boolean> {
       ir() { return { t: "scope", name: "tenant" }; }
@@ -573,7 +573,7 @@ for (const provider of PROVIDERS) {
     const item = w.models["AItem"];
     const badCan = (options: Parameters<typeof action>[1]) => action(async function check() {}, options);
     const cases: [Loose, RegExp][] = [
-      [{ actions: [badPlace] }, /placement/],
+      [{ actions: [bad_place] }, /placement/],
       [{ actions: [twice, twice] }, /listed twice/],
       [{ actions: [7] }, /an action is a name/],
       [{ bulkDelete: "no" }, /bulkDelete/],

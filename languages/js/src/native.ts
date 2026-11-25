@@ -304,12 +304,25 @@ export interface NativeEngine extends NativeInspector {
   close(): Promise<void>;
 }
 
+/** The state of an `Admin` config: it refuses a wrong option, a duplicate and an unknown key when the call comes. `statementTimeout` is in seconds. */
+export interface NativeAdminConfigBuilder {
+  register(model: string, keys: string[]): void;
+  package(name: string, json: string): void;
+  route(method: string, path: string, permission: string | null, callable: boolean): void;
+  build(schema: NativeSchema, lateJson: string): NativeAdminSite;
+}
+
 interface Addon {
   /** Without `packages` the hook bindings stay unresolved: migrations and code generation need no library. */
   Schema: new (schemaJson: string, packages?: Record<string, string>) => NativeSchema;
   Trace: new () => NativeTrace;
   /** The admin service (feature `admin`): throws the precise text of a wrong config. */
   adminSite(schema: NativeSchema, configJson: string): NativeAdminSite;
+  AdminConfigBuilder: {
+    new (optionsJson: string, statementTimeout: number, rolesJson: string, spelling?: string): NativeAdminConfigBuilder;
+    /** Checks the `save` and `style` of an inline. */
+    checkInline(model: string, save: string, style: string): void;
+  };
   /** The `[admin]` settings of the project in `dir` as JSON; throws the text of a wrong setting. */
   adminSettings(dir: string): string;
   /** The names that the glob `patterns` of `role` select, in the order of `names`; throws the text of a wrong pattern. */
