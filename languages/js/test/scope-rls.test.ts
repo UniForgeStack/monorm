@@ -13,6 +13,7 @@ const SCHEMA = (n: Record<string, string>) => `
 datasource db {
   provider = "postgresql"
   bypass_roles = ["${n["admin"]}"]
+  scope_role_check = true
   exempt_roles = ["${n["auditor"]}"]
 }
 model Order {

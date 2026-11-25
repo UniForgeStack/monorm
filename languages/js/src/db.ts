@@ -35,6 +35,10 @@ const SETTINGS_ENGINES_MAX = 1024;
 const scopeValues = new AsyncLocalStorage<Readonly<Record<string, unknown>>>();
 /** For each open database: the scope keys its schema reads or writes. `scope()` accepts these only. */
 const declared = new Map<Database, ReadonlySet<string> | null>(); // null: a hook reads the scope, so any key is valid
+/** The databases whose bypass is one value for all keys (`scope_bypass`). */
+const valueBypass = new Set<Database>();
+/** The databases whose datasource sets `scope_prefix`: a scope key may hold a list of values. */
+const listForm = new Set<Database>();
 /** The scope keys that `unscoped()` opens in this async context. */
 const openKeys = new AsyncLocalStorage<ReadonlySet<string>>();
 /** The extensions whose triggers `skipTriggers()` skips in this async context. */
@@ -294,7 +298,7 @@ export class Database {
     const open = openKeys.getStore();
     if (open?.size && !sqlite) {
       names.push(this.root.bypassSetting);
-      values.push(`{${[...open].sort().join(",")}}`);
+      values.push(engine.bypassText([...open].sort()));
     }
     const allowed = allowedWrites();
     const ruleSkips = sqlite || allowed.length === 0 ? [] : engine.writeRuleSkips([...allowed]);
@@ -309,7 +313,8 @@ export class Database {
       for (const { key, setting } of root.published) {
         if (key in current) {
           names.push(setting);
-          values.push(String(current[key]));
+          const value = current[key];
+          values.push(Array.isArray(value) ? engine.scopeListText(key, value.map(String)) : String(value));
         }
       }
     }
@@ -365,7 +370,7 @@ export class Database {
     const bound = new Map(callbacks.getStore() ?? []).set(root, noCommitWork());
     const run = async (): Promise<T> => await fn();
     return current.run(new Map(current.getStore() ?? []).set(root, tx), () =>
-      callbacks.run(bound, () => scopeValues.run({ ...scopeValues.getStore(), ...options.scope }, run)));
+      callbacks.run(bound, () => scopeValues.run({ ...scopeValues.getStore(), ...listify(options.scope ?? {}) }, run)));
   }
 
   /** @internal */
@@ -621,6 +626,8 @@ export class Database {
       return this.root.close();
     }
     declared.delete(this);
+    valueBypass.delete(this);
+    listForm.delete(this);
     skippable.delete(this);
     await wait(() => this.base.close());
     for (const replica of this.replicas) {
@@ -678,6 +685,8 @@ export async function connect(url: string, options: ConnectOptions = {}): Promis
   declared.set(db, engine.scopeKeysOpen() ? null : new Set(engine.scopeKeys()));
   db.published = [...engine.publishedScopeSettings()].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
   db.bypassSetting = engine.bypassSetting();
+  if (engine.bypassIsValue()) valueBypass.add(db);
+  if (engine.scopeListForm()) listForm.add(db);
   skippable.set(db, new Set(engine.skippableTriggers()));
   if (options.default ?? true) {
     defaultDb = db;
@@ -697,14 +706,23 @@ export function getDatabase(): Database {
  * Runs `fn` with the values that `scope.<name>` reads in default filters
  * (a filter such as `shop_id == scope.shop`). A query on a model whose default filter
  * reads a value that no enclosing `scope()` sets throws `QueryError`. Inner values
- * replace outer ones. Gives what `fn` gives. Rejects with `TypeError` for a key that no open
- * database's schema declares, for `null`, `undefined`, an empty string and an array: a scope value
- * is one value per key.
+ * replace outer ones. Gives what `fn` gives.
+ *
+ * A key takes an array of values (`scope({ shop: [1, 2] }, fn)`) when the datasource sets
+ * `scope_prefix`: a read then matches the rows of any of them, and a write needs a cell that is
+ * one of them. Rejects with `TypeError` for a key that no open database's schema declares, for
+ * `null`, `undefined`, an empty string, an array when no open database sets `scope_prefix`, and
+ * an empty array or an array with an empty item or an item that holds `,`.
  */
 export async function scope<T>(values: Readonly<Record<string, unknown>>, fn: () => Promise<T>): Promise<T> {
   checkScope(values);
   // `await` inside: a returned thenable (a query set) must run while the values are set.
-  return scopeValues.run({ ...scopeValues.getStore(), ...values }, async () => await fn());
+  return scopeValues.run({ ...scopeValues.getStore(), ...listify(values) }, async () => await fn());
+}
+
+/** The values with each `Set` as a sorted array: the form that statements and settings read. */
+function listify(values: Readonly<Record<string, unknown>>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(values).map(([k, v]) => [k, v instanceof Set ? [...v].sort((a, b) => (String(a) < String(b) ? -1 : 1)) : v]));
 }
 
 /** @internal Refuses a scope value that no statement could use: see {@link scope}. */
@@ -714,7 +732,14 @@ export function checkScope(values: Readonly<Record<string, unknown>>): void {
       throw new TypeError(`scope({ ${key}: ${value} }): a scope value is never ${value}; leave the key out to set no value`);
     }
     if (Array.isArray(value) || value instanceof Set) {
-      throw new TypeError(`scope({ ${key}: [...] }): a list of values is not available yet; a scope key takes one value`);
+      if (declared.size > 0 && listForm.size === 0) {
+        throw new TypeError(`scope({ ${key}: [...] }): a list of values needs scope_prefix in the datasource; a scope key takes one value`);
+      }
+      const items = [...value];
+      if (items.some((item) => item === null || item === undefined)) {
+        throw new TypeError(`scope({ ${key}: [...] }): a scope value is never null or undefined; leave the item out`);
+      }
+      for (const db of listForm) call(() => db.engine.scopeListText(key, items.map(String)));
     }
     if (value === "") {
       throw new TypeError(`scope({ ${key}: "" }): a scope value is never empty; a pooled connection reads '' for no value`);
@@ -734,18 +759,29 @@ export function declareScopeKeys(db: Database, keys: readonly string[]): void {
   declared.set(db, new Set(keys));
 }
 
+function everyKey(): string[] {
+  const sets = [...valueBypass].map((db) => declared.get(db));
+  if (sets.length === 0 || sets.includes(null) || sets.includes(undefined)) {
+    throw new TypeError(
+      sets.length === 0
+        ? "unscoped() needs at least one key: name each scope key to open"
+        : "unscoped() with no key cannot list the keys: a hook reads the scope, so name each scope key to open",
+    );
+  }
+  return [...new Set(sets.flatMap((s) => [...(s ?? [])]))].sort();
+}
+
 /**
  * Runs `fn` with the named scope keys open: the fill, the check and the app read filter of each
  * key are off, in `fn` and in work it starts. On Postgres it also sets the bypass setting
  * (`monorm.bypass` by default) to the open keys for the policies of the database. A write that
- * needs a key that is neither open nor set throws `ScopeMissing`. Needs at least one key; each key must be declared by the
- * schema of an open database (`TypeError` otherwise). A nested block adds its keys to those of
- * the outer block. Gives what `fn` gives.
+ * needs a key that is neither open nor set throws `ScopeMissing`. Each key must be declared by the
+ * schema of an open database (`TypeError` otherwise). With no key it opens every key, for a database whose
+ * datasource sets `scope_bypass`. A nested block adds its keys to those of the outer block. With `scope_bypass`
+ * a statement throws when the open keys are not all keys. Gives what `fn` gives.
  */
 export async function unscoped<T>(keys: readonly string[], fn: () => Promise<T>): Promise<T> {
-  if (keys.length === 0) {
-    throw new TypeError("unscoped() needs at least one key: name each scope key to open");
-  }
+  if (keys.length === 0) keys = everyKey();
   if (declared.size > 0 && ![...declared.values()].includes(null)) {
     const valid = new Set([...declared.values()].flatMap((s) => [...(s ?? [])]));
     const unknown = keys.filter((k) => !valid.has(k)).sort();
@@ -779,14 +815,14 @@ export async function skipTriggers<T>(extensions: readonly string[], fn: () => P
 /** @internal The scope of this async context: the values that `scope.<name>` reads, and
  * {@link OPEN} for each key that `unscoped()` opens (an open key wins over a value). */
 export function currentScope(extra?: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> {
-  const merged: Record<string, unknown> = { ...scopeValues.getStore(), ...extra };
+  const merged: Record<string, unknown> = { ...scopeValues.getStore(), ...listify(extra ?? {}) };
   for (const key of openKeys.getStore() ?? []) merged[key] = OPEN;
   return merged;
 }
 
-/** @internal The key of a prepared statement's scope: each name, an open one with a `!` before it. */
+/** @internal The key of a prepared statement's scope: each name, an open one with a `!` before it and a list one with a `*`. */
 export function scopeShape(scope: Readonly<Record<string, unknown>>): string[] {
-  return Object.entries(scope).map(([name, value]) => (value === OPEN ? `!${name}` : name));
+  return Object.entries(scope).map(([name, value]) => (value === OPEN ? `!${name}` : Array.isArray(value) ? `*${name}` : name));
 }
 
 /** @internal The values of the set keys of `scope`, in the order of {@link scopeShape}. */
@@ -794,12 +830,16 @@ export function scopeParams(scope: Readonly<Record<string, unknown>>): unknown[]
   return Object.values(scope).filter((value) => value !== OPEN);
 }
 
-/** @internal The `scope` map of a statement: a set key gets a parameter index from `base`, an open key the engine's `OPEN_INDEX`. */
+/** @internal The `scope` map of a statement: a set key gets a parameter index from `base` (plus the engine's `LIST_INDEX` for a list), an open key the engine's `OPEN_INDEX`. */
 export function scopeIndex(shape: readonly string[], base: number): Record<string, number> {
   const index: Record<string, number> = {};
-  const open = native().OPEN_INDEX;
+  const { OPEN_INDEX, LIST_INDEX } = native();
   let next = base;
-  for (const name of shape) index[name.startsWith("!") ? name.slice(1) : name] = name.startsWith("!") ? open : next++;
+  for (const name of shape) {
+    if (name.startsWith("!")) index[name.slice(1)] = OPEN_INDEX;
+    else if (name.startsWith("*")) index[name.slice(1)] = next++ + LIST_INDEX;
+    else index[name] = next++;
+  }
   return index;
 }
 

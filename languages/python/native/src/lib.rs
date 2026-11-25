@@ -1127,6 +1127,26 @@ impl Engine {
         self.schema.bypass_setting().to_owned()
     }
 
+    /// True when the bypass has the value form: `unscoped()` with no key then opens every key.
+    fn bypass_is_value(&self) -> bool {
+        self.schema.bypass_is_value()
+    }
+
+    /// The text of the bypass setting for an `unscoped` block that opens `open`; an error when the form cannot open only those keys.
+    fn bypass_text(&self, open: Vec<String>) -> PyResult<String> {
+        self.schema.bypass_text(&open).map_err(pyo3::exceptions::PyValueError::new_err)
+    }
+
+    /// True when a scope key may hold a list of values (`scope_prefix` is set).
+    fn scope_list_form(&self) -> bool {
+        self.schema.scope_list_form()
+    }
+
+    /// The text of a list value for a scope setting; an error when the form has no list or an item cannot be sent.
+    fn scope_list_text(&self, key: &str, items: Vec<String>) -> PyResult<String> {
+        self.schema.scope_list_text(key, &items).map_err(pyo3::exceptions::PyValueError::new_err)
+    }
+
     /// Session advisory lock on a pinned connection; `None` when it is not taken.
     #[pyo3(signature = (key, name, exclusive, nowait, timeout_ms = None, trace = None))]
     #[allow(clippy::too_many_arguments)]
@@ -1705,6 +1725,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SessionLock>()?;
     m.add("DEFAULT", Py::new(py, DefaultMarker)?)?;
     m.add("OPEN_INDEX", monorm_engine::params::OPEN_INDEX)?;
+    m.add("LIST_INDEX", monorm_engine::params::LIST_INDEX)?;
     errors::add_defaults(py)?;
     m.add("DatabaseError", py.get_type::<errors::DatabaseError>())?;
     m.add("IntegrityError", py.get_type::<errors::IntegrityError>())?;

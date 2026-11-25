@@ -326,6 +326,26 @@ impl Schema {
         }
     }
 
+    /// True when the datasource sets `scope_prefix`: a scope key can then hold a list of values.
+    pub fn scope_list_form(&self) -> bool {
+        self.scope_settings.list_form()
+    }
+
+    /// The text of the setting of a scope key that holds a list: the values separated by `,`.
+    /// A list is an error without `scope_prefix`, when it is empty, or when a value is empty or has a `,`.
+    pub fn scope_list_text(&self, key: &str, items: &[String]) -> Result<String> {
+        if !self.scope_settings.list_form() {
+            return Err(format!("scope({key}=[...]): a list of values needs scope_prefix in the datasource; without it a scope key takes one value"));
+        }
+        if items.is_empty() {
+            return Err(format!("scope({key}=[...]): a list of values has at least one value"));
+        }
+        if let Some(bad) = items.iter().find(|v| v.is_empty() || v.contains(',')) {
+            return Err(format!("scope({key}=[...]): the value {bad:?} is empty or has a `,`; the setting is text separated by `,`"));
+        }
+        Ok(items.join(","))
+    }
+
     /// The names that `skip_triggers` accepts: the `skippable` name of each trigger of a model.
     pub fn skippable_triggers(&self) -> std::collections::BTreeSet<String> {
         self.physical().models.iter().flat_map(|m| m.ir.triggers.iter()).filter_map(|t| t.skippable.clone()).collect()

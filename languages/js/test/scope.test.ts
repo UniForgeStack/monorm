@@ -190,7 +190,7 @@ test("scope refuses what the schema does not declare", { skip }, () =>
   withOrders("sqlite", async () => {
     await assert.rejects(scope({ nope: 1 }, async () => 0), /no key/);
     await assert.rejects(scope({ shop: null }, async () => 0), /never null/);
-    await assert.rejects(scope({ shop: [1, 2] }, async () => 0), /not available yet/);
+    await assert.rejects(scope({ shop: [1, 2] }, async () => 0), /needs scope_prefix/);
   }));
 
 test("skipTriggers switches the timestamps trigger off for a bypass role", { skip: skip || !process.env["ORM_TEST_DATABASE_URL"] }, () =>

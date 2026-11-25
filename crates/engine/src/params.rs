@@ -46,6 +46,11 @@ pub trait Params {
         None
     }
 
+    /// Whether `scope.<name>` holds a list of values (the parameter is a list).
+    fn scope_list(&self, _name: &str) -> bool {
+        false
+    }
+
     /// Whether the statement runs inside `unscoped(key)`: its fill and write check of `key` are off.
     fn unscoped(&self, _key: &str) -> bool {
         false
@@ -60,6 +65,9 @@ pub trait Params {
 /// The "parameter index" of a scope key that an `unscoped` block opens: the key has no value parameter, and the
 /// statement's fill, write check and read default of that key are off.
 pub const OPEN_INDEX: usize = u32::MAX as usize;
+
+/// Added to the parameter index of a scope key that holds a list of values.
+pub const LIST_INDEX: usize = 1 << 31;
 
 /// `params` with the statement's `scope.<name>` parameter indexes.
 pub struct Scoped<'a> {
@@ -87,13 +95,16 @@ impl Params for Scoped<'_> {
         self.params.now(ty)
     }
     fn scope(&self, name: &str) -> Option<usize> {
-        self.scope.get(name).copied().filter(|i| *i != OPEN_INDEX)
+        self.scope.get(name).copied().filter(|i| *i != OPEN_INDEX).map(|i| i & !LIST_INDEX)
+    }
+    fn scope_list(&self, name: &str) -> bool {
+        self.scope.get(name).is_some_and(|i| *i != OPEN_INDEX && i & LIST_INDEX != 0)
     }
     fn unscoped(&self, key: &str) -> bool {
         self.scope.get(key) == Some(&OPEN_INDEX) || self.params.unscoped(key)
     }
     fn scope_values(&self) -> Vec<(String, usize)> {
-        self.scope.iter().filter(|(_, v)| **v != OPEN_INDEX).map(|(k, v)| (k.clone(), *v)).collect()
+        self.scope.iter().filter(|(_, v)| **v != OPEN_INDEX).map(|(k, v)| (k.clone(), *v & !LIST_INDEX)).collect()
     }
 }
 

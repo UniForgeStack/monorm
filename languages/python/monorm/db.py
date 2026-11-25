@@ -38,10 +38,14 @@ _open: ContextVar[frozenset[str]] = ContextVar("monorm_open", default=frozenset(
 _skip: ContextVar[frozenset[str]] = ContextVar("monorm_skip", default=frozenset())
 # The scope index of a key that `unscoped()` opened: no parameter holds its value.
 OPEN_INDEX: int = _native.OPEN_INDEX
+# Added to the scope index of a key that holds a list of values.
+LIST_INDEX: int = _native.LIST_INDEX
 # For each open database: the extensions with triggers that `skip_triggers()` may skip.
 _skippable: dict[Database, frozenset[str]] = {}
 # The `scope.<name>` values of default filters.
 _scope: ContextVar[dict[str, Any]] = ContextVar("monorm_scope", default={})
+_value_bypass: set[Database] = set()  # the databases whose bypass is one value for all keys
+_list_form: set[Database] = set()  # the databases whose datasource sets `scope_prefix`: a key may hold a list
 # For each open database: the scope keys its schema reads or writes. `scope()` accepts these only.
 _declared: dict[Database, frozenset[str] | None] = {}  # None: a hook reads the scope, so any key is valid
 # For each database with an open transaction: the on_commit callbacks of the innermost one.
@@ -162,7 +166,7 @@ class Database:
             raise QueryError("skip_triggers() skips triggers of the database; sqlite has none that a block can skip")
         if (open_ := _open.get()) and not sqlite:
             names.append(self._root._bypass_setting)
-            values.append("{" + ",".join(sorted(open_)) + "}")
+            values.append(engine.bypass_text(sorted(open_)))
         allowed = allowed_writes()
         if allowed and not sqlite:
             skip = skip.union(engine.write_rule_skips(list(allowed)))
@@ -174,7 +178,12 @@ class Database:
             for name, setting in self._root._published:
                 if name in current:
                     names.append(setting)
-                    values.append(_setting_text(current[name]))
+                    value = current[name]
+                    values.append(
+                        engine.scope_list_text(name, [_setting_text(v) for v in value])
+                        if isinstance(value, list)
+                        else _setting_text(value)
+                    )
         # Before any block set a setting, no transaction carries one.
         if not names and (sqlite or self._tx() is None or not self._root._settings_engines):
             return engine
@@ -215,7 +224,7 @@ class Database:
         root = self._root
         tx_token = _current_tx.set({**_current_tx.get(), root: tx})
         check_scope(scope or {})
-        scope_token = _scope.set({**_scope.get(), **(scope or {})})
+        scope_token = _scope.set({**_scope.get(), **_listify(scope or {})})
         cb_token = _callbacks.set({**_callbacks.get(), root: _BoundCallbacks()})
         try:
             yield
@@ -668,6 +677,8 @@ class Database:
         if self._root is not self:
             return await self._root.close()
         _declared.pop(self, None)
+        _value_bypass.discard(self)
+        _list_form.discard(self)
         _skippable.pop(self, None)
         await self._base.close()
         for replica in self._replicas:
@@ -713,6 +724,10 @@ async def connect(
     _declared[db] = None if engine.scope_keys_open() else frozenset(engine.scope_keys())
     db._published = tuple(sorted(engine.published_scope_settings()))
     db._bypass_setting = engine.bypass_setting()
+    if engine.bypass_is_value():
+        _value_bypass.add(db)
+    if engine.scope_list_form():
+        _list_form.add(db)
     _skippable[db] = frozenset(engine.skippable_triggers())
     if default:
         _default = db
@@ -725,10 +740,14 @@ def scope(**values: Any) -> AbstractContextManager[None]:
     whose default filter reads a value that no enclosing ``scope()`` sets raises
     ``QueryError``. Inner values replace outer ones; tasks started in the block get them.
 
-    Raises ``ValueError`` for a key that no open database's schema declares, for ``None``, for an empty
-    string and for a list: a scope value is one value per key."""
+    A key takes a list of values (``scope(shop=[1, 2])``) when the datasource sets ``scope_prefix``;
+    a read then matches the rows of any of them, and a write needs a cell that is one of them.
+
+    Raises ``ValueError`` for a key that no open database's schema declares, for ``None``, for an
+    empty string, for a list when no open database sets ``scope_prefix``, and for an empty list or
+    a list with an empty item or an item that holds ``,``."""
     check_scope(values)
-    return _scope_block(values)
+    return _scope_block(_listify(values))
 
 
 @contextmanager
@@ -747,11 +766,22 @@ def unscoped(*keys: str) -> AbstractContextManager[None]:
     database. A write that needs a key that is neither open nor set raises :class:`~monorm.ScopeMissing`.
 
     Needs at least one key, and each key must be declared by the schema of an open database
-    (``ValueError`` otherwise). A nested block adds its keys to those of the outer block."""
+    (``ValueError`` otherwise). With no key it opens every key, for a database whose datasource
+    sets ``scope_bypass``. A nested block adds its keys to those of the outer block. With
+    ``scope_bypass`` a statement raises ``ValueError`` when the open keys are not all keys."""
     if not keys:
-        raise ValueError("unscoped() needs at least one key: name each scope key to open")
+        keys = _every_key()
     check_open(keys)
     return _open_block(frozenset(keys))
+
+
+def _every_key() -> tuple[str, ...]:
+    declared = [_declared[db] for db in _value_bypass if db in _declared]
+    if not declared:
+        raise ValueError("unscoped() needs at least one key: name each scope key to open")
+    if any(k is None for k in declared):
+        raise ValueError("unscoped() with no key cannot list the keys: a hook reads the scope, so name each scope key to open")
+    return tuple(sorted(frozenset().union(*(k for k in declared if k is not None))))
 
 
 @contextmanager
@@ -803,7 +833,13 @@ def check_scope(values: Mapping[str, Any]) -> None:
         if value is None:
             raise ValueError(f"scope({key}=None): a scope value is never None; leave the key out to set no value")
         if isinstance(value, (list, tuple, set, frozenset)):
-            raise ValueError(f"scope({key}=...): a list of values is not available yet; a scope key takes one value")
+            if _declared and not _list_form:
+                raise ValueError(f"scope({key}=[...]): a list of values needs scope_prefix in the datasource; a scope key takes one value")
+            texts = [_setting_text(v) for v in value]
+            if any(v is None for v in value):
+                raise ValueError(f"scope({key}=...): a scope value is never None; leave the item out")
+            for db in _list_form:
+                db._base.scope_list_text(key, texts)
         if isinstance(value, str) and not value:
             raise ValueError(f"scope({key}=''): a scope value is never empty; a pooled connection reads '' for no value")
     if _declared and None not in _declared.values():
@@ -825,6 +861,14 @@ OPEN = _Open()
 _SETTINGS_ENGINES_MAX = 1024
 
 
+def _listify(values: Mapping[str, Any]) -> dict[str, Any]:
+    """``values`` with each tuple or set as a list: the form that the statements and settings read."""
+    return {
+        k: sorted(v, key=str) if isinstance(v, (set, frozenset)) else list(v) if isinstance(v, tuple) else v
+        for k, v in values.items()
+    }
+
+
 def _setting_text(value: Any) -> str:
     """A scope value as the text of a database setting; the policy casts it back to the column type."""
     return ("true" if value else "false") if isinstance(value, bool) else str(value)
@@ -836,15 +880,15 @@ def scope_values(extra: Mapping[str, Any] | None = None) -> dict[str, Any]:
     values = _scope.get()
     if extra:
         check_scope(extra)
-        values = {**values, **extra}
+        values = {**values, **_listify(extra)}
     if open_ := _open.get():
         values = {**values, **dict.fromkeys(open_, OPEN)}
     return values
 
 
-def scope_shape(scope: Mapping[str, Any]) -> tuple[tuple[str, bool], ...]:
-    """The key of a held statement: the scope names, and which of them are open."""
-    return tuple((name, value is OPEN) for name, value in scope.items())
+def scope_shape(scope: Mapping[str, Any]) -> tuple[tuple[str, int], ...]:
+    """The key of a held statement: the scope names, each with its kind: 0 one value, 1 open, 2 a list."""
+    return tuple((name, 1 if value is OPEN else 2 if isinstance(value, list) else 0) for name, value in scope.items())
 
 
 def scope_index(base: int, scope: Mapping[str, Any]) -> dict[str, int]:
@@ -856,7 +900,7 @@ def scope_index(base: int, scope: Mapping[str, Any]) -> dict[str, int]:
         if value is OPEN:
             index[name] = OPEN_INDEX
         else:
-            index[name] = position
+            index[name] = position | LIST_INDEX if isinstance(value, list) else position
             position += 1
     return index
 
