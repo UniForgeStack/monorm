@@ -12,9 +12,6 @@ const ICONS: Record<string, LucideIcon> = {
   "user-cog": UserCog, users: Users, wallet: Wallet, wrench: Wrench, zap: Zap,
 };
 
-/** Whether the UI knows this lucide name. */
-export const knownIcon = (name: string | null | undefined): name is string => !!name && name in ICONS;
-
 /** The icon of a lucide name, or a plain dot for a name that the UI does not know (or no name: `fallback`). */
 export function NavIcon({ name, fallback, ...props }: { name?: string | null; fallback?: LucideIcon } & Omit<SVGProps<SVGSVGElement>, "name">) {
   const Icon = (name ? ICONS[name] : undefined) ?? fallback;

@@ -37,7 +37,8 @@ export function Shell({ user, route }: { user: api.User | null; route: Route }) 
 
   useEffect(() => {
     if (!brand) return;
-    applyBrand(brand.colors, !!brand.switcher?.services.some((svc) => svc.key === brand.switcher?.current && svc.color));
+    const serviceHasColor = !!brand.switcher?.services.some((svc) => svc.key === brand.switcher?.current && svc.color);
+    applyBrand(brand.colors, serviceHasColor);
     document.title = brand.name;
   }, [brand]);
 
@@ -57,6 +58,7 @@ export function Shell({ user, route }: { user: api.User | null; route: Route }) 
     window.location.assign(LOGIN_URL);
   };
   const current = "resource" in route ? route.resource : null;
+  const footer = <UserFooter user={user} zone={zone} onZone={(z) => { setZone(z); setZoneState(z); }} onSignOut={signOut} />;
 
   const title = pageTitle(route, site.data);
 
@@ -66,11 +68,19 @@ export function Shell({ user, route }: { user: api.User | null; route: Route }) 
         // The site list is refused (no permission): the account menu stays reachable.
         <aside id="sidebar" hidden={!open} className="flex w-64 shrink-0 flex-col justify-between border-r border-border bg-card p-2">
           <Link href={BASE} className="rounded-md p-2 text-sm font-semibold text-foreground no-underline hover:bg-accent">Admin</Link>
-          <UserFooter user={user} zone={zone} onZone={(z) => { setZone(z); setZoneState(z); }} onSignOut={signOut} />
+          {footer}
         </aside>
       )}
       {site.data && brand && (
-        <Sidebar site={site.data} open={open} current={current} home={route.page === "home"} onNavigate={() => { if (!wide()) toggle(); }} header={<ServiceSwitcher brand={brand} />} footer={<UserFooter user={user} zone={zone} onZone={(z) => { setZone(z); setZoneState(z); }} onSignOut={signOut} />} />
+        <Sidebar
+          site={site.data}
+          open={open}
+          current={current}
+          home={route.page === "home"}
+          onNavigate={() => { if (!wide()) toggle(); }}
+          header={<ServiceSwitcher brand={brand} />}
+          footer={footer}
+        />
       )}
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border bg-card px-3">

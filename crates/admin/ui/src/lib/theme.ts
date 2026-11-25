@@ -99,7 +99,6 @@ export function applyBrand(colors: { primary?: string; accent?: string }, servic
   // The colour of the current service sets the whole primary ramp; a site with only `colors.primary` keeps the one fill.
   if (colors.primary && service) {
     for (const [k, v] of Object.entries(ramp(colors.primary))) root.setProperty(k, v);
-    root.setProperty("--brand-foreground", "#ffffff");
   }
   setFavicon(faviconUrl(colors.primary ?? "#1f4fd8"));
   if (colors.primary) for (const [k, v] of Object.entries(brandVars(colors.primary))) root.setProperty(k, v);
