@@ -1584,7 +1584,7 @@ class _Compiled:
         self.slots = [(i, p.name, p.transform) for i, p in enumerate(params) if isinstance(p, _Slot)]
         self.names = frozenset(name for _, name, _ in self.slots)
         self.declared: list[str | None] = [p.type if isinstance(p, _Slot) else None for p in params]
-        self.natives: dict[tuple[Any, tuple[tuple[str, bool], ...]], Any] = {}
+        self.natives: dict[tuple[Any, tuple[tuple[str, int], ...]], Any] = {}
 
     def bind(self, values: Mapping[str, Any], known: frozenset[str]) -> list[Any]:
         if missing := self.names - values.keys():

@@ -302,6 +302,50 @@ impl Schema {
         self.scope_settings.bypass_setting()
     }
 
+    /// True when the bypass has the value form (`scope_bypass`): one value opens every key.
+    pub fn bypass_is_value(&self) -> bool {
+        self.scope_settings.bypass_value().is_some()
+    }
+
+    /// The text of the bypass setting for an `unscoped` block that opens the keys `open`.
+    /// The key-list form lists them. The value form has one value for all keys, so it needs every key that an object
+    /// of the database reads, and a block that opens only some of them is an error.
+    pub fn bypass_text(&self, open: &[String]) -> Result<String> {
+        let Some(value) = self.scope_settings.bypass_value() else {
+            let mut keys: Vec<&str> = open.iter().map(String::as_str).collect();
+            keys.sort_unstable();
+            return Ok(format!("{{{}}}", keys.join(",")));
+        };
+        match self.published_scope_keys.iter().filter(|k| !open.contains(k)).collect::<Vec<_>>().as_slice() {
+            [] => Ok(value.to_owned()),
+            closed => Err(format!(
+                "unscoped() opens only some scope keys, but the bypass setting {} opens all of them; also open {}",
+                self.scope_settings.bypass_setting(),
+                closed.iter().map(|k| k.as_str()).collect::<Vec<_>>().join(", "),
+            )),
+        }
+    }
+
+    /// True when the datasource sets `scope_prefix`: a scope key can then hold a list of values.
+    pub fn scope_list_form(&self) -> bool {
+        self.scope_settings.list_form()
+    }
+
+    /// The text of the setting of a scope key that holds a list: the values separated by `,`.
+    /// A list is an error without `scope_prefix`, when it is empty, or when a value is empty or has a `,`.
+    pub fn scope_list_text(&self, key: &str, items: &[String]) -> Result<String> {
+        if !self.scope_settings.list_form() {
+            return Err(format!("scope({key}=[...]): a list of values needs scope_prefix in the datasource; without it a scope key takes one value"));
+        }
+        if items.is_empty() {
+            return Err(format!("scope({key}=[...]): a list of values has at least one value"));
+        }
+        if let Some(bad) = items.iter().find(|v| v.is_empty() || v.contains(',')) {
+            return Err(format!("scope({key}=[...]): the value {bad:?} is empty or has a `,`; the setting is text separated by `,`"));
+        }
+        Ok(items.join(","))
+    }
+
     /// The names that `skip_triggers` accepts: the `skippable` name of each trigger of a model.
     pub fn skippable_triggers(&self) -> std::collections::BTreeSet<String> {
         self.physical().models.iter().flat_map(|m| m.ir.triggers.iter()).filter_map(|t| t.skippable.clone()).collect()

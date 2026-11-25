@@ -1,6 +1,8 @@
 //! `@@scope.by(shop: shop_id, mode: livemode)`: each key names a scope value and the column that holds it.
 //! Every key adds a read default (`<column> = scope.<key>`) and a scoped field: the insert fill and the write check.
 //! `unscoped("<key>")` turns off both for one key.
+//! The datasource's `scope_prefix`, `scope_bypass` and `scope_role_check` (the `scope_settings` of the IR) choose the
+//! names of the settings, the form of a key value (one value, or `,`-separated text) and the bypass.
 //! On PostgreSQL the same keys also give the table row-level security: the policy `monorm_scope`, a fill trigger and
 //! a read-only policy for each exempt role. A level table of a composed model joins to its parent.
 use monorm::{
@@ -35,6 +37,14 @@ fn setting(key: &Key, names: &ScopeSettingsIr) -> String {
     format!("(SELECT NULLIF(current_setting({}, true), '')::{})", literal(&names.key_setting(&key.name)), key.sql_type)
 }
 
+/// The value that a fill trigger writes. In the list form a setting that holds a list (`1,2`) is no value for one column,
+/// so the trigger leaves the column NULL: the insert then fails on a NOT NULL column or on the write check, as it should.
+fn fill_value(key: &Key, names: &ScopeSettingsIr) -> String {
+    if !names.list_form() { return setting(key, names); }
+    let current = format!("current_setting({}, true)", literal(&names.key_setting(&key.name)));
+    format!("(SELECT CASE WHEN position(',' in {current}) = 0 THEN NULLIF({current}, '')::{} END)", key.sql_type)
+}
+
 /// `current_user` is a member of one of the roles. The catalog lookup keeps a role that does not exist from raising an error:
 /// `pg_has_role` with a name fails for an unknown role, and the policy runs for every statement.
 fn member_of(roles: &[String]) -> String {
@@ -42,12 +52,33 @@ fn member_of(roles: &[String]) -> String {
     format!("(SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname IN ({names}) AND pg_has_role(current_user, oid, 'member')))")
 }
 
-/// The term of one key: the column equals the setting, or an open `unscoped` bypass of a bypass role.
+/// The column holds the value of the key. The list form reads the setting as `,`-separated text.
+fn equal(key: &Key, names: &ScopeSettingsIr) -> String {
+    if !names.list_form() { return format!("{} = {}", ident(&key.column), setting(key, names)); }
+    let current = format!("(SELECT current_setting({}, true))", literal(&names.key_setting(&key.name)));
+    format!("{}::text = ANY(string_to_array({current}, ','))", ident(&key.column))
+}
+
+/// The branch of one key that an open `unscoped` block takes: the bypass setting equals the value, or it lists the key.
+/// With `scope_role_check` it also needs a bypass role, and with no bypass role there is no branch. The choice is made
+/// here, so a schema without the check has no `pg_roles` text.
+fn bypass(key: &Key, bypass_roles: &[String], names: &ScopeSettingsIr) -> Option<String> {
+    let open = match names.bypass_value() {
+        Some(value) => format!("(SELECT current_setting({}, true) = {})", literal(names.bypass_setting()), literal(value)),
+        None => format!("(SELECT {} = ANY(NULLIF(current_setting({}, true), '')::text[]))", literal(&key.name), literal(names.bypass_setting())),
+    };
+    if !names.role_check { return Some(open); }
+    if bypass_roles.is_empty() { return None; }
+    Some(format!("({open} AND {})", member_of(bypass_roles)))
+}
+
+/// The term of one key: the column equals the setting, or the bypass is open.
 fn term(key: &Key, bypass_roles: &[String], names: &ScopeSettingsIr) -> String {
-    let equal = format!("{} = {}", ident(&key.column), setting(key, names));
-    if bypass_roles.is_empty() { return format!("({equal})"); }
-    let open = format!("(SELECT {} = ANY(NULLIF(current_setting({}, true), '')::text[]))", literal(&key.name), literal(names.bypass_setting()));
-    format!("({equal} OR ({open} AND {}))", member_of(bypass_roles))
+    let equal = equal(key, names);
+    match bypass(key, bypass_roles, names) {
+        Some(open) => format!("({equal} OR {open})"),
+        None => format!("({equal})"),
+    }
 }
 
 fn expression(keys: &[Key], bypass_roles: &[String], names: &ScopeSettingsIr) -> String {
@@ -68,7 +99,7 @@ fn exempt_policies(roles: &[String]) -> Vec<PolicyIr> {
 
 /// The fill trigger: for each key, a NULL column takes the setting.
 fn fill(keys: &[Key], names: &ScopeSettingsIr) -> TriggerIr {
-    let steps: String = keys.iter().map(|k| format!("IF NEW.{c} IS NULL THEN NEW.{c} := {s}; END IF; ", c = ident(&k.column), s = setting(k, names))).collect();
+    let steps: String = keys.iter().map(|k| format!("IF NEW.{c} IS NULL THEN NEW.{c} := {s}; END IF; ", c = ident(&k.column), s = fill_value(k, names))).collect();
     TriggerIr { name: FILL.into(), timing: TriggerTiming::Before, events: vec![TriggerEvent::Insert], body: Some(format!("BEGIN {steps}RETURN NEW; END;")), ..Default::default() }
 }
 
@@ -136,6 +167,9 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
     for d in ir.behavior.declarations.iter().filter(|d| d.attribute == "scope.by" && !d.lowered) {
         for (key, field) in declared(ir, d)? {
             if !seen.insert((d.model.clone(), key.clone())) { return Err(error(d, format!("{}: the scope key {key} is declared twice", d.model))); }
+            if ir.scope_settings.key_setting(&key) == ir.scope_settings.bypass_setting() {
+                return Err(error(d, format!("{}: the scope key {key} has the setting {}, which is also the bypass setting; rename the key or set `scope_bypass`", d.model, ir.scope_settings.bypass_setting())));
+            }
             if ir.dialect == Dialect::Postgres && !proxies.contains(&d.model) {
                 let model = ir.models.iter().find(|m| m.name == d.model).ok_or_else(|| error(d, "unknown model"))?;
                 let f = model.fields.iter().find(|f| f.name == field).ok_or_else(|| error(d, format!("{} has no field {field}", d.model)))?;
@@ -163,6 +197,13 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
     let published: Vec<_> = published.into_iter().map(|key| PublishedScopeKey { source: SOURCE.into(), key: key.clone() }).collect();
     ir.behavior.published_scope_keys.extend(published);
     for (owner, keys) in secured {
+        // A key in the datasource says that the policy of an unmanaged table already works: MonOrm adds no object to it.
+        if model_of(ir, &owner).is_some_and(|m| !m.managed) {
+            if !names.list_form() && names.bypass_value().is_none() {
+                return Err(format!("{owner}: @@scope.by on an unmanaged model adds a policy to a table that another service owns; set `scope_prefix` or `scope_bypass` in the datasource to say that its policy already works"));
+            }
+            continue;
+        }
         let keys: Vec<Key> = keys.into_values().collect();
         for model in ir.models_named_mut(&owner) {
             secure(model, policy(expression(&keys, &bypass, &names)), exempt_policies(&exempt))?;
@@ -233,6 +274,7 @@ mod tests {
     #[test]
     fn postgres_gets_the_policy_the_flags_and_the_fill_trigger() {
         let mut ir = secured(serde_json::json!(["admin"]), serde_json::json!([]));
+        ir.scope_settings.role_check = true;
         prepare(&mut ir).unwrap();
         let m = &ir.models[0];
         assert!(m.rls.enabled && m.rls.forced);
@@ -250,7 +292,7 @@ mod tests {
     #[test]
     fn the_policy_and_the_fill_trigger_read_the_settings_of_the_ir() {
         let mut ir = secured(serde_json::json!(["admin"]), serde_json::json!([]));
-        ir.scope_settings = ScopeSettingsIr { overrides: [("shop".to_owned(), "tenant.shop".to_owned())].into(), bypass: "tenant.bypass".into() };
+        ir.scope_settings = ScopeSettingsIr { prefix: "tenant".into(), bypass: "tenant.bypass".into(), role_check: true, ..Default::default() };
         prepare(&mut ir).unwrap();
         let using = ir.models[0].policies[0].using.clone().unwrap();
         assert!(using.contains("current_setting('tenant.shop', true)") && using.contains("current_setting('tenant.bypass', true)"), "{using}");
@@ -260,11 +302,95 @@ mod tests {
     }
 
     #[test]
-    fn no_bypass_role_leaves_the_bypass_branch_out() {
+    fn the_role_check_with_no_bypass_role_leaves_the_bypass_branch_out() {
         let mut ir = secured(serde_json::json!([]), serde_json::json!([]));
+        ir.scope_settings.role_check = true;
         prepare(&mut ir).unwrap();
         let using = ir.models[0].policies[0].using.clone().unwrap();
         assert!(!using.contains("monorm.bypass") && !using.contains(" OR "), "{using}");
+    }
+
+    #[test]
+    fn with_no_role_check_the_bypass_names_no_role_whatever_bypass_roles_says() {
+        for roles in [serde_json::json!([]), serde_json::json!(["admin"])] {
+            let mut ir = secured(roles, serde_json::json!([]));
+            prepare(&mut ir).unwrap();
+            let using = ir.models[0].policies[0].using.clone().unwrap();
+            let open = "(SELECT 'shop' = ANY(NULLIF(current_setting('monorm.bypass', true), '')::text[]))";
+            assert_eq!(using, format!("(\"shop_id\" = (SELECT NULLIF(current_setting('scope.shop', true), '')::integer) OR {open})"));
+            assert!(!using.contains("pg_roles") && !using.contains("pg_has_role"), "{using}");
+        }
+    }
+
+    fn named(prefix: &str, bypass: &str, value: &str) -> SchemaIr {
+        let mut ir = secured(serde_json::json!([]), serde_json::json!([]));
+        ir.scope_settings = ScopeSettingsIr { prefix: prefix.into(), bypass: bypass.into(), bypass_value: value.into(), ..Default::default() };
+        ir
+    }
+
+    #[test]
+    fn a_prefix_makes_the_list_predicate_and_the_fill_takes_a_single_value_only() {
+        let mut ir = named("tenant", "", "");
+        prepare(&mut ir).unwrap();
+        let using = ir.models[0].policies[0].using.clone().unwrap();
+        assert!(using.contains("\"shop_id\"::text = ANY(string_to_array((SELECT current_setting('tenant.shop', true)), ','))"), "{using}");
+        let body = ir.models[0].triggers[0].body.clone().unwrap();
+        assert!(body.contains("position(',' in current_setting('tenant.shop', true)) = 0"), "{body}");
+        assert!(body.contains("NULLIF(current_setting('tenant.shop', true), '')::integer"), "{body}");
+        let mut plain = named("", "", "");
+        prepare(&mut plain).unwrap();
+        let using = plain.models[0].policies[0].using.clone().unwrap();
+        assert!(!using.contains("string_to_array(") || using.contains("text[]"), "{using}");
+        assert!(!using.contains("::text = ANY"), "{using}");
+        assert!(!plain.models[0].triggers[0].body.clone().unwrap().contains("position("));
+    }
+
+    #[test]
+    fn a_bypass_value_opens_every_key_when_the_setting_equals_it() {
+        let mut ir = named("tenant", "tenant.bypass", "on");
+        ir.scope_settings.role_check = true;
+        ir.bypass_roles = serde_json::from_value(serde_json::json!(["admin"])).unwrap();
+        prepare(&mut ir).unwrap();
+        let using = ir.models[0].policies[0].using.clone().unwrap();
+        assert!(using.contains("(SELECT current_setting('tenant.bypass', true) = 'on')"), "{using}");
+        assert!(using.contains("pg_roles") && !using.contains("text[]"), "{using}");
+        let mut open = named("tenant", "tenant.bypass", "on");
+        prepare(&mut open).unwrap();
+        let using = open.models[0].policies[0].using.clone().unwrap();
+        assert!(using.contains("current_setting('tenant.bypass', true) = 'on'") && !using.contains("pg_roles"), "{using}");
+    }
+
+    #[test]
+    fn a_key_with_the_setting_of_the_bypass_is_an_error() {
+        let mut ir = named("tenant", "tenant.bypass", "on");
+        ir.behavior.declarations[0].arguments = serde_json::from_value(serde_json::json!({"bypass": "shop_id"})).unwrap();
+        let err = prepare(&mut ir).unwrap_err();
+        assert!(err.contains("bypass") && err.contains("tenant.bypass"), "{err}");
+    }
+
+    fn unmanaged(ir: &mut SchemaIr) {
+        ir.models[0].managed = false;
+    }
+
+    #[test]
+    fn an_unmanaged_model_with_a_scope_key_in_the_datasource_gets_no_object() {
+        for settings in [named("tenant", "", ""), named("", "tenant.bypass", "on")] {
+            let mut ir = settings;
+            unmanaged(&mut ir);
+            prepare(&mut ir).unwrap();
+            let m = &ir.models[0];
+            assert!(m.rls.is_off() && m.policies.is_empty() && m.triggers.is_empty());
+            assert_eq!(ir.behavior.scoped_fields.len(), 1);
+            assert_eq!(ir.behavior.read_defaults.len(), 1);
+        }
+    }
+
+    #[test]
+    fn an_unmanaged_model_with_no_scope_key_in_the_datasource_is_an_error_that_names_the_keys() {
+        let mut ir = secured(serde_json::json!([]), serde_json::json!([]));
+        unmanaged(&mut ir);
+        let err = prepare(&mut ir).unwrap_err();
+        assert!(err.contains("Order") && err.contains("scope_prefix") && err.contains("scope_bypass"), "{err}");
     }
 
     #[test]

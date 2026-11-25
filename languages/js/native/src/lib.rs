@@ -223,6 +223,10 @@ fn shared(env: &Env) -> napi::Result<&'static mut Shared> {
 #[napi]
 pub const OPEN_INDEX: u32 = monorm_engine::params::OPEN_INDEX as u32;
 
+/// The flag that marks a list-valued scope key in a statement's `scope` map.
+#[napi]
+pub const LIST_INDEX: u32 = monorm_engine::params::LIST_INDEX as u32;
+
 /// Registers the class decimal values are read as (and recognized by, as parameters):
 /// `decimal.js`'s `Decimal`. The runtime calls this once when it loads.
 #[napi]
@@ -1432,6 +1436,30 @@ impl Engine {
     #[napi]
     pub fn bypass_setting(&self) -> String {
         self.schema.bypass_setting().to_owned()
+    }
+
+    /// True when the bypass has the value form: `unscoped()` with no key then opens every key.
+    #[napi]
+    pub fn bypass_is_value(&self) -> bool {
+        self.schema.bypass_is_value()
+    }
+
+    /// The text of the bypass setting for an `unscoped` block that opens `open`; an error when the form cannot open only those keys.
+    #[napi]
+    pub fn bypass_text(&self, open: Vec<String>) -> napi::Result<String> {
+        self.schema.bypass_text(&open).map_err(napi::Error::from_reason)
+    }
+
+    /// True when a scope key may hold a list of values (`scope_prefix` is set).
+    #[napi]
+    pub fn scope_list_form(&self) -> bool {
+        self.schema.scope_list_form()
+    }
+
+    /// The text of a list value for a scope setting; an error when the form has no list or an item cannot be sent.
+    #[napi]
+    pub fn scope_list_text(&self, key: String, items: Vec<String>) -> napi::Result<String> {
+        self.schema.scope_list_text(&key, &items).map_err(napi::Error::from_reason)
     }
 
     /// Session advisory lock on a pinned connection; `null` when it is not taken.

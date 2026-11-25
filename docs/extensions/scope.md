@@ -19,6 +19,15 @@ The attribute takes no other argument.
 A key is declared once for each model.
 The field must be a field of the model. On PostgreSQL it must be a scalar column (not `Json`, not an array).
 The datasource block takes `bypass_roles` and `exempt_roles` (lists of database roles). Both default to the empty list.
+It also takes three keys that name the settings of the database, for a database that another ORM shares:
+
+| Key | Meaning | Default |
+| --- | --- | --- |
+| `scope_prefix = "tenant"` | The setting of key `shop` is `tenant.shop`. The policy reads the setting as a comma list (see below). | no prefix: `scope.<key>`, one value |
+| `scope_bypass = { setting = "tenant.bypass", value = "on" }` | `unscoped()` sets this setting to this value, and the policy opens every key when the setting equals the value. | `monorm.bypass`, the list of the open keys |
+| `scope_role_check = true` | The bypass also needs a role of `bypass_roles`. | `false` |
+
+A key whose setting is the bypass setting is a schema error.
 
 ## Use
 
@@ -84,16 +93,36 @@ Remove `@@scope.by` and the next migration drops the policies, the trigger and t
 ## Open keys
 
 `unscoped("shop")` sets `monorm.bypass`.
-The policy lets such a statement see all rows only if the connected role is a member of a role in `bypass_roles`.
-The policy looks the roles up in `pg_roles`, so a role that does not exist never matches and raises no error.
+By default the policy lets such a statement see all rows for any role: the bypass needs no role.
+With `scope_role_check = true` the connected role must also be a member of a role in `bypass_roles`.
+The policy then looks the roles up in `pg_roles`, so a role that does not exist never matches and raises no error.
 `monorm migrate` and `monorm audit` warn about a role of `bypass_roles` or `exempt_roles` that the database lacks.
 A `migrate()` call from Python code does not warn: only the command line does.
-If `bypass_roles` is empty, the database lets nobody through: `unscoped` then only changes the ORM.
+With `scope_role_check = true` and an empty `bypass_roles`, the database lets nobody through: `unscoped` then only changes the ORM.
+`scope_role_check` is about the scope policy only. It does not change who may use `skip_triggers`.
+
+With `scope_bypass = { setting, value }`, `unscoped()` with no key opens every key, and the ORM sets the setting to the value.
+`unscoped("shop")` raises an error when the schema has more keys, because one value opens all keys.
+Name every key, or give none.
+Without `scope_bypass`, a bare `unscoped()` is an error: name the keys.
 Do not put the role of your application in `exempt_roles`: that role then reads every scope.
+
+## List values
+
+With `scope_prefix`, `scope()` takes a list (or a set) of values for a key: `scope({ shop: [1, 2] }, fn)` in TypeScript, `scope(shop=[1, 2])` in Python.
+The ORM sends the list as text with `,` between the items, for example `1,2`, and the policy reads the setting as a comma list: the column matches when its text is one item of the list.
+A raw `set_config('tenant.shop', '1,2', true)` gives the same result.
+A list with no `scope_prefix` is an error, and so is an empty list or an item that has a `,`.
+A read matches the rows of every listed value.
+A write needs a cell that names one listed value: an omitted cell raises `ScopeMissing`, and a value outside the list raises a scope error.
+The insert fill takes a value only from a single-item setting. A list gives `NULL`, so the insert fails.
+A hook that reads a list scope raises an error, because hooks take one value for each key.
 
 ## What the ORM sends
 
-The ORM sets `scope.<key>` for each key that a policy reads, from the `scope()` context, in the first statement of the transaction.
+The ORM sets `<prefix>.<key>` for each key that a policy reads, from the `scope()` context, in the first statement of the transaction.
+Without `scope_prefix`, the name is `scope.<key>`.
+The bypass setting is `monorm.bypass`, or the `setting` of `scope_bypass`.
 A `scope=` option on one call is not sent to the database.
 Raw SQL (`db.execute`, `db.fetch`) inside `scope()` carries the same settings, in a transaction and outside one.
 A connection that MonOrm does not open (Django, `psql`) sets it itself at the start of the transaction: `SELECT set_config('scope.shop', '1', true)`.
@@ -121,7 +150,7 @@ It lists them as `// gap:` lines.
 | --- | --- |
 | `ScopeMismatch` (`model`, `key`, `expected`, `actual`) | A write sets a scope column to a value other than the scope. Write inside the scope, or use `unscoped(key)` to write another scope. |
 | `ScopeMissing` (`model`, `key`), a `QueryError` | A read or a write needs a scope key that is neither set nor open. Wrap the call in `scope(key=value)`. |
-| `ValueError` (Python), `TypeError` (TypeScript) | `scope()` got a key that no open schema declares, `None`, an empty string or a list. `unscoped()` got no key or an unknown key. |
+| `ValueError` (Python), `TypeError` (TypeScript) | `scope()` got a key that no open schema declares, `None`, an empty string or a list. `unscoped()` got an unknown key, or no key without `scope_bypass`. |
 | `<Model>: the scope key <key> is declared twice` | One model repeats a key in `@@scope.by`. |
 | `<Model> has no field <field>, named by @@scope.by(<key>:)` | The value of a pair is not a field of the model. |
 | `<Model>: the scope field <field> must be a scalar column` | PostgreSQL only: the field is `Json` or an array. |
@@ -139,9 +168,25 @@ Do the move in one migration, so that no table is open in between:
 2. In the migration, before the generated statements, drop the old objects of each table.
    Run `\d+ <table>` in `psql` to list them.
    Guitars names its policy `tenant_scope`, its exemption policies `rls_exempt_<role>`, and each autofill trigger after its function.
-   Its settings `tenant.<key>` and `tenant.bypass` are not objects: the monorm policy reads `scope.<key>` and `monorm.bypass`.
+   Its settings `tenant.<key>` and `tenant.bypass` are not objects. Set `scope_prefix = "tenant"` and `scope_bypass = { setting = "tenant.bypass", value = "on" }` in the datasource, and the monorm policy reads them.
 3. Run `migrate`. The migration runs in one transaction.
 4. Run `monorm audit` to check the result. It exits `1` if a policy of the old system is left.
+
+## Tables of another ORM
+
+A model with `@@managed(false)` and `@@scope.by(shop: shop_id)` keeps the read filter, the insert fill and the write check of the ORM.
+MonOrm adds no policy, trigger or flag to its table: the table already has the policy of the other ORM.
+This needs `scope_prefix` or `scope_bypass` in the datasource, which says that this policy reads the same settings.
+With neither key, the schema fails and the error names both keys.
+`drift` and `audit` skip such a table, so they report nothing about its policy, flags or triggers.
+Two policies on one table are permissive: a row passes when either policy lets it through.
+MonOrm makes no cascade from an unmanaged parent: a child of a soft-deleted or scoped unmanaged row follows its own rules only.
+
+## Changing the role check or the prefix
+
+The default is `scope_role_check = false`: the bypass needs no role of `bypass_roles`.
+A change of `scope_role_check` or `scope_prefix` makes the next `makemigrations` replace each `monorm_scope` policy.
+Set `scope_role_check = true` to make the bypass need a role of `bypass_roles`.
 
 ## RLS is not an access-control boundary
 

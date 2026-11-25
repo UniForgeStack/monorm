@@ -248,7 +248,7 @@ class _CompiledRows:
         self.declared: list[str | None] = [p.type if isinstance(p, _Slot) else None for p in params]
         self.returning = returning
         self.batch = batch
-        self.natives: dict[tuple[Any, tuple[tuple[str, bool], ...]], Any] = {}
+        self.natives: dict[tuple[Any, tuple[tuple[str, int], ...]], Any] = {}
 
     def bind(self, values: Mapping[str, Any], merged: Mapping[str, Any]) -> list[Any]:
         params = self.params.copy()

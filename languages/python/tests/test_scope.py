@@ -134,7 +134,7 @@ async def test_scope_refuses_what_the_schema_does_not_declare(orders):
         monorm.scope(nope=1)
     with pytest.raises(ValueError, match="never None"):
         monorm.scope(shop=None)
-    with pytest.raises(ValueError, match="not available yet"):
+    with pytest.raises(ValueError, match="needs scope_prefix"):
         monorm.scope(shop=[1, 2])
 
 

@@ -60,7 +60,10 @@ ALTER TABLE "order" ENABLE ROW LEVEL SECURITY, FORCE ROW LEVEL SECURITY;
 ```
 
 * For each role in `exempt_roles` of the `datasource` block, a policy `monorm_scope_exempt_<role>` (`FOR SELECT`).
-* The policy `USING` clause also lets a statement through when the setting `monorm.bypass` names the key and the role is in `bypass_roles`.
+* The policy `USING` clause also lets a statement through when the setting `monorm.bypass` names the key.
+  With `scope_role_check = true` in the datasource, the role must also be in `bypass_roles`.
+* The datasource keys `scope_prefix` and `scope_bypass = { setting, value }` rename the settings, for a database that another ORM shares. [Details](../../docs/extensions/scope.md)
+* A `@@managed(false)` model with `@@scope.by` needs one of the two keys and gets no object.
 
 ### Runtime hooks
 

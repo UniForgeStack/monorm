@@ -23,6 +23,30 @@ fn bypass_roles_name_the_database_roles_that_skip_triggers() {
 }
 
 #[test]
+fn the_scope_keys_of_the_datasource_name_the_settings_of_scope() {
+    let src = |keys: &str| format!("datasource db {{\n  provider = \"postgresql\"\n  {keys}\n}}\nmodel A {{\n  id BigInt @id\n}}\n");
+    assert!(ok(&src("")).scope_settings.is_default());
+    let ir = ok(&src("scope_prefix = \"tenant\"\n  scope_bypass = { setting = \"tenant.bypass\", value = \"on\" }\n  scope_role_check = true"));
+    let s = &ir.scope_settings;
+    assert_eq!((s.key_setting("shop").as_str(), s.bypass_setting(), s.bypass_value(), s.role_check, s.list_form()), ("tenant.shop", "tenant.bypass", Some("on"), true, true));
+    let colon = ok(&src("scope_bypass = { setting: \"b.x\", value: \"1\" }"));
+    assert_eq!((colon.scope_settings.bypass_setting(), colon.scope_settings.bypass_value()), ("b.x", Some("1")));
+    assert!(ok(&src("scope_role_check = false")).scope_settings.is_default());
+    for (keys, message) in [
+        ("scope_prefix = \"\"", "scope_prefix is a non-empty string"),
+        ("scope_prefix = 3", "scope_prefix is a non-empty string"),
+        ("scope_bypass = \"on\"", "scope_bypass is { setting"),
+        ("scope_bypass = { setting = \"b\" }", "scope_bypass is { setting"),
+        ("scope_bypass = { setting = \"b\", value = \"\" }", "scope_bypass `value` is a non-empty string"),
+        ("scope_bypass = { setting = \"b\", value = \"x\", extra = \"y\" }", "scope_bypass has no key `extra`"),
+        ("scope_role_check = \"yes\"", "scope_role_check"),
+    ] {
+        let err = fails(&src(keys));
+        assert!(err.contains(message), "{keys}: {err}");
+    }
+}
+
+#[test]
 fn exempt_roles_name_the_database_roles_that_read_every_row() {
     let src = |roles: &str| format!("datasource db {{\n  provider = \"postgresql\"\n  {roles}\n}}\nmodel A {{\n  id BigInt @id\n}}\n");
     assert!(ok(&src("")).exempt_roles.is_empty());

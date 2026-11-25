@@ -17,6 +17,7 @@ SCHEMA = """
 datasource db {{
  provider = "postgresql"
  bypass_roles = ["{admin}"]
+ scope_role_check = true
  exempt_roles = ["{auditor}"]
 }}
 model Order {{

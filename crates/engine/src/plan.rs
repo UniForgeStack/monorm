@@ -1688,6 +1688,38 @@ impl<'s> Planner<'s> {
         }
     }
 
+    /// `item` in (or with `neg`, not in) the list that parameter `param` holds.
+    fn in_list(&mut self, item: &Expr, param: usize, neg: bool, what: &str) -> Result<SExpr> {
+        let hint = self.hint_of(item);
+        if hint.field.is_some_and(|f| param_template(f).is_some()) {
+            return Err(query_err(format!("{what} does not take a column with a write_sql or char(n) type")));
+        }
+        let elem = match hint.ty {
+            Some(t) => t,
+            None => self.expr_type(item).map_err(|_| query_err(format!("{what} needs a column or a typed value on the left")))?,
+        };
+        let item = self.value(item, hint)?;
+        let list = self.params.value(param, Some(ValueType { array: true, ..elem }))?;
+        let list = if hint.field.is_some_and(is_naive_timestamp) { naive_utc(list) } else { list };
+        if self.caps.any_array {
+            let op = if neg { "$1 <> ALL($2)" } else { "$1 = ANY($2)" };
+            Ok(template(self.target.dialect, op, vec![item, SExpr::val(list)]))
+        } else if self.caps.json_each {
+            let op = if neg { "$1 NOT IN (SELECT value FROM json_each($2))" } else { "$1 IN (SELECT value FROM json_each($2))" };
+            Ok(template(self.target.dialect, op, vec![item, SExpr::val(json_list(list)?)]))
+        } else {
+            Err(query_err(format!("this database has no array or JSON list form for {what}")))
+        }
+    }
+
+    /// The name of a `scope.<name>` that holds a list, when `e` is one.
+    fn list_scope<'e>(&self, e: &'e Expr) -> Option<&'e str> {
+        match e {
+            Expr::Scope { name } if self.params.scope_list(name) => Some(name),
+            _ => None,
+        }
+    }
+
     fn leaf(&mut self, e: &Expr) -> Result<SExpr> {
         Ok(match e {
             Expr::Cmp { op, l, r } => {
@@ -1701,6 +1733,15 @@ impl<'s> Planner<'s> {
                     if matches!(op, CmpOp::Contains | CmpOp::ContainedBy | CmpOp::HasKey) && self.expr_type(l)? != ValueType::scalar(ColType::Json) {
                         return Err(Error::query("on sqlite, containment and key tests take a Json column: sqlite has no array columns"));
                     }
+                }
+                if let Some((name, other)) = self.list_scope(r).map(|n| (n, l)).or_else(|| self.list_scope(l).map(|n| (n, r))) {
+                    if !matches!(op, CmpOp::Eq | CmpOp::Ne) {
+                        return Err(Error::query(format!("scope.{name} holds a list of values: it compares with == or != only")));
+                    }
+                    if !self.schema.scope_list_form() {
+                        return Err(Error::query(format!("scope.{name} holds a list of values, and the datasource has no scope_prefix: a scope key takes one value")));
+                    }
+                    return self.in_list(other, self.scope_param(name)?, matches!(op, CmpOp::Ne), &format!("scope.{name}"));
                 }
                 if !matches!(op, CmpOp::Eq | CmpOp::Ne) {
                     self.refuse_bytes(l, "a comparison")?;
@@ -1743,28 +1784,7 @@ impl<'s> Planner<'s> {
                     item.is_in(values)
                 }
             }
-            Expr::InParam { item, i, neg } => {
-                let hint = self.hint_of(item);
-                if hint.field.is_some_and(|f| param_template(f).is_some()) {
-                    return Err(query_err("in_(param()) does not take a column with a write_sql or char(n) type".to_string()));
-                }
-                let elem = match hint.ty {
-                    Some(t) => t,
-                    None => self.expr_type(item).map_err(|_| query_err("in_(param()) needs a column or a typed value on the left".to_string()))?,
-                };
-                let item = self.value(item, hint)?;
-                let list = self.params.value(self.param(*i)?, Some(ValueType { array: true, ..elem }))?;
-                let list = if hint.field.is_some_and(is_naive_timestamp) { naive_utc(list) } else { list };
-                if self.caps.any_array {
-                    let op = if *neg { "$1 <> ALL($2)" } else { "$1 = ANY($2)" };
-                    template(self.target.dialect, op, vec![item, SExpr::val(list)])
-                } else if self.caps.json_each {
-                    let op = if *neg { "$1 NOT IN (SELECT value FROM json_each($2))" } else { "$1 IN (SELECT value FROM json_each($2))" };
-                    template(self.target.dialect, op, vec![item, SExpr::val(json_list(list)?)])
-                } else {
-                    return Err(query_err("this database has no array or JSON list form for in_(param())".to_string()));
-                }
-            }
+            Expr::InParam { item, i, neg } => self.in_list(item, self.param(*i)?, *neg, "in_(param())")?,
             Expr::InSelect { item, select, neg } => {
                 let hint = self.hint_of(item);
                 let item = self.value(item, hint)?;
@@ -1998,6 +2018,9 @@ impl<'s> Planner<'s> {
                 None => bind(self.params.value(self.param(*i)?, hint.ty)?, hint.field),
             },
             Expr::Scope { name } => {
+                if self.params.scope_list(name) {
+                    return Err(Error::query(format!("scope.{name} holds a list of values: it compares with == or != to a column, and a write takes one value")));
+                }
                 let value = self.params.value(self.scope_param(name)?, hint.ty)?;
                 if !value.is_some() {
                     return Err(Error::query(format!("scope.{name} is None/null: a NULL scope value would match no rows; use a filter on the column for NULL rows")));

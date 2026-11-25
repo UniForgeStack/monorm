@@ -279,6 +279,14 @@ export interface NativeEngine extends NativeInspector {
   publishedScopeSettings(): { key: string; setting: string }[];
   /** The setting that lists the keys an `unscoped` block opens. */
   bypassSetting(): string;
+  /** True when one value opens every scope key (`scope_bypass`). */
+  bypassIsValue(): boolean;
+  /** The text of the bypass setting for a block that opens `open`; throws when the form cannot open only those keys. */
+  bypassText(open: string[]): string;
+  /** True when a scope key may hold a list of values (`scope_prefix` is set). */
+  scopeListForm(): boolean;
+  /** The text of a list value for a scope setting; throws when the form has no list or an item cannot be sent. */
+  scopeListText(key: string, items: string[]): string;
   skippableTriggers(): string[];
   sessionLock(key: string, name: Buffer | null, exclusive: boolean, nowait: boolean, timeoutMs: number | null, trace?: NativeTrace | null): Promise<NativeSessionLock | null>;
   execute(sql: string, tx: NativeTransaction | null, trace?: NativeTrace | null): Promise<number>;
@@ -332,6 +340,7 @@ interface Addon {
   adminRoleGrants(patterns: string[], names: string[], role: string): string[];
   /** The parameter index of an open scope key in a statement's `scope` map. */
   OPEN_INDEX: number;
+  LIST_INDEX: number;
   connect(url: string, schema: NativeSchema, maxConnections: number, disable: string[]): Promise<NativeEngine>;
   prepareSchema(schemaJson: string, contextJson?: string): string;
   nativeArtifact(): string;

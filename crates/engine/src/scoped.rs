@@ -4,14 +4,37 @@
 
 use crate::error::{Error, Result};
 use crate::params::Params;
+use monorm_core::ir::ValueType;
 use monorm_core::schema::Model;
 use monorm_core::writes::PreparedScoped;
 use sea_query::Value;
 
 type Rows = Vec<Vec<Option<Value>>>;
 
+/// What the scope holds for a key: one value, or a list.
+pub(crate) enum Held {
+    One(Value),
+    Many(Vec<Value>),
+}
+
+impl Held {
+    fn has(&self, v: &Value) -> bool {
+        match self {
+            Held::One(one) => one == v,
+            Held::Many(list) => list.contains(v),
+        }
+    }
+
+    fn show(&self) -> String {
+        match self {
+            Held::One(v) => show(Some(v)),
+            Held::Many(list) => format!("[{}]", list.iter().map(|v| show(Some(v))).collect::<Vec<_>>().join(", ")),
+        }
+    }
+}
+
 /// The scope value of `s` for a write of `m`, coerced to the column type; `None` under `unscoped(key)`.
-pub(crate) fn value(m: &Model, s: &PreparedScoped, params: &dyn Params) -> Result<Option<Value>> {
+pub(crate) fn value(m: &Model, s: &PreparedScoped, params: &dyn Params) -> Result<Option<Held>> {
     if params.unscoped(&s.key) { return Ok(None); }
     let field = &m.fields()[s.field];
     let Some(i) = params.scope(&s.key) else {
@@ -22,10 +45,18 @@ pub(crate) fn value(m: &Model, s: &PreparedScoped, params: &dyn Params) -> Resul
         });
     };
     if i >= params.len() { return Err(Error::query(format!("parameter {i} out of range"))); }
-    params.value(i, Some(field.value_type())).map(Some)
+    if params.scope_list(&s.key) {
+        let ty = field.value_type();
+        return match params.value(i, Some(ValueType { array: true, ..ty }))? {
+            Value::Array(_, Some(items)) => Ok(Some(Held::Many(*items))),
+            other => Err(Error::query(format!("scope.{} holds {other:?}, which is not a list", s.key))),
+        };
+    }
+    params.value(i, Some(field.value_type())).map(|v| Some(Held::One(v)))
 }
 
 /// An insert: an omitted cell takes the scope value, an explicit other value fails, an absent column is added.
+/// A scope that holds a list has no value to fill: the cell names one of its values.
 pub(crate) fn fill(m: &Model, fields: &mut Vec<String>, rows: &mut Rows, params: &dyn Params) -> Result<()> {
     for s in &m.scoped {
         let Some(scope) = value(m, s, params)? else { continue };
@@ -40,17 +71,22 @@ pub(crate) fn fill(m: &Model, fields: &mut Vec<String>, rows: &mut Rows, params:
         };
         for row in rows.iter_mut() {
             let Some(cell) = row.get_mut(slot) else { return Err(Error::query("insert row length does not match fields")) };
-            match cell {
-                None => *cell = Some(scope.clone()),
-                Some(v) if *v == scope => {}
-                Some(v) => return Err(mismatch(m, s, &scope, Some(v))),
+            match (cell.as_ref(), &scope) {
+                (None, Held::One(one)) => *cell = Some(one.clone()),
+                (None, Held::Many(_)) => return Err(Error::ScopeMissing {
+                    model: m.ir.name.clone(),
+                    key: s.key.clone(),
+                    message: format!("{} inserts with scope.{} holding a list {}: set {} to one of its values", m.ir.name, s.key, scope.show(), name),
+                }),
+                (Some(v), _) if scope.has(v) => {}
+                (Some(v), _) => return Err(mismatch(m, s, &scope, Some(v))),
             }
         }
     }
     Ok(())
 }
 
-/// An update: the scope column may be set to the scope value only.
+/// An update: the scope column may be set to the scope value only (to one of its values for a list).
 /// `set` is the value of the assignment of `field` (a parameter, or SQL `NULL`); any other expression is refused.
 pub(crate) fn check_set(m: &Model, field: &str, set: Assigned, params: &dyn Params) -> Result<()> {
     let Some(s) = m.scoped.iter().find(|s| m.fields()[s.field].name == field) else { return Ok(()) };
@@ -60,21 +96,21 @@ pub(crate) fn check_set(m: &Model, field: &str, set: Assigned, params: &dyn Para
         Assigned::Param(i) => {
             if i >= params.len() { return Err(Error::query(format!("parameter {i} out of range"))); }
             let v = params.value(i, Some(ty))?;
-            if v == scope { Ok(()) } else { Err(mismatch(m, s, &scope, Some(&v))) }
+            if scope.has(&v) { Ok(()) } else { Err(mismatch(m, s, &scope, Some(&v))) }
         }
         Assigned::Null => Err(mismatch(m, s, &scope, None)),
         Assigned::NonLiteral => Err(Error::query(format!("{}.{field} holds scope.{}: assign it a plain value equal to the scope, or use unscoped({:?})", m.ir.name, s.key, s.key))),
     }
 }
 
-/// `update_many` rows: the cells of the scope columns must equal the scope value.
+/// `update_many` rows: the cells of the scope columns must equal the scope value (be one of its values for a list).
 pub(crate) fn check_rows<'a>(m: &Model, fields: &[String], rows: impl Iterator<Item = &'a [Value]>, params: &dyn Params) -> Result<()> {
     let rows: Vec<&[Value]> = rows.collect();
     for s in &m.scoped {
         let name = &m.fields()[s.field].name;
         let Some(slot) = fields.iter().position(|f| f == name) else { continue };
         let Some(scope) = value(m, s, params)? else { continue };
-        if let Some(v) = rows.iter().map(|r| &r[slot]).find(|v| **v != scope) {
+        if let Some(v) = rows.iter().map(|r| &r[slot]).find(|v| !scope.has(v)) {
             return Err(mismatch(m, s, &scope, Some(v)));
         }
     }
@@ -98,11 +134,11 @@ pub(crate) fn keep_scope(m: &Model, update: &[String], params: &dyn Params) -> V
     kept
 }
 
-fn mismatch(m: &Model, s: &PreparedScoped, expected: &Value, actual: Option<&Value>) -> Error {
+fn mismatch(m: &Model, s: &PreparedScoped, expected: &Held, actual: Option<&Value>) -> Error {
     Error::ScopeMismatch {
         model: m.ir.name.clone(),
         key: s.key.clone(),
-        expected: show(Some(expected)),
+        expected: expected.show(),
         actual: show(actual),
     }
 }
@@ -144,5 +180,16 @@ mod tests {
         assert_eq!(show(Some(&Value::Int(None))), "NULL");
         assert_eq!(show(Some(&Value::String(None))), "NULL");
         assert_eq!(show(None), "NULL");
+    }
+
+    #[test]
+    fn a_held_list_matches_a_member_only_and_a_held_value_matches_itself() {
+        let (one, two, three) = (Value::Int(Some(1)), Value::Int(Some(2)), Value::Int(Some(3)));
+        let list = Held::Many(vec![one.clone(), two.clone()]);
+        assert!(list.has(&one) && list.has(&two) && !list.has(&three));
+        assert_eq!(list.show(), "[1, 2]");
+        let single = Held::One(one.clone());
+        assert!(single.has(&one) && !single.has(&two));
+        assert_eq!(single.show(), "1");
     }
 }
