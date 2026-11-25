@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { faviconUrl, ramp } from "./ramp";
 
 export type Mode = "light" | "dark" | "system";
 const KEY = "monorm-admin-theme";
@@ -93,8 +94,25 @@ export function accentVars(color: string): Record<string, string> {
 }
 
 /** Set the brand colour of the site on <html>. `setProperty` is a script call, so the CSP `style-src 'self'` allows it. */
-export function applyBrand(colors: { primary?: string; accent?: string }) {
+export function applyBrand(colors: { primary?: string; accent?: string }, service = false) {
   const root = document.documentElement.style;
+  // The colour of the current service sets the whole primary ramp; a site with only `colors.primary` keeps the one fill.
+  if (colors.primary && service) {
+    for (const [k, v] of Object.entries(ramp(colors.primary))) root.setProperty(k, v);
+    root.setProperty("--brand-foreground", "#ffffff");
+  }
+  setFavicon(faviconUrl(colors.primary ?? "#1f4fd8"));
   if (colors.primary) for (const [k, v] of Object.entries(brandVars(colors.primary))) root.setProperty(k, v);
   if (colors.accent) for (const [k, v] of Object.entries(accentVars(colors.accent))) root.setProperty(k, v);
+}
+
+function setFavicon(href: string) {
+  let link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+  if (!link) {
+    link = document.createElement("link");
+    link.rel = "icon";
+    document.head.append(link);
+  }
+  link.type = "image/svg+xml";
+  link.href = href;
 }

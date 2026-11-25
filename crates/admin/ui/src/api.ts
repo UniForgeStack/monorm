@@ -92,6 +92,8 @@ export interface Resource {
   package_tabs?: { name: string; title: string; module: string }[];
   title: string;
   group: string | null;
+  /** A lucide icon name. */
+  icon?: string | null;
   columns: Column[];
   fields: Column[];
   key: string[];
@@ -217,10 +219,30 @@ export interface Brand {
   colors: { primary?: string; accent?: string };
   links: { label: string; url: string }[];
   environment: string | null;
+  environment_level?: "info" | "warning" | "danger" | null;
+  switcher?: Switcher | null;
+}
+
+export interface SwitcherService {
+  key: string;
+  title: string;
+  /** Null for the current service: its row has no link. */
+  url: string | null;
+  icon: string | null;
+  color: string | null;
+}
+
+/** The service switcher as the server checked it. `rows` are the build rows, `subheader` the line under the title. */
+export interface Switcher {
+  current: string | null;
+  services: SwitcherService[];
+  subheader: string;
+  rows: string[];
 }
 
 export interface Nav {
   group: string | null;
+  icon?: string | null;
   resources: string[];
 }
 

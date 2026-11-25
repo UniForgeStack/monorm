@@ -191,7 +191,7 @@ test("the shell: home, sidebar filter, theme toggle, keyboard focus, kit import 
   // Keyboard: Tab reaches the sidebar toggle, and the focus ring is visible.
   await page.locator("body").click({ position: { x: 1, y: 1 } });
   let ring = null;
-  for (let i = 0; i < 12 && !ring; i++) {
+  for (let i = 0; i < 80 && !ring; i++) {
     await page.keyboard.press("Tab");
     ring = await page.evaluate(() => {
       const el = document.activeElement;
@@ -251,15 +251,66 @@ test("the site theme reaches the page: brand colour, accent surface and logo", a
     await page.getByRole("heading", { name: "Acme", exact: true }).waitFor();
     const seen = await page.evaluate(() => {
       const css = getComputedStyle(document.documentElement);
-      return { brand: css.getPropertyValue("--brand").trim(), accent: css.getPropertyValue("--accent").trim(), foreground: css.getPropertyValue("--accent-foreground").trim(), logo: document.querySelector("header img")?.getAttribute("src") ?? null };
+      return { brand: css.getPropertyValue("--brand").trim(), accent: css.getPropertyValue("--accent").trim(), foreground: css.getPropertyValue("--accent-foreground").trim(), logo: document.querySelector("#sidebar img")?.getAttribute("src") ?? null };
     });
     assert.equal(seen.brand, "#7c3aed");
-    assert.ok(seen.logo?.startsWith("data:image/svg+xml"), "the logo is in the header");
+    assert.ok(seen.logo?.startsWith("data:image/svg+xml"), "the logo is in the sidebar header");
     assert.notEqual(seen.accent, scheme === "light" ? "#e9eef5" : "#1f2a4d", `the accent colour changes the accent token (${scheme})`);
     const lum = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((v) => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)).reduce((a, v, i) => a + v * [0.2126, 0.7152, 0.0722][i], 0);
     const [x, y] = [lum(seen.accent), lum(seen.foreground)];
     assert.ok((Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05) >= 4.5, `text on the accent surface reads (${scheme}): ${seen.accent} on ${seen.foreground}`);
   }
+  await context.close();
+});
+
+test("the shell: service switcher, colour ramp, favicon, environment chip, command search and user footer", async () => {
+  const { context, page } = await signedIn();
+  // The metadata route is stubbed with a switcher; the Rust side has its own tests.
+  await page.route(/\/api\/site$/, async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.brand = {
+      ...body.brand, name: "Acme", environment: "Production", environment_level: null, colors: { primary: "#7c3aed" },
+      switcher: { current: "app", subheader: "v1.2 · main", rows: ["build 42"], build: "42", services: [
+        { key: "app", title: "Application", url: null, icon: "layout-dashboard", color: "#7c3aed" },
+        { key: "billing", title: "Billing", url: "/billing/admin/", icon: "credit-card", color: "#0b7a5b" },
+      ] },
+    };
+    await route.fulfill({ response, json: body });
+  });
+  await page.goto(`${base}/admin/`);
+  const aside = page.locator("#sidebar");
+  await aside.getByRole("button", { name: /switch service/ }).click();
+  const menu = page.getByRole("menu");
+  assert.equal(await menu.getByRole("menuitem").count(), 2, "one row per service");
+  assert.equal(await menu.getByRole("menuitem", { name: /Application/ }).getAttribute("aria-disabled"), "true", "the current row is inert");
+  assert.equal(await menu.getByRole("menuitem", { name: /Billing/ }).getAttribute("href"), "/billing/admin/");
+  assert.ok(await menu.getByText("build 42").isVisible(), "the build rows show");
+  await page.keyboard.press("Escape");
+
+  const seen = await page.evaluate(() => {
+    const css = getComputedStyle(document.documentElement);
+    return { p600: css.getPropertyValue("--primary-600").trim(), p500: css.getPropertyValue("--primary-500").trim(), icon: document.querySelector('link[rel="icon"]')?.getAttribute("href") ?? "" };
+  });
+  assert.match(seen.p600, /^oklch\(/, "the ramp is set from the service colour");
+  assert.notEqual(seen.p600, seen.p500);
+  assert.ok(seen.icon.startsWith("data:image/svg+xml"), "the favicon is a data URL");
+  assert.equal(await page.getByTestId("page-title").innerText(), "Home");
+  assert.equal(await page.locator("[data-level]").getAttribute("data-level"), "danger", "Production defaults to the danger level");
+
+  // Ctrl+K opens the search; a typed name and Enter open the list of the resource.
+  await page.keyboard.press("Control+k");
+  const box = page.getByRole("combobox", { name: "Search the resources" });
+  await box.fill("reviewer");
+  await box.press("Enter");
+  await page.waitForURL(`${base}/admin/Reviewer`);
+  assert.equal(await page.getByTestId("page-title").innerText(), "Reviewer");
+
+  // The footer shows the user and opens the account menu.
+  const footer = aside.getByRole("button", { name: "User menu" });
+  assert.ok((await footer.innerText()).includes("ann"));
+  await footer.click();
+  await page.getByRole("menuitem", { name: "Sign out" }).waitFor();
   await context.close();
 });
 

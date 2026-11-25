@@ -1985,6 +1985,10 @@ The `subheader` is `<deployed_at> · <first 7 characters of tree>`, or `dev` whe
 The `rows` are `built <built_at> · commit <first 7 characters of commit>`, `deployed <deployed_at>` and `tree <first 7 characters of tree>`, and a row without a value is left out.
 A site without `switcher` has `brand.switcher: null`.
 
+The sidebar header shows the current service and opens the list of the other services; the current row does nothing.
+The colour of the current service sets a colour ramp (steps 50 to 950, from its hue) and the favicon, so each service has its own accent.
+The environment label shows in the top bar, and Ctrl+K (⌘K on a Mac) searches the resources by title.
+
 `[admin.switcher]` of `monorm.toml` takes the same keys, and every string in it may hold `${NAME}`, which reads the environment variable `NAME`:
 
 ```toml
