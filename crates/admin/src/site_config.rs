@@ -409,6 +409,13 @@ pub struct Config {
     /// The navigation groups in order. A resource with a `group` must name one of them.
     #[serde(default)]
     pub groups: Vec<String>,
+    /// A lucide icon name for each navigation group, by group name.
+    #[serde(default)]
+    pub group_icons: BTreeMap<String, String>,
+    /// The service switcher of the code: the current service, the services and the build identity.
+    pub switcher: Option<SwitcherConfig>,
+    /// The `[admin.switcher]` table of `monorm.toml`, as the serve mode hands it to the code. A key set here and in `switcher` is an error.
+    pub switcher_file: Option<SwitcherConfig>,
     /// The registered resources. None: every concrete model is a read-only resource.
     #[serde(default)]
     pub resources: Vec<ResourceConfig>,
@@ -462,6 +469,8 @@ pub struct ResourceConfig {
     pub title: Option<String>,
     /// The navigation group of the resource.
     pub group: Option<String>,
+    /// A lucide icon name (`book-open`) for the navigation item.
+    pub icon: Option<String>,
     /// Names of field permissions (`see_cost`): `<label>.<name>`.
     #[serde(default)]
     pub field_permissions: Vec<String>,
@@ -756,6 +765,69 @@ pub struct BrandConfig {
     pub links: Vec<LinkConfig>,
     /// A short label such as `staging`, shown in the header.
     pub environment: Option<String>,
+    /// `info`, `warning` or `danger`: the colour of the environment label. `production` gives danger, `staging` warning, else info.
+    pub environment_level: Option<String>,
+}
+
+/// The service switcher: which service this admin is, its siblings and the build that runs. Code and `monorm.toml` may each set some keys.
+#[derive(Deserialize, serde::Serialize, Default, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SwitcherConfig {
+    /// The `key` of the service that this admin is.
+    pub current: Option<String>,
+    pub services: Option<Vec<SwitcherService>>,
+    #[serde(default)]
+    pub build: SwitcherBuild,
+}
+
+#[derive(Deserialize, serde::Serialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SwitcherService {
+    pub key: String,
+    pub title: String,
+    /// A path that starts with `/` or an `https:` URL. Needed for every service but the current one.
+    pub url: Option<String>,
+    /// A lucide icon name.
+    pub icon: Option<String>,
+    /// `#rgb` or `#rrggbb`.
+    pub color: Option<String>,
+}
+
+/// Plain strings that each project fills from its own environment. An empty string is no value.
+#[derive(Deserialize, serde::Serialize, Default, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SwitcherBuild {
+    pub commit: Option<String>,
+    pub built_at: Option<String>,
+    pub deployed_at: Option<String>,
+    pub tree: Option<String>,
+}
+
+impl SwitcherConfig {
+    /// The keys of `code` and of `file` together. A key in both is an error that names it.
+    pub fn merge(code: Option<&SwitcherConfig>, file: Option<&SwitcherConfig>) -> Result<Option<SwitcherConfig>, String> {
+        let (a, b) = match (code, file) {
+            (None, None) => return Ok(None),
+            (Some(one), None) | (None, Some(one)) => return Ok(Some(one.clone())),
+            (Some(a), Some(b)) => (a, b),
+        };
+        fn pick<T: Clone>(key: &str, a: &Option<T>, b: &Option<T>) -> Result<Option<T>, String> {
+            match (a, b) {
+                (Some(_), Some(_)) => Err(format!("switcher.{} is set in the code and in monorm.toml: set it in one place", crate::error::opt(key))),
+                (x, y) => Ok(x.clone().or_else(|| y.clone())),
+            }
+        }
+        Ok(Some(SwitcherConfig {
+            current: pick("current", &a.current, &b.current)?,
+            services: pick("services", &a.services, &b.services)?,
+            build: SwitcherBuild {
+                commit: pick("build.commit", &a.build.commit, &b.build.commit)?,
+                built_at: pick("build.built_at", &a.build.built_at, &b.build.built_at)?,
+                deployed_at: pick("build.deployed_at", &a.build.deployed_at, &b.build.deployed_at)?,
+                tree: pick("build.tree", &a.build.tree, &b.build.tree)?,
+            },
+        }))
+    }
 }
 
 /// The short form of the look of a site: the title, the logo and the brand colour. It sets the same values as `brand`

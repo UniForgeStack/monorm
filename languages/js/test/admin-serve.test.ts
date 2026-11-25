@@ -110,6 +110,43 @@ test("the base path of the settings file wins over the option of the object", as
   assert.equal(await run.ended, 0);
 });
 
+const SWITCHER_TOML =
+  '[admin]\napp = "./admin.ts:admin"\n\n[admin.switcher]\ncurrent = "shop"\n\n' +
+  '[[admin.switcher.services]]\nkey = "shop"\ntitle = "Shop"\n\n' +
+  '[[admin.switcher.services]]\nkey = "ops"\ntitle = "Ops"\nurl = "https://ops.example.com/admin"\n\n' +
+  '[admin.switcher.build]\ncommit = "${SWITCHER_TEST_COMMIT}"\n';
+
+test("the switcher table of the settings file reaches the admin and merges with the code", async () => {
+  const { dir, url } = project();
+  const source = readFileSync(join(dir, "admin.ts"), "utf8");
+  const env = { SWITCHER_TEST_COMMIT: "0123456789abcdef" };
+  writeFileSync(join(dir, "monorm.toml"), SWITCHER_TOML);
+  // the file sets the services and the commit, the code sets another build key: no clash, the server starts
+  writeFileSync(join(dir, "admin.ts"), source.replace("new Admin()", 'new Admin(undefined, { switcher: { build: { tree: "fedcba9876543210" } } })'));
+  let run = start(dir, url, env);
+  assert.equal((await get(`${await run.listening()}/readyz`)).status, 200);
+  run.child.kill("SIGTERM");
+  assert.equal(await run.ended, 0, run.stderr());
+  // the same key in the code and in the file is an error that names it
+  writeFileSync(join(dir, "admin.ts"), source.replace("new Admin()", 'new Admin(undefined, { switcher: { current: "ops" } })'));
+  run = start(dir, url, env);
+  assert.notEqual(await run.ended, 0);
+  assert.ok(run.stderr().includes("switcher.current") && run.stderr().includes("set it in one place"), run.stderr());
+  // the error path of a build key follows the spelling of the host
+  writeFileSync(join(dir, "monorm.toml"), SWITCHER_TOML + 'built_at = "t1"\n');
+  writeFileSync(join(dir, "admin.ts"), source.replace("new Admin()", 'new Admin(undefined, { switcher: { build: { builtAt: "t2" } } })'));
+  run = start(dir, url, env);
+  assert.notEqual(await run.ended, 0);
+  assert.ok(run.stderr().includes("switcher.build.builtAt is set"), run.stderr());
+  writeFileSync(join(dir, "monorm.toml"), SWITCHER_TOML);
+  // a wrong value of the file is checked in Rust
+  writeFileSync(join(dir, "admin.ts"), source);
+  writeFileSync(join(dir, "monorm.toml"), SWITCHER_TOML.replace('current = "shop"', 'current = "missing"'));
+  run = start(dir, url, env);
+  assert.notEqual(await run.ended, 0);
+  assert.ok(run.stderr().includes('switcher.services["shop"]'), run.stderr());
+});
+
 test("monorm admin names the wrong setting and the missing database", async () => {
   const { dir, url } = project();
   let run = start(dir, "");

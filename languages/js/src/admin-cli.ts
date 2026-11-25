@@ -18,6 +18,7 @@ interface Settings {
   readonly app: string;
   readonly setup: string | null;
   readonly base_path?: string | null;
+  readonly switcher?: unknown;
 }
 
 async function open(settings: Settings): Promise<{ admin: Admin; database: Database }> {
@@ -26,6 +27,7 @@ async function open(settings: Settings): Promise<{ admin: Admin; database: Datab
   if (settings.setup !== null) await (await load(settings.setup, "admin.setup") as () => unknown)();
   // the deploy knows the gateway path: the setting wins over the option of the object
   if (settings.base_path) admin.basePath = settings.base_path;
+  if (settings.switcher) admin.switcherSettings = settings.switcher;
   let database;
   try {
     database = getDatabase();

@@ -9,9 +9,9 @@ use monorm_core::schema::Schema;
 use serde_json::{json, Value};
 
 use crate::list::{is_text, ranged};
-use crate::error::Fault;
+use crate::error::{opt, Fault};
 use crate::site::{err, Column, Filter, FilterKind, Resource, Source};
-use crate::site_config::{BrandConfig, ThemeConfig};
+use crate::site_config::{BrandConfig, SwitcherBuild, SwitcherConfig, ThemeConfig};
 
 /// A link target that a page may use: a path on this host or an `http` or `https` URL.
 fn url_ok(url: &str) -> bool {
@@ -25,7 +25,7 @@ fn color_ok(c: &str) -> bool {
 }
 
 /// The brand as the UI reads it. A wrong value is a config error that names the setting.
-pub fn brand(config: Option<&BrandConfig>, theme: Option<&ThemeConfig>) -> Result<Value, Fault> {
+pub fn brand(config: Option<&BrandConfig>, theme: Option<&ThemeConfig>, switcher: Option<&SwitcherConfig>) -> Result<Value, Fault> {
     let default = BrandConfig::default();
     let c = config.unwrap_or(&default);
     let no_theme = ThemeConfig::default();
@@ -41,6 +41,13 @@ pub fn brand(config: Option<&BrandConfig>, theme: Option<&ThemeConfig>) -> Resul
         }
     }
     let mut colors = c.colors.clone();
+    let switcher = match switcher {
+        Some(s) => switcher_view(s, colors.contains_key("primary") || t.color.is_some())?,
+        None => None,
+    };
+    if let Some(color) = switcher.as_ref().and_then(|v| v.color.as_ref()) {
+        colors.insert("primary".to_owned(), color.clone());
+    }
     if let Some(color) = &t.color {
         if !color_ok(color) {
             return err(format!("theme.color {color:?} must be #rgb or #rrggbb"));
@@ -80,7 +87,136 @@ pub fn brand(config: Option<&BrandConfig>, theme: Option<&ThemeConfig>) -> Resul
     if c.environment.as_ref().is_some_and(|e| e.trim().is_empty() || e.chars().count() > 32) {
         return err("brand.environment must have 1 to 32 characters".into());
     }
-    Ok(json!({"name": name, "logo": logo, "colors": colors, "links": links, "environment": c.environment}))
+    let level = environment_level(c)?;
+    Ok(json!({"name": name, "logo": logo, "colors": colors, "links": links, "environment": c.environment, "environment_level": level, "switcher": switcher.map(|v| v.json)}))
+}
+
+/// The colour of the environment label: the set level, else the one the label implies.
+fn environment_level(c: &BrandConfig) -> Result<Option<String>, Fault> {
+    let Some(env) = &c.environment else {
+        return match c.environment_level {
+            Some(_) => err(format!("brand.{} needs brand.environment", opt("environment_level"))),
+            None => Ok(None),
+        };
+    };
+    if let Some(level) = &c.environment_level {
+        if !matches!(level.as_str(), "info" | "warning" | "danger") {
+            return err(format!("brand.{} {level:?} must be info, warning or danger", opt("environment_level")));
+        }
+        return Ok(Some(level.clone()));
+    }
+    Ok(Some(match env.trim().to_lowercase().as_str() {
+        "production" | "prod" => "danger",
+        "staging" => "warning",
+        _ => "info",
+    }.to_owned()))
+}
+
+/// A lucide icon name in kebab case. The UI decides which names it knows.
+pub(crate) fn icon_ok(icon: &str) -> bool {
+    icon.len() <= 64 && icon.starts_with(|c: char| c.is_ascii_lowercase()) && icon.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// The value of a build setting. An empty string is no value: an unset `${VAR}` of `monorm.toml` gives one.
+fn build_value(v: &Option<String>) -> Option<&str> {
+    v.as_deref().map(str::trim).filter(|v| !v.is_empty())
+}
+
+fn short(sha: &str) -> String {
+    sha.chars().take(7).collect()
+}
+
+/// The `build` part of the switcher: the value sent, the rows and the subheader.
+struct BuildView {
+    json: Value,
+    rows: Vec<String>,
+    subheader: String,
+}
+
+fn build_view(b: &SwitcherBuild) -> BuildView {
+    let (commit, built, deployed, tree) = (build_value(&b.commit), build_value(&b.built_at), build_value(&b.deployed_at), build_value(&b.tree));
+    let mut rows = Vec::new();
+    match (built, commit) {
+        (Some(t), Some(c)) => rows.push(format!("built {t} · commit {}", short(c))),
+        (Some(t), None) => rows.push(format!("built {t}")),
+        (None, Some(c)) => rows.push(format!("commit {}", short(c))),
+        (None, None) => {}
+    }
+    if let Some(t) = deployed {
+        rows.push(format!("deployed {t}"));
+    }
+    if let Some(t) = tree {
+        rows.push(format!("tree {}", short(t)));
+    }
+    let head: Vec<String> = deployed.map(str::to_owned).into_iter().chain(tree.map(short)).collect();
+    let subheader = if head.is_empty() { "dev".to_owned() } else { head.join(" · ") };
+    BuildView { json: json!({"commit": commit, "built_at": built, "deployed_at": deployed, "tree": tree}), rows, subheader }
+}
+
+/// The switcher as sent, and the colour of the current service.
+struct SwitcherView {
+    json: Value,
+    color: Option<String>,
+}
+
+/// Check the switcher and build its view. `brand_primary`: the brand already sets the primary colour.
+fn switcher_view(s: &SwitcherConfig, brand_primary: bool) -> Result<Option<SwitcherView>, Fault> {
+    let services = s.services.as_deref().unwrap_or(&[]);
+    let current = s.current.as_deref();
+    if current.is_none() && services.is_empty() && s.build == SwitcherBuild::default() {
+        return Ok(None);
+    }
+    let mut keys: Vec<&str> = Vec::new();
+    let mut out = Vec::new();
+    let mut current_color = None;
+    for svc in services {
+        let at = format!("switcher.services[{:?}]", svc.key);
+        if svc.key.is_empty() || svc.key.len() > 32 || !svc.key.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_') {
+            return err(format!("switcher.services: key {:?} must have 1 to 32 characters: lower case letters, digits, - and _", svc.key));
+        }
+        if keys.contains(&svc.key.as_str()) {
+            return err(format!("switcher.services: key {:?} is listed twice", svc.key));
+        }
+        keys.push(&svc.key);
+        if svc.title.trim().is_empty() || svc.title.chars().count() > 40 {
+            return err(format!("{at}: title has 1 to 40 characters"));
+        }
+        if let Some(icon) = &svc.icon {
+            if !icon_ok(icon) {
+                return err(format!("{at}: icon {icon:?} must be a lucide icon name such as \"server\""));
+            }
+        }
+        if let Some(color) = &svc.color {
+            if !color_ok(color) {
+                return err(format!("{at}: color {color:?} must be #rgb or #rrggbb"));
+            }
+        }
+        let is_current = current == Some(svc.key.as_str());
+        let url = if is_current {
+            None
+        } else {
+            match &svc.url {
+                Some(u) if url_ok(u) && !u.starts_with("http://") => Some(u.clone()),
+                Some(u) => return err(format!("{at}: url {u:?} must be a path that starts with / or an https URL")),
+                None => return err(format!("{at}: url is needed for a service that is not the current one")),
+            }
+        };
+        if is_current {
+            current_color = svc.color.clone();
+        }
+        out.push(json!({"key": svc.key, "title": svc.title, "url": url, "icon": svc.icon, "color": svc.color}));
+    }
+    match current {
+        Some(c) if !keys.contains(&c) => return err(format!("switcher.current {c:?} is not the key of a service in switcher.services")),
+        None if !services.is_empty() => return err("switcher.current is needed when switcher.services is set".to_owned()),
+        _ => {}
+    }
+    if current_color.is_some() && brand_primary {
+        return err("the colour of the current switcher service and the brand set the primary colour: set one of them (brand.colors.primary, theme.color or the service colour)".to_owned());
+    }
+    let build = build_view(&s.build);
+    let json = json!({"current": current, "services": out, "subheader": build.subheader, "rows": build.rows, "build": build.json});
+    Ok(Some(SwitcherView { json, color: current_color }))
 }
 
 /// `created_at` and `BlogPost` become `Created at` and `Blog post`; a `.` of a path becomes a space.
@@ -261,6 +397,7 @@ pub fn resource(schema: &Schema, r: &Resource, builds: &AtomicUsize) -> Value {
         "name": r.name,
         "title": r.title,
         "group": r.group,
+        "icon": r.icon,
         "columns": r.columns.iter().map(|c| list_header(schema, r, c)).collect::<Vec<_>>(),
         "order": r.order.iter().map(|o| json!({"column": o.column.label, "desc": o.desc})).collect::<Vec<_>>(),
         "page_size": r.page_size,

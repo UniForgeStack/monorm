@@ -50,6 +50,8 @@ async def _open(config: dict[str, Any]) -> tuple[Any, Any]:
             await result
     if config.get("base_path"):  # the deploy knows the gateway path: the setting wins over the option of the object
         admin.base_path = config["base_path"]
+    if config.get("switcher"):
+        admin.switcher_settings = config["switcher"]
     try:
         db = get_database()
     except NotConnected:

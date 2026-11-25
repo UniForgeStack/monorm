@@ -21,6 +21,7 @@ use crate::error::{code, settings as st, AdminError};
 use crate::oidc::OidcSettings;
 use crate::security::{Security, SecurityOptions};
 use crate::serve::ServeConfig;
+use crate::site_config::SwitcherConfig;
 
 pub const DEFAULT_HOST: &str = "127.0.0.1";
 pub const DEFAULT_PORT: u16 = 8000;
@@ -48,9 +49,12 @@ pub struct Config {
     /// The OIDC single sign-on (`[admin.oidc]`); the client secret comes from `MONORM_ADMIN_OIDC_CLIENT_SECRET`.
     #[serde(default)]
     pub oidc: Option<OidcSettings>,
+    /// The service switcher (`[admin.switcher]`): each string may hold `${NAME}`, which reads the environment. The site merges it with the `switcher` of the code.
+    #[serde(default)]
+    pub switcher: Option<SwitcherConfig>,
 }
 
-const KEYS: [&str; 12] = ["app", "setup", "host", "port", "timeout", "db_settings", "idle_timeout", "session_timeout", "origins", "trusted_proxies", "base_path", "oidc"];
+const KEYS: [&str; 13] = ["app", "setup", "host", "port", "timeout", "db_settings", "idle_timeout", "session_timeout", "origins", "trusted_proxies", "base_path", "oidc", "switcher"];
 
 impl Config {
     /// Reads the settings of the project in `dir`. `env` reads one environment variable.
@@ -159,7 +163,15 @@ impl Config {
             }
             Some(_) => return Err(st(code::SETTINGS_INVALID, format!("{place}`admin.oidc` must be a table"))),
         };
-        Ok(Config { app, setup: text("setup")?, host, port, timeout_ms, db_settings, idle_timeout_secs, session_timeout_secs, origins, trusted_proxies, base_path, oidc })
+        let switcher = match table.get("switcher") {
+            None => None,
+            Some(Value::Object(map)) => {
+                let expanded = expand_env(&Value::Object(map.clone()), &env);
+                Some(serde_json::from_value::<SwitcherConfig>(expanded).map_err(|e| st(code::SETTINGS_INVALID, format!("{place}`admin.switcher`: {e}")))?)
+            }
+            Some(_) => return Err(st(code::SETTINGS_INVALID, format!("{place}`admin.switcher` must be a table"))),
+        };
+        Ok(Config { app, setup: text("setup")?, host, port, timeout_ms, db_settings, idle_timeout_secs, session_timeout_secs, origins, trusted_proxies, base_path, oidc, switcher })
     }
 
     /// The settings come back from JSON, which never holds the OIDC client secret: read it again from the environment.
@@ -187,6 +199,39 @@ impl Config {
             auth: None,
         }
     }
+}
+
+/// `value` with each `${NAME}` in a string replaced by the environment variable `NAME`. An unset variable gives an empty string.
+fn expand_env(value: &Value, env: &impl Fn(&str) -> Option<String>) -> Value {
+    match value {
+        Value::String(text) => {
+            let mut out = String::new();
+            let mut rest = text.as_str();
+            while let Some(open) = rest.find("${") {
+                let after = &rest[open + 2..];
+                match after.find('}') {
+                    Some(len) if is_env_name(&after[..len]) => {
+                        out.push_str(&rest[..open]);
+                        out.push_str(&env(&after[..len]).unwrap_or_default());
+                        rest = &after[len + 1..];
+                    }
+                    _ => {
+                        out.push_str(&rest[..open + 2]);
+                        rest = after;
+                    }
+                }
+            }
+            out.push_str(rest);
+            Value::String(out)
+        }
+        Value::Array(list) => Value::Array(list.iter().map(|v| expand_env(v, env)).collect()),
+        Value::Object(map) => Value::Object(map.iter().map(|(k, v)| (k.clone(), expand_env(v, env))).collect()),
+        other => other.clone(),
+    }
+}
+
+fn is_env_name(name: &str) -> bool {
+    name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
 /// The signing and limits for `secret` and `options`; the one place that words the missing-secret error.
@@ -292,6 +337,20 @@ mod tests {
         let back: Config = serde_json::from_str(&json).unwrap();
         assert_eq!(back.oidc.as_ref().unwrap().client_secret, None);
         assert_eq!(back.with_env_secret(env).oidc.unwrap().client_secret.as_deref(), Some("s3"));
+    }
+
+    #[test]
+    fn the_switcher_table_expands_environment_variables_and_an_unset_one_gives_an_empty_string() {
+        let text = "[admin]\napp = \"a:b\"\n[admin.switcher]\ncurrent = \"admin\"\n[admin.switcher.build]\ntree = \"${TREE_ID}\"\ncommit = \"${GIT_SHA}\"\nbuilt_at = \"at $HOME ${\"\n";
+        let d = dir("switcher", "monorm.toml", text);
+        let env = |k: &str| (k == "TREE_ID").then(|| "abc123".to_string());
+        let c = Config::load(&d, env).unwrap();
+        let s = c.switcher.as_ref().unwrap();
+        assert_eq!((s.current.as_deref(), s.build.tree.as_deref(), s.build.commit.as_deref(), s.build.built_at.as_deref()), (Some("admin"), Some("abc123"), Some(""), Some("at $HOME ${")));
+        let back: Config = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert_eq!(back, c);
+        let bad = dir("switcher-bad", "monorm.toml", "[admin]\napp = \"a:b\"\n[admin.switcher]\nfleet = \"x\"\n");
+        assert!(Config::load(&bad, no_env).unwrap_err().to_string().contains("admin.switcher"));
     }
 
     #[test]

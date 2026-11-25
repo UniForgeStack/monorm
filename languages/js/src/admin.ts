@@ -190,6 +190,47 @@ export interface BrandConfig {
   readonly links?: readonly { readonly label: string; readonly url: string }[];
   /** A short label such as `staging`, shown in the header. */
   readonly environment?: string;
+  /** The colour of the environment label. `production` gives `danger`, `staging` `warning`, any other label `info`. */
+  readonly environmentLevel?: "info" | "warning" | "danger";
+}
+
+function brandJson({ environmentLevel, ...rest }: BrandConfig): Record<string, unknown> {
+  return environmentLevel === undefined ? rest : { ...rest, environment_level: environmentLevel };
+}
+
+export interface SwitcherService {
+  /** Lower case letters, digits, `-` and `_`; unique. */
+  readonly key: string;
+  /** 1 to 40 characters. */
+  readonly title: string;
+  /** A path that starts with `/` or an `https` URL. Needed for every service but the current one. */
+  readonly url?: string;
+  /** A lucide icon name such as `server`. */
+  readonly icon?: string;
+  /** `#rgb` or `#rrggbb`. The colour of the current service sets the primary colour. */
+  readonly color?: string;
+}
+
+/** Plain strings that your project fills from its own environment. An empty string is no value. */
+export interface SwitcherBuild {
+  readonly commit?: string;
+  readonly builtAt?: string;
+  readonly deployedAt?: string;
+  readonly tree?: string;
+}
+
+/** The service switcher. The same table in `monorm.toml` (`[admin.switcher]`, `${NAME}` reads the environment) adds keys; a key set in both is an error. */
+export interface SwitcherConfig {
+  /** The `key` of the service that this admin is. */
+  readonly current?: string;
+  readonly services?: readonly SwitcherService[];
+  readonly build?: SwitcherBuild;
+}
+
+function switcherJson({ build, ...rest }: SwitcherConfig): Record<string, unknown> {
+  if (build === undefined) return rest;
+  const { builtAt, deployedAt, ...plain } = build;
+  return { ...rest, build: { ...plain, ...(builtAt === undefined ? {} : { built_at: builtAt }), ...(deployedAt === undefined ? {} : { deployed_at: deployedAt }) } };
 }
 
 /** The two `can` rules: a condition of the row, selected as a flag of every row in the list and the detail. */
@@ -261,6 +302,8 @@ export interface ResourceConfig {
   readonly title?: string;
   /** The navigation group: one of `groups` of the admin. */
   readonly group?: string;
+  /** A lucide icon name such as `book-open`, shown in the navigation. */
+  readonly icon?: string;
   /** The operations that the resource allows for every user, superusers too. */
   readonly allow?: readonly ("read" | "create" | "update" | "delete")[];
   /** The `page` strategy only: add `"delete"` to split the delete permission from `manage`. */
@@ -363,6 +406,10 @@ export interface AdminOptions {
   readonly widgets?: Readonly<Record<string, string>>;
   /** The order of the navigation groups; a resource names one of them with `group`. */
   readonly groups?: readonly string[];
+  /** A group to a lucide icon name for the navigation. */
+  readonly groupIcons?: Readonly<Record<string, string>>;
+  /** The services of your deploy and the build strings; `[admin.switcher]` of `monorm.toml` takes the same keys. */
+  readonly switcher?: SwitcherConfig;
   readonly frameOrigins?: readonly string[];
   readonly frameCards?: readonly FrameConfig[];
   readonly embeds?: Readonly<Record<string, EmbedConfig>>;
@@ -384,9 +431,10 @@ export interface AdminUser {
 }
 
 const LIST_KEYS = new Set(["columns", "order", "pageSize", "sortable", "search", "searchWith", "filters", "namedFilters", "computed", "aggregates", "labels", "empty", "emptyFields", "tabs", "editable", "badges", "dateHierarchy"]);
-const BRAND_KEYS = new Set(["name", "logo", "colors", "links", "environment"]);
+const BRAND_KEYS = new Set(["name", "logo", "colors", "links", "environment", "environmentLevel"]);
+const SWITCHER_KEYS = new Set(["current", "services", "build"]);
 const THEME_KEYS = new Set(["title", "logo", "color"]);
-const RESOURCE_KEYS = new Set(["queryset", "can", "list", "title", "group", "allow", "perms", "label", "fieldPermissions", "see", "change", "actions", "checkMessages", "form", "readonly", "widgets", "formComponent", "detailTabs", "frames", "fieldsets", "relations", "files", "create", "update", "delete", "inputs", "allowProtectedWrites", "inlines", "bulkDelete", "setPassword"]);
+const RESOURCE_KEYS = new Set(["queryset", "can", "list", "title", "group", "icon", "allow", "perms", "label", "fieldPermissions", "see", "change", "actions", "checkMessages", "form", "readonly", "widgets", "formComponent", "detailTabs", "frames", "fieldsets", "relations", "files", "create", "update", "delete", "inputs", "allowProtectedWrites", "inlines", "bulkDelete", "setPassword"]);
 
 function widgetsJson(who: string, value: unknown): Record<string, string> {
   if (typeof value !== "object" || value === null || Array.isArray(value) || !Object.values(value).every((v) => typeof v === "string")) {
@@ -1035,6 +1083,7 @@ const INLINE_PAGE_REFUSED: Readonly<Record<string, string>> = {
   files: "a file field needs a multipart body, which a change set does not carry",
   title: "an inline is not in the navigation",
   group: "an inline is not in the navigation",
+  icon: "an inline is not in the navigation",
   perms: "the permission of an inline follows its parent: use permission of the inline",
   label: "the permission of an inline follows its parent: use permission of the inline",
   fieldPermissions: "field permissions belong to the registered page of the child",
@@ -1119,6 +1168,10 @@ export class Admin {
   readonly #theme: ThemeConfig | undefined;
   readonly #widgets: Record<string, string> | undefined;
   readonly #groups: string[];
+  readonly #groupIcons: Readonly<Record<string, string>> | undefined;
+  readonly #switcher: SwitcherConfig | undefined;
+  /** The `[admin.switcher]` table of `monorm.toml`, set by the serve mode. */
+  switcherSettings: unknown;
   readonly #frameOrigins: readonly string[] | undefined;
   readonly #frameCards: readonly FrameConfig[] | undefined;
   readonly #embeds: Readonly<Record<string, EmbedConfig>> | undefined;
@@ -1148,6 +1201,11 @@ export class Admin {
     this.#theme = options.theme;
     this.#widgets = options.widgets === undefined ? undefined : widgetsJson("widgets", options.widgets);
     this.#groups = [...(options.groups ?? [])];
+    this.#groupIcons = options.groupIcons;
+    for (const key of Object.keys(options.switcher ?? {})) {
+      if (!SWITCHER_KEYS.has(key)) throw new AdminConfigError(`unknown switcher option '${key}'`);
+    }
+    this.#switcher = options.switcher;
     this.#frameOrigins = options.frameOrigins;
     this.#frameCards = options.frameCards;
     this.#embeds = options.embeds;
@@ -1214,10 +1272,13 @@ export class Admin {
       label: this.#label,
       resources,
       ...(resources.some((r) => r["set_password"]) ? { user_table: authUserTable(registry) } : {}),
-      ...(this.#brand === undefined ? {} : { brand: this.#brand }),
+      ...(this.#brand === undefined ? {} : { brand: brandJson(this.#brand) }),
       ...(this.#theme === undefined ? {} : { theme: this.#theme }),
       ...(this.#widgets === undefined || Object.keys(this.#widgets).length === 0 ? {} : { widgets: this.#widgets }),
       ...(this.#groups.length === 0 ? {} : { groups: this.#groups }),
+      ...(this.#groupIcons === undefined || Object.keys(this.#groupIcons).length === 0 ? {} : { group_icons: this.#groupIcons }),
+      ...(this.#switcher === undefined ? {} : { switcher: switcherJson(this.#switcher) }),
+      ...(this.switcherSettings ? { switcher_file: this.switcherSettings } : {}),
       frame_origins: this.#frameOrigins,
       frame_cards: this.#frameCards?.map(frameJson),
       embeds: this.#embeds,
@@ -1249,6 +1310,7 @@ export class Admin {
       ...this.#writesJson(model, cls, config),
       ...(config.title === undefined ? {} : { title: config.title }),
       ...(config.group === undefined ? {} : { group: config.group }),
+      ...(config.icon === undefined ? {} : { icon: config.icon }),
       ...(config.allow === undefined ? {} : { allow: [...config.allow] }),
       ...(config.perms === undefined ? {} : { perms: [...config.perms] }),
       ...(config.label === undefined ? {} : { label: config.label }),

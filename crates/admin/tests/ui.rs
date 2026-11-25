@@ -250,6 +250,82 @@ fn a_theme_is_the_short_form_of_the_brand_and_a_value_in_both_is_a_config_error(
     }
 }
 
+#[test]
+fn a_switcher_merges_code_and_file_keys_and_sets_the_primary_colour() {
+    let r = json!([{"model": "Author"}]);
+    let services = json!([
+        {"key": "admin", "title": "Admin", "icon": "shield", "color": "#336699"},
+        {"key": "ops", "title": "Ops", "url": "https://ops.example.com", "icon": "server"}
+    ]);
+    let built = site(json!({"switcher": {"current": "admin", "services": services, "build": {"deployed_at": "2026-11-24", "tree": "abcdef0123456"}}, "resources": r}));
+    let s = &built.brand["switcher"];
+    assert_eq!(s["current"], "admin");
+    assert_eq!(s["services"][0]["url"], Value::Null);
+    assert_eq!(s["services"][1]["url"], "https://ops.example.com");
+    assert_eq!(s["subheader"], "2026-11-24 · abcdef0");
+    assert_eq!(s["rows"], json!(["deployed 2026-11-24", "tree abcdef0"]));
+    assert_eq!(built.brand["colors"]["primary"], "#336699");
+    let both = site(json!({"switcher": {"current": "admin", "services": services}, "switcher_file": {"build": {"commit": "0123456789", "built_at": "t1"}}, "resources": r}));
+    assert_eq!(both.brand["switcher"]["rows"], json!(["built t1 · commit 0123456"]));
+    assert_eq!(both.brand["switcher"]["subheader"], "dev");
+    assert_eq!(site(json!({"resources": r})).brand["switcher"], Value::Null);
+    let empty_build = site(json!({"switcher_file": {"build": {"tree": ""}}, "resources": r}));
+    assert_eq!(empty_build.brand["switcher"]["subheader"], "dev");
+}
+
+#[test]
+fn a_wrong_switcher_is_a_config_error_that_names_the_setting() {
+    let r = json!([{"model": "Author"}]);
+    let svc = |extra: Value| {
+        let mut one = json!({"key": "admin", "title": "Admin", "url": "/admin"});
+        one.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        one
+    };
+    let other = json!({"key": "ops", "title": "Ops", "url": "/ops"});
+    let err = |switcher: Value| build_error(json!({"switcher": switcher, "resources": r}));
+    assert!(err(json!({"current": "nope", "services": [svc(json!({}))]})).contains("switcher.current"));
+    assert!(err(json!({"services": [svc(json!({}))]})).contains("switcher.current is needed"));
+    assert!(err(json!({"current": "ops", "services": [svc(json!({})), other.clone(), other.clone()]})).contains("twice"));
+    assert!(err(json!({"current": "ops", "services": [svc(json!({}))]})).contains("not the key"));
+    assert!(err(json!({"current": "admin", "services": [svc(json!({"icon": "Shield!"}))]})).contains("icon"));
+    assert!(err(json!({"current": "admin", "services": [svc(json!({"color": "red"}))]})).contains("color"));
+    assert!(err(json!({"current": "admin", "services": [svc(json!({"title": ""}))]})).contains("title"));
+    assert!(err(json!({"current": "admin", "services": [svc(json!({})), {"key": "ops", "title": "Ops"}]})).contains("url is needed"));
+    assert!(err(json!({"current": "admin", "services": [svc(json!({})), {"key": "ops", "title": "Ops", "url": "http://ops.example.com"}]})).contains("https"));
+    assert!(err(json!({"current": "admin", "services": [svc(json!({})), {"key": "Ops", "title": "Ops", "url": "/ops"}]})).contains("key"));
+    assert!(err(json!({"build": {"hash": "x"}})).contains("hash"));
+    let in_both = build_error(json!({"switcher": {"current": "admin"}, "switcher_file": {"current": "admin"}, "resources": r}));
+    assert!(in_both.contains("switcher.current") && in_both.contains("monorm.toml"), "{in_both}");
+    let build_both = build_error(json!({"switcher": {"build": {"tree": "a"}}, "switcher_file": {"build": {"tree": "b"}}, "resources": r}));
+    assert!(build_both.contains("switcher.build.tree"), "{build_both}");
+    let colours = build_error(json!({"brand": {"colors": {"primary": "#111111"}}, "switcher": {"current": "admin", "services": [svc(json!({"color": "#222222"}))]}, "resources": r}));
+    assert!(colours.contains("primary"), "{colours}");
+    let themed = build_error(json!({"theme": {"color": "#111111"}, "switcher": {"current": "admin", "services": [svc(json!({"color": "#222222"}))]}, "resources": r}));
+    assert!(themed.contains("theme.color"), "{themed}");
+}
+
+#[test]
+fn the_environment_level_the_resource_icon_and_the_group_icons_are_checked() {
+    let r = json!([{"model": "Author", "group": "People", "icon": "users"}]);
+    let level = |env: &str, level: Option<&str>| {
+        let mut brand = json!({"environment": env});
+        if let Some(l) = level {
+            brand["environment_level"] = json!(l);
+        }
+        site(json!({"brand": brand, "resources": [{"model": "Author"}]})).brand["environment_level"].clone()
+    };
+    assert_eq!((level("Production", None), level("prod", None), level("staging", None), level("demo", None), level("demo", Some("danger"))), (json!("danger"), json!("danger"), json!("warning"), json!("info"), json!("danger")));
+    assert!(build_error(json!({"brand": {"environment": "x", "environment_level": "loud"}, "resources": [{"model": "Author"}]})).contains("environment_level"));
+    assert!(build_error(json!({"brand": {"environment_level": "info"}, "resources": [{"model": "Author"}]})).contains("needs brand.environment"));
+    assert_eq!(site(json!({"resources": [{"model": "Author"}]})).brand["environment_level"], Value::Null);
+    let built = site(json!({"groups": ["People"], "group_icons": {"People": "users"}, "resources": r}));
+    assert_eq!(built.nav(&["Author"]), json!([{"group": "People", "icon": "users", "resources": ["Author"]}]));
+    assert_eq!(built.resource("Author").unwrap().meta["icon"], "users");
+    assert!(build_error(json!({"groups": ["People"], "group_icons": {"Sales": "users"}, "resources": r})).contains("group_icons"));
+    assert!(build_error(json!({"groups": ["People"], "group_icons": {"People": "Users!"}, "resources": r})).contains("group_icons"));
+    assert!(build_error(json!({"groups": ["People"], "resources": [{"model": "Author", "group": "People", "icon": "Users!"}]})).contains("icon"));
+}
+
 fn served(site: Arc<Site>, conn: Arc<dyn Executor>) -> axum::Router {
     let mut options = Options::new(None);
     options.log = Logger::new(|_| {});
