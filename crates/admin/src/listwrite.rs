@@ -196,7 +196,7 @@ async fn save_in(s: &State_, c: Call<'_>) -> Response {
         }
     }
     match hostwrite::route(&site.schema, resource, Op::Update) {
-        Some(function) => host_save(s, c, function, &rows, read, &changed).await,
+        Some(function) => host_save(s, c, &reach, function, &rows, read, &changed).await,
         None => plain_save(s, c, &reach, &rows, &read, changed).await,
     }
 }
@@ -265,7 +265,7 @@ fn statement_problems(s: &State_, c: &Call<'_>, resource: &Resource, at: usize, 
 }
 
 /// One bridge call for all changed rows. The host runs the update function once per row in one transaction.
-async fn host_save(s: &State_, c: Call<'_>, function: String, rows: &[Row], mut read: BTreeMap<usize, Read>, changed: &BTreeMap<usize, Vec<(String, sea_query::Value, Value)>>) -> Response {
+async fn host_save(s: &State_, c: Call<'_>, reach: &crate::server::Reach, function: String, rows: &[Row], mut read: BTreeMap<usize, Read>, changed: &BTreeMap<usize, Vec<(String, sea_query::Value, Value)>>) -> Response {
     let sight = c.resource.clone();
     let resource = &*sight;
     // The host gets the rows that change, in key order like the plain path locks them; `sent` maps each to its place in the request.
@@ -274,6 +274,10 @@ async fn host_save(s: &State_, c: Call<'_>, function: String, rows: &[Row], mut 
     if sent.is_empty() {
         return write::finish(c, done(rows, vec![Vec::new(); rows.len()])).await;
     }
+    let scope = match hostwrite::scope_payload(s, &c, resource, &reach.rows, Op::Update, false).await {
+        Ok(v) => v,
+        Err(e) => return fail_with(c, |c| write::list_failure(&c.meta, e)).await,
+    };
     let mut prepared: Vec<Prepared> = Vec::new();
     for &at in &sent {
         let r = read.remove(&at).expect("a row that was read");
@@ -287,6 +291,7 @@ async fn host_save(s: &State_, c: Call<'_>, function: String, rows: &[Row], mut 
             before: Some(r.cells),
             compared: r.compared,
             inlines: None,
+            scope: Some(scope.clone()),
         });
     }
     let (mut c, answer) = match hostwrite::call_host(s, c, Op::Update, &function, |c| {

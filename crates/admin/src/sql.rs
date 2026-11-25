@@ -26,8 +26,13 @@ pub struct Table {
 
 impl Table {
     pub fn of(site: &Site, model: &str) -> Result<Table, String> {
-        let idx = site.schema.model_idx(model).map_err(|_| format!("the schema has no {model} model"))?;
-        let m = site.schema.model(idx);
+        Table::in_schema(&site.schema, model)
+    }
+
+    /// The table of a model of a bare schema (a binding writes a log row with no site).
+    pub fn in_schema(schema: &monorm_core::schema::Schema, model: &str) -> Result<Table, String> {
+        let idx = schema.model_idx(model).map_err(|_| format!("the schema has no {model} model"))?;
+        let m = schema.model(idx);
         Ok(Table { name: m.table().to_string(), model: model.to_string(), fields: m.fields().iter().map(|f| (f.name.to_string(), f.column.to_string())).collect() })
     }
 

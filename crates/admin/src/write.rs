@@ -925,7 +925,7 @@ pub(crate) async fn create_in(s: &State_, c: Call<'_>, pin: Option<&Pin>) -> Res
         for (col, v) in pin.map(|p| p.pins.as_slice()).unwrap_or_default() {
             values.insert(col.label.clone(), v.clone());
         }
-        return hostwrite::run(s, c, Prepared { op: Op::Create, function, values, loaded: Map::new(), inputs, key: None, before: None, compared: Vec::new(), inlines: (!changes.is_empty()).then(|| changes.json()) }).await;
+        return hostwrite::run(s, c, Prepared { op: Op::Create, function, values, loaded: Map::new(), inputs, key: None, before: None, compared: Vec::new(), inlines: (!changes.is_empty()).then(|| changes.json()), scope: None }).await;
     }
     let cells = match plain_insert(s, &c, resource, values, pin.map(|p| p.pins.as_slice()).unwrap_or_default()).await {
         Ok(cells) => cells,
@@ -1117,11 +1117,19 @@ pub(crate) async fn update_in(s: &State_, c: Call<'_>, pin: Option<&Pin>) -> Res
             c.scope.rollback().await;
             return problems.response();
         }
+        let scope = match hostwrite::scope_payload(s, &c, resource, &reach.rows, Op::Update, pin.is_some()).await {
+            Ok(v) => v,
+            Err(e) => {
+                let response = list_failure(&c.meta, e);
+                c.scope.rollback().await;
+                return response;
+            }
+        };
         let mut values = set;
         for (col, v) in pin.map(|p| p.pins.as_slice()).unwrap_or_default() {
             values.insert(col.label.clone(), v.clone());
         }
-        return hostwrite::run(s, c, Prepared { op: Op::Update, function, values, loaded, inputs, key: Some(key), before: Some(record.cells), compared, inlines: (!changes.is_empty()).then(|| changes.json()) }).await;
+        return hostwrite::run(s, c, Prepared { op: Op::Update, function, values, loaded, inputs, key: Some(key), before: Some(record.cells), compared, inlines: (!changes.is_empty()).then(|| changes.json()), scope: Some(scope) }).await;
     }
     let changed = changed_values(site, resource, values, &record.cells);
     let changed_names: Vec<String> = changed.iter().map(|(n, _, _)| n.clone()).collect();
@@ -1239,7 +1247,15 @@ pub(crate) async fn destroy_in(s: &State_, c: Call<'_>, pin: Option<&Pin>) -> Re
         return conflict_response(found);
     }
     if let Some(function) = route {
-        return hostwrite::run(s, c, Prepared { op: Op::Delete, function, values: Map::new(), loaded, inputs, key: Some(key), before: Some(record.cells), compared, inlines: None }).await;
+        let scope = match hostwrite::scope_payload(s, &c, resource, &reach.rows, Op::Delete, pin.is_some()).await {
+            Ok(v) => v,
+            Err(e) => {
+                let response = list_failure(&c.meta, e);
+                c.scope.rollback().await;
+                return response;
+            }
+        };
+        return hostwrite::run(s, c, Prepared { op: Op::Delete, function, values: Map::new(), loaded, inputs, key: Some(key), before: Some(record.cells), compared, inlines: None, scope: Some(scope) }).await;
     }
     if let Err(r) = delete_row(s, &c, resource, &reach, &key).await {
         c.scope.rollback().await;
