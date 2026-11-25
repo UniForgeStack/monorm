@@ -402,6 +402,7 @@ class Database:
         db: Database | None = None,
         without_defaults: bool | tuple[str, ...] = False,
         model_fields: list[str] | None = None,
+        many: _native.NativeMany | None = None,
     ) -> Any:
         filters_json, params = _with_scope(json.dumps(filters), params, key="filters")
         tx, allowed = self._tx(), allowed_writes()
@@ -420,6 +421,7 @@ class Database:
                 allowed,
                 t,
                 model_fields,
+                many,
             ),
             ("update_many", model, fields, filters_json),
         )

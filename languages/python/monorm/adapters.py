@@ -351,7 +351,7 @@ class PendingUpdate(_AdaptedWrite, Update[Any]):
             prepare_update(qs, checked)
         self.operation = PreparedWrite(pending)
         params: list[Any] = []
-        super().__init__(qs, qs._mutation_ir("update", params, checked), params)
+        super().__init__(qs, qs._mutation_ir("update", params, checked, joins=True), params)
 
     def _returning(self, names: list[str] | None) -> Returning[Any]:
         self._used = True
@@ -438,11 +438,16 @@ class PendingUpdateMany(UpdateMany[Any]):
     :data:`CONCURRENCY`), then the update stores the stored values."""
 
     def __init__(
-        self, qs: QuerySet[Any], rows: list[Mapping[str, Any]], pending: _BatchPending, batch_size: int | None
+        self,
+        qs: QuerySet[Any],
+        rows: list[Mapping[str, Any]],
+        pending: _BatchPending,
+        batch_size: int | None,
+        update_values: Mapping[str, Any] | None = None,
     ):
         self.rows = rows
         self.operation = PreparedWrite(pending, CONCURRENCY)
-        super().__init__(qs, rows, batch_size)
+        super().__init__(qs, rows, batch_size, update_values)
 
     async def _run(self, returning: bool) -> Any:
         key = self._qs.model._meta.key_names
@@ -452,7 +457,7 @@ class PendingUpdateMany(UpdateMany[Any]):
         self._inspect_returning(False)  # rejects a bad row or a CTE before any upload
 
         def statement(stored: Mapping[Any, Any]) -> Awaitable[Any]:
-            update = UpdateMany(self._qs, _fill_rows(self.rows, stored), self._batch_size)
+            update = UpdateMany(self._qs, _fill_rows(self.rows, stored), self._batch_size, self._set_values)
             update._names = self._names
             update._used = True
             return update._run(returning)

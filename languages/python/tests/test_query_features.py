@@ -730,7 +730,7 @@ async def test_joining_a_cte(clean):
     )
     assert [tuple(r) for r in rows] == [("Alice", 75, 1), ("Bob", 100, 1)]
     with pytest.raises(QueryError, match="can't run on a query set with from_"):
-        User.objects.join(totals, totals.c.author_id == User.id).all().update(name="x")
+        User.objects.join(totals, totals.c.author_id == User.id).all().delete()
     with pytest.raises(ValueError, match="already read"):
         User.objects.join(totals, totals.c.author_id == User.id).join(totals, totals.c.n > 0)
 

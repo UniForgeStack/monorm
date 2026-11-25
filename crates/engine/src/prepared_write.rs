@@ -21,7 +21,7 @@ use crate::prepared::{pass, resolve, statements, untyped_error, Arg, Call, Recor
 use monorm_core::behavior::ResultShape;
 use monorm_core::client_default::ClientDefault;
 use monorm_core::dialect::{Dialect, Target};
-use monorm_core::ir::{Bypass, ColType, Expr, Operation, ValueType};
+use monorm_core::ir::{Assignment, Bypass, ColType, Expr, Operation, ValueType};
 use monorm_core::schema::{Model, Schema};
 use monorm_core::writes::AssignValue;
 
@@ -183,8 +183,8 @@ impl PreparedWrite {
 pub enum RowsKind {
     /// `insert` and `insert_many`, with an upsert's conflict clause.
     Insert(Option<Conflict>),
-    /// `update_many`: the filters that restrict the rows.
-    UpdateMany(Vec<Expr>),
+    /// `update_many`: the filters that restrict the rows, and the `update_values`.
+    UpdateMany(Vec<Expr>, Vec<Assignment>),
 }
 
 pub struct RowsSpec {
@@ -225,7 +225,8 @@ impl RowsSpec {
                 let field = |name: &str| opts.get(name).filter(|v| !v.is_null()).cloned();
                 let model_fields = field("model_fields").map(serde_json::from_value).transpose().map_err(parse)?;
                 let without_defaults = field("without_defaults").map(serde_json::from_value).transpose().map_err(parse)?.unwrap_or_default();
-                (RowsKind::UpdateMany(filters), scope, model_fields, without_defaults)
+                let update_values = field("update_values").map(serde_json::from_value).transpose().map_err(parse)?.unwrap_or_default();
+                (RowsKind::UpdateMany(filters, update_values), scope, model_fields, without_defaults)
             }
             other => return Err(query_err(format!("unknown rows kind {other:?}"))),
         };
@@ -243,16 +244,30 @@ struct Shape {
 struct Unnest {
     sql: Arc<str>,
     types: Vec<ColType>,
+    /// The statement of one row, whose other parameters (the `update_values` and the filters) come before the arrays.
+    lead: Option<Arc<Shape>>,
 }
 
 impl Unnest {
-    /// The statement with an array of the values of each column.
-    fn bind(&self, rows: &[Vec<Option<Value>>]) -> (String, Vec<Value>) {
-        let columns = self.types.iter().enumerate().map(|(c, ty)| {
+    /// The statement with the other parameters, then an array of the values of each column.
+    fn bind(&self, rows: &[Vec<Option<Value>>], params: &dyn Params) -> Result<(String, Vec<Value>)> {
+        let mut args = vec![];
+        if let Some(shape) = &self.lead {
+            let values = shape.slots.iter().map(|s| s.convert(params)).collect::<Result<Vec<_>>>()?;
+            for a in &shape.template.args {
+                match a {
+                    Arg::Const(v) => args.push(v.clone()),
+                    Arg::Slot(s) => args.push(values[*s].clone()),
+                    Arg::Cell(_) => {}
+                    Arg::Keys => unreachable!("a row statement has no arrays"),
+                }
+            }
+        }
+        args.extend(self.types.iter().enumerate().map(|(c, ty)| {
             let items = rows.iter().map(|r| r[c].clone().expect("a cell with a value")).collect();
             Value::Array(crate::params::array_type(*ty), Some(Box::new(items)))
-        });
-        (self.sql.to_string(), columns.collect())
+        }));
+        Ok((self.sql.to_string(), args))
     }
 }
 
@@ -276,8 +291,8 @@ fn unnest_type(ty: ColType) -> &'static str {
 }
 
 /// The arrays of the columns, as `$1::bigint[], $2::text[]`.
-fn unnest_list(types: &[ColType]) -> String {
-    types.iter().enumerate().map(|(i, ty)| format!("${}::{}[]", i + 1, unnest_type(*ty))).collect::<Vec<_>>().join(", ")
+fn unnest_list(types: &[ColType], before: usize) -> String {
+    types.iter().enumerate().map(|(i, ty)| format!("${}::{}[]", before + i + 1, unnest_type(*ty))).collect::<Vec<_>>().join(", ")
 }
 
 /// A held write of rows.
@@ -340,7 +355,7 @@ impl PreparedRows {
                 let columns = this.insert_statement(&this.spec.fields, 1, &pattern, vec![])?.0.1;
                 this.returned = this.returned_of(idx, columns)?;
             }
-            RowsKind::UpdateMany(_) => {
+            RowsKind::UpdateMany(..) => {
                 let positions = plan::field_positions(m, &this.spec.fields)?;
                 if positions.iter().skip(1).any(|p| m.computed(*p)) {
                     return Err(Error::query("computed fields are read-only"));
@@ -400,12 +415,12 @@ impl PreparedRows {
 
     /// The `update_many` statement of `n` rows of sentinel cells.
     fn update_many_statement(&self, n: usize, flags: Vec<usize>) -> Result<(sea_query::UpdateStatement, Option<plan::ReturnColumns>, Recorder)> {
-        let RowsKind::UpdateMany(filters) = &self.spec.kind else { unreachable!("an update_many") };
+        let RowsKind::UpdateMany(filters, update_values) = &self.spec.kind else { unreachable!("an update_many") };
         let recorder = self.recorder(flags);
         let ncols = self.spec.fields.len();
         let rows: Vec<Vec<Value>> = (0..n).map(|r| (0..ncols).map(|c| Value::BigInt(Some(CELL_BASE + (r * ncols + c) as i64))).collect()).collect();
         let scoped = Scoped { params: &recorder, scope: &self.spec.scope };
-        let (mut stmts, columns) = plan::plan_update_many(&self.schema, self.target, &self.spec.model, &self.spec.fields, &rows, n.max(1), filters, &scoped, self.spec.returning, self.spec.model_fields.as_deref(), &self.spec.without_defaults)?;
+        let (mut stmts, columns) = plan::plan_update_many(&self.schema, self.target, &self.spec.model, &self.spec.fields, &[plan::ManyChunk { rows: &rows, shape: None, slots: &[] }], update_values, filters, &scoped, self.spec.returning, self.spec.model_fields.as_deref(), &self.spec.without_defaults)?;
         if stmts.len() != 1 {
             return Err(Error::query("update_many: the rows of a batch must make one statement"));
         }
@@ -429,7 +444,7 @@ impl PreparedRows {
         };
         let Resolved { mut slots, mut args } = resolve(&reads, &base, &flip, self.target, &self.spec.scope, false, &cell)?;
         // The slots of a batch are filter values: only the rows carry values that may be NULL.
-        if matches!(self.spec.kind, RowsKind::UpdateMany(_)) {
+        if matches!(self.spec.kind, RowsKind::UpdateMany(..)) {
             slots.iter_mut().for_each(|s| s.nullable = false);
         }
         let (sql, _) = base.into_iter().next().expect("a statement");
@@ -466,7 +481,7 @@ impl PreparedRows {
         let scoped = Scoped { params, scope: &self.spec.scope };
         let work = match &self.spec.kind {
             RowsKind::Insert(conflict) => self.insert_work(&scoped, conflict.clone(), rows)?,
-            RowsKind::UpdateMany(_) => self.update_many_work(&scoped, rows)?,
+            RowsKind::UpdateMany(..) => self.update_many_work(&scoped, rows)?,
         };
         Ok(RowsCall { work })
     }
@@ -629,7 +644,11 @@ impl PreparedRows {
                 sql
             }
         };
-        Ok(sql.map(|sql| Unnest { sql, types }))
+        let lead = match (&self.spec.kind, &sql) {
+            (RowsKind::UpdateMany(..), Some(_)) => Some(self.update_shape(1)?),
+            _ => None,
+        };
+        Ok(sql.map(|sql| Unnest { sql, types, lead }))
     }
 
     /// The statement of one row, with its `VALUES` list replaced by `UNNEST` of an array for each column.
@@ -649,7 +668,7 @@ impl PreparedRows {
             return Ok(None);
         }
         // An explicit cast to `varchar(n)` cuts a long text; the column's assignment cast refuses it.
-        let list = unnest_list(types);
+        let list = unnest_list(types, 0);
         // Without it, `ON` after the `FROM` item could read as a join condition.
         let guard = if tail.starts_with(" ON CONFLICT") { " WHERE true" } else { "" };
         Ok(Some(format!("{head} SELECT * FROM UNNEST({list}){guard}{tail}").into()))
@@ -667,22 +686,37 @@ impl PreparedRows {
     }
 
     /// The statement of one row with its `VALUES` list replaced by `UNNEST` of an array for each column.
+    /// The arrays follow the other parameters, so the later placeholders move down.
     fn unnest_update_sql(&self, types: &[ColType]) -> Result<Option<Arc<str>>> {
         let ncols = types.len();
         let shape = self.update_shape(1)?;
-        let only_cells = shape.slots.is_empty() && shape.template.args.len() == ncols && shape.template.args.iter().enumerate().all(|(i, a)| matches!(a, Arg::Cell(c) if *c == i));
-        if !only_cells {
+        let args = &shape.template.args;
+        let Some(first) = args.iter().position(|a| matches!(a, Arg::Cell(0))) else { return Ok(None) };
+        let in_order = (0..ncols).all(|c| matches!(args.get(first + c), Some(Arg::Cell(i)) if *i == c));
+        if !in_order || args.iter().filter(|a| matches!(a, Arg::Cell(_))).count() != ncols {
             return Ok(None);
         }
-        let group = format!("(VALUES ({})) AS \"v\"", (1..=ncols).map(|i| format!("${i}")).collect::<Vec<_>>().join(", "));
+        let group = format!("(VALUES ({})) AS \"v\"", (0..ncols).map(|c| format!("${}", first + c + 1)).collect::<Vec<_>>().join(", "));
         let sql = &shape.template.sql;
         let Some(at) = sql.find(&group) else { return Ok(None) };
-        let (head, tail) = (&sql[..at], &sql[at + group.len()..]);
-        if tail.contains('$') {
-            return Ok(None);
-        }
+        let renumber = |text: &str| {
+            let mut out = String::with_capacity(text.len());
+            let mut rest = text;
+            while let Some(i) = rest.find('$') {
+                out.push_str(&rest[..i]);
+                let digits = rest[i + 1..].bytes().take_while(u8::is_ascii_digit).count();
+                match rest[i + 1..i + 1 + digits].parse::<usize>() {
+                    Ok(n) if n > first + ncols => out.push_str(&format!("${}", n - ncols)),
+                    _ => out.push_str(&rest[i..i + 1 + digits]),
+                }
+                rest = &rest[i + 1 + digits..];
+            }
+            out.push_str(rest);
+            out
+        };
         let names = (1..=ncols).map(|i| format!("\"column{i}\"")).collect::<Vec<_>>().join(", ");
-        Ok(Some(format!("{head}UNNEST({}) AS \"v\"({names}){tail}", unnest_list(types)).into()))
+        let before = args.len() - ncols;
+        Ok(Some(format!("{}UNNEST({}) AS \"v\"({names}){}", renumber(&sql[..at]), unnest_list(types, before), renumber(&sql[at + group.len()..])).into()))
     }
 
     /// The statement and binds of one batch of rows.
@@ -690,7 +724,7 @@ impl PreparedRows {
         let ncols = fields.len();
         let n = rows.len();
         if let (Some(u), true) = (unnest, n >= UNNEST_ROWS) {
-            return Ok(u.bind(rows));
+            return u.bind(rows, params);
         }
         let mut pattern = Vec::with_capacity(n * ncols);
         for (row, mask) in rows.iter().zip(forced) {
@@ -736,7 +770,7 @@ impl PreparedRows {
             let end = (start + chunk).min(total);
             let n = end - start;
             if let (Some(u), true) = (&unnest, n >= UNNEST_ROWS) {
-                statements.push(u.bind(&cells[start..end]));
+                statements.push(u.bind(&cells[start..end], params)?);
             } else {
                 let shape = self.update_shape(n)?;
                 let values = shape.slots.iter().map(|s| s.convert(params)).collect::<Result<Vec<_>>>()?;

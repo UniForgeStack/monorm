@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 CASES = ["pk_get", "filter_order_50", "read_1000", "filtered_count", "insert_one", "prefetch_posts"]
 PATHS = ["unprepared", "prepared", "direct", "driver"]
 ADMIN_CASES = {"admin_list": ["admin", "driver"], "admin_export": ["admin", "host", "driver"]}
+WRITE_CASES = {name: ["unprepared", "prepared", "driver"] for name in ("update_many_expr", "update_many_values")}
 
 
 class _Quick:
@@ -49,7 +50,7 @@ class _Quick:
     def test_every_case_and_path_has_a_number(self):
         for language in ("python", "js"):
             run = json.loads((self.out / f"{language}-{self.backend}.json").read_text())
-            self.assertEqual(list(run["cases"]), [*CASES, *ADMIN_CASES])
+            self.assertEqual(list(run["cases"]), [*CASES, *ADMIN_CASES, *WRITE_CASES])
             for case in CASES:
                 entry = run["cases"][case]
                 self.assertIs(entry["checked"], True, f"{language} {case}: the equality check did not run")
@@ -64,10 +65,10 @@ class _Quick:
                     self.assertIn("median_us", result, f"{language} {case} {path}: no number")
                     self.assertGreater(result["median_us"], 0)
 
-    def test_the_admin_cases_have_a_number_on_each_path(self):
+    def test_the_admin_and_write_cases_have_a_number_on_each_path(self):
         for language in ("python", "js"):
             run = json.loads((self.out / f"{language}-{self.backend}.json").read_text())
-            for case, paths in ADMIN_CASES.items():
+            for case, paths in {**ADMIN_CASES, **WRITE_CASES}.items():
                 entry = run["cases"][case]
                 self.assertIs(entry["checked"], True, f"{language} {case}: the equality check did not run")
                 self.assertEqual(sorted(entry["paths"]), sorted(paths))

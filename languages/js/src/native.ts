@@ -113,8 +113,12 @@ export interface NativeInspector {
   prepareRead(opJson: string, n: number, declared: (string | null)[]): NativePreparedRead;
   inspect(opJson: string, params: unknown[]): string;
   inspectInsert(model: string, fields: string[], rows: unknown[][], options: string, params: unknown[], batchSize: number | null, returning: boolean): string;
-  inspectUpdateMany(model: string, fields: string[], rows: unknown[][], filtersJson: string, params: unknown[], batchSize: number | null, returning: boolean, withoutDefaults: string, modelFields?: readonly string[] | null): string;
+  inspectUpdateMany(model: string, fields: string[], rows: unknown[][], filtersJson: string, params: unknown[], batchSize: number | null, returning: boolean, withoutDefaults: string, modelFields?: readonly string[] | null, many?: NativeMany | null): string;
 }
+
+/** The expression rows and the `updateValues` of an `updateMany`: `[json, shapeOf, slots]`, where the JSON is
+ * `{ update_values, shapes }`; row `i` has the shape `shapes[shapeOf[i]]` and the literal values `slots[i]`. */
+export type NativeMany = readonly [string, readonly number[], readonly (readonly unknown[])[]];
 
 export interface NativeSchema extends NativeInspector {
   /** The static read flags of each model, JSON `{model: {filtered, fields, related}}`. */
@@ -134,6 +138,7 @@ export interface NativeSchema extends NativeInspector {
     params: unknown[],
     batchSize: number | null | undefined,
     disable: string[],
+    many?: NativeMany | null,
   ): string[];
   ddl(): string[];
   snapshot(): string;
@@ -256,6 +261,7 @@ export interface NativeEngine extends NativeInspector {
     allowed?: readonly string[],
     trace?: NativeTrace | null,
     modelFields?: readonly string[] | null,
+    many?: NativeMany | null,
   ): Promise<unknown>;
   begin(tx: NativeTransaction | null, isolation?: string | null, timeout?: number | null): Promise<NativeTransaction>;
   advisoryLock(key: string, name: Buffer | null, exclusive: boolean, nowait: boolean, tx: NativeTransaction, trace?: NativeTrace | null): Promise<boolean>;

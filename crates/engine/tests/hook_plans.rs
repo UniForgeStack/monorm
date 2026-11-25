@@ -128,6 +128,16 @@ fn update_many_runs_the_hook_4_on_the_value_that_the_caller_sets() {
 }
 
 #[test]
+fn update_many_refuses_a_database_expression_for_a_field_that_a_hook_assigns() {
+    let schema = with_hook_4();
+    let rows = vec![vec![Value::Int(Some(1)), Value::String(None)]];
+    let expr: monorm_core::ir::Expr = serde_json::from_value(json!({"t":"col","path":[],"name":"text"})).unwrap();
+    let extras = exec::ManyExtras { rows: vec![(vec![None, Some(expr)], vec![])], update_values: vec![] };
+    let error = exec::plan_update_many_with(&schema, Target::new(Dialect::Postgres), "Note", &fields(&["id", "updated_by"]), rows, &extras, &[], &Args::of(vec![]), false, None, None, &Default::default()).err().expect("a refusal").to_string();
+    assert!(error.contains("Note.updated_by: a hook assigns this field; supply a value, not a database expression"), "{error}");
+}
+
+#[test]
 fn insert_keeps_the_value_that_the_caller_supplies_for_a_hook_4_field() {
     let schema = with_hook_4();
     let rows = vec![vec![Some(Value::Int(Some(1))), Some(string("note")), Some(string("caller"))]];

@@ -1055,20 +1055,23 @@ class QuerySet(Generic[M]):
             )
 
     def _mutation_ir(
-        self, op: str, params: list[Any], values: Mapping[str, Any] | None = None, *, guard: bool = True
+        self, op: str, params: list[Any], values: Mapping[str, Any] | None = None, *, guard: bool = True, joins: bool = False
     ) -> dict[str, Any]:
         """The IR of a write. ``guard=False`` skips the unfiltered-write check: the shared query set of
         ``update_many`` has no filter by design, and each row is matched by its key. A write takes no
-        ``load()`` selection: ``returning(...)`` carries it as ``model_fields``."""
+        ``load()`` selection: ``returning(...)`` carries it as ``model_fields``. Only ``update()`` (``joins=True``)
+        runs on a query set with ``join()``."""
         self._standalone()
         self._no_load(op)
         if self._limit is not None or self._offset is not None:
             raise QueryError(f"{op}() is not supported on a sliced query set")
         if self._lock is not None:
             raise QueryError(f"{op}() locks the rows it changes; drop lock()")
-        if self._from is not None or self._joins:
+        if self._from is not None or (self._joins and not joins):
             raise QueryError(f"{op}() writes the model's table; it can't run on a query set with from_() or join()")
-        if guard and not self._every_row and all(constant_truth(f) is True for f in self._filters):
+        # An inner join keeps only the rows that match; an outer join and a relation path in SET keep every row.
+        narrowed = any(not outer for _, _, outer in self._joins)
+        if guard and not self._every_row and not narrowed and all(constant_truth(f) is True for f in self._filters):
             from .db import resolve
 
             # A filter that is always true (`and_()` of no conditions) writes every row, as no filter does.
@@ -1076,6 +1079,11 @@ class QuerySet(Generic[M]):
                 raise UnfilteredWriteError(op, self._model._meta.name)
         ctx = IRContext(self._model, params)
         ir: dict[str, Any] = {"op": op, "model": self._model._meta.name, "filters": [f._ir(ctx) for f in self._filters]}
+        if self._joins:
+            ir["joins"] = []
+            for cte, on, is_outer in self._joins:
+                ctx.use_cte(cte)
+                ir["joins"].append({"cte": cte.name, "on": on._ir(ctx), "outer": is_outer})
         if self._without_defaults:
             ir["without_defaults"] = self._without_defaults
         if self._without_root_filter:
@@ -1362,7 +1370,13 @@ class QuerySet(Generic[M]):
             return adapters.PendingUpdate(self, checked, pending)
         return Update.build(self, checked)
 
-    def update_many(self, rows: Iterable[Mapping[str, Any]] | Param, *, batch_size: int | None = None) -> UpdateMany[M]:
+    def update_many(
+        self,
+        rows: Iterable[Mapping[str, Any]] | Param,
+        *,
+        batch_size: int | None = None,
+        update_values: Mapping[str, Any] | None = None,
+    ) -> UpdateMany[M]:
         """``UPDATE`` each row to its own values: ``rows`` are dicts with the primary key
         and the fields to set (the same fields in every row)::
 
@@ -1372,14 +1386,18 @@ class QuerySet(Generic[M]):
         ``batch_size`` rows (by default as many as fit), all in one transaction.
         ``await`` gives the number of rows updated; ``.returning()`` gives the rows.
 
+        A cell may be an expression over the model's own columns (``{"id": 1, "views": Post.views + 5}``).
+        ``update_values`` is a fixed expression map for every row; ``excluded(Post.views)`` in it reads
+        the row's value of that field, and a field in both is set by ``update_values``.
+
         ``param("rows", fields=(Post.id, Post.title))`` as ``rows`` is for ``.prepare()``."""
         self._standalone()
         if isinstance(rows, Param):
-            return UpdateMany(self, rows, batch_size)
+            return UpdateMany(self, rows, batch_size, update_values)
         checked, pending = adapters.split_rows(self._model, rows)
         if pending:
-            return adapters.PendingUpdateMany(self, checked, pending, batch_size)
-        return UpdateMany(self, checked, batch_size)
+            return adapters.PendingUpdateMany(self, checked, pending, batch_size, update_values)
+        return UpdateMany(self, checked, batch_size, update_values)
 
     def delete(self) -> Delete[M]:
         """``DELETE`` every matching row. ``await`` gives the number of rows deleted;
@@ -2010,6 +2028,8 @@ class BoundQuerySet(Generic[M]):
         the bound set loads become the ``returning(...)`` columns."""
         from ._loading import merge
 
+        if self._qs._joins:
+            raise QueryError("a bound write changes the rows of its objects; it can't run on a query set with join()")
         query = self._query()
         if any("_orm_internal" in o.__dict__ for o in self._objs):
             meta = self._qs._model._meta

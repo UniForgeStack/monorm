@@ -27,6 +27,18 @@ Each case binds its values, with no literals.
 Before the timing, each case checks that all paths return the same result.
 `schema.prisma` has a `BACKEND` placeholder that the runners replace with `postgresql` or `sqlite`, because `examples/blog` cannot run on SQLite.
 
+## Write cases
+
+`write_cases` in `cases.json` holds two write cases, `update_many_expr` and `update_many_values`.
+One call runs `update_many` for 1 000 rows, and each row adds a number to the `views` of one post (one `UPDATE … FROM (VALUES …)` statement).
+`update_many_expr` builds the rows with `Post.views + n` on the `unprepared` path; `update_many_values` binds plain rows and reads `excluded(views)` in `update_values`.
+`prepared` binds plain rows with `update_values` in both cases, because a prepared `update_many` takes no expression row.
+`driver` runs the same SQL on the raw driver.
+The three paths return the number of rows written.
+The `views` of every post grow with each call, and no case compares `views` by value.
+There is no direct-IR path, and the Rust engine-only run does not take these cases.
+`summary.md` has an own table for them.
+
 ## Admin cases
 
 `admin_cases` in `cases.json` holds the two admin cases.

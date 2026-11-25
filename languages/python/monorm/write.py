@@ -173,20 +173,40 @@ def lookup_values(model: type[Model], values: Mapping[str, Any]) -> dict[str, An
     return out
 
 
-def prepare_update_rows(model: type[Model], rows: Iterable[Mapping[str, Any]]) -> tuple[list[str], list[list[Any]]]:
-    """Validates ``update_many`` rows: each has the primary key and the same fields,
-    plain values only, no primary key twice. Returns (fields, rows) with the primary key
-    first and the other fields in schema order."""
+class RowExprs:
+    """The expression cells of ``update_many`` rows, as the engine takes them: ``shapes`` are the distinct
+    lists (one entry per field, an expression's IR or ``None``); row ``i`` has the shape ``shapes[shape_of[i]]``
+    and the literal values ``slots[i]`` that the shape's parameters number."""
+
+    __slots__ = ("shapes", "shape_of", "slots")
+
+    def __init__(self) -> None:
+        self.shapes: list[list[Any]] = []
+        self.shape_of: list[int] = []
+        self.slots: list[list[Any]] = []
+
+
+def prepare_update_rows(
+    model: type[Model], rows: Iterable[Mapping[str, Any]]
+) -> tuple[list[str], list[list[Any]], RowExprs | None]:
+    """Validates ``update_many`` rows: each has the primary key and the same fields, no
+    primary key twice. A cell is a plain value or an expression over the model's own columns; the
+    key is always plain. Returns (fields, rows, expressions) with the primary key first and the other
+    fields in schema order. An expression cell holds ``None`` in its row and its IR in ``expressions``
+    (``None`` when no cell is an expression)."""
     meta = model._meta
     pk = meta.key_names
     shown = ", ".join(pk)
     normalized: list[dict[str, Any]] = []
     seen: set[Any] = set()
     fields: set[str] | None = None
+    has_expr = False
     for n, row in enumerate(rows):
         values: dict[str, Any] = {}
         for key, value in row.items():
-            if isinstance(value, Expression):
+            if isinstance(value, Param):
+                raise QueryError(f"update_many: {meta.name}.{key} is {value!r}; a row takes values, and a prepared update_many takes param('rows', fields=...)")
+            if isinstance(value, Expression) and (key in meta.nested or key not in (*meta.input_fields, *meta.generated)):
                 raise TypeError(f"{meta.name}.{key}: update_many takes plain values, not expressions")
             if key in meta.nested and isinstance(value, Mapping):
                 raise TypeError(
@@ -197,10 +217,13 @@ def prepare_update_rows(model: type[Model], rows: Iterable[Mapping[str, Any]]) -
                 values.update(nested)
             elif key in meta.input_fields or key in meta.generated:
                 values[key] = value
+                has_expr = has_expr or isinstance(value, Expression)
             elif isinstance(rel := meta.relations.get(key), BelongsTo):
                 values.update(_link(rel, value))
             else:
                 raise _no_field(meta, key)
+        if any(isinstance(values.get(k), Expression) for k in pk):
+            raise TypeError("update_many: the primary key must be a plain value")
         if any(values.get(k) is None for k in pk):
             raise ValueError(f"update_many row {n} has no {shown}")
         row_key = tuple(values[k] for k in pk)
@@ -217,9 +240,23 @@ def prepare_update_rows(model: type[Model], rows: Iterable[Mapping[str, Any]]) -
             raise ValueError(f"update_many rows must set the same fields; row {n} differs in {diff}")
         normalized.append(values)
     if fields is None:
-        return [], []
+        return [], [], None
     names = [*pk, *(f for f in meta.field_names if f in fields and f not in pk)]
-    return names, [[v[f] for f in names] for v in normalized]
+    exprs: RowExprs | None = None
+    if has_expr:
+        exprs = RowExprs()
+        known: dict[str, int] = {}
+        for v in normalized:
+            slots: list[Any] = []
+            ctx = IRContext(model, slots)
+            shape = [v[f]._ir(ctx) if isinstance(v[f], Expression) else None for f in names]
+            text = json.dumps(shape)
+            if (at := known.get(text)) is None:
+                at = known[text] = len(exprs.shapes)
+                exprs.shapes.append(shape)
+            exprs.shape_of.append(at)
+            exprs.slots.append(slots)
+    return names, [[None if isinstance(v[f], Expression) else v[f] for f in names] for v in normalized], exprs
 
 
 def _batch_names(model: type[Model], columns: Iterable[Any], what: str) -> list[str]:
@@ -813,7 +850,7 @@ class Update(_SetStatement[M]):
     @classmethod
     def build(cls, qs: QuerySet[M], values: Mapping[str, Any]) -> Update[M]:
         params = SlotParams()
-        ir = qs._mutation_ir("update", params, values)
+        ir = qs._mutation_ir("update", params, values, joins=True)
         return cls(qs, ir if ir["set"] else None, params)
 
 
@@ -880,11 +917,21 @@ class UpdateMany(Generic[M]):
     """``update_many``: ``await`` gives the number of rows updated; ``.returning()`` the
     rows."""
 
-    __slots__ = ("_qs", "_fields", "_rows", "_batch_size", "_names", "_plan", "_used")
+    __slots__ = ("_qs", "_fields", "_rows", "_batch_size", "_names", "_plan", "_used", "_exprs", "_set_values")
 
-    def __init__(self, qs: QuerySet[M], rows: Iterable[Mapping[str, Any]] | Param, batch_size: int | None) -> None:
+    def __init__(
+        self,
+        qs: QuerySet[M],
+        rows: Iterable[Mapping[str, Any]] | Param,
+        batch_size: int | None,
+        update_values: Mapping[str, Any] | None = None,
+    ) -> None:
         if batch_size is not None and batch_size < 1:
             raise ValueError("batch_size must be at least 1")
+        if update_values is not None and not update_values:
+            raise TypeError("update_many(update_values={}) sets nothing; leave update_values out")
+        self._set_values = update_values
+        self._exprs: RowExprs | None = None
         qs._mutation_ir("update", SlotParams(), guard=False)  # rejects sliced and locked query sets
         self._qs = qs
         self._plan: ManyRows | None = None
@@ -897,7 +944,7 @@ class UpdateMany(Generic[M]):
             self._rows: list[list[Any]] = []
             self._plan = ManyRows(rows.name, self._fields, self._fields, {}, keys)
         else:
-            self._fields, self._rows = prepare_update_rows(qs.model, rows)
+            self._fields, self._rows, self._exprs = prepare_update_rows(qs.model, rows)
         self._batch_size = batch_size
         self._names: list[str] | None = None  # returning(...) columns; None: the default selection
         self._used = False
@@ -918,6 +965,16 @@ class UpdateMany(Generic[M]):
         self._used = True
         return prepare_update_many(self, "count")
 
+    def _many(self, params: list[Any]) -> _native.NativeMany | None:
+        """The expression rows and the ``update_values`` for the engine; their parameters go after the filters'."""
+        model = self._qs.model
+        sets = assignments(model, self._set_values, IRContext(model, params)) if self._set_values else []
+        exprs = self._exprs
+        if exprs is None and not sets:
+            return None
+        shapes = exprs.shapes if exprs else []
+        return json.dumps({"update_values": sets, "shapes": shapes}), exprs.shape_of if exprs else [], exprs.slots if exprs else []
+
     def _inspect_returning(self, returning: bool) -> QueryInspection:
         from .db import _with_scope
 
@@ -928,6 +985,7 @@ class UpdateMany(Generic[M]):
         ir = self._qs._mutation_ir("update", params, guard=False)
         if "with" in ir:
             raise QueryError("update_many() filters can't read CTEs")
+        many = self._many(params)
         filters, params = _with_scope(json.dumps(ir["filters"]), params, key="filters")
         return QueryInspection._from_json(
             _inspection_native(self._qs).inspect_update_many(
@@ -940,6 +998,7 @@ class UpdateMany(Generic[M]):
                 returning,
                 model_fields=self._names,
                 without_defaults=json.dumps(self._qs._without_defaults),
+                many=many,
             )
         )
 
@@ -953,6 +1012,7 @@ class UpdateMany(Generic[M]):
         ir = self._qs._mutation_ir("update", params, guard=False)
         if "with" in ir:
             raise QueryError("update_many() filters can't read CTEs")
+        many = self._many(params)
         db = resolve(self._qs._db)
         return await db._update_many(
             self._qs.model._meta.name,
@@ -965,6 +1025,7 @@ class UpdateMany(Generic[M]):
             self._qs._db,
             self._qs._without_defaults,
             self._names,
+            many,
         )
 
     def returning(self, *columns: ColumnRef[Any]) -> _UpdateManyReturning[M]:

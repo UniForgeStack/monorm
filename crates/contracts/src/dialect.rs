@@ -68,7 +68,7 @@ impl Dialect {
                 returning: true, on_conflict: true, ilike: false,
                 lock_exclusive: false, lock_shared: false, lock_of: false,
                 lock_nowait: false, lock_skip_locked: false,
-                update_from_values: false, savepoints: true, distinct_on: false, lateral_join: false,
+                update_from_values: true, savepoints: true, distinct_on: false, lateral_join: false,
                 any_array: false, json_each: true,
                 max_params: 32_766,
             },

@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 import monorm
-from monorm import admin, param
+from monorm import admin, excluded, param
 from monorm import _native
 from monorm.protection import allowed_writes
 from monorm.write import prepare_rows
@@ -273,6 +273,41 @@ def admin_cases(models: Any, db: Any, driver: Driver) -> list[Case]:
     return out
 
 
+def write_cases(models: Any, db: Any, driver: Driver) -> list[Case]:
+    """`update_many` for 1 000 rows, each adding a number to the views of one post.
+
+    `update_many_expr` builds the rows with `Post.views + n` (unprepared); `update_many_values` binds plain rows and reads
+    `excluded(views)` in `update_values`. `prepared` binds plain rows with `update_values` in both, because a prepared
+    update_many takes no expression row. `driver` runs the same UPDATE FROM VALUES statement. They return the number of rows written."""
+    Post = models["Post"]
+    by_excluded = {"views": Post.views + excluded(Post.views)}
+    prepared = Post.objects.update_many(param("rows", fields=[Post.id, Post.views]), update_values=by_excluded).prepare()
+    out = []
+    for spec in SPEC["write_cases"]:
+        n = spec["rows"]
+        step = [i % 3 + 1 for i in range(1, n + 1)]
+        names = [f"{c}{i}" for i in range(n) for c in "ab"]
+        values = {name: (i // 2 + 1 if i % 2 == 0 else step[i // 2]) for i, name in enumerate(names)}
+        cells = ", ".join("(CAST(? AS BIGINT), CAST(? AS INTEGER))" for _ in range(n))
+        text = f"UPDATE posts SET views = posts.views + v.column2 FROM (VALUES {cells}) AS v WHERE posts.id = v.column1 RETURNING posts.id"
+        plain = [{"id": i + 1, "views": step[i]} for i in range(n)]
+        c = Case({**spec, "sql": [{"text": text, "args": names}], "values": [values]})
+        if spec["name"] == "update_many_expr":
+            c.paths["unprepared"] = lambda _k, n=n, step=step: Post.objects.update_many(
+                [{"id": i + 1, "views": Post.views + step[i]} for i in range(n)]
+            )
+        else:
+            c.paths["unprepared"] = lambda _k, plain=plain: Post.objects.update_many(plain, update_values=by_excluded)
+        c.paths["prepared"] = lambda _k, plain=plain: prepared(rows=plain)
+        c.norm = lambda path, r: len(r[0]) if path == "driver" else r
+        if driver.skip is not None:
+            c.paths["driver"] = driver.skip
+        else:
+            c.paths["driver"] = lambda k, c=c: driver.run(c.sql, c.values[k % len(c.values)])
+        out.append(c)
+    return out
+
+
 async def check(case: Case) -> None:
     """Every path returns the same result for the first value set."""
     got: dict[str, Any] = {}
@@ -350,9 +385,10 @@ async def main() -> None:
     await driver.open()
     cases = build_cases(models, db, driver)
     admin_runs = admin_cases(models, db, driver)
+    write_runs = write_cases(models, db, driver)
 
     result: dict[str, Any] = {"environment": environment(backend), "quick": args.quick, "cases": {}}
-    for case in [*cases, *admin_runs]:
+    for case in [*cases, *admin_runs, *write_runs]:
         await check(case)
         rounds, inner = (1, 1) if args.quick else (args.rounds, case.inner)
         paths = await measure(case, rounds, inner, warm=not args.quick)

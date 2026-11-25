@@ -654,9 +654,41 @@ pub struct UpdateMany {
     pub returning: Option<crate::plan::Returned>,
 }
 
-/// Plans `update_many`: `rows` (aligned with `fields`, primary key first, converted by
-/// [`field_types`]) are split so no statement exceeds the dialect's parameter limit or
-/// `batch_size` rows. `filters` (planned against `params`) restrict the rows updated.
+/// What `update_many` adds to its plain rows: the expression of each cell, and `update_values`.
+#[derive(Default)]
+pub struct ManyExtras {
+    /// One entry per row, or none when no row holds an expression: the expression of each cell
+    /// (`None`: a plain value) with numbered `Param` slots, and the values of the slots.
+    pub rows: Vec<(Vec<Option<ir::Expr>>, Vec<Value>)>,
+    /// Expressions that set a field on every row; `excluded(F)` reads the row's `F`.
+    pub update_values: Vec<ir::Assignment>,
+}
+
+impl ManyExtras {
+    /// Reads the bindings' JSON document `{"update_values": [...], "shapes": [[expression or null
+    /// per field], ...]}`. Row `i` has the shape `shapes[shape_of[i]]` and the slot values `slots[i]`.
+    pub fn from_json(json: &str, shape_of: &[usize], slots: Vec<Vec<Value>>) -> Result<Self> {
+        #[derive(serde::Deserialize, Default)]
+        #[serde(default)]
+        struct Doc {
+            update_values: Vec<ir::Assignment>,
+            shapes: Vec<Vec<Option<ir::Expr>>>,
+        }
+        let doc: Doc = serde_json::from_str(json).map_err(|e| Error::query(format!("invalid update_many expressions: {e}")))?;
+        let rows = shape_of.iter().zip(slots).map(|(at, values)| {
+            let shape = doc.shapes.get(*at).ok_or_else(|| Error::query("update_many: a row names a shape that does not exist"))?.clone();
+            Ok((shape, values))
+        }).collect::<Result<Vec<_>>>()?;
+        Ok(Self { rows, update_values: doc.update_values })
+    }
+
+    /// The names of the fields that `update_values` set.
+    pub fn written(&self) -> impl Iterator<Item = String> + '_ {
+        self.update_values.iter().map(|a| a.field.clone())
+    }
+}
+
+/// Plans `update_many` of plain rows: see [`plan_update_many_with`].
 #[allow(clippy::too_many_arguments)]
 pub fn plan_update_many(
     schema: &Schema,
@@ -671,9 +703,35 @@ pub fn plan_update_many(
     batch_size: Option<usize>,
     without_defaults: &ir::Bypass,
 ) -> Result<(Vec<UpdateStatement>, UpdateMany)> {
+    plan_update_many_with(schema, target, model, fields, rows, &ManyExtras::default(), filters, params, returning, model_fields, batch_size, without_defaults)
+}
+
+/// Plans `update_many`: `rows` (aligned with `fields`, primary key first, converted by
+/// [`field_types`]) are grouped by the shape of their expression cells (first appearance first),
+/// and each group is split so no statement exceeds the dialect's parameter limit or
+/// `batch_size` rows. `filters` (planned against `params`) restrict the rows updated.
+#[allow(clippy::too_many_arguments)]
+pub fn plan_update_many_with(
+    schema: &Schema,
+    target: Target,
+    model: &str,
+    fields: &[String],
+    rows: Vec<Vec<Value>>,
+    extras: &ManyExtras,
+    filters: &[ir::Expr],
+    params: &dyn Params,
+    returning: bool,
+    model_fields: Option<&[String]>,
+    batch_size: Option<usize>,
+    without_defaults: &ir::Bypass,
+) -> Result<(Vec<UpdateStatement>, UpdateMany)> {
     if rows.iter().any(|r| r.len() != fields.len()) {
         return Err(Error::query("update_many row length does not match fields"));
     }
+    if !extras.rows.is_empty() && (extras.rows.len() != rows.len() || extras.rows.iter().any(|(shape, _)| shape.len() != fields.len())) {
+        return Err(Error::query("update_many row expressions do not match the rows"));
+    }
+    let is_expression = |row: usize, field: usize| extras.rows.get(row).is_some_and(|(shape, _)| shape[field].is_some());
     let rows = {
         let m = schema.model(schema.model_idx(model).map_err(query_err)?);
         let mut rows = rows;
@@ -682,17 +740,54 @@ pub fn plan_update_many(
         plan::refuse_generated(m, fields.iter())?;
         if m.hooks.is_some() {
             let map = crate::hooks::input_map(m.fields().len(), &positions)?;
-            crate::hooks::update_rows(m, &map, &mut rows, params)?;
+            if extras.rows.is_empty() {
+                crate::hooks::update_rows(m, &map, &mut rows, params)?;
+            } else {
+                let mut cells: Vec<Vec<Option<Value>>> = rows.into_iter().enumerate().map(|(r, row)| row.into_iter().enumerate().map(|(i, v)| (!is_expression(r, i)).then_some(v)).collect()).collect();
+                crate::hooks::update_rows(m, &map, &mut cells, params)?;
+                rows = cells.into_iter().map(|row| row.into_iter().map(|v| v.unwrap_or(Value::Int(None))).collect()).collect();
+            }
         }
         rows
     };
-    let per_row = if target.caps.update_from_values { fields.len() } else { 2 * fields.len() - 1 };
-    // Leave room for the filters' parameters.
-    let mut chunk = target.caps.max_params.saturating_sub(params.len()) / per_row.max(1);
-    if let Some(n) = batch_size {
-        chunk = chunk.min(n);
+    // One group per shape; a row of plain values has the shape of no expression.
+    let mut groups: Vec<ManyGroup> = vec![];
+    let mut index = std::collections::HashMap::new();
+    for (r, row) in rows.into_iter().enumerate() {
+        let (shape, slots) = match extras.rows.get(r) {
+            Some((shape, slots)) => (Some(shape), slots.clone()),
+            None => (None, vec![]),
+        };
+        let key = serde_json::to_string(&shape).map_err(|e| Error::query(e.to_string()))?;
+        let at = *index.entry(key).or_insert_with(|| {
+            groups.push(ManyGroup { shape: shape.cloned(), rows: vec![], slots: vec![] });
+            groups.len() - 1
+        });
+        groups[at].rows.push(row);
+        groups[at].slots.push(slots);
     }
-    let (stmts, columns) = plan::plan_update_many(schema, target, model, fields, &rows, chunk, filters, params, returning, model_fields, without_defaults)?;
+    let mut chunks = vec![];
+    for g in &groups {
+        let slots = g.slots.first().map_or(0, Vec::len);
+        let per_row = if target.caps.update_from_values {
+            fields.len() - g.shape.as_ref().map_or(0, |s| s.iter().filter(|e| e.is_some()).count()) + slots
+        } else {
+            2 * fields.len() - 1 + slots + extras.update_values.len() * fields.len()
+        };
+        // Leave room for the filters' parameters.
+        let mut size = target.caps.max_params.saturating_sub(params.len()) / per_row.max(1);
+        if let Some(n) = batch_size {
+            size = size.min(n);
+        }
+        let size = size.max(1);
+        let mut at = 0;
+        while at < g.rows.len() {
+            let end = (at + size).min(g.rows.len());
+            chunks.push(plan::ManyChunk { rows: &g.rows[at..end], shape: g.shape.as_deref(), slots: &g.slots[at..end] });
+            at = end;
+        }
+    }
+    let (stmts, columns) = plan::plan_update_many(schema, target, model, fields, &chunks, &extras.update_values, filters, params, returning, model_fields, without_defaults)?;
     let model_idx = schema.model_idx(model).map_err(query_err)?;
     let statements = stmts.iter().map(|s| db::build(target.dialect, s)).collect();
     let returning = match columns {
@@ -704,6 +799,13 @@ pub fn plan_update_many(
         None => None,
     };
     Ok((stmts, UpdateMany { statements, returning }))
+}
+
+/// The rows of one shape.
+struct ManyGroup {
+    shape: Option<Vec<Option<ir::Expr>>>,
+    rows: Vec<Vec<Value>>,
+    slots: Vec<Vec<Value>>,
 }
 
 /// Runs `update_many`'s statements, in a transaction of their own when there are several

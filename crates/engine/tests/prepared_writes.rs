@@ -248,7 +248,7 @@ async fn same_update_many(d: Dialect, n: usize, cap: Option<usize>) {
         c
     };
     let fields = ["id", "views"];
-    let prepared = PreparedRows::prepare(schema.clone(), t, rows_spec(RowsKind::UpdateMany(vec![]), &fields)).unwrap();
+    let prepared = PreparedRows::prepare(schema.clone(), t, rows_spec(RowsKind::UpdateMany(vec![], vec![]), &fields)).unwrap();
     let a = seed().await;
     prepared.run(&*a, &NoParams, update_many_rows(n).into_iter().map(|r| r.into_iter().map(Some).collect()).collect(), true).await.unwrap();
     let from_a = table(&*a).await;
@@ -303,7 +303,7 @@ fn an_update_many_refuses_null_in_a_filter_param_and_a_set_expression_takes_null
         let schema = schema(json!({}));
         let t = target(Dialect::Sqlite, None);
         let filter: Expr = serde_json::from_value(json!({"t":"cmp","op":"eq","l":{"t":"col","path":[],"name":"views"},"r":{"t":"param","i":0}})).unwrap();
-        let mut spec = rows_spec(RowsKind::UpdateMany(vec![filter]), &["id", "title"]);
+        let mut spec = rows_spec(RowsKind::UpdateMany(vec![filter], vec![]), &["id", "title"]);
         spec.len = 1;
         spec.declared = vec![ty(ColType::Int)];
         let prepared = PreparedRows::prepare(schema.clone(), t, spec).unwrap();
@@ -400,7 +400,7 @@ fn postgres_binds_one_array_a_column_from_the_unnest_threshold() {
 fn postgres_update_many_joins_unnest_from_the_threshold() {
     let schema = schema(json!({}));
     let t = target(Dialect::Postgres, None);
-    let prepared = PreparedRows::prepare(schema, t, rows_spec(RowsKind::UpdateMany(vec![]), &["id", "title", "views"])).unwrap();
+    let prepared = PreparedRows::prepare(schema, t, rows_spec(RowsKind::UpdateMany(vec![], vec![]), &["id", "title", "views"])).unwrap();
     let rows = |n: usize| -> Vec<Vec<Option<Value>>> { (0..n).map(|i| vec![Some(big(i as i64)), Some(text("a")), Some(int(1))]).collect() };
     let n = monorm_engine::prepared_write::UNNEST_ROWS;
     assert!(statements_of(&prepared, rows(n - 1))[0].contains("FROM (VALUES ($1, $2, $3), "));
@@ -423,7 +423,7 @@ fn a_scoped_update_many_of_33_rows_keeps_the_filter_on_postgres() {
         let plans = exec::plan_inserts(&schema, t, "Post", &["id".into(), "title".into(), "views".into()], seed, None, &NoParams, None, false, None, &Default::default()).unwrap();
         exec::run_inserts(&*c, t, plans, true, false).await.unwrap();
         let filter: Expr = serde_json::from_value(json!({"t":"cmp","op":"eq","l":{"t":"col","path":[],"name":"title"},"r":{"t":"param","i":0}})).unwrap();
-        let mut spec = rows_spec(RowsKind::UpdateMany(vec![filter]), &["id", "views"]);
+        let mut spec = rows_spec(RowsKind::UpdateMany(vec![filter], vec![]), &["id", "views"]);
         spec.len = 1;
         let prepared = PreparedRows::prepare(schema, t, spec).unwrap();
         let rows: Vec<_> = (0..33).map(|i| vec![Some(big(i)), Some(int(1000 + i as i32))]).collect();

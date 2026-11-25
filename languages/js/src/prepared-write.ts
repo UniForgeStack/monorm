@@ -16,14 +16,14 @@
 import { Builder } from "./build.js";
 import { currentScope, scopeIndex, scopeParams, scopeShape } from "./db.js";
 import { QueryError } from "./errors.js";
-import { Column, Slot, SlotParams, type IR, type RowsRef } from "./expr.js";
+import { Column, Expression, IRContext, Slot, SlotParams, type IR, type RowsRef } from "./expr.js";
 import { emptyInspection, inspection, inspector, type QueryInspection } from "./inspection.js";
-import { call, type NativeInspector, type NativePreparedRows, type NativeReturned } from "./native.js";
+import { call, type NativeMany, type NativeInspector, type NativePreparedRows, type NativeReturned } from "./native.js";
 import type { ModelMeta } from "./model.js";
 import type { FieldMeta } from "./meta.js";
 import { allowedWrites } from "./protection.js";
 import { Compiled, splitScope, type CallScope, type QuerySet, type Values } from "./query.js";
-import { prepareInsertTemplate, requireFields } from "./write.js";
+import { assignments, prepareInsertTemplate, requireFields } from "./write.js";
 
 type AnyQuerySet = QuerySet<any, any, any, any, any, any>;
 type Conflict = Parameters<AnyQuerySet["conflictPlan"]>[2];
@@ -174,6 +174,7 @@ class ManyRows {
     private readonly name: string,
     private readonly given: readonly string[],
     private readonly keys: number,
+    private readonly plainOnly = false,
   ) {
     this.names = new Set([name]);
   }
@@ -197,6 +198,9 @@ class ManyRows {
       cells[i] = cell;
     }
     if (this.keys) this.checkKeys(cells);
+    if (this.plainOnly && cells.some((cell) => cell.some((v) => v instanceof Expression))) {
+      throw new TypeError("a prepared updateMany takes plain values; use updateValues or an unprepared updateMany()");
+    }
     return cells;
   }
 
@@ -340,10 +344,12 @@ class RowsWrite implements Held {
     const engine = inspector(this.qs.meta, this.qs.state.db);
     const options = c.scoped(scopeShape(scope));
     const returning = this.shape !== "count";
+    const sets = options["update_values"];
+    const many: NativeMany | undefined = sets ? [JSON.stringify({ update_values: sets }), [], []] : undefined;
     const text =
       c.kind === "insert"
         ? engine.inspectInsert(c.model, c.fields, rows, JSON.stringify(options), params, c.batch, returning)
-        : engine.inspectUpdateMany(c.model, c.fields, rows, JSON.stringify(options["filters"]), params, c.batch, returning, JSON.stringify(options["without_defaults"] ?? false), (options["model_fields"] as string[] | undefined) ?? null);
+        : engine.inspectUpdateMany(c.model, c.fields, rows, JSON.stringify(options["filters"]), params, c.batch, returning, JSON.stringify(options["without_defaults"] ?? false), (options["model_fields"] as string[] | undefined) ?? null, many);
     return call(() => inspection(text));
   }
 
@@ -401,6 +407,13 @@ export function prepareInsertMany<R, P>(
   return held(qs, new ManyRows(rows.name, given, 0), "insert", fields, new Set(fields), conflict, shape, names, batchSize(size), [], null);
 }
 
+/** `updateMany({ updateValues: {} })` sets nothing, so it is a mistake. */
+export function refuseEmptyUpdateValues(updateValues: object | undefined): void {
+  if (updateValues !== undefined && !Object.keys(updateValues).length) {
+    throw new TypeError("updateMany({ updateValues: {} }) sets nothing; leave updateValues out");
+  }
+}
+
 /** The held `updateMany(param("rows", { fields }))`; the primary key is among the fields. */
 export function prepareUpdateManyRows<R, P>(
   qs: AnyQuerySet,
@@ -408,6 +421,7 @@ export function prepareUpdateManyRows<R, P>(
   shape: WriteShape,
   names: readonly string[] | undefined,
   size: number | null | undefined,
+  updateValues?: object,
 ): PreparedWrite<R, P> {
   const meta = qs.meta;
   const cols = rowFields(meta, rows, "updateMany");
@@ -421,7 +435,9 @@ export function prepareUpdateManyRows<R, P>(
   const params = new SlotParams();
   const ir = qs.mutationIr("update", params, undefined, false);
   if ("with" in ir) throw new Error("updateMany() filters can't read CTEs");
-  return held(qs, new ManyRows(rows.name, given, pk.length), "update_many", fields, new Set(fields), undefined, shape, names, batchSize(size), ir["filters"] as unknown[], params);
+  refuseEmptyUpdateValues(updateValues);
+  const sets = updateValues === undefined ? undefined : assignments(meta, updateValues, new IRContext(meta, params));
+  return held(qs, new ManyRows(rows.name, given, pk.length, true), "update_many", fields, new Set(fields), undefined, shape, names, batchSize(size), ir["filters"] as unknown[], params, sets);
 }
 
 function held<R, P>(
@@ -436,6 +452,7 @@ function held<R, P>(
   size: number | null,
   filters: unknown[],
   updateParams: SlotParams | null,
+  updateValues?: IR[],
 ): PreparedWrite<R, P> {
   const returning = shape !== "count";
   const without_defaults = qs.state.withoutDefaults;
@@ -449,7 +466,7 @@ function held<R, P>(
     compiled = new RowsCompiled("insert", model, fields, options, null, params, returning, size);
     key = ["insert", model, fields, c.conflict];
   } else {
-    const options = { model_fields: returning ? names : undefined, without_defaults };
+    const options = { model_fields: returning ? names : undefined, without_defaults, update_values: updateValues };
     compiled = new RowsCompiled("update_many", model, fields, options, filters, updateParams!, returning, size);
     key = ["update_many", model, fields];
   }

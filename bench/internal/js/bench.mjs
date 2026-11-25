@@ -17,7 +17,7 @@ import { parseArgs } from "node:util";
 
 const HERE = new URL(".", import.meta.url);
 const SRC = new URL("../../../languages/js/dist/src/", HERE);
-const { connect, load, func, param } = await import(new URL("index.js", SRC));
+const { connect, load, func, param, excluded } = await import(new URL("index.js", SRC));
 const { Admin } = await import(new URL("admin.js", SRC));
 const { Builder } = await import(new URL("build.js", SRC));
 const { allowedWrites } = await import(new URL("protection.js", SRC));
@@ -230,6 +230,35 @@ function adminCases() {
 const adminRuns = adminCases();
 for (const c of adminRuns) c.paths.driver = driver.skip ?? (k => driver.run(c.sql, c.values[k % c.values.length]));
 
+/**
+ * `updateMany` for 1 000 rows, each adding a number to the views of one post.
+ * `update_many_expr` builds the rows with `Post.views.add(n)` (unprepared); `update_many_values` binds plain rows and reads
+ * `excluded(views)` in `updateValues`. `prepared` binds plain rows with `updateValues` in both, because a prepared updateMany takes
+ * no expression row. `driver` runs the same UPDATE FROM VALUES statement. They return the number of rows written.
+ */
+function writeCases() {
+  const byExcluded = { views: Post.views.add(excluded(Post.views)) };
+  const prepared = Post.objects.updateMany(param("rows", { fields: [Post.id, Post.views] }), { updateValues: byExcluded }).prepare();
+  return SPEC.write_cases.map(spec => {
+    const n = spec.rows;
+    const step = Array.from({ length: n }, (_, i) => ((i + 1) % 3) + 1);
+    const names = Array.from({ length: n }, (_, i) => [`a${i}`, `b${i}`]).flat();
+    const values = Object.fromEntries(names.map((name, i) => [name, i % 2 === 0 ? i / 2 + 1 : step[(i - 1) / 2]]));
+    const cells = Array.from({ length: n }, () => "(CAST(? AS BIGINT), CAST(? AS INTEGER))").join(", ");
+    const text = `UPDATE posts SET views = posts.views + v.column2 FROM (VALUES ${cells}) AS v WHERE posts.id = v.column1 RETURNING posts.id`;
+    const plain = step.map((d, i) => ({ id: big(i + 1), views: d }));
+    const c = { name: spec.name, ...spec, sql: [{ text, args: names }], values: [values], paths: {} };
+    c.paths.unprepared = spec.name === "update_many_expr"
+      ? async () => Post.objects.updateMany(plain.map(r => ({ id: r.id, views: Post.views.add(r.views) })))
+      : async () => Post.objects.updateMany(plain, { updateValues: byExcluded });
+    c.paths.prepared = () => prepared.run({ rows: plain });
+    c.norm = (path, r) => (path === "driver" ? r[0].length : Number(r));
+    return c;
+  });
+}
+const writeRuns = writeCases();
+for (const c of writeRuns) c.paths.driver = driver.skip ?? (k => driver.run(c.sql, c.values[k % c.values.length]));
+
 async function check(c) {
   const got = {};
   for (const [path, fn] of Object.entries(c.paths)) {
@@ -285,7 +314,7 @@ const result = {
   quick: opt.quick,
   cases: {},
 };
-for (const c of [...cases, ...adminRuns]) {
+for (const c of [...cases, ...adminRuns, ...writeRuns]) {
   await check(c);
   const [rounds, inner] = opt.quick ? [1, 1] : [Number(opt.rounds), c.inner];
   const paths = await measure(c, rounds, inner, !opt.quick);

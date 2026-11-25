@@ -881,6 +881,17 @@ A field that a default hides is `NotLoaded` after a write, also when the caller 
 * `updateMany(rows, { batchSize })` does a bulk update by primary key with
   `UPDATE ... FROM (VALUES ...)`, falling back to `CASE`. All its batches run in one
   transaction.
+  A row value may be an expression over the model's own columns (`{ id: 1, views: Post.views.add(1) }`),
+  and `updateMany(rows, { updateValues: { views: Post.views.add(excluded(Post.views)) } })` sets a fixed expression map
+  (`excluded(F)` reads the `VALUES` column, so `F` must be in the rows).
+  A prepared `updateMany(param("rows", { fields }), { updateValues })` keeps plain rows, and an expression row at call time throws.
+  The key that matches the rows, a generated field, and a field that a hook assigns refuse an expression, and `updateValues` cannot set the key.
+  A duplicate key throws before any SQL runs.
+* `update()` takes `join(cte, on, { outer })`: `UPDATE ... FROM <cte> WHERE <on>`.
+  The `SET` values and the filters may read `cte.c.<name>` or a to-one path.
+  An inner join counts as a filter for the unfiltered-write guard, an outer join does not.
+  A to-many path outside an aggregate, `from()` with `update()` or `delete()`, and a join on a multi-table model throw `QueryError`.
+  When several rows of a joined source match one target row, the database picks one and the result is not predictable: give a CTE with one row per key (`groupBy`).
 * On an instance: `post.update({...})` (refreshed from `RETURNING`) and `post.delete()`.
   To reload an instance, use `post.load({ reload: true })`.
 * A model with a composite primary key (`@@id([shop, id])`) has an object `pk` keyed by field name, `{ shop: 1, id: 7 }`.

@@ -49,12 +49,12 @@ import {
 import { NotLoaded, QueryError, TransactionRequired, UnfilteredWriteError } from "./errors.js";
 import { irNames, type DefaultNames, type DeleteArgs, type Hop, type HopKind, type In, type ModelSpec, type RelationMeta } from "./meta.js";
 import { DB, IndexRef, columnOf, fieldValue, RELATED, registerQueries, type Instance, type ModelClass, type ModelMeta } from "./model.js";
-import { call, wait, type NativeInspector, type NativePreparedRead, type NativePreparedWrite, type NativeReturned, type NativeSelect, type NativeTrace, type NativeTransaction } from "./native.js";
+import { call, wait, type NativeMany, type NativeInspector, type NativePreparedRead, type NativePreparedWrite, type NativeReturned, type NativeSelect, type NativeTrace, type NativeTransaction } from "./native.js";
 import { adaptedCopyRows, adaptedInsert, adaptedInsertMany, adaptedUpdate, adaptedUpdateMany, FieldAdapterError, prepareValues, splitAdapted, splitBatch } from "./adapters.js";
-import { assignments, lookupValues, prepareRows, prepareUpdateRows, prepareAttach, prepareAttachMany } from "./write.js";
+import { assignments, lookupValues, prepareRows, prepareUpdateRows, prepareAttach, prepareAttachMany, type RowExprs } from "./write.js";
 import { after, checkPaging, decodeCursor, encodeCursor, fingerprint, keyset, type Page, type PageOptions } from "./pagination.js";
 import { allowedWrites } from "./protection.js";
-import { PreparedWrite, prepareInsertMany, prepareInsertOne, prepareSet, prepareUpdateManyRows, type WriteShape } from "./prepared-write.js";
+import { PreparedWrite, prepareInsertMany, prepareInsertOne, prepareSet, prepareUpdateManyRows, refuseEmptyUpdateValues, type WriteShape } from "./prepared-write.js";
 import { active as debugging, atSite, internalLoop, relationLoad, siteNow } from "./debug.js";
 import type { Cte, CteColumnsOf, CteSelf } from "./cte.js";
 import type { Select, SelectItems, SelectRow, ItemsParams, ItemsOuter } from "./select.js";
@@ -80,6 +80,17 @@ export type Simplify<T> = { [K in keyof T]: T[K] } & {};
 export type Allowed<S extends string> = S | Many | OuterOf<string> | NearestOf<string>;
 /** Expressions allowed where rows must not repeat (ordering, `select()`, grouping). */
 export type AllowedOne<S extends string> = S | OuterOf<string> | NearestOf<string>;
+
+/** A row of `updateMany()`: plain values, or expressions over the model's own columns (never for the primary key). */
+export type UpdateManyRow<M extends ModelSpec> = [M["updateRow"]] extends [never]
+  ? never
+  : { [K in keyof M["updateRow"]]: M["updateRow"][K] | (K extends keyof M["update"] ? Extract<M["update"][K], Expression<any, any, {}>> : never) };
+
+/** The options of `updateMany()`: `updateValues` sets fields to the same expression for every row, and `excluded(column)` in it reads the row's value of that column. */
+export interface UpdateManyOptions<M extends ModelSpec> {
+  readonly batchSize?: number;
+  readonly updateValues?: M["update"];
+}
 
 /** A field name in `orderBy`: `"createdAt"` ascending, `"-createdAt"` descending. */
 export type FieldOrder<M extends ModelSpec> = (keyof M["data"] & string) | `-${keyof M["data"] & string}`;
@@ -1215,9 +1226,9 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   /**
    * @internal
    * `guard: false` skips the unfiltered-write check. `updateMany()` needs it: its rows
-   * set the keys, so the query set has no filter by design.
+   * set the keys, so the query set has no filter by design. Only `update()` (`joins`) runs on a query set with `join()`.
    */
-  mutationIr(op: string, params: unknown[], values?: object, guard = true): IR {
+  mutationIr(op: string, params: unknown[], values?: object, guard = true, joins = false): IR {
     this.assertStandalone();
     this.assertNoLoad(op);
     const s = this.state;
@@ -1227,15 +1238,23 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     if (s.lock) {
       throw new QueryError(`${op}() locks the rows it changes; drop lock()`);
     }
-    if (s.from || s.joins.length) {
+    if (s.from || (s.joins.length && !joins)) {
       throw new QueryError(`${op}() writes the model's table; it can't run on a query set with from() or join()`);
     }
+    // An inner join keeps only the rows that match; an outer join and a relation path in SET keep every row.
+    const narrowed = s.joins.some(([, , outer]) => !outer);
     // A filter that is always true (`and()` of no conditions) writes every row, as no filter does.
-    if (guard && !s.everyRow && s.filters.every((f) => constantTruth(f) === true) && !resolve(s.db).allowUnfilteredWrites) {
+    if (guard && !s.everyRow && !narrowed && s.filters.every((f) => constantTruth(f) === true) && !resolve(s.db).allowUnfilteredWrites) {
       throw new UnfilteredWriteError(op, this.meta.name);
     }
     const ctx = new IRContext(this.meta, params);
     const ir: IR = { op, model: this.meta.name, filters: s.filters.map((f) => f.ir(ctx)) };
+    if (s.joins.length) {
+      ir["joins"] = s.joins.map(([cte, on, isOuter]) => {
+        ctx.useCte(cte as unknown as CteLike);
+        return { cte: cte.name, on: on.ir(ctx), outer: isOuter };
+      });
+    }
     if (s.withoutDefaults) ir["without_defaults"] = s.withoutDefaults;
     if (s.withoutRootFilter) ir["without_root_filter"] = true;
     if (values !== undefined) {
@@ -1551,7 +1570,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     if (adapted) values = adapted.checked as M["update"];
     return new WriteStatement<M, P>(this.meta, (names, returning) => this.updateValues(values, returning, names), (names, returning) => {
       const params: unknown[] = [];
-      const ir = this.mutationIr("update", params, values);
+      const ir = this.mutationIr("update", params, values, true, true);
       if (!(ir["set"] as unknown[]).length) return emptyInspection();
       if (returning) ir["returning"] = true;
       if (returning && names) ir["model_fields"] = names;
@@ -1562,7 +1581,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   private heldUpdate(values: M["update"], returning: boolean, names: readonly string[] | undefined): PreparedWrite<unknown> {
     this.db();
     const params = new SlotParams();
-    const ir = this.mutationIr("update", params, values);
+    const ir = this.mutationIr("update", params, values, true, true);
     const empty = !(ir["set"] as unknown[]).length;
     if (returning) {
       ir["returning"] = true;
@@ -1573,7 +1592,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
 
   private async updateValues(values: M["update"], returning: boolean, names?: readonly string[]): Promise<number | M["row"][]> {
     const params: unknown[] = [];
-    const ir = this.mutationIr("update", params, values);
+    const ir = this.mutationIr("update", params, values, true, true);
     if (!(ir["set"] as unknown[]).length) {
       return returning ? [] : 0;
     }
@@ -1592,7 +1611,8 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   private prepareUpdateWith(values: M["update"], guard: boolean): PreparedUpdate<M> {
     this.db();
     const params: unknown[] = [];
-    const ir = this.mutationIr("update", params, values, guard);
+    // Only `updateMany` passes guard=false, and it refuses a joined query set.
+    const ir = this.mutationIr("update", params, values, guard, guard);
     const unique = call(() => this.meta.registry.native().uniqueRowUpdate(...withScope(JSON.stringify(ir), params), allowedWrites()));
     return { unique, execute: (data = values, options = {}) => this.updateValues(data, options.returning ?? false, options.fields) };
   }
@@ -1640,10 +1660,10 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
    * alone. One statement per `batchSize` rows (by default as many as fit), all in one
    * transaction. Gives the number of rows updated, or the rows with `returning`.
    */
-  updateMany(rows: readonly M["updateRow"][], options?: { readonly batchSize?: number }): WriteStatement<M, P>;
+  updateMany(rows: readonly UpdateManyRow<M>[], options?: UpdateManyOptions<M>): WriteStatement<M, P>;
   /** `param("rows", { fields })`: the rows come with each call of the prepared write; the primary key is among the fields. */
-  updateMany<N extends string, const C extends readonly Column<any, any, any, any>[]>(rows: RowsRef<N, C>, options?: { readonly batchSize?: number }): WriteStatement<M, P & ParamValues<N, readonly RowOf<C>[]>>;
-  updateMany(rows: readonly M["updateRow"][] | RowsRef<string, readonly Column<any, any, any, any>[]>, options: { readonly batchSize?: number } = {}): WriteStatement<M, P> {
+  updateMany<N extends string, const C extends readonly Column<any, any, any, any>[]>(rows: RowsRef<N, C>, options?: UpdateManyOptions<M>): WriteStatement<M, P & ParamValues<N, readonly RowOf<C>[]>>;
+  updateMany(rows: readonly UpdateManyRow<M>[] | RowsRef<string, readonly Column<any, any, any, any>[]>, options: UpdateManyOptions<M> = {}): WriteStatement<M, P> {
     noReturningOption("updateMany", (options as { returning?: unknown }).returning);
     if (rows instanceof RowsRef) {
       const ref = rows;
@@ -1652,7 +1672,7 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
         this.meta,
         async () => missing(),
         () => missing(),
-        (names, returning) => prepareUpdateManyRows(this as never, ref, returning ? "list" : "count", names, options.batchSize),
+        (names, returning) => prepareUpdateManyRows(this as never, ref, returning ? "list" : "count", names, options.batchSize, options.updateValues),
       );
     }
     const { checked, pending } = splitBatch(this.meta, rows);
@@ -1665,15 +1685,15 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
   }
 
   /** @internal */
-  inspectUpdateMany(rows: readonly M["updateRow"][], options: { readonly batchSize?: number }, returning = false, names?: readonly string[]): QueryInspection {
-    const { prepared, batchSize, params, ir } = this.updateManyPlan(rows, options);
+  inspectUpdateMany(rows: readonly UpdateManyRow<M>[], options: UpdateManyOptions<M>, returning = false, names?: readonly string[]): QueryInspection {
+    const { prepared, batchSize, params, ir, many } = this.updateManyPlan(rows, options);
     if (ir === null) return emptyInspection();
     const [filters, scoped] = withScope(JSON.stringify(ir["filters"]), params, "filters");
-    return call(() => inspection(inspector(this.meta, this.state.db).inspectUpdateMany(this.meta.name, prepared.fields, prepared.rows, filters, scoped, batchSize ?? null, returning, JSON.stringify(this.state.withoutDefaults), returning ? names ?? null : null)));
+    return call(() => inspection(inspector(this.meta, this.state.db).inspectUpdateMany(this.meta.name, prepared.fields, prepared.rows, filters, scoped, batchSize ?? null, returning, JSON.stringify(this.state.withoutDefaults), returning ? names ?? null : null, many)));
   }
 
   /** @internal Checks `updateMany(rows)`, write protection too, before a `prepare` call. */
-  checkUpdateRows(rows: readonly M["updateRow"][], options: { readonly batchSize?: number }): void {
+  checkUpdateRows(rows: readonly UpdateManyRow<M>[], options: UpdateManyOptions<M>): void {
     this.updateManyPlan(rows, options);
     const first = rows[0] as object | undefined;
     if (first === undefined) return;
@@ -1682,37 +1702,45 @@ export class QuerySet<M extends ModelSpec, R = M["row"], S extends string = M["n
     this.inspectUpdateMany(rows, options); // rejects a bad row before any upload
   }
 
-  private updateManyPlan(rows: readonly M["updateRow"][], options: { readonly batchSize?: number }) {
-    const { batchSize } = options;
+  private updateManyPlan(rows: readonly UpdateManyRow<M>[], options: UpdateManyOptions<M>) {
+    const { batchSize, updateValues } = options;
+    refuseEmptyUpdateValues(updateValues);
     if (batchSize !== undefined && (!Number.isInteger(batchSize) || batchSize < 1)) {
       throw new RangeError("batchSize must be at least 1");
     }
     this.mutationIr("update", [], undefined, false); // refuses sliced and locked query sets
     const prepared = prepareUpdateRows(this.meta, rows);
     if (!prepared.rows.length) {
-      return { prepared, batchSize, params: [], ir: null };
+      return { prepared, batchSize, params: [], ir: null, many: undefined };
     }
     const params: unknown[] = [];
     const ir = this.mutationIr("update", params, undefined, false);
     if ("with" in ir) {
       throw new QueryError("updateMany() filters can't read CTEs");
     }
-    return { prepared, batchSize, params, ir };
+    return { prepared, batchSize, params, ir, many: this.manyArgument(prepared.exprs, updateValues, params) };
+  }
+
+  /** The expression rows and the `updateValues` for the engine; the parameters of `updateValues` follow the filters'. */
+  private manyArgument(exprs: RowExprs | undefined, updateValues: object | undefined, params: unknown[]): NativeMany | undefined {
+    const sets = updateValues === undefined ? [] : assignments(this.meta, updateValues, new IRContext(this.meta, params));
+    if (exprs === undefined && !sets.length) return undefined;
+    return [JSON.stringify({ update_values: sets, shapes: exprs?.shapes ?? [] }), exprs?.shapeOf ?? [], exprs?.slots ?? []];
   }
 
   /** @internal */
   async executeUpdateMany(
-    rows: readonly M["updateRow"][],
-    options: { readonly batchSize?: number } = {},
+    rows: readonly UpdateManyRow<M>[],
+    options: UpdateManyOptions<M> = {},
     returning = false,
     names?: readonly string[],
   ): Promise<number | M["row"][]> {
-    const { prepared, batchSize, params, ir } = this.updateManyPlan(rows, options);
+    const { prepared, batchSize, params, ir, many } = this.updateManyPlan(rows, options);
     if (ir === null) return returning ? [] : 0;
     const db = this.db();
     const [filters, scoped] = withScope(JSON.stringify(ir["filters"]), params, "filters");
     const res = await db_wait(db, (tx, allowed, trace) =>
-      db.engine.updateMany(this.meta.name, prepared.fields, prepared.rows, filters, scoped, returning, batchSize ?? null, tx, JSON.stringify(this.state.withoutDefaults), allowed, trace, returning ? names ?? null : null),
+      db.engine.updateMany(this.meta.name, prepared.fields, prepared.rows, filters, scoped, returning, batchSize ?? null, tx, JSON.stringify(this.state.withoutDefaults), allowed, trace, returning ? names ?? null : null, many),
       ["update_many", this.meta.name, prepared.fields, filters],
     );
     return returning ? (new Builder(db.registry, this.state.db).returned(res as NativeReturned) as M["row"][]) : (res as number);
