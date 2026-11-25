@@ -575,7 +575,7 @@ for (const provider of PROVIDERS) {
       [{ actions: [twice, twice] }, /listed twice/],
       [{ actions: [7] }, /an action is a name/],
       [{ bulkDelete: "no" }, /bulkDelete/],
-      [{ actions: [badCan({ replaceChange: true })] }, /replace_change needs can/],
+      [{ actions: [badCan({ replaceChange: true })] }, /replaceChange needs can/],
       [{ actions: [badCan({ can: item.qty })] }, /not a boolean/],
       [{ actions: [badCan({ can: item.shopId.eq(param("other")) })] }, /takes the param/],
       [{ actions: [badCan({ can: item.shopId.in(param("user")) })] }, /no in_param/],

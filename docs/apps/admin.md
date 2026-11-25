@@ -31,6 +31,9 @@ admin.check(); // throws AdminConfigError; needs no database
 
 `check()` rejects an unknown field and a list column through a to-many relation.
 It returns the warnings as a list of strings (for example a search field that has no index).
+A wrong config raises `AdminConfigError`, and wrong `[admin]` settings or a missing secret raise `AdminSettingsError` (a subclass of it in Python, a sibling class in TypeScript).
+Both have a `code` such as `config.unknown_model`, `config.invalid_value` or `settings.missing`: the part before the first dot is the class.
+The text names the option in the spelling of the language: `page_size` in Python and `pageSize` in TypeScript.
 The page size is 1 to 200, and the default is 25.
 An order column must be a plain column: not nullable, not an array, and not Json, Decimal or an enum.
 The primary key is always the last order column, so a keyset page has a stable order.

@@ -46,7 +46,7 @@ async function sync(settings: Settings): Promise<number> {
       synced = await admin.syncPermissions(database);
       seeded = await admin.seedRoles(database);
     } catch (e) {
-      if (e instanceof AdminConfigError) throw new AdminSettingsError(e.message);
+      if (e instanceof AdminConfigError) throw new AdminSettingsError(e.message, e.code.startsWith("settings.") ? e.code : "settings.invalid_value");
       throw e;
     }
     process.stdout.write(`permissions: ${synced.created} created, ${synced.stale.length} stale\n`);
