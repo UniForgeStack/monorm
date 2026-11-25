@@ -146,6 +146,7 @@ class Database:
         self._published: tuple[tuple[str, str], ...] = ()
         # The setting that lists the keys an `unscoped` block opens.
         self._bypass_setting = ""
+        self._hard_delete_setting = ""
 
     @property
     def primary(self) -> Database:
@@ -154,9 +155,10 @@ class Database:
         view._root = self._root
         return view
 
-    def _with_settings(self, engine: _native.Engine) -> _native.Engine:
+    def _with_settings(self, engine: _native.Engine, *, hard: bool = False) -> _native.Engine:
         """``engine`` with the database settings of the current blocks: the keys of
-        `unscoped()` and the extensions of `skip_triggers()`. Inside a Postgres transaction it
+        `unscoped()`, the extensions of `skip_triggers()` and, for a hard delete (``hard``),
+        the `hard_delete_setting` of the datasource. Inside a Postgres transaction it
         is always an engine with settings, so that a setting that a block no longer sets
         is reset before the next statement."""
         names: list[str] = []
@@ -184,6 +186,9 @@ class Database:
                         if isinstance(value, list)
                         else _setting_text(value)
                     )
+        if hard and not sqlite and (setting := self._root._hard_delete_setting):
+            names.append(setting)
+            values.append("on")
         # Before any block set a setting, no transaction carries one.
         if not names and (sqlite or self._tx() is None or not self._root._settings_engines):
             return engine
@@ -347,7 +352,7 @@ class Database:
     ) -> Any:
         """Runs a query; instances it builds get ``db`` to write back to (``using()``)."""
         op, params = _with_scope(json.dumps(ir), params)
-        engine = self._reader() if ir["op"] in _READS else self._engine
+        engine = self._reader() if ir["op"] in _READS else self._with_settings(self._base, hard=bool(ir.get("hard")))
         tx, allowed = self._tx(), allowed_writes()
         return await self._call(lambda t: engine.run(op, params, tx, row_cls, db, allowed, t))
 
@@ -724,6 +729,7 @@ async def connect(
     _declared[db] = None if engine.scope_keys_open() else frozenset(engine.scope_keys())
     db._published = tuple(sorted(engine.published_scope_settings()))
     db._bypass_setting = engine.bypass_setting()
+    db._hard_delete_setting = engine.hard_delete_setting()
     if engine.bypass_is_value():
         _value_bypass.add(db)
     if engine.scope_list_form():

@@ -108,6 +108,7 @@ model Book {
   A model gets them when it declares `@@soft_delete.deleted_at`; other models, and proxy models, do not.
 * `hard_delete()` (`hardDelete()`) sends `DELETE`.
   In database mode, the trigger soft-deletes a live row, so `hard_delete()` deletes only rows that are already soft-deleted.
+  With `hard_delete_setting` in the datasource (PostgreSQL), `hard_delete()` also deletes a live row: see [The hard delete setting](#the-hard-delete-setting).
   On a query set, it bypasses only the `"deleted"` default, so the other default filters (a tenant filter) still apply.
   An instance `hard_delete()` bypasses only `"deleted"` too. It deletes the row it holds, and no scope check applies to it.
   An instance `hard_delete()` does not check the version, also with `@@locking.version`.
@@ -216,6 +217,36 @@ What changes after the move:
 * A second `DELETE` of a soft-deleted row deletes it. The guitars rule left it as it was.
 * `rule:` needs `mode: "database"` and PostgreSQL. The schema load refuses `rule:` on SQLite, which has no rules.
 * The `down` of the move migration warns and does not bring the rule back, so deletes are hard after the `down` until you create the rule again.
+
+### The hard delete setting
+
+Another ORM may already delete for real when a setting is `'on'`, as the `rules.hard_deletion` setting of the guitars rule does.
+Name that setting in the `datasource` block:
+
+```prisma
+datasource db {
+  provider = "postgresql"
+  hard_delete_setting = "rules.hard_deletion"
+}
+```
+
+* `hard_delete()` (`hardDelete()`) sends `set_config('<setting>', 'on', true)` in the transaction of the `DELETE`.
+  The setting is on for this statement only: the next statement in the same transaction is soft again.
+  This holds for a query set, a bound query set, an instance and a prepared statement. A plain `delete()` never sends it.
+* The triggers that archive a row skip when the setting is `'on'`: the `soft_delete` trigger, the cascade triggers, the guard of a soft-delete child (also its `_cascade` copy for a moved row) and the sweep of an owner.
+  Each of them reads `current_setting('<setting>', true) IS DISTINCT FROM 'on'` in its `WHEN` clause, so an unset setting does not skip.
+  A live row is then deleted, and `ON DELETE CASCADE` removes its children for real. The value `'on'` is fixed.
+* The triggers that restore a row keep running: the revive and the owned revive.
+  A skipped revive would leave rows archived with no way back.
+* A rule of the other ORM that checks the same setting now lets `hard_delete()` remove a live row. With no key, the trigger of MonOrm soft-deletes it first.
+* A `@@managed(false)` model with `@@soft_delete.deleted_at` needs the key, on PostgreSQL and on SQLite. The extension then adds no trigger, rule or function to its table, and `drift` and `audit` skip it.
+  The other ORM keeps its own rule and triggers. Without the key the schema load fails and names the key.
+  An unmanaged table has no MonOrm guard trigger either, also as the child of a soft-delete parent.
+* Limit: no cascade from an unmanaged parent. MonOrm adds no trigger to an unmanaged table, so a soft delete of that row does not reach its children.
+  The other ORM must cascade it, as the trigger `sd_pick_cascade` does in the tests.
+  A managed child of an unmanaged parent gets no guard either, as the guard follows the cascade.
+* SQLite has no setting and no rule: the key has no effect on its triggers.
+* With no key, the SQL and the behavior stay as they were.
 
 ### Behavior changes
 

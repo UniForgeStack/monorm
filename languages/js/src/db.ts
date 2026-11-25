@@ -138,6 +138,7 @@ const MAX_TIMEOUT = 2147483.647;
 
 /** Statements a replica may answer (the IR starts with its `op`). */
 const READ = /^\{"op":"(select|count|exists|compound)"/;
+const HARD = /^\{"op":"delete".*"hard":true/s;
 
 /** Sets `errors` as the `cause` of `error`, unless there are none or it has a cause. */
 function causedBy(error: unknown, errors: readonly unknown[]): void {
@@ -185,6 +186,8 @@ export class Database {
   published: readonly { key: string; setting: string }[] = [];
   /** @internal The setting that lists the keys an `unscoped` block opens. */
   bypassSetting = "";
+  /** @internal The datasource's `hard_delete_setting`; empty when it has none. */
+  hardDeleteSetting = "";
   /** @internal The database a `primary` view belongs to: they share transactions and callbacks. */
   root: Database = this;
 
@@ -281,13 +284,19 @@ export class Database {
     return this.withSettings(this.base);
   }
 
+  /** @internal The primary's engine for a write; a hard delete (`hard`) also sets the `hard_delete_setting`. */
+  writeEngine(hard: boolean): NativeEngine {
+    return this.withSettings(this.base, hard);
+  }
+
   /**
-   * `engine` with the database settings of the current blocks: the keys of `unscoped()` and the
-   * extensions of `skipTriggers()`. Inside a Postgres transaction it is always an engine with
+   * `engine` with the database settings of the current blocks: the keys of `unscoped()`, the
+   * extensions of `skipTriggers()` and, for a hard delete (`hard`), the `hard_delete_setting`.
+   * Inside a Postgres transaction it is always an engine with
    * settings once any block set one, so a setting that a block no longer sets is reset before
    * the next statement.
    */
-  private withSettings(engine: NativeEngine): NativeEngine {
+  private withSettings(engine: NativeEngine, hard = false): NativeEngine {
     const names: string[] = [];
     const values: string[] = [];
     const sqlite = this.url.startsWith("sqlite://");
@@ -317,6 +326,10 @@ export class Database {
           values.push(Array.isArray(value) ? engine.scopeListText(key, value.map(String)) : String(value));
         }
       }
+    }
+    if (hard && !sqlite && root.hardDeleteSetting) {
+      names.push(root.hardDeleteSetting);
+      values.push("on");
     }
     // Before any block set a setting, no transaction carries one.
     if (names.length === 0 && (sqlite || this.tx() === null || root.settingsEngines.size === 0)) return engine;
@@ -387,7 +400,7 @@ export class Database {
   /** @internal */
   runJson(json: string, params: unknown[]): Promise<unknown> {
     [json, params] = withScope(json, params);
-    const engine = READ.test(json) ? this.reader() : this.engine;
+    const engine = READ.test(json) ? this.reader() : this.writeEngine(HARD.test(json));
     const allowed = allowedWrites();
     return this.send((tx, trace) => engine.run(json, params, tx, allowed, trace));
   }
@@ -685,6 +698,7 @@ export async function connect(url: string, options: ConnectOptions = {}): Promis
   declared.set(db, engine.scopeKeysOpen() ? null : new Set(engine.scopeKeys()));
   db.published = [...engine.publishedScopeSettings()].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
   db.bypassSetting = engine.bypassSetting();
+  db.hardDeleteSetting = engine.hardDeleteSetting();
   if (engine.bypassIsValue()) valueBypass.add(db);
   if (engine.scopeListForm()) listForm.add(db);
   skippable.set(db, new Set(engine.skippableTriggers()));

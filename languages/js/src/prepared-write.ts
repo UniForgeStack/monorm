@@ -93,6 +93,7 @@ class SetWrite implements Held {
   readonly names: Set<string>;
   readonly #compiled: Compiled | null;
   readonly #empty: unknown;
+  readonly #hard: boolean;
 
   constructor(
     private readonly qs: AnyQuerySet,
@@ -102,6 +103,7 @@ class SetWrite implements Held {
   ) {
     this.names = slotNames(params);
     this.#empty = returning ? [] : 0;
+    this.#hard = ir?.hard === true;
     this.#compiled = ir === null ? null : new Compiled(ir, params, true); // null: an update without values
     this.#compiled?.validate(inspector(qs.meta, qs.state.db));
   }
@@ -114,7 +116,7 @@ class SetWrite implements Held {
     }
     const [params, scope] = c.callValues(values, this.names);
     const db = this.qs.db();
-    const write = c.nativeWrite(db.engine, scope);
+    const write = c.nativeWrite(db.writeEngine(this.#hard), scope);
     const allowed = allowedWrites();
     const res = await db.send((tx, trace) => write.run(params, tx, allowed, trace));
     return this.returning ? new Builder(db.registry, this.qs.state.db).returned(res as NativeReturned) : res;

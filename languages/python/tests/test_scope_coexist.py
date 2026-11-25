@@ -285,7 +285,7 @@ async def test_a_scope_list_raises_at_scope_when_no_datasource_sets_the_prefix()
         await db.close()
 
 
-async def test_two_permissive_policies_are_ored_with_the_policy_of_the_other_orm(world):
+async def test_two_permissive_policies_are_ored_with_the_policy_of_another_mapper(world):
     owner, connect_as, models, _, _ = world
     await seed(owner, models)
     await owner.execute("CREATE POLICY tenant_scope ON co_orders USING (shop_id = 2)")

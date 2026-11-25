@@ -361,6 +361,8 @@ Unmanaged models remain readable and writable. Snapshot version 6 records their 
 Schema contract 5.12 adds `scope_settings` to the IR: the prefix, the bypass setting and value, and the role check flag of scope.
 An IR with a non-default value is stamped 5.12.
 The manifest format does not change, and no extension declares 5.12.
+Schema contract 5.13 adds `hard_delete_setting` to the IR, the setting that a hard delete turns on. An IR with a non-empty value is stamped 5.13.
+The manifest format does not change, and no extension declares 5.13.
 
 A version fits when its major equals the engine major and its minor is at most the engine minor.
 This holds for `schema_contract` and for `abi`, and for the `abi` that the library reports.

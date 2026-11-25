@@ -173,6 +173,8 @@ END;
 * The scope extension reads three more `datasource` keys: `scope_prefix = "tenant"`,
   `scope_bypass = { setting = "tenant.bypass", value = "on" }` (an object accepts `=` or `:` here)
   and `scope_role_check = true`. See [Scope](../extensions/scope.md).
+* The soft-delete extension reads one more `datasource` key: `hard_delete_setting = "rules.hard_deletion"`,
+  a non-empty string. See [The hard delete setting](../extensions/schema-extensions.md#the-hard-delete-setting).
 * `function name { ... }` is a stand-alone SQL function: `returns` (default `trigger`),
   `args` (the SQL argument list, e.g. `"a integer, b text"`), `language` (default
   `plpgsql`), `volatility` (`immutable` / `stable` / `volatile`), `security_definer`,

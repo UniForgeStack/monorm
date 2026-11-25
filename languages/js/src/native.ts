@@ -277,6 +277,8 @@ export interface NativeEngine extends NativeInspector {
   scopeKeysOpen(): boolean;
   /** Each scope key that an object of the database reads, with the setting that carries its value. */
   publishedScopeSettings(): { key: string; setting: string }[];
+  /** The setting a hard delete sets to `'on'`; empty when the datasource names none. */
+  hardDeleteSetting(): string;
   /** The setting that lists the keys an `unscoped` block opens. */
   bypassSetting(): string;
   /** True when one value opens every scope key (`scope_bypass`). */

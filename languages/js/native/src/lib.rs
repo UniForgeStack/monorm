@@ -1432,6 +1432,12 @@ impl Engine {
         self.schema.published_scope_settings().map(|(key, setting)| ScopeSetting { key: key.to_owned(), setting }).collect()
     }
 
+    /// The setting a hard delete sets to `'on'`; empty when the datasource names none.
+    #[napi]
+    pub fn hard_delete_setting(&self) -> String {
+        self.schema.hard_delete_setting().to_owned()
+    }
+
     /// The setting that lists the keys an `unscoped` block opens.
     #[napi]
     pub fn bypass_setting(&self) -> String {

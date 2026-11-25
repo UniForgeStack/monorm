@@ -190,6 +190,7 @@ pub struct Schema {
     pub write_rules: Vec<monorm::writes::WriteRule>,
     published_scope_keys: std::collections::BTreeSet<String>,
     scope_settings: monorm::ir::ScopeSettingsIr,
+    hard_delete_setting: String,
 }
 
 /// The view and check records must name known models, and a view shares the table of its root.
@@ -295,6 +296,11 @@ impl Schema {
     /// carries its value. A statement sends each key that has a value as that transaction setting.
     pub fn published_scope_settings(&self) -> impl Iterator<Item = (&str, String)> {
         self.published_scope_keys.iter().map(|key| (key.as_str(), self.scope_settings.key_setting(key)))
+    }
+
+    /// The setting a hard delete sets to `'on'` in its transaction; empty when the datasource names none.
+    pub fn hard_delete_setting(&self) -> &str {
+        &self.hard_delete_setting
     }
 
     /// The setting that lists the keys an `unscoped` block opens.
@@ -590,6 +596,7 @@ impl Schema {
             write_rules: ir.behavior.write_rules,
             published_scope_keys: ir.behavior.published_scope_keys.iter().map(|k| k.key.clone()).collect(),
             scope_settings: ir.scope_settings,
+            hard_delete_setting: ir.hard_delete_setting,
         })
     }
 
