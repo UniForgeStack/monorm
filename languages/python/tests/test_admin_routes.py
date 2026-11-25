@@ -95,6 +95,14 @@ async def test_a_route_without_a_session_is_401_and_the_function_does_not_run(wo
     assert calls == []
 
 
+async def test_a_route_that_is_twice_or_not_a_function_is_refused_at_the_call(world):
+    site, _, _ = await build(world, ("GET", "reports/summary", summary, None))
+    with pytest.raises(admin.AdminConfigError, match="registered twice"):
+        site.route("GET", "reports/summary", summary)
+    with pytest.raises(admin.AdminConfigError, match="needs a function"):
+        site.route("GET", "other", 7)  # type: ignore[arg-type]
+
+
 async def test_a_route_needs_the_gate_and_its_permission_and_a_refusal_is_audited(world):
     site, db, models = await build(world, ("GET", "reports/summary", summary, None), ("GET", "reports/{id}", report, "admin.run_report"))
     ann = await grant(db, models, "ann", ["admin.access", "admin.run_report"])

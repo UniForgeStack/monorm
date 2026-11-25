@@ -331,3 +331,47 @@ pub fn admin_site(schema: &JsSchema, config_json: String) -> napi::Result<AdminS
     let (site, handles) = Site::build_with_handles(schema.inner.clone(), &config_json).map_err(admin_error)?;
     Ok(AdminSite { site: Arc::new(site), handles })
 }
+
+/// The state of an `Admin` config: it refuses a wrong option, a duplicate and an unknown key when the call comes, and it builds the site.
+#[napi]
+pub struct AdminConfigBuilder {
+    inner: monorm_admin::AdminConfigBuilder,
+}
+
+#[napi]
+impl AdminConfigBuilder {
+    /// `statementTimeout` is in seconds. `spelling` is `snake` or `camel`: the spelling of the option keys in the texts.
+    #[napi(constructor)]
+    pub fn new(options_json: String, statement_timeout: f64, roles_json: String, spelling: Option<String>) -> napi::Result<Self, String> {
+        let spelling = if spelling.as_deref() == Some("camel") { monorm_admin::Spelling::Camel } else { monorm_admin::Spelling::Snake };
+        let inner = monorm_admin::AdminConfigBuilder::new(&options_json, statement_timeout, &roles_json, spelling).map_err(admin_error)?;
+        Ok(AdminConfigBuilder { inner })
+    }
+
+    #[napi]
+    pub fn register(&mut self, model: String, keys: Vec<String>) -> napi::Result<(), String> {
+        self.inner.register(&model, &keys).map_err(admin_error)
+    }
+
+    #[napi]
+    pub fn package(&mut self, name: String, json: String) -> napi::Result<(), String> {
+        self.inner.package(&name, &json).map_err(admin_error)
+    }
+
+    #[napi]
+    pub fn route(&mut self, method: String, path: String, permission: Option<String>, callable: bool) -> napi::Result<(), String> {
+        self.inner.route(&method, &path, permission.as_deref(), callable).map_err(admin_error)
+    }
+
+    #[napi]
+    pub fn check_inline(model: String, save: String, style: String) -> napi::Result<(), String> {
+        monorm_admin::AdminConfigBuilder::check_inline(&model, &save, &style, monorm_admin::Spelling::Snake).map_err(admin_error)
+    }
+
+    /// Plans the site from the state and `lateJson`. The builder keeps its state.
+    #[napi]
+    pub fn build(&self, schema: &JsSchema, late_json: String) -> napi::Result<AdminSite, String> {
+        let (site, handles) = self.inner.build(schema.inner.clone(), &late_json).map_err(admin_error)?;
+        Ok(AdminSite { site: Arc::new(site), handles })
+    }
+}

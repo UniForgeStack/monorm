@@ -78,21 +78,107 @@ pub(crate) fn err_in<T>(model: &str, message: String) -> Result<T, Fault> {
     Err(config_err(message).under(PathPart::Model(model.to_owned())))
 }
 
+/// A wrong config of the model `model` and the kind `code`: the model leads the path and the text.
+pub(crate) fn err_code_in<T>(model: &str, code: &'static str, message: String) -> Result<T, Fault> {
+    Err(Fault::new(code, message).under(PathPart::Model(model.to_owned())))
+}
+
+/// The key that serde names in the text of an unknown-field error. The one place that reads serde wording for this.
+pub(crate) fn unknown_field_key(text: &str) -> Option<&str> {
+    text.strip_prefix("unknown field `").and_then(|t| t.split('`').next())
+}
+
+/// One step of the place where a config fails to parse.
+enum Step {
+    Key(String),
+    Index(usize),
+}
+
+/// The marked text of a key that the user wrote: an option key is spelled for the host.
+fn marked_key(name: &str) -> String {
+    if name.chars().all(|c| c.is_ascii_lowercase() || c == '_') { opt(name) } else { name.to_owned() }
+}
+
+/// The value at `steps`.
+fn at<'a>(value: &'a Value, steps: &[Step]) -> Option<&'a Value> {
+    steps.iter().try_fold(value, |v, s| match s {
+        Step::Key(k) => v.get(k),
+        Step::Index(i) => v.get(*i),
+    })
+}
+
+/// The model of the resource that `steps` lead into.
+fn resource_model(value: &Value, steps: &[Step]) -> Option<String> {
+    match steps {
+        [Step::Key(r), Step::Index(i), ..] if r == "resources" => value.get("resources")?.get(*i)?.get("model")?.as_str().map(str::to_owned),
+        _ => None,
+    }
+}
+
+/// The text of an unknown option, by the place of the error: the same words that the bindings used. None: no friendly text for this place.
+fn unknown_option_text(value: &Value, steps: &[Step], key: &str) -> Option<String> {
+    let shown = format!("'{}'", marked_key(key));
+    let model_of = |index: usize| value.get("resources")?.get(index)?.get("model")?.as_str().map(str::to_owned);
+    match steps {
+        [Step::Key(k)] if k == "brand" || k == "theme" || k == "switcher" => Some(format!("unknown {k} option {shown}")),
+        [Step::Key(r), Step::Index(i)] if r == "resources" => Some(format!("{}: unknown option {shown}", model_of(*i)?)),
+        [Step::Key(r), Step::Index(i), Step::Key(l)] if r == "resources" && l == "list" => Some(format!("{}: unknown list option {shown}", model_of(*i)?)),
+        [Step::Key(r), Step::Index(i), Step::Key(l), Step::Key(d)] if r == "resources" && l == "list" && d == "date_hierarchy" => Some(format!("{}: unknown date_hierarchy option {shown}", model_of(*i)?)),
+        [Step::Key(r), Step::Index(i), Step::Key(l), Step::Key(rel)] if r == "resources" && l == "relations" => Some(format!("{}: relations['{rel}'] has an unknown option {shown}", model_of(*i)?)),
+        _ => None,
+    }
+}
+
 /// The fault of a config that does not parse. Each name that serde quotes is an option key of the wire.
-fn parse_fault(e: serde_json::Error) -> Fault {
-    let text = e.to_string();
-    let code = if text.starts_with("unknown field") { code::UNKNOWN_OPTION } else { code::INVALID_VALUE };
+pub(crate) fn parse_fault(value: &Value, e: serde_path_to_error::Error<serde_json::Error>) -> Fault {
+    use serde_path_to_error::Segment;
+    // The path ends with the key that failed, so for an unknown key it names the key itself.
+    let mut steps: Vec<Step> = e.path().iter().filter_map(|s| match s {
+        Segment::Map { key } => Some(Step::Key(key.clone())),
+        Segment::Seq { index } => Some(Step::Index(*index)),
+        _ => None,
+    }).collect();
+    let text = e.inner().to_string();
+    if let Some(key) = unknown_field_key(&text) {
+        if matches!(steps.last(), Some(Step::Key(k)) if k == key) {
+            steps.pop();
+        }
+        if let Some(friendly) = unknown_option_text(value, &steps, key) {
+            return Fault::new(code::UNKNOWN_OPTION, friendly);
+        }
+    }
+    // An untagged enum hides the cause: read the object itself.
+    if text.contains("untagged enum DateHierarchyConfig") {
+        if let (Some(model), Some(Value::Object(o))) = (resource_model(value, &steps), at(value, &steps)) {
+            if let Some(key) = o.keys().find(|k| *k != "field" && *k != "counts") {
+                return Fault::new(code::UNKNOWN_OPTION, format!("{model}: unknown date_hierarchy option '{}'", marked_key(key)));
+            }
+            if !o.contains_key("field") {
+                return Fault::new(code::INVALID_VALUE, format!("{model}: date_hierarchy needs a field"));
+            }
+        }
+    }
+    let code = if unknown_field_key(&text).is_some() { code::UNKNOWN_OPTION } else { code::INVALID_VALUE };
     let mut marked = String::with_capacity(text.len());
     let mut rest = text.as_str();
     while let Some(open) = rest.find('`') {
         let Some(len) = rest[open + 1..].find('`') else { break };
         let name = &rest[open + 1..open + 1 + len];
         marked.push_str(&rest[..open + 1]);
-        marked.push_str(&if name.chars().all(|c| c.is_ascii_lowercase() || c == '_') { opt(name) } else { name.to_owned() });
+        marked.push_str(&marked_key(name));
         marked.push('`');
         rest = &rest[open + 2 + len..];
     }
     marked.push_str(rest);
+    // A wrong value of a resource option: the model and the option come first.
+    if code == code::INVALID_VALUE {
+        if let Some(model) = resource_model(value, &steps) {
+            let keys: Vec<&str> = steps[2..].iter().filter_map(|s| if let Step::Key(k) = s { Some(k.as_str()) } else { None }).collect();
+            if !keys.is_empty() {
+                return Fault::new(code, format!("{model}: {}: {marked}", opt(&keys.join("."))));
+            }
+        }
+    }
     Fault::new(code, format!("invalid admin config: {marked}"))
 }
 
@@ -569,7 +655,7 @@ impl Site {
             let mut value: Value = serde_json::from_str(config_json).map_err(|e| Fault::new(code::INVALID_JSON, format!("invalid admin config: {e}")))?;
             handles = site_config::lower(&mut value, &schema)?;
             merge_inline_pages(&mut value)?;
-            serde_json::from_value(value).map_err(parse_fault)?
+            serde_path_to_error::deserialize(&value).map_err(|e| parse_fault(&value, e))?
         };
         let base_path = normalize_base(config.base_path.as_deref().unwrap_or(key::DEFAULT_BASE))?;
         let prefix = match config.prefix.as_deref() {
@@ -616,6 +702,9 @@ impl Site {
         let mut warnings = Vec::new();
         for c in &configs {
             let idx = schema.model_idx(&c.model).expect("checked above, or a model of the schema");
+            if !c.files.is_empty() && !config.storage {
+                return err_code_in(&c.model, code::INVALID_VALUE, "files needs a file storage registry: pass `storage` to Admin".to_string());
+            }
             if c.set_password && config.user_table.as_deref() != Some(schema.model(idx).ir.table.as_str()) {
                 return err(format!("{}: \u{1}set_password\u{2} needs the auth user model", c.model));
             }
@@ -700,10 +789,14 @@ impl Site {
         }
         let switcher = SwitcherConfig::merge(config.switcher.as_ref(), config.switcher_file.as_ref()).or_else(err)?;
         let brand = meta::brand(config.brand.as_ref(), config.theme.as_ref(), switcher.as_ref())?;
-        let statement_timeout = match config.statement_timeout_ms.unwrap_or(DEFAULT_STATEMENT_TIMEOUT_MS) {
-            ms if ms > MAX_STATEMENT_TIMEOUT_MS => return err(format!("\u{1}statement_timeout_ms\u{2} is {ms}, at most {MAX_STATEMENT_TIMEOUT_MS}")),
-            0 => None,
-            ms => Some(Duration::from_millis(ms)),
+        let statement_timeout = match config.statement_timeout {
+            None => Some(Duration::from_millis(DEFAULT_STATEMENT_TIMEOUT_MS)),
+            Some(secs) if !secs.is_finite() || secs < 0.0 => return err_code(code::INVALID_VALUE, format!("{} is a number of seconds, 0 or more (0 sets no limit)", opt("statement_timeout"))),
+            Some(secs) => match (secs * 1000.0).round() as u64 {
+                ms if ms > MAX_STATEMENT_TIMEOUT_MS => return err_code(code::INVALID_VALUE, format!("{} is {secs}, at most {} seconds", opt("statement_timeout"), MAX_STATEMENT_TIMEOUT_MS as f64 / 1000.0)),
+                0 => None,
+                ms => Some(Duration::from_millis(ms)),
+            },
         };
         let export_idle_timeout = match config.export_idle_timeout_ms.unwrap_or(DEFAULT_EXPORT_IDLE_TIMEOUT_MS) {
             0 => None,
@@ -1807,7 +1900,7 @@ fn extra_columns(schema: &Schema, idx: usize, name: &str, list: &ListConfig) -> 
                 Source::Expr(expr.clone())
             }
             (None, Some(f)) if !f.trim().is_empty() => Source::Batch(f.clone()),
-            _ => return err_in(name, format!("computed {:?} sets expr or function, one of them", c.name)),
+            _ => return err_code_in(name, code::INVALID_VALUE, format!("computed '{}' sets expr or function, one of them", c.name)),
         };
         let sort = match &c.order_by {
             Some(_) if c.sortable == Some(false) => return err_in(name, format!("computed {:?}: \u{1}order_by\u{2} makes the column sortable, and sortable is false", c.name)),

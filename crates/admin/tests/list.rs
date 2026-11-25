@@ -344,8 +344,8 @@ fn a_wrong_config_is_one_precise_error() {
     assert!(build(json!({"resources": [{"model": "Comment", "list": {"order": ["level"]}}]})).contains("cannot order"));
     assert!(build(json!({"resources": [{"model": "Author", "list": {"page_size": 0}}]})).contains("page_size"));
     assert!(build(json!({"resources": [{"model": "Author", "list": {"colums": []}}]})).contains("colums"));
-    assert!(build(json!({"statement_timeout_ms": 2_147_483_648u64})).contains("statement_timeout_ms"));
-    assert!(Site::build(schema(), &json!({"statement_timeout_ms": 2_147_483_647u64}).to_string()).is_ok());
+    assert!(build(json!({"statement_timeout": 2_147_483.648})).contains("statement_timeout"));
+    assert!(Site::build(schema(), &json!({"statement_timeout": 2_147_483.647}).to_string()).is_ok());
 }
 
 async fn get_sql(site: &Arc<Site>, conn: Arc<dyn Executor>, uri: &str) -> (u16, Value, Vec<String>) {

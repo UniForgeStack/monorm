@@ -138,6 +138,10 @@ function services(w: World): { config: ResourceConfig; seen: Record<string, unkn
 }
 
 for (const provider of PROVIDERS) {
+  test(`a service that is not a function is refused (${provider})`, () => world(provider, async (w) => {
+    assert.throws(() => siteOf(w, { create: 7 as never }).check(), (e: unknown) => e instanceof AdminConfigError && e.message.includes("create is a service function"));
+  }));
+
   test(`a query set write with the queryset and the can rule for a model with host behavior (${provider})`, () => world(provider, async (w) => {
     const Note = w.models["SNote"];
     registerFieldAdapter(Note._meta, "slug", lower);

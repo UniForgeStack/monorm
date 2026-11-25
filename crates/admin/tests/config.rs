@@ -2,7 +2,7 @@
 use std::sync::Arc;
 
 use monorm_admin::config::{security_options, Config};
-use monorm_admin::{code, AdminError, PathPart, Site};
+use monorm_admin::{code, AdminConfigBuilder, AdminError, PathPart, Site, Spelling};
 use monorm_core::{dsl, schema::Schema};
 use serde_json::{json, Value};
 
@@ -45,7 +45,7 @@ fn an_unknown_option_and_an_unknown_model_have_their_own_codes() {
 fn a_serde_error_names_an_option_in_the_spelling_of_the_host() {
     let e = build(json!({"spelling": "camel", "resources": [{"model": "Note", "bulk_delete": "yes"}]}));
     assert_eq!(e.code, code::INVALID_VALUE);
-    assert!(e.message.starts_with("invalid admin config: "), "{}", e.message);
+    assert_eq!(e.message, "Note: bulkDelete: invalid type: string \"yes\", expected a boolean");
 }
 
 #[test]
@@ -237,4 +237,189 @@ fn a_query_set_body_takes_its_known_keys_only() {
     assert_eq!(e.code, code::INVALID_VALUE);
     let e = build(note(json!({"queryset": {"$qs": {"model": "Note", "filter": positive(), "lock": true}}})));
     assert_eq!((e.code, e.message.as_str()), (code::UNSUPPORTED, "Note: queryset takes a filter and an order; it does not take lock()"));
+}
+
+#[test]
+fn an_unknown_option_names_its_place_and_has_its_own_code() {
+    let cases = [
+        (json!({"resources": [{"model": "Note", "colum": 1}]}), "Note: unknown option 'colum'"),
+        (json!({"resources": [{"model": "Note", "list": {"colums": []}}]}), "Note: unknown list option 'colums'"),
+        (json!({"resources": [{"model": "Note", "list": {"date_hierarchy": {"field": "id", "nope": 1}}}]}), "Note: unknown date_hierarchy option 'nope'"),
+        (json!({"resources": [{"model": "Book", "relations": {"author": {"nope": 1}}}]}), "Book: relations['author'] has an unknown option 'nope'"),
+        (json!({"resources": [{"model": "Book", "form": [{"fields": ["title"], "nope": 1}]}]}), "Book: unknown section option 'nope'"),
+        (json!({"brand": {"nope": 1}}), "unknown brand option 'nope'"),
+        (json!({"theme": {"nope": 1}}), "unknown theme option 'nope'"),
+        (json!({"switcher": {"nope": 1}}), "unknown switcher option 'nope'"),
+    ];
+    for (config, text) in cases {
+        let e = build(config);
+        assert_eq!((e.code, e.message.as_str()), (code::UNKNOWN_OPTION, text));
+    }
+}
+
+#[test]
+fn a_date_hierarchy_without_a_field_is_refused() {
+    let e = build(json!({"resources": [{"model": "Note", "list": {"date_hierarchy": {"counts": false}}}]}));
+    assert_eq!((e.code, e.message.as_str()), (code::INVALID_VALUE, "Note: date_hierarchy needs a field"));
+}
+
+fn builder(options: Value) -> AdminConfigBuilder {
+    AdminConfigBuilder::new(&options.to_string(), 15.0, "{}", Spelling::Snake).unwrap()
+}
+
+fn keys(list: &[&str]) -> Vec<String> {
+    list.iter().map(|k| k.to_string()).collect()
+}
+
+#[test]
+fn the_builder_refuses_a_wrong_option_when_it_is_made() {
+    let made = |options: Value, secs: f64, roles: &str| AdminConfigBuilder::new(&options.to_string(), secs, roles, Spelling::Snake).err().unwrap();
+    let e = made(json!({"brand": {"nope": 1}}), 15.0, "{}");
+    assert_eq!((e.code, e.message.as_str()), (code::UNKNOWN_OPTION, "unknown brand option 'nope'"));
+    assert_eq!(made(json!({"theme": {"nope": 1}}), 15.0, "{}").message, "unknown theme option 'nope'");
+    assert_eq!(made(json!({"switcher": {"nope": 1}}), 15.0, "{}").message, "unknown switcher option 'nope'");
+    for bad in [-1.0, f64::NAN, f64::INFINITY] {
+        let e = made(json!({}), bad, "{}");
+        assert_eq!((e.code, e.message.as_str()), (code::INVALID_VALUE, "statement_timeout is a number of seconds, 0 or more (0 sets no limit)"));
+    }
+    let e = made(json!({}), 15.0, r#"{"staff": "all"}"#);
+    assert_eq!(e.message, "roles['staff'] must be a list of patterns");
+}
+
+#[test]
+fn the_builder_refuses_a_duplicate_and_an_unknown_key() {
+    let mut b = builder(json!({}));
+    b.register("Note", &keys(&["list", "bulk_delete"])).unwrap();
+    let e = b.register("Note", &[]).unwrap_err();
+    assert_eq!((e.code, e.message.as_str()), (code::DUPLICATE, "Note is already registered"));
+    let e = b.register("Author", &keys(&["nope"])).unwrap_err();
+    assert_eq!((e.code, e.message.as_str()), (code::UNKNOWN_OPTION, "Author: unknown option 'nope'"));
+    assert_eq!(e.path, vec![PathPart::Model("Author".into())]);
+    // A refused call changes nothing: the model can register again.
+    b.register("Author", &[]).unwrap();
+}
+
+#[test]
+fn the_builder_takes_the_keys_in_the_spelling_of_the_host() {
+    let mut camel = AdminConfigBuilder::new("{}", 15.0, "{}", Spelling::Camel).unwrap();
+    camel.register("Note", &keys(&["bulkDelete", "checkMessages"])).unwrap();
+    assert_eq!(camel.register("Author", &keys(&["bulk_delete"])).unwrap_err().message, "Author: unknown option 'bulk_delete'");
+    let mut snake = builder(json!({}));
+    assert_eq!(snake.register("Author", &keys(&["bulkDelete"])).unwrap_err().message, "Author: unknown option 'bulkDelete'");
+}
+
+#[test]
+fn the_builder_refuses_a_package_a_route_and_an_inline_that_is_wrong() {
+    let mut b = builder(json!({}));
+    b.package("tools", "{}").unwrap();
+    let e = b.package("tools", "{}").unwrap_err();
+    assert_eq!((e.code, e.message.as_str()), (code::PACKAGE, "the package 'tools' is added twice"));
+    let e = b.route("GET", "/x", None, false).unwrap_err();
+    assert_eq!((e.code, e.message.as_str()), (code::ROUTE, "a route needs a function: route(method, path, fn)"));
+    b.route("get", "/x", None, true).unwrap();
+    let e = b.route("GET", "x", Some("admin.x"), true).unwrap_err();
+    assert_eq!((e.code, e.message.as_str()), (code::DUPLICATE, "the route GET x is registered twice"));
+    AdminConfigBuilder::check_inline("Book", "row", "table", Spelling::Snake).unwrap();
+    assert_eq!(AdminConfigBuilder::check_inline("Book", "later", "table", Spelling::Snake).unwrap_err().message, "inline Book: save is one of with_parent, row");
+    assert_eq!(AdminConfigBuilder::check_inline("Book", "row", "wide", Spelling::Snake).unwrap_err().message, "inline Book: style is one of table, stacked");
+}
+
+#[test]
+fn the_builder_builds_more_than_once_from_its_state() {
+    let mut b = builder(json!({"brand": {"name": "Shop"}}));
+    b.route("GET", "ping", None, true).unwrap();
+    for _ in 0..2 {
+        let (site, handles) = b.build(schema(), &json!({"resources": [{"model": "Note"}]}).to_string()).unwrap();
+        assert!(site.permission_names().contains(&"admin.access".to_string()));
+        assert!(handles.is_empty());
+    }
+    assert!(b.build(schema(), "[]").is_err());
+}
+
+#[test]
+fn the_inline_values_of_the_builder_are_the_values_that_the_site_takes() {
+    for save in ["with_parent", "row"] {
+        for style in ["table", "stacked"] {
+            AdminConfigBuilder::check_inline("Book", save, style, Spelling::Snake).unwrap();
+            let config = json!({"resources": [{"model": "Author", "inlines": [{"model": "Book", "save": save, "style": style}]}, {"model": "Book"}]});
+            Site::build(schema(), &config.to_string()).unwrap_or_else(|e| panic!("{save} {style}: {}", e.message));
+        }
+    }
+}
+
+#[test]
+fn the_builder_sends_its_statement_timeout_at_each_build() {
+    let late = json!({"resources": [{"model": "Note"}]}).to_string();
+    assert!(AdminConfigBuilder::new("{}", 15.0, "{}", Spelling::Snake).unwrap().build(schema(), &late).is_ok());
+    assert!(AdminConfigBuilder::new("{}", 20.0, "{}", Spelling::Snake).unwrap().build(schema(), &late).is_ok());
+    let e = AdminConfigBuilder::new("{}", 3_000_000.0, "{}", Spelling::Snake).unwrap().build(schema(), &late).err().unwrap();
+    assert_eq!(e.code, code::INVALID_VALUE);
+    assert!(e.message.contains("statement_timeout is 3000000"), "{}", e.message);
+}
+
+#[test]
+fn a_wrong_type_of_an_option_waits_for_the_build_but_an_unknown_key_does_not() {
+    assert!(builder(json!({"brand": "Shop"})).build(schema(), "{}").is_err());
+    assert_eq!(AdminConfigBuilder::new(&json!({"brand": {"nope": 1}}).to_string(), 15.0, "{}", Spelling::Snake).err().unwrap().code, code::UNKNOWN_OPTION);
+}
+
+#[test]
+fn files_need_a_storage_registry() {
+    let resources = json!([{"model": "Note", "files": ["cover"]}]);
+    let e = build(json!({"resources": resources}));
+    assert_eq!(e.code, code::INVALID_VALUE);
+    assert_eq!(e.message, "Note: files needs a file storage registry: pass `storage` to Admin");
+}
+
+fn refusal(resource: Value) -> (&'static str, String) {
+    let e = build(json!({"resources": [resource]}));
+    (e.code, e.message)
+}
+
+#[test]
+fn a_relations_option_names_its_relation_and_its_fault() {
+    let resource = |relations: Value| json!({"model": "Book", "relations": relations});
+    assert_eq!(refusal(resource(json!([1]))).0, code::INVALID_VALUE);
+    assert_eq!(refusal(resource(json!({"editor": {}}))), (code::RELATION_UNKNOWN, "Book: relations has 'editor', which is not a relation of the model".into()));
+    assert_eq!(refusal(resource(json!({"author": 3}))).0, code::INVALID_VALUE);
+    assert_eq!(refusal(resource(json!({"author": {"nope": 1}}))), (code::UNKNOWN_OPTION, "Book: relations['author'] has an unknown option 'nope'".into()));
+    assert_eq!(refusal(resource(json!({"author": {"create": "yes"}}))).0, code::INVALID_VALUE);
+}
+
+#[test]
+fn a_computed_column_sets_one_of_expr_and_function() {
+    let list = |computed: Value| json!({"model": "Author", "list": {"computed": [computed]}});
+    let both = refusal(list(json!({"name": "n", "type": "string", "expr": {"t": "col", "name": "name"}, "function": "f"})));
+    assert_eq!(both, (code::INVALID_VALUE, "Author: computed 'n' sets expr or function, one of them".into()));
+    assert_eq!(refusal(list(json!({"name": "n", "type": "string"}))), (code::INVALID_VALUE, "Author: computed 'n' sets expr or function, one of them".into()));
+}
+
+#[test]
+fn an_action_needs_a_function_a_known_placement_and_one_listing() {
+    let action = |a: Value| json!({"model": "Author", "actions": a});
+    assert_eq!(refusal(action(json!([{"name": "x", "placement": "bulk", "function": "plain"}]))), (code::INVALID_VALUE, "Author: action 'x' needs a function".into()));
+    let e = refusal(action(json!([{"name": "x", "placement": "middle", "function": {"$fn": "f1"}}])));
+    assert_eq!(e.0, code::INVALID_VALUE);
+    assert!(e.1.contains("placement"), "{}", e.1);
+    let twice = json!({"name": "x", "placement": "bulk", "function": {"$fn": "f1"}});
+    assert_eq!(refusal(action(json!([twice, twice]))), (code::DUPLICATE, "Author: action 'x' is listed twice".into()));
+}
+
+#[test]
+fn a_service_function_is_a_host_function() {
+    let e = refusal(json!({"model": "Author", "service": {"create": {"$host": "int"}}}));
+    assert_eq!(e, (code::INVALID_VALUE, "Author: create is a service function (ctx, ...)".into()));
+}
+
+#[test]
+fn an_action_function_is_a_host_function() {
+    let e = refusal(json!({"model": "Author", "actions": [{"name": "x", "placement": "bulk", "function": {"$host": "int"}}]}));
+    assert_eq!(e.0, code::INVALID_VALUE);
+    assert_eq!(e.1, "Author: action 'x' needs a function");
+}
+
+#[test]
+fn an_option_of_a_wrong_type_names_its_model_and_key() {
+    assert_eq!(refusal(json!({"model": "Note", "set_password": "no"})).1, "Note: set_password: invalid type: string \"no\", expected a boolean");
+    assert_eq!(refusal(json!({"model": "Note", "bulk_delete": 1})).1, "Note: bulk_delete: invalid type: integer `1`, expected a boolean");
 }

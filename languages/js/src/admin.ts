@@ -22,7 +22,7 @@ import { pipeline } from "node:stream/promises";
 import { HOST, authUserTable, hostDispatch, type HostFunction } from "./admin-host.js";
 import * as grants from "./admin-permissions.js";
 import { Reply, routeHost, Stream, type RouteFunction, type RouteRequest } from "./admin-routes.js";
-import { action, actionDef, actionFunction, Context, download, InputDef, input, log, message, PLACEMENTS, redirect, refresh, serviceFunction, viewHost, writerHost, type ActionDef, type ActionFunction, type ActionOptions, type ActionResult, type InlineChanges } from "./admin-write.js";
+import { action, actionDef, actionFunction, Context, download, InputDef, input, log, message, redirect, refresh, serviceFunction, viewHost, writerHost, type ActionDef, type ActionFunction, type ActionOptions, type ActionResult, type InlineChanges } from "./admin-write.js";
 import { fieldAdapters, hasFieldAdapters } from "./adapters.js";
 import type { RoleSeedReport, SyncReport } from "./admin-permissions.js";
 import type { Database } from "./db.js";
@@ -31,7 +31,7 @@ import { asCondition, Column, Condition, Expression, IRContext, Ordering, PATH, 
 import type { ModelSpec } from "./meta.js";
 import { registry as defaultRegistry, type ModelClass, type Registry } from "./model.js";
 import { Prepared } from "./query.js";
-import { call, native, wait, type NativeAdminRouter, type NativeAdminServer, type NativeAdminSite } from "./native.js";
+import { call, native, wait, type NativeAdminConfigBuilder, type NativeAdminRouter, type NativeAdminServer, type NativeAdminSite } from "./native.js";
 
 export const DEFAULT_BASE_PATH = "/admin";
 
@@ -65,6 +65,15 @@ export function adminError(e: unknown): AdminConfigError | AdminSettingsError {
   const message = e instanceof Error ? e.message : String(e);
   if (typeof code === "string" && code.startsWith("settings.")) return new AdminSettingsError(message, code);
   return new AdminConfigError(message, typeof code === "string" && code.startsWith("config") ? code : undefined);
+}
+
+/** Calls a native admin function and raises its refusal as an `AdminConfigError`. */
+function adminCall<T>(f: () => T): T {
+  try {
+    return call(f);
+  } catch (e) {
+    throw e instanceof AdminConfigError ? e : adminError(e);
+  }
 }
 
 type AnyColumn = Column<any, any, any, any>;
@@ -430,10 +439,6 @@ export interface AdminUser {
   readonly [key: string]: unknown;
 }
 
-const LIST_KEYS = new Set(["columns", "order", "pageSize", "sortable", "search", "searchWith", "filters", "namedFilters", "computed", "aggregates", "labels", "empty", "emptyFields", "tabs", "editable", "badges", "dateHierarchy"]);
-const BRAND_KEYS = new Set(["name", "logo", "colors", "links", "environment", "environmentLevel"]);
-const SWITCHER_KEYS = new Set(["current", "services", "build"]);
-const THEME_KEYS = new Set(["title", "logo", "color"]);
 const RESOURCE_KEYS = new Set(["queryset", "can", "list", "title", "group", "icon", "allow", "perms", "label", "fieldPermissions", "see", "change", "actions", "checkMessages", "form", "readonly", "widgets", "formComponent", "detailTabs", "frames", "fieldsets", "relations", "files", "create", "update", "delete", "inputs", "allowProtectedWrites", "inlines", "bulkDelete", "setPassword"]);
 
 function widgetsJson(who: string, value: unknown): Record<string, string> {
@@ -448,10 +453,8 @@ function sectionJson(name: string, s: unknown): Record<string, unknown> {
   if (typeof section !== "object" || section === null || !Array.isArray(section.fields) || !section.fields.every((f) => typeof f === "string")) {
     throw new AdminConfigError(`${name}: a form section is { title, fields }`);
   }
-  for (const key of Object.keys(section)) {
-    if (key !== "title" && key !== "fields" && key !== "collapsed") throw new AdminConfigError(`${name}: unknown section option '${key}'`);
-  }
-  return { fields: [...section.fields], ...(section.title === undefined ? {} : { title: section.title }), ...(section.collapsed === undefined ? {} : { collapsed: Boolean(section.collapsed) }) };
+  // Every key goes as null first, in snake case, so that Rust names an unknown key; a known key is replaced below.
+  return { ...Object.fromEntries(Object.keys(section).map((k) => [k, null])), fields: [...section.fields], ...(section.title === undefined ? {} : { title: section.title }), ...(section.collapsed === undefined ? {} : { collapsed: Boolean(section.collapsed) }) };
 }
 
 function readonlyJson(name: string, names: unknown): string[] {
@@ -469,26 +472,22 @@ function formComponentJson(name: string, path: unknown): string {
   return path;
 }
 
-const RELATION_KEYS = new Set(["label", "create", "choices"]);
-
-function relationsJson(name: string, cls: AnyModel, registry: Registry, value: unknown, fns: Fns): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new AdminConfigError(`${name}: relations maps a relation name to its options`);
+/** The `relations` option on the wire. Rust checks the names, the option keys and the value types. */
+function relationsJson(name: string, cls: AnyModel, registry: Registry, value: unknown, fns: Fns): unknown {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
   const out: Record<string, unknown> = {};
   for (const [relName, options] of Object.entries(value)) {
     const found = cls._meta.relations.get(relName);
-    if (found === undefined) throw new AdminConfigError(`${name}: relations has '${relName}', which is not a relation of the model`);
-    if (typeof options !== "object" || options === null || Array.isArray(options)) throw new AdminConfigError(`${name}: relations['${relName}'] is an object of options`);
-    for (const key of Object.keys(options)) {
-      if (!RELATION_KEYS.has(key)) throw new AdminConfigError(`${name}: relations['${relName}'] has an unknown option '${key}'`);
+    if (typeof options !== "object" || options === null || Array.isArray(options)) {
+      out[relName] = options;
+      continue;
     }
-    const o = options as RelationConfig;
-    if (o.label !== undefined && typeof o.label !== "string") throw new AdminConfigError(`${name}: relations['${relName}'].label is a column name`);
-    if (o.create !== undefined && typeof o.create !== "boolean") throw new AdminConfigError(`${name}: relations['${relName}'].create is true or false`);
-    out[relName] = {
-      ...(o.label === undefined ? {} : { label: o.label }),
-      ...(o.create === undefined ? {} : { create: o.create }),
-      ...(o.choices === undefined ? {} : { choices: hostJson({ _meta: registry.get(found.target) } as unknown as AnyModel, "relations.choices", o.choices, "", fns) }),
-    };
+    const entry: Record<string, unknown> = { ...options };
+    if ((options as RelationConfig).choices !== undefined) {
+      const target = found === undefined ? cls : ({ _meta: registry.get(found.target) } as unknown as AnyModel);
+      entry["choices"] = hostJson(target, "relations.choices", (options as RelationConfig).choices, "", fns);
+    }
+    out[relName] = entry;
   }
   return out;
 }
@@ -661,18 +660,12 @@ class Fns {
 
 function dateHierarchyJson(model: AnyModel, value: AnyColumn | string | DateHierarchy): unknown {
   if (typeof value === "string" || value instanceof Column) return hostJson(model, "list.dateHierarchy", value);
-  const { field, counts, ...rest } = value as DateHierarchy;
-  const extra = Object.keys(rest)[0];
-  if (extra !== undefined) throw new AdminConfigError(`${model._meta.name}: unknown dateHierarchy option '${extra}'`);
-  if (field === undefined) throw new AdminConfigError(`${model._meta.name}: dateHierarchy needs a field`);
-  return { field: hostJson(model, "list.dateHierarchy.field", field), ...(counts !== undefined ? { counts } : {}) };
+  const { field, ...rest } = value as DateHierarchy;
+  return { ...rest, ...(field === undefined ? {} : { field: hostJson(model, "list.dateHierarchy.field", field) }) };
 }
 
 function computedJson(model: AnyModel, items: readonly ComputedColumn[], fns: Fns): unknown[] {
   return items.map((item) => {
-    if ((item.expr === undefined) === (item.function === undefined)) {
-      throw new AdminConfigError(`${model._meta.name}: computed '${item.name}' sets expr or function, one of them`);
-    }
     const { expr, function: fn, orderBy, ...rest } = item;
     return {
       ...rest,
@@ -748,16 +741,10 @@ function querysetHost(model: AnyModel, fn: QuerysetFunction): HostFunction {
   };
 }
 
-function boolOption(model: string, option: string, value: unknown): boolean {
-  if (typeof value !== "boolean") throw new AdminConfigError(`${model}: ${option} is true or false`);
-  return value;
-}
-
 /** The action entries of a resource: a name declares a permission, a marked function is a button. */
-function actionsJson(name: string, model: AnyModel, items: unknown): Record<string, unknown>[] {
+function actionsJson(name: string, model: AnyModel, items: unknown, fnEntry: (d: ActionDef) => Record<string, unknown>): Record<string, unknown>[] {
   if (!Array.isArray(items)) throw new AdminConfigError(`${name}: actions is a list`);
   const out: Record<string, unknown>[] = [];
-  const seen = new Set<string>();
   for (const item of items) {
     const d = actionDef(item);
     let entry: Record<string, unknown>;
@@ -767,9 +754,8 @@ function actionsJson(name: string, model: AnyModel, items: unknown): Record<stri
     } else {
       const placement = d.placement ?? "bulk";
       if (d.name === "") throw new AdminConfigError(`${name}: an action needs a name: pass { name } to action()`);
-      if (!(PLACEMENTS as readonly string[]).includes(placement)) throw new AdminConfigError(`${name}: action '${d.name}': placement is one of ${PLACEMENTS.join(", ")}`);
       if (d.inputs !== undefined && !d.inputs.every((i) => i instanceof InputDef)) throw new AdminConfigError(`${name}: action '${d.name}': inputs is a list of input(...) controls`);
-      entry = { name: d.name, placement, sync: false, threaded: false };
+      entry = { name: d.name, placement, ...fnEntry(d) };
       if (d.permission !== undefined) entry["permission"] = d.permission;
       if (d.label !== undefined) entry["label"] = d.label;
       if (d.confirm !== undefined) entry["confirm"] = d.confirm;
@@ -778,9 +764,6 @@ function actionsJson(name: string, model: AnyModel, items: unknown): Record<stri
       if (d.can !== undefined) entry["can"] = hostJson(model, "actions.can", d.can, `action '${d.name}' can`);
       if (d.replaceChange !== undefined) entry["replace_change"] = d.replaceChange;
     }
-    const key = entry["name"] as string;
-    if (seen.has(key)) throw new AdminConfigError(`${name}: action '${key}' is listed twice`);
-    seen.add(key);
     out.push(entry);
   }
   return out;
@@ -796,11 +779,8 @@ function canJson(model: AnyModel, rules: CanRules): Record<string, unknown> {
 }
 
 function listJson(model: AnyModel, config: ListConfig, fns: Fns): Record<string, unknown> {
-  const name = model._meta.name;
-  for (const key of Object.keys(config)) {
-    if (!LIST_KEYS.has(key)) throw new AdminConfigError(`${name}: unknown list option '${key}'`);
-  }
-  const out: Record<string, unknown> = {};
+  // An unknown key goes as null: Rust names it.
+  const out: Record<string, unknown> = Object.fromEntries(Object.keys(config).map((k) => [k.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`), null]));
   if (config.columns !== undefined) out["columns"] = config.columns.map((c) => hostJson(model, "list.columns", c));
   if (config.filters !== undefined) out["filters"] = config.filters.map((c) => hostJson(model, "list.filters", c));
   if (config.tabs !== undefined) out["tabs"] = config.tabs.map((c) => hostJson(model, "list.tabs", c));
@@ -1071,8 +1051,6 @@ export type InlineOptions = {
   readonly page?: ResourceConfig;
 };
 
-const INLINE_SAVE = ["with_parent", "row"];
-const INLINE_STYLE = ["table", "stacked"];
 const INLINE_PAGE_SAVE_REASON = "a service writes one record: an inline row is written by the page of the parent (with_parent) or by the page of the child (row)";
 // A page key that an inline wrapper cannot override, with the reason.
 const INLINE_PAGE_REFUSED: Readonly<Record<string, string>> = {
@@ -1118,8 +1096,7 @@ export class InlineDef {
     const name = model._meta.name;
     this.save = options.save ?? "with_parent";
     this.style = options.style ?? "table";
-    if (!INLINE_SAVE.includes(this.save)) throw new AdminConfigError(`inline ${name}: save is one of ${INLINE_SAVE.join(", ")}`);
-    if (!INLINE_STYLE.includes(this.style)) throw new AdminConfigError(`inline ${name}: style is one of ${INLINE_STYLE.join(", ")}`);
+    adminCall(() => native().AdminConfigBuilder.checkInline(name, this.save, this.style));
     this.via = options.via;
     this.permission = options.permission;
     this.max = options.max ?? 20;
@@ -1164,21 +1141,17 @@ export class Admin {
   readonly #strategy: PermissionStrategy;
   readonly #label: string;
   readonly #roles: Record<string, string[]>;
-  readonly #brand: BrandConfig | undefined;
-  readonly #theme: ThemeConfig | undefined;
   readonly #widgets: Record<string, string> | undefined;
   readonly #groups: string[];
   readonly #groupIcons: Readonly<Record<string, string>> | undefined;
-  readonly #switcher: SwitcherConfig | undefined;
   /** The `[admin.switcher]` table of `monorm.toml`, set by the serve mode. */
   switcherSettings: unknown;
   readonly #frameOrigins: readonly string[] | undefined;
   readonly #frameCards: readonly FrameConfig[] | undefined;
   readonly #embeds: Readonly<Record<string, EmbedConfig>> | undefined;
-  readonly #statementTimeout: number;
+  readonly #builder: NativeAdminConfigBuilder;
   readonly #storage: FileStorage | undefined;
   readonly #routes = new Map<string, { method: string; path: string; fn: RouteFunction; permission: string | undefined }>();
-  readonly #packages = new Map<string, Record<string, unknown>>();
   #fns = new Fns();
   #planned: { schema: unknown; site: NativeAdminSite } | null = null;
 
@@ -1191,43 +1164,25 @@ export class Admin {
     this.prefix = options.prefix;
     this.#strategy = options.permissions ?? "page";
     this.#label = options.label ?? "admin";
-    for (const key of Object.keys(options.brand ?? {})) {
-      if (!BRAND_KEYS.has(key)) throw new AdminConfigError(`unknown brand option '${key}'`);
-    }
-    this.#brand = options.brand;
-    for (const key of Object.keys(options.theme ?? {})) {
-      if (!THEME_KEYS.has(key)) throw new AdminConfigError(`unknown theme option '${key}'`);
-    }
-    this.#theme = options.theme;
     this.#widgets = options.widgets === undefined ? undefined : widgetsJson("widgets", options.widgets);
     this.#groups = [...(options.groups ?? [])];
     this.#groupIcons = options.groupIcons;
-    for (const key of Object.keys(options.switcher ?? {})) {
-      if (!SWITCHER_KEYS.has(key)) throw new AdminConfigError(`unknown switcher option '${key}'`);
-    }
-    this.#switcher = options.switcher;
     this.#frameOrigins = options.frameOrigins;
     this.#frameCards = options.frameCards;
     this.#embeds = options.embeds;
-    const timeout = options.statementTimeout ?? 15;
-    if (!(timeout >= 0) || !Number.isFinite(timeout)) throw new AdminConfigError("statementTimeout is a number of seconds, 0 or more (0 sets no limit)");
-    this.#statementTimeout = timeout;
-    this.#roles = {};
-    for (const [name, patterns] of Object.entries(options.roles ?? {})) {
-      if (typeof patterns === "string" || !Array.isArray(patterns) || !patterns.every((p) => typeof p === "string")) {
-        throw new AdminConfigError(`roles[${JSON.stringify(name)}] must be a list of patterns`);
-      }
-      this.#roles[name] = [...patterns];
-    }
+    const eager = {
+      ...(options.brand === undefined ? {} : { brand: brandJson(options.brand) }),
+      ...(options.theme === undefined ? {} : { theme: options.theme }),
+      ...(options.switcher === undefined ? {} : { switcher: switcherJson(options.switcher) }),
+    };
+    this.#builder = adminCall(() => new (native().AdminConfigBuilder)(JSON.stringify(eager), options.statementTimeout ?? 15, JSON.stringify(options.roles ?? {}), "camel"));
+    this.#roles = Object.fromEntries(Object.entries(options.roles ?? {}).map(([name, patterns]) => [name, [...patterns]]));
   }
 
   /** Makes `model` a resource. Once any model is registered, only registered models are resources. */
   register(model: AnyModel, config: ResourceConfig = {}): void {
     const name = model._meta.name;
-    if (this.#resources.has(name)) throw new AdminConfigError(`${name} is already registered`);
-    for (const key of Object.keys(config)) {
-      if (!RESOURCE_KEYS.has(key)) throw new AdminConfigError(`${name}: unknown option '${key}'`);
-    }
+    adminCall(() => this.#builder.register(name, Object.keys(config)));
     this.#resources.set(name, { model, config });
     this.#planned = null;
   }
@@ -1241,8 +1196,8 @@ export class Admin {
    * with `route` and `action` itself: it is a function `install(admin)` that calls this method too.
    */
   package(name: string, directory: string, options: { readonly widgets?: Readonly<Record<string, string>>; readonly forms?: Readonly<Record<string, string>>; readonly tabs?: Readonly<Record<string, string | PackageTabConfig>>; readonly styles?: readonly string[]; readonly adminMajor?: number } = {}): void {
-    if (this.#packages.has(name)) throw new AdminConfigError(`the package '${name}' is added twice`);
-    this.#packages.set(name, { name, admin_major: options.adminMajor ?? 1, dir: resolvePath(directory), widgets: { ...options.widgets }, forms: { ...options.forms }, tabs: { ...options.tabs }, styles: [...(options.styles ?? [])] });
+    const entry = { name, admin_major: options.adminMajor ?? 1, dir: resolvePath(directory), widgets: { ...options.widgets }, forms: { ...options.forms }, tabs: { ...options.tabs }, styles: [...(options.styles ?? [])] };
+    adminCall(() => this.#builder.package(name, JSON.stringify(entry)));
     this.#planned = null;
   }
 
@@ -1252,44 +1207,38 @@ export class Admin {
    * route needs only the admin gate. `fn` returns a JSON value, `new Reply(json, { status })` or `new Stream(chunks, { contentType, filename })`.
    */
   route(method: string, path: string, fn: RouteFunction, options: { readonly permission?: string } = {}): void {
-    if (typeof fn !== "function") throw new AdminConfigError("route: the function must be callable");
+    adminCall(() => this.#builder.route(method, path, options.permission ?? null, typeof fn === "function"));
     const verb = method.toUpperCase();
     const clean = path.replace(/^\//, "");
     const id = `${verb} ${clean}`;
-    if (this.#routes.has(id)) throw new AdminConfigError(`route ${verb} /${clean} is already added`);
     this.#routes.set(id, { method: verb, path: clean, fn, permission: options.permission });
     this.#planned = null;
   }
 
-  #configJson(registry: Registry): string {
+  /** The part of the config that the host lowers at each build. The builder holds the rest. */
+  #lateJson(registry: Registry): string {
     const fns = (this.#fns = new Fns());
     const resources = [...this.#resources].map(([model, { model: cls, config }]) => this.#resourceJson(model, cls, config, registry, fns));
     return JSON.stringify({
-      spelling: "camel",
       base_path: this.basePath,
       ...(this.prefix === undefined ? {} : { prefix: this.prefix }),
       permissions: this.#strategy,
       label: this.#label,
       resources,
+      ...(this.#storage === undefined ? {} : { storage: true }),
       ...(resources.some((r) => r["set_password"]) ? { user_table: authUserTable(registry) } : {}),
-      ...(this.#brand === undefined ? {} : { brand: brandJson(this.#brand) }),
-      ...(this.#theme === undefined ? {} : { theme: this.#theme }),
       ...(this.#widgets === undefined || Object.keys(this.#widgets).length === 0 ? {} : { widgets: this.#widgets }),
       ...(this.#groups.length === 0 ? {} : { groups: this.#groups }),
       ...(this.#groupIcons === undefined || Object.keys(this.#groupIcons).length === 0 ? {} : { group_icons: this.#groupIcons }),
-      ...(this.#switcher === undefined ? {} : { switcher: switcherJson(this.#switcher) }),
       ...(this.switcherSettings ? { switcher_file: this.switcherSettings } : {}),
       frame_origins: this.#frameOrigins,
       frame_cards: this.#frameCards?.map(frameJson),
       embeds: this.#embeds,
-      ...(this.#packages.size === 0 ? {} : { packages: [...this.#packages.values()] }),
-      ...(this.#routes.size === 0 ? {} : { routes: [...this.#routes.values()].map((r) => ({ method: r.method, path: r.path, ...(r.permission === undefined ? {} : { permission: r.permission }) })) }),
-      ...(this.#statementTimeout === 15 ? {} : { statement_timeout_ms: Math.round(this.#statementTimeout * 1000) }),
     });
   }
 
   /** The config JSON of one page. */
-  #resourceJson(model: string, cls: AnyModel, config: ResourceConfig, registry: Registry, fns: Fns): Record<string, unknown> {
+  #resourceJson(model: string, cls: AnyModel, config: ResourceConfig, registry: Registry, fns: Fns, top = true): Record<string, unknown> {
     const queryset = config.queryset === undefined ? undefined : hostJson(cls, "queryset", config.queryset, "", fns);
     const list = config.list === undefined ? undefined : listJson(cls, config.list, fns);
     return {
@@ -1305,9 +1254,9 @@ export class Admin {
       frames: config.frames?.map(frameJson),
       fieldsets: config.fieldsets,
       ...(config.relations === undefined ? {} : { relations: relationsJson(model, cls, registry, config.relations, fns) }),
-      ...(config.files === undefined ? {} : { files: this.#filesOf(model, config.files) }),
+      ...(config.files === undefined ? {} : { files: Object.keys(filesJson(model, config.files)) }),
       ...(list === undefined ? {} : { list }),
-      ...this.#writesJson(model, cls, config),
+      ...this.#writesJson(model, cls, config, fns, top),
       ...(config.title === undefined ? {} : { title: config.title }),
       ...(config.group === undefined ? {} : { group: config.group }),
       ...(config.icon === undefined ? {} : { icon: config.icon }),
@@ -1317,9 +1266,9 @@ export class Admin {
       ...(config.fieldPermissions === undefined ? {} : { field_permissions: [...config.fieldPermissions] }),
       ...(config.see === undefined ? {} : { see: boundJson(model, "see", config.see) }),
       ...(config.change === undefined ? {} : { change: boundJson(model, "change", config.change) }),
-      ...(config.actions === undefined ? {} : { actions: actionsJson(model, cls, config.actions) }),
-      ...(config.setPassword === undefined ? {} : { set_password: boolOption(model, "setPassword", config.setPassword) }),
-      ...(config.bulkDelete === undefined ? {} : { bulk_delete: boolOption(model, "bulkDelete", config.bulkDelete) }),
+      ...(config.actions === undefined ? {} : { actions: actionsJson(model, cls, config.actions, (d) => this.#fnEntry(fns, d.fn, top, () => actionFunction(cls, config, d, this.#inlineModels()), true)) }),
+      ...(config.setPassword === undefined ? {} : { set_password: config.setPassword }),
+      ...(config.bulkDelete === undefined ? {} : { bulk_delete: config.bulkDelete }),
       ...(config.inlines === undefined ? {} : { inlines: inlineDefs(model, config.inlines).map((d) => this.#inlineJson(model, d, registry, fns)) }),
     };
   }
@@ -1331,7 +1280,7 @@ export class Admin {
     if (d.via !== undefined) out["via"] = d.via;
     if (d.permission !== undefined) out["permission"] = d.permission;
     if (d.label !== undefined) out["label"] = d.label;
-    const page = this.#resourceJson(child, d.model, d.page, registry, fns);
+    const page = this.#resourceJson(child, d.model, d.page, registry, fns, false);
     if (Object.keys(page).length > 1) out["page"] = page;
     return out;
   }
@@ -1344,14 +1293,19 @@ export class Admin {
     return out;
   }
 
-  #writesJson(name: string, cls: AnyModel, config: ResourceConfig): Record<string, unknown> {
+  /** A service or action function on the wire. A resource sends `$fn` with the two flags beside it; an inline page sends the flags alone. A value that is not callable is `$host`: Rust refuses it. */
+  #fnEntry(fns: Fns, fn: unknown, top: boolean, maker: () => HostFunction, wrap = false): Record<string, unknown> {
+    const entry = typeof fn !== "function" ? { $host: hostType(fn) } : top ? { ...fns.register(maker), sync: false, threaded: false } : { sync: false, threaded: false };
+    return wrap && ("$fn" in entry || "$host" in entry) ? { function: entry } : entry;
+  }
+
+  #writesJson(name: string, cls: AnyModel, config: ResourceConfig, fns: Fns, top: boolean): Record<string, unknown> {
     const out: Record<string, unknown> = {};
     const services: Record<string, unknown> = {};
     for (const op of ["create", "update", "delete"] as const) {
       const fn = config[op];
       if (fn === undefined) continue;
-      if (typeof fn !== "function") throw new AdminConfigError(`${name}: ${op} is a service function (ctx, ...)`);
-      services[op] = { sync: false, threaded: false };
+      services[op] = this.#fnEntry(fns, fn, top, () => serviceFunction(cls, op, fn as never, this.#inlineModels()));
     }
     if (Object.keys(services).length > 0) out["service"] = services;
     if (config.inputs !== undefined) {
@@ -1367,28 +1321,12 @@ export class Admin {
     return out;
   }
 
-  #filesOf(model: string, files: unknown): string[] {
-    const names = Object.keys(filesJson(model, files));
-    if (this.#storage === undefined) throw new AdminConfigError(`${model}: files needs the storage option of Admin (a Registry of extensions/file-storage)`);
-    return names;
-  }
-
   /** The host functions: login, the functions of the config under the names that Rust gave them, and the writes, services, actions, files and routes. */
   #host(handles: Readonly<Record<string, string>>): Record<string, HostFunction> {
     const host: Record<string, HostFunction> = { ...HOST, ...this.#fns.host(handles) };
     const models = this.#inlineModels();
     host["admin.write"] = writerHost(this.#resources, models);
     host["admin.view"] = viewHost(new Map([...models, ...[...this.#resources.values()].map(({ model }) => [model._meta.name, model] as const)]));
-    for (const [name, { model, config }] of this.#resources) {
-      for (const item of config.actions ?? []) {
-        const d = actionDef(item);
-        if (d !== undefined) host[`action.${name}.${d.name}`] = actionFunction(model, config, d, models);
-      }
-      for (const op of ["create", "update", "delete"] as const) {
-        const fn = config[op];
-        if (fn !== undefined) host[`service.${name}.${op}`] = serviceFunction(model, op, fn, models);
-      }
-    }
     const files = new Map<string, string>();
     for (const [name, { config }] of this.#resources) {
       for (const [field, storage] of Object.entries(filesJson(name, config.files ?? {}))) files.set(`${name}.${field}`, storage);
@@ -1401,7 +1339,7 @@ export class Admin {
   #site(registry: Registry): NativeAdminSite {
     const schema = registry.native();
     try {
-      return call(() => native().adminSite(schema, this.#configJson(registry)));
+      return adminCall(() => this.#builder.build(schema, this.#lateJson(registry)));
     } catch (e) {
       if (e instanceof AdminConfigError) throw e;
       throw adminError(e);

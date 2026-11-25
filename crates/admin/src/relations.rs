@@ -23,7 +23,8 @@ use crate::scope::Scoped;
 use crate::server::{authorize, deny, error_response, finish, found_keys, queryset_rows, reject, user_key, Shared, State_, User};
 use crate::sight::Sight;
 use crate::error::Fault;
-use crate::site::{config_err, column, err, queryset_of, Column, Queryset, Resource, Source};
+use crate::error::code;
+use crate::site::{config_err, column, err, err_code, queryset_of, Column, Queryset, Resource, Source};
 use crate::site_config::{QuerysetConfig, RelationConfig};
 
 /// The rows that one autocomplete call returns when the call sets no limit, and the most it returns.
@@ -117,7 +118,7 @@ pub(crate) fn build(schema: &Schema, resources: &[Resource], r: &Resource, confi
             out.push(link(schema, resources, r, &at, rel, c)?);
             continue;
         }
-        let Ok((rel, target_idx)) = model.relation(name) else { return err(format!("{at} is not a relation of the model")) };
+        let Ok((rel, target_idx)) = model.relation(name) else { return err_code(code::RELATION_UNKNOWN, format!("{}: relations has '{name}', which is not a relation of the model", r.name)) };
         if rel.is_conditioned() {
             return err(format!("{at} is one member of a union relation; name the union relation"));
         }

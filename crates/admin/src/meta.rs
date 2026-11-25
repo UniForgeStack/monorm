@@ -14,12 +14,12 @@ use crate::site::{err, Column, Filter, FilterKind, Resource, Source};
 use crate::site_config::{BrandConfig, SwitcherBuild, SwitcherConfig, ThemeConfig};
 
 /// A link target that a page may use: a path on this host or an `http` or `https` URL.
-fn url_ok(url: &str) -> bool {
+pub(crate) fn url_ok(url: &str) -> bool {
     let plain = url.bytes().all(|b| b.is_ascii_graphic());
     plain && ((url.starts_with('/') && !url.starts_with("//")) || url.starts_with("https://") || url.starts_with("http://"))
 }
 
-fn color_ok(c: &str) -> bool {
+pub(crate) fn color_ok(c: &str) -> bool {
     let digits = c.strip_prefix('#').unwrap_or("");
     matches!(digits.len(), 3 | 6) && digits.bytes().all(|b| b.is_ascii_hexdigit())
 }
@@ -159,57 +159,23 @@ struct SwitcherView {
     color: Option<String>,
 }
 
-/// Check the switcher and build its view. `brand_primary`: the brand already sets the primary colour.
+/// Build the switcher view. `s` has passed `SwitcherConfig::check`. `brand_primary`: the brand already sets the primary colour.
 fn switcher_view(s: &SwitcherConfig, brand_primary: bool) -> Result<Option<SwitcherView>, Fault> {
+    s.check()?;
     let services = s.services.as_deref().unwrap_or(&[]);
     let current = s.current.as_deref();
     if current.is_none() && services.is_empty() && s.build == SwitcherBuild::default() {
         return Ok(None);
     }
-    let mut keys: Vec<&str> = Vec::new();
     let mut out = Vec::new();
     let mut current_color = None;
     for svc in services {
-        let at = format!("switcher.services[{:?}]", svc.key);
-        if svc.key.is_empty() || svc.key.len() > 32 || !svc.key.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_') {
-            return err(format!("switcher.services: key {:?} must have 1 to 32 characters: lower case letters, digits, - and _", svc.key));
-        }
-        if keys.contains(&svc.key.as_str()) {
-            return err(format!("switcher.services: key {:?} is listed twice", svc.key));
-        }
-        keys.push(&svc.key);
-        if svc.title.trim().is_empty() || svc.title.chars().count() > 40 {
-            return err(format!("{at}: title has 1 to 40 characters"));
-        }
-        if let Some(icon) = &svc.icon {
-            if !icon_ok(icon) {
-                return err(format!("{at}: icon {icon:?} must be a lucide icon name such as \"server\""));
-            }
-        }
-        if let Some(color) = &svc.color {
-            if !color_ok(color) {
-                return err(format!("{at}: color {color:?} must be #rgb or #rrggbb"));
-            }
-        }
         let is_current = current == Some(svc.key.as_str());
-        let url = if is_current {
-            None
-        } else {
-            match &svc.url {
-                Some(u) if url_ok(u) && !u.starts_with("http://") => Some(u.clone()),
-                Some(u) => return err(format!("{at}: url {u:?} must be a path that starts with / or an https URL")),
-                None => return err(format!("{at}: url is needed for a service that is not the current one")),
-            }
-        };
+        let url = if is_current { None } else { svc.url.clone() };
         if is_current {
             current_color = svc.color.clone();
         }
         out.push(json!({"key": svc.key, "title": svc.title, "url": url, "icon": svc.icon, "color": svc.color}));
-    }
-    match current {
-        Some(c) if !keys.contains(&c) => return err(format!("switcher.current {c:?} is not the key of a service in switcher.services")),
-        None if !services.is_empty() => return err("switcher.current is needed when switcher.services is set".to_owned()),
-        _ => {}
     }
     if current_color.is_some() && brand_primary {
         return err("the colour of the current switcher service and the brand set the primary colour: set one of them (brand.colors.primary, theme.color or the service colour)".to_owned());

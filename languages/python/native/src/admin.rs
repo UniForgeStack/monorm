@@ -359,6 +359,46 @@ fn admin_site(schema: &Bound<'_, PySchema>, config_json: &str) -> PyResult<Admin
     Ok(AdminSite { site: Arc::new(site), handles })
 }
 
+/// The state of an `Admin`: it refuses a wrong call at once, with the code and the text of the Rust checks.
+#[pyclass(module = "monorm._native")]
+pub struct AdminConfigBuilder {
+    inner: monorm_admin::AdminConfigBuilder,
+}
+
+#[pymethods]
+impl AdminConfigBuilder {
+    #[new]
+    #[pyo3(signature = (options_json, statement_timeout, roles_json, spelling = "snake"))]
+    fn new(options_json: &str, statement_timeout: f64, roles_json: &str, spelling: &str) -> PyResult<Self> {
+        let spelling = if spelling == "camel" { monorm_admin::Spelling::Camel } else { monorm_admin::Spelling::Snake };
+        let inner = monorm_admin::AdminConfigBuilder::new(options_json, statement_timeout, roles_json, spelling).map_err(admin_error)?;
+        Ok(AdminConfigBuilder { inner })
+    }
+
+    fn register(&mut self, model: &str, keys: Vec<String>) -> PyResult<()> {
+        self.inner.register(model, &keys).map_err(admin_error)
+    }
+
+    fn package(&mut self, name: &str, json: &str) -> PyResult<()> {
+        self.inner.package(name, json).map_err(admin_error)
+    }
+
+    fn route(&mut self, method: &str, path: &str, permission: Option<&str>, callable: bool) -> PyResult<()> {
+        self.inner.route(method, path, permission, callable).map_err(admin_error)
+    }
+
+    #[staticmethod]
+    fn check_inline(model: &str, save: &str, style: &str) -> PyResult<()> {
+        monorm_admin::AdminConfigBuilder::check_inline(model, save, style, monorm_admin::Spelling::Snake).map_err(admin_error)
+    }
+
+    /// Plans the site from the state and `late_json`. The builder keeps its state.
+    fn build(&self, schema: &Bound<'_, PySchema>, late_json: &str) -> PyResult<AdminSite> {
+        let (site, handles) = self.inner.build(schema.get().inner.clone(), late_json).map_err(admin_error)?;
+        Ok(AdminSite { site: Arc::new(site), handles })
+    }
+}
+
 /// The names that the glob `patterns` of `role` select, in the order of `names`. Raises `ValueError` with a `code`.
 #[pyfunction]
 fn admin_role_grants(patterns: Vec<String>, names: Vec<String>, role: &str) -> PyResult<Vec<String>> {
@@ -370,6 +410,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(admin_settings, m)?)?;
     m.add_function(wrap_pyfunction!(admin_role_grants, m)?)?;
     m.add_class::<AdminSite>()?;
+    m.add_class::<AdminConfigBuilder>()?;
     m.add_class::<AdminServer>()?;
     m.add_class::<AdminRouter>()?;
     Ok(())

@@ -113,14 +113,33 @@ fn lower_page(page: &mut Value, model: &str, tag: &str, schema: &Schema, handles
             *rule = ir_of(rule, &format!("can '{name}'"), Slots::User)?.0;
         }
     }
+    let mut listed = std::collections::BTreeSet::new();
     for action in map.get_mut("actions").and_then(Value::as_array_mut).into_iter().flatten() {
         let Some(action) = action.as_object_mut() else { continue };
         let name = action.get("name").and_then(Value::as_str).unwrap_or_default().to_owned();
+        if !listed.insert(name.clone()) {
+            return Err(Fault::new(code::DUPLICATE, format!("action '{name}' is listed twice")));
+        }
         if let Some(rule) = action.get_mut("applies_to") {
             *rule = ir_of(rule, &format!("action '{name}' applies_to"), Slots::None)?.0;
         }
         if let Some(rule) = action.get_mut("can") {
             *rule = ir_of(rule, &format!("action '{name}' can"), Slots::User)?.0;
+        }
+    }
+    for (op, entry) in map.get_mut("service").and_then(Value::as_object_mut).into_iter().flatten() {
+        lower_callable(entry, format!("service.{model}.{op}"), format!("{op} is a service function (ctx, ...)"), handles)?;
+    }
+    for action in map.get_mut("actions").and_then(Value::as_array_mut).into_iter().flatten() {
+        let Some(action) = action.as_object_mut() else { continue };
+        let Some(mut function) = action.remove("function") else { continue };
+        let name = action.get("name").and_then(Value::as_str).unwrap_or_default().to_owned();
+        if tagged(&function).is_none() {
+            return Err(Fault::new(code::INVALID_VALUE, format!("action '{name}' needs a function")));
+        }
+        lower_callable(&mut function, format!("action.{model}.{name}"), format!("action '{name}' needs a function"), handles)?;
+        if let Some(flags) = function.as_object() {
+            action.extend(flags.clone());
         }
     }
     if let Some(relations) = map.get_mut("relations").and_then(Value::as_object_mut) {
@@ -158,6 +177,22 @@ fn host_function(value: &Value, name: String, handles: &mut Handles) -> Result<O
             Ok(Some(name))
         }
         Some((other, _)) => Err(Fault::new(code::INVALID_VALUE, format!("{other:?} is not a host function: a function is {{\"$fn\": id}}"))),
+    }
+}
+
+/// The `sync` and `threaded` flags that sit beside a `{"$fn": id}`, and the host name of the function.
+/// A value with no tag is a plain config and stays. A `$host` value is not a function: `refusal` is its text.
+fn lower_callable(value: &mut Value, name: String, refusal: String, handles: &mut Handles) -> Result<(), Fault> {
+    match tagged(value) {
+        None => Ok(()),
+        Some(("$fn", _)) => {
+            let flag = |key: &str| value.get(key).and_then(Value::as_bool).unwrap_or(false);
+            let flags = json!({"sync": flag("sync"), "threaded": flag("threaded")});
+            host_function(value, name, handles)?;
+            *value = flags;
+            Ok(())
+        }
+        Some(_) => Err(Fault::new(code::INVALID_VALUE, refusal)),
     }
 }
 
@@ -274,6 +309,25 @@ fn lower_names(map: &mut serde_json::Map<String, Value>, key: &str, model: &str)
     Ok(())
 }
 
+/// Turns the list of `[key, value]` pairs at `key` into an object. A key is a name, or a `$ref` to a column or a relation of `model`.
+/// A plain object stays as it is.
+fn lower_pairs(map: &mut serde_json::Map<String, Value>, key: &str, model: &str) -> Result<(), Fault> {
+    let Some(pairs) = map.get(key).and_then(Value::as_array) else { return Ok(()) };
+    let mut out = serde_json::Map::new();
+    for pair in pairs {
+        let Some([k, v]) = pair.as_array().map(Vec::as_slice) else {
+            return Err(Fault::new(code::INVALID_VALUE, format!("{key}: a pair is [column, value]")));
+        };
+        let name = match name_of(k, model, key)? {
+            Some(name) => name,
+            None => k.as_str().map(str::to_owned).ok_or_else(|| Fault::new(code::INVALID_VALUE, format!("{key}: {k} is not a column or a relation of {model}")))?,
+        };
+        out.insert(name, v.clone());
+    }
+    map.insert(key.into(), Value::Object(out));
+    Ok(())
+}
+
 /// An order as `"-name"` strings. An item is a plain string, or a `$ref` with `desc` and `nulls` beside it.
 fn lower_order(items: &[Value], model: &str, what: &str) -> Result<Vec<Value>, Fault> {
     let mut out = Vec::with_capacity(items.len());
@@ -303,6 +357,9 @@ fn lower_order(items: &[Value], model: &str, what: &str) -> Result<Vec<Value>, F
 fn lower_list(list: &mut serde_json::Map<String, Value>, model: &str, tag: &str, handles: &mut Handles) -> Result<(), Fault> {
     for key in ["columns", "filters", "tabs", "editable", "sortable", "search"] {
         lower_names(list, key, model)?;
+    }
+    for key in ["labels", "empty_fields", "badges"] {
+        lower_pairs(list, key, model)?;
     }
     if let Some(items) = list.get("order").and_then(Value::as_array) {
         let order = lower_order(items, model, "order")?;
@@ -419,8 +476,11 @@ pub struct Config {
     /// The registered resources. None: every concrete model is a read-only resource.
     #[serde(default)]
     pub resources: Vec<ResourceConfig>,
-    /// The time limit of each statement of a request, in ms (PostgreSQL). 0: none. Default 15000.
-    pub statement_timeout_ms: Option<u64>,
+    /// The time limit of each statement of a request, in seconds (PostgreSQL). 0: none. Default 15.
+    pub statement_timeout: Option<f64>,
+    /// True when the host gave the admin a file storage registry: a resource may then list `files`.
+    #[serde(default)]
+    pub storage: bool,
     /// How long an export waits for the client to take the next chunk, in ms. 0: no limit. Default 30000.
     pub export_idle_timeout_ms: Option<u64>,
     /// Widgets for every resource: `Model.field`, `Type.subfield`, or a type name, to a widget name.
@@ -804,6 +864,50 @@ pub struct SwitcherBuild {
 }
 
 impl SwitcherConfig {
+    /// The checks of the switcher that need no brand: the service keys, titles, icons, colours and urls, and `current`.
+    pub fn check(&self) -> Result<(), Fault> {
+        use crate::meta::{color_ok, icon_ok, url_ok};
+        use crate::site::err;
+        let services = self.services.as_deref().unwrap_or(&[]);
+        let current = self.current.as_deref();
+        let mut keys: Vec<&str> = Vec::new();
+        for svc in services {
+            let at = format!("switcher.services[{:?}]", svc.key);
+            if svc.key.is_empty() || svc.key.len() > 32 || !svc.key.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_') {
+                return err(format!("switcher.services: key {:?} must have 1 to 32 characters: lower case letters, digits, - and _", svc.key));
+            }
+            if keys.contains(&svc.key.as_str()) {
+                return err(format!("switcher.services: key {:?} is listed twice", svc.key));
+            }
+            keys.push(&svc.key);
+            if svc.title.trim().is_empty() || svc.title.chars().count() > 40 {
+                return err(format!("{at}: title has 1 to 40 characters"));
+            }
+            if let Some(icon) = &svc.icon {
+                if !icon_ok(icon) {
+                    return err(format!("{at}: icon {icon:?} must be a lucide icon name such as \"server\""));
+                }
+            }
+            if let Some(color) = &svc.color {
+                if !color_ok(color) {
+                    return err(format!("{at}: color {color:?} must be #rgb or #rrggbb"));
+                }
+            }
+            if current != Some(svc.key.as_str()) {
+                match &svc.url {
+                    Some(u) if url_ok(u) && !u.starts_with("http://") => {}
+                    Some(u) => return err(format!("{at}: url {u:?} must be a path that starts with / or an https URL")),
+                    None => return err(format!("{at}: url is needed for a service that is not the current one")),
+                }
+            }
+        }
+        match current {
+            Some(c) if !keys.contains(&c) => err(format!("switcher.current {c:?} is not the key of a service in switcher.services")),
+            None if !services.is_empty() => err("switcher.current is needed when switcher.services is set".to_owned()),
+            _ => Ok(()),
+        }
+    }
+
     /// The keys of `code` and of `file` together. A key in both is an error that names it.
     pub fn merge(code: Option<&SwitcherConfig>, file: Option<&SwitcherConfig>) -> Result<Option<SwitcherConfig>, String> {
         let (a, b) = match (code, file) {

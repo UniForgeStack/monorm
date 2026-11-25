@@ -578,14 +578,6 @@ async def test_an_action_is_a_plain_function_that_a_unit_test_calls_with_no_admi
 def test_a_wrong_action_config_is_an_admin_config_error(world):
     registry, db, models = world
 
-    @admin.action(placement="middle")
-    async def bad_place(ctx, qs):
-        pass
-
-    @admin.action(placement="bulk", confirm="x")
-    async def twice(ctx, qs):
-        pass
-
     class ScopeValue(Expression[bool]):
         def _ir(self, ctx):
             return {"t": "scope", "name": "tenant"}
@@ -598,8 +590,6 @@ def test_a_wrong_action_config_is_an_admin_config_error(world):
         return check
 
     cases = [
-        ({"actions": [bad_place]}, "placement"),
-        ({"actions": [twice, twice]}, "listed twice"),
         ({"actions": [7]}, "an action is a name"),
         ({"bulk_delete": "no"}, "bulk_delete"),
         ({"actions": [bad_can(replace_change=True)]}, "replace_change needs can"),

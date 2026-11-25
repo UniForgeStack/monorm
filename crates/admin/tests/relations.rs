@@ -70,7 +70,7 @@ fn resources(author: Value, book: Value) -> Value {
     author_resource.as_object_mut().unwrap().extend(author.as_object().unwrap().clone());
     let mut book_resource = json!({"model": "Book", "list": {"columns": ["title"], "order": ["id"]}, "relations": {"author": {}, "tags": {}}, "files": ["cover", "attachment"]});
     book_resource.as_object_mut().unwrap().extend(book.as_object().unwrap().clone());
-    json!({"resources": [author_resource, {"model": "Tag", "list": {"columns": ["name"], "order": ["id"], "search": ["name"]}}, book_resource]})
+    json!({"storage": true, "resources": [author_resource, {"model": "Tag", "list": {"columns": ["name"], "order": ["id"], "search": ["name"]}}, book_resource]})
 }
 
 fn config() -> Value {

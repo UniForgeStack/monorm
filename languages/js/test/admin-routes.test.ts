@@ -107,6 +107,12 @@ for (const provider of PROVIDERS) {
     assert.deepEqual(calls, []);
   }));
 
+  test(`a route that is twice or not a function is refused at the call (${provider})`, () => world(provider, async (w) => {
+    const site = await build(w, ["GET", "reports/summary", summary, null]);
+    assert.throws(() => site.route("GET", "reports/summary", summary), (e: Error) => e instanceof AdminConfigError && e.message.includes("registered twice"));
+    assert.throws(() => site.route("GET", "other", 7 as never), (e: Error) => e instanceof AdminConfigError && e.message.includes("needs a function"));
+  }));
+
   test(`a route needs the gate and its permission and a refusal is audited (${provider})`, () => world(provider, async (w) => {
     const site = await build(w, ["GET", "reports/summary", summary, null], ["GET", "reports/{id}", report, "admin.run_report"]);
     const ann = await grant(w.db, w.models, "ann", ["admin.access", "admin.run_report"]);
