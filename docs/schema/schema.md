@@ -170,6 +170,9 @@ END;
 * The `datasource` is optional (Postgres is implied), but Prisma's editor wants one.
   `extensions` pins where an extension goes and which version; extensions the schema
   uses are added anyway. `map:` gives the real name of one that isn't an identifier.
+* The scope extension reads three more `datasource` keys: `scope_prefix = "tenant"`,
+  `scope_bypass = { setting = "tenant.bypass", value = "on" }` (an object accepts `=` or `:` here)
+  and `scope_role_check = true`. See [Scope](../extensions/scope.md).
 * `function name { ... }` is a stand-alone SQL function: `returns` (default `trigger`),
   `args` (the SQL argument list, e.g. `"a integer, b text"`), `language` (default
   `plpgsql`), `volatility` (`immutable` / `stable` / `volatile`), `security_definer`,

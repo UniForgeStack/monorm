@@ -358,6 +358,9 @@ Schema contract 5.10 adds neutral `behavior.write_rules` records and the `insert
 Model rules identify the owning model, operations, optional fields and database predicate, action, layer, skip policy and rule name.
 Schema contract 5.11 adds the optional `ModelIr.managed` flag. It defaults to `true`, and an IR that contains an unmanaged model is stamped 5.11.
 Unmanaged models remain readable and writable. Snapshot version 6 records their ownership so migration planners can leave their tables untouched.
+Schema contract 5.12 adds `scope_settings` to the IR: the prefix, the bypass setting and value, and the role check flag of scope.
+An IR with a non-default value is stamped 5.12.
+The manifest format does not change, and no extension declares 5.12.
 
 A version fits when its major equals the engine major and its minor is at most the engine minor.
 This holds for `schema_contract` and for `abi`, and for the `abi` that the library reports.
