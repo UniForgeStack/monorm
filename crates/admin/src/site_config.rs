@@ -1,7 +1,10 @@
 //! The tagged values of the config wire, lowered to the plain config that `site.rs` reads.
 //!
-//! A host sends a value that holds a host object as a tagged object: `{"$qs": {...}}` is a prepared query set, and
-//! `{"$fn": "<local id>"}` is a host function. Rust derives the host name of each function (`queryset.<M>`,
+//! A host sends a value that holds a host object as a tagged object: `{"$qs": {...}}` is a prepared query set,
+//! `{"$fn": "<local id>"}` is a host function, `{"$ref": {"model", "path"}}` is a column or a relation path, `{"$ir": ir}`
+//! is a condition or an expression of the engine IR (it holds `{"t": "slot", "name", "transform"}` nodes where the host
+//! wrote `param("user")`), and `{"$host": "<type>"}` is a value of a host type that the config does not take.
+//! Rust derives the host name of each function (`queryset.<M>`,
 //! `search.<M>`, `column.<M>.<name>`, with the inline tag `@<Parent>.<Child>[.<via>]` after `<M>` for a page that an
 //! inline wrapper overrides) and returns the table of local id to host name. The binding registers each function
 //! under the name of its id. A value without a tag is the plain config and passes through unchanged.
@@ -19,9 +22,47 @@ use monorm_core::schema::Schema;
 /// The host name of each local function id.
 pub type Handles = BTreeMap<String, String>;
 
-/// The `$qs` flags that a queryset of the admin refuses, with the call that sets each.
-fn refused() -> [(&'static str, String); 5] {
-    [("load", "load()".into()), ("slice", "a slice".into()), ("join", hint(Hint::FromJoin)), ("lock", "lock()".into()), ("without_defaults", hint(Hint::WithoutDefaults))]
+/// The body of a `{"$qs": ...}` value: a prepared query set as the admin takes it. The flags are the calls that the
+/// admin refuses; the host sets each one that its query set holds.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Qs {
+    /// The model of the query set. It must be the model of the resource.
+    pub model: Option<String>,
+    /// The condition of the query set as a `{"$ir": ...}` value. Absent: the query set has no filter, which the admin refuses.
+    pub filter: Option<Value>,
+    /// The order: each item is a plain name, or a `$ref` with `desc` beside it.
+    #[serde(default)]
+    pub order: Vec<Value>,
+    /// The query set loads related rows (`load()`, a field list, `related`, `prefetch`).
+    #[serde(default)]
+    pub load: bool,
+    /// The query set has a limit or an offset.
+    #[serde(default)]
+    pub slice: bool,
+    /// The query set has its own `from` or joins.
+    #[serde(default)]
+    pub join: bool,
+    /// The query set locks rows.
+    #[serde(default)]
+    pub lock: bool,
+    /// The query set drops the model defaults.
+    #[serde(default)]
+    pub without_defaults: bool,
+}
+
+impl Qs {
+    /// The call that the query set holds and the admin refuses.
+    fn refused(&self) -> Option<String> {
+        let flags = [
+            (self.load, "load()".to_owned()),
+            (self.slice, "a slice".to_owned()),
+            (self.join, hint(Hint::FromJoin)),
+            (self.lock, "lock()".to_owned()),
+            (self.without_defaults, hint(Hint::WithoutDefaults)),
+        ];
+        flags.into_iter().find_map(|(set, what)| set.then_some(what))
+    }
 }
 
 /// Lowers the tagged values of `config` in place and returns the function table.
@@ -44,11 +85,10 @@ pub(crate) fn lower(config: &mut Value, schema: &Schema) -> Result<Handles, Faul
     Ok(handles)
 }
 
-/// The tag of a value: `Some((tag, body))` for an object whose first key starts with `$`.
+/// The tag of a value: `Some((tag, body))` for an object with a key that starts with `$`. The other keys are siblings.
 fn tagged(value: &Value) -> Option<(&str, &Value)> {
-    let map = value.as_object()?;
-    let (key, body) = map.iter().next()?;
-    key.starts_with('$').then_some((key.as_str(), body))
+    let (key, body) = value.as_object()?.iter().find(|(key, _)| key.starts_with('$'))?;
+    Some((key.as_str(), body))
 }
 
 fn lower_page(page: &mut Value, model: &str, tag: &str, schema: &Schema, handles: &mut Handles) -> Result<(), Fault> {
@@ -66,19 +106,21 @@ fn lower_page(page: &mut Value, model: &str, tag: &str, schema: &Schema, handles
         }
     }
     if let Some(list) = map.get_mut("list").and_then(Value::as_object_mut) {
-        if let Some(value) = list.get("search_with") {
-            if let Some(name) = host_function(value, format!("search.{model}{tag}"), handles)? {
-                list.insert("search_with".into(), Value::String(name));
-            }
+        lower_list(list, model, tag, handles)?;
+    }
+    if let Some(rules) = map.get_mut("can").and_then(Value::as_object_mut) {
+        for (name, rule) in rules.iter_mut() {
+            *rule = ir_of(rule, &format!("can '{name}'"), Slots::User)?.0;
         }
-        for item in list.get_mut("computed").and_then(Value::as_array_mut).into_iter().flatten() {
-            let Some(item) = item.as_object_mut() else { continue };
-            let name = item.get("name").and_then(Value::as_str).unwrap_or_default().to_owned();
-            if let Some(value) = item.get("function") {
-                if let Some(host) = host_function(value, format!("column.{model}{tag}.{name}"), handles)? {
-                    item.insert("function".into(), Value::String(host));
-                }
-            }
+    }
+    for action in map.get_mut("actions").and_then(Value::as_array_mut).into_iter().flatten() {
+        let Some(action) = action.as_object_mut() else { continue };
+        let name = action.get("name").and_then(Value::as_str).unwrap_or_default().to_owned();
+        if let Some(rule) = action.get_mut("applies_to") {
+            *rule = ir_of(rule, &format!("action '{name}' applies_to"), Slots::None)?.0;
+        }
+        if let Some(rule) = action.get_mut("can") {
+            *rule = ir_of(rule, &format!("action '{name}' can"), Slots::User)?.0;
         }
     }
     if let Some(relations) = map.get_mut("relations").and_then(Value::as_object_mut) {
@@ -132,22 +174,214 @@ fn queryset(model: &str, tag: &str, value: Value, handles: &mut Handles) -> Resu
             Ok((json!({"function": name}), None))
         }
         "$qs" => {
-            let Some(qs) = body.as_object() else { return Err(wrong()) };
-            if let Some(of) = qs.get("model").and_then(Value::as_str).filter(|of| *of != model) {
+            let qs: Qs = serde_json::from_value(body.clone()).map_err(|e| Fault::new(code::INVALID_VALUE, format!("queryset: invalid prepared query set: {e}")))?;
+            if let Some(of) = qs.model.as_deref().filter(|of| *of != model) {
                 return Err(Fault::new(code::INVALID_VALUE, format!("queryset is a query set of {of}")));
             }
-            for (flag, what) in refused() {
-                if qs.get(flag).and_then(Value::as_bool) == Some(true) {
-                    return Err(Fault::new(code::UNSUPPORTED, format!("queryset takes a filter and an order; it does not take {what}")));
-                }
+            if let Some(what) = qs.refused() {
+                return Err(Fault::new(code::UNSUPPORTED, format!("queryset takes a filter and an order; it does not take {what}")));
             }
-            let filter = qs.get("filter").filter(|f| !f.is_null()).ok_or_else(|| Fault::new(code::INVALID_VALUE, "queryset needs a filter"))?;
-            let slots = qs.get("slots").cloned().unwrap_or_else(|| json!([]));
-            let order = qs.get("order").filter(|o| o.as_array().is_some_and(|a| !a.is_empty())).cloned();
-            Ok((json!({"filter": filter, "slots": slots}), order))
+            let filter = qs.filter.as_ref().filter(|f| !f.is_null()).ok_or_else(|| Fault::new(code::INVALID_VALUE, "queryset needs a filter"))?;
+            let (filter, used) = ir_of(filter, "queryset", Slots::User)?;
+            let slots: Vec<&str> = if used { vec!["user"] } else { vec![] };
+            let order = lower_order(&qs.order, model, "queryset order")?;
+            Ok((json!({"filter": filter, "slots": slots}), (!order.is_empty()).then_some(Value::Array(order))))
         }
+        "$host" => Err(Fault::new(code::INVALID_VALUE, format!("queryset takes a prepared query set ({}) or an async function, not a value of type {}", hint(Hint::PreparedQuerySet), type_of(body)))),
         _ => Err(wrong()),
     }
+}
+
+/// The type name that a `{"$host": "<type>"}` value carries.
+fn type_of(body: &Value) -> &str {
+    body.as_str().unwrap_or("unknown")
+}
+
+/// Which request slots a condition takes: none, or `param("user")`, which is parameter 0.
+#[derive(Clone, Copy, PartialEq)]
+enum Slots {
+    None,
+    User,
+}
+
+/// The plain IR of an `{"$ir": ir}` value, and whether it holds the user slot. An untagged value is plain IR already.
+fn ir_of(value: &Value, what: &str, slots: Slots) -> Result<(Value, bool), Fault> {
+    let node = match tagged(value) {
+        Some(("$ir", body)) => body,
+        Some(("$host", t)) => return Err(Fault::new(code::INVALID_VALUE, format!("{what} takes a condition or an expression, not a value of type {}", type_of(t)))),
+        Some((other, _)) => return Err(Fault::new(code::INVALID_VALUE, format!("{what} takes a condition or an expression: {other:?} is not one"))),
+        None => value,
+    };
+    let mut used = false;
+    let ir = walk_ir(node, what, slots, &mut used)?;
+    Ok((ir, used))
+}
+
+fn walk_ir(node: &Value, what: &str, slots: Slots, used: &mut bool) -> Result<Value, Fault> {
+    match node {
+        Value::Array(items) => items.iter().map(|n| walk_ir(n, what, slots, used)).collect::<Result<Vec<_>, _>>().map(Value::Array),
+        Value::Object(map) => {
+            if let Some(t) = map.get("$host") {
+                return Err(Fault::new(code::INVALID_VALUE, format!("{what}: a value of type {} is not a literal of the admin; use an integer, a string or a boolean", type_of(t))));
+            }
+            if map.get("t").and_then(Value::as_str) == Some("slot") {
+                let name = map.get("name").and_then(Value::as_str).unwrap_or_default();
+                if slots == Slots::None {
+                    return Err(Fault::new(code::INVALID_VALUE, format!("{what}: param('{name}') is a placeholder of a prepared query; it takes no request values here")));
+                }
+                if name != "user" || map.get("transform").and_then(Value::as_bool) == Some(true) {
+                    return Err(Fault::new(code::INVALID_VALUE, format!("{what}: takes the params 'user', not param('{name}')")));
+                }
+                *used = true;
+                return Ok(json!({"t": "param", "i": 0}));
+            }
+            map.iter().map(|(k, v)| Ok((k.clone(), walk_ir(v, what, slots, used)?))).collect::<Result<serde_json::Map<_, _>, Fault>>().map(Value::Object)
+        }
+        other => Ok(other.clone()),
+    }
+}
+
+/// The dotted path of a `{"model", "path"}` reference to a column or a relation of `model`.
+fn ref_path(body: &Value, model: &str) -> Result<String, Fault> {
+    let (of, path) = (body.get("model").and_then(Value::as_str), body.get("path").and_then(Value::as_str));
+    let (Some(of), Some(path)) = (of, path) else { return Err(Fault::new(code::INVALID_VALUE, "a reference is {\"model\", \"path\"}")) };
+    if of != model {
+        return Err(Fault::new(code::INVALID_VALUE, format!("{of}.{path} belongs to {of}, not to {model}")));
+    }
+    Ok(path.to_owned())
+}
+
+/// The name that a column or relation position holds. `None` for a plain name, which stays as it is.
+fn name_of(value: &Value, model: &str, what: &str) -> Result<Option<String>, Fault> {
+    match tagged(value) {
+        None => Ok(None),
+        Some(("$ref", _)) if value.as_object().is_some_and(|m| m.len() > 1) => {
+            Err(Fault::new(code::INVALID_VALUE, format!("{what}: a reference of {model} takes no key beside \"$ref\"")))
+        }
+        Some(("$ref", body)) => ref_path(body, model).map(Some),
+        Some(("$host", t)) => Err(Fault::new(code::INVALID_VALUE, format!("{what}: a value of type {} is not a column or a relation of {model}", type_of(t)))),
+        Some((other, _)) => Err(Fault::new(code::INVALID_VALUE, format!("{what}: {other:?} is not a column or a relation of {model}"))),
+    }
+}
+
+/// Replaces each tagged item of the list at `key` by its dotted path.
+fn lower_names(map: &mut serde_json::Map<String, Value>, key: &str, model: &str) -> Result<(), Fault> {
+    for item in map.get_mut(key).and_then(Value::as_array_mut).into_iter().flatten() {
+        if let Some(name) = name_of(item, model, key)? {
+            *item = Value::String(name);
+        }
+    }
+    Ok(())
+}
+
+/// An order as `"-name"` strings. An item is a plain string, or a `$ref` with `desc` and `nulls` beside it.
+fn lower_order(items: &[Value], model: &str, what: &str) -> Result<Vec<Value>, Fault> {
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let Some((tag, body)) = tagged(item) else {
+            out.push(item.clone());
+            continue;
+        };
+        match tag {
+            "$ref" => {
+                if let Some(key) = item.as_object().and_then(|m| m.keys().find(|k| !matches!(k.as_str(), "$ref" | "desc" | "nulls"))) {
+                    return Err(Fault::new(code::INVALID_VALUE, format!("{what} takes no key {key:?} beside \"$ref\"")));
+                }
+                if item.get("nulls").is_some_and(|n| !n.is_null()) {
+                    return Err(Fault::new(code::INVALID_VALUE, "order does not take a NULLs placement"));
+                }
+                let desc = item.get("desc").and_then(Value::as_bool) == Some(true);
+                out.push(Value::String(format!("{}{}", if desc { "-" } else { "" }, ref_path(body, model)?)));
+            }
+            "$host" => return Err(Fault::new(code::INVALID_VALUE, format!("{what} takes columns, not a value of type {}", type_of(body)))),
+            _ => return Err(Fault::new(code::INVALID_VALUE, format!("{what} takes columns, not an expression"))),
+        }
+    }
+    Ok(out)
+}
+
+fn lower_list(list: &mut serde_json::Map<String, Value>, model: &str, tag: &str, handles: &mut Handles) -> Result<(), Fault> {
+    for key in ["columns", "filters", "tabs", "editable", "sortable", "search"] {
+        lower_names(list, key, model)?;
+    }
+    if let Some(items) = list.get("order").and_then(Value::as_array) {
+        let order = lower_order(items, model, "order")?;
+        list.insert("order".into(), Value::Array(order));
+    }
+    if let Some(value) = list.get("date_hierarchy") {
+        match value.as_object().filter(|_| tagged(value).is_none()) {
+            Some(full) => {
+                if let Some(name) = full.get("field").map(|f| name_of(f, model, "date_hierarchy")).transpose()?.flatten() {
+                    if let Some(map) = list.get_mut("date_hierarchy").and_then(Value::as_object_mut) {
+                        map.insert("field".into(), Value::String(name));
+                    }
+                }
+            }
+            None => {
+                if let Some(name) = name_of(value, model, "date_hierarchy")? {
+                    list.insert("date_hierarchy".into(), Value::String(name));
+                }
+            }
+        }
+    }
+    if let Some(value) = list.get("search_with") {
+        if let Some(name) = host_function(value, format!("search.{model}{tag}"), handles)? {
+            list.insert("search_with".into(), Value::String(name));
+        }
+    }
+    for filter in list.get_mut("named_filters").and_then(Value::as_array_mut).into_iter().flatten() {
+        let name = filter.get("name").and_then(Value::as_str).unwrap_or_default().to_owned();
+        for choice in filter.get_mut("choices").and_then(Value::as_array_mut).into_iter().flatten() {
+            if let Some(expr) = choice.get_mut("expr") {
+                *expr = ir_of(expr, &format!("named filter '{name}'"), Slots::None)?.0;
+            }
+        }
+    }
+    for item in list.get_mut("computed").and_then(Value::as_array_mut).into_iter().flatten() {
+        let Some(item) = item.as_object_mut() else { continue };
+        let name = item.get("name").and_then(Value::as_str).unwrap_or_default().to_owned();
+        if let Some(value) = item.get("function") {
+            if let Some(host) = host_function(value, format!("column.{model}{tag}.{name}"), handles)? {
+                item.insert("function".into(), Value::String(host));
+            }
+        }
+        if let Some(expr) = item.get_mut("expr") {
+            *expr = ir_of(expr, &format!("computed '{name}'"), Slots::None)?.0;
+        }
+        if let Some(by) = item.get_mut("order_by") {
+            let at = || Fault::new(code::INVALID_VALUE, format!("computed '{name}': order_by takes a field of {model} or an expression"));
+            match tagged(by) {
+                Some(("$ref", body)) => *by = Value::String(ref_path(body, model)?),
+                Some(("$ir", _)) => *by = ir_of(by, &format!("computed '{name}' order_by"), Slots::None)?.0,
+                Some(_) => return Err(at()),
+                None => {}
+            }
+        }
+    }
+    for item in list.get_mut("aggregates").and_then(Value::as_array_mut).into_iter().flatten() {
+        let Some(item) = item.as_object_mut() else { continue };
+        let name = item.get("name").and_then(Value::as_str).unwrap_or_default().to_owned();
+        if let Some(relation) = item.get("relation") {
+            let at = || Fault::new(code::INVALID_VALUE, format!("aggregate '{name}': relation takes a relation such as {model}.<relation>"));
+            match tagged(relation) {
+                Some(("$ref", body)) => {
+                    let path = ref_path(body, model)?;
+                    item.insert("relation".into(), Value::String(path));
+                }
+                Some(_) => return Err(at()),
+                None => {}
+            }
+        }
+        let relation = item.get("relation").and_then(Value::as_str).unwrap_or_default().to_owned();
+        if let Some(field) = item.get("field").filter(|f| tagged(f).is_some()) {
+            let at = || Fault::new(code::INVALID_VALUE, format!("aggregate '{name}': field takes a field of the relation '{relation}'"));
+            let Some(("$ref", body)) = tagged(field) else { return Err(at()) };
+            let path = ref_path(body, model)?;
+            let Some(field) = path.strip_prefix(&format!("{relation}.")).filter(|f| !f.contains('.')) else { return Err(at()) };
+            item.insert("field".into(), Value::String(field.to_owned()));
+        }
+    }
+    Ok(())
 }
 
 // ---- The config structs: what `site.rs` and the modules read after `lower`. ----

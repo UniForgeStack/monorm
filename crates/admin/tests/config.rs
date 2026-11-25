@@ -74,7 +74,7 @@ fn positive() -> Value {
 }
 
 fn qs(extra: Value) -> Value {
-    let mut body = json!({"model": "Note", "filter": positive(), "slots": []});
+    let mut body = json!({"model": "Note", "filter": positive()});
     body.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
     json!({"$qs": body})
 }
@@ -127,7 +127,7 @@ fn a_wrong_tag_names_the_hint_in_the_spelling_of_the_host() {
     let e = build(json!({"spelling": "camel", "resources": [{"model": "Note", "queryset": 5}]}));
     assert!(e.message.contains("prepared query set"), "{}", e.message);
     let e = build(note(json!({"queryset": {"$host": "str"}})));
-    assert_eq!((e.code, e.message.as_str()), (code::INVALID_VALUE, "Note: queryset takes a prepared query set (Model.objects.filter(...).prepare()) or an async function"));
+    assert_eq!((e.code, e.message.as_str()), (code::INVALID_VALUE, "Note: queryset takes a prepared query set (Model.objects.filter(...).prepare()) or an async function, not a value of type str"));
     let e = build(note(json!({"list": {"search_with": {"$host": "str"}}})));
     assert!(e.message.contains("is not a host function"), "{}", e.message);
 }
@@ -149,7 +149,7 @@ fn book(relations: Value) -> Value {
 
 #[test]
 fn relation_choices_takes_a_query_set_of_the_target() {
-    let body = |model: &str| json!({"$qs": {"model": model, "filter": positive(), "slots": []}});
+    let body = |model: &str| json!({"$qs": {"model": model, "filter": positive()}});
     let e = build(book(json!({"author": {"choices": body("Book")}})));
     assert_eq!((e.code, e.message.as_str()), (code::INVALID_VALUE, "Book: relation \"author\": choices is a query set of Book, not of Author"));
     for choices in [json!({"$fn": "f0"}), json!("all"), json!(5), json!({"$host": "str"})] {
@@ -174,4 +174,67 @@ fn two_functions_with_one_host_name_are_refused() {
     let e = build(config);
     assert_eq!(e.code, code::INVALID_VALUE);
     assert!(e.message.contains("two host functions get the name \"search.Book@Author.Book\""), "{}", e.message);
+}
+
+fn author(list: Value) -> Value {
+    json!({"resources": [{"model": "Author", "list": list}, {"model": "Book"}]})
+}
+
+fn at(model: &str, path: &str) -> Value {
+    json!({"$ref": {"model": model, "path": path}})
+}
+
+#[test]
+fn a_ref_lowers_to_its_path_and_checks_its_model() {
+    let ok = Site::build(schema(), &author(json!({"columns": [at("Author", "id"), "name"], "order": [{"$ref": {"model": "Author", "path": "name"}, "desc": true}]})).to_string());
+    assert!(ok.is_ok(), "{:?}", ok.err());
+    let e = build(author(json!({"columns": [at("Book", "title")]})));
+    assert_eq!((e.code, e.message.as_str()), (code::INVALID_VALUE, "Author: Book.title belongs to Book, not to Author"));
+    let e = build(author(json!({"search": [{"$host": "Q"}]})));
+    assert_eq!((e.code, e.message.as_str()), (code::INVALID_VALUE, "Author: search: a value of type Q is not a column or a relation of Author"));
+}
+
+#[test]
+fn a_ref_takes_no_key_beside_it_except_desc_and_nulls_in_an_order() {
+    // The text puts `desc` first; the tag is found by its `$`, not by its place.
+    let order: Value = serde_json::from_str(r#"[{"desc": true, "$ref": {"model": "Author", "path": "name"}}]"#).unwrap();
+    let ok = Site::build(schema(), &author(json!({"order": order})).to_string());
+    assert!(ok.is_ok(), "{:?}", ok.err());
+    let sibling = json!({"$ref": {"model": "Author", "path": "id"}, "desc": true});
+    let e = build(author(json!({"columns": [sibling]})));
+    assert_eq!(e.message, "Author: columns: a reference of Author takes no key beside \"$ref\"");
+    let e = build(author(json!({"order": [{"$ref": {"model": "Author", "path": "id"}, "asc": true}]})));
+    assert_eq!(e.message, "Author: order takes no key \"asc\" beside \"$ref\"");
+}
+
+#[test]
+fn an_order_takes_columns() {
+    let e = build(author(json!({"order": [{"$ir": {"t": "col", "path": [], "name": "id"}}]})));
+    assert_eq!((e.code, e.message.as_str()), (code::INVALID_VALUE, "Author: order takes columns, not an expression"));
+    let e = build(author(json!({"order": [{"$host": "Q"}]})));
+    assert_eq!(e.message, "Author: order takes columns, not a value of type Q");
+    let e = build(author(json!({"order": [{"$ref": {"model": "Author", "path": "id"}, "nulls": "first"}]})));
+    assert_eq!(e.message, "Author: order does not take a NULLs placement");
+}
+
+#[test]
+fn a_slot_is_the_user_param_and_a_host_value_is_not_a_literal() {
+    let slot = |name: &str, transform: bool| json!({"t": "slot", "name": name, "transform": transform});
+    let can = |rule: Value| note(json!({"can": {"delete": {"$ir": rule}}}));
+    let e = build(can(json!({"t": "cmp", "op": "eq", "l": slot("x", false), "r": {"t": "int", "value": 1}})));
+    assert_eq!((e.code, e.message.as_str()), (code::INVALID_VALUE, "Note: can 'delete': takes the params 'user', not param('x')"));
+    let e = build(can(json!({"t": "cmp", "op": "eq", "l": slot("user", true), "r": {"t": "int", "value": 1}})));
+    assert_eq!(e.code, code::INVALID_VALUE);
+    let e = build(can(json!({"t": "cmp", "op": "eq", "l": {"$host": "Decimal"}, "r": {"t": "int", "value": 1}})));
+    assert!(e.message.contains("a value of type Decimal is not a literal of the admin"), "{}", e.message);
+    let e = build(note(json!({"actions": [{"name": "a", "applies_to": {"$ir": slot("user", false)}}]})));
+    assert!(e.message.contains("takes no request values here"), "{}", e.message);
+}
+
+#[test]
+fn a_query_set_body_takes_its_known_keys_only() {
+    let e = build(note(json!({"queryset": {"$qs": {"model": "Note", "filter": positive(), "slots": []}}})));
+    assert_eq!(e.code, code::INVALID_VALUE);
+    let e = build(note(json!({"queryset": {"$qs": {"model": "Note", "filter": positive(), "lock": true}}})));
+    assert_eq!((e.code, e.message.as_str()), (code::UNSUPPORTED, "Note: queryset takes a filter and an order; it does not take lock()"));
 }
