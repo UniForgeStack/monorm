@@ -55,6 +55,10 @@ class PlanTest(unittest.TestCase):
         for path in ("scripts/check-thin-bindings.py", "scripts/tests/test_check_thin_bindings.py"):
             self.assertEqual(plan(path), {"names", "python"}, path)
 
+    def test_admin_type_files_run_the_stale_check(self) -> None:
+        for path in ("scripts/gen-admin-types.py", "scripts/tests/test_admin_types.py", "languages/js/src/admin-types.ts"):
+            self.assertEqual(plan(path), {"names", "rust", "python", "node", "packages"}, path)
+
     def test_typescript_only(self) -> None:
         self.assertEqual(plan("languages/js/src/client.ts"), {"names", "node", "create-monorm", "packages"})
         self.assertEqual(plan("languages/js/test/x.test.ts"), {"names", "node", "test-twins"})

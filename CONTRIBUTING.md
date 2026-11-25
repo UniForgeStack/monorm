@@ -56,6 +56,7 @@ MONORM_BENCH_SMOKE=1 python3 -m unittest scripts/tests/test_internal_bench.py   
 python3 -m unittest scripts/tests/test_ci_affected.py   # the map from changed files to the CI check groups
 python3 -m unittest scripts/tests/test_check_test_twins.py && python3 scripts/check-test-twins.py   # every Python test case has a TypeScript twin and the other way round, or an entry with a reason in languages/test-twins.toml
 python3 -m unittest scripts/tests/test_check_thin_bindings.py && python3 scripts/check-thin-bindings.py   # no SQL statement text and no admin config shape check in the language bindings: the Rust core builds all SQL and checks the config
+python3 -m unittest scripts/tests/test_admin_types.py   # the generated admin config types (`_admin_types.py`, `admin-types.ts`) equal a fresh `python3 scripts/gen-admin-types.py` from the Rust structs
 python3 scripts/ci/check_links.py   # every relative link in a Markdown file points to a file in the tree
 python3 scripts/release/versions.py check --allow-tbd   # every version site agrees with pyproject.toml
 ```
