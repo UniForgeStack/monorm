@@ -155,6 +155,22 @@ async def test_an_unknown_or_unfit_filter_field_is_a_build_error(world):
         site.check()
 
 
+async def test_a_column_of_another_model_or_a_host_value_in_a_config_column_is_a_build_error(world):
+    C, A = world.Comment, world.Author
+    cases = [
+        ({"columns": [A.name]}, "belongs to FltAuthor, not to FltComment"),
+        ({"order": [A.id]}, "belongs to FltAuthor, not to FltComment"),
+        ({"columns": [5]}, "a value of type int is not a column or a relation of FltComment"),
+        ({"order": [5]}, "order takes columns, not a value of type int"),
+    ]
+    for list_config, text in cases:
+        site = admin.Admin(world.registry)
+        site.register(C, {"list": list_config})
+        site.register(A)
+        with pytest.raises(admin.AdminConfigError, match=text):
+            site.check()
+
+
 async def test_a_named_filter_has_a_default_and_an_all_choice(world):
     C = world.Comment
     named = [

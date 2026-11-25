@@ -434,9 +434,9 @@ def _name(model: type[Model], ref: Any) -> str:
     return _label(model, ref)
 
 
-def _ir(model: type[Model], node: Any, what: str, *, user_slot: bool = False) -> Any:
-    """The engine IR of an expression or condition, with literals inlined."""
-    params: list[Any] = SlotParams() if user_slot else []
+def _ir(model: type[Model], node: Any, what: str, *, wire: bool = False) -> Any:
+    """The engine IR of an expression or condition, with literals inlined. ``wire`` sends it as ``{"$ir": ...}``, with a ``slot`` node for each ``param(...)``; Rust checks the slots."""
+    params: list[Any] = SlotParams() if wire else []
     if isinstance(node, Condition):
         node = resolve_null_rule(node)
     elif not isinstance(node, Expression):
@@ -446,16 +446,19 @@ def _ir(model: type[Model], node: Any, what: str, *, user_slot: bool = False) ->
     except QueryError as e:
         raise AdminConfigError(f"{model.__name__}: {what}: {e}") from None
     where = f"{model.__name__}: {what}"
-    return _slot_ir(ir, params, [], where) if user_slot else _inline(ir, params, where)
+    inlined = _inline(ir, params, where, wire)
+    return {"$ir": inlined} if wire else inlined
 
 
-def _inline(ir: Any, params: list[Any], what: str) -> Any:
+def _inline(ir: Any, params: list[Any], what: str, wire: bool = False) -> Any:
     if isinstance(ir, list):
-        return [_inline(item, params, what) for item in ir]
+        return [_inline(item, params, what, wire) for item in ir]
     if not isinstance(ir, dict):
         return ir
     if ir.get("t") == "param":
         value = params[ir["i"]]
+        if wire and isinstance(value, _Slot):
+            return {"t": "slot", "name": value.name, "transform": value.transform is not None}
         if value is None:
             return {"t": "null"}
         if isinstance(value, bool):
@@ -464,8 +467,73 @@ def _inline(ir: Any, params: list[Any], what: str) -> Any:
             return {"t": "int", "value": value}
         if isinstance(value, str):
             return {"t": "text", "value": value}
+        if wire:
+            return {"$host": type(value).__name__}
         raise AdminConfigError(f"{what}: a value of type {type(value).__name__} is not a literal of the admin; use an integer, a string or a boolean")
-    return {k: _inline(v, params, what) for k, v in ir.items()}
+    return {k: _inline(v, params, what, wire) for k, v in ir.items()}
+
+
+def _ref(ref: Any) -> Any:
+    """A column or relation of a model on the wire: a name stays, a column or relation is ``$ref``, any other value is ``$host``. Rust checks the model and the name."""
+    if isinstance(ref, str):
+        return ref
+    if isinstance(ref, RelationPath):
+        return {"$ref": {"model": ref._root.__name__, "path": ".".join(ref._path)}}
+    if isinstance(ref, ColumnRef):
+        return {"$ref": {"model": ref._root.__name__, "path": ".".join((*ref._path, ref._field.name))}}
+    return {"$host": type(ref).__name__}
+
+
+def _order_item(model: type[Model], item: Any) -> Any:
+    """An order item on the wire: the column, with ``desc`` and ``nulls`` beside it. Rust refuses an expression and a placement."""
+    expr, desc, nulls = (item.expr, item.desc, item.nulls) if isinstance(item, Ordering) else (item, False, None)
+    by = _ir(model, expr, "order", wire=True) if isinstance(expr, Expression) and not isinstance(expr, ColumnRef) else _ref(expr)
+    if not isinstance(by, dict) or not (desc or nulls):
+        return by
+    return {**by, **({"desc": True} if desc else {}), **({"nulls": nulls} if nulls else {})}
+
+
+# The config positions that hold a host object, and what each holds. The call sites send each one through `_host`.
+_HOST_FIELDS: dict[str, str] = {
+    "list.columns": "column",
+    "list.filters": "column",
+    "list.tabs": "column",
+    "list.editable": "column",
+    "list.sortable": "column",
+    "list.search": "column",
+    "list.date_hierarchy": "column",
+    "list.date_hierarchy.field": "column",
+    "list.order": "order",
+    "list.aggregates.relation": "relation",
+    "list.aggregates.field": "column",
+    "list.computed.order_by": "order_by",
+    "list.computed.expr": "ir",
+    "list.named_filters.choices.condition": "ir",
+    "list.search_with": "function",
+    "list.computed.function": "function",
+    "can": "ir",
+    "actions.can": "ir",
+    "actions.applies_to": "ir",
+    "queryset": "queryset",
+    "relations.choices": "queryset",
+}
+
+
+def _host(model: type[Model], path: str, value: Any, what: str = "", fns: _Fns | None = None, maker: Callable[[], Any] | None = None) -> Any:
+    """The wire form of the value at config position ``path``, by its kind in ``_HOST_FIELDS``."""
+    kind = _HOST_FIELDS[path]
+    if kind == "column":
+        return _ref(value)
+    if kind == "relation":
+        return _ref(value) if isinstance(value, (str, RelationPath)) else {"$host": type(value).__name__}
+    if kind == "order":
+        return _order_item(model, value)
+    if kind == "order_by":
+        return _ref(value) if isinstance(value, ColumnRef) else _ir(model, value, what, wire=True) if isinstance(value, Expression) else {"$host": type(value).__name__}
+    if kind == "ir":
+        return _ir(model, value, what, wire=True)
+    assert fns is not None
+    return _queryset(model, value, fns) if kind == "queryset" else fns.register(cast(Callable[[], Any], maker))
 
 
 class _Fns:
@@ -488,19 +556,13 @@ def _computed(model: type[Model], items: Sequence[Mapping[str, Any]], fns: _Fns)
     for item in items:
         entry = {k: v for k, v in item.items() if k not in ("expr", "function", "order_by")}
         if item.get("order_by") is not None:
-            by = item["order_by"]
-            if isinstance(by, ColumnRef):
-                entry["order_by"] = _label(model, by)
-            elif isinstance(by, Expression):
-                entry["order_by"] = _ir(model, by, f"computed {item.get('name')!r} order_by")
-            else:
-                raise AdminConfigError(f"{model.__name__}: computed {item.get('name')!r}: order_by takes a field of {model.__name__} or an expression")
+            entry["order_by"] = _host(model, "list.computed.order_by", item["order_by"], f"computed {item.get('name')!r} order_by")
         if (item.get("expr") is None) == (item.get("function") is None):
             raise AdminConfigError(f"{model.__name__}: computed {item.get('name')!r} sets expr or function, one of them")
         if item.get("expr") is not None:
-            entry["expr"] = _ir(model, item["expr"], f"computed {item.get('name')!r}")
+            entry["expr"] = _host(model, "list.computed.expr", item["expr"], f"computed {item.get('name')!r}")
         else:
-            entry["function"] = fns.register(partial(_batch_host, model, item["function"]))
+            entry["function"] = _host(model, "list.computed.function", item["function"], fns=fns, maker=partial(_batch_host, model, item["function"]))
         out.append(entry)
     return out
 
@@ -509,16 +571,10 @@ def _aggregates(model: type[Model], items: Sequence[Mapping[str, Any]]) -> list[
     out = []
     for item in items:
         entry: dict[str, Any] = {k: v for k, v in item.items() if k not in ("relation", "fn", "field")}
-        relation = item["relation"]
-        if not isinstance(relation, RelationPath):
-            raise AdminConfigError(f"{model.__name__}: aggregate {item.get('name')!r}: relation takes a relation such as {model.__name__}.<relation>")
-        entry["relation"] = _name(model, relation)
+        entry["relation"] = _host(model, "list.aggregates.relation", item["relation"])
         entry["fn"] = item["fn"]
         if item.get("field") is not None:
-            field = item["field"]
-            if not isinstance(field, ColumnRef) or field._root is not model or field._path != relation._path:
-                raise AdminConfigError(f"{model.__name__}: aggregate {item.get('name')!r}: field takes a field of the relation {entry['relation']!r}")
-            entry["field"] = field._field.name
+            entry["field"] = _host(model, "list.aggregates.field", item["field"])
         out.append(entry)
     return out
 
@@ -528,7 +584,7 @@ def _named(model: type[Model], items: Sequence[Mapping[str, Any]]) -> list[dict[
     for item in items:
         entry = {k: v for k, v in item.items() if k != "choices"}
         entry["choices"] = [
-            {**{k: v for k, v in c.items() if k != "condition"}, "expr": _ir(model, c["condition"], f"named filter {item.get('name')!r}")}
+            {**{k: v for k, v in c.items() if k != "condition"}, "expr": _host(model, "list.named_filters.choices.condition", c["condition"], f"named filter {item.get('name')!r}")}
             for c in item["choices"]
         ]
         out.append(entry)
@@ -541,8 +597,8 @@ def _date_hierarchy(model: type[Model], value: Any) -> Any:
             raise AdminConfigError(f"{model.__name__}: unknown date_hierarchy option {unknown[0]!r}")
         if "field" not in value:
             raise AdminConfigError(f"{model.__name__}: date_hierarchy needs a field")
-        return {**value, "field": _name(model, value["field"])}
-    return _name(model, value)
+        return {**value, "field": _host(model, "list.date_hierarchy.field", value["field"])}
+    return _host(model, "list.date_hierarchy", value)
 
 
 def _list(model: type[Model], config: Mapping[str, Any], fns: _Fns) -> dict[str, Any]:
@@ -550,10 +606,10 @@ def _list(model: type[Model], config: Mapping[str, Any], fns: _Fns) -> dict[str,
         raise AdminConfigError(f"{model.__name__}: unknown list option {unknown[0]!r}")
     out: dict[str, Any] = {}
     if "columns" in config:
-        out["columns"] = [_name(model, c) for c in config["columns"]]
+        out["columns"] = [_host(model, "list.columns", c) for c in config["columns"]]
     for key in ("filters", "tabs", "editable"):
         if key in config:
-            out[key] = [_name(model, c) for c in config[key]]
+            out[key] = [_host(model, f"list.{key}", c) for c in config[key]]
     if "named_filters" in config:
         out["named_filters"] = _named(model, config["named_filters"])
     if "computed" in config:
@@ -570,24 +626,14 @@ def _list(model: type[Model], config: Mapping[str, Any], fns: _Fns) -> dict[str,
     if "badges" in config:
         out["badges"] = {_name(model, k): {_badge_value(model, v): colour for v, colour in map_.items()} for k, map_ in config["badges"].items()}
     if "order" in config:
-        order = []
-        for item in config["order"]:
-            if isinstance(item, Ordering):
-                if not isinstance(item.expr, ColumnRef):
-                    raise AdminConfigError(f"{model.__name__}: order takes columns, not {item.expr!r}")
-                if item.nulls is not None:
-                    raise AdminConfigError(f"{model.__name__}: order does not take a NULLs placement")
-                order.append(("-" if item.desc else "") + _label(model, item.expr))
-            else:
-                order.append(_label(model, item))
-        out["order"] = order
+        out["order"] = [_host(model, "list.order", item) for item in config["order"]]
     if "page_size" in config:
         out["page_size"] = config["page_size"]
     for key in ("sortable", "search"):
         if key in config:
-            out[key] = [_label(model, c) for c in config[key]]
+            out[key] = [_host(model, f"list.{key}", c) for c in config[key]]
     if "search_with" in config:
-        out["search_with"] = fns.register(partial(_search_host, model, config["search_with"]))
+        out["search_with"] = _host(model, "list.search_with", config["search_with"], fns=fns, maker=partial(_search_host, model, config["search_with"]))
     return out
 
 
@@ -598,27 +644,6 @@ def _badge_value(model: type[Model], value: Any) -> str:
     if isinstance(value, (str, int)):
         return str(value)
     raise AdminConfigError(f"{model.__name__}: a badge value is a string, an integer or a boolean, not {value!r}")
-
-
-_SLOTS = ("user",)
-
-
-def _slot_ir(ir: Any, params: list[Any], slots: list[str], where: str) -> Any:
-    """The IR of a filter with request slots: a ``param("user")`` becomes slot ``i`` and a literal goes inline."""
-    if isinstance(ir, list):
-        return [_slot_ir(item, params, slots, where) for item in ir]
-    if not isinstance(ir, dict):
-        return ir
-    if ir.get("t") == "param":
-        value = params[ir["i"]]
-        if not isinstance(value, _Slot):
-            return _inline(ir, params, where)
-        if value.name not in _SLOTS or value.transform is not None:
-            raise AdminConfigError(f"{where}: takes the params {', '.join(repr(n) for n in _SLOTS)}, not {value!r}")
-        if value.name not in slots:
-            slots.append(value.name)
-        return {"t": "param", "i": slots.index(value.name)}
-    return {k: _slot_ir(v, params, slots, where) for k, v in ir.items()}
 
 
 def _queryset(model: type[Model], config: Any, fns: _Fns) -> dict[str, Any]:
@@ -647,14 +672,9 @@ def _queryset(model: type[Model], config: Any, fns: _Fns) -> dict[str, Any]:
         filters = [resolve_null_rule(f)._ir(ctx) for f in qs._filters]
     except QueryError as e:
         raise AdminConfigError(f"{model.__name__}: queryset: {e}") from None
-    slots: list[str] = []
-    irs = [_slot_ir(f, params, slots, f"{model.__name__}: queryset") for f in filters]
-    body["filter"] = irs[0] if len(irs) == 1 else {"t": "and", "items": irs}
-    body["slots"] = slots
-    order = [("-" if o.desc else "") + _label(model, o.expr) for o in qs._order if isinstance(o.expr, ColumnRef)]
-    if len(order) != len(qs._order):
-        raise AdminConfigError(f"{model.__name__}: queryset order takes columns")
-    body["order"] = order
+    irs = [_inline(f, params, f"{model.__name__}: queryset", True) for f in filters]
+    body["filter"] = {"$ir": irs[0] if len(irs) == 1 else {"t": "and", "items": irs}}
+    body["order"] = [_order_item(model, o) for o in qs._order]
     return {"$qs": body}
 
 
@@ -679,7 +699,7 @@ def _is_prepared(value: Any) -> bool:
 
 
 def _can(model: type[Model], rules: Mapping[Any, Any]) -> dict[str, Any]:
-    return {name: _ir(model, rule, f"can {name!r}", user_slot=True) for name, rule in rules.items()}
+    return {name: _host(model, "can", rule, f"can {name!r}") for name, rule in rules.items()}
 
 
 def _key_cells(model: type[Model], row: Any) -> list[Any]:
@@ -766,7 +786,7 @@ def _relations(name: str, model: type[Model], value: Any, fns: _Fns) -> dict[str
                 raise AdminConfigError(f"{name}: relations[{rel_name!r}].create is True or False")
             entry["create"] = options["create"]
         if "choices" in options:
-            entry["choices"] = _queryset(relation.target, options["choices"], fns)
+            entry["choices"] = _host(relation.target, "relations.choices", options["choices"], fns=fns)
         out[rel_name] = entry
     return out
 
@@ -1009,9 +1029,9 @@ def _actions_json(name: str, model: type[Model], items: Any) -> list[dict[str, A
             if d.inputs:
                 entry["inputs"] = [i.json() for i in d.inputs]
             if d.applies_to is not None:
-                entry["applies_to"] = _ir(model, d.applies_to, f"action {d.name!r} applies_to")
+                entry["applies_to"] = _host(model, "actions.applies_to", d.applies_to, f"action {d.name!r} applies_to")
             if d.can is not None:
-                entry["can"] = _ir(model, d.can, f"action {d.name!r} can", user_slot=True)
+                entry["can"] = _host(model, "actions.can", d.can, f"action {d.name!r} can")
             entry["replace_change"] = d.replace_change
         if entry["name"] in seen:
             raise AdminConfigError(f"{name}: action {entry['name']!r} is listed twice")
@@ -1160,7 +1180,7 @@ class Admin:
         if "list" in config:
             resource["list"] = _list(model, config["list"], fns)
         if "queryset" in config:
-            resource["queryset"] = _queryset(model, config["queryset"], fns)
+            resource["queryset"] = _host(model, "queryset", config["queryset"], fns=fns)
         if "can" in config:
             resource["can"] = _can(model, config["can"])
         if "check_messages" in config:
