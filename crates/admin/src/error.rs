@@ -106,7 +106,7 @@ pub fn hint(h: Hint) -> String {
 }
 
 /// `bulk_delete` as `bulkDelete`, each dotted part on its own.
-fn spell(key: &str, spelling: Spelling) -> String {
+pub(crate) fn spell(key: &str, spelling: Spelling) -> String {
     if spelling == Spelling::Snake {
         return key.to_owned();
     }

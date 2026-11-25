@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 
 use crate::packages::Packages;
 use crate::permissions::Op;
-use crate::error::Fault;
+use crate::error::{code, Fault};
 use crate::site::{config_err, err, err_in, Column};
 use crate::write::{has_default, writable};
 use crate::site_config::{SectionConfig};
@@ -224,7 +224,13 @@ fn sections(name: &str, which: &str, layout: Option<&Value>, fields: &[&Column])
     let mut out = Vec::new();
     let mut seen = BTreeSet::new();
     for s in layout.map(|v| v.as_array().map(Vec::as_slice).unwrap_or_default()).unwrap_or_default() {
-        let c: SectionConfig = serde_json::from_value(s.clone()).map_err(|e| config_err(format!("{name}: form {which}: {e}")))?;
+        let c: SectionConfig = serde_json::from_value(s.clone()).map_err(|e| {
+            let text = e.to_string();
+            match crate::site::unknown_field_key(&text) {
+                Some(key) => Fault::new(code::UNKNOWN_OPTION, format!("{name}: unknown section option '{key}'")),
+                None => Fault::new(code::INVALID_VALUE, format!("{name}: form {which}: {text}")),
+            }
+        })?;
         if c.fields.is_empty() {
             return err_in(name, format!("form {which}: a section has no fields"));
         }
