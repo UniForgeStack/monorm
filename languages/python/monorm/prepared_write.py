@@ -19,11 +19,11 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from .db import resolve, scope_index, scope_params, scope_shape, scope_values
 from .errors import QueryError
-from .expr import Param, SlotParams, _Slot
+from .expr import Expression, IRContext, Param, SlotParams, _Slot
 from .inspection import QueryInspection, _native as _inspection_native
 from .protection import allowed_writes
 from .query import _Compiled
-from .write import InsertMany, _Call
+from .write import InsertMany, _Call, assignments
 
 if TYPE_CHECKING:
     from .query import QuerySet
@@ -203,6 +203,8 @@ class ManyRows:
             self._shape(rows)
         if self.keys:
             self._check_keys(cells)
+            if any(isinstance(c, Expression) for cell in cells for c in cell):
+                raise TypeError("a prepared update_many takes plain values; use update_values or an unprepared update_many()")
         return cells
 
     def _check_keys(self, cells: list[Any]) -> None:
@@ -341,6 +343,7 @@ class PreparedRows(Generic[R_co]):
             text = engine.inspect_update_many(
                 c.model, c.fields, rows, json.dumps(options["filters"]), params, c.batch, returning,
                 model_fields=options.get("model_fields"), without_defaults=json.dumps(options.get("without_defaults", False)),
+                many=(json.dumps({"update_values": options["update_values"]}), [], []) if options.get("update_values") else None,
             )
         return QueryInspection._from_json(text)
 
@@ -383,6 +386,8 @@ def prepare_update_many(stmt: Any, shape: str) -> PreparedRows[Any]:
     if "with" in ir:
         raise QueryError("update_many() filters can't read CTEs")
     options = {"model_fields": stmt._names, "without_defaults": qs._without_defaults}
+    if stmt._set_values:
+        options["update_values"] = assignments(qs.model, stmt._set_values, IRContext(qs.model, params))
     compiled = _CompiledRows(
         "update_many", qs.model._meta.name, list(stmt._fields), options, ir["filters"], params, shape != "count", stmt._batch_size
     )

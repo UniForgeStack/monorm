@@ -8,6 +8,10 @@ from typing import Any, Literal, final
 class _Default: ...
 
 DEFAULT: _Default
+
+# What an update_many adds to its plain rows: the JSON document of expressions and update_values,
+# the shape of each row, and the slot values of each row.
+NativeMany = tuple[str, list[int], list[list[Any]]]
 OPEN_INDEX: int
 
 class DatabaseError(Exception):
@@ -97,6 +101,7 @@ class Schema:
         returning: bool = False,
         model_fields: list[str] | None = None,
         without_defaults: str = "false",
+        many: NativeMany | None = None,
     ) -> str: ...
     def __init__(self, schema_json: str, classes: dict[str, type] | None = None, packages: dict[str, str] | None = None) -> None: ...  # no `packages`: hook bindings stay unresolved
     def validate_insert(self, model: str, fields: list[str], rows: list[list[Any]], allowed: list[str]) -> None: ...
@@ -115,6 +120,7 @@ class Schema:
         params: list[Any] = ...,
         batch_size: int | None = None,
         disable: list[str] = ...,
+        many: NativeMany | None = None,
     ) -> list[str]: ...
     def ddl(self) -> list[str]: ...
     def snapshot(self) -> str: ...
@@ -232,6 +238,7 @@ class Engine:
         returning: bool = False,
         model_fields: list[str] | None = None,
         without_defaults: str = "false",
+        many: NativeMany | None = None,
     ) -> str: ...
     def prefetch(
         self,
@@ -320,6 +327,7 @@ class Engine:
         allowed: Sequence[str] = ...,
         trace: Trace | None = None,
         model_fields: list[str] | None = None,
+        many: NativeMany | None = None,
     ) -> Awaitable[Any]: ...
     def begin(self, tx: Transaction | None = None, isolation: str | None = None, timeout: float | None = None) -> Awaitable[Transaction]: ...
     def advisory_lock(

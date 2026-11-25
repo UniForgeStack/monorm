@@ -1370,7 +1370,13 @@ class QuerySet(Generic[M]):
             return adapters.PendingUpdate(self, checked, pending)
         return Update.build(self, checked)
 
-    def update_many(self, rows: Iterable[Mapping[str, Any]] | Param, *, batch_size: int | None = None) -> UpdateMany[M]:
+    def update_many(
+        self,
+        rows: Iterable[Mapping[str, Any]] | Param,
+        *,
+        batch_size: int | None = None,
+        update_values: Mapping[str, Any] | None = None,
+    ) -> UpdateMany[M]:
         """``UPDATE`` each row to its own values: ``rows`` are dicts with the primary key
         and the fields to set (the same fields in every row)::
 
@@ -1380,14 +1386,18 @@ class QuerySet(Generic[M]):
         ``batch_size`` rows (by default as many as fit), all in one transaction.
         ``await`` gives the number of rows updated; ``.returning()`` gives the rows.
 
+        A cell may be an expression over the model's own columns (``{"id": 1, "views": Post.views + 5}``).
+        ``update_values`` is a fixed expression map for every row; ``excluded(Post.views)`` in it reads
+        the row's value of that field, and a field in both is set by ``update_values``.
+
         ``param("rows", fields=(Post.id, Post.title))`` as ``rows`` is for ``.prepare()``."""
         self._standalone()
         if isinstance(rows, Param):
-            return UpdateMany(self, rows, batch_size)
+            return UpdateMany(self, rows, batch_size, update_values)
         checked, pending = adapters.split_rows(self._model, rows)
         if pending:
-            return adapters.PendingUpdateMany(self, checked, pending, batch_size)
-        return UpdateMany(self, checked, batch_size)
+            return adapters.PendingUpdateMany(self, checked, pending, batch_size, update_values)
+        return UpdateMany(self, checked, batch_size, update_values)
 
     def delete(self) -> Delete[M]:
         """``DELETE`` every matching row. ``await`` gives the number of rows deleted;

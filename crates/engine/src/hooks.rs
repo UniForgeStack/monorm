@@ -227,7 +227,10 @@ pub fn insert_rows(model: &Model, map: &[Option<usize>], rows: &mut [Vec<Option<
 }
 
 /// Runs the hooks on the rows of an `update_many`; slot 0 is the key.
-pub fn update_rows(model: &Model, map: &[Option<usize>], rows: &mut [Vec<Value>], params: &dyn Params) -> Result<()> {
+pub fn update_rows<V>(model: &Model, map: &[Option<usize>], rows: &mut [Vec<V>], params: &dyn Params) -> Result<()>
+where
+    [V]: Slots,
+{
     let Some(plan) = model.hooks.as_deref() else { return Ok(()) };
     let contexts = Contexts::new(params);
     rows.iter_mut().try_for_each(|r| {

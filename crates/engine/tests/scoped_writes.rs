@@ -127,6 +127,18 @@ fn update_many_rows_must_keep_the_scope() {
     assert!(plan(vec![row(8)], &Ctx::shop(7).open()).is_ok());
 }
 
+#[test]
+fn update_many_refuses_an_expression_for_the_scope_column() {
+    let schema = schema();
+    let expr: monorm_core::ir::Expr = serde_json::from_value(serde_json::json!({"t":"col","path":[],"name":"total"})).unwrap();
+    let extras = exec::ManyExtras { rows: vec![(vec![None, Some(expr)], vec![])], update_values: vec![] };
+    let fields = ["id", "shop_id"].map(String::from);
+    let plan = |ctx: &Ctx| exec::plan_update_many_with(&schema, Target::new(Dialect::Sqlite), "Order", &fields, vec![vec![Value::BigInt(Some(1)), Value::Int(None)]], &extras, &[], ctx, false, None, None, &Default::default());
+    let error = plan(&Ctx::shop(7)).err().expect("the write is refused").to_string();
+    assert!(error.contains("shop_id"), "{error}");
+    assert!(plan(&Ctx::shop(7).open()).is_ok());
+}
+
 #[tokio::test]
 async fn a_filled_insert_stores_the_scope_value() {
     let schema = schema();

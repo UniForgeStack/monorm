@@ -180,7 +180,10 @@ impl Writable {
     pub fn rows(schema: &Schema, spec: &RowsSpec) -> Result<Self> {
         match &spec.kind {
             RowsKind::Insert(conflict) => Self::insert(schema, &spec.model, conflict.as_ref()),
-            RowsKind::UpdateMany(_) => Self::update_many(schema, &spec.model, &spec.fields),
+            RowsKind::UpdateMany(_, update_values) => {
+                let fields: Vec<String> = spec.fields.iter().cloned().chain(update_values.iter().map(|a| a.field.clone())).collect();
+                Self::update_many(schema, &spec.model, &fields)
+            }
         }
     }
 

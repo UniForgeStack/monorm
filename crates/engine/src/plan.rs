@@ -38,8 +38,11 @@ use monorm_core::schema::{Model, Schema};
 use monorm_core::writes::{AssignValue, WriteKind as AssignKind};
 
 mod compound;
+mod many;
 mod nested;
 mod update;
+pub use many::ManyChunk;
+use many::{check_value_expr, RowCell, RowSource};
 use update::{FromItem, FromJoin, RowUpdate};
 
 const NULL_ONLY_USE: &str = "a field that holds opaque bytes (such as a proto field) can only be tested with IS NULL or IS NOT NULL";
@@ -960,6 +963,8 @@ pub struct Planner<'s> {
     /// Paths of the joins whose ON carries a default filter.
     filtered_joins: Vec<Vec<String>>,
     root_filtered: bool,
+    /// Set while an `update_many` row expression or `update_values` is planned.
+    row_source: Option<RowSource>,
 }
 
 impl<'s> Planner<'s> {
@@ -1006,6 +1011,7 @@ impl<'s> Planner<'s> {
             policy_bypass: Bypass::default(),
             filtered_joins: vec![],
             root_filtered: false,
+            row_source: None,
         };
         p.root = p.model_idx(model)?;
         p.source = match from {
@@ -1987,7 +1993,10 @@ impl<'s> Planner<'s> {
             },
             Expr::Null => SExpr::cust("NULL"),
             Expr::Object { .. } => return Err(Error::query("an object value only compares with, or is assigned to, a nested field")),
-            Expr::Param { i } => bind(self.params.value(self.param(*i)?, hint.ty)?, hint.field),
+            Expr::Param { i } => match self.row_source.as_ref().and_then(|s| s.slots.as_ref()) {
+                Some(slots) => self.row_cell(slots.get(*i).ok_or_else(|| Error::query("a row expression reads a value that the row lacks"))?, &hint),
+                None => bind(self.params.value(self.param(*i)?, hint.ty)?, hint.field),
+            },
             Expr::Scope { name } => {
                 let value = self.params.value(self.scope_param(name)?, hint.ty)?;
                 if !value.is_some() {
@@ -1998,9 +2007,13 @@ impl<'s> Planner<'s> {
             Expr::Const { value } => SExpr::val(*value),
             Expr::Int { value } => SExpr::cust(value.to_string()),
             Expr::Text { value } => bind(sea_query::Value::from(value.clone()), hint.field),
+            Expr::Excluded { name } if self.row_source.is_some() => {
+                let cell = self.row_source.as_ref().and_then(|s| s.excluded.iter().find(|(n, _)| n == name)).and_then(|(_, c)| c.as_ref());
+                self.row_cell(cell.ok_or_else(|| Error::query(format!("excluded({name}) needs {name} in the rows")))?, &hint)
+            }
             Expr::Excluded { name } => {
                 if !self.allow_excluded {
-                    return Err(Error::query("excluded() can only be used in on_conflict(..., update=True)"));
+                    return Err(Error::query("excluded() can only be used in on_conflict(..., update=True) and in the update_values of update_many()"));
                 }
                 self.reject_computed(self.model(self.root), name)?;
                 let f = self.model(self.root).field(name).map_err(query_err)?;
@@ -3484,6 +3497,14 @@ impl<'s> Planner<'s> {
         self.set_values(&q.set)
     }
 
+    /// A value of the `update_many` row in the statement.
+    fn row_cell(&self, cell: &RowCell, hint: &Hint) -> SExpr {
+        match cell {
+            RowCell::Column(n) => col("v", &format!("column{n}")),
+            RowCell::Bound(v) => bind(v.clone(), hint.field),
+        }
+    }
+
     /// `SET` values in `q.set` order, after the model's hook checks.
     fn set_values(&mut self, set: &[Assignment]) -> Result<Vec<SExpr>> {
         let root = self.model(self.root);
@@ -4603,7 +4624,7 @@ pub(crate) fn insert_statement(
 }
 
 /// `UPDATE ... SET` each row to its own values, matched by primary key, as one
-/// statement per chunk of `rows`.
+/// statement per chunk in `chunks`.
 ///
 /// `fields[0]` is the primary key, the rest are the fields set; each row holds a value
 /// per field. Where the dialect can, it joins a `VALUES` list:
@@ -4614,15 +4635,18 @@ pub(crate) fn insert_statement(
 /// ```
 ///
 /// otherwise it uses `SET title = CASE WHEN posts.id = $1 THEN $2 ... END ... WHERE
-/// posts.id IN (...)`. `filters` (planned against `params`) further restrict the rows.
+/// posts.id IN (...)`. A cell that is an expression (`ManyChunk::shape`) reads the row's
+/// slots as extra `VALUES` columns, or inlines them in each `CASE` branch. `update_values`
+/// set the same expressions on every row; `excluded(F)` in them reads the row's value of `F`.
+/// `filters` (planned against `params`) further restrict the rows.
 #[allow(clippy::too_many_arguments)]
 pub fn plan_update_many(
     schema: &Schema,
     target: Target,
     model: &str,
     fields: &[String],
-    rows: &[Vec<sea_query::Value>],
-    chunk_rows: usize,
+    chunks: &[ManyChunk],
+    update_values: &[Assignment],
     filters: &[Expr],
     params: &dyn Params,
     returning: bool,
@@ -4647,40 +4671,134 @@ pub fn plan_update_many(
         planner.require(planner.caps.returning, "update_many().returning()")?;
     }
     validate_bypass(m, without_defaults)?;
-    crate::scoped::check_rows(m, &fields[width..], rows.iter().map(|r| &r[width..]), params)?;
+    for chunk in chunks {
+        for (i, e) in chunk.shape.into_iter().flatten().enumerate() {
+            let Some(e) = e else { continue };
+            if i < width {
+                return Err(Error::query("update_many: the primary key must be a plain value"));
+            }
+            check_value_expr(e, "update_many", false, &mut false)?;
+            if update_values.iter().any(|a| a.field == fields[i]) {
+                return Err(Error::query(format!("update_many: {} is an expression in a row and also in update_values", fields[i])));
+            }
+        }
+        for (i, f) in fields.iter().enumerate().skip(width) {
+            if chunk.shape.and_then(|s| s.get(i)).is_some_and(Option::is_some) {
+                crate::scoped::check_set(m, f, crate::scoped::Assigned::NonLiteral, params)?;
+            }
+        }
+        crate::scoped::check_rows(m, &fields[width..], chunk.rows.iter().map(|r| &r[width..]), params)?;
+    }
+    refuse_generated(m, update_values.iter().map(|a| &a.field))?;
+    if let Some(a) = update_values.iter().find(|a| key.contains(&a.field.as_str())) {
+        return Err(Error::query(format!("update_many: update_values cannot set {}, the key that matches the rows", a.field)));
+    }
+    // `update_values` set their fields instead of the rows' cells.
+    let fixed: Vec<usize> = update_values.iter().filter_map(|a| fields.iter().position(|f| *f == a.field).filter(|p| *p >= width)).collect();
+    let mut reads_excluded = vec![];
+    for a in update_values {
+        let mut excluded = false;
+        check_value_expr(&a.value, "update_values", true, &mut excluded)?;
+        reads_excluded.push(excluded);
+    }
     let selection = if returning { Some(planner.return_shape(model_fields, without_defaults)?) } else { None };
     let positions = selection.as_ref().map(|shape| shape_positions(m, shape.as_ref()));
     let where_ = planner.apply_filters(filters, without_defaults, false)?;
     let key_cols: Vec<SExpr> = cols[..width].iter().map(|c| col(&table, &c.column)).collect();
+    let set_by_values = |i: usize| fixed.contains(&i);
     let mut stmts = vec![];
-    for chunk in rows.chunks(chunk_rows.max(1)) {
+    for chunk in chunks {
         let mut stmt = Query::update();
         stmt.table(Alias::new(&table));
+        let shape = |i: usize| -> Option<&Expr> { chunk.shape.and_then(|s| s.get(i)).and_then(Option::as_ref) };
+        // The fields with a `VALUES` column: the key and the plain cells; the slots follow.
+        let layout: Vec<usize> = (0..cols.len()).filter(|i| *i < width || shape(*i).is_none()).collect();
+        let column = |i: usize| layout.iter().position(|l| *l == i).map(|n| n + 1);
+        let excluded = |values: Option<&[sea_query::Value]>| -> Vec<(String, Option<RowCell>)> {
+            (0..cols.len()).map(|i| (fields[i].clone(), match values {
+                Some(v) => layout.contains(&i).then(|| RowCell::Bound(v[i].clone())),
+                None => column(i).map(RowCell::Column),
+            })).collect()
+        };
+        let slot_count = chunk.slots.first().map_or(0, Vec::len);
+        let mut set: Vec<(usize, SExpr)> = vec![];
         if planner.caps.update_from_values {
-            for (i, c) in cols.iter().enumerate().skip(width) {
-                stmt.value(Alias::new(&c.column), write_expr(col("v", &format!("column{}", i + 1)), c));
+            let slots: Vec<RowCell> = (0..slot_count).map(|k| RowCell::Column(layout.len() + k + 1)).collect();
+            for i in (width..cols.len()).filter(|i| !set_by_values(*i)) {
+                let c = cols[i];
+                let value = match shape(i) {
+                    Some(e) => {
+                        planner.row_source = Some(RowSource { slots: Some(slots.clone()), excluded: excluded(None) });
+                        let v = planner.value(e, Hint { ty: Some(c.value_type()), field: Some(c) });
+                        planner.row_source = None;
+                        v?
+                    }
+                    None => col("v", &format!("column{}", column(i).expect("a plain cell has a column"))),
+                };
+                set.push((i, write_expr(value, c)));
             }
-            let tuples = chunk.iter().map(|r| sea_query::ValueTuple::Many(r.clone())).collect();
+            let tuples = chunk.rows.iter().enumerate().map(|(r, row)| {
+                let mut cells: Vec<sea_query::Value> = layout.iter().map(|i| row[*i].clone()).collect();
+                cells.extend(chunk.slots.get(r).into_iter().flatten().cloned());
+                sea_query::ValueTuple::Many(cells)
+            }).collect();
             stmt.from(sea_query::TableRef::ValuesList(tuples, Alias::new("v").into_iden()));
             for (i, k) in key_cols.iter().enumerate() {
                 stmt.and_where(k.clone().eq(col("v", &format!("column{}", i + 1))));
             }
         } else {
             let matches = |r: &[sea_query::Value]| fold(key_cols.iter().zip(&cols).zip(r).map(|((k, c), v)| k.clone().eq(bind(v.clone(), Some(c)))).collect(), true);
-            for (i, c) in cols.iter().enumerate().skip(width) {
+            for i in (width..cols.len()).filter(|i| !set_by_values(*i)) {
+                let c = cols[i];
                 let mut case = sea_query::CaseStatement::new();
-                for r in chunk {
-                    case = case.case(matches(r), bind(r[i].clone(), Some(c)));
+                for (r, row) in chunk.rows.iter().enumerate() {
+                    let value = match shape(i) {
+                        Some(e) => {
+                            let slots = chunk.slots.get(r).into_iter().flatten().cloned().map(RowCell::Bound).collect();
+                            planner.row_source = Some(RowSource { slots: Some(slots), excluded: excluded(Some(row)) });
+                            let v = planner.value(e, Hint { ty: Some(c.value_type()), field: Some(c) });
+                            planner.row_source = None;
+                            v?
+                        }
+                        None => bind(row[i].clone(), Some(c)),
+                    };
+                    case = case.case(matches(row), value);
                 }
                 let case: SExpr = case.into();
-                stmt.value(Alias::new(&c.column), case);
+                set.push((i, case));
             }
             match width {
-                1 => stmt.and_where(key_cols[0].clone().is_in(chunk.iter().map(|r| bind(r[0].clone(), Some(cols[0]))))),
-                _ => stmt.and_where(row_in(target.dialect, key_cols.clone(), chunk.iter().map(|r| r.iter().zip(&cols).take(width).map(|(v, c)| bind(v.clone(), Some(c))).collect()).collect())),
+                1 => stmt.and_where(key_cols[0].clone().is_in(chunk.rows.iter().map(|r| bind(r[0].clone(), Some(cols[0]))))),
+                _ => stmt.and_where(row_in(target.dialect, key_cols.clone(), chunk.rows.iter().map(|r| r.iter().zip(&cols).take(width).map(|(v, c)| bind(v.clone(), Some(c))).collect()).collect())),
             };
         }
-        for (column, v) in maintained(m, AssignKind::Update, |name| fields.iter().skip(width).any(|f| f == name), &mut planner)? {
+        for (i, c) in cols.iter().enumerate().skip(width) {
+            if let Some((_, v)) = set.iter().find(|(s, _)| *s == i) {
+                stmt.value(Alias::new(&c.column), v.clone());
+            }
+        }
+        for (a, reads) in update_values.iter().zip(&reads_excluded) {
+            let one = |planner: &mut Planner, source: Option<RowSource>| -> Result<SExpr> {
+                planner.row_source = source;
+                let v = planner.set_values(std::slice::from_ref(a));
+                planner.row_source = None;
+                Ok(v?.remove(0))
+            };
+            let value = if planner.caps.update_from_values || !reads {
+                one(&mut planner, Some(RowSource { slots: None, excluded: excluded(None) }))?
+            } else {
+                let mut case = sea_query::CaseStatement::new();
+                let matches = |r: &[sea_query::Value]| fold(key_cols.iter().zip(&cols).zip(r).map(|((k, c), v)| k.clone().eq(bind(v.clone(), Some(c)))).collect(), true);
+                for row in chunk.rows {
+                    case = case.case(matches(row), one(&mut planner, Some(RowSource { slots: None, excluded: excluded(Some(row)) }))?);
+                }
+                case.into()
+            };
+            let f = m.field(&a.field).map_err(query_err)?;
+            stmt.value(Alias::new(&f.column), value);
+        }
+        let is_set = |name: &str| fields.iter().skip(width).any(|f| f == name) || update_values.iter().any(|a| a.field == name);
+        for (column, v) in maintained(m, AssignKind::Update, is_set, &mut planner)? {
             stmt.value(Alias::new(column), v);
         }
         for w in &where_ {

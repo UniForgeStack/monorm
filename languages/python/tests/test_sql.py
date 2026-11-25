@@ -286,8 +286,12 @@ def test_update_many_validation():
         Post.objects.update_many([{"id": 1, "title": "a"}, {"id": 2, "views": 3}])
     with pytest.raises(ValueError, match="besides id"):
         Post.objects.update_many([{"id": 1}])
-    with pytest.raises(TypeError, match="plain values"):
-        Post.objects.update_many([{"id": 1, "views": Post.views + 1}])
+    with pytest.raises(TypeError, match="primary key must be a plain value"):
+        Post.objects.update_many([{"id": Post.views + 1, "views": 1}])
+    with pytest.raises(QueryError, match="relation path"):
+        Post.objects.update_many([{"id": 1, "views": Post.author.id}]).inspect()
+    with pytest.raises(QueryError, match="excluded"):
+        Post.objects.update_many([{"id": 1, "views": excluded(Post.views)}]).inspect()
     with pytest.raises(TypeError, match="no field"):
         Post.objects.update_many([{"id": 1, "nope": 1}])
     with pytest.raises(QueryError):
