@@ -5,6 +5,16 @@ All notable changes are listed here, in the [Keep a Changelog](https://keepachan
 ## [Unreleased]
 
 - TypeScript: `cte` of a whole model with a `columns` group now exposes group paths (`c.address.city`, `c.address.geo.lat`) as `select` does, in types and at run time. Breaking (alpha): the physical leaf names (`c.addressCity`) are gone, and `c.address` itself is no column: read a subfield. The same holds in Python (`c.address.city`; `Cte.columns` lists `address`, not `address_city`). A `json` group stays one column.
+- Migrations are one JSON file each, `migrations/NNNN_name.json`, a list of operations: the schema operations, `run_sql`, `run_code` (a Python or TypeScript function), `separate` and `commit`;
+  `"atomic": false` runs one operation outside a transaction.
+  The online form (`migrations.online`) now only builds indexes `CONCURRENTLY`; a constraint `NOT VALID` is a `run_sql` pair that the user writes.
+  The state of a migration comes from the replay of the files, so there is no `snapshot.json`.
+  A migration runs in one transaction; the new columns `ops_done`, `ops_total` and `started` of `monorm_migrations` record a stop halfway, and `migrate --ops A-B` and `rollback --ops A-B` run a part.
+  `rollback` runs the reverse operations from the last to the first and refuses an operation with no reverse.
+  The `name` setting holds a template with `{number}`, `{timestamp}` and `{slug}`.
+  `squashmigrations` follows Django: `elidable` data steps are dropped, other barriers stop it, the file lists `replaces`, and a database that applied all replaced migrations adopts it with no SQL.
+  Breaking (alpha): the folder format (`up.sql`, `down.sql`, `snapshot.json`, `data.py`, `data.ts`, the `-- monorm:` markers) is gone, with no converter; a folder in the old format gives an error that says to delete the migration history and run `baseline`.
+  [Migrations](docs/schema/schema.md#migrations)
 
 ## [0.1.4] - 2026-11-24
 
