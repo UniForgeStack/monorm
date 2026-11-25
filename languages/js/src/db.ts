@@ -107,7 +107,7 @@ export interface QueryEvent {
   /** True for SQL the caller wrote as a string with no parameters ({@link Database.execute}): it
    * can hold literal values. ORM-built SQL and {@link Database.fetch} are `false`. */
   readonly raw: boolean;
-  /** The settings in force for the statement, such as `scope.shop` and `monorm.bypass`. */
+  /** The settings in force for the statement, such as `scope.shop` and `monorm.bypass` (the default names). */
   readonly settings: Readonly<Record<string, string>>;
 }
 
@@ -177,8 +177,10 @@ export class Database {
   private turn = 0;
   /** @internal Engines with settings, by base engine and setting values; shared by the views of a root. */
   readonly settingsEngines = new Map<NativeEngine, Map<string, NativeEngine>>();
-  /** @internal The scope keys that a policy or trigger of the database reads; each goes out as `scope.<key>`. */
-  published: readonly string[] = [];
+  /** @internal The scope keys that a policy or trigger of the database reads, each with its setting name. */
+  published: readonly { key: string; setting: string }[] = [];
+  /** @internal The setting that lists the keys an `unscoped` block opens. */
+  bypassSetting = "";
   /** @internal The database a `primary` view belongs to: they share transactions and callbacks. */
   root: Database = this;
 
@@ -291,7 +293,7 @@ export class Database {
     }
     const open = openKeys.getStore();
     if (open?.size && !sqlite) {
-      names.push("monorm.bypass");
+      names.push(this.root.bypassSetting);
       values.push(`{${[...open].sort().join(",")}}`);
     }
     const allowed = allowedWrites();
@@ -304,9 +306,9 @@ export class Database {
     const root = this.root;
     const current = scopeValues.getStore();
     if (current && !sqlite) {
-      for (const key of root.published) {
+      for (const { key, setting } of root.published) {
         if (key in current) {
-          names.push(`scope.${key}`);
+          names.push(setting);
           values.push(String(current[key]));
         }
       }
@@ -674,7 +676,8 @@ export async function connect(url: string, options: ConnectOptions = {}): Promis
   }
   const db = new Database(engine, url, reg, readers, options.allowUnfilteredWrites ?? false);
   declared.set(db, engine.scopeKeysOpen() ? null : new Set(engine.scopeKeys()));
-  db.published = [...engine.publishedScopeKeys()].sort();
+  db.published = [...engine.publishedScopeSettings()].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  db.bypassSetting = engine.bypassSetting();
   skippable.set(db, new Set(engine.skippableTriggers()));
   if (options.default ?? true) {
     defaultDb = db;
@@ -733,9 +736,9 @@ export function declareScopeKeys(db: Database, keys: readonly string[]): void {
 
 /**
  * Runs `fn` with the named scope keys open: the fill, the check and the app read filter of each
- * key are off, in `fn` and in work it starts. On Postgres it also sets `monorm.bypass` to the
- * open keys for the policies of the database. A write that needs a key that is neither open
- * nor set throws `ScopeMissing`. Needs at least one key; each key must be declared by the
+ * key are off, in `fn` and in work it starts. On Postgres it also sets the bypass setting
+ * (`monorm.bypass` by default) to the open keys for the policies of the database. A write that
+ * needs a key that is neither open nor set throws `ScopeMissing`. Needs at least one key; each key must be declared by the
  * schema of an open database (`TypeError` otherwise). A nested block adds its keys to those of
  * the outer block. Gives what `fn` gives.
  */

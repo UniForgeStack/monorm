@@ -291,13 +291,8 @@ impl Schema {
         out
     }
 
-    /// The scope keys that an object of the database reads (a policy, a trigger). A statement sends each one that
-    /// has a value as the transaction setting `scope.<key>`.
-    pub fn published_scope_keys(&self) -> impl Iterator<Item = &str> {
-        self.published_scope_keys.iter().map(String::as_str)
-    }
-
-    /// Each published scope key with the setting that carries its value.
+    /// The scope keys that an object of the database reads (a policy, a trigger), each with the setting that
+    /// carries its value. A statement sends each key that has a value as that transaction setting.
     pub fn published_scope_settings(&self) -> impl Iterator<Item = (&str, String)> {
         self.published_scope_keys.iter().map(|key| (key.as_str(), self.scope_settings.key_setting(key)))
     }
