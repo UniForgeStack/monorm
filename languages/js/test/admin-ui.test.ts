@@ -100,7 +100,7 @@ test("a wrong switcher is refused", () => world(async ({ registry, classes }) =>
   const shop = { key: "shop", title: "Shop", url: "/shop" };
   const cases: [Loose, string][] = [
     [{ brand: { environmentLevel: "info" } }, "needs brand.environment"],
-    [{ groupIcons: { Sales: "users" } }, "group_icons"],
+    [{ groupIcons: { Sales: "users" } }, "groupIcons"],
     [{ switcher: { current: "shop", services: [{ ...shop, icon: "Shield!" }] } }, "icon"],
     [{ switcher: { current: "shop", services: [shop, { key: "ops", title: "Ops", url: "http://ops.example.com" }] } }, "https"],
     [{ brand: { colors: { primary: "#111111" } }, switcher: { current: "shop", services: [{ ...shop, color: "#222222" }] } }, "primary"],
