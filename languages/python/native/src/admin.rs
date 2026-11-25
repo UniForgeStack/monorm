@@ -1,6 +1,7 @@
 //! The admin service (feature `admin`): `monorm-admin` planned from the prepared schema and
 //! called in memory. This file only converts between Python values and the crate's JSON.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use monorm_admin::{AuthConfig, BoxFuture, BridgeError, CallContext, Config, HostBridge, Logger, Routed, Server, Site};
@@ -113,6 +114,7 @@ fn auth_config(py: Python<'_>, database: Bound<'_, PyAny>, host: Bound<'_, PyDic
 #[pyclass(frozen, module = "monorm._native")]
 pub struct AdminSite {
     site: Arc<Site>,
+    handles: BTreeMap<String, String>,
 }
 
 #[pymethods]
@@ -121,6 +123,12 @@ impl AdminSite {
     #[getter]
     fn permissions(&self) -> Vec<String> {
         self.site.permission_names()
+    }
+
+    /// The host name of each local function id that the config tagged with `$fn`: register each callable under its name.
+    #[getter]
+    fn handles(&self) -> BTreeMap<String, String> {
+        self.handles.clone()
     }
 
     /// The warnings of the config, for example a search field that no index serves.
@@ -347,8 +355,8 @@ fn admin_settings(dir: &str) -> PyResult<String> {
 /// Plans the resources: raises `ValueError` with the precise text of a wrong config, and its `code`.
 #[pyfunction]
 fn admin_site(schema: &Bound<'_, PySchema>, config_json: &str) -> PyResult<AdminSite> {
-    let site = Site::build(schema.get().inner.clone(), config_json).map_err(admin_error)?;
-    Ok(AdminSite { site: Arc::new(site) })
+    let (site, handles) = Site::build_with_handles(schema.get().inner.clone(), config_json).map_err(admin_error)?;
+    Ok(AdminSite { site: Arc::new(site), handles })
 }
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
