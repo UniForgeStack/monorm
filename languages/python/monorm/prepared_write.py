@@ -58,7 +58,11 @@ class _CompiledWrite(_Compiled):
     """The held statement of an update or a delete. ``None`` binds as NULL; the engine
     refuses it where the statement compares."""
 
-    __slots__ = ()
+    __slots__ = ("hard",)
+
+    def __init__(self, ir: dict[str, Any], params: list[Any]) -> None:
+        super().__init__(ir, params)
+        self.hard = bool(ir.get("hard"))
 
     def bind(self, values: Mapping[str, Any], known: frozenset[str]) -> list[Any]:
         if missing := self.names - values.keys():
@@ -88,7 +92,7 @@ class _CompiledWrite(_Compiled):
     ) -> Awaitable[Any]:
         params, merged = self.call_values(values, known, scope)
         db = resolve(qs._db)
-        write = self.native(db._engine, merged)
+        write = self.native(db._with_settings(db._base, hard=self.hard), merged)
         tx, allowed = db._tx(), allowed_writes()
         return db._call(lambda t: write.run(params, tx, row_cls, qs._db, allowed, t))
 

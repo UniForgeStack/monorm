@@ -3127,6 +3127,12 @@ export function hardDeleteStatement<M extends ModelSpec>(qs: QuerySet<M, any, an
   }, (names, returning) => {
     const { ir, params } = plan(returning, names);
     return qs["inspectIr"](ir, params);
+  }, (names, returning) => {
+    qs["db"]();
+    const params = new SlotParams();
+    const ir: IR = { ...qs.mutationIr("delete", params), hard: true, returning };
+    if (returning && names) ir["model_fields"] = names;
+    return prepareSet(qs as never, ir, params, returning);
   });
 }
 
