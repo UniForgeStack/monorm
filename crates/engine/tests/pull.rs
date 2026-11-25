@@ -275,7 +275,12 @@ fn postgres_pull_unmanaged_baselines_without_owning_the_tables() {
             let migrations = make(&dir, &pulled.schema);
             let first = ddl::files::list(&migrations).unwrap().remove(0);
             let file = std::fs::read_to_string(&first.path).unwrap();
-            assert!(!file.contains("create_table"), "{file}");
+            // An unmanaged table is state only: every operation is a `separate` with no database step.
+            let doc: serde_json::Value = serde_json::from_str(&file).unwrap();
+            assert!(
+                doc["operations"].as_array().unwrap().iter().all(|op| op["separate"]["database"].as_array().is_some_and(|d| d.is_empty())),
+                "{file}"
+            );
             migrate::baseline(&*conn, &migrations).await.unwrap();
             conn.batch("ALTER TABLE accounts ADD COLUMN outside_monorm text".into()).await.unwrap();
             let drift = introspect::drift(&*conn, &migrations).await.unwrap();
