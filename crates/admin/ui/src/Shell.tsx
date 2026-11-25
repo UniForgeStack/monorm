@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { LayoutDashboard, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { PanelLeftClose, PanelLeftOpen, Search } from "lucide-react";
 import { DetailPage } from "./Detail";
 import { FormPage } from "./Form";
 import { Home } from "./Home";
 import { ListPage } from "./List";
 import { Password } from "./Password";
 import { Sidebar } from "./Sidebar";
-import { UserMenu } from "./UserMenu";
+import { CommandSearch, EnvChip, ServiceSwitcher } from "./ShellParts";
+import { UserFooter } from "./UserMenu";
 import * as api from "./api";
 import { Toaster } from "./components/ui/toast";
 import { getZone, setZone, type Zone } from "./format";
@@ -30,12 +31,13 @@ export function Shell({ user, route }: { user: api.User | null; route: Route }) 
   const client = useQueryClient();
   const [zone, setZoneState] = useState<Zone>(getZone());
   const [open, setOpen] = useState(savedOpen);
+  const [searching, setSearching] = useState(false);
   const site = useQuery({ queryKey: ["site"], queryFn: api.site, staleTime: Infinity });
   const brand = site.data?.brand;
 
   useEffect(() => {
     if (!brand) return;
-    applyBrand(brand.colors);
+    applyBrand(brand.colors, !!brand.switcher?.services.some((svc) => svc.key === brand.switcher?.current && svc.color));
     document.title = brand.name;
   }, [brand]);
 
@@ -56,28 +58,39 @@ export function Shell({ user, route }: { user: api.User | null; route: Route }) 
   };
   const current = "resource" in route ? route.resource : null;
 
+  const title = pageTitle(route, site.data);
+
   return (
-    <div className="flex min-h-screen flex-col">
-      <header className="sticky top-0 z-30 flex h-14 items-center gap-2 border-b border-border bg-card px-3">
-        <Button variant="ghost" size="icon" onClick={toggle} aria-label={open ? "Hide the sidebar" : "Show the sidebar"} aria-expanded={open} aria-controls="sidebar">
-          {open ? <PanelLeftClose /> : <PanelLeftOpen />}
-        </Button>
-        <Link href={BASE} className="flex items-center gap-2 rounded-md px-1 text-lg font-semibold text-foreground no-underline">
-          {brand?.logo ? <img src={brand.logo} alt="" className="h-7 w-auto" /> : <span className="grid size-7 place-items-center rounded-md bg-primary text-primary-foreground"><LayoutDashboard className="size-4" aria-hidden /></span>}
-          <span>{brand?.name ?? "Admin"}</span>
-        </Link>
-        {brand?.environment && <span className="rounded-full border border-warning px-2 py-0.5 text-xs font-medium text-warning">{brand.environment}</span>}
-        <nav className="ml-4 hidden items-center gap-4 text-sm sm:flex" aria-label="Links">
-          {brand?.links.map((l) => (
-            <a key={l.url} href={l.url} className="text-muted-foreground hover:text-foreground">{l.label}</a>
-          ))}
-        </nav>
-        <div className="ml-auto">
-          <UserMenu user={user} zone={zone} onZone={(z) => { setZone(z); setZoneState(z); }} onSignOut={signOut} />
-        </div>
-      </header>
-      <div className="flex flex-1">
-        {site.data && <Sidebar site={site.data} open={open} current={current} home={route.page === "home"} onNavigate={() => { if (!wide()) toggle(); }} />}
+    <div className="flex min-h-screen">
+      {site.isError && (
+        // The site list is refused (no permission): the account menu stays reachable.
+        <aside id="sidebar" hidden={!open} className="flex w-64 shrink-0 flex-col justify-between border-r border-border bg-card p-2">
+          <Link href={BASE} className="rounded-md p-2 text-sm font-semibold text-foreground no-underline hover:bg-accent">Admin</Link>
+          <UserFooter user={user} zone={zone} onZone={(z) => { setZone(z); setZoneState(z); }} onSignOut={signOut} />
+        </aside>
+      )}
+      {site.data && brand && (
+        <Sidebar site={site.data} open={open} current={current} home={route.page === "home"} onNavigate={() => { if (!wide()) toggle(); }} header={<ServiceSwitcher brand={brand} />} footer={<UserFooter user={user} zone={zone} onZone={(z) => { setZone(z); setZoneState(z); }} onSignOut={signOut} />} />
+      )}
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border bg-card px-3">
+          <Button variant="ghost" size="icon" onClick={toggle} aria-label={open ? "Hide the sidebar" : "Show the sidebar"} aria-expanded={open} aria-controls="sidebar">
+            {open ? <PanelLeftClose /> : <PanelLeftOpen />}
+          </Button>
+          <p className="m-0 truncate text-lg font-semibold text-foreground" data-testid="page-title">{title}</p>
+          {brand && <EnvChip brand={brand} />}
+          <nav className="ml-4 hidden items-center gap-4 text-sm sm:flex" aria-label="Links">
+            {brand?.links.map((l) => (
+              <a key={l.url} href={l.url} className="text-muted-foreground hover:text-foreground">{l.label}</a>
+            ))}
+          </nav>
+          {site.data && (
+            <Button variant="plain" size="sm" className="ml-auto text-muted-foreground" onClick={() => setSearching(true)} aria-label="Search the resources (Ctrl+K)">
+              <Search aria-hidden />
+              <span className="hidden sm:inline">Search</span>
+            </Button>
+          )}
+        </header>
         <main className="min-w-0 flex-1 p-4 md:p-6">
           {site.isError && <Alert>{message(site.error)}</Alert>}
           {route.page === "password" && <Password />}
@@ -88,7 +101,17 @@ export function Shell({ user, route }: { user: api.User | null; route: Route }) 
           {route.page === "detail" && <DetailPage resource={route.resource} id={route.key} zone={zone} site={site.data} />}
         </main>
       </div>
+      {site.data && <CommandSearch site={site.data} open={searching} onOpenChange={setSearching} />}
       <Toaster />
     </div>
   );
+}
+
+/** The title of the top bar: the page of the route. */
+function pageTitle(route: Route, site: api.Site | undefined): string {
+  if (route.page === "home") return "Home";
+  if (route.page === "password") return "Change password";
+  if (route.page === "login") return "Sign in";
+  const title = site?.resources.find((r) => r.name === route.resource)?.title ?? route.resource;
+  return route.page === "new" ? `Add ${title}` : title;
 }
