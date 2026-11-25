@@ -6,7 +6,6 @@ import pytest
 
 import monorm
 from monorm import admin
-from monorm._admin_permissions import resolve_pattern_grants
 from monorm_auth import UserMethods, UserQueries, make_password
 
 PG_URL = os.environ.get("ORM_TEST_DATABASE_URL", "postgres://postgres:postgres@localhost/orm_test")
@@ -220,14 +219,13 @@ async def test_a_pattern_that_matches_nothing_and_a_missing_sync_are_errors(worl
     site, db, models = world
     typo = admin.Admin(site._registry, roles={"support": ["orders.*"]})
     typo.register(models["Role"])
-    with pytest.raises(admin.AdminConfigError, match="matches no permission name"):
+    with pytest.raises(admin.AdminConfigError, match="matches no permission name") as exc:
         await typo.seed_roles(db)
-    names = ["admin.access", "admin.read_role"]
-    assert resolve_pattern_grants(["admin.*", "-admin.acce??"], names, "r") == ["admin.read_role"]
-    with pytest.raises(ValueError, match="matches no permission name"):
-        resolve_pattern_grants(["admin.READ_*"], names, "r")
-    with pytest.raises(ValueError, match=r"has \[ or \]"):
-        resolve_pattern_grants(["admin.[ar]*"], names, "r")
+    assert exc.value.code == "config.role_grant"
+    brackets = admin.Admin(site._registry, roles={"support": ["admin.[ar]*"]})
+    brackets.register(models["Role"])
+    with pytest.raises(admin.AdminConfigError, match=r"has \[ or \]"):
+        await brackets.seed_roles(db)
     unsynced = admin.Admin(site._registry, roles={"support": ["admin.read_role"]})
     unsynced.register(models["Role"])
     with pytest.raises(admin.AdminConfigError, match="sync-permissions"):

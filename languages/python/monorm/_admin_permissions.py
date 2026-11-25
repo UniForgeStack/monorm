@@ -6,13 +6,14 @@ Both steps use the auth app through its Python API, so no SQL text lives here.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
+
+from . import _native
 
 if TYPE_CHECKING:
     from .db import Database
 
-__all__ = ["RoleSeedReport", "SyncReport", "resolve_pattern_grants"]
+__all__ = ["RoleSeedReport", "SyncReport"]
 
 
 @dataclass(frozen=True)
@@ -33,30 +34,6 @@ class RoleSeedReport:
     """Names of the roles that the call created."""
     grants: int = 0
     """Role and permission pairs that the call added."""
-
-
-def resolve_pattern_grants(patterns: Sequence[str], names: Sequence[str], role: str) -> list[str]:
-    """The names that ``patterns`` select, in the order of ``names``.
-
-    A pattern is a glob over ``<label>.<codename>`` (``orders.*``). A leading ``-`` removes what the patterns before it added.
-    A pattern that matches no name is an error: it is most often a typo.
-    ``[`` and ``]`` are not allowed: a permission name never holds them, and the TypeScript host reads them as plain text.
-    """
-    chosen: dict[str, None] = {}
-    for pattern in patterns:
-        remove = pattern.startswith("-")
-        glob = pattern[1:] if remove else pattern
-        if "[" in glob or "]" in glob:
-            raise ValueError(f"role {role!r}: the pattern {pattern!r} has [ or ]; a glob here has only * and ?")
-        hits = [n for n in names if fnmatchcase(n, glob)]
-        if not hits:
-            raise ValueError(f"role {role!r}: the pattern {pattern!r} matches no permission name of the site")
-        for n in hits:
-            if remove:
-                chosen.pop(n, None)
-            else:
-                chosen[n] = None
-    return [n for n in names if n in chosen]
 
 
 def _auth_model(name: str, registry: Any) -> Any:
@@ -87,7 +64,7 @@ async def seed(roles: Mapping[str, Sequence[str]], names: Sequence[str], databas
     from monorm_auth.permissions import split_perm
 
     registry = database._registry
-    wanted = {role: resolve_pattern_grants(patterns, names, role) for role, patterns in roles.items()}
+    wanted = {role: _native.admin_role_grants(list(patterns), list(names), role) for role, patterns in roles.items()}
     role_model = _auth_model("Role", registry)
     permission_model = _auth_model("Permission", registry)
     through = _auth_model("RolePermission", registry)
