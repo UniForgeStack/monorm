@@ -4,7 +4,7 @@
  * two types are identical. Never run.
  */
 
-import { CompoundSelect, describe, of, DatabaseError, TransactionTimeoutError, type Database, type Isolation, Decimal, exists, func, outer, param, window, type JsonValue, type OneRowQuery, type PreparedOneRowQuery, type Page, type QueryInspection, type StatementInspection } from "../../src/index.js";
+import { CompoundSelect, describe, of, DatabaseError, TransactionTimeoutError, type Database, type Isolation, Decimal, exists, excluded, func, outer, param, window, type JsonValue, type OneRowQuery, type PreparedOneRowQuery, type Page, type QueryInspection, type StatementInspection } from "../../src/index.js";
 import { Comment, Post, Priority, Profile, Role, Tag, User } from "../blog/models.js";
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
@@ -282,8 +282,12 @@ export async function writes() {
   Post.objects.update({ views: User.id });
   // @ts-expect-error update rows need the primary key
   Post.objects.updateMany([{ title: "x" }]);
-  // @ts-expect-error update rows take plain values
   Post.objects.updateMany([{ id: 1, views: Post.views.add(1) }]);
+  Post.objects.updateMany([{ id: 1, views: 3 }], { updateValues: { views: Post.views.add(excluded(Post.views)) } });
+  // @ts-expect-error an expression over another model
+  Post.objects.updateMany([{ id: 1, views: User.id }]);
+  // @ts-expect-error updateValues is a map of fields
+  Post.objects.updateMany([{ id: 1, views: 3 }], { updateValues: { nope: 1 } });
   // @ts-expect-error a post is not a tag
   post.tags.add(post);
 }

@@ -1,6 +1,6 @@
 /** Rows and assignments for INSERT / UPDATE statements. */
 
-import { Expression, ParamRef, wrap, type IR, type IRContext } from "./expr.js";
+import { Expression, IRContext, ParamRef, wrap, type IR } from "./expr.js";
 import { fieldValue, type ModelMeta } from "./model.js";
 import { flattenGroup, jsonInsert, NestedValue, nestedAssignments } from "./nested.js";
 
@@ -8,23 +8,28 @@ import { flattenGroup, jsonInsert, NestedValue, nestedAssignments } from "./nest
  * key column. Expressions are refused unless `expressions`. */
 function normalize(meta: ModelMeta, row: object, what: string, expressions: boolean): Map<string, unknown> {
   const values = new Map<string, unknown>();
+  const many = what === "updateMany";
   for (const [key, value] of Object.entries(row)) {
     if (value === undefined) {
       continue;
     }
-    if (!expressions && value instanceof ParamRef) {
+    if (value instanceof ParamRef && (!expressions || many)) {
       throw new TypeError(`${meta.name}.${key}: param() is a placeholder of a prepared write; call .prepare()`);
     }
     if (!expressions && value instanceof Expression) {
       throw new TypeError(`${meta.name}.${key}: ${what} takes plain values, not expressions`);
     }
+    const cell = many && value instanceof Expression;
     // The engine refuses a generated column, so a write that names one goes on to it.
     const f = meta.generated.has(key) ? meta.fields.get(key) : meta.inputFields.get(key);
     if (f) {
       if (f.nested !== undefined && what === "getOrInsert") {
         throw new TypeError(`getOrInsert: ${meta.name}.${key} is a nested field; look up by a plain field of a unique constraint`);
       }
-      if (f.nested !== undefined && what === "updateMany" && value !== null && !(value instanceof NestedValue)) {
+      if (cell && f.nested !== undefined) {
+        throw new TypeError(`${meta.name}.${key}: updateMany takes plain values for a nested field, not expressions`);
+      }
+      if (f.nested !== undefined && many && value !== null && !(value instanceof NestedValue)) {
         throw new TypeError(`updateMany: ${meta.name}.${key} is an object; an object patches, and updateMany only replaces. Pass a ${f.nested.type.name} value, or use update() to patch`);
       }
       if (f.nested === undefined || what === "update") values.set(f.ir, value);
@@ -34,6 +39,7 @@ function normalize(meta: ModelMeta, row: object, what: string, expressions: bool
     }
     const rel = meta.relations.get(key);
     if (rel?.kind === "belongsTo") {
+      if (cell) throw new TypeError(`${meta.name}.${key}: updateMany takes plain values for a relation, not expressions`);
       const target = meta.registry.get(rel.target);
       rel.from.forEach((from, i) => {
         values.set(from, value === null ? null : fieldValue(value as object, target.fieldByIr.get(rel.to[i]!)!.name));
@@ -123,19 +129,33 @@ export function lookupValues(meta: ModelMeta, lookup: object): Map<string, unkno
   return values;
 }
 
+/** The expression cells of `updateMany` rows, as the engine takes them: `shapes` are the distinct lists (one entry per
+ * field, an expression's IR or `null`); row `i` has the shape `shapes[shapeOf[i]]` and the literal values `slots[i]`. */
+export interface RowExprs {
+  readonly shapes: (IR | null)[][];
+  readonly shapeOf: number[];
+  readonly slots: unknown[][];
+}
+
 /**
- * Validates `updateMany` rows: each has the primary key and the same fields, plain
- * values only, no primary key twice. Gives the fields (IR names, the primary key first)
- * and the rows aligned on them.
+ * Validates `updateMany` rows: each has the primary key and the same fields, no primary key
+ * twice. A cell is a plain value or an expression over the model's own columns; the key is
+ * plain. Gives the fields (IR names, the primary key first) and the rows aligned on them. An
+ * expression cell holds `null` in its row and its IR in `exprs` (`undefined` when no cell is an expression).
  */
-export function prepareUpdateRows(meta: ModelMeta, rows: readonly object[]): { fields: string[]; rows: unknown[][] } {
+export function prepareUpdateRows(meta: ModelMeta, rows: readonly object[]): { fields: string[]; rows: unknown[][]; exprs?: RowExprs } {
   const pk = meta.key.map((f) => f.ir);
   const label = meta.key.map((f) => f.name).join(", ");
   const normalized: Map<string, unknown>[] = [];
   const seen = new Set<string>();
   let fields: Set<string> | undefined;
+  let hasExpr = false;
   rows.forEach((row, n) => {
-    const values = normalize(meta, row, "updateMany", false);
+    const values = normalize(meta, row, "updateMany", true);
+    if (pk.some((f) => values.get(f) instanceof Expression)) {
+      throw new TypeError("updateMany: the primary key must be a plain value");
+    }
+    hasExpr ||= [...values.values()].some((v) => v instanceof Expression);
     const id = pk.map((f) => values.get(f));
     if (id.some((v) => v === undefined || v === null)) {
       throw new TypeError(`updateMany row ${n} has no ${label}`);
@@ -160,7 +180,28 @@ export function prepareUpdateRows(meta: ModelMeta, rows: readonly object[]): { f
     return { fields: [], rows: [] };
   }
   const names = [...pk, ...meta.fieldList.map((f) => f.ir).filter((f) => fields!.has(f) && !pk.includes(f))];
-  return { fields: names, rows: normalized.map((v) => names.map((f) => v.get(f))) };
+  const plain = normalized.map((v) => names.map((f) => (v.get(f) instanceof Expression ? null : v.get(f))));
+  if (!hasExpr) return { fields: names, rows: plain };
+  const exprs: RowExprs = { shapes: [], shapeOf: [], slots: [] };
+  const known = new Map<string, number>();
+  for (const v of normalized) {
+    const slots: unknown[] = [];
+    const ctx = new IRContext(meta, slots);
+    const shape = names.map((f) => {
+      const cell = v.get(f);
+      return cell instanceof Expression ? cell.ir(ctx) : null;
+    });
+    const text = JSON.stringify(shape);
+    let at = known.get(text);
+    if (at === undefined) {
+      at = exprs.shapes.length;
+      known.set(text, at);
+      exprs.shapes.push(shape);
+    }
+    exprs.shapeOf.push(at);
+    exprs.slots.push(slots);
+  }
+  return { fields: names, rows: plain, exprs };
 }
 
 /** `SET` items as IR: plain values become parameters, expressions compile in `ctx`. */

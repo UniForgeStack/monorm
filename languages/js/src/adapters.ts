@@ -53,7 +53,8 @@ const CONCURRENCY = 16;
 type Values = Record<string, unknown>;
 /** A batch value also holds its place (`at`). */
 type PendingFields = Map<string, { adapter: FieldAdapter; value: unknown; at?: { row: number; field: string } }>;
-type UpdateManyOptions = { readonly batchSize?: number };
+/** `UpdateManyOptions<M>` with the model erased. */
+type ErasedUpdateManyOptions = { readonly batchSize?: number; readonly updateValues?: object };
 interface AdaptedQuerySet {
   prepareInsert(values: Values): PreparedInsert<ModelSpec>;
   prepareUpdate(values: Values): PreparedUpdate<ModelSpec>;
@@ -63,9 +64,9 @@ interface AdaptedQuerySet {
   copyRows(rows: readonly object[], options: object): Promise<number>;
   insertRows(rows: readonly object[], conflict: undefined, returning: boolean, batchSize: number | null, names?: readonly string[]): Promise<unknown[] | number>;
   inspectInsert(rows: readonly object[], conflict: undefined, returning: boolean, batchSize: number | null, names?: readonly string[]): QueryInspection;
-  checkUpdateRows(rows: readonly object[], options: UpdateManyOptions): void;
-  executeUpdateMany(rows: readonly object[], options: UpdateManyOptions, returning?: boolean, names?: readonly string[]): Promise<number | Row[]>;
-  inspectUpdateMany(rows: readonly object[], options: UpdateManyOptions, returning?: boolean, names?: readonly string[]): QueryInspection;
+  checkUpdateRows(rows: readonly object[], options: ErasedUpdateManyOptions): void;
+  executeUpdateMany(rows: readonly object[], options: ErasedUpdateManyOptions, returning?: boolean, names?: readonly string[]): Promise<number | Row[]>;
+  inspectUpdateMany(rows: readonly object[], options: ErasedUpdateManyOptions, returning?: boolean, names?: readonly string[]): QueryInspection;
 }
 /** A write that plans its statement, with the `returning` fields `names` when given. */
 interface InspectableWrite {
@@ -320,7 +321,7 @@ export async function adaptedCopyRows(qs: AdaptedQuerySet, rows: readonly object
 }
 
 /** @internal `updateMany(rows)` with a value that needs `prepare`. */
-export function adaptedUpdateMany(Statement: typeof WriteStatement, qs: AdaptedQuerySet, rows: readonly object[], pending: PendingFields, options: UpdateManyOptions, meta: ModelMeta): WriteStatement<ModelSpec> & { readonly operation: PreparedWrite } {
+export function adaptedUpdateMany(Statement: typeof WriteStatement, qs: AdaptedQuerySet, rows: readonly object[], pending: PendingFields, options: ErasedUpdateManyOptions, meta: ModelMeta): WriteStatement<ModelSpec> & { readonly operation: PreparedWrite } {
   const operation = new PreparedWrite(pending, CONCURRENCY);
   const update = new Statement<ModelSpec>(meta, async (names, returning) => {
     qs.checkUpdateRows(rows, options);

@@ -83,7 +83,7 @@ for (const provider of ["sqlite", "postgresql"]) {
         .update({ postCount: func.coalesce(totals.c.n, 0) });
       const [count, sql] = await sqlOf(statement);
       assert.equal(count, 3);
-      assert.ok(sql[0]!.includes('FROM "uf_author" AS "r1" LEFT JOIN "totals" ON "totals"."author_id" = "r1"."id" WHERE "uf_author"."id" = "r1"."id"'), sql[0]);
+      assert.ok(sql[0]!.includes('FROM "uf_author" AS "r1" LEFT JOIN "totals" ON "totals"."authorId" = "r1"."id" WHERE "uf_author"."id" = "r1"."id"'), sql[0]);
       assert.deepEqual(await counts(), { A: 2, B: 1, C: 0 });
       // A filter on the target narrows the self-join rows.
       const filtered = A.join(totals, totals.c.authorId.eq(Author.id), { outer: true }).filter(Author.id.eq(3))
@@ -143,8 +143,8 @@ for (const provider of ["sqlite", "postgresql"]) {
       await assert.rejects(async () => { await A.join(totals, totals.c.authorId.eq(Author.id)).all().updateMany([{ id: 1, nick: "x" }]); }, /can't run on a query set with from\(\)/);
       // An inner join narrows the rows, so it counts as a filter; an outer join and a relation path do not.
       assert.equal(await A.join(totals, totals.c.authorId.eq(Author.id)).update({ nick: "n" }), 2);
-      assert.throws(() => A.join(totals, totals.c.authorId.eq(Author.id), { outer: true }).update({ nick: "n" }), UnfilteredWriteError);
-      assert.throws(() => P.update({ authorName: Post.author.name }), UnfilteredWriteError);
+      await assert.rejects(async () => { await A.join(totals, totals.c.authorId.eq(Author.id), { outer: true }).update({ nick: "n" }); }, UnfilteredWriteError);
+      await assert.rejects(async () => { await P.update({ authorName: Post.author.name }); }, UnfilteredWriteError);
     } finally {
       await db.close();
     }

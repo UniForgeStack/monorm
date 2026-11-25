@@ -307,7 +307,6 @@ test("updateMany validation", async () => {
   await assert.rejects(Post.objects.updateMany([{ id: 1, title: "a" }, { id: 1, title: "b" }]), /appears twice/);
   await assert.rejects(Post.objects.updateMany([{ id: 1, title: "a" }, { id: 2, views: 3 }]), /same fields/);
   await assert.rejects(Post.objects.updateMany([{ id: 1 }]), /besides id/);
-  await assert.rejects(Post.objects.updateMany([{ id: 1, views: Post.views.add(1) as never }]), /plain values/);
   await assert.rejects(Post.objects.updateMany([{ id: 1, nope: 1 } as never]), /no field/);
   await assert.rejects(Post.objects.slice(0, 2).updateMany([{ id: 1, views: 1 }]), QueryError);
   await assert.rejects(Post.objects.updateMany([{ id: 1, views: 1 }], { batchSize: 0 }), RangeError);
