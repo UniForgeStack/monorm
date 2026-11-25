@@ -43,7 +43,7 @@ if TYPE_CHECKING:
     from .db import Database
     from .model import Registry
 
-__all__ = ["Admin", "AdminConfigError", "AdminSettingsError", "AdminResponse", "AdminTestClient", "AggregateColumn", "BrandConfig", "BrandLink", "ThemeConfig", "ActionDef", "ComputedColumn", "Context", "DateHierarchy", "EmbedConfig", "Fieldset", "FrameConfig", "InlineDef", "ListConfig", "NamedChoice", "NamedFilter", "PackageTabConfig", "Reply", "ResourceConfig", "RoleSeedReport", "RouteRequest", "Stream", "SyncReport", "action", "check", "download", "inline", "input", "log", "message", "redirect", "refresh", "register", "test_client", "threaded", "url"]
+__all__ = ["Admin", "AdminConfigError", "AdminSettingsError", "AdminResponse", "AdminTestClient", "AggregateColumn", "BrandConfig", "BrandLink", "ThemeConfig", "ActionDef", "ComputedColumn", "Context", "DateHierarchy", "EmbedConfig", "Fieldset", "FrameConfig", "InlineDef", "ListConfig", "NamedChoice", "NamedFilter", "PackageTabConfig", "Reply", "ResourceConfig", "RoleSeedReport", "RouteRequest", "Stream", "SwitcherBuild", "SwitcherConfig", "SwitcherService", "SyncReport", "action", "check", "download", "inline", "input", "log", "message", "redirect", "refresh", "register", "test_client", "threaded", "url"]
 
 DEFAULT_BASE_PATH = "/admin"
 
@@ -178,6 +178,39 @@ class BrandConfig(TypedDict, total=False):
     """Links in the header."""
     environment: str
     """A short label such as ``staging``, shown in the header."""
+    environment_level: Literal["info", "warning", "danger"]
+    """The colour of the environment label. ``production`` gives ``danger``, ``staging`` ``warning``, any other label ``info``."""
+
+
+class SwitcherService(TypedDict):
+    key: str
+    """Lower case letters, digits, ``-`` and ``_``; unique."""
+    title: str
+    """1 to 40 characters."""
+    url: NotRequired[str]
+    """A path that starts with ``/`` or an ``https`` URL. Needed for every service but the current one."""
+    icon: NotRequired[str]
+    """A lucide icon name such as ``server``."""
+    color: NotRequired[str]
+    """``#rgb`` or ``#rrggbb``. The colour of the current service sets the primary colour."""
+
+
+class SwitcherBuild(TypedDict, total=False):
+    """Plain strings that your project fills from its own environment. An empty string is no value."""
+
+    commit: str
+    built_at: str
+    deployed_at: str
+    tree: str
+
+
+class SwitcherConfig(TypedDict, total=False):
+    """The service switcher. The same table in ``monorm.toml`` (``[admin.switcher]``, ``${NAME}`` reads the environment) adds keys; a key set in both is an error."""
+
+    current: str
+    """The ``key`` of the service that this admin is."""
+    services: Sequence[SwitcherService]
+    build: SwitcherBuild
 
 
 class ThemeConfig(TypedDict, total=False):
@@ -232,6 +265,8 @@ class ResourceConfig(TypedDict, total=False):
     """The name in the navigation and the page heading (the model name, spaced, by default)."""
     group: str
     """The navigation group: one of ``groups`` of the admin."""
+    icon: str
+    """A lucide icon name such as ``book-open``, shown in the navigation."""
     allow: Sequence[Literal["read", "create", "update", "delete"]]
     """The operations that the resource allows for every user, superusers too."""
     perms: Sequence[Literal["read", "manage", "delete"]]
@@ -308,6 +343,7 @@ _INLINE_PAGE_REFUSED = {
     "files": "a file field needs a multipart body, which a change set does not carry",
     "title": "an inline is not in the navigation",
     "group": "an inline is not in the navigation",
+    "icon": "an inline is not in the navigation",
     "perms": "the permission of an inline follows its parent: use permission= of the inline",
     "label": "the permission of an inline follows its parent: use permission= of the inline",
     "field_permissions": "field permissions belong to the registered page of the child",
@@ -409,8 +445,9 @@ def _form(name: str, form: Any) -> Any:
 
 
 _LIST_KEYS = {"columns", "order", "page_size", "sortable", "search", "search_with", "filters", "named_filters", "computed", "aggregates", "labels", "empty", "empty_fields", "tabs", "editable", "badges", "date_hierarchy"}
-_RESOURCE_KEYS = {"list", "title", "group", "allow", "perms", "label", "field_permissions", "see", "change", "actions", "queryset", "can", "check_messages", "form", "readonly", "widgets", "form_component", "detail_tabs", "frames", "fieldsets", "relations", "files", "create", "update", "delete", "inputs", "allow_protected_writes", "inlines", "bulk_delete", "set_password"}
-_BRAND_KEYS = {"name", "logo", "colors", "links", "environment"}
+_RESOURCE_KEYS = {"list", "title", "group", "icon", "allow", "perms", "label", "field_permissions", "see", "change", "actions", "queryset", "can", "check_messages", "form", "readonly", "widgets", "form_component", "detail_tabs", "frames", "fieldsets", "relations", "files", "create", "update", "delete", "inputs", "allow_protected_writes", "inlines", "bulk_delete", "set_password"}
+_BRAND_KEYS = {"name", "logo", "colors", "links", "environment", "environment_level"}
+_SWITCHER_KEYS = {"current", "services", "build"}
 _THEME_KEYS = {"title", "logo", "color"}
 Strategy = Literal["page", "model", "access"]
 
@@ -1058,7 +1095,8 @@ class Admin:
     (``{"support": ["orders.*", "-shops.see_credential"]}``) that ``seed_roles`` writes to the auth tables.
     ``brand`` sets the name, logo, colors, header links and environment label of the UI. ``theme`` sets the title, the logo and the
     brand colour in one small dict (``{"title": "Acme", "logo": "/static/acme.svg", "color": "#0a7d5a"}``); it must not repeat a ``brand`` value. ``groups`` is the order of the
-    navigation groups; a resource names one of them with ``group``. ``widgets`` maps a field (``"Book.title"``), a nested subfield (``"Geo.lat"``)
+    navigation groups; a resource names one of them with ``group`` and may set an ``icon`` (a lucide name), and ``group_icons`` maps a group to its icon.
+    ``switcher`` lists the services of your deploy (``current``, ``services`` with ``key``, ``title``, ``url``, ``icon`` and ``color``) and the ``build`` strings; ``[admin.switcher]`` of ``monorm.toml`` takes the same keys. ``widgets`` maps a field (``"Book.title"``), a nested subfield (``"Geo.lat"``)
     or a type name (``"Text"``, ``"Status"``, a nested type) to a widget for every resource; a resource ``widgets`` entry wins at one level.
     ``statement_timeout`` is the time limit in seconds of each request's database statements (15 by default, 0 for none).
     The admin ignores tenancy: a read default that reads a ``scope`` value is off in every admin read, so staff see the rows of all tenants.
@@ -1080,6 +1118,8 @@ class Admin:
         theme: ThemeConfig | None = None,
         widgets: Mapping[str, str] | None = None,
         groups: Sequence[str] = (),
+        group_icons: Mapping[str, str] | None = None,
+        switcher: SwitcherConfig | None = None,
         frame_origins: Sequence[str] = (),
         frame_cards: Sequence[FrameConfig] = (),
         embeds: Mapping[str, EmbedConfig] | None = None,
@@ -1101,6 +1141,11 @@ class Admin:
         self._theme = dict(theme) if theme else None
         self._widgets = _widgets(None, widgets) if widgets else None
         self._groups = list(groups)
+        self._group_icons = dict(group_icons) if group_icons else None
+        if unknown := sorted(set(switcher or {}) - _SWITCHER_KEYS):
+            raise AdminConfigError(f"unknown switcher option {unknown[0]!r}")
+        self._switcher = dict(switcher) if switcher else None
+        self.switcher_settings: Mapping[str, Any] | None = None  # the `[admin.switcher]` table of monorm.toml, set by the serve mode
         self._frame_origins = list(frame_origins)
         self._frame_cards = list(frame_cards)
         self._embeds = dict(embeds or {})
@@ -1252,7 +1297,7 @@ class Admin:
                 raise AdminConfigError(f"{name}: bulk_delete is True or False")
             resource["bulk_delete"] = config["bulk_delete"]
         raw: dict[str, Any] = dict(config)
-        for key in ("title", "group", "allow", "perms", "label", "field_permissions"):
+        for key in ("title", "group", "icon", "allow", "perms", "label", "field_permissions"):
             if key in raw:
                 value = raw[key]
                 resource[key] = value if isinstance(value, str) else list(value)
@@ -1291,6 +1336,12 @@ class Admin:
             out["widgets"] = self._widgets
         if self._groups:
             out["groups"] = self._groups
+        if self._group_icons:
+            out["group_icons"] = self._group_icons
+        if self._switcher is not None:
+            out["switcher"] = self._switcher
+        if self.switcher_settings:
+            out["switcher_file"] = self.switcher_settings
         if self._statement_timeout != 15.0:
             out["statement_timeout_ms"] = round(self._statement_timeout * 1000)
         if self._frame_origins:

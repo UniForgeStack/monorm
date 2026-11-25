@@ -1913,6 +1913,18 @@ A page that the config puts in another group keeps that group.
 A resource of yours may name "Users and access" on purpose: it then shares the group with the built-in pages, with no message.
 The metadata is built once per process.
 
+`brand.environment_level` (`environmentLevel` in TypeScript) is the colour of the environment label: `info`, `warning` or `danger`.
+Without it, the label picks the level: `production` and `prod` give `danger`, `staging` gives `warning`, and any other label gives `info`.
+The case of the label does not matter.
+A level without `brand.environment` is an error.
+`/site` returns it as `brand.environment_level`.
+
+A resource may set `icon`, and `group_icons` (`groupIcons`) maps a group to an icon.
+An icon is a [lucide](https://lucide.dev/icons) name in kebab case, such as `book-open`, with at most 64 characters.
+The config checks the form of the name only, and the UI decides which names it knows.
+A key of `group_icons` that `groups` does not list is an error.
+The `icon` of a resource is in its metadata, and the `icon` of a group is in its `nav` entry.
+
 ```python
 admin = Admin(
     theme={"title": "Acme", "logo": "/static/logo.svg", "color": "#0b5fff"},
@@ -1934,6 +1946,71 @@ admin.register(Post, { group: "Content", title: "Articles" });
 The sidebar lists the groups as sections that collapse, with a filter box.
 The header button hides the sidebar, and the UI keeps that choice.
 The sign-in page shows no brand, because the metadata route needs a session.
+
+### Service switcher
+
+`switcher` names the services of one deploy, so a staff user can move between them.
+It holds three keys.
+
+| Key | Meaning |
+|---|---|
+| `current` | The `key` of the service that this admin is. It must name a service of `services`. |
+| `services` | A list of `{key, title, url, icon, color}`. `key` is lower case letters, digits, `-` and `_` (at most 32 characters, unique). `title` has 1 to 40 characters. `url` is a path that starts with `/` or an `https` URL, and every service but the current one needs it. `icon` is a lucide name. `color` is `#rgb` or `#rrggbb`. |
+| `build` | Four plain strings: `commit`, `built_at` (`builtAt`), `deployed_at` (`deployedAt`) and `tree`. MonOrm reads no environment variable for them: your project fills them. An empty string is no value. |
+
+The `color` of the current service sets the primary colour, like `brand.colors.primary`.
+If the brand or the theme also sets the primary colour, that is an error.
+The list is the same in every deploy, so each deploy only changes `current`.
+
+`/site` returns the checked table as `brand.switcher`: `current`, `services` (the `url` of the current one is `null`), `subheader`, `rows` and `build`.
+The `subheader` is `<deployed_at> · <first 7 characters of tree>`, or `dev` when both are missing.
+The `rows` are `built <built_at> · commit <first 7 characters of commit>`, `deployed <deployed_at>` and `tree <first 7 characters of tree>`, and a row without a value is left out.
+A site without `switcher` has `brand.switcher: null`.
+
+`[admin.switcher]` of `monorm.toml` takes the same keys, and every string in it may hold `${NAME}`, which reads the environment variable `NAME`:
+
+```toml
+[admin.switcher]
+current = "admin"
+
+[admin.switcher.build]
+commit = "${GIT_SHA}"
+built_at = "${BUILD_TIME}"
+tree = "${TREE_ID}"
+```
+
+An unset variable gives an empty string, which is no value.
+`monorm admin` merges the table with the `switcher` of the object, key by key.
+A key that both set is an error that names the key.
+An unknown key is an error.
+
+```python
+admin = Admin(
+    switcher={
+        "current": "admin",
+        "services": [
+            {"key": "admin", "title": "Admin", "icon": "shield", "color": "#336699"},
+            {"key": "ops", "title": "Ops", "icon": "server", "url": "https://ops.example.com"},
+        ],
+        "build": {"deployed_at": "2026-11-24"},
+    },
+)
+```
+
+```ts
+const admin = new Admin(registry, {
+  switcher: {
+    current: "admin",
+    services: [
+      { key: "admin", title: "Admin", icon: "shield", color: "#336699" },
+      { key: "ops", title: "Ops", icon: "server", url: "https://ops.example.com" },
+    ],
+    build: { deployedAt: "2026-11-24" },
+  },
+});
+```
+
+This release sends the checked values only. The sidebar header does not show the switcher yet.
 
 ### `admin.url`
 
@@ -2063,6 +2140,7 @@ db_settings = { "app.tenant" = "acme" }
 | `origins` | none | A list of extra origins that a write may come from, such as `"https://admin.example.com"`. |
 | `trusted_proxies` | none | A list of peer IP addresses whose `X-Forwarded-For` the login limits believe, such as `"10.0.0.1"`. |
 | `oidc` | none | A table for [single sign-on](#single-sign-on-oidc). The client secret is the variable `MONORM_ADMIN_OIDC_CLIENT_SECRET`; a `client_secret` key is an error. |
+| `switcher` | none | A table for the [service switcher](#service-switcher). A string may hold `${NAME}`. A key that the `Admin` object also sets is an error. |
 
 `MONORM_ADMIN_HOST` and `MONORM_ADMIN_PORT` override `host` and `port`.
 An unknown key under `[admin]` is an error that names the key and the settings file.
