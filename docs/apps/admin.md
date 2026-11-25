@@ -672,8 +672,8 @@ A host route adds `inputs`, `service` (whether a service wrote) and `allow_prote
 A widget follows the type unless the config sets one (see [Layout, read-only fields and widgets](#layout-read-only-fields-and-widgets)): a checkbox for a Boolean, a select for an enum, a text area for long text, JSON and lists, a date or time input, and a text input for the rest.
 A key field is read-only on the change form.
 The footer is sticky and stays at the bottom of the page.
-On the change form it has Delete on the left (when the user may delete), and on the right the `submit` actions in their `variant`, then "Save" (back to the record), "Save and continue" (stay in the form, on the new record for a create) and "Save and add another" (an empty create form).
-The list, detail and form pages start with breadcrumbs (the site, the resource, the record) in place of a back link.
+On the change form it has Delete on the left (when the user may delete), and on the right the `submit` actions in their `variant`, then "Save and add another" (an empty create form), "Save and continue" (stay in the form, on the new record for a create) and "Save" (back to the record).
+The list, detail and form pages start with breadcrumbs ("Home", the resource, the record) in place of a back link.
 The header of a detail page shows each `detail` action without a `menu` as a button, and each `menu` as one dropdown.
 After three buttons the rest go to "More", which also holds "History" (a link to the audit log filtered on the record, when the site has the audit page).
 A `+` button opens the create form when the user may add.

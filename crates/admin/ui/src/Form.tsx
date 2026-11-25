@@ -11,7 +11,10 @@ import { ValueControl } from "./controls";
 import { InlineSections, planInlines, startInlines, type InlineState } from "./Inlines";
 import { InputFields, inputBody, startInputs, type InputValues } from "./Inputs";
 import { actionDisabled, ActionDialog, needsDialog, request, toast, useFinish } from "./Actions";
-import { Alert, Button, message } from "./ui";
+import { Breadcrumbs, StickyFooter } from "./Bars";
+import { ActionFace, DeleteButton, actionLook, loadedValues } from "./RecordActions";
+import { Alert, message } from "./ui";
+import { Button as KitButton } from "./components/ui/button";
 import { Collapsible } from "./components/ui/collapsible";
 import { Label } from "./components/ui/label";
 import { cn } from "./lib/utils";
@@ -31,7 +34,7 @@ export function FormPage({ resource, id, zone, site }: { resource: string; id?: 
   const back = id === undefined ? listBack(resource) : detailUrl(resource, id);
   const head = (
     <>
-      <p><Link href={back}>← {id === undefined ? meta.title : `${meta.title} ${decodeURIComponent(id)}`}</Link></p>
+      <Breadcrumbs group={meta.group} items={id === undefined ? [{ label: meta.title, href: listBack(resource) }, { label: "Add" }] : [{ label: meta.title, href: listBack(resource) }, { label: decodeURIComponent(id), href: back }, { label: "Change" }]} />
       <h1>{id === undefined ? `Add ${meta.title}` : `Change ${meta.title}`} {id !== undefined && <span className="muted">{decodeURIComponent(id)}</span>}</h1>
     </>
   );
@@ -537,24 +540,29 @@ function FormBody({ meta, columns, cells, flags, rows, id, zone, site, reload, m
         </div>
       ))}
       {inlined && <InlineSections meta={meta} state={inl} setState={setInl} errors={problems.fields} conflicts={conflicts} zone={zone} site={site} parentKey={id} />}
-      <div className="savebar sticky bottom-0 z-10 mt-2 flex flex-wrap items-center gap-2 rounded-xl border border-border bg-card/95 p-3 shadow-md backdrop-blur">
-        <Button type="submit" disabled={busy}>Save</Button>
+      <StickyFooter left={!creating && !modal && id !== undefined ? <DeleteButton meta={meta} id={id} flags={flags ?? {}} loaded={loadedValues(meta, columns, columns.map((c) => cells[c.label]))} /> : undefined}>
         {modal ? (
-          <Button type="button" variant="plain" disabled={busy} onClick={modal.cancel}>Cancel</Button>
+          <>
+            <KitButton type="submit" disabled={busy}>Save</KitButton>
+            <KitButton type="button" variant="outline" disabled={busy} onClick={modal.cancel}>Cancel</KitButton>
+          </>
         ) : (
           <>
-            <Button type="button" variant="plain" disabled={busy} onClick={on("continue")}>Save and continue</Button>
-            <Button type="button" variant="plain" disabled={busy} onClick={on("add")}>Save and add another</Button>
+            <Link href={creating ? listBack(meta.name) : detailUrl(meta.name, id)} className="mr-2 text-sm">Cancel</Link>
             {submitActions.map((a) => {
               const reason = creating ? undefined : actionDisabled(a, meta.can ?? [], flags ?? {});
               return (
-                <Button key={a.name} type="button" variant="plain" disabled={busy || reason !== undefined} title={reason} onClick={(e) => { e.preventDefault(); void submit("save", a); }}>Save and {a.label.toLowerCase()}</Button>
+                <KitButton key={a.name} type="button" variant={actionLook(a)} disabled={busy || reason !== undefined} title={reason} onClick={(e) => { e.preventDefault(); void submit("save", a); }}>
+                  <ActionFace a={{ icon: a.icon, label: `Save and ${a.label.toLowerCase()}` }} />
+                </KitButton>
               );
             })}
-            <Link href={creating ? listBack(meta.name) : detailUrl(meta.name, id)} className="ml-auto text-sm">Cancel</Link>
+            <KitButton type="button" variant="outline" disabled={busy} onClick={on("add")}>Save and add another</KitButton>
+            <KitButton type="button" variant="outline" disabled={busy} onClick={on("continue")}>Save and continue</KitButton>
+            <KitButton type="submit" disabled={busy}>Save</KitButton>
           </>
         )}
-      </div>
+      </StickyFooter>
       {afterSave && <ActionDialog key={afterSave.action.name} resource={meta.name} action={afterSave.action} target={{ keys: [afterSave.key], what: "this record" }} onClose={() => { const key = afterSave.key; setAfterSave(null); go(detailUrl(meta.name, key)); }} />}
       {creator && (() => {
         const target = site?.resources.find((r) => r.name === creator.relation.target);

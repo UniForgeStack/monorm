@@ -150,9 +150,17 @@ export interface ActionInfo {
   label: string;
   placement: "bulk" | "row" | "detail" | "list" | "submit";
   confirm: string | null;
+  /** How the button looks: `default`, `primary`, `success`, `warning` or `danger`. */
+  variant: ActionVariant | null;
+  /** A lucide name in kebab case. */
+  icon: string | null;
+  /** A `detail` action with a `menu` joins the dropdown of that name in the header. */
+  menu: string | null;
   inputs: InputInfo[];
   applies: boolean;
 }
+
+export type ActionVariant = "default" | "primary" | "success" | "warning" | "danger";
 
 /** What an action answers: the SPA shows the message, follows the redirect, saves the download or reloads the data. */
 export type ActionResult =

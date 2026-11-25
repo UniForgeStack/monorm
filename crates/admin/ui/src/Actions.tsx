@@ -65,7 +65,7 @@ export function actionDisabled(a: api.ActionInfo, rules: readonly string[], flag
 
 /** An action as the dialog shows it. The built-in bulk delete has the same shape. */
 export function deleteAction(meta: api.Resource): api.ActionInfo {
-  return { name: "bulk_delete", label: "Delete", placement: "bulk", confirm: "This cannot be undone.", inputs: meta.inputs ?? [], applies: false };
+  return { name: "bulk_delete", label: "Delete", placement: "bulk", confirm: "This cannot be undone.", variant: "danger", icon: null, menu: null, inputs: meta.inputs ?? [], applies: false };
 }
 
 /** An action that needs no question runs at once. A delete always asks. */

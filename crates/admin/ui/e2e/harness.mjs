@@ -174,12 +174,12 @@ async def reopen_ticket(ctx, qs):
     return message("Reopened", "success")
 
 
-@action(label="Review", placement="detail", can=Ticket.status == "open", replace_change=True)
+@action(label="Review", placement="detail", icon="eye", can=Ticket.status == "open", replace_change=True)
 async def review_ticket(ctx, qs):
     return message("Reviewed", "success")
 
 
-@action(label="Mark closed", placement="submit", can=Ticket.status == "closed")
+@action(label="Mark closed", placement="submit", variant="success", can=Ticket.status == "closed")
 async def mark_closed(ctx, qs):
     return message("Marked closed", "success")
 
