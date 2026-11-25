@@ -4,7 +4,7 @@
 use monorm::{
     dialect::Dialect,
     extension::{AddedTrigger, ExtensionRecord},
-    ir::{ColType, FieldIr, IndexColumnIr, IndexIr, ModelIr, OnDelete, RelationIr, SchemaIr, TriggerEvent, TriggerIr, TriggerTiming},
+    ir::{ColType, FieldIr, IndexColumnIr, IndexIr, ModelIr, OnDelete, RelationIr, SchemaIr, ScopeSettingsIr, TriggerEvent, TriggerIr, TriggerTiming},
     sql::{column_type, ident, literal, skip_guard},
     tracking::Tracked,
     writes::{AssignValue, PublishedScopeKey, WriteKind},
@@ -145,7 +145,7 @@ fn xact(dialect: Dialect) -> Option<&'static str> {
     match dialect { Dialect::Postgres => Some("pg_current_xact_id()::text::bigint"), Dialect::Sqlite => None }
 }
 
-fn scope_value(key: &str) -> String { format!("nullif(current_setting({}, true), '')", literal(&format!("scope.{key}"))) }
+fn scope_value(key: &str, names: &ScopeSettingsIr) -> String { format!("nullif(current_setting({}, true), '')", literal(&names.key_setting(key))) }
 
 fn sqlite_value(field: &TrackedField, value: &str) -> String {
     if field.ty == ColType::Json || field.array { format!("json({value})") }
@@ -178,12 +178,12 @@ fn event_columns(dialect: Dialect, t: &Tracker) -> Vec<String> {
 }
 
 /// The values of one event, in the order of `event_columns`; `prefix` names the row, `label` is a SQL expression.
-fn event_values(dialect: Dialect, t: &Tracker, label: &str, prefix: &str) -> Vec<String> {
+fn event_values(dialect: Dialect, names: &ScopeSettingsIr, t: &Tracker, label: &str, prefix: &str) -> Vec<String> {
     let mut values: Vec<String> = t.key.iter().map(|k| format!("{prefix}.{}", ident(&k.column))).collect();
     values.extend([label.to_owned(), data_expr(dialect, &t.fields, prefix)]);
     if let Some(x) = xact(dialect) {
         values.push(x.to_owned());
-        values.extend(t.scope.iter().map(|k| scope_value(k)));
+        values.extend(t.scope.iter().map(|k| scope_value(k, names)));
     }
     values
 }
@@ -192,21 +192,21 @@ fn placeholder(dialect: Dialect, n: usize) -> String {
     match dialect { Dialect::Postgres => format!("${n}"), Dialect::Sqlite => "?".to_owned() }
 }
 
-fn select_from_root(dialect: Dialect, t: &Tracker) -> String {
+fn select_from_root(dialect: Dialect, names: &ScopeSettingsIr, t: &Tracker) -> String {
     let label = format!("CAST({} AS text)", placeholder(dialect, 1));
-    format!("INSERT INTO {} ({}) SELECT {} FROM {} t", ident(&t.event_table), event_columns(dialect, t).join(", "), event_values(dialect, t, &label, "t").join(", "), ident(&t.root_table))
+    format!("INSERT INTO {} ({}) SELECT {} FROM {} t", ident(&t.event_table), event_columns(dialect, t).join(", "), event_values(dialect, names, t, &label, "t").join(", "), ident(&t.root_table))
 }
 
 /// One event of one row; parameters: the label, then the key values. Returns the id of the event.
-fn manual_sql(dialect: Dialect, t: &Tracker) -> String {
+fn manual_sql(dialect: Dialect, names: &ScopeSettingsIr, t: &Tracker) -> String {
     let keys: Vec<String> = t.key.iter().enumerate().map(|(i, k)| format!("t.{} = {}", ident(&k.column), placeholder(dialect, i + 2))).collect();
-    format!("{} WHERE {} RETURNING {}", select_from_root(dialect, t), keys.join(" AND "), ident("id"))
+    format!("{} WHERE {} RETURNING {}", select_from_root(dialect, names, t), keys.join(" AND "), ident("id"))
 }
 
 /// One event per row of the table, in key order; parameter: the label. Returns one row with the count `n` on PostgreSQL, and one row per event on SQLite.
-fn backfill_sql(dialect: Dialect, t: &Tracker) -> String {
+fn backfill_sql(dialect: Dialect, names: &ScopeSettingsIr, t: &Tracker) -> String {
     let order: Vec<String> = t.key.iter().map(|k| format!("t.{}", ident(&k.column))).collect();
-    let insert = format!("{} ORDER BY {}", select_from_root(dialect, t), order.join(", "));
+    let insert = format!("{} ORDER BY {}", select_from_root(dialect, names, t), order.join(", "));
     match dialect {
         Dialect::Postgres => format!("WITH ins AS ({insert} RETURNING 1) SELECT count(*) AS n FROM ins"),
         Dialect::Sqlite => format!("{insert} RETURNING 1"),
@@ -249,7 +249,7 @@ fn change_test(dialect: Dialect, columns: &[String]) -> String {
 }
 
 /// The triggers of one tracker, in the order of its event kinds.
-fn build_triggers(dialect: Dialect, t: &Tracker, touched: Option<&str>, roles: &[String]) -> Vec<TriggerIr> {
+fn build_triggers(dialect: Dialect, names: &ScopeSettingsIr, t: &Tracker, touched: Option<&str>, roles: &[String]) -> Vec<TriggerIr> {
     t.kinds.iter().map(|kind| {
         let (event, prefix) = match kind.as_str() {
             "insert" => (TriggerEvent::Insert, "NEW"),
@@ -266,7 +266,7 @@ fn build_triggers(dialect: Dialect, t: &Tracker, touched: Option<&str>, roles: &
             when = Some(match when { Some(w) => format!("({w}) AND {guard}"), None => guard });
         }
         let label = label_expr(dialect, t, &literal(t.label.as_deref().unwrap_or(kind)));
-        let insert = format!("INSERT INTO {} ({}) VALUES ({})", ident(&t.event_table), event_columns(dialect, t).join(", "), event_values(dialect, t, &label, prefix).join(", "));
+        let insert = format!("INSERT INTO {} ({}) VALUES ({})", ident(&t.event_table), event_columns(dialect, t).join(", "), event_values(dialect, names, t, &label, prefix).join(", "));
         let body = match dialect { Dialect::Postgres => format!("BEGIN {insert}; RETURN NULL; END;"), Dialect::Sqlite => insert };
         TriggerIr { name: trigger_name(t, kind), timing: TriggerTiming::After, events: vec![event], when, body: Some(body), skippable: Some("history".into()), ..Default::default() }
     }).collect()
@@ -365,8 +365,8 @@ fn parse(ir: &SchemaIr, d: &monorm::extension::Declaration) -> Result<(Tracker, 
     }
 
     let mut tracker = Tracker { event_model: model_name, event_table, root_model: root.name.clone(), root_table: root.table.clone(), kinds, row, label, when, full, key, fields: tracked, scope, trigger_suffix, event_sql: String::new(), backfill_sql: String::new(), restore_sql: restore_sql(ir.dialect) };
-    tracker.event_sql = manual_sql(ir.dialect, &tracker);
-    tracker.backfill_sql = backfill_sql(ir.dialect, &tracker);
+    tracker.event_sql = manual_sql(ir.dialect, &ir.scope_settings, &tracker);
+    tracker.backfill_sql = backfill_sql(ir.dialect, &ir.scope_settings, &tracker);
     let model = event_model(&tracker, root).map_err(|e| fail(d, e))?;
     Ok((tracker, model))
 }
@@ -421,7 +421,7 @@ fn typed(dialect: Dialect, n: usize, field: &FieldIr) -> String {
     }
 }
 
-fn version_model(dialect: Dialect, model: &ModelIr, of: &FieldIr, pk: &FieldIr, scope: &[String]) -> VersionModel {
+fn version_model(dialect: Dialect, names: &ScopeSettingsIr, model: &ModelIr, of: &FieldIr, pk: &FieldIr, scope: &[String]) -> VersionModel {
     let (table, number, of_column, pk_column) = (ident(&model.table), ident("version_number"), ident(&of.column), ident(&pk.column));
     let entity = typed(dialect, 1, of);
     let latest_sql = format!("SELECT {pk_column} AS id, {} AS content_hash, {} AS change_type FROM {table} WHERE {of_column} = {entity} ORDER BY {number} DESC LIMIT 1", ident("content_hash"), ident("change_type"));
@@ -438,7 +438,7 @@ fn version_model(dialect: Dialect, model: &ModelIr, of: &FieldIr, pk: &FieldIr, 
         columns.push(ident("xact_id"));
         values.push(expr.to_owned());
         columns.extend(scope.iter().map(|key| ident(key)));
-        values.extend(scope.iter().map(|key| scope_value(key)));
+        values.extend(scope.iter().map(|key| scope_value(key, names)));
     }
     let insert_sql = format!("WITH k AS (SELECT {entity} AS v) INSERT INTO {table} ({}) SELECT {} FROM k RETURNING {pk_column} AS id", columns.join(", "), values.join(", "));
     let lock_sql = (dialect == Dialect::Postgres).then(|| format!("SELECT 1 AS locked FROM (SELECT pg_advisory_xact_lock(hashtext({}), hashtext(CAST($1 AS text)))) l", literal(&model.table)));
@@ -511,7 +511,7 @@ pub fn versions(ir: &mut SchemaIr) -> Result<(), String> {
         let restored_from = RelationIr { foreign_key: true, on_delete: Some(OnDelete::SetNull), ..RelationIr::one("restored_from_version", &model.name, "restored_from", &pk.name) };
         add_version_fields(ir, d, &version_fields(&pk, &scope), &index, &restored_from)?;
         publish_scope_keys(ir, &scope);
-        let record = version_model(ir.dialect, &model, &of, &pk, &scope);
+        let record = version_model(ir.dialect, &ir.scope_settings, &model, &of, &pk, &scope);
         let data = serde_json::to_value(&record).map_err(|e| e.to_string())?;
         ir.behavior.extension_records.push(ExtensionRecord { source: SOURCE.into(), model: d.model.clone(), kind: VERSIONS_KIND.into(), data });
     }
@@ -534,7 +534,7 @@ pub fn triggers(ir: &mut SchemaIr) -> Result<(), String> {
             .find(|a| a.model == t.root_model && a.on.contains(&WriteKind::Update) && matches!(a.value, AssignValue::Now))
             .and_then(|a| root.fields.iter().find(|f| f.name == a.field)).map(|f| f.column.clone());
         let lowered = ir.behavior.lowered_models.contains(&t.root_model);
-        for trigger in build_triggers(dialect, &t, touched.as_deref(), &roles) {
+        for trigger in build_triggers(dialect, &ir.scope_settings, &t, touched.as_deref(), &roles) {
             let present = ir.models.iter().find(|m| m.name == t.root_model).is_some_and(|m| m.triggers.iter().any(|x| x.name == trigger.name));
             if present { continue; }
             if lowered {
@@ -639,6 +639,25 @@ mod tests {
         assert_eq!(keys, ["user", "request"]);
         let event = ir.models.last().unwrap();
         assert!(event.fields.iter().filter(|f| ["user", "request"].contains(&f.name.as_str())).all(|f| f.nullable && f.ty == ColType::String));
+    }
+
+    #[test]
+    fn the_scope_columns_of_an_event_read_the_settings_of_the_ir() {
+        let declarations = vec![at("Post", serde_json::json!({"scope": ["user"]}))];
+        let build = |names: ScopeSettingsIr| {
+            let mut ir = schema("postgres", declarations.clone());
+            ir.scope_settings = names;
+            monorm::extension::capture_storage(&mut ir).unwrap();
+            events(&mut ir).unwrap();
+            triggers(&mut ir).unwrap();
+            let sql: Vec<String> = ir.models.iter().flat_map(|m| m.triggers.iter()).filter_map(|t| t.body.clone()).collect();
+            let record = serde_json::to_string(&ir.behavior.extension_records).unwrap();
+            format!("{}\n{record}", sql.join("\n"))
+        };
+        let default = build(ScopeSettingsIr::default());
+        assert!(default.contains("current_setting('scope.user', true)"), "{default}");
+        let renamed = build(ScopeSettingsIr { overrides: [("user".to_owned(), "tenant.user".to_owned())].into(), bypass: String::new() });
+        assert!(renamed.contains("current_setting('tenant.user', true)") && !renamed.contains("scope.user"), "{renamed}");
     }
 
     #[test]

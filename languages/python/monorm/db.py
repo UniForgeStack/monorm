@@ -110,7 +110,7 @@ class QueryEvent:
     #: True for SQL the caller wrote as a string with no parameters (:meth:`Database.execute`):
     #: it can hold literal values. ORM-built SQL and :meth:`Database.fetch` are False.
     raw: bool = False
-    #: The database settings in force for the statement, such as ``scope.shop``.
+    #: The database settings in force for the statement, such as ``scope.shop`` (the default name of a key).
     settings: Mapping[str, str] = field(default_factory=dict)
 
 
@@ -138,8 +138,10 @@ class Database:
         # The engines with settings, by (engine, names, values): one engine for each setting set, so
         # that the statements prepared on it stay valid.
         self._settings_engines: dict[tuple[Any, ...], _native.Engine] = {}
-        # The scope keys that a policy or trigger of the database reads; each goes out as `scope.<key>`.
-        self._published: tuple[str, ...] = ()
+        # The scope keys that a policy or trigger of the database reads, each with its setting name.
+        self._published: tuple[tuple[str, str], ...] = ()
+        # The setting that lists the keys an `unscoped` block opens.
+        self._bypass_setting = ""
 
     @property
     def primary(self) -> Database:
@@ -159,7 +161,7 @@ class Database:
         if (skip := _skip.get()) and sqlite:
             raise QueryError("skip_triggers() skips triggers of the database; sqlite has none that a block can skip")
         if (open_ := _open.get()) and not sqlite:
-            names.append("monorm.bypass")
+            names.append(self._root._bypass_setting)
             values.append("{" + ",".join(sorted(open_)) + "}")
         allowed = allowed_writes()
         if allowed and not sqlite:
@@ -169,9 +171,9 @@ class Database:
             values.append("{" + ",".join(sorted(skip)) + "}")
         if self._root._published and not sqlite:
             current = _scope.get()
-            for name in self._root._published:
+            for name, setting in self._root._published:
                 if name in current:
-                    names.append(f"scope.{name}")
+                    names.append(setting)
                     values.append(_setting_text(current[name]))
         # Before any block set a setting, no transaction carries one.
         if not names and (sqlite or self._tx() is None or not self._root._settings_engines):
@@ -709,7 +711,8 @@ async def connect(
     readers = [await _native.connect(r, schema, max_connections, list(_disable)) for r in replicas]
     db = Database(engine, url, registry, readers, allow_unfiltered_writes)
     _declared[db] = None if engine.scope_keys_open() else frozenset(engine.scope_keys())
-    db._published = tuple(sorted(engine.published_scope_keys()))
+    db._published = tuple(sorted(engine.published_scope_settings()))
+    db._bypass_setting = engine.bypass_setting()
     _skippable[db] = frozenset(engine.skippable_triggers())
     if default:
         _default = db
@@ -740,8 +743,8 @@ def _scope_block(values: dict[str, Any]) -> Iterator[None]:
 def unscoped(*keys: str) -> AbstractContextManager[None]:
     """``with monorm.unscoped("shop"):`` — turns off the fill, the check and the app read filter
     of each named scope key, in the block and in tasks it starts. On Postgres it also sets
-    ``monorm.bypass`` to the open keys for the policies of the database. A write that needs
-    a key that is neither open nor set raises :class:`~monorm.ScopeMissing`.
+    the bypass setting (``monorm.bypass`` by default) to the open keys for the policies of the
+    database. A write that needs a key that is neither open nor set raises :class:`~monorm.ScopeMissing`.
 
     Needs at least one key, and each key must be declared by the schema of an open database
     (``ValueError`` otherwise). A nested block adds its keys to those of the outer block."""

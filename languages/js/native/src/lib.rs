@@ -836,6 +836,13 @@ fn down_args(steps: u32, target: Option<String>, ops_migration: Option<String>, 
     Ok((down, slice))
 }
 
+/// A scope key and the database setting that carries its value.
+#[napi(object)]
+pub struct ScopeSetting {
+    pub key: String,
+    pub setting: String,
+}
+
 // -- trace ----------------------------------------------------------------------------------------
 
 /// One statement the database ran: `start` in Unix milliseconds, `duration` in milliseconds.
@@ -1415,10 +1422,16 @@ impl Engine {
         self.schema.scope_keys().into_iter().collect()
     }
 
-    /// The scope keys that an object of the database reads: each is sent as the setting `scope.<key>`.
+    /// The scope keys that an object of the database reads, each with the setting that carries its value.
     #[napi]
-    pub fn published_scope_keys(&self) -> Vec<String> {
-        self.schema.published_scope_keys().map(str::to_owned).collect()
+    pub fn published_scope_settings(&self) -> Vec<ScopeSetting> {
+        self.schema.published_scope_settings().map(|(key, setting)| ScopeSetting { key: key.to_owned(), setting }).collect()
+    }
+
+    /// The setting that lists the keys an `unscoped` block opens.
+    #[napi]
+    pub fn bypass_setting(&self) -> String {
+        self.schema.bypass_setting().to_owned()
     }
 
     /// Session advisory lock on a pinned connection; `null` when it is not taken.

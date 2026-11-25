@@ -189,6 +189,7 @@ pub struct Schema {
     pub bypass_roles: Vec<String>,
     pub write_rules: Vec<monorm::writes::WriteRule>,
     published_scope_keys: std::collections::BTreeSet<String>,
+    scope_settings: monorm::ir::ScopeSettingsIr,
 }
 
 /// The view and check records must name known models, and a view shares the table of its root.
@@ -290,10 +291,15 @@ impl Schema {
         out
     }
 
-    /// The scope keys that an object of the database reads (a policy, a trigger). A statement sends each one that
-    /// has a value as the transaction setting `scope.<key>`.
-    pub fn published_scope_keys(&self) -> impl Iterator<Item = &str> {
-        self.published_scope_keys.iter().map(String::as_str)
+    /// The scope keys that an object of the database reads (a policy, a trigger), each with the setting that
+    /// carries its value. A statement sends each key that has a value as that transaction setting.
+    pub fn published_scope_settings(&self) -> impl Iterator<Item = (&str, String)> {
+        self.published_scope_keys.iter().map(|key| (key.as_str(), self.scope_settings.key_setting(key)))
+    }
+
+    /// The setting that lists the keys an `unscoped` block opens.
+    pub fn bypass_setting(&self) -> &str {
+        self.scope_settings.bypass_setting()
     }
 
     /// The names that `skip_triggers` accepts: the `skippable` name of each trigger of a model.
@@ -539,6 +545,7 @@ impl Schema {
             bypass_roles: ir.bypass_roles,
             write_rules: ir.behavior.write_rules,
             published_scope_keys: ir.behavior.published_scope_keys.iter().map(|k| k.key.clone()).collect(),
+            scope_settings: ir.scope_settings,
         })
     }
 

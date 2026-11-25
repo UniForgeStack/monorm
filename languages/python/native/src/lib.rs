@@ -1117,9 +1117,14 @@ impl Engine {
         self.schema.scope_keys().into_iter().collect()
     }
 
-    /// The scope keys that an object of the database reads: each is sent as the setting `scope.<key>`.
-    fn published_scope_keys(&self) -> Vec<String> {
-        self.schema.published_scope_keys().map(str::to_owned).collect()
+    /// The scope keys that an object of the database reads, each with the setting that carries its value.
+    fn published_scope_settings(&self) -> Vec<(String, String)> {
+        self.schema.published_scope_settings().map(|(key, setting)| (key.to_owned(), setting)).collect()
+    }
+
+    /// The setting that lists the keys an `unscoped` block opens.
+    fn bypass_setting(&self) -> String {
+        self.schema.bypass_setting().to_owned()
     }
 
     /// Session advisory lock on a pinned connection; `None` when it is not taken.

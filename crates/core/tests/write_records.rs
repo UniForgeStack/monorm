@@ -161,7 +161,24 @@ fn published_scope_keys_are_scope_keys() {
     assert!(none.scope_keys().is_empty());
     let schema = prepare(json!({"published_scope_keys": [{"source": "ext-a", "key": "user"}]})).unwrap();
     assert_eq!(schema.scope_keys().into_iter().collect::<Vec<_>>(), ["user"]);
-    assert_eq!(schema.published_scope_keys().collect::<Vec<_>>(), ["user"]);
+    assert_eq!(schema.published_scope_settings().collect::<Vec<_>>(), [("user", "scope.user".to_owned())]);
+}
+
+#[test]
+fn the_engine_hands_out_the_setting_names_of_scope() {
+    let keys = json!({"published_scope_keys": [{"source": "ext-a", "key": "shop"}, {"source": "ext-a", "key": "user"}]});
+    let plain = prepare(keys.clone()).unwrap();
+    assert_eq!(plain.published_scope_settings().collect::<Vec<_>>(), [("shop", "scope.shop".to_owned()), ("user", "scope.user".to_owned())]);
+    assert_eq!(plain.bypass_setting(), "monorm.bypass");
+    let mut ir: monorm_core::ir::SchemaIr = serde_json::from_value(json!({"dialect": "postgres", "models": [], "behavior": {"schema_contract": 5}})).unwrap();
+    assert!(!serde_json::to_string(&ir).unwrap().contains("scope_settings"), "the default is not written");
+    ir.behavior.published_scope_keys = serde_json::from_value(keys["published_scope_keys"].clone()).unwrap();
+    ir.scope_settings.overrides.insert("shop".into(), "tenant.shop".into());
+    ir.scope_settings.bypass = "tenant.bypass".into();
+    let json = serde_json::to_string(&ir).unwrap();
+    let schema = monorm_core::schema::Schema::from_ir(monorm_core::ir::SchemaIr::from_json(&json).unwrap()).unwrap();
+    assert_eq!(schema.published_scope_settings().collect::<Vec<_>>(), [("shop", "tenant.shop".to_owned()), ("user", "scope.user".to_owned())]);
+    assert_eq!(schema.bypass_setting(), "tenant.bypass");
 }
 
 #[test]
