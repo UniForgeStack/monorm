@@ -280,7 +280,7 @@ pub fn embedded_schema_json(ir: &crate::ir::SchemaIr) -> Result<String, String> 
     String::from_utf8(out).map_err(|e| e.to_string())
 }
 
-/// The schema on one line, for payloads that sit inside a string literal.
+/// The schema on one line: the Rust client puts it into a `{:?}` string literal, which a line break would not survive.
 pub fn embedded_schema_json_compact(ir: &crate::ir::SchemaIr) -> Result<String, String> {
     serde_json::to_string(ir).map_err(|e| e.to_string())
 }
@@ -522,6 +522,14 @@ mod embedded_schema_tests {
         let spread = embedded_schema_json(&ir).unwrap();
         let longest = spread.lines().map(str::len).max().unwrap();
         assert!(longest <= 200, "longest line is {longest} bytes");
+    }
+    #[test]
+    fn a_nested_schema_keeps_one_field_per_line() {
+        let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/nested/schema.prisma")).unwrap();
+        let spread = embedded_schema_json(&crate::dsl::compile(&source, None).unwrap()).unwrap();
+        let fields = spread.lines().filter(|l| l.contains("\"column\":")).count();
+        assert!(fields > 10, "the nested example has many fields");
+        assert!(spread.lines().all(|l| l.matches("\"column\":").count() <= 1), "two fields share a line");
     }
 }
 

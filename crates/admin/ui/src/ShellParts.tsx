@@ -94,7 +94,7 @@ export function CommandSearch({ site, open, onOpenChange }: { site: api.Site; op
   };
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) setText(""); onOpenChange(o); }}>
-      <DialogContent aria-label="Search" closeButton={false} className="top-[15vh] m-auto mt-[15vh]">
+      <DialogContent aria-label="Search" closeButton={false} className="m-auto mt-[15vh]">
         <DialogTitle className="sr-only">Search the resources</DialogTitle>
         <div className="relative">
           <Search className="pointer-events-none absolute top-2.5 left-2.5 size-4 text-muted-foreground" aria-hidden />
@@ -103,6 +103,7 @@ export function CommandSearch({ site, open, onOpenChange }: { site: api.Site; op
             role="combobox"
             aria-expanded
             aria-controls="command-hits"
+            aria-activedescendant={hits[at] ? `command-hit-${hits[at].name}` : undefined}
             aria-label="Search the resources"
             value={text}
             onChange={(e) => setText(e.target.value)}
@@ -117,12 +118,11 @@ export function CommandSearch({ site, open, onOpenChange }: { site: api.Site; op
         </div>
         <ul id="command-hits" role="listbox" aria-label="Resources" className="m-0 grid max-h-72 list-none gap-0.5 overflow-auto p-0">
           {hits.map((r, i) => (
-            <li key={r.name} role="option" aria-selected={i === at}>
-              <button type="button" onClick={() => go(r.name)} onMouseMove={() => setAt(i)} className={cn("flex w-full items-center gap-2 rounded-md border-0 bg-transparent px-2 py-1.5 text-left text-sm text-foreground", i === at && "bg-accent")}>
-                <NavIcon name={r.icon} className="size-4 shrink-0 text-muted-foreground" />
-                <span className="flex-1 truncate">{r.title}</span>
-                {r.group && <span className="text-xs text-muted-foreground">{r.group}</span>}
-              </button>
+            // The input keeps the focus and drives the keys, so an option holds no button.
+            <li key={r.name} id={`command-hit-${r.name}`} role="option" aria-selected={i === at} onClick={() => go(r.name)} onMouseMove={() => setAt(i)} className={cn("flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-foreground", i === at && "bg-accent")}>
+              <NavIcon name={r.icon} className="size-4 shrink-0 text-muted-foreground" />
+              <span className="flex-1 truncate">{r.title}</span>
+              {r.group && <span className="text-xs text-muted-foreground">{r.group}</span>}
             </li>
           ))}
           {hits.length === 0 && <li className="px-2 py-1.5 text-sm text-muted-foreground">No resource matches.</li>}

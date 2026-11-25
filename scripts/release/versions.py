@@ -49,7 +49,8 @@ JSON_SITES = [
 # Committed generated models lock the version and the manifest hash of each extension they use.
 GENERATED = ["languages/js/test/**/models*.ts", "examples/**/models*.ts"]
 STAMP = re.compile(
-    r'("(monorm\.[\w.-]+)"\s*:\s*\{\s*"version"\s*:\s*")([^"]*)("\s*,\s*"manifest_hash"\s*:\s*")([0-9a-f]{64})(")'
+    r'(?P<head>"(?P<ident>monorm\.[\w.-]+)"\s*:\s*\{\s*"version"\s*:\s*")(?P<version>[^"]*)'
+    r'(?P<mid>"\s*,\s*"manifest_hash"\s*:\s*")(?P<hash>[0-9a-f]{64})(?P<tail>")'
 )
 
 
@@ -76,9 +77,9 @@ def stale_stamps(root: Path) -> list[str]:
     known = manifests(root)
     wrong = []
     for path in generated_files(root):
-        for _, ident, version, _, digest, _ in STAMP.findall(path.read_text()):
-            if ident in known and (version, digest) != known[ident]:
-                wrong.append(f"{path.relative_to(root).as_posix()}: {ident} stamp is stale; run `monorm generate`")
+        for m in STAMP.finditer(path.read_text()):
+            if m["ident"] in known and (m["version"], m["hash"]) != known[m["ident"]]:
+                wrong.append(f"{path.relative_to(root).as_posix()}: {m['ident']} stamp is stale; run `monorm generate`")
     return wrong
 
 
@@ -86,8 +87,8 @@ def restamp(root: Path) -> None:
     known = manifests(root)
 
     def fix(m):
-        version, digest = known.get(m[2], (m[3], m[5]))
-        return f"{m[1]}{version}{m[4]}{digest}{m[6]}"
+        version, digest = known.get(m["ident"], (m["version"], m["hash"]))
+        return f"{m['head']}{version}{m['mid']}{digest}{m['tail']}"
 
     for path in generated_files(root):
         path.write_text(STAMP.sub(fix, path.read_text()))
