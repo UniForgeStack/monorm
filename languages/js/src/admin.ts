@@ -414,6 +414,9 @@ function actionsJson(name: string, model: AnyModel, items: unknown, fnEntry: (d:
       if (d.permission !== undefined) entry["permission"] = d.permission;
       if (d.label !== undefined) entry["label"] = d.label;
       if (d.confirm !== undefined) entry["confirm"] = d.confirm;
+      if (d.variant !== undefined) entry["variant"] = d.variant;
+      if (d.icon !== undefined) entry["icon"] = d.icon;
+      if (d.menu !== undefined) entry["menu"] = d.menu;
       if (d.inputs !== undefined && d.inputs.length > 0) entry["inputs"] = d.inputs.map((i) => i.json());
       if (d.appliesTo !== undefined) entry["applies_to"] = hostJson(model, "actions.appliesTo", d.appliesTo, `action '${d.name}' appliesTo`);
       if (d.can !== undefined) entry["can"] = hostJson(model, "actions.can", d.can, `action '${d.name}' can`);

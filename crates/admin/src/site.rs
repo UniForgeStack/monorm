@@ -486,12 +486,21 @@ impl Placement {
     }
 }
 
+/// The colour of an action button.
+pub const VARIANTS: [&str; 5] = ["default", "primary", "success", "warning", "danger"];
+
 /// One action of a resource, checked.
 #[derive(Debug, Clone)]
 pub struct Action {
     pub name: String,
     pub label: String,
     pub placement: Option<Placement>,
+    /// One of `VARIANTS`: the colour of the button. None: `default`.
+    pub variant: Option<String>,
+    /// A lucide icon name.
+    pub icon: Option<String>,
+    /// The label of a dropdown menu in the detail header. Actions with the same label share one menu.
+    pub menu: Option<String>,
     pub permission: Option<String>,
     pub confirm: Option<String>,
     pub inputs: Vec<crate::site_config::InputConfig>,
@@ -2301,6 +2310,24 @@ fn actions_of(schema: &Schema, name: &str, config: &[ActionConfig], can: &mut Ve
                 return invalid_in(name, format!("action {:?}: the label has 1 to 80 characters", a.name));
             }
         }
+        if let Some(variant) = &a.variant {
+            if !VARIANTS.contains(&variant.as_str()) {
+                return invalid_in(name, format!("action {:?} has variant {variant:?}, not one of {}", a.name, VARIANTS.join(", ")));
+            }
+        }
+        if let Some(icon) = &a.icon {
+            if !crate::meta::icon_ok(icon) {
+                return invalid_in(name, format!("action {:?}: icon {icon:?} must be a lucide icon name such as \"refresh-cw\"", a.name));
+            }
+        }
+        if let Some(menu) = &a.menu {
+            if menu.is_empty() || menu.chars().count() > 40 {
+                return invalid_in(name, format!("action {:?}: the menu has 1 to 40 characters", a.name));
+            }
+            if placement != Some(Placement::Detail) {
+                return invalid_in(name, format!("action {:?}: a menu needs the placement \"detail\"", a.name));
+            }
+        }
         crate::hostwrite::check_action_inputs(name, &a.name, &a.inputs)?;
         let rule = if let Some(expr) = &a.can {
             check_can(schema, name, expr, &format!("{name}: action {:?}: can", a.name))?;
@@ -2311,7 +2338,7 @@ fn actions_of(schema: &Schema, name: &str, config: &[ActionConfig], can: &mut Ve
         } else {
             None
         };
-        let action = Action { name: a.name.clone(), label: a.label.clone().unwrap_or_else(|| crate::meta::humanize(&a.name)), placement, permission: a.permission.clone(), confirm: a.confirm.clone(), inputs: a.inputs.clone(), applies: a.applies_to.clone(), can: rule, sync: a.sync, threaded: a.threaded };
+        let action = Action { name: a.name.clone(), label: a.label.clone().unwrap_or_else(|| crate::meta::humanize(&a.name)), placement, variant: a.variant.clone(), icon: a.icon.clone(), menu: a.menu.clone(), permission: a.permission.clone(), confirm: a.confirm.clone(), inputs: a.inputs.clone(), applies: a.applies_to.clone(), can: rule, sync: a.sync, threaded: a.threaded };
         if let Some(expr) = &a.applies_to {
             if has_binding(expr) {
                 return invalid_in(name, format!("action {:?}: \u{1}applies_to\u{2} has no parameters or scope values", a.name));

@@ -251,7 +251,7 @@ for (const provider of PROVIDERS) {
     assert.deepEqual([summary.placement, summary.count, summary.selection, summary.keys], ["bulk", 1, "keys", ["1", "3"]]);
     const meta = (await client.get("/admin/api/resources")).json();
     const actions = meta.resources.find((x: Loose) => x.name === "AItem").actions;
-    assert.deepEqual(actions, [{ name: "double", label: "Double", placement: "bulk", confirm: "Double these?", inputs: [], applies: false }]);
+    assert.deepEqual(actions, [{ name: "double", label: "Double", placement: "bulk", variant: null, icon: null, menu: null, confirm: "Double these?", inputs: [], applies: false }]);
   }));
 
   test(`all rows that match the list filters run in batches with a date filter and a search free query set (${provider})`, () => world(provider, async (w) => {
@@ -562,6 +562,19 @@ for (const provider of PROVIDERS) {
     const ctx = new Context({ inputs: { by: 10 }, database: w.db });
     assert.equal(await add(ctx, item.objects.using(w.db).filter(item.shopId.eq(2))), "added 10");
     assert.deepEqual(await qtys(w), [["a", 1], ["b", 2], ["c", 3], ["d", 14], ["e", 15]]);
+  }));
+
+  test(`an action variant, icon and menu reach the metadata and are checked (${provider})`, () => world(provider, async (w) => {
+    const make = (options: Parameters<typeof action>[1]) => action(async function close() {}, { name: "close", placement: "detail", ...options });
+    const client = siteOf(w, [make({ variant: "danger", icon: "x-circle", menu: "Status" })]).testClient(w.db, { user: SU });
+    const meta = (await client.get("/admin/api/resources")).json().resources.find((r: Loose) => r.name === "AItem");
+    const shown = meta.actions.find((a: Loose) => a.name === "close");
+    assert.deepEqual([shown.variant, shown.icon, shown.menu], ["danger", "x-circle", "Status"]);
+    for (const [options, text] of [[{ variant: "loud" }, /variant/], [{ icon: "Not A Name" }, /lucide icon name/], [{ menu: "" }, /menu/]] as [Loose, RegExp][]) {
+      const site = new Admin(w.registry);
+      site.register(w.models["AItem"], { actions: [make(options)] });
+      assert.throws(() => site.check(), (e) => e instanceof AdminConfigError && text.test(e.message), String(text));
+    }
   }));
 
   test(`a wrong action config is an admin config error (${provider})`, () => world(provider, async (w) => {

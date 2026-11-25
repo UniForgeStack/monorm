@@ -406,6 +406,36 @@ fn an_action_needs_a_function_a_known_placement_and_one_listing() {
 }
 
 #[test]
+fn an_action_variant_icon_and_menu_are_checked() {
+    let action = |extra: Value| {
+        let mut a = json!({"name": "x", "placement": "detail", "function": {"$fn": "f1"}});
+        for (k, v) in extra.as_object().unwrap() {
+            a[k] = v.clone();
+        }
+        json!({"model": "Author", "actions": [a]})
+    };
+    let e = refusal(action(json!({"variant": "loud"})));
+    assert_eq!(e.0, code::INVALID_VALUE);
+    assert!(e.1.contains("variant") && e.1.contains("danger"), "{}", e.1);
+    let e = refusal(action(json!({"icon": "Not A Name"})));
+    assert_eq!(e.0, code::INVALID_VALUE);
+    assert!(e.1.contains("lucide icon name"), "{}", e.1);
+    assert!(refusal(action(json!({"menu": ""}))).1.contains("menu"));
+    let e = refusal(json!({"model": "Author", "actions": [{"name": "x", "placement": "row", "menu": "More", "function": {"$fn": "f1"}}]}));
+    assert!(e.1.contains("menu") && e.1.contains("detail"), "{}", e.1);
+}
+
+#[test]
+fn the_audit_list_always_filters_on_resource_and_record_key() {
+    let names = |resources: Value| {
+        let site = Site::build(schema(), &json!({"resources": resources}).to_string()).unwrap_or_else(|e| panic!("{e}"));
+        site.resource("AdminLogEntry").unwrap().filters.iter().map(|f| f.name.clone()).collect::<Vec<_>>()
+    };
+    assert_eq!(names(json!([{"model": "Note"}])), ["resource", "record_key"]);
+    assert_eq!(names(json!([{"model": "AdminLogEntry", "list": {"filters": ["action", "resource"]}}])), ["action", "resource", "record_key"]);
+}
+
+#[test]
 fn a_service_function_is_a_host_function() {
     let e = refusal(json!({"model": "Author", "service": {"create": {"$host": "int"}}}));
     assert_eq!(e, (code::INVALID_VALUE, "Author: create is a service function (ctx, ...)".into()));

@@ -660,6 +660,12 @@ export interface ActionOptions {
   /** The name part of `<label>.<permission>_<resource>`. An action with no `permission` needs the manage permission of the resource. */
   readonly permission?: string;
   readonly confirm?: string;
+  /** The look of the button: `default`, `primary`, `success`, `warning` or `danger`. */
+  readonly variant?: string;
+  /** A lucide icon name such as `"refresh-cw"`. */
+  readonly icon?: string;
+  /** Only for `placement: "detail"`: actions with the same `menu` name share one dropdown button. */
+  readonly menu?: string;
   readonly inputs?: readonly InputDef[];
   /** A condition: the action is off on the rows where it is false, and the query set leaves them out. */
   readonly appliesTo?: unknown;

@@ -668,6 +668,9 @@ class ActionDef:
         applies_to: Any,
         can: Any = None,
         replace_change: bool = False,
+        variant: str | None = None,
+        icon: str | None = None,
+        menu: str | None = None,
     ) -> None:
         self.fn = fn
         self.name = name
@@ -679,6 +682,9 @@ class ActionDef:
         self.applies_to = applies_to
         self.can = can
         self.replace_change = replace_change
+        self.variant = variant
+        self.icon = icon
+        self.menu = menu
 
 
 def action(
@@ -693,6 +699,9 @@ def action(
     applies_to: Any = None,
     can: Any = None,
     replace_change: bool = False,
+    variant: str | None = None,
+    icon: str | None = None,
+    menu: str | None = None,
 ) -> Any:
     """Marks a function as an admin action. Use it as a decorator: ``@admin.action(placement="bulk", confirm="Refund these orders?")``.
 
@@ -707,11 +716,13 @@ def action(
     (``permission="refund"``); an action with no ``permission`` needs the manage permission of the resource. ``applies_to`` is a condition: the action is off on the rows where it is false, and the query set leaves them out.
     ``can`` may read ``param("user")`` and adds to the resource change rule. Set ``replace_change=True`` to use only the action rule.
     ``name`` is the name of the function by default.
+    ``variant`` is the look of the button: ``default``, ``primary``, ``success``, ``warning`` or ``danger``. ``icon`` is a lucide name (``"refresh-cw"``).
+    ``menu`` is only for ``placement="detail"``: actions with the same ``menu`` name share one dropdown button on the detail page.
     """
 
     def mark(f: Callable[..., Any]) -> Callable[..., Any]:
         n = name or f.__name__
-        setattr(f, _ACTION, ActionDef(f, n, label=label, placement=placement, permission=permission, confirm=confirm, inputs=tuple(inputs), applies_to=applies_to, can=can, replace_change=replace_change))
+        setattr(f, _ACTION, ActionDef(f, n, label=label, placement=placement, permission=permission, confirm=confirm, inputs=tuple(inputs), applies_to=applies_to, can=can, replace_change=replace_change, variant=variant, icon=icon, menu=menu))
         return f
 
     return mark(fn) if fn is not None else mark

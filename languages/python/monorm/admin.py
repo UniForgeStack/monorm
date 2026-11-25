@@ -676,7 +676,7 @@ def _actions_json(name: str, model: type[Model], items: Any, fn_entry: Callable[
             entry = {"name": d.name, "placement": d.placement, **fn_entry(d)}
             if d.permission is not None:
                 entry["permission"] = d.permission
-            for key in ("label", "confirm"):
+            for key in ("label", "confirm", "variant", "icon", "menu"):
                 if (value := getattr(d, key)) is not None:
                     entry[key] = value
             if d.inputs:

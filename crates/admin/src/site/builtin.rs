@@ -44,6 +44,12 @@ pub(super) fn apply(schema: &Schema, configs: &mut Vec<ResourceConfig>) -> Added
         let i = position(configs, "AdminLogEntry");
         configs[i].allow = Some(vec!["read".to_owned()]);
         configs[i].bulk_delete = false;
+        // The History link of a detail page opens this list filtered on these two fields, so a list with its own filters keeps them and gains these.
+        for name in ["resource", "record_key"] {
+            if !configs[i].list.filters.iter().any(|f| f == name) {
+                configs[i].list.filters.push(name.to_owned());
+            }
+        }
         grouped(&mut configs[i]);
     }
     if !(has(schema, "Role") && has(schema, "Permission") && has(schema, "RolePermission")) {
