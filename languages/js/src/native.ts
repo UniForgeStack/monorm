@@ -311,6 +311,8 @@ interface Addon {
   adminSite(schema: NativeSchema, configJson: string): NativeAdminSite;
   /** The `[admin]` settings of the project in `dir` as JSON; throws the text of a wrong setting. */
   adminSettings(dir: string): string;
+  /** The names that the glob `patterns` of `role` select, in the order of `names`; throws the text of a wrong pattern. */
+  adminRoleGrants(patterns: string[], names: string[], role: string): string[];
   /** The parameter index of an open scope key in a statement's `scope` map. */
   OPEN_INDEX: number;
   connect(url: string, schema: NativeSchema, maxConnections: number, disable: string[]): Promise<NativeEngine>;

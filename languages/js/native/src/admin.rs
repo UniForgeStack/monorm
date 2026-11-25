@@ -319,6 +319,12 @@ pub fn admin_settings(dir: String) -> napi::Result<String, String> {
     serde_json::to_string(&config).map_err(|e| napi::Error::new("settings.invalid_value".to_string(), e.to_string()))
 }
 
+/// The names that the glob `patterns` of `role` select, in the order of `names`. Throws the text of a wrong pattern, with its `code`.
+#[napi]
+pub fn admin_role_grants(patterns: Vec<String>, names: Vec<String>, role: String) -> napi::Result<Vec<String>, String> {
+    monorm_admin::permissions::role_grants(&patterns, &names, &role).map_err(admin_error)
+}
+
 /// Plans the resources: throws the precise text of a wrong config, with its `code`.
 #[napi]
 pub fn admin_site(schema: &JsSchema, config_json: String) -> napi::Result<AdminSite, String> {
