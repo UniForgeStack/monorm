@@ -24,6 +24,7 @@ import * as grants from "./admin-permissions.js";
 import { Reply, routeHost, Stream, type RouteFunction, type RouteRequest } from "./admin-routes.js";
 import { action, actionDef, actionFunction, Context, download, InputDef, input, log, message, redirect, refresh, serviceFunction, viewHost, writerHost, type ActionDef, type ActionFunction, type ActionOptions, type ActionResult, type InlineChanges } from "./admin-write.js";
 import { fieldAdapters, hasFieldAdapters } from "./adapters.js";
+import { HOST_FIELDS, type AggregateColumn, type BadgeColour, type BrandConfig, type BrandLink, type ComputedColumn, type DateHierarchy, type EmbedConfig, type Fieldset, type FormSection, type FrameConfig, type ListConfig, type NamedChoice, type NamedFilter, type PackageTabConfig, type RelationConfig, type ResourceConfig, type SwitcherBuild, type SwitcherConfig, type SwitcherService, type ThemeConfig } from "./admin-types.js";
 import type { RoleSeedReport, SyncReport } from "./admin-permissions.js";
 import type { Database } from "./db.js";
 import { ORMError } from "./errors.js";
@@ -81,159 +82,14 @@ type AnyModel = ModelClass<ModelSpec>;
 
 type AnyRelation = RelationPath<any, any, any>;
 
-export interface NamedChoice {
-  readonly name: string;
-  readonly label?: string;
-  /** A condition such as `Note.rank.gt(1)`. It has no `param()`: the choice is a fixed condition. */
-  readonly condition: unknown;
-}
-
-export interface NamedFilter {
-  /** The name in the URL (`n.<name>=<choice>`). The choice `all` is reserved: it applies no condition. */
-  readonly name: string;
-  readonly label?: string;
-  readonly choices: readonly NamedChoice[];
-  /** The choice that applies when the URL names none. Without it: all rows. */
-  readonly default?: string;
-}
-
-export interface ComputedColumn {
-  /** The column name: list it in `columns` as a string. */
-  readonly name: string;
-  readonly label?: string;
-  /** `int`, `bigint`, `float`, `bool`, `string`, `text`, `datetime`, `date`, `uuid`, `json` or `decimal`. */
-  readonly type: string;
-  readonly nullable?: boolean;
-  /** An expression that the list statement computes, such as `func.lower(Note.title)`. It has no `param()`. */
-  readonly expr?: unknown;
-  /** Instead of `expr`: `async (keys) => values` gets the keys of one page (one call per page), one value per key. */
-  readonly function?: BatchFunction;
-  /** A sort header. It needs `orderBy`, or `expr` and `nullable: false`. */
-  readonly sortable?: boolean;
-  /**
-   * What the sort header orders by: a field of the model or of a to-one relation (`Note.author.name`, not null), or an expression
-   * (the column then declares `nullable: false`). It makes the column sortable, also for `function`.
-   */
-  readonly orderBy?: unknown;
-}
-
-export type BadgeColour = "grey" | "blue" | "green" | "yellow" | "red" | "purple";
-
-export interface DateHierarchy {
-  /** A date or datetime field, by path (`"author.joined"`) or column. One to-one hop is the most. */
-  readonly field: AnyColumn | string;
-  /** `false` skips the counts: the bar shows the periods of the date range and runs no count statement. */
-  readonly counts?: boolean;
-}
-
 export type BatchFunction = (keys: readonly any[]) => Promise<readonly unknown[]>;
-
-export interface AggregateColumn {
-  readonly name: string;
-  readonly label?: string;
-  /** A to-many relation of the model, such as `Author.comments`. */
-  readonly relation: AnyRelation;
-  readonly fn: "count" | "sum" | "min" | "max" | "avg";
-  /** A field of the related model, such as `Author.comments.rank`: every function but `count` needs it. */
-  readonly field?: AnyColumn;
-}
-
-export interface ListConfig {
-  /** Fields of the model; a string names a computed or aggregate column. */
-  readonly columns?: readonly (AnyColumn | string)[];
-  /** The filter bar: a field, a field of a to-one relation, or a to-one relation (its key is the value). */
-  readonly filters?: readonly (AnyColumn | AnyRelation)[];
-  readonly namedFilters?: readonly NamedFilter[];
-  readonly computed?: readonly ComputedColumn[];
-  readonly aggregates?: readonly AggregateColumn[];
-  /** The title of a column, by path (`"author.name"`) or name. */
-  readonly labels?: Readonly<Record<string, string>>;
-  /** What an empty value shows in the list. */
-  readonly empty?: string;
-  /** What an empty value shows in one column, by path (`"author.name"`) or name. */
-  readonly emptyFields?: Readonly<Record<string, string>>;
-  /** A column, by path or name, to a map of value to colour: the list and the detail page show the value as a badge. A value outside the map shows grey. */
-  readonly badges?: Readonly<Record<string, Readonly<Record<string, BadgeColour>>>>;
-  /** A date or datetime field (one to-one hop allowed): a bar over the table drills down year, month and day. It joins `filters`. */
-  readonly dateHierarchy?: AnyColumn | string | DateHierarchy;
-  /** The to-many relations that the detail page shows as tabs. Without it: every one that leads to a resource. */
-  readonly tabs?: readonly AnyRelation[];
-  readonly order?: readonly (AnyColumn | Ordering<any, any>)[];
-  /** Rows per page, 1 to 200 (25 by default). */
-  readonly pageSize?: number;
-  /** The list columns that a sort header may use. Without it every list column that can sort. */
-  readonly sortable?: readonly AnyColumn[];
-  /** List columns that a user edits in place and saves for several rows at once. Each is a plain field of the model that the update form may write. */
-  readonly editable?: readonly AnyColumn[];
-  /** Fields of the model that the search box matches. The strategy comes from the indexes of each field. */
-  readonly search?: readonly AnyColumn[];
-  /**
-   * Replaces `search`. A prepared query set with `param("q")` (its rows are the matches), or
-   * `async (q, limit) => keys`. One host call per request.
-   */
-  readonly searchWith?: SearchWith;
-}
 
 /** The keys of the matches: a key value, the key values in key order, or an object of key fields. */
 export type SearchFunction = (q: string, limit: number) => Promise<readonly RecordKey[]>;
 export type SearchWith = SearchFunction | Prepared<any, any, any>;
 
-/** The look of the UI in three values. Each one is the same value as a `brand` key; set it in one place only. */
-export interface ThemeConfig {
-  /** The name in the header and the page title (same as `brand.name`). */
-  readonly title?: string;
-  /** The URL of the logo image: a path or an `https` URL. */
-  readonly logo?: string;
-  /** The brand colour, `#rgb` or `#rrggbb` (same as `brand.colors.primary`). The UI picks a readable text colour for it. */
-  readonly color?: string;
-}
-
-export interface BrandConfig {
-  /** The name in the header and the page title (`Admin` by default). */
-  readonly name?: string;
-  /** The URL of the logo image. */
-  readonly logo?: string;
-  /** `#rgb` or `#rrggbb`. */
-  readonly colors?: { readonly primary?: string; readonly accent?: string };
-  /** Links in the header. */
-  readonly links?: readonly { readonly label: string; readonly url: string }[];
-  /** A short label such as `staging`, shown in the header. */
-  readonly environment?: string;
-  /** The colour of the environment label. `production` gives `danger`, `staging` `warning`, any other label `info`. */
-  readonly environmentLevel?: "info" | "warning" | "danger";
-}
-
 function brandJson({ environmentLevel, ...rest }: BrandConfig): Record<string, unknown> {
   return environmentLevel === undefined ? rest : { ...rest, environment_level: environmentLevel };
-}
-
-export interface SwitcherService {
-  /** Lower case letters, digits, `-` and `_`; unique. */
-  readonly key: string;
-  /** 1 to 40 characters. */
-  readonly title: string;
-  /** A path that starts with `/` or an `https` URL. Needed for every service but the current one. */
-  readonly url?: string;
-  /** A lucide icon name such as `server`. */
-  readonly icon?: string;
-  /** `#rgb` or `#rrggbb`. The colour of the current service sets the primary colour. */
-  readonly color?: string;
-}
-
-/** Plain strings that your project fills from its own environment. An empty string is no value. */
-export interface SwitcherBuild {
-  readonly commit?: string;
-  readonly builtAt?: string;
-  readonly deployedAt?: string;
-  readonly tree?: string;
-}
-
-/** The service switcher. The same table in `monorm.toml` (`[admin.switcher]`, `${NAME}` reads the environment) adds keys; a key set in both is an error. */
-export interface SwitcherConfig {
-  /** The `key` of the service that this admin is. */
-  readonly current?: string;
-  readonly services?: readonly SwitcherService[];
-  readonly build?: SwitcherBuild;
 }
 
 function switcherJson({ build, ...rest }: SwitcherConfig): Record<string, unknown> {
@@ -251,104 +107,6 @@ export interface CanRules {
 /** `async (user) => condition`: the rows that this user sees, one call per request. A list of conditions means AND. */
 export type QuerysetFunction = (user: any) => Promise<unknown>;
 
-export interface ResourceConfig {
-  /**
-   * The rows that staff see: a prepared query set with a `param("user")` slot
-   * (`Order.objects.filter(Order.ownerId.eq(param("user"))).prepare()`), or an async function `(user) => condition`
-   * (one host call per request). Its filter applies to the list, the detail, the count, the search and the tabs;
-   * its order sets the order of the list. A row outside the filter is a 404 on the detail. The bypass permission never lifts it.
-   */
-  readonly queryset?: Prepared<any, any, any> | QuerysetFunction;
-  /** `{ change, delete }`: a condition each. The list and the detail carry the result for every row; the UI disables the button that a row does not allow. */
-  readonly can?: CanRules;
-  /** The form message of each named `@@check`, by the name of the check. A failed check without an entry shows a generic message. */
-  readonly checkMessages?: Readonly<Record<string, string>>;
-  /**
-   * The sections of the form: one list for both forms, or `{ create, edit }`. A field that no section names trails in an
-   * untitled section. A name that is not a field of the form is an error at the start of the site.
-   */
-  readonly form?: readonly FormSection[] | { readonly create?: readonly FormSection[]; readonly edit?: readonly FormSection[] };
-  /** Fields that the form shows but never writes, in the create and the edit form. A write to one of them is a 422. */
-  readonly readonly?: readonly string[];
-  /**
-   * The widget of a field (`blurb: "textarea"`), of a nested path (`"Geo.lat"`) or of a type (`Text`, an enum name).
-   * A field beats a path, a path beats a type; the site `widgets` come last.
-   */
-  readonly widgets?: Readonly<Record<string, string>>;
-  /**
-   * The path of a JavaScript module that replaces the whole form: `export default (React) => function Form(props) {...}`.
-   * The admin reads the file when the site starts and serves it to signed-in staff.
-   */
-  readonly formComponent?: string;
-  /** Package detail tabs, each `"<package>.<tab>"`: the detail page shows them after the relation tabs. See `Admin.package`. */
-  readonly detailTabs?: readonly string[];
-  readonly frames?: readonly FrameConfig[];
-  readonly fieldsets?: readonly Fieldset[];
-  /**
-   * The relation fields that the form edits, by relation name. A to-one relation becomes a picker with keyset autocomplete;
-   * a many-to-many relation (through a join model) becomes chips. The target of each needs a text column that names a row.
-   */
-  readonly relations?: Readonly<Record<string, RelationConfig>>;
-  /** File fields by field name, each with the name of its storage in the `storage` registry of the admin (`{ cover: "media" }`). A file field is a nullable `Json` field that holds the reference of the file. */
-  readonly files?: Readonly<Record<string, string>>;
-  /** The service of a create: `async (ctx, values) => record`. It owns its transactions and returns the new record. */
-  readonly create?: (ctx: Context, values: any) => Promise<unknown>;
-  /** The service of an update: `async (ctx, qs, changes)`. `qs` is the one-row query set (with the `queryset` filter and the `can` rule). A `VersionConflict` is a 409. */
-  readonly update?: (ctx: Context, qs: any, changes: any) => Promise<unknown>;
-  /** The service of a delete: `async (ctx, qs)`. */
-  readonly delete?: (ctx: Context, qs: any) => Promise<unknown>;
-  /** Controls of the form that are no field (`input("reason", { type: "textarea" })`). Only a service reads them (`ctx.inputs`). */
-  readonly inputs?: readonly InputDef[];
-  /** Open application write rules for this resource. The audit row records the opt-in. */
-  readonly allowProtectedWrites?: boolean;
-  /**
-   * To-many relations that the detail page shows and edits in place: `inline(OrderLine)` for each one (a bare model works too).
-   * The inline takes the registered page of the child model; `inline(..., { page: {...} })` overrides page keys.
-   */
-  readonly inlines?: readonly (InlineDef | AnyModel)[];
-  readonly list?: ListConfig;
-  /** The name in the navigation and the page heading (the model name, spaced, by default). */
-  readonly title?: string;
-  /** The navigation group: one of `groups` of the admin. */
-  readonly group?: string;
-  /** A lucide icon name such as `book-open`, shown in the navigation. */
-  readonly icon?: string;
-  /** The operations that the resource allows for every user, superusers too. */
-  readonly allow?: readonly ("read" | "create" | "update" | "delete")[];
-  /** The `page` strategy only: add `"delete"` to split the delete permission from `manage`. */
-  readonly perms?: readonly ("read" | "manage" | "delete")[];
-  /** The label of the permission names of this resource, instead of the site label. */
-  readonly label?: string;
-  /** Names such as `"see_credential"` that become `<label>.<name>`. */
-  readonly fieldPermissions?: readonly string[];
-  /**
-   * Field permissions that show a field: `{ cost: "see_cost" }` shows the column `cost` only to a user who holds `<label>.see_cost`.
-   * Without it the field leaves the list, detail, tabs, search, filters, sort, export, labels, inlines and the response.
-   * A filter, sort or write on it is an error.
-   */
-  readonly see?: Readonly<Record<string, string>>;
-  /** Field permissions that change a field: `{ price: "change_price" }` makes `price` read-only for a user who does not hold `<label>.change_price`. */
-  readonly change?: Readonly<Record<string, string>>;
-  /**
-   * The actions of the resource. A function that `action(fn, options)` marked is a button (see `ActionOptions`).
-   * A plain name such as `"refund"` only declares the permission `<label>.<action>_<resource>`.
-   */
-  readonly actions?: readonly (string | ActionFunction)[];
-  /** `false` removes the bulk delete of the list. It is on by default; it uses the `delete` service and the `can.delete` rule. */
-  readonly bulkDelete?: boolean;
-  /** Enable the built-in password action on the active auth user resource. */
-  readonly setPassword?: boolean;
-}
-
-export interface RelationConfig {
-  /** The text column of the target that names a row in the picker (the first text column by default). */
-  readonly label?: string;
-  /** Offer a modal in the form that creates a record of the target and fills the field. */
-  readonly create?: boolean;
-  /** A prepared query set of the target that limits the picker. The server checks it again on write. It combines with the `queryset` of the target. */
-  readonly choices?: Prepared<any, any, any>;
-}
-
 /** The file storage of the admin: a `Registry` of `@ufstack/monorm/extensions/file-storage`. */
 export interface FileStorage {
   upload(storage: string, source: AsyncIterable<Uint8Array>, options: { filename?: string; contentType?: string; maxSize?: number }): Promise<{ toJSON(): unknown }>;
@@ -357,41 +115,6 @@ export interface FileStorage {
 
 /** `page`: `<label>.read_<resource>` and `<label>.manage_<resource>` (the default); `model`: `add_`, `change_`, `delete_`, `view_`; `access`: only `admin.access`. */
 export type PermissionStrategy = "page" | "model" | "access";
-
-export interface FormSection {
-  readonly title?: string;
-  readonly fields: readonly string[];
-  /** A collapsed section starts closed. It needs a `title`. */
-  readonly collapsed?: boolean;
-}
-
-export interface FrameConfig {
-  readonly name: string;
-  readonly title: string;
-  readonly url: string;
-  readonly sandbox?: readonly string[];
-  readonly scripts?: boolean;
-  readonly sameOrigin?: boolean;
-  readonly height?: string;
-}
-
-export interface Fieldset {
-  readonly name: string;
-  readonly fields: readonly string[];
-  readonly title?: string;
-}
-
-export interface EmbedConfig {
-  readonly resource: string;
-  readonly tab: string;
-  readonly lookup: string;
-  readonly ancestors: readonly string[];
-}
-
-export interface PackageTabConfig {
-  readonly module: string;
-  readonly embeddable?: boolean;
-}
 
 function frameJson({ sameOrigin, ...frame }: FrameConfig): Record<string, unknown> {
   return { ...frame, same_origin: sameOrigin };
@@ -433,6 +156,7 @@ type KeyPart = string | number | bigint | boolean | Date;
 export type RecordKey = KeyPart | readonly KeyPart[] | { readonly [field: string]: KeyPart };
 
 export type { RoleSeedReport, SyncReport };
+export type { AggregateColumn, BadgeColour, BrandConfig, BrandLink, ComputedColumn, DateHierarchy, EmbedConfig, Fieldset, FormSection, FrameConfig, ListConfig, NamedChoice, NamedFilter, PackageTabConfig, RelationConfig, ResourceConfig, SwitcherBuild, SwitcherConfig, SwitcherService, ThemeConfig };
 
 export interface AdminUser {
   readonly is_superuser?: boolean;
@@ -554,31 +278,6 @@ function orderJson(model: AnyModel, item: unknown): unknown {
   return { ...by, ...(desc ? { desc: true } : {}), ...(nulls !== undefined ? { nulls } : {}) };
 }
 
-/** The config positions that hold a host object, and what each holds. The call sites send each one through `hostJson`. */
-const HOST_FIELDS: Readonly<Record<string, "column" | "relation" | "order" | "order_by" | "ir" | "queryset" | "function">> = {
-  "list.columns": "column",
-  "list.filters": "column",
-  "list.tabs": "column",
-  "list.editable": "column",
-  "list.sortable": "column",
-  "list.search": "column",
-  "list.dateHierarchy": "column",
-  "list.dateHierarchy.field": "column",
-  "list.order": "order",
-  "list.aggregates.relation": "relation",
-  "list.aggregates.field": "column",
-  "list.computed.orderBy": "order_by",
-  "list.computed.expr": "ir",
-  "list.namedFilters.choices.condition": "ir",
-  "list.searchWith": "function",
-  "list.computed.function": "function",
-  can: "ir",
-  "actions.can": "ir",
-  "actions.appliesTo": "ir",
-  queryset: "queryset",
-  "relations.choices": "queryset",
-};
-
 /** The wire form of the value at config position `path`, by its kind in `HOST_FIELDS`. */
 function hostJson(model: AnyModel, path: string, value: unknown, what = "", fns?: Fns, maker?: () => HostFunction): unknown {
   switch (HOST_FIELDS[path]) {
@@ -649,7 +348,7 @@ function namedJson(model: AnyModel, items: readonly NamedFilter[]): unknown[] {
     choices: item.choices.map((c) => ({
       name: c.name,
       ...(c.label !== undefined ? { label: c.label } : {}),
-      expr: hostJson(model, "list.namedFilters.choices.condition", c.condition, `named filter '${item.name}'`),
+      condition: hostJson(model, "list.namedFilters.choices.condition", c.condition, `named filter '${item.name}'`),
     })),
   }));
 }

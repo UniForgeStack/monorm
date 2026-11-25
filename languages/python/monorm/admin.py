@@ -23,7 +23,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from functools import partial
 from json import dumps as _dumps
-from typing import TYPE_CHECKING, Any, Literal, Mapping, NotRequired, Required, Sequence, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Literal, Mapping, Sequence, cast
 
 from . import _native
 from . import _admin_permissions
@@ -33,6 +33,7 @@ from ._admin_routes import Reply, RouteFunction, RouteRequest, Stream
 from ._duration import format_duration
 from ._admin_write import ActionDef, Context, InputDef, action, action_def, action_function, admin_mode_of, download, input, is_sync, is_threaded, log, message, redirect, refresh, service_function, threaded, view_host, writer_host
 from ._admin_permissions import RoleSeedReport, SyncReport
+from ._admin_types import HOST_FIELDS, AggregateColumn, BadgeColour, BrandConfig, BrandLink, ComputedColumn, DateHierarchy, EmbedConfig, Fieldset, FrameConfig, ListConfig, NamedChoice, NamedFilter, PackageTabConfig, RelationConfig, ResourceConfig, SectionConfig, SwitcherBuild, SwitcherConfig, SwitcherService, ThemeConfig
 from .adapters import _ADAPTERS as _adapters
 from .errors import QueryError
 from .expr import ColumnRef, Condition, Expression, IRContext, Ordering, RelationPath, SlotParams, _Slot, as_condition, resolve_null_rule
@@ -42,7 +43,7 @@ if TYPE_CHECKING:
     from .db import Database
     from .model import Registry
 
-__all__ = ["Admin", "AdminConfigError", "AdminSettingsError", "AdminResponse", "AdminTestClient", "AggregateColumn", "BrandConfig", "BrandLink", "ThemeConfig", "ActionDef", "ComputedColumn", "Context", "DateHierarchy", "EmbedConfig", "Fieldset", "FrameConfig", "InlineDef", "ListConfig", "NamedChoice", "NamedFilter", "PackageTabConfig", "Reply", "ResourceConfig", "RoleSeedReport", "RouteRequest", "Stream", "SwitcherBuild", "SwitcherConfig", "SwitcherService", "SyncReport", "action", "check", "download", "inline", "input", "log", "message", "redirect", "refresh", "register", "test_client", "threaded", "url"]
+__all__ = ["Admin", "AdminConfigError", "AdminSettingsError", "AdminResponse", "AdminTestClient", "AggregateColumn", "BadgeColour", "BrandConfig", "BrandLink", "ThemeConfig", "ActionDef", "ComputedColumn", "Context", "DateHierarchy", "EmbedConfig", "Fieldset", "FrameConfig", "InlineDef", "ListConfig", "NamedChoice", "NamedFilter", "PackageTabConfig", "RelationConfig", "Reply", "ResourceConfig", "RoleSeedReport", "RouteRequest", "SectionConfig", "Stream", "SwitcherBuild", "SwitcherConfig", "SwitcherService", "SyncReport", "action", "check", "download", "inline", "input", "log", "message", "redirect", "refresh", "register", "test_client", "threaded", "url"]
 
 DEFAULT_BASE_PATH = "/admin"
 
@@ -80,262 +81,6 @@ def _admin_call(fn: Callable[..., Any], *args: Any) -> Any:
         return fn(*args)
     except ValueError as e:
         raise _admin_error(e) from None
-
-
-class NamedChoice(TypedDict, total=False):
-    name: str
-    label: str
-    condition: Any
-    """A condition such as ``Note.rank > 1``. It has no ``monorm.param``: the choice is a fixed condition."""
-
-
-class NamedFilter(TypedDict, total=False):
-    name: str
-    """The name in the URL (``n.<name>=<choice>``). The choice ``all`` is reserved: it applies no condition."""
-    label: str
-    choices: Sequence[NamedChoice]
-    default: str
-    """The choice that applies when the URL names none. Without it: all rows."""
-
-
-BadgeColour = Literal["grey", "blue", "green", "yellow", "red", "purple"]
-
-
-class DateHierarchy(TypedDict, total=False):
-    field: Required[ColumnRef[Any] | str]
-    counts: bool
-    """``False`` skips the counts: the bar shows the periods of the date range and runs no count statement."""
-
-
-class ComputedColumn(TypedDict, total=False):
-    name: str
-    """The column name: list it in ``columns`` as a string."""
-    label: str
-    type: str
-    """``int``, ``bigint``, ``float``, ``bool``, ``string``, ``text``, ``datetime``, ``date``, ``uuid``, ``json`` or ``decimal``."""
-    nullable: bool
-    expr: Any
-    """An expression that the list statement computes, such as ``monorm.func.lower(Note.title)``. It has no ``monorm.param``."""
-    function: Callable[[list[Any]], Awaitable[Sequence[Any]]]
-    """Instead of ``expr``: ``async def f(keys)`` gets the keys of one page (one call per page) and returns one value per key."""
-    sortable: bool
-    """A sort header. It needs ``order_by``, or ``expr`` and ``nullable=False``."""
-    order_by: Any
-    """What the sort header orders by: a field of the model or of a to-one relation (``Note.author.name``, not null), or an expression
-    (the column then declares ``nullable=False``). It makes the column sortable, also for ``function``."""
-
-
-class AggregateColumn(TypedDict, total=False):
-    name: str
-    label: str
-    relation: Any
-    """A to-many relation of the model, such as ``Author.comments``."""
-    fn: Literal["count", "sum", "min", "max", "avg"]
-    field: Any
-    """A field of the related model, such as ``Author.comments.rank``: every function but ``count`` needs it."""
-
-
-class ListConfig(TypedDict, total=False):
-    columns: Sequence[ColumnRef[Any] | str]
-    """Fields of the model; a string names a computed or aggregate column."""
-    filters: Sequence[ColumnRef[Any] | RelationPath[Any]]
-    """The filter bar: a field, a field of a to-one relation, or a to-one relation (its key is the value)."""
-    named_filters: Sequence[NamedFilter]
-    computed: Sequence[ComputedColumn]
-    aggregates: Sequence[AggregateColumn]
-    labels: Mapping[ColumnRef[Any] | str, str]
-    """The title of a column."""
-    empty: str
-    """What an empty value shows in the list."""
-    empty_fields: Mapping[ColumnRef[Any] | str, str]
-    """What an empty value shows in one column."""
-    badges: Mapping[ColumnRef[Any] | str, Mapping[str | int | bool, BadgeColour]]
-    """A column to a map of value to colour: the list and the detail page show the value as a badge. A value outside the map shows grey."""
-    date_hierarchy: ColumnRef[Any] | str | DateHierarchy
-    """A date or datetime field (one to-one hop allowed, as ``"author.joined"``): a bar over the table drills down year, month and day. It joins ``filters``."""
-    tabs: Sequence[RelationPath[Any]]
-    """The to-many relations that the detail page shows as tabs. Without it: every one that leads to a resource."""
-    order: Sequence[ColumnRef[Any] | Ordering]
-    page_size: int
-    """Rows per page, 1 to 200 (25 by default)."""
-    sortable: Sequence[ColumnRef[Any]]
-    """The list columns that a sort header may use. Without it every list column that can sort."""
-    editable: Sequence[ColumnRef[Any] | str]
-    """List columns that a user edits in place and saves for several rows at once. Each is a plain field of the model that the update form may write."""
-    search: Sequence[ColumnRef[Any]]
-    """Fields of the model that the search box matches. The strategy comes from the indexes of each field."""
-    search_with: Any
-    """Replaces ``search``. A prepared query set with ``monorm.param("q")`` (its rows are the matches), or
-    ``async def f(q: str, limit: int) -> Sequence[key]``. One host call per request."""
-
-
-class BrandLink(TypedDict):
-    label: str
-    url: str
-
-
-class BrandConfig(TypedDict, total=False):
-    name: str
-    """The name in the header and the page title (``Admin`` by default)."""
-    logo: str
-    """The URL of the logo image."""
-    colors: Mapping[Literal["primary", "accent"], str]
-    """``#rgb`` or ``#rrggbb``."""
-    links: Sequence[BrandLink]
-    """Links in the header."""
-    environment: str
-    """A short label such as ``staging``, shown in the header."""
-    environment_level: Literal["info", "warning", "danger"]
-    """The colour of the environment label. ``production`` gives ``danger``, ``staging`` ``warning``, any other label ``info``."""
-
-
-class SwitcherService(TypedDict):
-    key: str
-    """Lower case letters, digits, ``-`` and ``_``; unique."""
-    title: str
-    """1 to 40 characters."""
-    url: NotRequired[str]
-    """A path that starts with ``/`` or an ``https`` URL. Needed for every service but the current one."""
-    icon: NotRequired[str]
-    """A lucide icon name such as ``server``."""
-    color: NotRequired[str]
-    """``#rgb`` or ``#rrggbb``. The colour of the current service sets the primary colour."""
-
-
-class SwitcherBuild(TypedDict, total=False):
-    """Plain strings that your project fills from its own environment. An empty string is no value."""
-
-    commit: str
-    built_at: str
-    deployed_at: str
-    tree: str
-
-
-class SwitcherConfig(TypedDict, total=False):
-    """The service switcher. The same table in ``monorm.toml`` (``[admin.switcher]``, ``${NAME}`` reads the environment) adds keys; a key set in both is an error."""
-
-    current: str
-    """The ``key`` of the service that this admin is."""
-    services: Sequence[SwitcherService]
-    build: SwitcherBuild
-
-
-class ThemeConfig(TypedDict, total=False):
-    """The look of the UI in three values. Each one is the same value as a ``brand`` key; set it in one place only."""
-
-    title: str
-    """The name in the header and the page title (same as ``brand["name"]``)."""
-    logo: str
-    """The URL of the logo image: a path or an ``https`` URL."""
-    color: str
-    """The brand colour, ``#rgb`` or ``#rrggbb`` (same as ``brand["colors"]["primary"]``). The UI picks a readable text colour for it."""
-
-
-class SectionConfig(TypedDict, total=False):
-    title: str
-    fields: Sequence[str]
-    collapsed: bool
-    """A collapsed section starts closed. It needs a ``title``."""
-
-
-class FrameConfig(TypedDict):
-    name: str
-    title: str
-    url: str
-    sandbox: NotRequired[Sequence[str]]
-    scripts: NotRequired[bool]
-    same_origin: NotRequired[bool]
-    height: NotRequired[str]
-
-
-class Fieldset(TypedDict):
-    name: str
-    fields: Sequence[str]
-    title: NotRequired[str]
-
-
-class EmbedConfig(TypedDict):
-    resource: str
-    tab: str
-    lookup: str
-    ancestors: Sequence[str]
-
-
-class PackageTabConfig(TypedDict):
-    module: str
-    embeddable: NotRequired[bool]
-
-
-class ResourceConfig(TypedDict, total=False):
-    list: ListConfig
-    title: str
-    """The name in the navigation and the page heading (the model name, spaced, by default)."""
-    group: str
-    """The navigation group: one of ``groups`` of the admin."""
-    icon: str
-    """A lucide icon name such as ``book-open``, shown in the navigation."""
-    allow: Sequence[Literal["read", "create", "update", "delete"]]
-    """The operations that the resource allows for every user, superusers too."""
-    perms: Sequence[Literal["read", "manage", "delete"]]
-    """The ``page`` strategy only: add ``"delete"`` to split the delete permission from ``manage``."""
-    label: str
-    """The label of the permission names of this resource, instead of the site label."""
-    field_permissions: Sequence[str]
-    """Names such as ``"see_credential"`` that become ``<label>.<name>``."""
-    see: Mapping[str, str]
-    """Field permissions that show a field: ``{"cost": "see_cost"}`` shows the column ``cost`` only to a user who holds ``<label>.see_cost``.
-    Without it the field leaves the list, detail, tabs, search, filters, sort, export, labels, inlines and the response. A filter, sort or write on it is an error."""
-    change: Mapping[str, str]
-    """Field permissions that change a field: ``{"price": "change_price"}`` makes ``price`` read-only for a user who does not hold ``<label>.change_price``."""
-    actions: Sequence[Any]
-    """Functions that ``@admin.action(...)`` marked (a button where staff need it), or names such as ``"refund"`` that only declare
-    the permission ``<label>.<action>_<resource>``."""
-    bulk_delete: bool
-    set_password: bool
-    """``False`` removes the bulk delete of the list. It is on by default; it needs the delete permission, and a ``delete`` service gets the query set."""
-    queryset: Any
-    """The rows that staff see: a prepared query set (``Model.objects.filter(Model.owner == param("user")).prepare()``) whose
-    ``user`` param the admin fills, or an async function ``(user)`` that returns a condition (one host call
-    for each request). Its filter limits the list, count, search, detail and tabs; its ``order`` is the list order when the list sets none."""
-    can: Mapping[Literal["change", "delete"], Any]
-    """Conditions that a row must meet for the user to change or delete it. The list and the detail select them as flags."""
-    check_messages: Mapping[str, str]
-    """The form message of each named ``@@check``, by the name of the check. A failed check without an entry shows a generic message."""
-    form: Sequence[SectionConfig] | Mapping[Literal["create", "edit"], Sequence[SectionConfig]]
-    """The sections of the form: one list for both forms, or ``{"create": [...], "edit": [...]}``. A field that no section names
-    trails in an untitled section. A name that is not a field of the form is an error at the start of the site."""
-    readonly: Sequence[str]
-    """Fields that the form shows but never writes, in the create and the edit form. A write to one of them is a 422."""
-    widgets: Mapping[str, str]
-    """The widget of a field (``"blurb": "textarea"``), of a nested path (``"Geo.lat"``) or of a type (``"Text"``, an enum name).
-    A field beats a path, a path beats a type; the site ``widgets`` come last."""
-    detail_tabs: Sequence[str]
-    frames: Sequence[FrameConfig]
-    fieldsets: Sequence[Fieldset]
-    """Package detail tabs, each ``"<package>.<tab>"``: the detail page shows them after the relation tabs. See :meth:`Admin.package`."""
-    form_component: str | os.PathLike[str]
-    """The path of a JavaScript module that replaces the whole form: ``export default (React) => function Form(props) {...}``.
-    The admin reads the file when the site starts and serves it to signed-in staff."""
-    relations: Mapping[str, RelationConfig]
-    """The relation fields that the form edits, by relation name. A to-one relation becomes a picker with keyset autocomplete;
-    a many-to-many relation (through a join model) becomes chips. The target of each needs a text column that names a row."""
-    files: Mapping[str, str]
-    """File fields by field name, each with the name of its storage in the ``storage`` registry of the admin
-    (``{"cover": "media"}``). A file field is a nullable ``Json`` field that holds the reference of the file."""
-    create: Callable[..., Any]
-    """The service of a create: ``async def create(ctx, values)`` returns the new record. It owns its transactions."""
-    update: Callable[..., Any]
-    """The service of an update: ``async def update(ctx, qs, changes)``, where ``qs`` is the one-row query set of the record
-    (with the ``queryset`` filter and the ``can`` rule). Check ``ctx.loaded`` for a version conflict (``VersionConflict`` is a 409)."""
-    delete: Callable[..., Any]
-    """The service of a delete: ``async def delete(ctx, qs)``."""
-    inputs: Sequence[InputDef]
-    """Controls of the form that are no field (``admin.input("reason", type="textarea")``). Only a service reads them (``ctx.inputs``)."""
-    allow_protected_writes: bool
-    """Open application write rules for this resource. The audit row records the opt-in."""
-    inlines: Sequence[Any]
-    """To-many relations that the detail page shows and edits in place: ``admin.inline(OrderLine)`` for each one (a bare model works too).
-    The inline takes the registered page of the child model; ``admin.inline(..., page={...})`` overrides page keys."""
 
 
 class InlineDef:
@@ -376,16 +121,6 @@ def inline(
     """
     _admin_call(_native.AdminConfigBuilder.check_inline, model.__name__, save, style)
     return InlineDef(model, via, save, permission, style, max, label, collapsed, delete, page)
-
-
-class RelationConfig(TypedDict, total=False):
-    label: str
-    """The text column of the target that names a row in the picker (the first text column by default)."""
-    create: bool
-    """Offer a modal in the form that creates a record of the target and fills the field."""
-    choices: Any
-    """A prepared query set of the target (``Author.objects.filter(Author.active == True).prepare()``) that limits the picker.
-    The server checks it again on write. It combines with the ``queryset`` of the target."""
 
 
 Strategy = Literal["page", "model", "access"]
@@ -450,35 +185,9 @@ def _order_item(model: type[Model], item: Any) -> Any:
     return {**by, **({"desc": True} if desc else {}), **({"nulls": nulls} if nulls else {})}
 
 
-# The config positions that hold a host object, and what each holds. The call sites send each one through `_host`.
-_HOST_FIELDS: dict[str, str] = {
-    "list.columns": "column",
-    "list.filters": "column",
-    "list.tabs": "column",
-    "list.editable": "column",
-    "list.sortable": "column",
-    "list.search": "column",
-    "list.date_hierarchy": "column",
-    "list.date_hierarchy.field": "column",
-    "list.order": "order",
-    "list.aggregates.relation": "relation",
-    "list.aggregates.field": "column",
-    "list.computed.order_by": "order_by",
-    "list.computed.expr": "ir",
-    "list.named_filters.choices.condition": "ir",
-    "list.search_with": "function",
-    "list.computed.function": "function",
-    "can": "ir",
-    "actions.can": "ir",
-    "actions.applies_to": "ir",
-    "queryset": "queryset",
-    "relations.choices": "queryset",
-}
-
-
 def _host(model: type[Model], path: str, value: Any, what: str = "", fns: _Fns | None = None, maker: Callable[[], Any] | None = None) -> Any:
-    """The wire form of the value at config position ``path``, by its kind in ``_HOST_FIELDS``."""
-    kind = _HOST_FIELDS[path]
+    """The wire form of the value at config position ``path``, by its kind in ``HOST_FIELDS``."""
+    kind = HOST_FIELDS[path]
     if kind == "column":
         return _ref(value)
     if kind == "relation":
@@ -539,7 +248,7 @@ def _named(model: type[Model], items: Sequence[Mapping[str, Any]]) -> list[dict[
     for item in items:
         entry = {k: v for k, v in item.items() if k != "choices"}
         entry["choices"] = [
-            {**{k: v for k, v in c.items() if k != "condition"}, "expr": _host(model, "list.named_filters.choices.condition", c["condition"], f"named filter {item.get('name')!r}")}
+            {**c, "condition": _host(model, "list.named_filters.choices.condition", c["condition"], f"named filter {item.get('name')!r}")}
             for c in item["choices"]
         ]
         out.append(entry)

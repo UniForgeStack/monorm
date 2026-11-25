@@ -179,8 +179,8 @@ async fn a_named_filter_has_a_default_and_an_all_choice() {
     let named = json!([{
         "name": "recent", "label": "Age", "default": "march",
         "choices": [
-            {"name": "march", "label": "Rank two or more", "expr": {"t": "cmp", "op": "ge", "l": {"t": "col", "path": [], "name": "rank"}, "r": {"t": "int", "value": 2}}},
-            {"name": "first", "label": "Rank one", "expr": {"t": "cmp", "op": "eq", "l": {"t": "col", "path": [], "name": "rank"}, "r": {"t": "int", "value": 1}}}
+            {"name": "march", "label": "Rank two or more", "condition": {"t": "cmp", "op": "ge", "l": {"t": "col", "path": [], "name": "rank"}, "r": {"t": "int", "value": 2}}},
+            {"name": "first", "label": "Rank one", "condition": {"t": "cmp", "op": "eq", "l": {"t": "col", "path": [], "name": "rank"}, "r": {"t": "int", "value": 1}}}
         ]
     }]);
     let site = comments(json!({"named_filters": named}));
