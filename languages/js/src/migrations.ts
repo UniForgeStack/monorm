@@ -163,10 +163,13 @@ export class Migrations {
   }
 
   /** Folds the migrations 1..`to` (a number or a name) into one file.
+   * The first run of schema operations becomes one diff from an empty database. A `run_sql` or
+   * `run_code` with `elidable: true` is dropped; one without it stops the squash. `separate`,
+   * `commit` and the operations after them stay as written.
    * The new file lists the replaced migrations; a database that applied all of them adopts it with no SQL.
    * Keep the old files until every database has passed them. Reads no database. */
   squash(options: { readonly to: string; readonly name?: string }): Migration {
-    const [name, path] = call(() => native().squashMigration(this.directory, options.to, options.name ?? null));
+    const [name, path] = call(() => this.schema.squashMigration(this.directory, options.to, options.name ?? null, this.options.nameTemplate ?? null));
     return new Migration(name!, path!, this.schema);
   }
 }

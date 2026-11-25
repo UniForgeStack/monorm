@@ -505,7 +505,13 @@ async fn command(argv: &[String], host: Host) -> Result<i32> {
         }
         "squashmigrations" => {
             args.allow(command, &["--to", "--name"], 0)?;
-            return Err(Failure::Failed("squashmigrations is not available in this build".into()));
+            let to = args.opt(&["--to"]).ok_or_else(|| Failure::Usage("squashmigrations needs --to <migration>".into()))?;
+            let dir = migrations_dir(&args, &settings)?;
+            let (_, compiled) = load(&schema, &args)?;
+            let template = migrations_name(&args, &settings)?;
+            let (entry, file) = files::files::squash(&dir, compiled.dialect, to, args.opt(&["--name"]), &template).map_err(Failure::Failed)?;
+            println!("Created {} (replaces {} migrations)", entry.path.display(), file.replaces.len());
+            println!("Keep the replaced files until every database has passed them.");
         }
         "sqlmigrate" => {
             args.allow(command, &["--down"], 1)?;

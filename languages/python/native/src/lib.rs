@@ -374,6 +374,14 @@ impl PySchema {
         Ok(made.map(|(entry, _)| entry.name))
     }
 
+    /// Folds the migrations of `dir` up to `to` into one file that lists them in `replaces`: `(name, path)`.
+    #[pyo3(signature = (dir, to, name = None, template = None))]
+    fn squash_migration(&self, dir: &str, to: &str, name: Option<&str>, template: Option<&str>) -> PyResult<(String, std::path::PathBuf)> {
+        let template = name_template(template)?;
+        let (entry, _) = migrate::files::squash(std::path::Path::new(dir), self.inner.dialect, to, name, &template).map_err(errors::MigrationError::new_err)?;
+        Ok((entry.name, entry.path))
+    }
+
     /// The numbered operations of the migration `name` of `dir` with their SQL for this schema's dialect
     /// (what `sqlmigrate` prints).
     #[pyo3(signature = (dir, name, down = false))]
@@ -1609,14 +1617,6 @@ fn list_migrations(dir: PathBuf) -> PyResult<Vec<(String, PathBuf)>> {
     Ok(all.into_iter().map(|m| (m.name, m.path)).collect())
 }
 
-/// Folds the migrations up to `to` into one folder: `(name, path)`.
-#[pyfunction]
-#[pyo3(signature = (dir, to, name=None))]
-fn squash_migration(dir: PathBuf, to: &str, name: Option<&str>) -> PyResult<(String, PathBuf)> {
-    let _ = (dir, to, name);
-    Err(schema_err("squashmigrations is not available in this build".to_owned()))
-}
-
 /// The checksum of a migration: its canonical JSON and the `.sql` files it names.
 #[pyfunction]
 fn migration_checksum(dir: PathBuf, name: &str) -> PyResult<String> {
@@ -1674,7 +1674,6 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     #[cfg(feature = "cli")]
     m.add_function(wrap_pyfunction!(cli_schema, m)?)?;
     m.add_function(wrap_pyfunction!(list_migrations, m)?)?;
-    m.add_function(wrap_pyfunction!(squash_migration, m)?)?;
     m.add_function(wrap_pyfunction!(migration_checksum, m)?)?;
     m.add_function(wrap_pyfunction!(find_migration, m)?)?;
     #[cfg(feature = "admin")]

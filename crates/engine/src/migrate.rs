@@ -70,9 +70,9 @@ impl From<MigrationEntry> for Migration {
     }
 }
 
-/// The migrations of `dir`, in order.
+/// The migrations of `dir` in order, without the files that a squash file replaces.
 pub fn list(dir: &Path) -> Result<Vec<Migration>> {
-    Ok(files::list(dir).map_err(Error::Migration)?.into_iter().map(Migration::from).collect())
+    Ok(files::effective(dir).map_err(Error::Migration)?.into_iter().map(|(m, _)| Migration::from(m)).collect())
 }
 
 /// The place of `name` in the order of `statuses`: names compare by order key, not as text.
@@ -384,11 +384,25 @@ pub async fn adopt(conn: &dyn Executor, dir: &Path) -> Result<Vec<Migration>> {
     Ok(done)
 }
 
+/// The replaced files that stay on disk must still match what the database recorded for them.
+fn verify_replaced(dir: &Path, rows: &BTreeMap<String, Row>) -> Result<()> {
+    for entry in files::list(dir).map_err(Error::Migration)? {
+        let Some(row) = rows.get(&entry.name) else { continue };
+        let m = Migration::from(entry);
+        if row.checksum != m.checksum()? {
+            return Err(Error::Migration(format!("{} changed after it was applied", m.name)));
+        }
+    }
+    Ok(())
+}
+
 /// [`adopt`] after the checks of [`status`] and [`verify`], so a partly applied database or a changed checksum fails before anything is written.
 async fn adopt_if_ready(conn: &dyn Executor, dir: &Path) -> Result<()> {
     if list(dir)?.iter().any(|m| m.replaces().is_ok_and(|r| !r.is_empty())) {
         let statuses = status(conn, dir).await?;
-        verify(&statuses, &applied(conn).await?)?;
+        let rows = applied(conn).await?;
+        verify(&statuses, &rows)?;
+        verify_replaced(dir, &rows)?;
         adopt(conn, dir).await?;
     }
     Ok(())

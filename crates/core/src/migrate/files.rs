@@ -297,6 +297,78 @@ pub fn make(dir: &Path, schema: &Schema, opts: &MakeOptions) -> Result<Option<(M
     Ok(Some((MigrationEntry { name, path }, file)))
 }
 
+/// The operations of a barrier-free run from an empty database: the diff to the state the run
+/// reaches, plus one `separate` operation with no `database` list for the state that no schema
+/// operation carries.
+fn fold(dialect: Dialect, run: &[&Operation]) -> Result<Vec<Operation>> {
+    if run.is_empty() { return Ok(vec![]); }
+    let start = empty_state(dialect);
+    let mut target = start.clone();
+    for op in run { replay::apply_operation(&mut target, op)?; }
+    let list = super::diff::diff(&start, &target, &Default::default())?;
+    let mut replayed = start;
+    let mut operations: Vec<Operation> = list.into_iter().map(Operation::schema).collect();
+    replay::replay(&mut replayed, &operations)?;
+    operations.extend(replay::state_operation(&replayed, &target));
+    Ok(operations)
+}
+
+/// Folds the migrations of `dir` up to `to` (a name or a number) into one file that lists them in
+/// `replaces`. The first run of schema operations (before any barrier) becomes the diff from an
+/// empty database, because the squash file only runs on one. A `run_sql` or `run_code` that is
+/// `elidable` is dropped; one that is not stops the squash. `separate`, `commit` and every
+/// operation after a barrier stay as written, so a rename after data was written stays a rename.
+pub fn squash(dir: &Path, dialect: Dialect, to: &str, name: Option<&str>, template: &NameTemplate) -> Result<(MigrationEntry, MigrationFile)> {
+    let last = find(dir, to)?;
+    let last_key = order_key(&last.name).ok_or_else(|| format!("{} has no order key", last.name))?;
+    let folded: Vec<(MigrationEntry, MigrationFile)> = effective(dir)?.into_iter().filter(|(m, _)| order_key(&m.name).is_some_and(|k| k <= last_key)).collect();
+    if folded.len() < 2 { return Err(format!("squashing needs two or more migrations up to {}; found {}", last.name, folded.len())); }
+    let mut operations: Vec<Operation> = vec![];
+    let mut run: Vec<&Operation> = vec![];
+    let mut first = true;
+    let flush = |run: &mut Vec<&Operation>, first: &mut bool, operations: &mut Vec<Operation>| -> Result<()> {
+        if *first { operations.extend(fold(dialect, run)?); } else { operations.extend(run.iter().map(|o| (*o).clone())); }
+        run.clear();
+        *first = false;
+        Ok(())
+    };
+    for (m, f) in &folded {
+        for op in &f.operations {
+            match &op.kind {
+                OpKind::RunSql(r) if r.elidable => flush(&mut run, &mut first, &mut operations)?,
+                OpKind::RunCode(r) if r.elidable => flush(&mut run, &mut first, &mut operations)?,
+                OpKind::RunSql(_) | OpKind::RunCode(_) => {
+                    return Err(format!("{} has the operation `{}`, which is not elidable; mark it \"elidable\": true to drop it from the squash, or keep the migrations", m.name, op.summary()));
+                }
+                OpKind::Separate { .. } | OpKind::Commit => {
+                    flush(&mut run, &mut first, &mut operations)?;
+                    operations.push(op.clone());
+                }
+                _ => run.push(op),
+            }
+        }
+    }
+    flush(&mut run, &mut first, &mut operations)?;
+    let key = order_key(&folded[0].0.name).unwrap_or(1);
+    let label = match name {
+        Some(n) => slug(n),
+        None => format!("squashed_{last_key:04}"),
+    };
+    let new_name = template.render(key, &label);
+    let path = dir.join(format!("{new_name}.json"));
+    if path.exists() { return Err(format!("{} exists; pass another --name", path.display())); }
+    let mut replaces: Vec<String> = vec![];
+    for (m, f) in &folded {
+        replaces.extend(f.replaces.iter().cloned());
+        replaces.push(m.name.clone());
+    }
+    replaces.sort();
+    replaces.dedup();
+    let file = MigrationFile { version: FORMAT_VERSION, replaces, operations };
+    std::fs::write(&path, file.render()).map_err(|e| io(&path, e))?;
+    Ok((MigrationEntry { name: new_name, path }, file))
+}
+
 fn sql_files(ops: &[Operation], out: &mut Vec<String>) {
     for op in ops {
         match &op.kind {
@@ -322,6 +394,202 @@ pub fn file_checksum(entry: &MigrationEntry) -> Result<String> {
     Ok(hash.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
-pub fn checksum(text: &str) -> String {
-    Sha256::digest(text.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::migrate::render::Direction;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn temp() -> PathBuf {
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!("monorm-files-{}-{}", std::process::id(), N.fetch_add(1, Ordering::SeqCst)));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn put(dir: &Path, name: &str, text: &str) {
+        std::fs::write(dir.join(format!("{name}.json")), text).unwrap();
+    }
+
+    fn file(ops: &str) -> String {
+        format!(r#"{{"version": 1, "operations": [{ops}]}}"#)
+    }
+
+    const CREATE: &str = r#"{"create_table": {"table": {"name": "t", "columns": [{"name": "id", "type": "bigint"}]}, "foreign_keys": []}}"#;
+    const ADD: &str = r#"{"add_column": {"table": "t", "column": {"name": "a", "type": "text", "nullable": true}}}"#;
+    const ADD_B: &str = r#"{"add_column": {"table": "t", "column": {"name": "b", "type": "text", "nullable": true}}}"#;
+    const DROP: &str = r#"{"drop_column": {"table": "t", "column": "a", "generated": false}}"#;
+    const RENAME: &str = r#"{"rename_column": {"table": "t", "from": "b", "to": "c"}}"#;
+
+    fn entry(name: &str) -> MigrationEntry {
+        MigrationEntry { name: name.into(), path: PathBuf::from(format!("{name}.json")) }
+    }
+
+    fn squash_default(dir: &Path, to: &str) -> Result<(MigrationEntry, MigrationFile)> {
+        squash(dir, Dialect::Postgres, to, None, &NameTemplate::default())
+    }
+
+    fn kinds(file: &MigrationFile) -> Vec<String> {
+        file.operations.iter().map(|o| o.summary()).collect()
+    }
+
+    #[test]
+    fn name_template_renders_number_timestamp_and_slug() {
+        assert_eq!(NameTemplate::default().render(7, "add_x"), "0007_add_x");
+        let t = NameTemplate::parse("{timestamp}_{slug}").unwrap();
+        assert_eq!(t.render(20260102030405, "x"), "20260102030405_x");
+        let t = NameTemplate::parse("m{number}-{slug}").unwrap_err();
+        assert!(t.contains("must start with"), "{t}");
+    }
+
+    #[test]
+    fn name_template_without_a_slug_leaves_no_separator() {
+        let t = NameTemplate::parse("{number}_{slug}").unwrap();
+        assert_eq!(t.render(3, ""), "0003");
+        assert_eq!(NameTemplate::parse("{number}").unwrap().render(3, "ignored"), "0003");
+    }
+
+    #[test]
+    fn name_template_rejects_bad_templates() {
+        for (text, why) in [
+            ("{number}_{nope}", "unknown placeholder"),
+            ("{slug}", "must start with"),
+            ("{number}_{timestamp}", "exactly one"),
+            ("{number}_{slug}_{slug}", "may appear once"),
+            ("{number", "no `}`"),
+            ("{number}/x", "not allowed"),
+            ("{number}{slug}", "followed by"),
+            ("{number}2_{slug}", "followed by"),
+        ] {
+            let e = NameTemplate::parse(text).unwrap_err();
+            assert!(e.contains(why), "{text}: {e}");
+        }
+    }
+
+    #[test]
+    fn the_next_key_follows_the_newest_in_a_mixed_history() {
+        let existing = [entry("0001_a"), entry("20260101000000_b"), entry("0002_c")];
+        assert_eq!(NameTemplate::default().next_key(&existing), 20260101000001);
+        let stamp = NameTemplate::parse("{timestamp}_{slug}").unwrap();
+        assert!(stamp.next_key(&existing) > 20260101000000);
+        assert_eq!(NameTemplate::default().next_key(&[]), 1);
+    }
+
+    #[test]
+    fn order_is_the_number_of_the_leading_digits() {
+        let dir = temp();
+        for n in ["0002_b", "0010_c", "0001_a"] { put(&dir, n, &file("")); }
+        let names: Vec<String> = list(&dir).unwrap().into_iter().map(|m| m.name).collect();
+        assert_eq!(names, ["0001_a", "0002_b", "0010_c"]);
+        assert_eq!(find(&dir, "10").unwrap().name, "0010_c");
+    }
+
+    #[test]
+    fn a_duplicate_order_key_is_an_error() {
+        let dir = temp();
+        put(&dir, "0001_a", &file(CREATE));
+        put(&dir, "0001_b", &file(""));
+        let e = list(&dir).unwrap_err();
+        assert!(e.contains("same order key"), "{e}");
+    }
+
+    #[test]
+    fn an_old_migration_folder_gets_a_clear_error() {
+        let dir = temp();
+        std::fs::create_dir_all(dir.join("0001_initial")).unwrap();
+        std::fs::write(dir.join("0001_initial/up.sql"), "SELECT 1").unwrap();
+        let e = list(&dir).unwrap_err();
+        assert!(e.contains("old format") && e.contains("baseline"), "{e}");
+    }
+
+    #[test]
+    fn a_file_checks_its_version_and_its_operation_names() {
+        assert!(MigrationFile::parse(r#"{"operations": []}"#).unwrap_err().contains("missing \"version\""));
+        assert!(MigrationFile::parse(r#"{"version": 2, "operations": []}"#).unwrap_err().contains("version 2 is not supported"));
+        assert!(MigrationFile::parse(r#"{"version": 1, "operations": [{"no_such_op": {}}]}"#).is_err());
+        assert!(MigrationFile::parse("nope").unwrap_err().contains("not valid JSON"));
+        let f = MigrationFile::parse(&file(&format!("{CREATE}, {ADD}"))).unwrap();
+        assert_eq!(MigrationFile::parse(&f.render()).unwrap(), f);
+    }
+
+    #[test]
+    fn run_code_cannot_be_outside_a_transaction() {
+        let dir = temp();
+        put(&dir, "0001_a", &file(r#"{"run_code": {"python": "fix.py:run", "reverse": "noop"}, "atomic": false}"#));
+        let e = crate::migrate::render_migration(&dir, "0001_a", Dialect::Postgres, Direction::Up).unwrap_err();
+        assert!(e.contains("run_code cannot be"), "{e}");
+    }
+
+    #[test]
+    fn a_squash_folds_the_first_run_into_one_diff() {
+        let dir = temp();
+        put(&dir, "0001_a", &file(CREATE));
+        put(&dir, "0002_b", &file(&format!("{ADD}, {ADD_B}")));
+        put(&dir, "0003_c", &file(DROP));
+        let (made, squashed) = squash_default(&dir, "0003").unwrap();
+        assert_eq!(made.name, "0001_squashed_0003");
+        assert_eq!(squashed.replaces, ["0001_a", "0002_b", "0003_c"]);
+        // the dropped column never reaches the squash file
+        assert_eq!(squashed.operations.len(), 1);
+        let json = squashed.render();
+        assert!(json.contains("\"b\"") && !json.contains("\"a\""), "{json}");
+        // the squash file stands for the three: the state is the same and the old files are skipped
+        let names: Vec<String> = effective(&dir).unwrap().into_iter().map(|(m, _)| m.name).collect();
+        assert_eq!(names, ["0001_squashed_0003"]);
+        let after = latest_state(&dir, Dialect::Postgres).unwrap();
+        assert_eq!(after.tables[0].columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["id", "b"]);
+    }
+
+    #[test]
+    fn a_squash_keeps_what_follows_a_barrier_as_written() {
+        let dir = temp();
+        put(&dir, "0001_a", &file(&format!("{CREATE}, {ADD_B}")));
+        put(&dir, "0002_b", &file(&format!(r#"{{"commit": {{}}}}, {RENAME}"#)));
+        let (_, squashed) = squash_default(&dir, "0002").unwrap();
+        // create_table (with b), then the commit, then the rename as a rename
+        let k = kinds(&squashed);
+        assert_eq!(k.len(), 3, "{k:?}");
+        assert_eq!(k[1], "commit");
+        assert!(squashed.render().contains("rename_column"));
+    }
+
+    #[test]
+    fn a_squash_drops_an_elidable_operation_and_refuses_another() {
+        let dir = temp();
+        put(&dir, "0001_a", &file(CREATE));
+        put(&dir, "0002_b", &file(r#"{"run_sql": {"sql": "UPDATE t SET id = id", "reverse_sql": "noop", "elidable": true}}"#));
+        let (_, squashed) = squash_default(&dir, "0002").unwrap();
+        assert!(!squashed.render().contains("run_sql"));
+
+        let dir = temp();
+        put(&dir, "0001_a", &file(CREATE));
+        put(&dir, "0002_b", &file(r#"{"run_sql": {"sql": "UPDATE t SET id = id", "reverse_sql": "noop"}}"#));
+        let e = squash_default(&dir, "0002").unwrap_err();
+        assert!(e.contains("0002_b") && e.contains("not elidable"), "{e}");
+        assert_eq!(list(&dir).unwrap().len(), 2, "a refused squash writes nothing");
+    }
+
+    #[test]
+    fn a_squash_needs_two_migrations_and_a_free_name() {
+        let dir = temp();
+        put(&dir, "0001_a", &file(CREATE));
+        assert!(squash_default(&dir, "0001").unwrap_err().contains("two or more"));
+        put(&dir, "0002_b", &file(ADD));
+        put(&dir, "0003_c", &file(ADD_B));
+        let e = squash(&dir, Dialect::Postgres, "0003", Some("a"), &NameTemplate::default()).unwrap_err();
+        assert!(e.contains("exists"), "{e}");
+    }
+
+    #[test]
+    fn a_second_squash_carries_the_first_replaces() {
+        let dir = temp();
+        put(&dir, "0001_a", &file(CREATE));
+        put(&dir, "0002_b", &file(ADD));
+        put(&dir, "0003_c", &file(ADD_B));
+        let (first, _) = squash(&dir, Dialect::Postgres, "0002", Some("one"), &NameTemplate::default()).unwrap();
+        assert_eq!(first.name, "0001_one");
+        let (_, second) = squash(&dir, Dialect::Postgres, "0003", Some("two"), &NameTemplate::default()).unwrap();
+        assert_eq!(second.replaces, ["0001_a", "0001_one", "0002_b", "0003_c"]);
+    }
 }

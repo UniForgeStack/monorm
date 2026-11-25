@@ -1840,6 +1840,8 @@ mod failure_tests {
             )
             .unwrap();
             let db = PgDriver::connect(&flagged(&test_url()), 1).await.unwrap();
+            // rows that another test left would stop `status` before the lock
+            PgDriver::connect(&test_url(), 1).await.unwrap().batch("DROP TABLE IF EXISTS monorm_migrations".into()).await.unwrap();
             let e = crate::migrate::upgrade(&db, &path, None, None, true).await.unwrap_err().to_string();
             std::fs::remove_dir_all(&path).unwrap();
             assert!(e.contains("0001_concurrent: operation 1 runs outside a transaction and needs a session lock"), "{e}");

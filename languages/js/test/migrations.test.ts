@@ -931,3 +931,224 @@ test("enum migrations", async () => {
     await drop();
   }
 });
+
+const SQUASH_SHOP_TAG = GATE_SHOP.replace("  note String?\n", "  note String?\n  tag  String?\n");
+const SQUASH_DOC = 'model Doc {\n  id    BigInt @id @default(autoincrement())\n  email String @db.Citext\n\n  @@map("ext_docs")\n}\n';
+
+/** Writes three migrations (keep; shop; a tag column on shop) and gives the Migrations of the last schema. */
+function squashHistory(dir: string, prefix: string): Migrations {
+  const sources = [prefix + GATE_KEEP, prefix + GATE_KEEP + GATE_SHOP, prefix + GATE_KEEP + SQUASH_SHOP_TAG];
+  for (const source of sources) new Migrations(dir, models(source)).make();
+  return new Migrations(dir, models(sources[2]!));
+}
+
+async function migrationNames(db: Database): Promise<string[]> {
+  return (await db.fetchText("SELECT name FROM monorm_migrations ORDER BY name")).map((r) => r[0]!);
+}
+
+for (const dialect of GATE_DIALECTS) {
+  test(`squash replays on a fresh database with no drift (${dialect})`, async () => {
+    const dir = tmp();
+    const { db, prefix } = await gateDatabase(dialect);
+    const migs = squashHistory(dir, prefix);
+    const old = migs.all().map((m) => m.name);
+    const squashed = migs.squash({ to: "2" });
+    assert.equal(squashed.name, "0001_squashed_0002");
+    assert.deepEqual((JSON.parse(readFileSync(squashed.path, "utf8")) as { replaces: string[] }).replaces, old.slice(0, 2));
+    assert.deepEqual(migs.all().map((m) => m.name), [squashed.name, old[2]]);
+    const migrator = new Migrator(db, migs);
+    assert.deepEqual((await migrator.upgrade()).map((m) => m.name), [squashed.name, old[2]]);
+    assert.equal((await migrator.drift()).steps.length, 0);
+    assert.deepEqual(await migrationNames(db), [squashed.name, old[2]!].sort());
+    assert.equal((await migrator.downgrade({ steps: 2 })).length, 2);
+    assert.equal(await gateHasTable(db, dialect, "shop"), false);
+  });
+
+  test(`squash adopts on a database that applied the old migrations (${dialect})`, async () => {
+    const dir = tmp();
+    const { db, prefix } = await gateDatabase(dialect);
+    const migs = squashHistory(dir, prefix);
+    const old = migs.all().map((m) => m.name);
+    await new Migrator(db, migs).upgrade();
+    await db.execute("INSERT INTO shop (name) VALUES ('a')");
+    const squashed = migs.squash({ to: "2" });
+    const migrator = new Migrator(db, migs);
+    assert.deepEqual((await migrator.status()).map((s) => s.applied), [true, true]);
+    assert.deepEqual(await migrationNames(db), [...old].sort()); // status reads only
+    assert.deepEqual(await migrator.upgrade(), []); // no SQL ran: the table keeps its row
+    assert.deepEqual(await migrationNames(db), [squashed.name, old[2]!].sort());
+    assert.equal(await gateRows(db, "shop"), 1);
+    assert.equal((await migrator.drift()).steps.length, 0);
+    assert.deepEqual(await migrator.upgrade(), []);
+  });
+
+  test(`squash refuses a partly applied database (${dialect})`, async () => {
+    const dir = tmp();
+    const { db, prefix } = await gateDatabase(dialect);
+    const migs = squashHistory(dir, prefix);
+    await new Migrator(db, migs).upgrade("2");
+    const before = await migrationNames(db);
+    const squashed = migs.squash({ to: "3" });
+    const refused = (e: unknown) => e instanceof MigrationError && e.message.includes(`applied 2 of the 3 migrations that ${squashed.name} replaces; migrate it with a release before the squash`);
+    await assert.rejects(new Migrator(db, migs).upgrade(), refused);
+    await assert.rejects(new Migrator(db, migs).status(), refused);
+    assert.deepEqual(await migrationNames(db), before);
+  });
+
+  test(`squash refuses a data step in the range (${dialect})`, () => {
+    const dir = tmp();
+    const migs = squashHistory(dir, dialect === "sqlite" ? GATE_SQLITE : "");
+    const before = migs.all().map((m) => m.name);
+    const second = migs.all()[1]!;
+    appendOp(second, { run_sql: { sql: "UPDATE shop SET name = 'x'", reverse_sql: "noop" } });
+    assert.throws(() => migs.squash({ to: "3" }), (e: unknown) => e instanceof MigrationError && e.message.includes("not elidable"));
+    assert.deepEqual(migs.all().map((m) => m.name), before);
+    const data = JSON.parse(readFileSync(second.path, "utf8")) as { operations: { run_sql?: { elidable?: boolean } }[] };
+    data.operations[data.operations.length - 1]!.run_sql!.elidable = true;
+    writeFileSync(second.path, JSON.stringify(data));
+    assert.equal(migs.squash({ to: "3" }).name, "0001_squashed_0003");
+  });
+
+  test(`squash checks the checksums of replaced migrations (${dialect})`, async () => {
+    const dir = tmp();
+    const { db, prefix } = await gateDatabase(dialect);
+    const migs = squashHistory(dir, prefix);
+    const old = migs.all().map((m) => m.name);
+    await new Migrator(db, migs).upgrade();
+    await db.execute(`UPDATE monorm_migrations SET checksum = 'edited' WHERE name = '${old[1]}'`);
+    migs.squash({ to: "3" });
+    await assert.rejects(new Migrator(db, migs).upgrade(), (e: unknown) => e instanceof MigrationError && e.message.includes(`${old[1]} changed after it was applied`));
+    assert.deepEqual(await migrationNames(db), [...old].sort());
+  });
+
+  test(`squash rollback after adoption (${dialect})`, async () => {
+    const dir = tmp();
+    const { db, prefix } = await gateDatabase(dialect);
+    const migs = squashHistory(dir, prefix);
+    await new Migrator(db, migs).upgrade();
+    const squashed = migs.squash({ to: "3" });
+    const migrator = new Migrator(db, migs);
+    assert.deepEqual(await migrator.upgrade(), []);
+    assert.deepEqual((await migrator.downgrade()).map((m) => m.name), [squashed.name]);
+    assert.equal(await gateHasTable(db, dialect, "shop"), false);
+    assert.deepEqual(await migrationNames(db), []);
+  });
+
+  test(`squash of baselined migrations needs force to roll back (${dialect})`, async () => {
+    const dir = tmp();
+    const { db, prefix } = await gateDatabase(dialect);
+    const migs = squashHistory(dir, prefix);
+    const old = migs.all().map((m) => m.name);
+    await new Migrator(db, migs).upgrade();
+    await db.execute(`UPDATE monorm_migrations SET baseline = ${dialect === "sqlite" ? "1" : "true"} WHERE name = '${old[0]}'`);
+    const squashed = migs.squash({ to: "3" });
+    const migrator = new Migrator(db, migs);
+    assert.deepEqual(await migrator.upgrade(), []);
+    await assert.rejects(migrator.downgrade(), (e: unknown) => e instanceof MigrationError && e.message.includes("was baselined"));
+    assert.equal(await gateHasTable(db, dialect, "shop"), true);
+    assert.deepEqual((await migrator.downgrade({ force: true })).map((m) => m.name), [squashed.name]);
+    assert.equal(await gateHasTable(db, dialect, "shop"), false);
+  });
+}
+
+test("squash runs the extensions of the snapshot", async () => {
+  const dir = tmp();
+  const { db } = await gateDatabase("postgres");
+  new Migrations(dir, models(GATE_KEEP)).make();
+  const migs = new Migrations(dir, models(GATE_KEEP + SQUASH_DOC));
+  migs.make();
+  const squashed = migs.squash({ to: "2" });
+  assert.ok(squashed.operations.some((op) => JSON.stringify(op).includes("citext")));
+  try {
+    await db.execute("DROP TABLE IF EXISTS ext_docs");
+    assert.deepEqual((await new Migrator(db, migs).upgrade()).map((m) => m.name), [squashed.name]);
+    assert.equal((await new Migrator(db, migs).drift()).steps.length, 0);
+  } finally {
+    await db.execute("DROP TABLE IF EXISTS ext_docs");
+  }
+});
+
+test("squash adopts once with two migrators", async () => {
+  const dir = tmp();
+  const { db, prefix } = await gateDatabase("postgres");
+  const migs = squashHistory(dir, prefix);
+  await new Migrator(db, migs).upgrade();
+  const squashed = migs.squash({ to: "2" });
+  const other = await connect(MIGRATIONS_URL, { maxConnections: 2, default: false, registry: models(GATE_KEEP) });
+  opened.push(other);
+  const results = await Promise.all([new Migrator(db, migs).upgrade(), new Migrator(other, migs).upgrade()]);
+  assert.deepEqual(results, [[], []]);
+  const names = await migrationNames(db);
+  assert.equal(names.filter((n) => n === squashed.name).length, 1);
+  assert.equal(names.length, 2);
+});
+
+const GROUP_NAME = "0002_groups";
+
+function groupMigrations(dir: string, prefix: string, operations: Record<string, unknown>[]): Migrations {
+  writeMigration(dir, "0001_base", []);
+  writeMigration(dir, GROUP_NAME, operations);
+  return new Migrations(dir, models(prefix + GATE_KEEP));
+}
+
+for (const dialect of GATE_DIALECTS) {
+  test(`a commit ends a group and a failure keeps the earlier groups (${dialect})`, async () => {
+    const dir = tmp();
+    const { db, prefix } = await gateDatabase(dialect);
+    const migs = groupMigrations(dir, prefix, [
+      { run_sql: { sql: "CREATE TABLE shop_a (id integer)", reverse_sql: "DROP TABLE shop_a" } },
+      { commit: {} },
+      { run_sql: { sql: "SELECT no_such_function()", reverse_sql: "noop" } },
+    ]);
+    try {
+      await assert.rejects(new Migrator(db, migs).upgrade(), (e) => e instanceof DatabaseError);
+      assert.equal(await gateHasTable(db, dialect, "shop_a"), true); // the first group is committed
+      await assert.rejects(
+        new Migrator(db, migs).upgrade(),
+        (e) => e instanceof MigrationError && e.message.includes(`continue it with \`migrate ${GROUP_NAME} --ops 3-3\``),
+      );
+    } finally {
+      await db.execute("DROP TABLE IF EXISTS shop_a");
+    }
+  });
+
+  test(`rollback refuses an operation with no reverse (${dialect})`, async () => {
+    const dir = tmp();
+    const { db, prefix } = await gateDatabase(dialect);
+    const migs = groupMigrations(dir, prefix, [{ run_sql: { sql: "CREATE TABLE shop_b (id integer)" } }]);
+    try {
+      await new Migrator(db, migs).upgrade();
+      await assert.rejects(new Migrator(db, migs).downgrade(), (e) => e instanceof MigrationError && e.message.includes("operation 1 (run_sql) has no reverse"));
+      assert.equal(await gateHasTable(db, dialect, "shop_b"), true);
+    } finally {
+      await db.execute("DROP TABLE IF EXISTS shop_b");
+    }
+  });
+
+  test(`a slice must start after the operations done (${dialect})`, async () => {
+    const dir = tmp();
+    const { db, prefix } = await gateDatabase(dialect);
+    const migs = groupMigrations(dir, prefix, [
+      { run_sql: { sql: "SELECT 1", reverse_sql: "noop" } },
+      { run_sql: { sql: "SELECT 2", reverse_sql: "noop" } },
+    ]);
+    await new Migrator(db, migs).upgrade("0001_base");
+    await assert.rejects(new Migrator(db, migs).upgrade(GROUP_NAME, { ops: "2-2" }), (e) => e instanceof MigrationError && e.message.includes("the next slice starts at 1 (--ops 1-)"));
+    await assert.rejects(new Migrator(db, migs).upgrade(GROUP_NAME, { ops: "1-3" }), (e) => e instanceof MigrationError && e.message.includes("out of range"));
+    assert.deepEqual((await new Migrator(db, migs).upgrade(GROUP_NAME, { ops: "1-1" })).map((m) => m.name), [GROUP_NAME]);
+    assert.deepEqual((await new Migrator(db, migs).status()).map((s) => s.applied), [true, false]);
+  });
+}
+
+for (const dialect of GATE_DIALECTS) {
+  test(`migrations with numbers and timestamps run in order of the leading number (${dialect})`, async () => {
+    const dir = tmp();
+    const { db, prefix } = await gateDatabase(dialect);
+    writeMigration(dir, "2500_first", [{ run_sql: { sql: "SELECT 1", reverse_sql: "noop" } }]);
+    writeMigration(dir, "20261101120000_second", [{ run_sql: { sql: "SELECT 2", reverse_sql: "noop" } }]);
+    const migrator = new Migrator(db, new Migrations(dir, models(prefix + GATE_KEEP)));
+    assert.deepEqual((await migrator.upgrade("2500_first")).map((m) => m.name), ["2500_first"]);
+    assert.deepEqual((await migrator.upgrade()).map((m) => m.name), ["20261101120000_second"]);
+    assert.deepEqual((await migrator.downgrade({ target: "2500_first" })).map((m) => m.name), ["20261101120000_second"]);
+  });
+}

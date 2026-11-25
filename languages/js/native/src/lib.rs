@@ -709,6 +709,14 @@ impl JsSchema {
         Ok(made.map(|(entry, _)| entry.name))
     }
 
+    /// Folds the migrations of `dir` up to `to` into one file that lists them in `replaces`: `[name, path]`.
+    #[napi]
+    pub fn squash_migration(&self, dir: String, to: String, name: Option<String>, template: Option<String>) -> napi::Result<Vec<String>> {
+        let template = name_template(template.as_deref())?;
+        let (entry, _) = migrate::files::squash(std::path::Path::new(&dir), self.inner.dialect, &to, name.as_deref(), &template).map_err(|m| tagged("MigrationError", m))?;
+        Ok(vec![entry.name, entry.path.to_string_lossy().into_owned()])
+    }
+
     /// The numbered operations of the migration `name` of `dir` with their SQL for this schema's dialect
     /// (what `sqlmigrate` prints).
     #[napi]
@@ -1875,13 +1883,6 @@ pub fn cli_migrate_args(argv: Vec<String>) -> Option<Vec<Option<String>>> {
 pub fn list_migrations(dir: String) -> napi::Result<Vec<Vec<String>>> {
     let all = engine_migrate::list(Path::new(&dir)).map_err(engine_err)?;
     Ok(all.into_iter().map(|m| vec![m.name, m.path.to_string_lossy().into_owned()]).collect())
-}
-
-/// Folds the migrations up to `to` into one folder: `[name, path]`.
-#[napi]
-pub fn squash_migration(dir: String, to: String, name: Option<String>) -> napi::Result<Vec<String>> {
-    let _ = (dir, to, name);
-    Err(schema_err("squashmigrations is not available in this build".to_owned()))
 }
 
 /// The checksum of a migration: its canonical JSON and the `.sql` files it names.

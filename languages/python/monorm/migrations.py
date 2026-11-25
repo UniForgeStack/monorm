@@ -198,9 +198,12 @@ class Migrations:
     def squash(self, *, to: str, name: str | None = None) -> Migration:
         """Fold the migrations 1..``to`` (a number or a name) into one file.
 
+        The first run of schema operations becomes one diff from an empty database. A ``run_sql`` or
+        ``run_code`` with ``elidable: true`` is dropped; one without it stops the squash. ``separate``,
+        ``commit`` and the operations after them stay as written.
         The new file lists the replaced migrations; a database that applied all of them adopts it with no SQL.
         Keep the old files until every database has passed them. Reads no database."""
-        found, path = _native.squash_migration(str(self.directory), to, name)
+        found, path = self.schema.squash_migration(str(self.directory), to, name, self.name_template)
         return Migration(found, Path(path), self.schema)
 
 

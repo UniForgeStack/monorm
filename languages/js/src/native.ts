@@ -144,6 +144,7 @@ export interface NativeSchema extends NativeInspector {
   planMigration(dir: string, template?: string | null, online?: boolean | null, name?: string | null): string;
   makeMigration(dir: string, name?: string | null, empty?: boolean | null, online?: boolean | null, baseline?: boolean | null, template?: string | null): string | null;
   sqlmigrate(dir: string, name: string, down?: boolean | null): string;
+  squashMigration(dir: string, to: string, name?: string | null, template?: string | null): string[];
 }
 
 /** One traced statement: `start` in Unix milliseconds, `duration` in milliseconds. */
@@ -340,7 +341,6 @@ interface Addon {
   cliMigrateArgs(argv: string[]): (string | null)[] | null;
   listMigrations(dir: string): string[][];
   findMigration(dir: string, name: string): string[];
-  squashMigration(dir: string, to: string, name?: string | null): string[];
   migrationChecksum(dir: string, name: string): string;
 }
 
