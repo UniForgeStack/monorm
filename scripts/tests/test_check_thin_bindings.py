@@ -116,5 +116,49 @@ class ScanTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
 
+class AdminRuleTest(unittest.TestCase):
+    def make_root(self, files: dict[str, str]) -> Path:
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        for name, text in files.items():
+            (root / name).parent.mkdir(parents=True, exist_ok=True)
+            (root / name).write_text(text)
+        return root
+
+    def test_the_error_map_may_make_the_classes(self) -> None:
+        root = self.make_root(
+            {
+                "languages/python/monorm/admin.py": "def _admin_error(e):\n    return (AdminSettingsError if e else AdminConfigError)(str(e))\n",
+                "languages/js/src/admin.ts": "export function adminError(e: unknown) {\n  if (e) { return new AdminSettingsError('x'); }\n  return new AdminConfigError('y');\n}\n",
+            }
+        )
+        self.assertEqual(thin.scan_admin(root, []), [])
+
+    def test_a_check_in_any_admin_file_fails(self) -> None:
+        root = self.make_root(
+            {
+                "languages/python/monorm/admin.py": "def f(x):\n    raise AdminConfigError('bad')\n",
+                "languages/python/monorm/_admin_host.py": "def f(x):\n    raise AdminSettingsError('bad')\n",
+                "languages/python/monorm/other.py": "def f(x):\n    raise AdminConfigError('not an admin file')\n",
+                "languages/js/src/admin-write.ts": "function f(x: unknown) {\n  throw new AdminConfigError(`bad`);\n}\n",
+                "languages/js/src/admin.ts": "// throw new AdminConfigError('a comment')\n/** new AdminConfigError('a doc') */\nconst x = 1;\n",
+            }
+        )
+        problems = thin.scan_admin(root, [])
+        self.assertEqual(len(problems), 3, problems)
+        self.assertIn("languages/js/src/admin-write.ts:2:", " ".join(problems))
+
+    def test_a_kept_site_needs_an_entry_and_a_stale_entry_fails(self) -> None:
+        root = self.make_root({"languages/js/src/admin.ts": "function f() {\n  throw new AdminConfigError(`a function`);\n}\n"})
+        kept = thin.Allowed("languages/js/src/admin.ts", "a function", "a reason")
+        self.assertEqual(thin.scan_admin(root, [kept]), [])
+        stale = thin.Allowed("languages/js/src/admin.ts", "gone", "a reason")
+        self.assertEqual(len(thin.scan_admin(root, [kept, stale])), 1)
+
+    def test_every_kept_site_has_a_reason(self) -> None:
+        for entry in thin.ADMIN_ALLOWED:
+            self.assertGreater(len(entry.reason.split()), 3, entry)
+
+
 if __name__ == "__main__":
     unittest.main()

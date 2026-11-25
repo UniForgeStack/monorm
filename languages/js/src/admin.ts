@@ -439,39 +439,6 @@ export interface AdminUser {
   readonly [key: string]: unknown;
 }
 
-const RESOURCE_KEYS = new Set(["queryset", "can", "list", "title", "group", "icon", "allow", "perms", "label", "fieldPermissions", "see", "change", "actions", "checkMessages", "form", "readonly", "widgets", "formComponent", "detailTabs", "frames", "fieldsets", "relations", "files", "create", "update", "delete", "inputs", "allowProtectedWrites", "inlines", "bulkDelete", "setPassword"]);
-
-function widgetsJson(who: string, value: unknown): Record<string, string> {
-  if (typeof value !== "object" || value === null || Array.isArray(value) || !Object.values(value).every((v) => typeof v === "string")) {
-    throw new AdminConfigError(`${who} maps a field, a path or a type to a widget name`);
-  }
-  return { ...(value as Record<string, string>) };
-}
-
-function sectionJson(name: string, s: unknown): Record<string, unknown> {
-  const section = s as Record<string, unknown> | null;
-  if (typeof section !== "object" || section === null || !Array.isArray(section.fields) || !section.fields.every((f) => typeof f === "string")) {
-    throw new AdminConfigError(`${name}: a form section is { title, fields }`);
-  }
-  // Every key goes as null first, in snake case, so that Rust names an unknown key; a known key is replaced below.
-  return { ...Object.fromEntries(Object.keys(section).map((k) => [k, null])), fields: [...section.fields], ...(section.title === undefined ? {} : { title: section.title }), ...(section.collapsed === undefined ? {} : { collapsed: Boolean(section.collapsed) }) };
-}
-
-function readonlyJson(name: string, names: unknown): string[] {
-  if (!Array.isArray(names) || !names.every((n) => typeof n === "string")) throw new AdminConfigError(`${name}: readonly is a list of field names`);
-  return [...names];
-}
-
-function boundJson(name: string, key: string, value: unknown): Record<string, string> {
-  if (typeof value !== "object" || value === null || Array.isArray(value) || !Object.values(value).every((v) => typeof v === "string")) throw new AdminConfigError(`${name}: ${key} maps a field name to a permission name`);
-  return { ...(value as Record<string, string>) };
-}
-
-function formComponentJson(name: string, path: unknown): string {
-  if (typeof path !== "string") throw new AdminConfigError(`${name}: formComponent is the path of a JavaScript file`);
-  return path;
-}
-
 /** The `relations` option on the wire. Rust checks the names, the option keys and the value types. */
 function relationsJson(name: string, cls: AnyModel, registry: Registry, value: unknown, fns: Fns): unknown {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
@@ -522,17 +489,6 @@ function multipartBody(file: UploadFile): { type: string; data: Buffer } {
   const head = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${name}"\r\nContent-Type: ${type}\r\n\r\n`);
   const tail = Buffer.from(`\r\n--${boundary}--\r\n`);
   return { type: `multipart/form-data; boundary=${boundary}`, data: Buffer.concat([head, typeof data === "string" ? Buffer.from(data) : data, tail]) };
-}
-
-function formJson(name: string, form: unknown): unknown {
-  if (Array.isArray(form)) return form.map((s) => sectionJson(name, s));
-  if (typeof form === "object" && form !== null) {
-    return Object.fromEntries(Object.entries(form).map(([which, sections]) => {
-      if (!Array.isArray(sections)) throw new AdminConfigError(`${name}: form ${which} is a list of sections`);
-      return [which, sections.map((s) => sectionJson(name, s))];
-    }));
-  }
-  throw new AdminConfigError(`${name}: form is a list of sections, or an object with create and edit`);
 }
 
 /** The name of a host value's type, for a `$host` tag. */
@@ -772,7 +728,6 @@ function actionsJson(name: string, model: AnyModel, items: unknown, fnEntry: (d:
 function canJson(model: AnyModel, rules: CanRules): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [rule, condition] of Object.entries(rules)) {
-    if (rule !== "change" && rule !== "delete") throw new AdminConfigError(`${model._meta.name}: can takes 'change' and 'delete', not '${rule}'`);
     if (condition !== undefined) out[rule] = hostJson(model, "can", condition, `can '${rule}'`);
   }
   return out;
@@ -1051,32 +1006,6 @@ export type InlineOptions = {
   readonly page?: ResourceConfig;
 };
 
-const INLINE_PAGE_SAVE_REASON = "a service writes one record: an inline row is written by the page of the parent (with_parent) or by the page of the child (row)";
-// A page key that an inline wrapper cannot override, with the reason.
-const INLINE_PAGE_REFUSED: Readonly<Record<string, string>> = {
-  create: INLINE_PAGE_SAVE_REASON,
-  update: INLINE_PAGE_SAVE_REASON,
-  delete: INLINE_PAGE_SAVE_REASON,
-  inlines: "an inline is never nested",
-  files: "a file field needs a multipart body, which a change set does not carry",
-  title: "an inline is not in the navigation",
-  group: "an inline is not in the navigation",
-  icon: "an inline is not in the navigation",
-  perms: "the permission of an inline follows its parent: use permission of the inline",
-  label: "the permission of an inline follows its parent: use permission of the inline",
-  fieldPermissions: "field permissions belong to the registered page of the child",
-  see: "field permissions belong to the registered page of the child",
-  change: "field permissions belong to the registered page of the child",
-  actions: "an inline has no actions",
-  bulkDelete: "an inline has no bulk delete",
-  setPassword: "an inline has no set password action",
-  formComponent: "a replaced form cannot be a row of a table",
-  detailTabs: "a detail tab belongs to the registered page of the child",
-  frames: "a frame tab belongs to the registered page of the child",
-  fieldsets: "a fieldset belongs to the registered page of the child",
-  allowProtectedWrites: "the opt-in belongs to the registered page of the child",
-};
-
 /** A to-many relation that the detail page of the parent edits in place; see `inline`. */
 export class InlineDef {
   readonly via: string | undefined;
@@ -1124,15 +1053,6 @@ function inlineDefs(name: string, items: unknown): InlineDef[] {
   });
 }
 
-function checkInlinePage(name: string, d: InlineDef): void {
-  const at = `${name}: inline ${d.model._meta.name}`;
-  for (const key of Object.keys(d.page)) {
-    const reason = INLINE_PAGE_REFUSED[key];
-    if (reason !== undefined) throw new AdminConfigError(`${at}: page does not take '${key}': ${reason}`);
-    if (!RESOURCE_KEYS.has(key)) throw new AdminConfigError(`${at}: unknown page option '${key}'`);
-  }
-}
-
 /** The resources of one registry. */
 export class Admin {
   prefix: string | undefined;
@@ -1164,7 +1084,7 @@ export class Admin {
     this.prefix = options.prefix;
     this.#strategy = options.permissions ?? "page";
     this.#label = options.label ?? "admin";
-    this.#widgets = options.widgets === undefined ? undefined : widgetsJson("widgets", options.widgets);
+    this.#widgets = options.widgets === undefined ? undefined : structuredClone(options.widgets);
     this.#groups = [...(options.groups ?? [])];
     this.#groupIcons = options.groupIcons;
     this.#frameOrigins = options.frameOrigins;
@@ -1196,7 +1116,7 @@ export class Admin {
    * with `route` and `action` itself: it is a function `install(admin)` that calls this method too.
    */
   package(name: string, directory: string, options: { readonly widgets?: Readonly<Record<string, string>>; readonly forms?: Readonly<Record<string, string>>; readonly tabs?: Readonly<Record<string, string | PackageTabConfig>>; readonly styles?: readonly string[]; readonly adminMajor?: number } = {}): void {
-    const entry = { name, admin_major: options.adminMajor ?? 1, dir: resolvePath(directory), widgets: { ...options.widgets }, forms: { ...options.forms }, tabs: { ...options.tabs }, styles: [...(options.styles ?? [])] };
+    const entry = { name, admin_major: options.adminMajor ?? 1, dir: resolvePath(directory), widgets: structuredClone(options.widgets ?? {}), forms: structuredClone(options.forms ?? {}), tabs: structuredClone(options.tabs ?? {}), styles: [...(options.styles ?? [])] };
     adminCall(() => this.#builder.package(name, JSON.stringify(entry)));
     this.#planned = null;
   }
@@ -1227,7 +1147,7 @@ export class Admin {
       resources,
       ...(this.#storage === undefined ? {} : { storage: true }),
       ...(resources.some((r) => r["set_password"]) ? { user_table: authUserTable(registry) } : {}),
-      ...(this.#widgets === undefined || Object.keys(this.#widgets).length === 0 ? {} : { widgets: this.#widgets }),
+      ...(this.#widgets === undefined ? {} : { widgets: this.#widgets }),
       ...(this.#groups.length === 0 ? {} : { groups: this.#groups }),
       ...(this.#groupIcons === undefined || Object.keys(this.#groupIcons).length === 0 ? {} : { group_icons: this.#groupIcons }),
       ...(this.switcherSettings ? { switcher_file: this.switcherSettings } : {}),
@@ -1245,12 +1165,13 @@ export class Admin {
       model,
       ...(queryset === undefined ? {} : { queryset }),
       ...(config.can === undefined ? {} : { can: canJson(cls, config.can) }),
-      ...(config.checkMessages === undefined ? {} : { check_messages: { ...config.checkMessages } }),
-      ...(config.form === undefined ? {} : { form: formJson(model, config.form) }),
-      ...(config.readonly === undefined ? {} : { readonly: readonlyJson(model, config.readonly) }),
-      ...(config.widgets === undefined ? {} : { widgets: widgetsJson(`${model}: widgets`, config.widgets) }),
-      ...(config.formComponent === undefined ? {} : { form_component: formComponentJson(model, config.formComponent) }),
-      ...(config.detailTabs === undefined ? {} : { detail_tabs: [...config.detailTabs] }),
+      // These values go as the user wrote them: Rust checks their shape and names the key in the error.
+      ...(config.checkMessages === undefined ? {} : { check_messages: config.checkMessages }),
+      ...(config.form === undefined ? {} : { form: config.form }),
+      ...(config.readonly === undefined ? {} : { readonly: config.readonly }),
+      ...(config.widgets === undefined ? {} : { widgets: config.widgets }),
+      ...(config.formComponent === undefined ? {} : { form_component: config.formComponent }),
+      ...(config.detailTabs === undefined ? {} : { detail_tabs: config.detailTabs }),
       frames: config.frames?.map(frameJson),
       fieldsets: config.fieldsets,
       ...(config.relations === undefined ? {} : { relations: relationsJson(model, cls, registry, config.relations, fns) }),
@@ -1264,8 +1185,8 @@ export class Admin {
       ...(config.perms === undefined ? {} : { perms: [...config.perms] }),
       ...(config.label === undefined ? {} : { label: config.label }),
       ...(config.fieldPermissions === undefined ? {} : { field_permissions: [...config.fieldPermissions] }),
-      ...(config.see === undefined ? {} : { see: boundJson(model, "see", config.see) }),
-      ...(config.change === undefined ? {} : { change: boundJson(model, "change", config.change) }),
+      ...(config.see === undefined ? {} : { see: config.see }),
+      ...(config.change === undefined ? {} : { change: config.change }),
       ...(config.actions === undefined ? {} : { actions: actionsJson(model, cls, config.actions, (d) => this.#fnEntry(fns, d.fn, top, () => actionFunction(cls, config, d, this.#inlineModels()), true)) }),
       ...(config.setPassword === undefined ? {} : { set_password: config.setPassword }),
       ...(config.bulkDelete === undefined ? {} : { bulk_delete: config.bulkDelete }),
@@ -1274,13 +1195,14 @@ export class Admin {
   }
 
   #inlineJson(parent: string, d: InlineDef, registry: Registry, fns: Fns): Record<string, unknown> {
-    checkInlinePage(parent, d);
     const child = d.model._meta.name;
     const out: Record<string, unknown> = { model: child, save: d.save, style: d.style, max: d.max, collapsed: d.collapsed, delete: d.delete };
     if (d.via !== undefined) out["via"] = d.via;
     if (d.permission !== undefined) out["permission"] = d.permission;
     if (d.label !== undefined) out["label"] = d.label;
     const page = this.#resourceJson(child, d.model, d.page, registry, fns, false);
+    // A page key that did not lower reaches Rust as null, so that Rust refuses it by name.
+    for (const key of Object.keys(d.page)) page[key.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`)] ??= null;
     if (Object.keys(page).length > 1) out["page"] = page;
     return out;
   }
@@ -1364,7 +1286,7 @@ export class Admin {
     try {
       return call(() => this.#planned!.site.url(model._meta.name, JSON.stringify(keyJson(key))));
     } catch (e) {
-      if (e instanceof Error && e.message.includes("is not an admin resource")) throw new AdminConfigError(e.message);
+      if (e instanceof Error && e.message.includes("is not an admin resource")) throw adminError(e);
       throw e;
     }
   }
@@ -1380,7 +1302,7 @@ export class Admin {
     try {
       return await grants.sync(site.permissions, site.labels, database, database.registry);
     } catch (e) {
-      throw new AdminConfigError(e instanceof Error ? e.message : String(e));
+      throw adminError(e);
     }
   }
 

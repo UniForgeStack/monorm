@@ -229,8 +229,8 @@ for (const provider of PROVIDERS) {
     assert.deepEqual(await lines(w), ORIGINAL);
   }));
 
-  test(`a page key that cannot be shared and a wrong wrapper are config errors (${provider})`, () => world(provider, async (w) => {
-    for (const key of ["create", "inlines", "files", "title", "perms", "actions", "allowProtectedWrites"]) {
+  test(`a page key that cannot be shared is refused by name and a wrong wrapper is a config error (${provider})`, () => world(provider, async (w) => {
+    for (const key of ["create", "nope"]) {
       const site = new Admin(w.registry);
       site.register(w.models["IOrder"], { inlines: [inline(w.models["IOrderLine"], { page: { [key]: 1 } as Loose })] });
       assert.throws(() => site.check(), (e) => e instanceof AdminConfigError && e.message.includes(key), key);

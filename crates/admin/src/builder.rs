@@ -16,7 +16,7 @@ use crate::site::{parse_fault, Site};
 use crate::site_config::{BrandConfig, Handles, SwitcherConfig, ThemeConfig};
 
 /// The keys of a page that the user sets, in snake case. A host spells them its own way.
-const RESOURCE_KEYS: &[&str] = &[
+pub(crate) const RESOURCE_KEYS: &[&str] = &[
     "list", "title", "group", "icon", "allow", "perms", "label", "field_permissions", "see", "change", "actions", "queryset", "can", "check_messages", "form",
     "readonly", "widgets", "form_component", "detail_tabs", "frames", "fieldsets", "relations", "files", "create", "update", "delete", "inputs",
     "allow_protected_writes", "inlines", "bulk_delete", "set_password",

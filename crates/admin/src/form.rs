@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use crate::packages::Packages;
 use crate::permissions::Op;
 use crate::error::{code, Fault};
-use crate::site::{config_err, err, err_in, Column};
+use crate::site::{err_code, err_code_in, invalid, invalid_fault, invalid_in, Column};
 use crate::write::{has_default, writable};
 use crate::site_config::{SectionConfig};
 
@@ -194,9 +194,9 @@ fn keys(schema: &Schema, packages: &Packages, own: Option<(&str, &[&Column])>, w
     for (key, widget) in widgets {
         let custom = packages.has_widget(widget);
         if !custom && !WIDGETS.contains(&widget.as_str()) {
-            return err(format!("{who}: widgets has {widget:?} for {key:?}, not one of {} and not a widget of a package", WIDGETS.join(", ")));
+            return invalid(format!("{who}: widgets has {widget:?} for {key:?}, not one of {} and not a widget of a package", WIDGETS.join(", ")));
         }
-        let (k, ty) = classify(schema, own, key).map_err(|m| config_err(format!("{who}: widgets key {key:?} {m}")))?;
+        let (k, ty) = classify(schema, own, key).map_err(|m| invalid_fault(format!("{who}: widgets key {key:?} {m}")))?;
         // A package widget edits any value: the package decides what it shows and sends.
         let ok = custom
             || match ty {
@@ -204,10 +204,10 @@ fn keys(schema: &Schema, packages: &Packages, own: Option<(&str, &[&Column])>, w
                 None => widget == "json",
             };
         if !ok {
-            return err(format!("{who}: the {widget:?} widget does not fit {key:?}"));
+            return invalid(format!("{who}: the {widget:?} widget does not fit {key:?}"));
         }
         if out.iter().any(|(o, _)| *o == k) {
-            return err(format!("{who}: widgets names {key:?} twice (as a field name and as Model.field)"));
+            return err_code(code::DUPLICATE, format!("{who}: widgets names {key:?} twice (as a field name and as Model.field)"));
         }
         out.push((k, widget.clone()));
     }
@@ -228,24 +228,24 @@ fn sections(name: &str, which: &str, layout: Option<&Value>, fields: &[&Column])
             let text = e.to_string();
             match crate::site::unknown_field_key(&text) {
                 Some(key) => Fault::new(code::UNKNOWN_OPTION, format!("{name}: unknown section option '{key}'")),
-                None => Fault::new(code::INVALID_VALUE, format!("{name}: form {which}: {text}")),
+                None => Fault::new(code::INVALID_VALUE, format!("{name}: form {which}: a section has a title and a list of field names")),
             }
         })?;
         if c.fields.is_empty() {
-            return err_in(name, format!("form {which}: a section has no fields"));
+            return invalid_in(name, format!("form {which}: a section has no fields"));
         }
         if c.title.as_ref().is_some_and(|t| t.trim().is_empty() || t.chars().count() > 80) {
-            return err_in(name, format!("form {which}: a title has 1 to 80 characters"));
+            return invalid_in(name, format!("form {which}: a title has 1 to 80 characters"));
         }
         if c.collapsed && c.title.is_none() {
-            return err_in(name, format!("form {which}: a collapsed section needs a title"));
+            return invalid_in(name, format!("form {which}: a collapsed section needs a title"));
         }
         for f in &c.fields {
             if !fields.iter().any(|d| &d.label == f) {
-                return err_in(name, format!("form {which}: {f:?} is not a field of the form"));
+                return err_code_in(name, code::UNKNOWN_FIELD, format!("form {which}: {f:?} is not a field of the form"));
             }
             if !seen.insert(f.clone()) {
-                return err_in(name, format!("form {which}: {f:?} is in two places"));
+                return invalid_in(name, format!("form {which}: {f:?} is in two places"));
             }
         }
         out.push(Section { title: c.title, fields: c.fields, collapsed: c.collapsed, other: false });
@@ -265,10 +265,10 @@ pub fn build(schema: &Schema, idx: usize, name: &str, detail: &[Column], allow: 
     let mut readonly = BTreeSet::new();
     for n in &config.readonly {
         let Some(c) = fields.iter().find(|c| &c.label == n) else {
-            return err_in(name, format!("readonly names {n:?}, which is not a field of the form"));
+            return err_code_in(name, code::UNKNOWN_FIELD, format!("readonly names {n:?}, which is not a field of the form"));
         };
         if allow.contains(&Op::Create) && model.field(&c.field).is_ok_and(|f| !f.nullable && !has_default(f)) {
-            return err_in(name, format!("{n:?} is read-only and required with no default, so a new record cannot get a value"));
+            return invalid_in(name, format!("{n:?} is read-only and required with no default, so a new record cannot get a value"));
         }
         readonly.insert(n.clone());
     }
@@ -278,15 +278,15 @@ pub fn build(schema: &Schema, idx: usize, name: &str, detail: &[Column], allow: 
         Some(Value::Array(_)) => (config.form.as_ref(), config.form.as_ref()),
         Some(Value::Object(o)) => {
             if let Some(k) = o.keys().find(|k| !matches!(k.as_str(), "create" | "edit")) {
-                return err_in(name, format!("form has {k:?}, not one of create, edit"));
+                return invalid_in(name, format!("form has {k:?}, not one of create, edit"));
             }
             (o.get("create"), o.get("edit"))
         }
-        Some(_) => return err_in(name, "form is a list of sections, or an object with create and edit".to_string()),
+        Some(_) => return invalid_in(name, "form is a list of sections, or an object with create and edit".to_string()),
     };
     for (which, v) in [("create", create), ("edit", edit)] {
         if v.is_some_and(|v| !v.is_array()) {
-            return err_in(name, format!("form {which} is a list of sections"));
+            return invalid_in(name, format!("form {which} is a list of sections"));
         }
     }
     let create = sections(name, "create", create, &fields)?;
@@ -316,9 +316,9 @@ pub fn build(schema: &Schema, idx: usize, name: &str, detail: &[Column], allow: 
     let module = config.component.as_deref().and_then(|c| global.packages.form(c)).map(str::to_owned);
     let component = match &config.component {
         Some(path) if module.is_none() => {
-            let text = std::fs::read_to_string(path).map_err(|e| config_err(format!("{name}: \u{1}form_component\u{2} {path:?}: {e}")))?;
+            let text = std::fs::read_to_string(path).map_err(|e| invalid_fault(format!("{name}: \u{1}form_component\u{2} {path:?}: {e}")))?;
             if text.trim().is_empty() || text.len() > COMPONENT_MAX {
-                return err_in(name, format!("\u{1}form_component\u{2} {path:?} must hold 1 byte to {COMPONENT_MAX} bytes of JavaScript"));
+                return invalid_in(name, format!("\u{1}form_component\u{2} {path:?} must hold 1 byte to {COMPONENT_MAX} bytes of JavaScript"));
             }
             Some(text)
         }

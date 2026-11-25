@@ -338,33 +338,6 @@ class ResourceConfig(TypedDict, total=False):
     The inline takes the registered page of the child model; ``admin.inline(..., page={...})`` overrides page keys."""
 
 
-# A page key that an inline wrapper cannot override, with the reason.
-_INLINE_PAGE_SAVE_REASON = "a service writes one record: an inline row is written by the page of the parent (with_parent) or by the page of the child (row)"
-_INLINE_PAGE_REFUSED = {
-    "create": _INLINE_PAGE_SAVE_REASON,
-    "update": _INLINE_PAGE_SAVE_REASON,
-    "delete": _INLINE_PAGE_SAVE_REASON,
-    "inlines": "an inline is never nested",
-    "files": "a file field needs a multipart body, which a change set does not carry",
-    "title": "an inline is not in the navigation",
-    "group": "an inline is not in the navigation",
-    "icon": "an inline is not in the navigation",
-    "perms": "the permission of an inline follows its parent: use permission= of the inline",
-    "label": "the permission of an inline follows its parent: use permission= of the inline",
-    "field_permissions": "field permissions belong to the registered page of the child",
-    "see": "field permissions belong to the registered page of the child",
-    "change": "field permissions belong to the registered page of the child",
-    "actions": "an inline has no actions",
-    "bulk_delete": "an inline has no bulk delete",
-    "set_password": "an inline has no set password action",
-    "form_component": "a replaced form cannot be a row of a table",
-    "detail_tabs": "a detail tab belongs to the registered page of the child",
-    "frames": "a frame tab belongs to the registered page of the child",
-    "fieldsets": "a fieldset belongs to the registered page of the child",
-    "allow_protected_writes": "the opt-in belongs to the registered page of the child",
-}
-
-
 class InlineDef:
     """A to-many relation that the detail page of the parent edits in place; see :func:`inline`."""
 
@@ -415,37 +388,6 @@ class RelationConfig(TypedDict, total=False):
     The server checks it again on write. It combines with the ``queryset`` of the target."""
 
 
-def _widgets(name: str | None, value: Any) -> dict[str, str]:
-    who = f"{name}: widgets" if name else "widgets"
-    if not isinstance(value, Mapping) or not all(isinstance(k, str) and isinstance(v, str) for k, v in value.items()):
-        raise AdminConfigError(f"{who} maps a field, a path or a type to a widget name")
-    return dict(value)
-
-
-def _section(name: str, s: Any) -> dict[str, Any]:
-    if not isinstance(s, Mapping) or not isinstance(s.get("fields"), (list, tuple)) or not all(isinstance(f, str) for f in s["fields"]):
-        raise AdminConfigError(f"{name}: a form section is {{'title': ..., 'fields': [...]}}")
-    out: dict[str, Any] = {k: None for k in s}
-    out["fields"] = list(s["fields"])
-    if "title" in s:
-        out["title"] = s["title"]
-    if "collapsed" in s:
-        out["collapsed"] = bool(s["collapsed"])
-    return out
-
-
-def _form(name: str, form: Any) -> Any:
-    if isinstance(form, Mapping):
-        for which, sections in form.items():
-            if not isinstance(sections, (list, tuple)):
-                raise AdminConfigError(f"{name}: form {which} is a list of sections")
-        return {which: [_section(name, s) for s in sections] for which, sections in form.items()}
-    if isinstance(form, (list, tuple)):
-        return [_section(name, s) for s in form]
-    raise AdminConfigError(f"{name}: form is a list of sections, or a mapping with create and edit")
-
-
-_RESOURCE_KEYS = {"list", "title", "group", "icon", "allow", "perms", "label", "field_permissions", "see", "change", "actions", "queryset", "can", "check_messages", "form", "readonly", "widgets", "form_component", "detail_tabs", "frames", "fieldsets", "relations", "files", "create", "update", "delete", "inputs", "allow_protected_writes", "inlines", "bulk_delete", "set_password"}
 Strategy = Literal["page", "model", "access"]
 
 
@@ -633,7 +575,7 @@ def _list(model: type[Model], config: Mapping[str, Any], fns: _Fns) -> dict[str,
     if "date_hierarchy" in config:
         out["date_hierarchy"] = _date_hierarchy(model, config["date_hierarchy"])
     if "badges" in config:
-        out["badges"] = [[_ref(k), {_badge_value(model, v): colour for v, colour in map_.items()}] for k, map_ in config["badges"].items()]
+        out["badges"] = [[_ref(k), {_badge_value(v): colour for v, colour in map_.items()}] for k, map_ in config["badges"].items()]
     if "order" in config:
         out["order"] = [_host(model, "list.order", item) for item in config["order"]]
     if "page_size" in config:
@@ -646,13 +588,13 @@ def _list(model: type[Model], config: Mapping[str, Any], fns: _Fns) -> dict[str,
     return out
 
 
-def _badge_value(model: type[Model], value: Any) -> str:
-    """The text of a badge key: an int as decimal text, a bool as ``true`` or ``false``."""
+def _badge_value(value: Any) -> str:
+    """The text of a badge key: a bool as ``true`` or ``false``, a string or an int as its text. Rust checks that the column has the value."""
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (str, int)):
         return str(value)
-    raise AdminConfigError(f"{model.__name__}: a badge value is a string, an integer or a boolean, not {value!r}")
+    raise AdminConfigError(f"a badge value is a string, an integer or a boolean, not {value!r}")
 
 
 def _queryset(model: type[Model], config: Any, fns: _Fns) -> dict[str, Any]:
@@ -983,6 +925,17 @@ class AdminTestClient:
         return await self.post(f"{self._prefix}/logout", json={})
 
 
+def _json_default(value: Any) -> Any:
+    """The wire form of a value that JSON has no type for: a mapping, a path, a set, or a host value that Rust cannot read."""
+    if isinstance(value, Mapping):
+        return dict(value)
+    if isinstance(value, os.PathLike):
+        return os.fspath(value)
+    if isinstance(value, (set, frozenset, Sequence)):
+        return list(value)
+    return {"$host": type(value).__name__}
+
+
 def _inline_defs(name: str, items: Any) -> list[InlineDef]:
     if isinstance(items, (str, InlineDef)) or not isinstance(items, Sequence):
         raise AdminConfigError(f"{name}: inlines is a list of admin.inline(...) wrappers or models")
@@ -1026,15 +979,6 @@ def _actions_json(name: str, model: type[Model], items: Any, fn_entry: Callable[
             entry["replace_change"] = d.replace_change
         out.append(entry)
     return out
-
-
-def _check_inline_page(name: str, d: InlineDef) -> None:
-    at = f"{name}: inline {d.model.__name__}"
-    for key in d.page:
-        if key in _INLINE_PAGE_REFUSED:
-            raise AdminConfigError(f"{at}: page does not take {key!r}: {_INLINE_PAGE_REFUSED[key]}")
-        if key not in _RESOURCE_KEYS:
-            raise AdminConfigError(f"{at}: unknown page option {key!r}")
 
 
 class Admin:
@@ -1081,7 +1025,7 @@ class Admin:
         self._registry = registry
         self.prefix = prefix
         self.base_path = base_path
-        self._widgets = _widgets(None, widgets) if widgets else None
+        self._widgets = widgets
         self._groups = list(groups)
         self._group_icons = dict(group_icons) if group_icons else None
         self.switcher_settings: Mapping[str, Any] | None = None  # the `[admin.switcher]` table of monorm.toml, set by the serve mode
@@ -1181,36 +1125,10 @@ class Admin:
             resource["queryset"] = _host(model, "queryset", config["queryset"], fns=fns)
         if "can" in config:
             resource["can"] = _can(model, config["can"])
-        if "check_messages" in config:
-            messages = config["check_messages"]
-            if not isinstance(messages, Mapping) or not all(isinstance(k, str) and isinstance(v, str) for k, v in messages.items()):
-                raise AdminConfigError(f"{name}: check_messages maps a check name to a message")
-            resource["check_messages"] = dict(messages)
-        if "form" in config:
-            resource["form"] = _form(name, config["form"])
-        if "readonly" in config:
-            names = config["readonly"]
-            if isinstance(names, str) or not all(isinstance(n, str) for n in names):
-                raise AdminConfigError(f"{name}: readonly is a list of field names")
-            resource["readonly"] = list(names)
-        for key in ("see", "change"):
+        # These keys go as the user wrote them: Rust checks their shape and names the key in the error.
+        for key in ("check_messages", "form", "readonly", "see", "change", "widgets", "form_component", "detail_tabs"):
             if key in config:
-                bound = config[key]
-                if not isinstance(bound, Mapping) or not all(isinstance(k, str) and isinstance(v, str) for k, v in bound.items()):
-                    raise AdminConfigError(f"{name}: {key} maps a field name to a permission name")
-                resource[key] = dict(bound)
-        if "widgets" in config:
-            resource["widgets"] = _widgets(name, config["widgets"])
-        if "form_component" in config:
-            path = config["form_component"]
-            if not isinstance(path, (str, os.PathLike)):
-                raise AdminConfigError(f"{name}: form_component is the path of a JavaScript file")
-            resource["form_component"] = os.fspath(path)
-        if "detail_tabs" in config:
-            names = config["detail_tabs"]
-            if isinstance(names, str) or not all(isinstance(n, str) for n in names):
-                raise AdminConfigError(f"{name}: detail_tabs is a list of package tab names")
-            resource["detail_tabs"] = list(names)
+                resource[key] = config[key]
         if "frames" in config:
             resource["frames"] = list(config["frames"])
         if "fieldsets" in config:
@@ -1255,13 +1173,14 @@ class Admin:
         return resource
 
     def _inline_json(self, parent: str, d: InlineDef, fns: _Fns) -> dict[str, Any]:
-        _check_inline_page(parent, d)
         child = d.model.__name__
         out: dict[str, Any] = {"model": child, "save": d.save, "style": d.style, "max": d.max, "collapsed": d.collapsed, "delete": d.delete}
         for key in ("via", "permission", "label"):
             if (value := getattr(d, key)) is not None:
                 out[key] = value
         page = self._resource_json(child, d.model, d.page, fns, top=False)
+        for key in d.page:
+            page.setdefault(key, None)  # a key that did not lower reaches Rust as null, so that Rust refuses it by name
         if len(page) > 1:
             out["page"] = page
         return out
@@ -1277,7 +1196,7 @@ class Admin:
             out["user_table"] = auth_user_table(self._registry if registry is None else registry)
         if self.prefix is not None:
             out["prefix"] = self.prefix
-        if self._widgets:
+        if self._widgets is not None:
             out["widgets"] = self._widgets
         if self._groups:
             out["groups"] = self._groups
@@ -1293,7 +1212,7 @@ class Admin:
             out["embeds"] = self._embeds
         if self._storage is not None:
             out["storage"] = True
-        return json.dumps(out)
+        return json.dumps(out, default=_json_default)
 
     def _host(self, handles: Mapping[str, str] | None = None) -> dict[str, Any]:
         """The host functions: login, the functions of the config under the names that Rust gave them, and the writes, services, actions, files and routes."""
@@ -1337,7 +1256,7 @@ class Admin:
             return self._planned[1].url(model.__name__, json.dumps(_key_json(key)))
         except ValueError as e:
             if "is not an admin resource" in str(e):
-                raise AdminConfigError(str(e)) from None
+                raise _admin_error(e) from None
             raise
 
     @property
@@ -1354,7 +1273,7 @@ class Admin:
         try:
             return await _admin_permissions.sync(site.permissions, site.labels, db)
         except ValueError as e:
-            raise AdminConfigError(str(e)) from None
+            raise _admin_error(e) from None
 
     async def seed_roles(self, database: Database | None = None) -> RoleSeedReport:
         """Writes the pattern grants of ``roles`` to the auth tables. A second run changes nothing; no role or grant is removed.

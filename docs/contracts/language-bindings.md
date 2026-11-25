@@ -28,6 +28,9 @@ Both shipped bindings (`languages/python/native/src/lib.rs`, `languages/js/nativ
   The kinds in both bindings are `QueryError`, `SchemaError`, `MigrationError`, `WriteProtected`, `DatabaseError`, `IntegrityError`, `LockNotAvailable`, `TransactionAborted` and `TransactionTimeoutError`.
   `TransactionTimeoutError` carries `outcome` (`rolled_back` or `unknown`) and the real server SQLSTATE, if any.
   Look at `errors.rs` (Python) and `engine_err` (Node).
+- **Admin config.**
+  A binding lowers the host objects of an admin config (a function, a model class, a wrapper) to plain values.
+  Rust checks the shape of every plain value and names the error code. `scripts/check-thin-bindings.py` fails a shape check in a binding, except a site in `ADMIN_ALLOWED` with its reason.
 - **Transaction options.**
   `isolation` and `timeout` of `transaction()` go to the engine as plain values (a string and seconds).
   `TransactionOptions::parse` validates them, `begin_root` starts the transaction and its deadline, and the engine writes all `BEGIN ISOLATION LEVEL ...` SQL.

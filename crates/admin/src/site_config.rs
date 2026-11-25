@@ -867,43 +867,43 @@ impl SwitcherConfig {
     /// The checks of the switcher that need no brand: the service keys, titles, icons, colours and urls, and `current`.
     pub fn check(&self) -> Result<(), Fault> {
         use crate::meta::{color_ok, icon_ok, url_ok};
-        use crate::site::err;
+        use crate::site::{err_code, invalid};
         let services = self.services.as_deref().unwrap_or(&[]);
         let current = self.current.as_deref();
         let mut keys: Vec<&str> = Vec::new();
         for svc in services {
             let at = format!("switcher.services[{:?}]", svc.key);
             if svc.key.is_empty() || svc.key.len() > 32 || !svc.key.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_') {
-                return err(format!("switcher.services: key {:?} must have 1 to 32 characters: lower case letters, digits, - and _", svc.key));
+                return invalid(format!("switcher.services: key {:?} must have 1 to 32 characters: lower case letters, digits, - and _", svc.key));
             }
             if keys.contains(&svc.key.as_str()) {
-                return err(format!("switcher.services: key {:?} is listed twice", svc.key));
+                return err_code(code::DUPLICATE, format!("switcher.services: key {:?} is listed twice", svc.key));
             }
             keys.push(&svc.key);
             if svc.title.trim().is_empty() || svc.title.chars().count() > 40 {
-                return err(format!("{at}: title has 1 to 40 characters"));
+                return invalid(format!("{at}: title has 1 to 40 characters"));
             }
             if let Some(icon) = &svc.icon {
                 if !icon_ok(icon) {
-                    return err(format!("{at}: icon {icon:?} must be a lucide icon name such as \"server\""));
+                    return invalid(format!("{at}: icon {icon:?} must be a lucide icon name such as \"server\""));
                 }
             }
             if let Some(color) = &svc.color {
                 if !color_ok(color) {
-                    return err(format!("{at}: color {color:?} must be #rgb or #rrggbb"));
+                    return invalid(format!("{at}: color {color:?} must be #rgb or #rrggbb"));
                 }
             }
             if current != Some(svc.key.as_str()) {
                 match &svc.url {
                     Some(u) if url_ok(u) && !u.starts_with("http://") => {}
-                    Some(u) => return err(format!("{at}: url {u:?} must be a path that starts with / or an https URL")),
-                    None => return err(format!("{at}: url is needed for a service that is not the current one")),
+                    Some(u) => return invalid(format!("{at}: url {u:?} must be a path that starts with / or an https URL")),
+                    None => return invalid(format!("{at}: url is needed for a service that is not the current one")),
                 }
             }
         }
         match current {
-            Some(c) if !keys.contains(&c) => err(format!("switcher.current {c:?} is not the key of a service in switcher.services")),
-            None if !services.is_empty() => err("switcher.current is needed when switcher.services is set".to_owned()),
+            Some(c) if !keys.contains(&c) => invalid(format!("switcher.current {c:?} is not the key of a service in switcher.services")),
+            None if !services.is_empty() => invalid("switcher.current is needed when switcher.services is set".to_owned()),
             _ => Ok(()),
         }
     }

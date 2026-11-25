@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Fail when a language binding holds the text of a SQL statement.
+"""Fail when a language binding holds the text of a SQL statement, or checks the shape of an admin config.
 
 Usage: python3 scripts/check-thin-bindings.py [ROOT]
 The Rust core plans and builds all SQL. A binding converts types, maps errors and drives the async runtime.
-The check reads the string literals of the code in the binding directories and skips comments and docstrings.
+The SQL rule reads the string literals of the code in the binding directories and skips comments and docstrings.
 A kept site goes in `ALLOWED` with the reason. An entry that matches no literal fails the check, so the list cannot go stale.
+
+The admin rule: the admin files of a binding make an `AdminConfigError` or an `AdminSettingsError` only in the error map
+(`_admin_error`, `adminError`). Rust checks the shape of a config value and names the error code. A site that lowers a host object
+(a function, a model class, a wrapper) sees what Rust cannot see: it goes in `ADMIN_ALLOWED` with the reason.
 """
 
 import ast
@@ -29,6 +33,39 @@ class Allowed:
 
 
 ALLOWED: list[Allowed] = []
+
+ADMIN_FILES = [
+    ("languages/python/monorm", re.compile(r"(?:_admin_\w+|admin)\.py$")),
+    ("languages/js/src", re.compile(r"admin(?:-\w+)?\.ts$")),
+]
+ERROR_MAPS = {"languages/python/monorm/admin.py": "_admin_error", "languages/js/src/admin.ts": "adminError"}
+ADMIN_ALLOWED: list[Allowed] = [
+    Allowed('languages/python/monorm/admin.py', 'a value of type', 'a literal of the admin: only the binding sees the Python type of the value'),
+    Allowed('languages/python/monorm/admin.py', 'a badge value is a string', 'a badge key is a Python value: only the binding sees its type before it becomes text'),
+    Allowed('languages/python/monorm/admin.py', 'files maps a field name', 'the `files` storage names stay in the binding, which owns the file storage registry'),
+    Allowed('languages/python/monorm/admin.py', 'inlines is a list of', 'an inline wrapper is a host object: only the binding sees it'),
+    Allowed('languages/python/monorm/admin.py', 'actions is a list', 'an action entry is a host function or a name: only the binding sees it'),
+    Allowed('languages/python/monorm/admin.py', '{what}: {e}', 'the lowering of a host column, function or expression names the model and the place of a failure'),
+    Allowed('languages/python/monorm/admin.py', 'queryset: {e}', 'the lowering of a host column, function or expression names the model and the place of a failure'),
+    Allowed('languages/python/monorm/admin.py', 'the queryset function returns a condition', 'the binding calls the queryset function: only it sees the result'),
+    Allowed('languages/python/monorm/admin.py', 'is not a file field', 'a host call at run time, not a config shape: the file registry is in the binding'),
+    Allowed('languages/python/monorm/admin.py', 'an action is a name or a function', 'an action entry is a host function or a name: only the binding sees it'),
+    Allowed('languages/python/monorm/admin.py', 'inputs is a list of admin.input', 'an input control is a host object: only the binding sees it'),
+    Allowed('languages/js/src/admin.ts', 'files maps a field name', 'the `files` storage names stay in the binding, which owns the file storage registry'),
+    Allowed('languages/js/src/admin.ts', 'is not a file field', 'a host call at run time, not a config shape: the file registry is in the binding'),
+    Allowed('languages/js/src/admin.ts', '${where}: ${e instanceof Error', 'the lowering of a host column, function or expression names the place of a failure'),
+    Allowed('languages/js/src/admin.ts', 'typeof value === "bigint"', 'a literal of the admin: only the binding sees the JavaScript type of the value'),
+    Allowed('languages/js/src/admin.ts', 'a value of this type is not a literal', 'a literal of the admin: only the binding sees the JavaScript type of the value'),
+    Allowed('languages/js/src/admin.ts', 'the queryset function returns a condition', 'the binding calls the queryset function: only it sees the result'),
+    Allowed('languages/js/src/admin.ts', 'actions is a list', 'an action entry is a host function or a name: only the binding sees it'),
+    Allowed('languages/js/src/admin.ts', 'an action is a name or a function', 'an action entry is a host function or a name: only the binding sees it'),
+    Allowed('languages/js/src/admin.ts', 'an action needs a name', 'an action entry is a host function or a name: only the binding sees it'),
+    Allowed('languages/js/src/admin.ts', 'inputs is a list of input(...)', 'an input control is a host object: only the binding sees it'),
+    Allowed('languages/js/src/admin.ts', 'inlines is a list of inline(...)', 'an inline wrapper is a host object: only the binding sees it'),
+    Allowed('languages/js/src/admin-cli.ts', 'e instanceof AdminConfigError', 'the command line maps a failure to the settings class, which sets the exit code 2'),
+    Allowed('languages/js/src/admin-cli.ts', 'throw new AdminSettingsError(e instanceof Error', 'the command line maps a failure to the settings class, which sets the exit code 2'),
+    Allowed('languages/js/src/admin.ts', 'new AdminSettingsError(err.message)', '`serve` maps a failure to the settings class, which sets the exit code 2'),
+]
 
 # The keywords are upper case: error text uses the lower case words ("select exactly one profile").
 STATEMENT = re.compile(
@@ -146,13 +183,71 @@ def scan(root: Path, allowed: list[Allowed] = ALLOWED) -> list[str]:
     return problems
 
 
+ERROR_CLASS = re.compile(r"\bnew\s+Admin(?:Config|Settings)Error\s*\(")
+
+
+def python_error_sites(source: str, error_map: str | None) -> list[int]:
+    """The lines that make an admin error class, outside the function of the error map."""
+    tree = ast.parse(source)
+    inside: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == error_map:
+            inside.update(id(n) for n in ast.walk(node))
+    names = {"AdminConfigError", "AdminSettingsError"}
+
+    def makes_class(func: ast.expr) -> bool:
+        if isinstance(func, ast.Name):
+            return func.id in names
+        return isinstance(func, ast.IfExp) and makes_class(func.body) and makes_class(func.orelse)
+
+    return [n.lineno for n in ast.walk(tree) if isinstance(n, ast.Call) and id(n) not in inside and makes_class(n.func)]
+
+
+def typescript_error_sites(source: str, error_map: str | None) -> list[int]:
+    code = re.sub(r"/\*.*?\*/", lambda m: re.sub(r"[^\n]", " ", m[0]), source, flags=re.S)
+    lines = [re.sub(r"(?<![:\"'`])//.*", "", line) for line in code.split("\n")]
+    skip = range(0)
+    if error_map and (m := re.search(rf"^(?:export )?function {error_map}\b", "\n".join(lines), re.M)):
+        start = "\n".join(lines)[: m.start()].count("\n")
+        depth, seen = 0, False
+        for n in range(start, len(lines)):
+            depth += lines[n].count("{") - lines[n].count("}")
+            seen = seen or "{" in lines[n]
+            if seen and depth <= 0:
+                skip = range(start, n + 1)
+                break
+    return [n + 1 for n, line in enumerate(lines) if n not in skip and ERROR_CLASS.search(line)]
+
+
+def scan_admin(root: Path, allowed: list[Allowed] = ADMIN_ALLOWED) -> list[str]:
+    problems: list[str] = []
+    used: set[Allowed] = set()
+    for directory, name in ADMIN_FILES:
+        for path in sorted((root / directory).glob("*")):
+            if not name.search(path.name):
+                continue
+            rel = path.relative_to(root).as_posix()
+            source = path.read_text(encoding="utf-8")
+            sites = python_error_sites(source, ERROR_MAPS.get(rel)) if path.suffix == ".py" else typescript_error_sites(source, ERROR_MAPS.get(rel))
+            text = source.split("\n")
+            for line in sites:
+                kept = next((a for a in allowed if a.path == rel and a.snippet in text[line - 1]), None)
+                if kept:
+                    used.add(kept)
+                else:
+                    problems.append(f"{rel}:{line}: an admin binding checks a config: {text[line - 1].strip()[:80]!r}")
+    problems += [f"stale admin allow list entry: {a.path}: {a.snippet!r}" for a in allowed if a not in used]
+    return problems
+
+
 def main() -> int:
     root = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path(__file__).resolve().parents[1]
-    problems = scan(root)
+    problems = scan(root) + scan_admin(root)
     for problem in problems:
         print(problem, file=sys.stderr)
     if problems:
         print("Move the SQL into monorm-core or monorm-engine, or add the site to ALLOWED with a reason.", file=sys.stderr)
+        print("Move an admin shape check into crates/admin, or add the site to ADMIN_ALLOWED with a reason.", file=sys.stderr)
     return 1 if problems else 0
 
 

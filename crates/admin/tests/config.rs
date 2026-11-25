@@ -45,7 +45,7 @@ fn an_unknown_option_and_an_unknown_model_have_their_own_codes() {
 fn a_serde_error_names_an_option_in_the_spelling_of_the_host() {
     let e = build(json!({"spelling": "camel", "resources": [{"model": "Note", "bulk_delete": "yes"}]}));
     assert_eq!(e.code, code::INVALID_VALUE);
-    assert_eq!(e.message, "Note: bulkDelete: invalid type: string \"yes\", expected a boolean");
+    assert_eq!(e.message, "Note: bulkDelete is true or false");
 }
 
 #[test]
@@ -421,5 +421,94 @@ fn an_action_function_is_a_host_function() {
 #[test]
 fn an_option_of_a_wrong_type_names_its_model_and_key() {
     assert_eq!(refusal(json!({"model": "Note", "set_password": "no"})).1, "Note: set_password: invalid type: string \"no\", expected a boolean");
-    assert_eq!(refusal(json!({"model": "Note", "bulk_delete": 1})).1, "Note: bulk_delete: invalid type: integer `1`, expected a boolean");
+    assert_eq!(refusal(json!({"model": "Note", "bulk_delete": 1})).1, "Note: bulk_delete is true or false");
+}
+
+fn refusal_in(spelling: &str, resource: Value) -> (&'static str, String) {
+    let e = build(json!({"spelling": spelling, "resources": [resource]}));
+    (e.code, e.message)
+}
+
+#[test]
+fn a_map_option_of_a_wrong_shape_says_what_it_maps() {
+    for (key, text) in [
+        ("widgets", "maps a field, a path or a type to a widget name"),
+        ("see", "maps a field name to a permission name"),
+        ("change", "maps a field name to a permission name"),
+        ("check_messages", "maps a check name to a message"),
+    ] {
+        assert_eq!(refusal(json!({"model": "Note", key: ["x"]})), (code::INVALID_VALUE, format!("Note: {key} {text}")), "{key}");
+    }
+    assert_eq!(refusal_in("camel", json!({"model": "Note", "check_messages": 1})).1, "Note: checkMessages maps a check name to a message");
+}
+
+#[test]
+fn the_site_widgets_option_of_a_wrong_shape_says_what_it_maps() {
+    for widgets in [json!("title"), json!(["title"]), json!(5), json!({"title": 1})] {
+        let e = build(json!({"widgets": widgets, "resources": []}));
+        assert_eq!((e.code, e.message.as_str()), (code::INVALID_VALUE, "widgets maps a field, a path or a type to a widget name"));
+    }
+}
+
+#[test]
+fn a_form_that_is_not_a_list_or_a_map_of_sections_is_refused() {
+    let e = refusal(json!({"model": "Note", "form": "x"}));
+    assert_eq!(e, (code::INVALID_VALUE, "Note: form is a list of sections, or an object with create and edit".into()));
+}
+
+#[test]
+fn a_list_option_of_a_wrong_shape_says_what_it_is() {
+    assert_eq!(refusal(json!({"model": "Note", "readonly": "id"})).1, "Note: readonly is a list of field names");
+    assert_eq!(refusal(json!({"model": "Note", "form_component": 3})).1, "Note: form_component is the path of a JavaScript file");
+    assert_eq!(refusal_in("camel", json!({"model": "Note", "form_component": 3})).1, "Note: formComponent is the path of a JavaScript file");
+    assert_eq!(refusal(json!({"model": "Note", "detail_tabs": "a"})).1, "Note: detail_tabs is a list of package tab names");
+}
+
+#[test]
+fn a_form_section_has_a_title_and_a_list_of_field_names() {
+    let text = "Note: form create: a section has a title and a list of field names";
+    assert_eq!(refusal(json!({"model": "Note", "form": {"create": [{"title": "A", "fields": "id"}]}})), (code::INVALID_VALUE, text.into()));
+    assert_eq!(refusal(json!({"model": "Note", "form": {"create": [1]}})), (code::INVALID_VALUE, text.into()));
+}
+
+#[test]
+fn a_can_rule_is_change_or_delete() {
+    let e = refusal(json!({"model": "Note", "can": {"edit": true}}));
+    assert_eq!(e, (code::INVALID_VALUE, "Note: can has \"edit\", not one of change, delete".into()));
+}
+
+#[test]
+fn an_inline_page_takes_no_refused_key() {
+    let inline = |page: Value| json!({"model": "Author", "inlines": [{"model": "Book", "page": page}]});
+    for (key, reason) in [
+        ("create", "a service writes one record"),
+        ("inlines", "an inline is never nested"),
+        ("files", "a file field needs a multipart body"),
+        ("perms", "use permission of the inline"),
+        ("see", "field permissions belong to the registered page of the child"),
+        ("bulk_delete", "an inline has no bulk delete"),
+        ("form_component", "a replaced form cannot be a row of a table"),
+        ("allow_protected_writes", "the opt-in belongs to the registered page of the child"),
+    ] {
+        let (c, m) = refusal(inline(json!({key: null})));
+        assert_eq!(c, code::UNSUPPORTED, "{key}");
+        assert!(m.starts_with(&format!("Author: inline Book: page does not take '{key}': ")) && m.contains(reason), "{key}: {m}");
+    }
+    let (_, m) = refusal_in("camel", inline(json!({"bulk_delete": true})));
+    assert!(m.starts_with("Author: inline Book: page does not take 'bulkDelete': "), "{m}");
+}
+
+#[test]
+fn an_inline_page_names_a_key_that_no_page_has() {
+    let page = json!({"model": "Author", "inlines": [{"model": "Book", "page": {"nope": 1}}]});
+    assert_eq!(refusal(page.clone()), (code::UNKNOWN_OPTION, "Author: inline Book: unknown page option 'nope'".into()));
+    let camel = json!({"model": "Author", "inlines": [{"model": "Book", "page": {"page_size": null, "no_pe": 1}}]});
+    assert_eq!(refusal_in("camel", camel).1, "Author: inline Book: unknown page option 'noPe'");
+}
+
+#[test]
+fn an_inline_page_takes_the_keys_that_a_binding_lowers() {
+    let config = json!({"resources": [{"model": "Author", "inlines": [{"model": "Book", "save": "row", "page": {"model": "Book", "service": {}, "host_behavior": true, "views": {}, "list": {"page_size": 5}}}]}, {"model": "Book"}]});
+    let built = Site::build(schema(), &config.to_string());
+    assert!(built.is_ok(), "{:?}", built.err().map(|e| e.message));
 }
