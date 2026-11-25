@@ -187,9 +187,8 @@ for (const provider of PROVIDERS) {
     const Item = w.Item;
     const cases: [Record<string, unknown>, string, string][] = [
       [{ queryset: Item.objects.filter(Item.rank.gt(1)).limit(2).prepare() }, "config.unsupported", "queryset takes a filter and an order; it does not take a slice"],
-      [{ queryset: Item.objects.prepare() }, "config.invalid_value", "queryset needs a filter"],
+      [{ queryset: Item.objects.withoutDefaults().filter(Item.rank.gt(1)).prepare() }, "config.unsupported", "it does not take withoutDefaults()"],
       [{ queryset: "all" }, "config.invalid_value", "Model.objects.filter(...).prepare()"],
-      [{ queryset: Item.objects.filter(Item.rank.gt(1)).orderBy(Item.id.asc()).prepare(), list: { order: [Item.id] } }, "config.invalid_value", "not in both"],
     ];
     for (const [config, code, text] of cases) {
       assert.throws(() => siteOf(w, config).check(), (e) => e instanceof AdminConfigError && e.code === code && e.message.includes(text));

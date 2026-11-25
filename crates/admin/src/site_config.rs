@@ -17,7 +17,9 @@ use monorm_core::schema::Schema;
 pub type Handles = BTreeMap<String, String>;
 
 /// The `$qs` flags that a queryset of the admin refuses, with the call that sets each.
-const REFUSED: [(&str, &str); 5] = [("load", "load()"), ("slice", "a slice"), ("join", "from_() or join()"), ("lock", "lock()"), ("without_defaults", "without_defaults()")];
+fn refused() -> [(&'static str, String); 5] {
+    [("load", "load()".into()), ("slice", "a slice".into()), ("join", hint(Hint::FromJoin)), ("lock", "lock()".into()), ("without_defaults", hint(Hint::WithoutDefaults))]
+}
 
 /// Lowers the tagged values of `config` in place and returns the function table.
 pub(crate) fn lower(config: &mut Value, schema: &Schema) -> Result<Handles, Fault> {
@@ -131,7 +133,7 @@ fn queryset(model: &str, tag: &str, value: Value, handles: &mut Handles) -> Resu
             if let Some(of) = qs.get("model").and_then(Value::as_str).filter(|of| *of != model) {
                 return Err(Fault::new(code::INVALID_VALUE, format!("queryset is a query set of {of}")));
             }
-            for (flag, what) in REFUSED {
+            for (flag, what) in refused() {
                 if qs.get(flag).and_then(Value::as_bool) == Some(true) {
                     return Err(Fault::new(code::UNSUPPORTED, format!("queryset takes a filter and an order; it does not take {what}")));
                 }

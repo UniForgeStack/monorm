@@ -76,9 +76,17 @@ pub fn opt(key: &str) -> String {
 pub enum Hint {
     /// How to make a prepared query set.
     PreparedQuerySet,
+    /// The call that sets a table source or a join on a query set.
+    FromJoin,
+    /// The call that drops the default filters of a query set.
+    WithoutDefaults,
 }
 
-const HINTS: [(Hint, &str, &str); 1] = [(Hint::PreparedQuerySet, "Model.objects.filter(...).prepare()", "Model.objects.filter(...).prepare()")];
+const HINTS: [(Hint, &str, &str); 3] = [
+    (Hint::PreparedQuerySet, "Model.objects.filter(...).prepare()", "Model.objects.filter(...).prepare()"),
+    (Hint::FromJoin, "from_() or join()", "from() or join()"),
+    (Hint::WithoutDefaults, "without_defaults()", "withoutDefaults()"),
+];
 
 impl Hint {
     fn text(self, spelling: Spelling) -> &'static str {

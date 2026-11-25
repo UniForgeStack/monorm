@@ -102,6 +102,12 @@ fn a_queryset_refusal_has_the_code_the_path_and_the_text() {
         assert_eq!((e.code, e.path), (code::UNSUPPORTED, vec![PathPart::Model("Note".into())]), "{flag}");
         assert_eq!(e.message, format!("Note: queryset takes a filter and an order; it does not take {what}"));
     }
+    let mut camel = note(json!({"queryset": qs(json!({"join": true}))}));
+    camel["spelling"] = json!("camel");
+    assert_eq!(build(camel).message, "Note: queryset takes a filter and an order; it does not take from() or join()");
+    let mut camel = note(json!({"queryset": qs(json!({"without_defaults": true}))}));
+    camel["spelling"] = json!("camel");
+    assert_eq!(build(camel).message, "Note: queryset takes a filter and an order; it does not take withoutDefaults()");
     let e = build(note(json!({"queryset": {"$qs": {"model": "Note", "filter": null}}})));
     assert_eq!((e.code, e.message.as_str()), (code::INVALID_VALUE, "Note: queryset needs a filter"));
     let e = build(note(json!({"queryset": {"$qs": {"model": "Other", "filter": positive()}}})));
