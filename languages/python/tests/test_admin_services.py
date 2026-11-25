@@ -95,6 +95,12 @@ class Lower:
         return stored
 
 
+async def test_a_service_that_is_not_a_function_is_refused(world):
+    registry, db, models = world
+    with pytest.raises(admin.AdminConfigError, match="create is a service function"):
+        site_of(registry, models, {"create": 7}).check()
+
+
 # -- the default writer ------------------------------------------------------------------------------------------------
 
 

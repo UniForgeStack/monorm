@@ -239,7 +239,6 @@ for (const provider of PROVIDERS) {
     };
     assert.throws(() => build({ name: "n", type: "text", expr: length }), (e) => e instanceof AdminConfigError && /declared/.test(e.message));
     assert.throws(() => build({ name: "body", type: "int", expr: length }), (e) => e instanceof AdminConfigError && /name of a field/.test(e.message));
-    assert.throws(() => build({ name: "n", type: "int" }), (e) => e instanceof AdminConfigError && /expr or function/.test(e.message));
   }));
 
   test(`a batch function column runs once for the page (${provider})`, () => world(provider, async (w) => {

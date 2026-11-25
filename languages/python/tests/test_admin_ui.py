@@ -131,6 +131,12 @@ async def test_a_theme_is_the_short_form_of_the_brand_and_a_value_in_both_is_ref
         admin.Admin(registry, theme={"shade": "x"})  # type: ignore[typeddict-unknown-key]
 
 
+def test_an_unknown_brand_key_is_refused(world):
+    registry, _, _ = world
+    with pytest.raises(admin.AdminConfigError, match="nope"):
+        admin.Admin(registry, brand={"nope": "x"})  # type: ignore[typeddict-unknown-key]
+
+
 def test_a_group_that_the_admin_does_not_list_is_refused(world):
     registry, classes, _ = world
     site = admin.Admin(registry, groups=["People"])

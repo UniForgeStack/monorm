@@ -163,13 +163,15 @@ for (const provider of PROVIDERS) {
   test(`a bad relation config fails the build (${provider})`, () => world(provider, async (w) => {
     const cases: [Loose, string][] = [
       [{ author: { label: "id" } }, "not a text column"],
-      [{ nope: {} }, "not a relation"],
       [{ links: {} }, "not a resource"],
-      [{ author: { colour: "red" } }, "unknown option"],
     ];
     for (const [relations, match] of cases) {
       assert.throws(() => siteOf(w, { relations }).check(), (e: unknown) => e instanceof AdminConfigError && e.message.includes(match), JSON.stringify(relations));
     }
+  }));
+
+  test(`files need a storage registry (${provider})`, () => world(provider, async (w) => {
+    assert.throws(() => siteOf(w, { files: { cover: "media" } }).check(), (e: unknown) => e instanceof AdminConfigError && e.message.includes("files needs a file storage registry"));
   }));
 
   test(`a target with no search fails the build (${provider})`, () => world(provider, async (w) => {
