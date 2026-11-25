@@ -241,6 +241,41 @@ pub struct SchemaIr {
     /// for any other role, so an empty list means no skip.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub bypass_roles: Vec<String>,
+    /// The names of the database settings that scope reads and the runtimes send. Not written at the default.
+    #[serde(skip_serializing_if = "ScopeSettingsIr::is_default", default)]
+    pub scope_settings: ScopeSettingsIr,
+}
+
+/// The default setting of a scope key is `scope.<key>`.
+pub const SCOPE_SETTING_PREFIX: &str = "scope.";
+/// The default setting that lists the keys an `unscoped` block opens.
+pub const BYPASS_SETTING: &str = "monorm.bypass";
+
+/// The names of the database settings of scope. Every reader takes a name from here: the policy and fill trigger,
+/// the history extension and the engine, which hands the names to the language bindings.
+#[derive(Deserialize, Serialize, Debug, Default, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ScopeSettingsIr {
+    /// The setting of a key that is not the default `scope.<key>`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty", default)]
+    pub overrides: BTreeMap<String, String>,
+    /// The setting that lists the open keys; empty means `monorm.bypass`.
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub bypass: String,
+}
+
+impl ScopeSettingsIr {
+    pub fn is_default(&self) -> bool { self.overrides.is_empty() && self.bypass.is_empty() }
+
+    /// The setting that holds the value of scope key `key`.
+    pub fn key_setting(&self, key: &str) -> String {
+        self.overrides.get(key).cloned().unwrap_or_else(|| format!("{SCOPE_SETTING_PREFIX}{key}"))
+    }
+
+    /// The setting that lists the keys an `unscoped` block opens.
+    pub fn bypass_setting(&self) -> &str {
+        if self.bypass.is_empty() { BYPASS_SETTING } else { &self.bypass }
+    }
 }
 
 impl SchemaIr {

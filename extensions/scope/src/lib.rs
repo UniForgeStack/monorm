@@ -6,7 +6,7 @@
 use monorm::{
     dialect::Dialect,
     extension::{Declaration, ReadDefault},
-    ir::{ColType, ModelIr, PolicyCommand, PolicyIr, RlsIr, SchemaIr, TriggerEvent, TriggerIr, TriggerTiming},
+    ir::{ColType, ModelIr, PolicyCommand, PolicyIr, RlsIr, SchemaIr, ScopeSettingsIr, TriggerEvent, TriggerIr, TriggerTiming},
     sql::{column_type, ident, literal},
     tracking::{composed_levels, error},
     writes::{PublishedScopeKey, ScopedField},
@@ -30,9 +30,9 @@ struct Key {
     sql_type: String,
 }
 
-/// `(SELECT NULLIF(current_setting('scope.<key>', true), '')::<type>)`: the sub-select makes the read run once per statement.
-fn setting(key: &Key) -> String {
-    format!("(SELECT NULLIF(current_setting({}, true), '')::{})", literal(&format!("scope.{}", key.name)), key.sql_type)
+/// `(SELECT NULLIF(current_setting('<setting of the key>', true), '')::<type>)`: the sub-select makes the read run once per statement.
+fn setting(key: &Key, names: &ScopeSettingsIr) -> String {
+    format!("(SELECT NULLIF(current_setting({}, true), '')::{})", literal(&names.key_setting(&key.name)), key.sql_type)
 }
 
 /// `current_user` is a member of one of the roles. The catalog lookup keeps a role that does not exist from raising an error:
@@ -43,15 +43,15 @@ fn member_of(roles: &[String]) -> String {
 }
 
 /// The term of one key: the column equals the setting, or an open `unscoped` bypass of a bypass role.
-fn term(key: &Key, bypass_roles: &[String]) -> String {
-    let equal = format!("{} = {}", ident(&key.column), setting(key));
+fn term(key: &Key, bypass_roles: &[String], names: &ScopeSettingsIr) -> String {
+    let equal = format!("{} = {}", ident(&key.column), setting(key, names));
     if bypass_roles.is_empty() { return format!("({equal})"); }
-    let open = format!("(SELECT {} = ANY(NULLIF(current_setting('monorm.bypass', true), '')::text[]))", literal(&key.name));
+    let open = format!("(SELECT {} = ANY(NULLIF(current_setting({}, true), '')::text[]))", literal(&key.name), literal(names.bypass_setting()));
     format!("({equal} OR ({open} AND {}))", member_of(bypass_roles))
 }
 
-fn expression(keys: &[Key], bypass_roles: &[String]) -> String {
-    keys.iter().map(|k| term(k, bypass_roles)).collect::<Vec<_>>().join(" AND ")
+fn expression(keys: &[Key], bypass_roles: &[String], names: &ScopeSettingsIr) -> String {
+    keys.iter().map(|k| term(k, bypass_roles, names)).collect::<Vec<_>>().join(" AND ")
 }
 
 fn policy(expression: String) -> PolicyIr {
@@ -67,8 +67,8 @@ fn exempt_policies(roles: &[String]) -> Vec<PolicyIr> {
 }
 
 /// The fill trigger: for each key, a NULL column takes the setting.
-fn fill(keys: &[Key]) -> TriggerIr {
-    let steps: String = keys.iter().map(|k| format!("IF NEW.{c} IS NULL THEN NEW.{c} := {s}; END IF; ", c = ident(&k.column), s = setting(k))).collect();
+fn fill(keys: &[Key], names: &ScopeSettingsIr) -> TriggerIr {
+    let steps: String = keys.iter().map(|k| format!("IF NEW.{c} IS NULL THEN NEW.{c} := {s}; END IF; ", c = ident(&k.column), s = setting(k, names))).collect();
     TriggerIr { name: FILL.into(), timing: TriggerTiming::Before, events: vec![TriggerEvent::Insert], body: Some(format!("BEGIN {steps}RETURN NEW; END;")), ..Default::default() }
 }
 
@@ -158,15 +158,15 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
     ir.behavior.read_defaults.extend(read_defaults);
     ir.behavior.scoped_fields.extend(scoped);
     if ir.dialect != Dialect::Postgres { return Ok(()); }
-    let (bypass, exempt) = (ir.bypass_roles.clone(), ir.exempt_roles.clone());
+    let (bypass, exempt, names) = (ir.bypass_roles.clone(), ir.exempt_roles.clone(), ir.scope_settings.clone());
     let published: BTreeSet<&String> = secured.values().flat_map(|keys| keys.keys()).collect();
     let published: Vec<_> = published.into_iter().map(|key| PublishedScopeKey { source: SOURCE.into(), key: key.clone() }).collect();
     ir.behavior.published_scope_keys.extend(published);
     for (owner, keys) in secured {
         let keys: Vec<Key> = keys.into_values().collect();
         for model in ir.models_named_mut(&owner) {
-            secure(model, policy(expression(&keys, &bypass)), exempt_policies(&exempt))?;
-            model.push_trigger(fill(&keys))?;
+            secure(model, policy(expression(&keys, &bypass, &names)), exempt_policies(&exempt))?;
+            model.push_trigger(fill(&keys, &names))?;
         }
     }
     level_policies(ir, &exempt)
@@ -245,6 +245,18 @@ mod tests {
         let t = &m.triggers[0];
         assert_eq!(t.name, FILL);
         assert!(t.body.as_deref().unwrap().contains("IF NEW.\"shop_id\" IS NULL THEN NEW.\"shop_id\" := (SELECT NULLIF(current_setting('scope.shop', true), '')::integer)"));
+    }
+
+    #[test]
+    fn the_policy_and_the_fill_trigger_read_the_settings_of_the_ir() {
+        let mut ir = secured(serde_json::json!(["admin"]), serde_json::json!([]));
+        ir.scope_settings = ScopeSettingsIr { overrides: [("shop".to_owned(), "tenant.shop".to_owned())].into(), bypass: "tenant.bypass".into() };
+        prepare(&mut ir).unwrap();
+        let using = ir.models[0].policies[0].using.clone().unwrap();
+        assert!(using.contains("current_setting('tenant.shop', true)") && using.contains("current_setting('tenant.bypass', true)"), "{using}");
+        assert!(!using.contains("scope.shop") && !using.contains("monorm.bypass"), "{using}");
+        let body = ir.models[0].triggers[0].body.clone().unwrap();
+        assert!(body.contains("current_setting('tenant.shop', true)") && !body.contains("scope.shop"), "{body}");
     }
 
     #[test]
