@@ -340,6 +340,16 @@ mod tests {
     }
 
     #[test]
+    fn auto_start_is_off_by_default_and_a_setting_of_the_oidc_table() {
+        let text = |extra: &str| format!("[admin]\napp = \"a:b\"\n[admin.oidc]\nissuer = \"https://idp.example.com\"\nclient_id = \"admin\"\n{extra}");
+        let load = |name: &str, extra: &str| Config::load(&dir(name, "monorm.toml", &text(extra)), |_| None);
+        assert!(!load("auto-off", "").unwrap().oidc.unwrap().auto_start);
+        assert!(load("auto-on", "auto_start = true\n").unwrap().oidc.unwrap().auto_start);
+        let err = load("auto-bad", "auto_start = \"yes\"\n").unwrap_err();
+        assert!(err.to_string().contains("expected a boolean"), "{err}");
+    }
+
+    #[test]
     fn the_switcher_table_expands_environment_variables_and_an_unset_one_gives_an_empty_string() {
         let text = "[admin]\napp = \"a:b\"\n[admin.switcher]\ncurrent = \"admin\"\n[admin.switcher.build]\ntree = \"${TREE_ID}\"\ncommit = \"${GIT_SHA}\"\nbuilt_at = \"at $HOME ${\"\n";
         let d = dir("switcher", "monorm.toml", text);

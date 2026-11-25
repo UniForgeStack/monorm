@@ -272,8 +272,11 @@ async fn login_page(State(ctx): State<Arc<Ctx>>, session: Option<Extension<Sessi
     let csrf = sec.csrf_token(sid);
     let max_age = session.as_ref().map(|s| sec.remaining(&s.0 .0)).unwrap_or(sec.options.idle_secs);
     let mut body = json!({"ok": true, "csrf": csrf, "authenticated": session.is_some()});
-    if sec.options.oidc.is_some() {
+    if let Some(oidc) = &sec.options.oidc {
         body["sso"] = json!(format!("{}/auth/start", ctx.site.base_path));
+        if oidc.auto_start {
+            body["auto_start"] = json!(true);
+        }
     }
     with_cookies(Json(body).into_response(), &[security::csrf_cookie(&ctx.site.base_path, &csrf, max_age)])
 }
