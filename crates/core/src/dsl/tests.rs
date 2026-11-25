@@ -47,6 +47,22 @@ fn the_scope_keys_of_the_datasource_name_the_settings_of_scope() {
 }
 
 #[test]
+fn the_hard_delete_setting_of_the_datasource_is_lowered_and_stamps_the_contract() {
+    let src = |keys: &str| format!("datasource db {{\n  provider = \"postgresql\"\n  {keys}\n}}\nmodel A {{\n  id BigInt @id\n}}\n");
+    let mut plain = ok(&src(""));
+    assert!(plain.hard_delete_setting.is_empty());
+    plain.stamp_schema_contract();
+    assert!(plain.behavior.schema_contract_minor < 13, "a schema with no key stays at the old contract");
+    let mut keyed = ok(&src("hard_delete_setting = \"rules.hard_deletion\""));
+    assert_eq!(keyed.hard_delete_setting, "rules.hard_deletion");
+    keyed.stamp_schema_contract();
+    assert_eq!(keyed.behavior.schema_contract_minor, 13);
+    for keys in ["hard_delete_setting = \"\"", "hard_delete_setting = 3"] {
+        assert!(fails(&src(keys)).contains("hard_delete_setting is a non-empty string"), "{keys}");
+    }
+}
+
+#[test]
 fn exempt_roles_name_the_database_roles_that_read_every_row() {
     let src = |roles: &str| format!("datasource db {{\n  provider = \"postgresql\"\n  {roles}\n}}\nmodel A {{\n  id BigInt @id\n}}\n");
     assert!(ok(&src("")).exempt_roles.is_empty());

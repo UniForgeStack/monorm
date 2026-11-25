@@ -135,18 +135,25 @@ fn bump(version: Option<&str>) -> String {
     version.map(|v| { let v = ident(v); format!(", {v} = {v} + 1") }).unwrap_or_default()
 }
 
+/// ` AND <setting> is not 'on'`: the condition that makes a trigger skip while a hard delete runs. Nothing without a hard-delete
+/// setting or on SQLite. An unset setting reads as `NULL`, so the test is `IS DISTINCT FROM`: a plain `<>` would skip every statement.
+fn unless_hard(dialect: Dialect, setting: &str) -> String {
+    if dialect != Dialect::Postgres || setting.is_empty() { return String::new(); }
+    format!(" AND current_setting({}, true) IS DISTINCT FROM 'on'", literal(setting))
+}
+
 /// `BEFORE DELETE` of a live row: set the field and cancel the delete. A row that is
 /// already soft-deleted is deleted. On PostgreSQL a delete inside a trigger (a foreign-key
 /// cascade included) is a hard delete: a cancelled cascade delete runs no foreign-key check
 /// and would leave an orphan.
-fn delete_trigger(dialect: Dialect, model: &ModelIr, field: &str, version: Option<&str>) -> Result<TriggerIr, String> {
+fn delete_trigger(dialect: Dialect, model: &ModelIr, field: &str, version: Option<&str>, hard: &str) -> Result<TriggerIr, String> {
     let keys = model.key_fields();
     if keys.is_empty() { return Err(format!("{} has no primary key", model.name)); }
     let pk = keys.iter().map(|k| Ok(format!("{0} = OLD.{0}", ident(column(model, k)?)))).collect::<Result<Vec<_>, String>>()?.join(" AND ");
     let (c, t) = (ident(column(model, field)?), ident(&model.table));
     let bump = bump(version.map(|v| column(model, v)).transpose()?);
     let (body, when) = match dialect {
-        Dialect::Postgres => (format!("BEGIN UPDATE {t} SET {c} = now(){bump} WHERE {pk}; RETURN NULL; END;"), format!("OLD.{c} IS NULL AND pg_trigger_depth() = 0")),
+        Dialect::Postgres => (format!("BEGIN UPDATE {t} SET {c} = now(){bump} WHERE {pk}; RETURN NULL; END;"), format!("OLD.{c} IS NULL AND pg_trigger_depth() = 0{}", unless_hard(dialect, hard))),
         Dialect::Sqlite => (format!("UPDATE {t} SET {c} = strftime('%Y-%m-%d %H:%M:%f', 'now'){bump} WHERE {pk}; SELECT RAISE(IGNORE)"), format!("OLD.{c} IS NULL")),
     };
     Ok(TriggerIr { name: "soft_delete".into(), timing: TriggerTiming::Before, events: vec![TriggerEvent::Delete], when: Some(when), body: Some(body), ..Default::default() })
@@ -159,11 +166,11 @@ struct Child { table: String, soft: String, version: Option<String>, keys: Vec<(
 
 /// `AFTER UPDATE OF` the field, when a row becomes soft-deleted: soft-delete the live rows
 /// of each soft-delete child whose relation cascades deletes. A relation with `@soft_delete.keep_child_rows` is no child.
-fn cascade_trigger(dialect: Dialect, parent: &ModelIr, field: &str, children: &[Child]) -> Result<TriggerIr, String> {
+fn cascade_trigger(dialect: Dialect, parent: &ModelIr, field: &str, children: &[Child], hard: &str) -> Result<TriggerIr, String> {
     let c = ident(column(parent, field)?);
     let statements = children.iter().map(|child| child.statement(&format!("NEW.{c}"), &format!("{} IS NULL", ident(&child.soft)))).collect::<Vec<_>>();
     Ok(TriggerIr { name: "soft_delete_cascade".into(), timing: TriggerTiming::After, events: vec![TriggerEvent::Update], update_of: vec![field.into()],
-        when: Some(format!("OLD.{c} IS NULL AND NEW.{c} IS NOT NULL")), body: Some(trigger_body(dialect, &statements)), ..Default::default() })
+        when: Some(format!("OLD.{c} IS NULL AND NEW.{c} IS NOT NULL{}", unless_hard(dialect, hard))), body: Some(trigger_body(dialect, &statements)), ..Default::default() })
 }
 
 /// `AFTER UPDATE OF` the field, when a row is undeleted: undelete the rows its soft delete cascaded to,
@@ -206,11 +213,11 @@ impl Guard {
 /// A live row that is inserted under, or moved to, a soft-deleted parent takes the stamp of the parent.
 /// PostgreSQL: one `BEFORE INSERT OR UPDATE OF <foreign key>` trigger that sets the field of `NEW`.
 /// SQLite: a `BEFORE` trigger cannot change `NEW`, so an `AFTER INSERT` and an `AFTER UPDATE OF <foreign key>` trigger stamp the row.
-fn guard_triggers(dialect: Dialect, g: &Guard) -> Result<Vec<TriggerIr>, String> {
+fn guard_triggers(dialect: Dialect, g: &Guard, hard: &str) -> Result<Vec<TriggerIr>, String> {
     let (soft, name) = (ident(&g.soft), format!("soft_delete_guard_{}", g.relation));
     match dialect {
         Dialect::Postgres => Ok(vec![TriggerIr { name, timing: TriggerTiming::Before, events: vec![TriggerEvent::Insert, TriggerEvent::Update], update_of: g.fields.clone(),
-            when: Some(format!("NEW.{soft} IS NULL")), body: Some(format!("BEGIN NEW.{soft} := {}; RETURN NEW; END;", g.parent_stamp())), ..Default::default() }]),
+            when: Some(format!("NEW.{soft} IS NULL{}", unless_hard(dialect, hard))), body: Some(format!("BEGIN NEW.{soft} := {}; RETURN NEW; END;", g.parent_stamp())), ..Default::default() }]),
         Dialect::Sqlite => {
             if g.pk.is_empty() { return Err(format!("{} has no primary key", g.model)); }
             let pk = g.pk.iter().map(|k| format!("{0} = NEW.{0}", ident(k))).collect::<Vec<_>>().join(" AND ");
@@ -224,13 +231,14 @@ fn guard_triggers(dialect: Dialect, g: &Guard) -> Result<Vec<TriggerIr>, String>
 
 /// PostgreSQL: the `BEFORE` guard sets the stamp inside the write, so the `AFTER UPDATE OF <soft field>` cascade of the moved row does not fire
 /// and its own children stay live. This `AFTER UPDATE OF <foreign key>` trigger runs the body of that cascade for a live row that the guard stamped.
+/// It skips on the hard-delete setting, as the cascade does.
 /// SQLite needs none: its `AFTER` guard updates the stamp, and that update fires the cascade.
-fn moved_row_cascade(dialect: Dialect, model: &ModelIr, g: &Guard) -> Option<TriggerIr> {
+fn moved_row_cascade(dialect: Dialect, model: &ModelIr, g: &Guard, hard: &str) -> Option<TriggerIr> {
     if dialect != Dialect::Postgres { return None; }
     let cascade = model.triggers.iter().find(|t| t.name == "soft_delete_cascade")?;
     let soft = ident(&g.soft);
     Some(TriggerIr { name: format!("soft_delete_guard_{}_cascade", g.relation), timing: TriggerTiming::After, events: vec![TriggerEvent::Update], update_of: g.fields.clone(),
-        when: Some(format!("OLD.{soft} IS NULL AND NEW.{soft} IS NOT NULL")), body: cascade.body.clone(), ..Default::default() })
+        when: Some(format!("OLD.{soft} IS NULL AND NEW.{soft} IS NOT NULL{}", unless_hard(dialect, hard))), body: cascade.body.clone(), ..Default::default() })
 }
 
 /// The row is live: its soft-delete field is `NULL`.
@@ -323,7 +331,8 @@ fn lock_target(dialect: Dialect, o: &Owning, row: &str) -> Option<String> {
 
 /// `AFTER UPDATE OF` the field, when an owner becomes soft-deleted: soft-delete the target of each owning relation that
 /// no live owner holds any more, with the owner's stamp. It reads `OLD`, so a key move in the same statement releases the old target.
-fn sweep_trigger(dialect: Dialect, all: &[Owning], rels: &[&Owning], field: &str, column: &str) -> TriggerIr {
+/// It archives rows, so it skips on the hard-delete setting; the owned revive restores rows and does not.
+fn sweep_trigger(dialect: Dialect, all: &[Owning], rels: &[&Owning], field: &str, column: &str, hard: &str) -> TriggerIr {
     let c = ident(column);
     let mut statements = vec![];
     for o in rels {
@@ -335,7 +344,7 @@ fn sweep_trigger(dialect: Dialect, all: &[Owning], rels: &[&Owning], field: &str
         statements.push(format!("UPDATE {t} SET {ts} = NEW.{c}{} WHERE {}", bump(o.target_version.as_deref()), conds.join(" AND ")));
     }
     TriggerIr { name: "soft_delete_sweep".into(), timing: TriggerTiming::After, events: vec![TriggerEvent::Update], update_of: vec![field.into()],
-        when: Some(format!("OLD.{c} IS NULL AND NEW.{c} IS NOT NULL")), body: Some(trigger_body(dialect, &statements)), ..Default::default() }
+        when: Some(format!("OLD.{c} IS NULL AND NEW.{c} IS NOT NULL{}", unless_hard(dialect, hard))), body: Some(trigger_body(dialect, &statements)), ..Default::default() }
 }
 
 /// `AFTER UPDATE OF` the field, when an owner is undeleted: revive the target that its delete stamped (the same stamp),
@@ -417,6 +426,14 @@ fn trigger_body(dialect: Dialect, statements: &[String]) -> String {
     }
 }
 
+/// True for an unmanaged model whose triggers the datasource trusts (`hard_delete_setting` is set, on any dialect): the extension adds no object to it.
+/// An unmanaged model with no such key is an error that names the key. A managed model, or an unknown one, is false.
+fn trusts_unmanaged(ir: &SchemaIr, model: &str) -> Result<bool, String> {
+    if all_models(ir).iter().find(|m| m.name == model).is_none_or(|m| m.managed) { return Ok(false); }
+    if !ir.hard_delete_setting.is_empty() { return Ok(true); }
+    Err(format!("{model}: soft delete on an unmanaged model adds triggers to a table that another service owns; set `hard_delete_setting` in the datasource to say that its triggers already work"))
+}
+
 pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
     // Models of an earlier batch keep their records; their mode is unknown (Application is a placeholder), and only the models of this batch use it.
     let mut roles: Vec<SoftDelete> = ir.behavior.delete_rewrites.iter().filter(|d| d.source == SOURCE)
@@ -462,8 +479,13 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
         ir.behavior.delete_rewrites.push(DeleteRewrite { source: SOURCE.into(), model: s.model.clone(), field: s.field.clone(), guard: live(&s.field) });
     }
     let dialect = ir.dialect;
+    let hard = ir.hard_delete_setting.clone();
+    let hard = hard.as_str();
     let mut all_guards = vec![];
     for s in roles.iter().filter(|s| s.mode == Mode::Database && added.contains(&s.model)) {
+        // A key in the datasource says that the triggers of an unmanaged table already work: MonOrm adds no object to it.
+        // So it makes no cascade from this parent either.
+        if trusts_unmanaged(ir, &s.model)? { continue; }
         // Children: soft-delete models, and the levels of a composed model with a soft-delete root, with a cascading foreign key to this model.
         let (parent_table, parent_soft, parent_columns) = {
             let parent = ir.models.iter().find(|m| m.name == s.model).ok_or_else(|| format!("unknown model {}", s.model))?;
@@ -497,7 +519,7 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
                     _ => None,
                 };
                 // A level of a composed model keeps its flag on the root row, and a proxy shares the table of its root: neither gets a guard.
-                if via.is_none() && composed.is_none() && !ir.behavior.model_views.iter().any(|v| v.model == child.name) {
+                if via.is_none() && composed.is_none() && !ir.behavior.model_views.iter().any(|v| v.model == child.name) && !trusts_unmanaged(ir, &child.name)? {
                     let referenced = r.to.iter().map(|f| parent_columns.iter().find(|(n, _)| n == f).map(|(_, c)| c.clone()).ok_or_else(|| format!("{} has no field {f}", s.model))).collect::<Result<Vec<_>, String>>()?;
                     let pk = child.key_fields().iter().map(|k| column(child, k).map(str::to_owned)).collect::<Result<Vec<_>, String>>()?;
                     guards.push(Guard { model: child.name.clone(), relation: r.name.clone(), table: child.table.clone(), soft: column(soft_model, &child_field.field)?.to_owned(), pk,
@@ -509,13 +531,13 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
         let version = bumped(&ir.behavior.write_assignments, &s.model).map(str::to_owned);
         for model in ir.models_named_mut(&s.model) {
             let version = version.as_deref();
-            let mut triggers = vec![delete_trigger(dialect, model, &s.field, version)?];
+            let mut triggers = vec![delete_trigger(dialect, model, &s.field, version, hard)?];
             if !children.is_empty() {
                 let resolved = children.iter().map(|(child, keys, to)| {
                     let pairs = keys.iter().zip(to).map(|(k, to)| Ok((k.clone(), column(model, to)?.to_owned()))).collect::<Result<Vec<_>, String>>()?;
                     Ok(Child { table: child.table.clone(), soft: child.soft.clone(), version: child.version.clone(), keys: pairs, via: child.via.clone() })
                 }).collect::<Result<Vec<_>, String>>()?;
-                triggers.push(cascade_trigger(dialect, model, &s.field, &resolved)?);
+                triggers.push(cascade_trigger(dialect, model, &s.field, &resolved, hard)?);
                 triggers.extend(revive_trigger(dialect, model, &s.field, &resolved)?);
             }
             for mut t in triggers {
@@ -525,7 +547,7 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
         }
         for g in &guards {
             for model in ir.models_named_mut(&g.model) {
-                for t in guard_triggers(dialect, g)? { model.push_trigger(t)?; }
+                for t in guard_triggers(dialect, g, hard)? { model.push_trigger(t)?; }
             }
         }
         all_guards.extend(guards);
@@ -533,7 +555,7 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
     // After every cascade trigger exists: a moved row that the guard stamps passes the stamp on to its own children.
     for g in &all_guards {
         for model in ir.models_named_mut(&g.model) {
-            if let Some(t) = moved_row_cascade(dialect, model, g) { model.push_trigger(t)?; }
+            if let Some(t) = moved_row_cascade(dialect, model, g, hard) { model.push_trigger(t)?; }
         }
     }
     owning_triggers(ir, &roles, &added)?;
@@ -547,11 +569,12 @@ pub fn prepare(ir: &mut SchemaIr) -> Result<(), String> {
 fn owning_triggers(ir: &mut SchemaIr, roles: &[SoftDelete], added: &[String]) -> Result<(), String> {
     let all = owning_relations(ir, roles)?;
     let dialect = ir.dialect;
+    let hard = ir.hard_delete_setting.clone();
     let mut owners: Vec<(String, String)> = vec![];
     for o in &all {
         let Some(field) = roles.iter().find(|s| s.model == o.model && o.soft.is_some()).map(|s| s.field.clone()) else { continue };
         let database = match roles.iter().find(|s| s.model == o.model) {
-            Some(s) if added.contains(&s.model) => s.mode == Mode::Database,
+            Some(s) if added.contains(&s.model) => s.mode == Mode::Database && !all_models(ir).iter().any(|m| m.name == s.model && !m.managed),
             _ => all_models(ir).iter().any(|m| m.name == o.model && m.triggers.iter().any(|t| t.name == "soft_delete")),
         };
         if database && !owners.iter().any(|(m, _)| m == &o.model) { owners.push((o.model.clone(), field)); }
@@ -559,7 +582,7 @@ fn owning_triggers(ir: &mut SchemaIr, roles: &[SoftDelete], added: &[String]) ->
     for (name, field) in owners {
         let rels: Vec<&Owning> = all.iter().filter(|o| o.model == name).collect();
         let Some(column) = rels.iter().find_map(|o| o.soft.clone()) else { continue };
-        let triggers = [sweep_trigger(dialect, &all, &rels, &field, &column), owned_revive_trigger(dialect, &all, &rels, &field, &column)];
+        let triggers = [sweep_trigger(dialect, &all, &rels, &field, &column, &hard), owned_revive_trigger(dialect, &all, &rels, &field, &column)];
         for model in ir.models_named_mut(&name) {
             model.triggers.retain(|t| triggers.iter().all(|n| n.name != t.name));
             for t in &triggers { model.push_trigger(t.clone())?; }
@@ -873,6 +896,102 @@ mod tests {
         prepared(&mut ir).unwrap();
         assert_eq!(ir.behavior.delete_rewrites.len(), 2);
         assert!(ir.behavior.storage.as_ref().unwrap().models.iter().all(|m| m.triggers.is_empty()));
+    }
+
+    const SKIP: &str = " AND current_setting('rules.hard_deletion', true) IS DISTINCT FROM 'on'";
+
+    #[test]
+    fn a_hard_delete_setting_makes_the_delete_cascade_and_guard_triggers_skip() {
+        let mut ir = schema("postgres", "database");
+        ir.hard_delete_setting = "rules.hard_deletion".into();
+        prepared(&mut ir).unwrap();
+        let author = &ir.models[0];
+        assert_eq!(author.triggers[0].when.as_deref(), Some(format!("OLD.\"deleted\" IS NULL AND pg_trigger_depth() = 0{SKIP}").as_str()));
+        assert_eq!(author.triggers[1].when.as_deref(), Some(format!("OLD.\"deleted\" IS NULL AND NEW.\"deleted\" IS NOT NULL{SKIP}").as_str()));
+        // The revive reads no setting: a hard delete removes the row and never revives one.
+        assert_eq!(author.triggers[2].when.as_deref(), Some("OLD.\"deleted\" IS NOT NULL AND NEW.\"deleted\" IS NULL"));
+        let guard = ir.models[1].triggers.iter().find(|t| t.name == "soft_delete_guard_author").unwrap();
+        assert_eq!(guard.when.as_deref(), Some(format!("NEW.\"deleted\" IS NULL{SKIP}").as_str()));
+        let up = migration(&ir);
+        assert!(up.iter().any(|sql| sql.contains("current_setting('rules.hard_deletion', true) IS DISTINCT FROM 'on'")), "{up:?}");
+    }
+
+    #[test]
+    fn a_hard_delete_setting_makes_the_moved_row_cascade_and_the_sweep_skip_and_keeps_the_restore_triggers() {
+        let mut ir = with_pages("postgres");
+        ir.hard_delete_setting = "rules.hard_deletion".into();
+        prepared(&mut ir).unwrap();
+        assert_eq!(trigger(&ir, "Book", "soft_delete_guard_author_cascade").when.as_deref(), Some(format!("OLD.\"deleted\" IS NULL AND NEW.\"deleted\" IS NOT NULL{SKIP}").as_str()));
+        let mut owners = owning("postgres", 1);
+        owners.hard_delete_setting = "rules.hard_deletion".into();
+        prepared(&mut owners).unwrap();
+        assert_eq!(trigger(&owners, "B1", "soft_delete_sweep").when.as_deref(), Some(format!("OLD.\"deleted\" IS NULL AND NEW.\"deleted\" IS NOT NULL{SKIP}").as_str()));
+        // Both triggers that restore rows keep running: a skipped revive would leave rows archived with no way back.
+        assert_eq!(trigger(&owners, "B1", "soft_delete_owned_revive").when.as_deref(), Some("OLD.\"deleted\" IS NOT NULL AND NEW.\"deleted\" IS NULL"));
+        // With no key the text is the old text.
+        let mut plain = owning("postgres", 1);
+        prepared(&mut plain).unwrap();
+        assert_eq!(trigger(&plain, "B1", "soft_delete_sweep").when.as_deref(), Some("OLD.\"deleted\" IS NULL AND NEW.\"deleted\" IS NOT NULL"));
+    }
+
+    #[test]
+    fn a_hard_delete_setting_changes_nothing_on_sqlite() {
+        let mut plain = schema("sqlite", "database");
+        let mut keyed = schema("sqlite", "database");
+        keyed.hard_delete_setting = "rules.hard_deletion".into();
+        prepared(&mut plain).unwrap();
+        prepared(&mut keyed).unwrap();
+        assert_eq!(serde_json::to_value(&plain.models).unwrap(), serde_json::to_value(&keyed.models).unwrap());
+    }
+
+    fn unmanage(ir: &mut SchemaIr, names: &[&str]) {
+        for m in ir.models.iter_mut().filter(|m| names.contains(&m.name.as_str())) { m.managed = false; }
+    }
+
+    #[test]
+    fn a_trusted_unmanaged_parent_gets_no_trigger_and_no_cascade_to_a_child() {
+        let mut ir = schema("postgres", "database");
+        ir.hard_delete_setting = "rules.hard_deletion".into();
+        unmanage(&mut ir, &["Author"]);
+        prepared(&mut ir).unwrap();
+        assert!(ir.models[0].triggers.is_empty());
+        // Book is managed: it keeps its own delete trigger, and gets no guard, because the parent is unmanaged.
+        let names: Vec<_> = ir.models[1].triggers.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, ["soft_delete"]);
+        // The rewrite and the live filter stay: `delete()` is still the engine UPDATE.
+        assert_eq!(ir.behavior.delete_rewrites.len(), 2);
+    }
+
+    #[test]
+    fn a_trusted_unmanaged_model_passes_on_sqlite_too_and_gets_no_object() {
+        let mut ir = schema("sqlite", "database");
+        ir.hard_delete_setting = "rules.hard_deletion".into();
+        unmanage(&mut ir, &["Author"]);
+        prepared(&mut ir).unwrap();
+        assert!(ir.models[0].triggers.is_empty());
+        let mut without = schema("sqlite", "database");
+        unmanage(&mut without, &["Author"]);
+        assert!(prepared(&mut without).unwrap_err().contains("hard_delete_setting"));
+    }
+
+    #[test]
+    fn a_trusted_unmanaged_child_gets_no_guard_and_no_trigger() {
+        let mut ir = schema("postgres", "database");
+        ir.hard_delete_setting = "rules.hard_deletion".into();
+        unmanage(&mut ir, &["Book"]);
+        prepared(&mut ir).unwrap();
+        assert!(ir.models[1].triggers.is_empty());
+        assert!(ir.models[0].triggers.iter().any(|t| t.name == "soft_delete_cascade"));
+    }
+
+    #[test]
+    fn an_unmanaged_soft_delete_model_with_no_key_is_an_error_that_names_the_key() {
+        for name in ["Author", "Book"] {
+            let mut ir = schema("postgres", "database");
+            unmanage(&mut ir, &[name]);
+            let error = prepared(&mut ir).unwrap_err();
+            assert!(error.contains("hard_delete_setting") && !error.contains("PostgreSQL"), "{error}");
+        }
     }
 
     #[test]

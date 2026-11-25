@@ -643,6 +643,12 @@ fn datasource_block(ir: &mut SchemaIr, pos: Pos, props: &Props) -> Result<()> {
         }
     }
     scope_settings(ir, &mut n)?;
+    if let Some((p, v)) = n.get("hard_delete_setting") {
+        match v {
+            Value::Str(setting) if !setting.is_empty() => ir.hard_delete_setting = setting.clone(),
+            _ => return err(p, r#"datasource: hard_delete_setting is a non-empty string, e.g. "rules.hard_deletion""#),
+        }
+    }
     if let Some((p, v)) = n.get("extensions") {
         let Value::List(list) = v else { return err(p, "datasource: extensions takes a list, e.g. [postgis, citext]") };
         for (p, v) in list {

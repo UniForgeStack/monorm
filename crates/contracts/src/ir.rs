@@ -244,6 +244,10 @@ pub struct SchemaIr {
     /// The names of the database settings that scope reads and the runtimes send. Not written at the default.
     #[serde(skip_serializing_if = "ScopeSettingsIr::is_default", default)]
     pub scope_settings: ScopeSettingsIr,
+    /// The datasource's `hard_delete_setting`: the database setting that a hard delete sets to `'on'` in its transaction.
+    /// An empty name means no setting: a hard delete sends nothing and no trigger reads one.
+    #[serde(skip_serializing_if = "String::is_empty", default)]
+    pub hard_delete_setting: String,
 }
 
 /// The default setting of a scope key is `scope.<key>`.
@@ -375,6 +379,11 @@ impl SchemaIr {
         if !self.scope_settings.is_default() {
             self.behavior.schema_contract = SCHEMA_CONTRACT;
             self.behavior.schema_contract_minor = self.behavior.schema_contract_minor.max(12);
+        }
+        // Contract 5.13 holds `hard_delete_setting`. An engine of 5.12 would not send it and a library of 5.12 would make triggers that never skip.
+        if !self.hard_delete_setting.is_empty() {
+            self.behavior.schema_contract = SCHEMA_CONTRACT;
+            self.behavior.schema_contract_minor = self.behavior.schema_contract_minor.max(13);
         }
     }
 
