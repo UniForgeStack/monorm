@@ -21,6 +21,7 @@ use crate::form::FormConfig;
 use crate::key;
 use crate::meta::{self, BrandConfig, ThemeConfig};
 use crate::permissions::{Op, Strategy};
+use crate::site_config::{self, Handles};
 
 pub const DEFAULT_PAGE_SIZE: usize = 25;
 pub const MAX_PAGE_SIZE: usize = 200;
@@ -858,15 +859,22 @@ pub struct Site {
 impl Site {
     /// Plans the resources. The text of a wrong config spells the option keys as the `spelling` key of the config says, `snake` by default.
     pub fn build(schema: Arc<Schema>, config_json: &str) -> Result<Site, AdminError> {
+        Site::build_with_handles(schema, config_json).map(|(site, _)| site)
+    }
+
+    /// Like [`Site::build`], and returns the host name of each local function id that the config tagged with `$fn`.
+    pub fn build_with_handles(schema: Arc<Schema>, config_json: &str) -> Result<(Site, Handles), AdminError> {
         let spelling = serde_json::from_str::<Value>(config_json).ok().and_then(|v| v.get("spelling").cloned()).and_then(|v| serde_json::from_value::<Spelling>(v).ok()).unwrap_or_default();
         Site::plan(schema, config_json).map_err(|fault| fault.render(spelling))
     }
 
-    fn plan(schema: Arc<Schema>, config_json: &str) -> Result<Site, Fault> {
+    fn plan(schema: Arc<Schema>, config_json: &str) -> Result<(Site, Handles), Fault> {
+        let mut handles = Handles::new();
         let mut config: Config = if config_json.trim().is_empty() {
             Config::default()
         } else {
             let mut value: Value = serde_json::from_str(config_json).map_err(|e| Fault::new(code::INVALID_JSON, format!("invalid admin config: {e}")))?;
+            handles = site_config::lower(&mut value, &schema)?;
             merge_inline_pages(&mut value)?;
             serde_json::from_value(value).map_err(parse_fault)?
         };
@@ -1009,7 +1017,7 @@ impl Site {
                 relation.choices = Some(builtin::names_filter(&names));
             }
         }
-        Ok(site)
+        Ok((site, handles))
     }
 
     /// How many times the metadata of a resource was made: one per resource at `build`, and one per set of granted names of a page that binds fields.
@@ -2315,9 +2323,9 @@ pub(crate) fn scope_default_names(model: &monorm_core::schema::Model) -> Vec<Str
     model.read_defaults.parts.iter().filter(|p| !p.scopes.is_empty()).map(|p| p.identity.name.clone()).collect()
 }
 
-/// The name of a host function: letters, digits, `_`, `.`, `:` and `-`, at most 80 characters.
+/// The name of a host function: letters, digits, `_`, `.`, `:`, `-` and `@` (the inline tag), at most 80 characters.
 fn check_function(what: &str, name: &str) -> Result<(), Fault> {
-    let ok = !name.is_empty() && name.chars().count() <= 80 && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ':' | '-'));
+    let ok = !name.is_empty() && name.chars().count() <= 80 && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ':' | '-' | '@'));
     if ok { Ok(()) } else { err(format!("{what} {name:?} is not a function name")) }
 }
 
