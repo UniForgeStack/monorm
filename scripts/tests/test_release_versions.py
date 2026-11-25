@@ -139,6 +139,21 @@ class VersionsTest(unittest.TestCase):
         digest = versions.manifests(self.root)["monorm.proto"][1]
         self.assertIn(f'"manifest_hash":"{digest}"', (self.root / "languages/js/test/proto/es/models.ts").read_text())
 
+    def test_restamp_keeps_the_layout_of_the_one_line_and_the_many_line_form(self):
+        digest = versions.manifests(self.root)["monorm.proto"][1]
+        old = "0" * 64
+        one = '{"packages":{"monorm.proto":{"version":"0.0.1","manifest_hash":"%s","passes":[]}}}'
+        many = '{\n "packages":{\n  "monorm.proto":{\n   "version":"0.0.1",\n   "manifest_hash":"%s",\n   "passes":[]\n  }\n }\n}'
+        path = self.root / "examples/stamp-forms/models.ts"
+        path.parent.mkdir(parents=True)
+        for form in (one, many):
+            path.write_text(form % old)
+            self.assertEqual(len(versions.stale_stamps(self.root)), 1)
+            versions.restamp(self.root)
+            version = versions.manifests(self.root)["monorm.proto"][0]
+            self.assertEqual(path.read_text(), (form % digest).replace("0.0.1", version))
+            self.assertEqual(versions.stale_stamps(self.root), [])
+
     def test_check_without_a_version_takes_the_one_in_pyproject(self):
         self.set("0.1.0rc1")
         self.assertEqual(self.check().returncode, 0)
