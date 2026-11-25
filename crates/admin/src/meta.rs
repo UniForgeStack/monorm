@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 
 use crate::list::{is_text, ranged};
 use crate::error::{opt, Fault};
-use crate::site::{err, Column, Filter, FilterKind, Resource, Source};
+use crate::site::{invalid, Column, Filter, FilterKind, Resource, Source};
 use crate::site_config::{BrandConfig, SwitcherBuild, SwitcherConfig, ThemeConfig};
 
 /// A link target that a page may use: a path on this host or an `http` or `https` URL.
@@ -37,7 +37,7 @@ pub fn brand(config: Option<&BrandConfig>, theme: Option<&ThemeConfig>, switcher
                 "logo" => "brand.logo",
                 _ => "brand.colors.primary",
             };
-            return err(format!("theme.{key} and {twin} both set the same value: set one of them"));
+            return invalid(format!("theme.{key} and {twin} both set the same value: set one of them"));
         }
     }
     let mut colors = c.colors.clone();
@@ -50,42 +50,42 @@ pub fn brand(config: Option<&BrandConfig>, theme: Option<&ThemeConfig>, switcher
     }
     if let Some(color) = &t.color {
         if !color_ok(color) {
-            return err(format!("theme.color {color:?} must be #rgb or #rrggbb"));
+            return invalid(format!("theme.color {color:?} must be #rgb or #rrggbb"));
         }
         colors.insert("primary".to_owned(), color.clone());
     }
     let logo = t.logo.clone().or_else(|| c.logo.clone());
     let name = t.title.clone().or_else(|| c.name.clone()).unwrap_or_else(|| "Admin".to_owned());
     if name.trim().is_empty() || name.chars().count() > 80 {
-        return err(format!("{} must have 1 to 80 characters", if t.title.is_some() { "theme.title" } else { "brand.name" }));
+        return invalid(format!("{} must have 1 to 80 characters", if t.title.is_some() { "theme.title" } else { "brand.name" }));
     }
     if let Some(logo) = &logo {
         // The CSP allows images from this origin and from https only.
         if !url_ok(logo) || logo.starts_with("http://") {
             let setting = if t.logo.is_some() { "theme.logo" } else { "brand.logo" };
-            return err(format!("{setting} {logo:?} must be a path that starts with / or an https URL"));
+            return invalid(format!("{setting} {logo:?} must be a path that starts with / or an https URL"));
         }
     }
     for (key, value) in &colors {
         if !matches!(key.as_str(), "primary" | "accent") {
-            return err(format!("brand.colors has {key:?}, not one of primary, accent"));
+            return invalid(format!("brand.colors has {key:?}, not one of primary, accent"));
         }
         if !color_ok(value) {
-            return err(format!("brand.colors.{key} {value:?} must be #rgb or #rrggbb"));
+            return invalid(format!("brand.colors.{key} {value:?} must be #rgb or #rrggbb"));
         }
     }
     let mut links = Vec::new();
     for l in &c.links {
         if l.label.trim().is_empty() || l.label.chars().count() > 40 {
-            return err("brand.links: a label has 1 to 40 characters".into());
+            return invalid("brand.links: a label has 1 to 40 characters".into());
         }
         if !url_ok(&l.url) {
-            return err(format!("brand.links: {:?} must be a path that starts with / or an http or https URL", l.url));
+            return invalid(format!("brand.links: {:?} must be a path that starts with / or an http or https URL", l.url));
         }
         links.push(json!({"label": l.label, "url": l.url}));
     }
     if c.environment.as_ref().is_some_and(|e| e.trim().is_empty() || e.chars().count() > 32) {
-        return err("brand.environment must have 1 to 32 characters".into());
+        return invalid("brand.environment must have 1 to 32 characters".into());
     }
     let level = environment_level(c)?;
     Ok(json!({"name": name, "logo": logo, "colors": colors, "links": links, "environment": c.environment, "environment_level": level, "switcher": switcher.map(|v| v.json)}))
@@ -95,13 +95,13 @@ pub fn brand(config: Option<&BrandConfig>, theme: Option<&ThemeConfig>, switcher
 fn environment_level(c: &BrandConfig) -> Result<Option<String>, Fault> {
     let Some(env) = &c.environment else {
         return match c.environment_level {
-            Some(_) => err(format!("brand.{} needs brand.environment", opt("environment_level"))),
+            Some(_) => invalid(format!("brand.{} needs brand.environment", opt("environment_level"))),
             None => Ok(None),
         };
     };
     if let Some(level) = &c.environment_level {
         if !matches!(level.as_str(), "info" | "warning" | "danger") {
-            return err(format!("brand.{} {level:?} must be info, warning or danger", opt("environment_level")));
+            return invalid(format!("brand.{} {level:?} must be info, warning or danger", opt("environment_level")));
         }
         return Ok(Some(level.clone()));
     }
@@ -178,7 +178,7 @@ fn switcher_view(s: &SwitcherConfig, brand_primary: bool) -> Result<Option<Switc
         out.push(json!({"key": svc.key, "title": svc.title, "url": url, "icon": svc.icon, "color": svc.color}));
     }
     if current_color.is_some() && brand_primary {
-        return err("the colour of the current switcher service and the brand set the primary colour: set one of them (brand.colors.primary, theme.color or the service colour)".to_owned());
+        return invalid("the colour of the current switcher service and the brand set the primary colour: set one of them (brand.colors.primary, theme.color or the service colour)".to_owned());
     }
     let build = build_view(&s.build);
     let json = json!({"current": current, "services": out, "subheader": build.subheader, "rows": build.rows, "build": build.json});

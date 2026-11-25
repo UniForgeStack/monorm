@@ -24,7 +24,7 @@ use crate::server::{authorize, deny, error_response, finish, found_keys, queryse
 use crate::sight::Sight;
 use crate::error::Fault;
 use crate::error::code;
-use crate::site::{config_err, column, err, err_code, queryset_of, Column, Queryset, Resource, Source};
+use crate::site::{column, err_code, invalid, queryset_of, Column, Queryset, Resource, Source};
 use crate::site_config::{QuerysetConfig, RelationConfig};
 
 /// The rows that one autocomplete call returns when the call sets no limit, and the most it returns.
@@ -120,71 +120,71 @@ pub(crate) fn build(schema: &Schema, resources: &[Resource], r: &Resource, confi
         }
         let Ok((rel, target_idx)) = model.relation(name) else { return err_code(code::RELATION_UNKNOWN, format!("{}: relations has '{name}', which is not a relation of the model", r.name)) };
         if rel.is_conditioned() {
-            return err(format!("{at} is one member of a union relation; name the union relation"));
+            return invalid(format!("{at} is one member of a union relation; name the union relation"));
         }
-        let Some(target) = resources.iter().find(|o| o.model == target_idx) else { return err(format!("{at} leads to {}, which is not a resource", schema.model(target_idx).ir.name)) };
+        let Some(target) = resources.iter().find(|o| o.model == target_idx) else { return invalid(format!("{at} leads to {}, which is not a resource", schema.model(target_idx).ir.name)) };
         let label = match &c.label {
             Some(l) => {
                 let col = column(schema, target.model, l)?;
                 if !plain_text(&col) {
-                    return err(format!("{at}: label {l:?} is not a text column of {}", target.name));
+                    return invalid(format!("{at}: label {l:?} is not a text column of {}", target.name));
                 }
                 col
             }
             None => match target.columns.iter().find(|c| plain_text(c) && !target.key_columns.iter().any(|k| k.label == c.label)) {
                 Some(col) => col.clone(),
-                None => return err(format!("{at}: {} has no text column to name a row; set label", target.name)),
+                None => return invalid(format!("{at}: {} has no text column to name a row; set label", target.name)),
             },
         };
         if !target.columns.iter().any(|c| c.label == label.label) {
-            return err(format!("{at}: label {:?} is not a column of the list of {}", label.label, target.name));
+            return err_code(code::UNKNOWN_FIELD, format!("{at}: label {:?} is not a column of the list of {}", label.label, target.name));
         }
         if target.search.is_empty() && target.search_with.is_none() {
-            return err(format!("{at}: {} has no search; set list.search or list.search_with on it", target.name));
+            return invalid(format!("{at}: {} has no search; set list.search or list.search_with on it", target.name));
         }
         if target.key_columns.len() != 1 {
-            return err(format!("{at}: {} has a composite key, which a picker does not support", target.name));
+            return err_code(code::UNSUPPORTED, format!("{at}: {} has a composite key, which a picker does not support", target.name));
         }
         let choices = queryset_of(schema, target.model, &format!("{at}: choices"), c.choices.as_ref())?;
         if c.create {
             if !target.allow.contains(&crate::permissions::Op::Create) {
-                return err(format!("{at}: create needs {} to allow create", target.name));
+                return invalid(format!("{at}: create needs {} to allow create", target.name));
             }
             if let Some(why) = crate::write::model_read_only_reason(schema, target.model) {
-                return err(format!("{at}: create: {} is read-only in the admin: {why}", target.name));
+                return invalid(format!("{at}: create: {} is read-only in the admin: {why}", target.name));
             }
         }
         let mut relation = Relation { name: name.clone(), field: String::new(), target: target.name.clone(), label, choices, create: c.create, through: None, linked: None };
         match (&rel.kind, &rel.through) {
             (RelKind::One, _) => {
                 if rel.from.len() != 1 || !rel.foreign_key {
-                    return err(format!("{at} needs a to-one relation that owns a single-column foreign key"));
+                    return invalid(format!("{at} needs a to-one relation that owns a single-column foreign key"));
                 }
                 let key = schema.model(target.model).key_fields();
                 if !key.first().is_some_and(|k| rel.to[0] == k.column || rel.to[0] == k.name) {
-                    return err(format!("{at}: the foreign key must lead to the key of {}", target.name));
+                    return invalid(format!("{at}: the foreign key must lead to the key of {}", target.name));
                 }
-                let Some(field) = model.ir.fields.iter().find(|f| f.column == rel.from[0] || f.name == rel.from[0]) else { return err(format!("{at}: no field for the foreign key")) };
+                let Some(field) = model.ir.fields.iter().find(|f| f.column == rel.from[0] || f.name == rel.from[0]) else { return invalid(format!("{at}: no field for the foreign key")) };
                 if !r.detail.iter().any(|d| d.field == field.name && crate::write::writable(d)) {
-                    return err(format!("{at}: the foreign key field {:?} is not a writable field of the form", field.name));
+                    return invalid(format!("{at}: the foreign key field {:?} is not a writable field of the form", field.name));
                 }
                 relation.field = field.name.clone();
             }
             (RelKind::Many, Some(t)) => {
-                let join = schema.model_idx(&t.model).map_err(|_| config_err(format!("{at}: unknown join model {:?}", t.model)))?;
+                let join = schema.model_idx(&t.model).map_err(|_| Fault::new(code::RELATION_UNKNOWN, format!("{at}: unknown join model {:?}", t.model)))?;
                 let jm = schema.model(join);
                 if let Some(why) = crate::write::model_read_only_reason(schema, join) {
-                    return err(format!("{at}: the join model {} is read-only in the admin: {why}", t.model));
+                    return invalid(format!("{at}: the join model {} is read-only in the admin: {why}", t.model));
                 }
                 if model.key_fields().len() != 1 {
-                    return err(format!("{at}: {} has a composite key, which chips do not support", r.name));
+                    return err_code(code::UNSUPPORTED, format!("{at}: {} has a composite key, which chips do not support", r.name));
                 }
                 if let Some(f) = jm.ir.fields.iter().find(|f| f.name != t.source && f.name != t.target && !f.nullable && f.generated.is_none() && !crate::write::has_default(f)) {
-                    return err(format!("{at}: the join model {} needs a value for {:?}, which chips do not set", t.model, f.name));
+                    return invalid(format!("{at}: the join model {} needs a value for {:?}, which chips do not set", t.model, f.name));
                 }
                 relation.through = Some(Through { model: t.model.clone(), source: t.source.clone(), target: t.target.clone(), scope_defaults: crate::site::scope_default_names(jm) });
             }
-            (RelKind::Many, None) => return err(format!("{at} is a to-many relation without a join model; chips need a many-to-many relation")),
+            (RelKind::Many, None) => return invalid(format!("{at} is a to-many relation without a join model; chips need a many-to-many relation")),
         }
         out.push(relation);
     }
@@ -194,40 +194,40 @@ pub(crate) fn build(schema: &Schema, resources: &[Resource], r: &Resource, confi
 /// A relation with fixed conditions or union members, shown as a read-only link to the page of the related row.
 fn link(schema: &Schema, resources: &[Resource], r: &Resource, at: &str, rel: &monorm_core::ir::RelationIr, c: &RelationConfig) -> Result<Relation, Fault> {
     if c.choices.is_some() || c.create {
-        return err(format!("{at}: a relation with fixed conditions or union members is a read-only link: it takes no choices and no create"));
+        return invalid(format!("{at}: a relation with fixed conditions or union members is a read-only link: it takes no choices and no create"));
     }
-    let [source_key] = &r.key_columns[..] else { return err(format!("{at}: {} has a composite key, which a link does not support", r.name)) };
+    let [source_key] = &r.key_columns[..] else { return err_code(code::UNSUPPORTED, format!("{at}: {} has a composite key, which a link does not support", r.name)) };
     let model = schema.model(r.model);
     let mut relation = Relation { name: rel.name.clone(), field: String::new(), target: String::new(), label: source_key.clone(), choices: None, create: false, through: None, linked: None };
     if !rel.members.is_empty() {
         if c.label.is_some() {
-            return err(format!("{at}: a union link takes no label: each row is named by its own resource"));
+            return invalid(format!("{at}: a union link takes no label: each row is named by its own resource"));
         }
         let mut fields = Vec::new();
         let mut members = Vec::new();
         let mut key = None;
         for member in &rel.members {
-            let [cond] = &member.conditions[..] else { return err(format!("{at}: a union member needs one condition on a field of the source")) };
+            let [cond] = &member.conditions[..] else { return invalid(format!("{at}: a union member needs one condition on a field of the source")) };
             if cond.side != RelationSide::Source || member.from.len() != 1 || member.to.len() != 1 {
-                return err(format!("{at}: a union member needs one condition on a field of the source and one key field"));
+                return invalid(format!("{at}: a union member needs one condition on a field of the source and one key field"));
             }
             fields.push(cond.field.clone());
             key.get_or_insert(&member.from[0]);
-            let Ok((_, idx)) = model.relation(&member.name) else { return err(format!("{at}: {:?} is not a relation of the model", member.name)) };
+            let Ok((_, idx)) = model.relation(&member.name) else { return err_code(code::RELATION_UNKNOWN, format!("{at}: {:?} is not a relation of the model", member.name)) };
             // A member whose model is no resource has no page to link to: its rows show no link.
             let Some(target) = resources.iter().find(|o| o.model == idx) else { continue };
             let [target_key] = &schema.model(idx).key_fields()[..] else { continue };
             if !(member.to[0] == target_key.column || member.to[0] == target_key.name) {
-                return err(format!("{at}: the key field must lead to the key of {}", target.name));
+                return invalid(format!("{at}: the key field must lead to the key of {}", target.name));
             }
             members.push((target.name.clone(), cond.value.clone()));
         }
-        let (Some(field), Some(key)) = (fields.first(), key) else { return err(format!("{at}: a union needs members")) };
+        let (Some(field), Some(key)) = (fields.first(), key) else { return invalid(format!("{at}: a union needs members")) };
         if fields.iter().any(|f| f != field) {
-            return err(format!("{at}: the members of a union must read one type field"));
+            return invalid(format!("{at}: the members of a union must read one type field"));
         }
         if members.is_empty() {
-            return err(format!("{at}: no member of the union leads to a resource"));
+            return invalid(format!("{at}: no member of the union leads to a resource"));
         }
         let type_column = column(schema, r.model, field)?;
         let key = column(schema, r.model, key)?;
@@ -235,20 +235,20 @@ fn link(schema: &Schema, resources: &[Resource], r: &Resource, at: &str, rel: &m
         relation.linked = Some(Linked::Union { type_column, key, members });
         return Ok(relation);
     }
-    let Ok((_, target_idx)) = model.relation(&rel.name) else { return err(format!("{at} is not a relation of the model")) };
+    let Ok((_, target_idx)) = model.relation(&rel.name) else { return err_code(code::RELATION_UNKNOWN, format!("{at} is not a relation of the model")) };
     if rel.kind != RelKind::Many || rel.through.is_some() || !rel.path.is_empty() || rel.from.len() != 1 || rel.to.len() != 1 || rel.conditions.iter().any(|x| x.side != RelationSide::Target) {
-        return err(format!("{at} has fixed conditions the admin cannot show as a link: it takes a to-one union or a to-many relation with conditions on the target"));
+        return invalid(format!("{at} has fixed conditions the admin cannot show as a link: it takes a to-one union or a to-many relation with conditions on the target"));
     }
-    let Some(target) = resources.iter().find(|o| o.model == target_idx) else { return err(format!("{at} leads to {}, which is not a resource", schema.model(target_idx).ir.name)) };
+    let Some(target) = resources.iter().find(|o| o.model == target_idx) else { return invalid(format!("{at} leads to {}, which is not a resource", schema.model(target_idx).ir.name)) };
     if !(rel.from[0] == source_key.field) {
-        return err(format!("{at}: the relation must start at the key of {}", r.name));
+        return invalid(format!("{at}: the relation must start at the key of {}", r.name));
     }
-    let [_] = &target.key_columns[..] else { return err(format!("{at}: {} has a composite key, which a link does not support", target.name)) };
+    let [_] = &target.key_columns[..] else { return err_code(code::UNSUPPORTED, format!("{at}: {} has a composite key, which a link does not support", target.name)) };
     let label = match &c.label {
         Some(l) => {
             let col = column(schema, target.model, l)?;
             if !plain_text(&col) {
-                return err(format!("{at}: label {l:?} is not a text column of {}", target.name));
+                return invalid(format!("{at}: label {l:?} is not a text column of {}", target.name));
             }
             Some(col)
         }

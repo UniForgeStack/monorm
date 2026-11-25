@@ -40,12 +40,12 @@ pub(crate) fn policy(base: &str, packages: bool, origins: &[String]) -> Result<H
 }
 
 pub(crate) fn with_ancestors(csp: &HeaderValue, ancestors: &str) -> Result<HeaderValue, crate::error::Fault> {
-    let csp = csp.to_str().map_err(|e| crate::site::config_err(e.to_string()))?;
+    let csp = csp.to_str().map_err(|e| crate::site::invalid_fault(e.to_string()))?;
     header_policy(&csp.replacen("frame-ancestors 'none'", &format!("frame-ancestors {ancestors}"), 1))
 }
 
 fn header_policy(csp: &str) -> Result<HeaderValue, crate::error::Fault> {
-    HeaderValue::from_str(csp).map_err(|e| crate::site::config_err(format!("invalid UI CSP: {e}")))
+    HeaderValue::from_str(csp).map_err(|e| crate::site::invalid_fault(format!("invalid UI CSP: {e}")))
 }
 
 /// Only the server-rendered embed document may override the default X-Frame-Options.
