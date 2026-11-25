@@ -105,6 +105,25 @@ async def test_the_login_page_names_the_sso_start_only_when_oidc_is_set(world, i
     assert (await site_of(world, idp).get("/admin/api/login")).json()["sso"] == START
 
 
+async def test_the_login_page_names_auto_start_only_when_the_setting_is_on(world, idp):
+    assert "auto_start" not in (await site_of(world, idp).get("/admin/api/login")).json()
+    assert "auto_start" not in (await site_of(world, idp, auto_start=False).get("/admin/api/login")).json()
+    body = (await site_of(world, idp, auto_start=True).get("/admin/api/login")).json()
+    assert (body["sso"], body["auto_start"]) == (START, True)
+
+
+async def test_the_user_returns_to_the_next_path_and_a_foreign_path_is_dropped(world, idp):
+    client = site_of(world, idp)
+    start = await client.get(f"{START}?next=/admin/-/resources/Book%3Fpage%3D2")
+    done = await client.get(idp.approve(location(start), email="ann@example.com"))
+    assert (done.status, location(done)) == (302, "/admin/-/resources/Book?page=2")
+    for foreign in ("https://evil.example/", "//evil.example/", "/other/page", "/admin/../x", "/admin/.%2e/x", "/admin/%2e./x", "/admin/auth/start"):
+        other = site_of(world, idp)
+        start = await other.get(f"{START}?next={foreign}")
+        done = await other.get(idp.approve(location(start), email="ann@example.com"))
+        assert (done.status, location(done)) == (302, "/admin/"), foreign
+
+
 async def test_a_login_of_a_new_user_creates_it_and_sets_the_roles_of_the_claim(world, idp):
     _, db, models = world
     client = site_of(world, idp)

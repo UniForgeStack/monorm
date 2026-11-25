@@ -78,6 +78,9 @@ pub struct OidcSettings {
     /// The origin the provider sends the browser back to (`https://admin.example.com`). None: the `Host` of the request.
     #[serde(default)]
     pub public_url: Option<String>,
+    /// A visitor with no session goes to the provider at once, with no sign-in form. The form stays at `<base>/-/login` and `<base>/?password=1`.
+    #[serde(default)]
+    pub auto_start: bool,
 }
 
 fn default_roles_claim() -> String {
@@ -453,6 +456,27 @@ impl Oidc {
     }
 }
 
+/// The longest `next` path that the flow cookie keeps.
+const MAX_NEXT: usize = 1024;
+
+/// A `next` path that stays under the base path, or None. The path goes into a `Location` header, so it is a path of this origin and nothing else:
+/// it names `base` or goes below `base/`, has no dot segment, space, backslash or control character, is at most `MAX_NEXT` bytes, and does not re-enter `base/auth/`.
+fn safe_next(base: &str, raw: &str) -> Option<String> {
+    if raw.len() > MAX_NEXT || raw.chars().any(|c| c.is_control() || c == '\\' || c == ' ') {
+        return None;
+    }
+    let path = raw.split(['?', '#']).next().unwrap_or("");
+    let rest = path.strip_prefix(base)?;
+    if path.starts_with("//") || !(rest.is_empty() || rest.starts_with('/')) || rest == "/auth" || rest.starts_with("/auth/") {
+        return None;
+    }
+    // The dot segments of the WHATWG URL rule: a browser reads each of these as `.` or `..`.
+    if path.split('/').any(|s| [".", "%2e", "..", ".%2e", "%2e.", "%2e%2e"].iter().any(|d| s.eq_ignore_ascii_case(d))) {
+        return None;
+    }
+    Some(raw.to_string())
+}
+
 fn redirect(to: &str, cookies: &[String]) -> Response {
     let mut response = (StatusCode::FOUND, "").into_response();
     if let Ok(v) = HeaderValue::from_str(to) {
@@ -486,9 +510,13 @@ async fn start(State(o): State<Arc<Oidc>>, req: Request) -> Response {
         Err(e) => return noted(o.back("unavailable", &[]), format!("oidc discovery: {e}")),
     };
     let (state, nonce, verifier) = (random(), random(), random());
+    let next = req.uri().query().and_then(|q| form_urlencoded::parse(q.as_bytes()).find(|(k, _)| k == "next")).and_then(|(_, v)| safe_next(o.base(), &v));
     let challenge = B64.encode(Sha256::digest(verifier.as_bytes()));
     let sec = &o.auth.security;
-    let flow = json!({"state": state, "nonce": nonce, "verifier": verifier, "redirect_uri": redirect_uri, "exp": sec.now() + FLOW_SECS});
+    let mut flow = json!({"state": state, "nonce": nonce, "verifier": verifier, "redirect_uri": redirect_uri, "exp": sec.now() + FLOW_SECS});
+    if let Some(next) = next {
+        flow["next"] = json!(next);
+    }
     let mut query = form_urlencoded::Serializer::new(String::new());
     query
         .append_pair("response_type", "code")
@@ -516,6 +544,8 @@ async fn callback(State(o): State<Arc<Oidc>>, req: Request) -> Response {
     let params: Vec<(String, String)> = form_urlencoded::parse(req.uri().query().unwrap_or("").as_bytes()).into_owned().collect();
     let param = |name: &str| params.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
     let flow = req.headers().get(header::COOKIE).and_then(|c| c.to_str().ok()).and_then(|c| cookie_value(c, security::FLOW_COOKIE)).and_then(|t| sec.read_flow(t));
+    // Checked again here on purpose: the cookie is signed, and this keeps the redirect safe if a later change to the flow cookie lets an unchecked value in.
+    let next = flow.as_ref().and_then(|f| f["next"].as_str()).and_then(|n| safe_next(o.base(), n));
     let result = finish(&o, &params_view(&param), flow, &ip, &request_id).await;
     match result {
         Ok(session) => {
@@ -523,7 +553,7 @@ async fn callback(State(o): State<Arc<Oidc>>, req: Request) -> Response {
             let csrf = sec.csrf_token(&session.sid);
             let max_age = sec.remaining(&session);
             let cookies = [security::session_cookie(o.base(), &sec.sign_session(&session), max_age), security::csrf_cookie(o.base(), &csrf, max_age), o.ended_flow()];
-            redirect(&format!("{}/", o.base()), &cookies)
+            redirect(&next.unwrap_or_else(|| format!("{}/", o.base())), &cookies)
         }
         Err(Failure::Server(response)) => {
             sec.ip_limit().release(&limit);
@@ -622,6 +652,24 @@ async fn finish(o: &Oidc, p: &Params<'_>, flow: Option<Value>, ip: &str, request
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_next_path_stays_under_the_base_path() {
+        let ok = ["/admin", "/admin/", "/admin/Note", "/admin/Note?page=2&q=a%20b", "/admin/Note/12/edit", "/admin/Note/a.b"];
+        for next in ok {
+            assert_eq!(super::safe_next("/admin", next).as_deref(), Some(next), "{next}");
+        }
+        let bad = [
+            "", "/", "/administrator", "/other/admin", "//evil.com", "//evil.com/admin", "https://evil.com", "https://evil.com/admin", "/admin/../evil", "/admin/%2e%2E/evil", "/admin/.%2e/evil", "/admin/%2E./evil", "/admin/./x", "/admin\\evil", "/admin/x\r\nSet-Cookie: a=b", "/admin/a b",
+            "/admin/auth/start", "/admin/auth/callback?x=1", "/admin/auth", "admin/Note",
+        ];
+        for next in bad {
+            assert_eq!(super::safe_next("/admin", next), None, "{next:?}");
+        }
+        assert_eq!(super::safe_next("/admin", &format!("/admin/{}", "a".repeat(2000))), None);
+        assert_eq!(super::safe_next("", "//evil.com"), None);
+        assert_eq!(super::safe_next("", "/Note").as_deref(), Some("/Note"));
+    }
+
     use super::*;
     use ring::rand::SystemRandom;
     use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_FIXED_SIGNING};

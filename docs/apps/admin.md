@@ -1375,6 +1375,7 @@ MONORM_ADMIN_OIDC_CLIENT_SECRET=...      # the client secret is never a setting
 | `scopes` | none | Scopes added to `openid profile email`, such as the scope that carries the roles claim. |
 | `hd` | none | The ID token must hold this `hd` claim. The server checks it, not the provider. |
 | `username_claim` | `email` | The claim that is the `username` of the user. |
+| `auto_start` | `false` | Send a visitor with no session straight to the provider, with no login form. See [below](#single-sign-on-with-no-form). |
 | `discovery_url` | `<issuer>/.well-known/openid-configuration` | Another discovery document. |
 | `public_url` | the `Host` header | The origin that the provider sees, when a proxy changes it. |
 
@@ -1390,10 +1391,27 @@ A first login creates the user with a random password that nobody can use.
 A claim with no matching role gives no grant.
 - Writes a `login` row with `changes` `{"method": "sso", "ip", "request_id", "roles", "created"}`, or a `login_failed` row with `changes.reason`.
 
-A failed login sends the browser to `<base_path>/?sso_error=<word>`, and the login page shows the message.
+A failed login sends the browser to `<base_path>/?sso_error=<word>`, and the login page shows the message (the callback never uses `next` for a failed login).
 The words are `inactive`, `domain`, `unavailable`, `denied`, `too_many` and `failed`.
 The password login stays; `GET /login` has `"sso": "<base_path>/auth/start"` when OIDC is on.
 The callback counts each attempt on the limit of 20 for one IP address (see above), and a success gives the count back.
+
+#### Single sign-on with no form
+
+Set `auto_start = true` and the admin opens the provider for a visitor who has no session.
+The visitor returns to the page that the visitor asked for: `GET <base_path>/auth/start?next=<path>` keeps `next` in the signed flow cookie, and the callback redirects to it.
+`next` must start with `<base_path>/`, and must not point at `<base_path>/auth/`.
+It must not hold a dot segment (`.`, `..` or an encoded form such as `%2e` or `.%2e`), a space, `\`, a control character or a double slash, and it must be at most 1024 bytes.
+Any other `next` is dropped, and the visitor lands on `<base_path>/`: a long query string loses its `next`.
+`GET /login` has `"auto_start": true` only when the setting is on.
+
+The login form stays at `<base_path>/?password=1` and at `<base_path>/-/login`, for an account that the provider does not know (a break-glass account).
+No redirect loop is possible:
+- A page with `?sso_error=` shows the form and the message.
+- The page after a sign-out is `<base_path>/-/login` and shows the form.
+- A browser tab does not start the flow a second time within 15 seconds. The 15 seconds start at the redirect: a visitor who signs out and opens the admin again within them sees the form.
+
+A session that ends while the admin is open (a `401`) starts the flow again with `next` set to the current page.
 
 An organization that moved from allauth fits as an `idp` provider: set `issuer` to it, add the scope of its roles claim to `scopes`, and set `hd` for a Google Workspace domain.
 
@@ -2139,7 +2157,7 @@ db_settings = { "app.tenant" = "acme" }
 | `base_path` | `/admin` | The path of the whole admin. When you omit it, the value of the constructor stays: the UI, the API and the cookies (see [Base path and cookie scope](#base-path-and-cookie-scope)). |
 | `origins` | none | A list of extra origins that a write may come from, such as `"https://admin.example.com"`. |
 | `trusted_proxies` | none | A list of peer IP addresses whose `X-Forwarded-For` the login limits believe, such as `"10.0.0.1"`. |
-| `oidc` | none | A table for [single sign-on](#single-sign-on-oidc). The client secret is the variable `MONORM_ADMIN_OIDC_CLIENT_SECRET`; a `client_secret` key is an error. |
+| `oidc` | none | A table for [single sign-on](#single-sign-on-oidc), with `auto_start` to skip the form. The client secret is the variable `MONORM_ADMIN_OIDC_CLIENT_SECRET`; a `client_secret` key is an error. |
 | `switcher` | none | A table for the [service switcher](#service-switcher). A string may hold `${NAME}`. A key that the `Admin` object also sets is an error. |
 
 `MONORM_ADMIN_HOST` and `MONORM_ADMIN_PORT` override `host` and `port`.

@@ -618,3 +618,43 @@ async fn the_login_page_names_the_sso_start() {
     let mut b = Browser::new(&rig);
     assert_eq!(b.get("/admin/api/login").await.body["sso"], START);
 }
+
+#[tokio::test]
+async fn the_login_page_names_auto_start_only_when_the_setting_is_on() {
+    let off = rig().await;
+    assert_eq!(Browser::new(&off).get("/admin/api/login").await.body.get("auto_start"), None);
+    let on = rig_with(json!({"auto_start": true})).await;
+    let body = Browser::new(&on).get("/admin/api/login").await.body;
+    assert_eq!((body["sso"].as_str(), body["auto_start"].as_bool()), (Some(START), Some(true)));
+}
+
+#[tokio::test]
+async fn the_user_returns_to_the_page_of_the_next_path_after_the_callback() {
+    let rig = rig().await;
+    let mut b = Browser::new(&rig);
+    let start = b.get(&format!("{START}?next=%2Fadmin%2FNote%2F3%3Fq%3Da")).await;
+    assert_eq!(start.status, 302);
+    let done = b.get(&rig.idp.approve(&start.location(), "u-1", None, json!({"email": "n@example.com", "roles": []}))).await;
+    assert_eq!((done.status, done.location().as_str()), (302, "/admin/Note/3?q=a"));
+    assert!(b.logged_in().await);
+}
+
+#[tokio::test]
+async fn a_next_path_outside_the_base_path_is_dropped_and_the_user_lands_on_the_home_page() {
+    let rig = rig().await;
+    for next in ["https%3A%2F%2Fevil.com", "%2F%2Fevil.com", "%2Fadministrator", "%2Fadmin%2F..%2Fevil", "%2Fadmin%2F.%252e%2Fevil", "%2Fadmin%2F%252e.%2Fevil", "%2Fadmin%2Fauth%2Fstart", "%2Fadmin%5Cevil"] {
+        let mut b = Browser::new(&rig);
+        let start = b.get(&format!("{START}?next={next}")).await;
+        let done = b.get(&rig.idp.approve(&start.location(), "u-1", None, json!({"email": "n@example.com", "roles": []}))).await;
+        assert_eq!((done.status, done.location().as_str()), (302, "/admin/"), "{next}");
+    }
+}
+
+#[tokio::test]
+async fn a_failed_callback_goes_to_the_error_page_and_not_to_the_next_path() {
+    let rig = rig().await;
+    let mut b = Browser::new(&rig);
+    let start = b.get(&format!("{START}?next=%2Fadmin%2FNote")).await;
+    let callback = rig.idp.approve(&start.location(), "u-1", Some("wrong"), json!({"email": "n@example.com", "roles": []}));
+    assert_eq!(b.get(&callback).await.location(), "/admin/?sso_error=failed");
+}

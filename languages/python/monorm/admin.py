@@ -1450,7 +1450,7 @@ class Admin:
     ) -> AdminTestClient:
         """``user=`` is the in-memory path with no login. ``secret=`` (at least 32 bytes) runs the router with login;
         ``settings`` then takes ``idle_timeout`` and ``session_timeout`` (whole seconds), ``origins``, ``trusted_proxies``,
-        ``base_path`` and ``oidc`` (``issuer``, ``client_id``, ``client_secret``, ``roles_claim``, ``scopes``, ``hd``).
+        ``base_path`` and ``oidc`` (``issuer``, ``client_id``, ``client_secret``, ``roles_claim``, ``scopes``, ``hd``, ``auto_start``).
         A wrong secret or setting raises :class:`AdminSettingsError` (a ``ValueError``) at the first request."""
         from .db import resolve
 

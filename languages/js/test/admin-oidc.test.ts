@@ -211,6 +211,26 @@ for (const provider of PROVIDERS) {
     assert.equal((await siteOf(w, idp).get("/admin/api/login")).json().sso, START);
   }));
 
+  test(`the login page names auto start only when the setting is on (${provider})`, () => world(provider, async (w, idp) => {
+    assert.ok(!("auto_start" in (await siteOf(w, idp).get("/admin/api/login")).json()));
+    assert.ok(!("auto_start" in (await siteOf(w, idp, { auto_start: false }).get("/admin/api/login")).json()));
+    const body = (await siteOf(w, idp, { auto_start: true }).get("/admin/api/login")).json();
+    assert.deepEqual([body.sso, body.auto_start], [START, true]);
+  }));
+
+  test(`the user returns to the next path and a foreign path is dropped (${provider})`, () => world(provider, async (w, idp) => {
+    const client = siteOf(w, idp);
+    const start = await client.get(`${START}?next=/admin/-/resources/Book%3Fpage%3D2`);
+    const done = await client.get(idp.approve(location(start), { email: "ann@example.com" }));
+    assert.deepEqual([done.status, location(done)], [302, "/admin/-/resources/Book?page=2"]);
+    for (const foreign of ["https://evil.example/", "//evil.example/", "/other/page", "/admin/../x", "/admin/.%2e/x", "/admin/%2e./x", "/admin/auth/start"]) {
+      const other = siteOf(w, idp);
+      const first = await other.get(`${START}?next=${foreign}`);
+      const last = await other.get(idp.approve(location(first), { email: "ann@example.com" }));
+      assert.deepEqual([last.status, location(last)], [302, "/admin/"], foreign);
+    }
+  }));
+
   test(`a login of a new user creates it and sets the roles of the claim (${provider})`, () => world(provider, async (w, idp) => {
     const client = siteOf(w, idp);
     const done = await signIn(client, idp, { email: "new@example.com", roles: ["editor", "nobody"] });

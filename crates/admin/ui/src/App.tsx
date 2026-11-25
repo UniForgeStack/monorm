@@ -7,6 +7,7 @@ import * as api from "./api";
 import { buttonVariants } from "./components/ui/button";
 import { Toaster } from "./components/ui/toast";
 import { BASE, LOGIN_URL, navigate, parse, usePath } from "./router";
+import { shouldAutoStart, startUrl, wantsForm } from "./sso";
 import { Alert, Button, Card, Field, message } from "./ui";
 
 export function App() {
@@ -20,8 +21,15 @@ function FullAdmin() {
   const state = useQuery({ queryKey: ["session"], queryFn: api.session, retry: false, staleTime: Infinity });
 
   useEffect(() => {
-    if (state.data && !state.data.authenticated && route.page !== "login") navigate(LOGIN_URL, true);
-    if (state.data?.authenticated && route.page === "login") navigate(BASE, true);
+    const data = state.data;
+    if (data && !data.authenticated && route.page !== "login") {
+      const go = shouldAutoStart({ sso: data.sso, autoStart: data.autoStart, formOnly, lastStart: lastStart(), now: Date.now() });
+      if (go && data.sso) {
+        markStart();
+        window.location.assign(startUrl(data.sso, window.location.pathname, window.location.search));
+      } else navigate(LOGIN_URL, true);
+    }
+    if (data?.authenticated && route.page === "login") navigate(BASE, true);
   }, [state.data, route.page]);
 
   if (state.isPending) return <p className="grid min-h-screen place-items-center text-muted-foreground">Loading…</p>;
@@ -29,6 +37,25 @@ function FullAdmin() {
   if (!state.data.authenticated) return <Login sso={state.data.sso} onDone={() => client.invalidateQueries({ queryKey: ["session"] })} />;
   return <Shell user={state.data.user} route={route} />;
 }
+
+// A page that a person opens with `?sso_error=` or `?password=1` shows the form, even when the site starts the sign-in at once; a sign-in clears it.
+let formOnly = wantsForm(window.location.search);
+const STARTED = "monorm-sso-started";
+const lastStart = (): number | null => {
+  try {
+    const at = Number(window.sessionStorage.getItem(STARTED));
+    return at > 0 ? at : null;
+  } catch {
+    return null;
+  }
+};
+const markStart = () => {
+  try {
+    window.sessionStorage.setItem(STARTED, String(Date.now()));
+  } catch {
+    // With no storage the loop guard is off; the provider and the callback still end the sign-in.
+  }
+};
 
 // The callback sends the browser to `<base>/?sso_error=<word>`; the redirect to the login page drops the query, so read it once at load.
 const SSO_ERRORS: Record<string, string> = {
@@ -53,6 +80,7 @@ function Login({ sso, onDone }: { sso: string | null; onDone: () => void }) {
     setError(null);
     try {
       await api.login(String(form.get("username")), String(form.get("password")));
+      formOnly = false;
       navigate(BASE, true);
       onDone();
     } catch (err) {

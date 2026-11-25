@@ -385,14 +385,16 @@ export interface Session {
   user: User | null;
   /** The address that starts the single sign-on, when the site has one. */
   sso: string | null;
+  /** The site sends a visitor with no session to the single sign-on at once. */
+  autoStart: boolean;
 }
 
 /** The login state: the token for writes, and the user when a session exists. */
 export async function session(): Promise<Session> {
-  const state = await call<{ authenticated: boolean; sso?: string }>("GET", "/login");
-  if (!state.authenticated) return { authenticated: false, user: null, sso: state.sso ?? null };
+  const state = await call<{ authenticated: boolean; sso?: string; auto_start?: boolean }>("GET", "/login");
+  if (!state.authenticated) return { authenticated: false, user: null, sso: state.sso ?? null, autoStart: state.auto_start === true };
   const me = await call<{ user: User }>("GET", "/me");
-  return { authenticated: true, user: me.user, sso: null };
+  return { authenticated: true, user: me.user, sso: null, autoStart: false };
 }
 
 export const login = (username: string, password: string) => call<{ user: User }>("POST", "/login", { username, password });

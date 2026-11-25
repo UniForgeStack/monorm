@@ -7,7 +7,6 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { App } from "./App";
 import { ApiError } from "./api";
-import { LOGIN_URL, navigate } from "./router";
 import * as ui from "./kit";
 import { initTheme } from "./lib/theme";
 import "./styles.css";
@@ -26,12 +25,11 @@ const client = new QueryClient({
   },
 });
 
-// A 401 from any query means the session ended: the session query decides where to go.
+// A 401 from any query means the session ended: the session query is read again and the app decides where to go (the form, or the provider when the site starts the sign-in at once).
 client.getQueryCache().subscribe((event) => {
   const error = event.type === "updated" ? event.action.type === "error" && event.action.error : null;
   if (error instanceof ApiError && error.status === 401 && event.query.queryKey[0] !== "session") {
-    client.setQueryData(["session"], { authenticated: false, user: null });
-    navigate(LOGIN_URL, true);
+    void client.invalidateQueries({ queryKey: ["session"] });
   }
 });
 
