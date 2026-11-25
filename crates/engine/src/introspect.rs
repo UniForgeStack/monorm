@@ -1597,14 +1597,11 @@ pub struct Drift {
     pub gaps: Vec<String>,
 }
 
-/// Compares the live database with the snapshot of the newest migration in `dir`.
+/// Compares the live database with the state that the migrations of `dir` replay to.
 pub async fn drift(conn: &dyn Executor, dir: &Path) -> Result<Drift> {
     let list = monorm_core::migrate::files::list(dir).map_err(Error::Migration)?;
-    let snapshot = monorm_core::migrate::files::latest_snapshot(dir).map_err(Error::Migration)?;
-    if list.last().is_some() && snapshot.dialect != conn.dialect() {
-        return Err(Error::Migration(format!("the migrations target {}, the connection uses {}", snapshot.dialect.name(), conn.dialect().name())));
-    }
-    compare(conn, &snapshot).await.map(|(steps, gaps)| Drift { migration: list.last().map(|m| m.name.clone()), steps, gaps })
+    let state = monorm_core::migrate::files::latest_state(dir, conn.dialect()).map_err(Error::Migration)?;
+    compare(conn, &state).await.map(|(steps, gaps)| Drift { migration: list.last().map(|m| m.name.clone()), steps, gaps })
 }
 
 /// The live database against `target`: the steps between them and the live gaps.

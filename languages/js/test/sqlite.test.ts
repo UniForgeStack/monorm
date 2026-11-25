@@ -568,28 +568,6 @@ test("bulk writes", async () => {
   } finally { await db.close(); }
 });
 
-test("cross dialect snapshots are rejected", async () => {
-  const root = [join(import.meta.dirname, "..", "..", ".."), join(import.meta.dirname, "..", "..", "..", "..")].find((d) => {
-    try { readFileSync(join(d, "examples/sqlite/schema.prisma")); return true; } catch { return false; }
-  })!;
-  const source = readFileSync(join(root, "examples/sqlite/schema.prisma"), "utf8");
-  const postgres = new Registry();
-  loads(source.replace("provider = \"sqlite\"", "provider = \"postgresql\""), { registry: postgres });
-  const sqlite = new Registry();
-  loads(source, { registry: sqlite });
-  const dir = mkdtempSync(join(tmpdir(), "monorm-sqlite-"));
-  const directory = join(dir, "migrations");
-  try {
-    const [initial] = new Migrations(directory, postgres).make("initial");
-    assert.ok(readFileSync(join(initial!.path, "snapshot.json"), "utf8").includes("\"version\": 1"));
-    assert.throws(() => new Migrations(directory, sqlite).make("wrong"), (e: Error) => e instanceof SchemaError && /snapshot targets postgres/.test(e.message));
-    const db = await connect("sqlite://:memory:", { registry: sqlite, default: false });
-    try {
-      await assert.rejects(new Migrator(db, new Migrations(directory, sqlite)).upgrade(), (e: Error) => e instanceof MigrationError && /targets postgres/.test(e.message));
-    } finally { await db.close(); }
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
 const FOLLOW = `
 datasource db {
   provider = "sqlite"

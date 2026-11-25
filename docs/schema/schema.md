@@ -7,7 +7,7 @@ schema.prisma ──▶ monorm-core (Rust) ──▶ schema IR (JSON) ──▶ 
    ▲                 │                                └──▶ TypeScript: loads() / generated models.ts
 extension files      │
   postgres/*.toml    │
-                     ├──▶ migrations/NNNN_name/{up.sql, down.sql, snapshot.json}
+                     ├──▶ migrations/NNNN_name.json
                      └──▶ PostgreSQL / SQLite DDL (create_tables)
 ```
 
@@ -27,7 +27,7 @@ crate `monorm-cli`) uses the same crate and needs no Python.
 |---|---|
 | `crates/core/src/dsl/` | parser (`syntax.rs`) and lowering to the IR (`lower.rs`) |
 | `crates/core/src/ext.rs`, `crates/core/extensions/postgres/*.toml` | extension files and the catalog built from them |
-| `crates/core/src/migrate/` | snapshot model, diff, PostgreSQL / SQLite renderers, migration folders |
+| `crates/core/src/migrate/` | snapshot model, diff, replay, PostgreSQL / SQLite renderers, migration files |
 | `crates/core/src/codegen/python.rs`, `typescript.rs` | `models.py` / `models.pyi` and `models.ts` generators |
 | `crates/cli/src/` | the `monorm` CLI |
 | `languages/python/monorm/model.py` | `monorm.load()` / `monorm.loads()` / `monorm.define()`: model classes from the IR |
@@ -969,26 +969,27 @@ TypeScript: see [`typescript-api.md`](../api/typescript-api.md).
 ## Migrations
 
 ```bash
-python -m monorm makemigrations [name]          # migrations/NNNN_name/{up.sql,down.sql,snapshot.json}
+python -m monorm makemigrations [name]          # migrations/NNNN_name.json
 python -m monorm makemigrations --check         # exit 1 if the schema changed without a migration (CI)
-python -m monorm makemigrations --empty data    # an empty migration for hand-written SQL or a data step
+python -m monorm makemigrations --empty data    # an empty migration for hand-written SQL or code
 python -m monorm sqlmigrate 2 [--down]
-python -m monorm migrate [target] [--allow-destructive]   # apply pending migrations
+python -m monorm migrate [target] [--allow-destructive] [--ops A-B]   # apply pending migrations
 python -m monorm rollback [--steps N | --to 0002_x | --to zero] [--force] [--allow-destructive]
+python -m monorm rollback 0002_x --ops A-B      # revert some operations of one migration
 python -m monorm showmigrations
-python -m monorm squashmigrations --to 0005 [--name X]   # fold migrations 1..5 into one folder
+python -m monorm squashmigrations --to 0005 [--name X]   # fold migrations 1..5 into one file
 python -m monorm pull [-o schema.prisma] [--force] [--unmanaged]   # the schema file from a live database
 python -m monorm baseline                       # mark the first migration applied (after pull)
 python -m monorm fmt --native                   # convert supported SQL expressions offline
-python -m monorm drift                          # exit 1 if the database differs from the last snapshot
+python -m monorm drift                          # exit 1 if the database differs from the replayed migrations
 python -m monorm audit                          # exit 1 if the row-level security or a trigger differs from the schema
 ```
 
 There is one command line, written in Rust (`crates/cli/`): `python -m monorm`, `npx monorm` and the
 standalone `monorm` binary (`cargo install --path cli`) all run it, through the Python
 extension, the Node addon or on their own, so they take the same arguments, write the
-same files and apply migrations the same way. A migration with a data step is the
-exception: only the host of its language applies it (see "Data migrations"). The bindings only change the defaults:
+same files and apply migrations the same way. A migration with a `run_code` operation is the
+exception: only the host of its language applies it (see "Code operations"). The bindings only change the defaults:
 the name in `--help` and the language `generate`
 writes (the binary needs `python` / `typescript`, or an `-o` path that tells).
 
@@ -1003,48 +1004,74 @@ The `query_sets` and `model_methods` tables come from the winning file for every
 The lookup reads the working directory only.
 The URL comes from `MONORM_DATABASE_URL`.
 `monorm init` writes a `monorm.toml` with the default `schema` and `migrations`.
-`migrations` is a directory name, or a table `{ dir = "migrations", online = true }`.
-With `online = true` on PostgreSQL, `makemigrations` writes one ordered set of folders for a change to an existing table:
-a no-transaction folder with `DROP INDEX CONCURRENTLY IF EXISTS` for each removed index (first),
-the main folder, a no-transaction folder with `CREATE INDEX CONCURRENTLY IF NOT EXISTS` for each new non-unique index,
-and one folder with `VALIDATE CONSTRAINT` for the foreign keys and checks that the main folder adds as `NOT VALID`.
-Each folder has the `snapshot.json` of the schema after it.
-Each folder name is the migration number, the migration label and a suffix: `_drop_<index>`, `_index_<index>`, `_validate`, and none for the main folder.
-The label is the `--name`, or the first step of the main folder; so `makemigrations --name add_author_idx` names every folder it writes.
-A change of indexes only writes no main folder.
-New tables and unique indexes stay in the main folder.
-An index or a foreign key of a partitioned table also stays there, because PostgreSQL refuses `CREATE INDEX CONCURRENTLY` on it, and (before PostgreSQL 18) a foreign key `NOT VALID`.
-A check of a partitioned table is added `NOT VALID` like any other.
-SQLite is unchanged.
-The default is `false`; the Python and TypeScript `Migrations` take `online=True` / `{ online: true }`.
-`Step.transaction` is `false` for a concurrent step.
+`migrations` is a directory name, or a table `{ dir = "migrations", online = true, name = "{number}_{slug}" }`.
 Exit codes: 0 success, 1 failure (including
 `makemigrations --check` finding changes and `drift` finding differences), 2 bad usage. This
 repository's `pyproject.toml` points at the blog example; its first migration is
-[`examples/blog/migrations/0001_initial`](../../examples/blog/migrations/0001_initial/up.sql).
+[`examples/blog/migrations/0001_initial.json`](../../examples/blog/migrations/0001_initial.json).
 
 From Python: `Migrations("migrations", "schema.prisma")` (or a `Registry`) has
-`.plan()`, `.make(name)` and `.all()`.
-`.make(name)` returns the list of the folders it wrote, in order (one folder, or several with `online=True`; an empty list when nothing changed).
-`.all()` lists every migration, including the earlier ones.
+`.plan()`, `.make(name)`, `.all()` and `.squash(to=...)`.
+`.make(name)` returns the `Migration` it wrote, or `None` when nothing changed.
+`.all()` lists every migration in the directory, in order, except the ones that a squash file replaces.
+A `Migration` has `.name`, `.path`, `.operations` (a list of dicts), `.up_sql`, `.down_sql` and `.checksum`.
 `Migrator(db, migrations)` has `.upgrade()`,
 `.downgrade()`, `.status()`, `.baseline()` and `.drift()`; `await monorm.migrations.pull(db)`
 reads a live database.
+TypeScript has the same names in camel case.
+
+### The migration file
+
+One migration is one file, `migrations/NNNN_name.json`:
+
+```json
+{
+  "version": 1,
+  "operations": [
+    { "create_table": { "table": { "name": "shop", "columns": [] }, "foreign_keys": [] } },
+    { "add_column": { "table": "shop", "column": { "name": "note", "type": "text", "nullable": true } } },
+    { "run_sql": { "sql": "UPDATE shop SET note = ''", "reverse_sql": "noop" } }
+  ]
+}
+```
+
+* **`version`** is `1`. A file with another version is refused.
+* **`replaces`** (optional) lists the migrations that a squash file replaces (see "Squash").
+* **`operations`** is an ordered list. Each entry is an object with one key, the operation, and an optional `"atomic": false`.
+* A folder in the old format (`NNNN_name/up.sql`, `down.sql`, `snapshot.json`) is an error that says to delete the migration history and run `baseline`. There is no converter and no second reader.
+* A `.sql` file that an operation names sits next to the JSON file, in the migrations directory.
+
+**The name** of a new file comes from the `name` setting. The default is `{number}_{slug}`.
+The placeholders are `{number}` (four digits), `{timestamp}` (`YYYYMMDDHHMMSS`) and `{slug}`
+(the label that you give, or the first operation). A template must start with `{number}` or `{timestamp}` and hold exactly one of the two. The order of the files is the numeric value of the leading digits, so
+`0009_x` sorts before `0010_y` and a timestamp name sorts after a number. A second file with
+the same number is refused, unless a squash file lists the other one in `replaces`.
+
+**The operations** are:
+
+| Operation | What it does |
+|---|---|
+| `create_table`, `drop_table`, `rename_table`, `add_column`, `drop_column`, `rename_column`, `alter_column_type`, `set_not_null`, `drop_not_null`, `set_default`, `drop_default`, `add_identity`, `drop_identity`, `add_constraint`, `drop_constraint`, `rename_constraint`, `create_index`, `drop_index`, `rename_index`, `create_trigger`, `drop_trigger`, `create_enum`, `drop_enum`, `add_enum_value`, `recreate_enum`, `create_extension`, `drop_extension`, `create_function`, `drop_function`, `create_view`, `drop_view`, `create_policy`, `drop_policy`, `set_row_security`, comments, partitions | The schema operations that `makemigrations` writes. Each one has a rule that changes the replayed state, and SQL for each dialect. |
+| `run_sql` | `sql` (inline) or `file`, and `reverse_sql` or `reverse_file`. `"elidable": true` lets a squash drop the step. |
+| `run_code` | `python` and/or `typescript` as `file:function`, `reverse`, `elidable`. See "Code operations". |
+| `separate` | `{ "database": [...], "state": [...] }`: the database list runs, the state list only changes the replayed state. An empty `database` list records state with no SQL: an unmanaged model, the shape of a `json` column. `makemigrations` writes it. |
+| `commit` | Ends the transaction group (see "Applying"). |
 
 ### What the generator does
 
-The generator diffs the schema against the **snapshot stored with the last migration**,
-not a live database, so it works offline and gives the same files everywhere.
+The generator **replays** the operations of the existing files to get the state after the
+last migration, then diffs the schema against that state. It reads no snapshot file and no
+live database, so it works offline and gives the same files everywhere.
 
 * **Tables and columns** are matched by name first, then by `@renamed_from` /
-  `@@renamed_from`. A hint applies only when the current name is not in the snapshot
+  `@@renamed_from`. A hint applies only when the current name is not in the replayed state
   and the hinted name is, on Postgres and on SQLite. Two hints that name the same old
   table, or the same old column of one table, are a schema error when the schema
-  loads, not only when a migration is planned. The snapshot stores only the new name,
+  loads, not only when a migration is planned. The state stores only the new name,
   so the hint is safe to remove after the migration is generated; a kept hint does
   nothing in later migrations. New tables are created
   in foreign-key order with their keys and constraints inline; a foreign-key cycle is
-  closed with `ALTER TABLE ... ADD CONSTRAINT`. Changed columns are altered in place
+  closed with `add_constraint`. Changed columns are altered in place
   (`TYPE ... USING`, `SET / DROP NOT NULL`, `SET / DROP DEFAULT`, identity).
 * **Indexes and constraints** are matched by name, then by definition. If only the name
   changed (a renamed table or column), the object is renamed. If its definition
@@ -1055,110 +1082,116 @@ not a live database, so it works offline and gives the same files everywhere.
   constraints), renames, dropped tables, new tables, column changes, new constraints
   (keys before foreign keys), indexes, triggers, comments, unused functions, and
   unused extensions last.
-* **Down** is the same diff in reverse.
-* **Warnings** (CLI output and `-- WARNING:` lines) flag steps that can lose data or
+* **Down** is the operations in reverse, bottom to top, each one reversed. A `run_sql`
+  needs `reverse_sql` or `reverse_file`, and a `run_code` needs `reverse`. `"noop"` is
+  allowed for both and says that the step has no reverse. `rollback` refuses a migration with a step that has
+  no reverse.
+* **Warnings** (CLI output) flag operations that can lose data or
   fail on existing rows: drops, type changes, `SET NOT NULL`, a `NOT NULL` column
   without a default, new unique / check / exclusion / foreign-key constraints,
   dropping an extension.
-* **Destructive markers** mark steps that can delete data. A step that drops a table,
-  drops a column, or changes a column type so that values can be lost gets one line in
-  `up.sql` and `down.sql`: `-- monorm: destructive <kind> <table>[.<column>]`.
-  The kind is `drop-table`, `drop-column` or `alter-type`. The table is the name before
-  the migration. A widening change has no marker, for example `varchar(20)` to
-  `varchar(40)` or `int4` to `int8`. The checksum covers the marker lines, so edit them
-  together with the SQL.
-* **The gate**: `migrate` and `rollback` refuse a migration with a marker when the marked
-  table exists and has rows. A missing or empty table passes. The error names the
-  migration, the step, the table and the flag. Pass `--allow-destructive` (Python:
+* **The destructive gate** comes from the operation, not from a marker. An operation that drops a table,
+  drops a column, or changes a column type so that values can be lost is destructive.
+  A widening change is not, for example `varchar(20)` to
+  `varchar(40)` or `int4` to `int8`. `migrate` and `rollback` refuse a migration with such an operation when the table
+  exists and has rows. A missing or empty table passes. The error names the
+  migration, the operation, the table and the flag. Pass `--allow-destructive` (Python:
   `allow_destructive=True`, TypeScript: `{ allowDestructive: true }`) to run it anyway.
   The first check reads the database as it is before the run. A later migration of the
   same run can therefore be refused after an earlier one has committed, for example when
   the earlier one renames the table.
   A second check runs in the migration lock and the transaction. On PostgreSQL it locks
   the table first, so a concurrent insert cannot pass it.
-  `--force` for a baselined row does not lift the gate. Each `Step` in a plan has a
+  `--force` for a baselined row does not lift the gate. Each operation in a plan has a
   `destructive` field with the same information.
 
 ### Applying
 
 Each migration runs in one transaction together with its `monorm_migrations` row (name,
-SHA-256 of `up.sql`, time), under an advisory lock. A failing migration leaves the
+SHA-256 checksum, time), under an advisory lock. A failing migration leaves the
 database at the previous one, and concurrent deploys don't apply one twice. The runner
-stops if an applied `up.sql` changed, if migrations were applied out of order, if one
+stops if the checksum of an applied migration changed, if migrations were applied out of order, if one
 recorded in the database is missing from the directory, or if two migrations share a
-number. `create_tables()` / `drop_tables()` remain as development helpers (idempotent
+number. The checksum covers the canonical JSON of the file and the `.sql` files that it names; it does not cover a `run_code` script.
+`create_tables()` / `drop_tables()` remain as development helpers (idempotent
 DDL of the whole schema; drop with `CASCADE`).
 
-### No-transaction migrations
+**Groups.** A `commit` operation ends a transaction group: the runner commits what ran so far, then opens a new transaction for the rest. An operation with `"atomic": false` runs alone, outside a transaction, and the runner records it as it finishes. A migration with no `commit` and no `atomic: false` is one group, as before.
 
-`CREATE INDEX CONCURRENTLY` cannot run in a transaction. A migration folder whose
-`up.sql` starts with `-- monorm: no-transaction [create-index <name> | drop-index <name>]`
-runs without one, on PostgreSQL only. A `down.sql` can carry the same first line.
+**The dirty record.** The row of a migration that stopped between groups holds `ops_done`, `ops_total` and `started`. `status` reports it as partly applied. The next `migrate` continues at operation `ops_done + 1`, or you pick the slice: `migrate 0004_x --ops 3-5` runs operations 3 to 5 of that migration, and it must start at `ops_done + 1`. `rollback 0004_x --ops 3-5` reverts the operations of a slice, bottom to top, and the slice must end at `ops_done`. In Python the `ops` argument is a string such as `"3-5"`.
 
-* **One statement per folder.** The runner sends the file in one call and does not split
-  it. A file with two statements fails with the PostgreSQL error.
-* **The lock**: the runner holds the migration advisory lock on a session of its own, so
-  other migrators wait. It records the migration in a statement of its own after the SQL.
-* **A failed build** leaves an invalid index. With `create-index <name>`, the next run
-  drops an invalid index of that name (`DROP INDEX CONCURRENTLY`) and builds it again.
-* **The name** in the header is one identifier. `app.idx` is an index with a dot in its
-  name, not the index `idx` in schema `app`. A name in double quotes stays as written.
-* **A crash** between the SQL and the record leaves the index without a row.
-  Write `IF NOT EXISTS` (`IF EXISTS` in a `down.sql`) in the statement, so the next run passes.
-* **Refused**: a folder with a data step (`data.py` / `data.ts`), and any use on SQLite.
-  The error names the folder (`<folder>/down.sql` for a down file).
-* **A scoped block** (`monorm.scope(...)`) sets transaction settings, which need a transaction,
+**Reverse.** `rollback` reverts a migration from its last operation to its first. It checks every operation first and refuses the migration if a `run_sql` or `run_code` has no reverse.
+
+### Online migrations
+
+With `online = true` on PostgreSQL, `makemigrations` writes **one file** for a change to an existing table.
+The operations that lock a table with rows for a long time get `"atomic": false` and run alone:
+
+* a `drop_index` of an existing index runs first as `DROP INDEX CONCURRENTLY IF EXISTS`;
+* the main operations follow, in one group;
+* each new non-unique index on an existing table is a `create_index` with `"atomic": false`, built by `CREATE INDEX CONCURRENTLY IF NOT EXISTS`.
+
+New tables, unique indexes and constraints stay in the main group. An index of a partitioned table also stays there, because PostgreSQL refuses `CREATE INDEX CONCURRENTLY` on it.
+To add a constraint `NOT VALID`, write a `run_sql` pair by hand: the `ALTER TABLE ... ADD CONSTRAINT ... NOT VALID`, then `VALIDATE CONSTRAINT`, each with its `reverse_sql`. SQLite is unchanged and refuses `"atomic": false`.
+The default is `false`; the Python and TypeScript `Migrations` take `online=True` / `{ online: true }`.
+
+**An operation outside a transaction:**
+
+* The runner holds the migration advisory lock on a session of its own, so other migrators wait.
+  It records the operation after it ran.
+* A failed `CREATE INDEX CONCURRENTLY` leaves an invalid index. The next run drops an invalid index of that name and builds it again.
+* A crash between the SQL and the record leaves the index without a record. Write `IF NOT EXISTS` (`IF EXISTS` in a reverse), so the next run passes.
+* A `run_code` operation cannot be `"atomic": false`. The file is refused.
+* A scoped block (`monorm.scope(...)`) sets transaction settings, which need a transaction,
   so `CONCURRENTLY` fails there. Run a `Migrator` outside a scope block.
-* **A normal migrator that waits** for a no-transaction run polls the lock every 100 ms.
+* A normal migrator that waits for such a run polls the lock every 100 ms.
   A blocked wait would hold a snapshot that the index build waits for, and the two would hang.
-* The destructive gate applies as for other migrations, but its check takes no table lock:
+* The destructive gate applies as for other operations, but its check takes no table lock:
   it does not wait for a concurrent writer.
 
-### Data migrations
+### Code operations
 
-A migration folder may hold a data step next to `up.sql`: `data.py` with
-`async def run(db)`, or `data.ts` with `export async function run(db)`.
+A `run_code` operation runs a function of your own. `python` is `file:function` (a path next to
+the JSON file, then the function name), and `typescript` is the same for a `.ts` file:
+
+```json
+{ "run_code": { "python": "0002_slug.py:run", "reverse": "noop" } }
+```
 
 ```python
-# migrations/0002_slug/data.py
+# migrations/0002_slug.py
 async def run(db):
     await db.execute("UPDATE author SET slug = lower(name)")
 ```
 
-The step runs after `up.sql`, in the same transaction and under the same advisory lock,
-before the migration's `monorm_migrations` row. Queries on `db` inside it, and ORM queries
+The function runs in the transaction of its group, under the same advisory lock, before the `monorm_migrations` row.
+Queries on `db` inside it, and ORM queries
 on that database, go into that transaction, so they see the new columns. A
-`db.transaction()` block in the step is a savepoint that inherits the migration's transaction (an explicit `isolation` or `timeout` there raises `QueryError`), and `db.on_commit()` callbacks run
-after the migration commits. An error rolls back the SQL, the data changes and the row,
-and drops the callbacks. `makemigrations --empty name` gives a folder for a step without
-schema changes.
+`db.transaction()` block in the function is a savepoint that inherits the migration's transaction (an explicit `isolation` or `timeout` there raises `QueryError`), and `db.on_commit()` callbacks run
+after the migration commits. An error rolls back the group and drops the callbacks. `makemigrations --empty name` writes a file with no operations, for hand-written steps.
 
 The models are the current ones, not the models at the time of the migration. Model
-queries in a data step also pick up today's query defaults and extensions. A later model
+queries in a code operation also pick up today's query defaults and extensions. A later model
 change can make an old step fail on a new database (a column that the migration did not
 add yet), or silently read fewer rows (a later default filter or soft delete on an
 existing column). There are no historical models. Use `db.execute` and `db.fetch` in a
-data step; use model queries only in a step that you delete later. `data.py` and
-`data.ts` are outside the checksum, so a step can be rewritten after it ran.
+step; use model queries only in a step that you delete later.
 
-* Python applies `data.py`: `Migrator.upgrade()`, or `python -m monorm migrate`, which then
-  runs through `Migrator` instead of the Rust runner. It imports the data modules of the
+* Python applies `python` operations: `Migrator.upgrade()`, or `python -m monorm migrate`, which then
+  runs through `Migrator` instead of the Rust runner. It imports the modules of the
   pending migrations before it connects, so the models they import are in the default
   registry. Without a schema file, it connects with no models.
-* TypeScript applies `data.ts` the same way: `Migrator.upgrade()` or `npx monorm migrate`.
+* TypeScript applies `typescript` operations the same way: `Migrator.upgrade()` or `npx monorm migrate`.
   Node 22.18 and later strip the types of a `.ts` file; Bun runs it.
-* Each tool refuses the other's file, and the standalone `monorm` binary refuses both,
-  before it applies anything.
-* A data module is a single file: it cannot import a sibling file with a relative import.
+* An operation can name both languages; each host runs its own. An operation with one language is refused by the other host, and the standalone `monorm` binary refuses both, before it applies anything.
+* `reverse` is `"noop"`, or `file:function` for a function that undoes the step, or `{ "python": ..., "typescript": ... }`.
+* A module is a single file: it cannot import a sibling file with a relative import.
   Put shared code in your package.
-* Await every query in `run`. A query that runs after `run` returns fails, because the
+* Await every query in the function. A query that runs after it returns fails, because the
   transaction is closed.
-* `rollback` runs `down.sql` only; a data step has no down step. A later `migrate` runs
-  the step again, so write steps that you can run two times.
-* The checksum covers `up.sql` only, so a change to a data step after it ran is not
-  detected.
+* The checksum does not cover the script, so a change to it after it ran is not detected.
 * SQLite runs a migration with foreign keys off (`PRAGMA foreign_keys` has no effect in
-  a transaction), so `ON DELETE CASCADE` does not fire in a data step. A second migrator
+  a transaction), so `ON DELETE CASCADE` does not fire in a code operation. A second migrator
   waits 5 seconds for the database lock, then fails with `database is locked`.
 
 ### Backward-compatible rollouts
@@ -1167,7 +1200,7 @@ A rollout runs old and new code against one database. A column must stay in the 
 `@deprecated` on a field removes it from the logical model and keeps its column in the physical schema.
 
 * The class, the generated types, reads, inserts and updates do not know the field. No SQL names its column.
-* DDL, the migration snapshot and `drift` still have the column.
+* DDL, the replayed state of the migrations and `drift` still have the column.
 * Adding or removing the attribute makes no migration, so `makemigrations --check` passes.
 * Deleting the field line later makes the normal `DROP COLUMN`, with the destructive marker and gate.
 * An index, a unique constraint, an exclusion constraint or a trigger `update_of` list over the column stays in the table. The model does not know it, so such a unique is not an upsert conflict target. An index or exclusion constraint whose `where` SQL names the column or the field as a whole word stays in the table too.
@@ -1203,7 +1236,7 @@ The column must be nullable or have a database `@default`. Before step 1, add th
 `@renamed_from` renames the column in one step, so old code that names the old column fails during the rollout. Use these steps for a rename without downtime:
 
 1. Add the new field as nullable, with no `@default`. Add a `@@trigger` on `insert` and on `update_of(old)` that copies the value to the new column only when `NEW.old IS DISTINCT FROM OLD.old`, so a write that new code makes to the new column stays. Run `makemigrations`.
-2. In the same migration folder, add a data step (`data.py` or `data.ts`) that copies the existing values: `UPDATE t SET new = old WHERE new IS NULL`. See [Data migrations](#data-migrations).
+2. In the same migration file, add a `run_sql` operation (or a `run_code` operation) that copies the existing values: `UPDATE t SET new = old WHERE new IS NULL`. See [Code operations](#code-operations).
 3. Deploy code that reads and writes the new field. Old code reads the old column, so it does not see these writes. If old code must see them, add a second trigger that copies the new column back to the old one.
 4. Add `@deprecated` to the old field and deploy. No migration is made.
 5. Delete the old field line and the trigger, and run `makemigrations`. It drops the column.
@@ -1227,7 +1260,7 @@ creates and drops that view; delete the block if another tool owns the view.
 `pull --unmanaged` does not turn a database rule or object into an attribute of an
 installed extension, so a rule that an extension would claim is listed as a `// gap:` line.
 `baseline` records unmanaged models in the migration
-snapshot without running table SQL for them, and `drift` ignores their tables.
+replayed state without running table SQL for them, and `drift` ignores their tables.
 Constraints on managed tables still take part in drift checks.
 
 Then `pull` checks its own result: it creates the pulled schema in a shadow and compares
@@ -1275,59 +1308,60 @@ cannot compare them.
 
 `baseline` sets `baseline = true` on that row of `monorm_migrations`. `rollback` refuses to
 revert a baselined row, names it, and reverts nothing; `--force` (`downgrade(force=True)`,
-`downgrade({ force: true })`) reverts it, and its `down.sql` then drops the tables that
+`downgrade({ force: true })`) reverts it, and the reverse operations then drop the tables that
 were in the database before, with their rows. The column is added to an older
 `monorm_migrations` table the first time a migration command runs. A binary from before this
 change ignores the marker and still reverts a baselined row.
 
-`monorm drift` compares the database with the snapshot of the newest migration. It exits 1
-when they differ and prints the steps that bring the database to the snapshot. A
-pending migration is part of the newest snapshot, so it shows as drift until it is
+`monorm drift` compares the database with the state that the replay of all migrations gives. It exits 1
+when they differ and prints the steps that bring the database to that state. A
+pending migration is part of the replayed state, so it shows as drift until it is
 applied. Rules and the other gaps above are listed as not compared. Views are compared (see [SQL views](#sql-views)).
 
 Postgres prints expressions in its own form (`CHECK ((views >= 0))`,
-`'x'::character varying`, `role = ANY (ARRAY[...])`), so the snapshot is never compared
-as text. Drift and `pull` run the snapshot's DDL in a shadow and read the shadow back
+`'x'::character varying`, `role = ANY (ARRAY[...])`), so the replayed state is never compared
+as text. Drift and `pull` run the DDL of the replayed state in a shadow and read the shadow back
 the same way as the database. On Postgres the shadow is a schema `monorm_shadow_<backend
 id>` in a transaction that is rolled back; on SQLite it is an in-memory database. The
 live schema is re-created in a second shadow too. An object that both shadows agree on
 counts as equal, because Postgres does not always print a parsed expression back the
 same way. So drift needs the right to create a schema, and the extensions that the
-snapshot uses must be installed.
+replayed state uses must be installed.
 
 ### Squash
 
 `monorm squashmigrations --to N [--name X]` (`Migrations.squash(to=N)`, `migrations.squash({ to: N })`)
-folds the migrations 1..N into one folder, `<first number>_squashed_<N>` or `<first number>_<X>`.
-It reads no database. The `up.sql` of the new folder builds the snapshot of migration N in a fresh
-database, extensions included, and starts with one line per replaced migration:
-`-- monorm: replaces <folder> <sha256 of its up.sql>`. The command then deletes the replaced folders.
-Later migrations stay as they are.
+folds the migrations 1..N into one file. The default name is `{number}_squashed_{last}` with the number of the first migration and the name of migration N; `--name` sets the slug.
+It reads no database.
+The new file lists the replaced migrations (the sorted union) in `replaces`.
+The replaced files stay on disk, and `makemigrations`, `migrate` and `status` ignore them.
+Keep them until every database has passed them, and delete them after that.
 
-A database that applied all the replaced migrations adopts the folder: `migrate` records one row and
-runs no SQL. The row is baselined when any replaced row was. Two migrators that adopt at the same time
-leave one row. A database that applied none runs the folder. A database that applied some of them is
-refused, and nothing is written; migrate it with a release from before the squash first.
-The checksum of each replaced row must still equal the checksum in its `replaces` line, as for any
-applied migration.
+The first run of schema operations, before any barrier, becomes one diff from an empty database, extensions included.
+The barriers are `run_sql`, `run_code`, `separate` and `commit`.
+A `run_sql` or `run_code` with `"elidable": true` is dropped from the squash, and the run goes on.
+One without `elidable` stops the squash with "…which is not elidable…", and nothing is written.
+`separate` and `commit` stay as they are.
+Every operation after the first barrier stays as written, so a rename after a data step stays a rename.
+Squash folds at least two migrations.
 
-Adoption is one-way for code. After a database adopts the folder, a checkout from before the squash
-(or a revert of the squash commit) fails every command with "the database has migrations missing from
-the directory". So deploy the squash only after every environment applied 1..N, and do not revert it.
-To undo an adoption by hand, delete the squash row from `monorm_migrations` and insert one row per
-`replaces` line, with its name and checksum.
+A database that applied all the replaced migrations adopts the squash file: `migrate` records one row and runs no SQL.
+The row is baselined when any replaced row was. Two migrators that adopt at the same time leave one row.
+A database that applied none of them runs the squash file.
+A database that applied some of them is refused, and nothing is written: "the database applied {n} of the {N} migrations that {name} replaces; migrate it with a release before the squash".
+The checksum of each replaced row must still equal the checksum of its file, as for any applied migration.
+When a replaced file is gone, its row is not checked.
 
-`rollback` of an adopted folder runs its `down.sql`, which drops the whole schema of migrations 1..N.
-`rollback --steps 1` does this when the squash is the newest applied migration; a database with no rows
-and no baseline is dropped with no prompt. `rollback --to` a replaced name fails with "not found": name
-the squash folder instead.
+Adoption is one-way for code.
+After a database adopts the file, a checkout from before the squash (or a revert of the squash commit) fails every command with "the database has migrations missing from the directory".
+So deploy the squash only after every environment applied 1..N, and do not revert it.
+To undo an adoption by hand, delete the squash row from `monorm_migrations` and insert one row per name in `replaces`, with its name and checksum.
 
-Squash folds at least two migrations: `--to` the first migration is refused.
-Squash refuses, and writes nothing, for a range with a data step (`data.py`, `data.ts`), a folder of
-hand-written SQL only, a squash folder or a no-transaction folder, and a folder whose `up.sql` differs
-from the SQL its snapshots give (a hand edit the fresh build would lose). That check compares the SQL
-lines only, so comments, blank lines and a final newline do not count as an edit. It skips folders
-with rename hints and folders with `NOT VALID` constraints, so a hand edit in one of them is not found.
+`rollback` of an adopted file reverses its operations from the last to the first, which drops the whole schema of migrations 1..N.
+It needs a reverse for every operation, so a kept `run_sql` without `reverse_sql` refuses it.
+`rollback --steps 1` does this when the squash is the newest applied migration.
+A rollback of a baselined row needs `--force`.
+A name of a replaced migration is refused: "migration {name} is replaced by the squash file {file}".
 
 ### Why not SeaORM's or Refinery's tooling
 

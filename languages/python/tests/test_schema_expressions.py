@@ -115,12 +115,11 @@ def test_native_adoption_survives_registry_ir_and_unrelated_snapshots(tmp_path):
         return reg
 
     old = registry('raw("((qty > 0))")')
-    [initial] = Migrations(tmp_path, old).make()
+    initial = Migrations(tmp_path, old).make()
     native = registry("qty > 0")
     assert not Migrations(tmp_path, native).plan()
-    assert Migrations(tmp_path, native).plan().down == []
     unrelated = registry("qty > 0", "  note String?\n")
-    [migration] = Migrations(tmp_path, unrelated).make("unrelated")
+    migration = Migrations(tmp_path, unrelated).make("unrelated")
     assert "CHECK (((qty > 0)))" in migration.up_sql
     assert not Migrations(tmp_path, unrelated).plan()
 
@@ -143,7 +142,7 @@ async def test_offline_native_conversion_preserves_live_rules_and_later_migratio
     )
     path.write_text(legacy)
     migrations = Migrations(tmp_path / "migrations", path)
-    [first] = migrations.make()
+    first = migrations.make()
     connection_registry = monorm.Registry()
     monorm.loads(f'datasource db {{ provider = "{dialect}" }}\n', registry=connection_registry)
     db = await monorm.connect(url, registry=connection_registry, default=False, max_connections=1)
@@ -160,7 +159,6 @@ async def test_offline_native_conversion_preserves_live_rules_and_later_migratio
         assert converted.returncode == 0, converted.stderr
         assert "@@check((((qty > 0))))" in path.read_text()
         assert not migrations.plan()
-        assert migrations.plan().down == []
         assert await runner.upgrade() == []
         with pytest.raises(monorm.IntegrityError):
             await db.execute('INSERT INTO conversion_item (id, "Qty") VALUES (3, -1)')
@@ -187,11 +185,11 @@ async def test_offline_native_conversion_preserves_live_rules_and_later_migratio
         baseline = Migrator(db, Migrations(tmp_path / "baseline", pulled_path))
         assert not (await runner.drift()).steps
         path.write_text(path.read_text().replace(" qty Int", " note String?\n qty Int"))
-        [unrelated] = migrations.make("unrelated")
+        unrelated = migrations.make("unrelated")
         await runner.upgrade()
         assert not migrations.plan()
         path.write_text(path.read_text().replace("qty > 0", "qty > 1"))
-        [real] = migrations.make("stricter")
+        real = migrations.make("stricter")
         assert real.down_sql
         await runner.upgrade()
         with pytest.raises(monorm.IntegrityError):

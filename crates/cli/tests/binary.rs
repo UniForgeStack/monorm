@@ -42,13 +42,31 @@ fn binary() {
     assert!(dir.join("db/models.py").is_file() && dir.join("db/models.pyi").is_file());
 
     assert!(monorm(&dir, &["makemigrations", "--name", "start"]).status.success());
-    assert!(dir.join("db/migrations/0001_start/up.sql").is_file());
+    assert!(dir.join("db/migrations/0001_start.json").is_file());
     let sql = monorm(&dir, &["sqlmigrate", "1"]);
     assert!(text(&sql.stdout).contains("CREATE TABLE \"book\""), "{}", text(&sql.stdout));
 
     let no_db = monorm(&dir, &["migrate"]);
     assert_eq!(no_db.status.code(), Some(2));
     assert!(text(&no_db.stderr).contains("MONORM_DATABASE_URL"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn squashmigrations_writes_one_file_that_replaces_the_range() {
+    let dir = std::env::temp_dir().join(format!("monorm-cli-squash-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("schema.prisma"), SCHEMA).unwrap();
+    assert!(monorm(&dir, &["makemigrations", "--name", "start"]).status.success());
+    std::fs::write(dir.join("schema.prisma"), format!("{SCHEMA}\nmodel Tag {{\n  id   BigInt @id @default(autoincrement())\n  name String\n}}\n")).unwrap();
+    assert!(monorm(&dir, &["makemigrations", "--name", "tags"]).status.success());
+    assert_eq!(monorm(&dir, &["squashmigrations"]).status.code(), Some(2));
+    let squash = monorm(&dir, &["squashmigrations", "--to", "2"]);
+    assert!(squash.status.success(), "{}", text(&squash.stderr));
+    assert!(text(&squash.stdout).contains("replaces 2 migrations"), "{}", text(&squash.stdout));
+    let squashed = std::fs::read_to_string(dir.join("migrations/0001_squashed_0002.json")).unwrap();
+    assert!(squashed.contains("\"replaces\"") && squashed.contains("0002_tags"), "{squashed}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -383,7 +401,7 @@ fn fmt_native_is_offline_idempotent_and_preserves_imports_comments_and_history()
     std::fs::write(dir.join("item.prisma"), old).unwrap();
     let initial = monorm(&dir, &["makemigrations", "initial"]);
     assert!(initial.status.success(), "{}", text(&initial.stderr));
-    let snapshot = std::fs::read(dir.join("migrations/0001_initial/snapshot.json")).unwrap();
+    let snapshot = std::fs::read(dir.join("migrations/0001_initial.json")).unwrap();
     let old = old.replace(" label String", " pending String?\n label String");
     std::fs::write(dir.join("item.prisma"), &old).unwrap();
     let converted = monorm(&dir, &["fmt", "--native"]);
@@ -396,7 +414,7 @@ fn fmt_native_is_offline_idempotent_and_preserves_imports_comments_and_history()
     assert!(second.status.success(), "{}", text(&second.stderr));
     assert_eq!(std::fs::read_to_string(dir.join("item.prisma")).unwrap(), expected);
     assert_eq!(monorm(&dir, &["makemigrations", "--check"]).status.code(), Some(1));
-    assert_eq!(std::fs::read(dir.join("migrations/0001_initial/snapshot.json")).unwrap(), snapshot);
+    assert_eq!(std::fs::read(dir.join("migrations/0001_initial.json")).unwrap(), snapshot);
     // Conversion must not absorb changes that still need a migration.
     std::fs::write(dir.join("item.prisma"), expected.replace(" label String", " note String?\n label String")).unwrap();
     assert_eq!(monorm(&dir, &["makemigrations", "--check"]).status.code(), Some(1));
@@ -522,7 +540,7 @@ fn a_flag_overrides_a_wrong_setting_and_a_command_reads_only_the_keys_it_uses() 
     );
     let make = monorm(&dir, &["--dir", "db", "makemigrations", "initial"]);
     assert!(make.status.success(), "{}", text(&make.stderr));
-    assert!(dir.join("db/0001_initial").is_dir());
+    assert!(dir.join("db/0001_initial.json").is_file());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -595,8 +613,12 @@ fn destructive_gate_flag_on_migrate_rollback_and_makemigrations() {
     assert!(run(&["migrate"]).status.success());
     // a hand-written migration puts a row in each table
     assert!(run(&["makemigrations", "--empty", "--name", "seed"]).status.success());
-    let seed = std::fs::read_dir(dir.join("migrations")).unwrap().map(|e| e.unwrap().path()).find(|p| p.ends_with("0002_seed")).unwrap();
-    std::fs::write(seed.join("up.sql"), "INSERT INTO book (title) VALUES ('a');\nINSERT INTO note (body) VALUES ('a');\n").unwrap();
+    let seed = dir.join("migrations/0002_seed.json");
+    std::fs::write(
+        &seed,
+        r#"{"version": 1, "operations": [{"run_sql": {"sql": "INSERT INTO book (title) VALUES ('a'); INSERT INTO note (body) VALUES ('a')", "reverse_sql": "noop"}}]}"#,
+    )
+    .unwrap();
     assert!(run(&["migrate"]).status.success());
 
     // makemigrations prints the flag next to the destructive step
@@ -623,7 +645,7 @@ fn destructive_gate_flag_on_migrate_rollback_and_makemigrations() {
 }
 
 #[test]
-fn a_no_transaction_migration_runs_and_rolls_back_on_postgres() {
+fn an_atomic_false_migration_runs_and_rolls_back_on_postgres() {
     let Ok(base) = std::env::var("ORM_RUST_TEST_POSTGRES_URL") else { return };
     let (server, _) = base.rsplit_once('/').unwrap();
     let name = format!("monorm_cli_notx_{}", std::process::id());
@@ -646,9 +668,11 @@ fn a_no_transaction_migration_runs_and_rolls_back_on_postgres() {
         assert!(run(&["makemigrations", "--name", "initial"]).status.success());
         assert!(run(&["migrate"]).status.success());
         assert!(run(&["makemigrations", "--empty", "--name", "book_title_idx"]).status.success());
-        let folder = std::fs::read_dir(dir.join("migrations")).unwrap().map(|e| e.unwrap().path()).find(|p| p.ends_with("0002_book_title_idx")).unwrap();
-        std::fs::write(folder.join("up.sql"), "-- monorm: no-transaction create-index book_title_idx\nCREATE INDEX CONCURRENTLY book_title_idx ON book (title);\n").unwrap();
-        std::fs::write(folder.join("down.sql"), "-- monorm: no-transaction drop-index book_title_idx\nDROP INDEX CONCURRENTLY IF EXISTS book_title_idx;\n").unwrap();
+        std::fs::write(
+            dir.join("migrations/0002_book_title_idx.json"),
+            r#"{"version": 1, "operations": [{"run_sql": {"sql": "CREATE INDEX CONCURRENTLY book_title_idx ON book (title)", "reverse_sql": "DROP INDEX CONCURRENTLY IF EXISTS book_title_idx"}, "atomic": false}]}"#,
+        )
+        .unwrap();
         let done = run(&["migrate"]);
         assert!(done.status.success(), "{}", text(&done.stderr));
         assert_eq!(valid().as_deref(), Some("true"));

@@ -269,6 +269,20 @@ fn migrations_online(args: &Args, settings: &Settings) -> Result<bool> {
     }
 }
 
+/// The `migrations.name` setting: the template of new file names. Like `online`, a `migrations` value that is not a table
+/// does not fail a command that names `--dir`.
+fn migrations_name(args: &Args, settings: &Settings) -> Result<files::files::NameTemplate> {
+    let text = match settings.migrations() {
+        Ok(found) => found.name,
+        Err(_) if args.opt(&["--dir"]).is_some() && !matches!(settings.section("migrations"), Some(serde_json::Value::Object(_))) => None,
+        Err(message) => return Err(Failure::Setup(message)),
+    };
+    match text {
+        Some(t) => files::files::NameTemplate::parse(&t).map_err(Failure::Setup),
+        None => Ok(Default::default()),
+    }
+}
+
 /// The `what` classes of the project's settings: `query_sets` (`querySets` in `package.json`) and the like.
 /// The spelling of the other file format is an error, so a setting does not fail silently.
 fn configured_targets(settings: &Settings, language: &str, what: &str, py_key: &str, js_key: &str) -> Result<std::collections::BTreeMap<String, String>> {
@@ -304,17 +318,17 @@ fn write(path: &Path, text: &str) -> Result<()> {
 }
 
 /// Schema file, migrations directory, database URL, target and `--allow-destructive`.
-pub type MigrateArgs = (PathBuf, PathBuf, Option<String>, Option<String>, bool);
+pub type MigrateArgs = (PathBuf, PathBuf, Option<String>, Option<String>, bool, Option<String>);
 
 /// For a `migrate` command line: the schema file, the migrations directory, the database
-/// URL, the target and `--allow-destructive`, as [`run`] resolves them; `None` for anything
+/// URL, the target, `--allow-destructive` and `--ops`, as [`run`] resolves them; `None` for anything
 /// else. The Python and Node hosts use it to apply migrations with a data step themselves.
 pub fn migrate_args(argv: &[String]) -> Option<MigrateArgs> {
     let args = Args::parse(argv).ok()?;
     if args.positional.first().map(String::as_str) != Some("migrate") || args.flag("-h") || args.flag("--help") {
         return None;
     }
-    args.allow("migrate", &["--allow-destructive"], 1).ok()?;
+    args.allow("migrate", &["--allow-destructive", "--ops"], 1).ok()?;
     let settings = settings().ok()?;
     let (schema, dir) = (
         schema_file(&args, &settings).ok()?,
@@ -322,7 +336,7 @@ pub fn migrate_args(argv: &[String]) -> Option<MigrateArgs> {
     );
     let env = std::env::var("MONORM_DATABASE_URL").ok().filter(|u| !u.is_empty());
     let url = args.opt(&["--url"]).map(String::from).or(env);
-    Some((schema, dir, url, args.arg(0).map(String::from), args.flag("--allow-destructive")))
+    Some((schema, dir, url, args.arg(0).map(String::from), args.flag("--allow-destructive"), args.opt(&["--ops"]).map(String::from)))
 }
 
 /// The schema file a command line reads, as [`run`] resolves it. The Python and Node hosts
@@ -435,7 +449,8 @@ async fn command(argv: &[String], host: Host) -> Result<i32> {
             args.allow(command, &["--native"], 0)?;
             if !args.flag("--native") { return Err(Failure::Usage("fmt requires --native".into())); }
             let dir = migrations_dir(&args, &settings)?;
-            let previous = files::files::latest_snapshot(&dir).map_err(Failure::Failed)?;
+            let (_, compiled) = load(&schema, &args)?;
+            let previous = if files::files::list(&dir).map_err(Failure::Failed)?.is_empty() { Default::default() } else { files::files::latest_state(&dir, compiled.dialect).map_err(Failure::Failed)? };
             let conversion = dsl::native::prepare(&schema, &args.installed()?, &previous).map_err(Failure::Failed)?;
             for report in conversion.reports { eprintln!("{report}"); }
             for (path, source) in conversion.files {
@@ -466,53 +481,50 @@ async fn command(argv: &[String], host: Host) -> Result<i32> {
             args.allow(command, &["--name", "--empty", "--check"], 1)?;
             let dir = migrations_dir(&args, &settings)?;
             let (_, compiled) = load(&schema, &args)?;
+            let template = migrations_name(&args, &settings)?;
+            let name = args.arg(0).or(args.opt(&["--name"]));
+            let opts = files::files::MakeOptions { name, template: &template, empty: false, online: migrations_online(&args, &settings)?, baseline: false };
             if args.flag("--check") {
-                let plans = files::files::next_folders(&dir, &compiled, migrations_online(&args, &settings)?).map_err(Failure::Failed)?;
-                let steps: Vec<_> = plans.iter().flat_map(|p| &p.up).collect();
-                for s in &steps {
-                    println!("  {}", s.summary);
-                }
-                if !steps.is_empty() {
+                let (_, file) = files::files::next(&dir, &compiled, &opts).map_err(Failure::Failed)?;
+                let changes = file.operations.iter().filter(|o| matches!(o.kind, files::ops::OpKind::Schema(_) | files::ops::OpKind::Separate { .. })).count();
+                print_operations(&file.operations);
+                if changes > 0 {
                     eprintln!("the schema has changes without a migration");
                     return Ok(1);
                 }
                 return Ok(0);
             }
-            let name = args.arg(0).or(args.opt(&["--name"]));
-            let made = files::files::make(&dir, &compiled, name, args.flag("--empty"), migrations_online(&args, &settings)?).map_err(Failure::Failed)?;
-            if made.is_empty() {
-                println!("No changes.");
-            }
-            for (folder, plan) in made {
-                println!("Created {}", folder.path.display());
-                for s in &plan.up {
-                    println!("  - {}", s.summary);
-                    if let Some(w) = &s.warning {
-                        println!("    ! {w}");
-                    }
-                    if !s.destructive.is_empty() {
-                        println!("    needs --allow-destructive");
-                    }
+            let opts = files::files::MakeOptions { empty: args.flag("--empty"), ..opts };
+            match files::files::make(&dir, &compiled, &opts).map_err(Failure::Failed)? {
+                None => println!("No changes."),
+                Some((entry, file)) => {
+                    println!("Created {}", entry.path.display());
+                    print_operations(&file.operations);
                 }
             }
         }
         "squashmigrations" => {
             args.allow(command, &["--to", "--name"], 0)?;
             let to = args.opt(&["--to"]).ok_or_else(|| Failure::Usage("squashmigrations needs --to <migration>".into()))?;
-            let folder = files::files::squash(&migrations_dir(&args, &settings)?, to, args.opt(&["--name"])).map_err(Failure::Failed)?;
-            println!("Created {}", folder.path.display());
-            eprintln!("warning: a hand edit inside a replaced folder is not kept; the new folder builds the schema fresh");
+            let dir = migrations_dir(&args, &settings)?;
+            let (_, compiled) = load(&schema, &args)?;
+            let template = migrations_name(&args, &settings)?;
+            let (entry, file) = files::files::squash(&dir, compiled.dialect, to, args.opt(&["--name"]), &template).map_err(Failure::Failed)?;
+            println!("Created {} (replaces {} migrations)", entry.path.display(), file.replaces.len());
+            println!("Keep the replaced files until every database has passed them.");
         }
         "sqlmigrate" => {
             args.allow(command, &["--down"], 1)?;
             let name = args.arg(0).ok_or_else(|| Failure::Usage("sqlmigrate needs a migration".into()))?;
-            let m = migrate::find(&migrations_dir(&args, &settings)?, name)?;
-            print!("{}", if args.flag("--down") { m.down_sql()? } else { m.up_sql()? });
+            let dir = migrations_dir(&args, &settings)?;
+            let (_, compiled) = load(&schema, &args)?;
+            let direction = if args.flag("--down") { files::render::Direction::Down } else { files::render::Direction::Up };
+            print!("{}", files::render_migration(&dir, name, compiled.dialect, direction).map_err(Failure::Failed)?);
         }
         "migrate" | "rollback" | "showmigrations" | "pull" | "baseline" | "drift" | "audit" => {
             match command {
-                "migrate" => args.allow(command, &["--allow-destructive"], 1)?,
-                "rollback" => args.allow(command, &["--steps", "--to", "--force", "--allow-destructive"], 0)?,
+                "migrate" => args.allow(command, &["--allow-destructive", "--ops"], 1)?,
+                "rollback" => args.allow(command, &["--steps", "--to", "--force", "--allow-destructive", "--ops"], 1)?,
                 "pull" => args.allow(command, &["-o", "--out", "--force", "--unmanaged"], 0)?,
                 _ => args.allow(command, &[], 0)?,
             }
@@ -522,7 +534,7 @@ async fn command(argv: &[String], host: Host) -> Result<i32> {
                     return Err(Failure::Setup(format!("{} exists; pass --force to overwrite it, or -o FILE", out.display())));
                 }
             }
-            return database(command, &args, &migrations_dir(&args, &settings)?, &schema).await;
+            return database(command, &args, &settings, &migrations_dir(&args, &settings)?, &schema).await;
         }
         other => return Err(Failure::Usage(format!("unknown command {other}"))),
     }
@@ -724,6 +736,22 @@ fn module_paths(from: &Path, shared: &Path, module: &str) -> Result<(String, Str
     Ok((relative.to_string_lossy().into_owned(), import))
 }
 
+/// One line for each operation of a new migration, with its warning and the destructive mark.
+fn print_operations(operations: &[files::ops::Operation]) {
+    for (i, o) in operations.iter().enumerate() {
+        println!("  {}. {}", i + 1, o.summary());
+        if let Some(w) = o.warning() {
+            println!("     ! {w}");
+        }
+        if o.destructive() {
+            println!("     needs --allow-destructive");
+        }
+        if !o.atomic {
+            println!("     outside a transaction");
+        }
+    }
+}
+
 fn print_steps(steps: &[files::Step]) {
     for s in steps {
         println!("  - {}", s.summary);
@@ -782,7 +810,7 @@ async fn role_warning(driver: &dyn monorm_engine::db::Executor) -> Option<String
     }
 }
 
-async fn database(command: &str, args: &Args, dir: &Path, schema: &Path) -> Result<i32> {
+async fn database(command: &str, args: &Args, settings: &Settings, dir: &Path, schema: &Path) -> Result<i32> {
     let env = std::env::var("MONORM_DATABASE_URL").ok().filter(|u| !u.is_empty());
     let Some(url) = args.opt(&["--url"]).map(String::from).or(env) else {
         return Err(Failure::Setup("no database; pass --url or set MONORM_DATABASE_URL".into()));
@@ -799,7 +827,11 @@ async fn database(command: &str, args: &Args, dir: &Path, schema: &Path) -> Resu
                         eprintln!("warning: {w}");
                     }
                 }
-                let done = migrate::upgrade(&*driver, dir, args.arg(0), args.flag("--allow-destructive")).await?;
+                let slice = args.opt(&["--ops"]).map(migrate::parse_slice).transpose()?;
+                if slice.is_some() && args.arg(0).is_none() {
+                    return Err(Failure::Usage("--ops needs one named migration: migrate <migration> --ops A-B".into()));
+                }
+                let done = migrate::upgrade(&*driver, dir, args.arg(0), slice, args.flag("--allow-destructive")).await?;
                 for m in &done {
                     println!("Applied {}", m.name);
                 }
@@ -815,7 +847,13 @@ async fn database(command: &str, args: &Args, dir: &Path, schema: &Path) -> Resu
                         steps.map_or(Ok(1), str::parse).map_err(|_| Failure::Usage("--steps takes a number".into()))?,
                     ),
                 };
-                let done = migrate::downgrade(&*driver, dir, down, args.flag("--force"), args.flag("--allow-destructive")).await?;
+                let slice = match (args.opt(&["--ops"]), args.arg(0)) {
+                    (Some(ops), Some(name)) => Some((name, migrate::parse_slice(ops)?)),
+                    (Some(_), None) => return Err(Failure::Usage("--ops needs one named migration: rollback <migration> --ops A-B".into())),
+                    (None, Some(_)) => return Err(Failure::Usage("rollback names a migration only with --ops; use --to or --steps to pick migrations".into())),
+                    (None, None) => None,
+                };
+                let done = migrate::downgrade(&*driver, dir, down, slice, args.flag("--force"), args.flag("--allow-destructive")).await?;
                 for m in &done {
                     println!("Reverted {}", m.name);
                 }
@@ -856,8 +894,10 @@ async fn database(command: &str, args: &Args, dir: &Path, schema: &Path) -> Resu
                     return Err(failed(format!("the database already has applied migrations ({}); baseline only marks the first", applied.join(", "))));
                 }
                 if files::files::list(dir).map_err(failed)?.is_empty() {
-                    if let Some((folder, _)) = files::files::make_with(dir, &compiled, None, false, false, true).map_err(failed)?.into_iter().next() {
-                        println!("Created {}", folder.path.display());
+                    let template = migrations_name(args, settings)?;
+                    let opts = files::files::MakeOptions { template: &template, baseline: true, ..Default::default() };
+                    if let Some((entry, _)) = files::files::make(dir, &compiled, &opts).map_err(failed)? {
+                        println!("Created {}", entry.path.display());
                     }
                 }
                 let m = migrate::baseline(&*driver, dir).await?;

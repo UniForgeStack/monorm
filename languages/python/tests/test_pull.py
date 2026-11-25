@@ -636,7 +636,7 @@ async def test_pull_moves_a_soft_delete_rule_to_triggers(tmp_path):
         assert await scalar(db, "SELECT count(*) FROM sdm_t WHERE _deleted_at IS NOT NULL") == "1"
         await db.execute("TRUNCATE sdm_t CASCADE")
 
-        [move] = migrations.make("move_soft_delete")
+        move = migrations.make("move_soft_delete")
         up = move.up_sql
         assert up.index('DROP RULE IF EXISTS "soft_delete" ON "sdm_t"') < up.index("CREATE TRIGGER")
         assert 'DROP RULE IF EXISTS "soft_delete" ON "sdm_c"' in up and 'DROP RULE IF EXISTS "sdm_d_soft_delete" ON "sdm_d"' in up
@@ -895,7 +895,7 @@ model Task {
 '''
     consumer.write_text(consumer_source)
     owner_migrations = Migrations(tmp_path / "owner", owner)
-    [initial] = owner_migrations.make()
+    initial = owner_migrations.make()
     registry = Registry()
     Account = monorm.load(consumer, registry=registry)["Account"]
     db = await monorm.connect(url, max_connections=1, default=False, registry=registry)
@@ -912,7 +912,7 @@ model Task {
             await db.execute(initial.up_sql)
         await db.execute("CREATE INDEX outside_index ON shared_account (label)")
         consumer_migrations = Migrations(tmp_path / "consumer", consumer)
-        [migration] = consumer_migrations.make()
+        migration = consumer_migrations.make()
         assert 'REFERENCES "shared_account"' in migration.up_sql
         assert 'CREATE TABLE "shared_account"' not in migration.up_sql
         await Migrator(db, consumer_migrations).upgrade()

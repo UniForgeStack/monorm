@@ -1830,16 +1830,21 @@ mod failure_tests {
     }
 
     #[test]
-    fn a_no_transaction_migration_names_its_step_when_the_pooler_refuses_the_lock() {
+    fn an_atomic_false_operation_names_its_step_when_the_pooler_refuses_the_lock() {
         runtime().block_on(async {
             let path = std::env::temp_dir().join(format!("monorm_pgb_{}", std::process::id()));
             std::fs::create_dir_all(&path).unwrap();
-            std::fs::write(path.join("up.sql"), "-- monorm: no-transaction\nSELECT 1").unwrap();
-            let m = crate::migrate::Migration { name: "0001_concurrent".into(), path: path.clone() };
+            std::fs::write(
+                path.join("0001_concurrent.json"),
+                r#"{"version": 1, "operations": [{"run_sql": {"sql": "SELECT 1"}, "atomic": false}]}"#,
+            )
+            .unwrap();
             let db = PgDriver::connect(&flagged(&test_url()), 1).await.unwrap();
-            let e = crate::migrate::apply_no_transaction(&db, &m, true).await.unwrap_err().to_string();
+            // rows that another test left would stop `status` before the lock
+            PgDriver::connect(&test_url(), 1).await.unwrap().batch("DROP TABLE IF EXISTS monorm_migrations".into()).await.unwrap();
+            let e = crate::migrate::upgrade(&db, &path, None, None, true).await.unwrap_err().to_string();
             std::fs::remove_dir_all(&path).unwrap();
-            assert!(e.contains("0001_concurrent runs outside a transaction and needs a session lock"), "{e}");
+            assert!(e.contains("0001_concurrent: operation 1 runs outside a transaction and needs a session lock"), "{e}");
             assert!(e.contains("pgbouncer=true") && e.contains("MONORM_DATABASE_URL"), "{e}");
         });
     }

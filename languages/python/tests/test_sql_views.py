@@ -239,7 +239,7 @@ async def test_postgres_recreates_a_view_and_runs_the_migration(change, tmp_path
             _migration_schema(tmp_path, "postgres", field="BigInt")
         else:
             _migration_schema(tmp_path, "postgres", extra="added Int?")
-        (migration,) = migrations.make(change)
+        migration = migrations.make(change)
         sql = migration.up_sql
         assert "OR REPLACE" not in sql
         assert sql.index("DROP VIEW") < sql.index("CREATE VIEW")
@@ -267,7 +267,7 @@ async def test_sqlite_rebuild_under_a_view_copies_rows_with_legacy_alter_table_o
         models = monorm.load(schema, registry=monorm.Registry())
         await models["ReviewItem"].objects.using(db).insert_many([{"id": 1, "value": 7}, {"id": 2, "value": 9}])
         _migration_schema(tmp_path, "sqlite", extra="@@check(value >= 0)")
-        (migration,) = migrations.make("rebuild")
+        migration = migrations.make("rebuild")
         assert "__orm_new_" in migration.up_sql
         await migrator.upgrade(allow_destructive=True)
         assert await db._fetch_text("PRAGMA legacy_alter_table") == [("0",)]

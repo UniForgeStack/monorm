@@ -1,10 +1,10 @@
 //! Migration generator.
 //!
 //! ```text
-//! ORM schema ──build──▶ DbSchema (snapshot) ──diff(previous snapshot)──▶ [Op] ──render──▶ SQL
+//! ORM schema ──build──▶ DbSchema (snapshot) ──diff(replayed previous state)──▶ [Op] ──render──▶ SQL
 //! ```
 //!
-//! The previous snapshot is whatever the last migration recorded, so generating a
+//! The previous state is what replaying the migration files gives, so generating a
 //! migration needs no database. The down migration is the diff in the other direction.
 
 pub mod diff;
@@ -13,16 +13,18 @@ pub mod json_sql;
 pub mod model;
 pub mod nested_copy;
 pub mod online;
+pub mod ops;
 pub mod pg;
 pub mod pull;
 mod reconcile;
+pub mod render;
+pub mod replay;
 pub mod sqlite;
 
 use serde::Serialize;
 
 pub use diff::{Destructive, DestructiveKind, Op};
 pub use model::DbSchema;
-pub use online::{plan_online, FolderKind};
 
 use crate::schema::{Result, Schema};
 
@@ -53,11 +55,8 @@ fn any<S: serde::Serializer>(list: &[Destructive], s: S) -> std::result::Result<
 pub struct MigrationPlan {
     pub up: Vec<Step>,
     pub down: Vec<Step>,
-    /// The schema after `up`: the snapshot to store with the migration.
+    /// The schema after `up`.
     pub snapshot: DbSchema,
-    /// What the folder of this plan is. Not serialized: the bindings see the merged plan.
-    #[serde(skip)]
-    pub kind: FolderKind,
 }
 
 fn steps(ops: &[Op], target: &DbSchema) -> Vec<Step> {
@@ -208,7 +207,7 @@ fn sqlite_plan(previous: &DbSchema, p: Prepared) -> Result<MigrationPlan> {
     let mut down = sqlite::steps_with(&p.current, previous, &p.renames.reversed(), &p.down_fills)?;
     if p.identity_changed { identity_step(&mut up); identity_step(&mut down); }
     snapshot_step(&p, &mut up, &mut down);
-    Ok(MigrationPlan { up, down, snapshot: p.current, kind: FolderKind::Main })
+    Ok(MigrationPlan { up, down, snapshot: p.current })
 }
 
 fn pg_plan(previous: &DbSchema, p: Prepared, up: &[Op], down: &[Op]) -> MigrationPlan {
@@ -216,39 +215,7 @@ fn pg_plan(previous: &DbSchema, p: Prepared, up: &[Op], down: &[Op]) -> Migratio
     let mut down = steps(down, previous);
     if p.identity_changed { identity_step(&mut up); identity_step(&mut down); }
     snapshot_step(&p, &mut up, &mut down);
-    MigrationPlan { up, down, snapshot: p.current, kind: FolderKind::Main }
-}
-
-/// The migration from `previous` to `next`, from the two snapshots alone: no rename hints, and none of the
-/// checks of [`plan`]. `next` may be empty (the down plan of a squash). An empty snapshot takes the dialect of the other.
-pub fn plan_between(previous: &DbSchema, next: &DbSchema, renames: &model::Renames) -> Result<MigrationPlan> {
-    let dialect = if previous.version != 0 { previous.dialect } else { next.dialect };
-    let identity_changed = previous.identities != next.identities;
-    let (fills, down_fills) = json_ops(previous, next, renames)?;
-    let (mut up, mut down) = if dialect == crate::dialect::Dialect::Sqlite {
-        (sqlite::steps_with(previous, next, renames, &fills)?, sqlite::steps_with(next, previous, &renames.reversed(), &down_fills)?)
-    } else {
-        let mut up = diff::diff(previous, next, renames)?;
-        up.extend(fills);
-        let mut down = diff::diff(next, previous, &renames.reversed())?;
-        down.extend(down_fills);
-        (steps(&up, next), steps(&down, previous))
-    };
-    if identity_changed { identity_step(&mut up); identity_step(&mut down); }
-    Ok(MigrationPlan { up, down, snapshot: next.clone(), kind: FolderKind::Main })
-}
-
-/// The squash of the migrations that end in `snapshot`: `up` builds it from an empty database (with its
-/// extensions), `down` removes it.
-pub fn plan_squash(snapshot: &DbSchema) -> Result<MigrationPlan> {
-    let empty = DbSchema { dialect: snapshot.dialect, version: snapshot.version, ..Default::default() };
-    let mut plan = plan_between(&empty, snapshot, &Default::default())?;
-    if snapshot.dialect == crate::dialect::Dialect::Sqlite {
-        let sql = sqlite::create_all(snapshot, false).join(";\n");
-        plan.up = if sql.is_empty() { vec![] } else { vec![Step::new("Create the schema".into(), sql, None, vec![])] };
-        if snapshot.identities.is_some() { identity_step(&mut plan.up); }
-    }
-    Ok(plan)
+    MigrationPlan { up, down, snapshot: p.current }
 }
 
 /// Shadow databases can add parentheses to equivalent native expressions.
@@ -277,18 +244,47 @@ fn shape_changed(previous: &DbSchema, current: &DbSchema) -> bool {
 fn snapshot_step(p: &Prepared, up: &mut Vec<Step>, down: &mut Vec<Step>) {
     if p.unmanaged_changed && up.is_empty() {
         for steps in [&mut *up, &mut *down] {
-            steps.push(Step::new("Record unmanaged models".into(), "-- Unmanaged models are recorded in snapshot.json".into(), None, vec![]));
+            steps.push(Step::new("Record unmanaged models".into(), "-- Unmanaged models are recorded in the migration state".into(), None, vec![]));
         }
     }
     if p.shape_changed && up.is_empty() {
         for steps in [up, down] {
-            steps.push(Step::new("Record the shape of json columns".into(), "-- The shape of a json column is recorded in snapshot.json".into(), None, vec![]));
+            steps.push(Step::new("Record the shape of json columns".into(), "-- The shape of a json column is recorded in the migration state".into(), None, vec![]));
         }
     }
 }
 
 fn identity_step(steps: &mut Vec<Step>) {
-    steps.push(Step::new("Record frozen ContentType identities".into(), "-- Frozen ContentType identity mapping recorded in snapshot.json".into(), None, vec![]));
+    steps.push(Step::new("Record frozen ContentType identities".into(), "-- Frozen ContentType identity mapping recorded in the migration state".into(), None, vec![]));
+}
+
+/// The numbered operations of the migration `name` of `dir` with their SQL, for `sqlmigrate`.
+pub fn render_migration(dir: &std::path::Path, name: &str, dialect: crate::dialect::Dialect, direction: render::Direction) -> std::result::Result<String, String> {
+    let entry = files::find(dir, name)?;
+    let file = files::read(&entry)?;
+    let start = files::state_before(dir, &entry.name, dialect)?;
+    let rendered = render::render(&entry.name, dir, &file, &start, direction, None)?;
+    let title = format!("{} ({})", entry.name, if direction == render::Direction::Up { "up" } else { "down" });
+    Ok(rendered.text(&title))
+}
+
+/// The operations of the migration from `previous` to `schema`. `online` (PostgreSQL) gives the
+/// operations that lock a table for long in a form with `"atomic": false`. A last `separate`
+/// operation with no `database` list carries the part of the new state that no schema operation reaches.
+pub fn generate(schema: &Schema, previous: &DbSchema, baseline: bool, online: bool) -> Result<Vec<ops::Operation>> {
+    let p = prepare(schema, previous, baseline)?;
+    let mut list = diff::diff(previous, &p.current, &p.renames)?;
+    list.extend(p.fills.iter().cloned());
+    let mut operations: Vec<ops::Operation> = if online && p.current.dialect != crate::dialect::Dialect::Sqlite {
+        online::online_operations(previous, &p.renames, list)
+    } else {
+        list.into_iter().map(ops::Operation::schema).collect()
+    };
+    let mut replayed = previous.clone();
+    replayed.dialect = p.current.dialect;
+    replay::replay(&mut replayed, &operations)?;
+    operations.extend(replay::state_operation(&replayed, &p.current));
+    Ok(operations)
 }
 
 /// The managed schema as idempotent DDL (`IF NOT EXISTS` / `OR REPLACE`), for

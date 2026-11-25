@@ -395,7 +395,7 @@ for (const provider of ["sqlite", "postgres"]) {
     const schema = constraintSchema("constraint: false", dialect);
     const registry = new Registry();
     const m: any = load(schema, { registry });
-    const sql: string = new Migrations(join(schema, "..", "migrations"), schema).make()[0]!.upSql;
+    const sql: string = new Migrations(join(schema, "..", "migrations"), schema).make()!.upSql;
     assert.ok(sql.includes("lcn_stat") && !sql.includes("FOREIGN KEY") && !sql.includes("REFERENCES"), sql);
     const db = await connect(urlOf(dbProvider), { registry, default: false });
     try {
@@ -423,14 +423,14 @@ for (const provider of ["sqlite", "postgres"]) {
   test(`the migration diff follows the constraint flag (${provider})`, () => {
     const schema = constraintSchema("", dialect);
     const migrations = new Migrations(join(schema, "..", "migrations"), schema);
-    const first: string = migrations.make()[0]!.upSql;
+    const first: string = migrations.make()!.upSql;
     // a foreign key to a table, none to a view that cannot hold one
     assert.ok(first.includes("REFERENCES"), first);
     constraintSchema("constraint: false", dialect, join(schema, ".."));
-    const drop: string = migrations.make("drop_fk")[0]!.upSql;
+    const drop: string = migrations.make("drop_fk")!.upSql;
     assert.ok(dialect === "postgres" ? drop.includes("DROP CONSTRAINT") : !drop.includes("REFERENCES"), drop);
     constraintSchema("", dialect, join(schema, ".."));
-    const add: string = migrations.make("add_fk")[0]!.upSql;
+    const add: string = migrations.make("add_fk")!.upSql;
     assert.ok(add.includes("REFERENCES"), add);
   });
 }

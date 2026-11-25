@@ -6,12 +6,14 @@ are per database, and the blog tables of the other tests depend on some of them.
 
 import asyncio
 import contextlib
+import json
 import re
 import uuid
 from urllib.parse import urlsplit, urlunsplit
 
 import pytest
 from conftest import DATABASE_URL
+from _planned import append_op, write_migration
 from test_migrations import ONLINE_ITEM, ONLINE_ITEM_FK, ONLINE_PLAIN, ONLINE_SHOP_WITH_ITEMS, V1, V2, models
 
 import monorm
@@ -123,10 +125,10 @@ async def test_edited_applied_migration_is_refused(tmp_path):
     await reset(db)
     try:
         migs = Migrations(tmp_path, v1())
-        [m] = migs.make()
+        m = migs.make()
         migrator = Migrator(db, migs)
         await migrator.upgrade()
-        (m.path / "up.sql").write_text(m.up_sql + "\n-- edited\n")
+        append_op(m, {"run_sql": {"sql": "SELECT 1", "reverse_sql": "noop"}})
         Migrations(tmp_path, v2()).make()
         with pytest.raises(MigrationError, match="changed after it was applied"):
             await migrator.upgrade()
@@ -141,8 +143,8 @@ async def test_failed_migration_rolls_back(tmp_path):
     await reset(db)
     try:
         migs = Migrations(tmp_path, v1())
-        [m] = migs.make()
-        (m.path / "up.sql").write_text(m.up_sql + "\nSELECT no_such_function();\n")
+        m = migs.make()
+        append_op(m, {"run_sql": {"sql": "SELECT no_such_function()", "reverse_sql": "noop"}})
         with pytest.raises(monorm.DatabaseError):
             await Migrator(db, migs).upgrade()
         assert await scalar(db, "SELECT to_regclass('authors')::text") is None
@@ -281,7 +283,7 @@ async def gate_database(dialect):
 async def gate_apply(db, tmp_path, source):
     """Writes the next migration for `source` and applies it (no flag: it must not be destructive)."""
     migs = Migrations(tmp_path, models(source))
-    [migration] = migs.make()
+    migration = migs.make()
     await Migrator(db, migs).upgrade()
     return migration
 
@@ -289,7 +291,7 @@ async def gate_apply(db, tmp_path, source):
 def gate_next(tmp_path, source):
     """Writes the next migration for `source` without applying it."""
     migs = Migrations(tmp_path, models(source))
-    [migration] = migs.make()
+    migration = migs.make()
     return migs, migration
 
 
@@ -318,7 +320,7 @@ async def test_destructive_gate_refuses_a_drop_on_a_table_with_rows(tmp_path, di
         await gate_apply(db, tmp_path, prefix + GATE_KEEP + GATE_SHOP)
         await db.execute("INSERT INTO shop (name) VALUES ('a')")
         migs, dropped = gate_next(tmp_path, prefix + GATE_KEEP)
-        assert "-- monorm: destructive drop-table shop\n" in dropped.up_sql
+        assert [next(iter(op)) for op in dropped.operations] == ["drop_table"]
         with pytest.raises(MigrationError, match=gate_refusal(dropped.name, "drops table shop", "shop")):
             await Migrator(db, migs).upgrade()
         assert await gate_rows(db, "shop") == 1
@@ -344,22 +346,17 @@ async def test_destructive_gate_allows_the_drop_on_an_empty_or_missing_table(tmp
         await gate_apply(db, tmp_path, prefix + GATE_KEEP + GATE_SHOP)
         migs, dropped = gate_next(tmp_path, prefix + GATE_KEEP)
         assert [m.name for m in await Migrator(db, migs).upgrade()] == [dropped.name]  # empty table
-        # a marker for a table that does not exist: nothing to lose
-        ghost = tmp_path / "0003_ghost"
-        ghost.mkdir()
-        (ghost / "up.sql").write_text("-- monorm: destructive drop-table ghost\nCREATE TABLE ghost_done (id integer);\n")
-        assert [m.name for m in await Migrator(db, migs).upgrade()] == ["0003_ghost"]
 
 
-@pytest.mark.case("migrations::destructive_gate_ignores_a_migration_with_no_marker")
+@pytest.mark.case("migrations::destructive_gate_ignores_a_migration_with_no_destructive_operation")
 @pytest.mark.parametrize("dialect", DIALECTS)
-async def test_destructive_gate_ignores_a_migration_with_no_marker(tmp_path, dialect):
+async def test_destructive_gate_ignores_a_migration_with_no_destructive_operation(tmp_path, dialect):
     async with gate_database(dialect) as (db, prefix):
         await gate_apply(db, tmp_path, prefix + GATE_KEEP + GATE_SHOP)
         await db.execute("INSERT INTO shop (name) VALUES ('a')")
         wider = GATE_SHOP.replace("  note String?", "  note String?\n  extra String?")
         added = await gate_apply(db, tmp_path, prefix + GATE_KEEP + wider)
-        assert "-- monorm: destructive" not in added.up_sql
+        assert "drop" not in added.path.read_text()
         assert await gate_rows(db, "shop") == 1
 
 
@@ -373,8 +370,9 @@ async def test_destructive_gate_sees_a_drop_after_a_table_rename(tmp_path, diale
             GATE_SHOP.replace('@@map("shop")', '@@map("venue")\n  @@renamed_from("shop")').replace("model Shop", "model Venue").replace("  note String?\n", "")
         )
         migs, step = gate_next(tmp_path, prefix + GATE_KEEP + venue)
-        # the marker names the table as the database has it before the migration
-        assert "-- monorm: destructive drop-column shop.note\n" in step.up_sql
+        # the gate names the table as the database has it before the migration
+        kinds = [next(iter(op)) for op in step.operations]
+        assert kinds[0] == "rename_table" and "drop_column" in kinds
         with pytest.raises(MigrationError, match=gate_refusal(step.name, "drops column shop.note", "shop")):
             await Migrator(db, migs).upgrade()
         assert await gate_rows(db, "shop") == 1
@@ -391,7 +389,7 @@ async def test_rollback_gate_refuses_a_down_drop_on_a_table_with_rows(tmp_path, 
         migrator = Migrator(db, migs)
         await migrator.upgrade()  # creating a table is not destructive
         await db.execute("INSERT INTO shop (name) VALUES ('a')")
-        assert "-- monorm: destructive drop-table shop\n" in created.down_sql
+        assert [next(iter(op)) for op in created.operations] == ["create_table"]
         with pytest.raises(MigrationError, match=gate_refusal(f"rolling back {created.name}", "drops table shop", "shop")):
             await migrator.downgrade()
         assert await gate_rows(db, "shop") == 1
@@ -417,17 +415,16 @@ async def test_destructive_gate_waits_for_a_concurrent_insert_on_postgres(tmp_pa
             await writer.close()
 
 
-NO_TX_INDEX = "-- monorm: no-transaction create-index shop_name_idx\nCREATE UNIQUE INDEX CONCURRENTLY shop_name_idx ON shop (name);\n"
-NO_TX_DROP = "-- monorm: no-transaction drop-index shop_name_idx\nDROP INDEX CONCURRENTLY IF EXISTS shop_name_idx;\n"
+NO_TX_INDEX = {
+    "create_index": {"table": "shop", "index": {"name": "shop_name_idx", "unique": True, "keys": [{"column": "name"}]}},
+    "atomic": False,
+}
+AFTER_TX = {"run_sql": {"sql": "CREATE TABLE after_tx (id integer)", "reverse_sql": "DROP TABLE after_tx"}}
 
 
-def no_tx_folder(tmp_path, name="0002_shop_name_idx", up=NO_TX_INDEX, down=NO_TX_DROP, extra=None):
-    folder = tmp_path / name
-    folder.mkdir()
-    (folder / "up.sql").write_text(up)
-    (folder / "down.sql").write_text(down)
-    for file, text in (extra or {}).items():
-        (folder / file).write_text(text)
+def no_tx_folder(tmp_path, name="0002_shop_name_idx", ops=(NO_TX_INDEX,)):
+    """Writes a migration file by hand; its index operation runs outside a transaction."""
+    write_migration(tmp_path, name, list(ops))
     return Migrations(tmp_path, models(GATE_KEEP + GATE_SHOP))
 
 
@@ -457,19 +454,25 @@ async def test_a_no_transaction_migration_repairs_an_invalid_index(tmp_path):
             await Migrator(db, migs).upgrade()
         assert await index_valid(db) == "f"  # the failed build leaves an invalid index
         assert [s.applied for s in await Migrator(db, migs).status()] == [True, False]
+        # the migration stopped inside an operation outside a transaction: a plain run refuses it
+        with pytest.raises(MigrationError, match=re.escape("continue it with `migrate 0002_shop_name_idx --ops 1-1`")):
+            await Migrator(db, migs).upgrade()
         await db.execute("DELETE FROM shop")
-        assert [m.name for m in await Migrator(db, migs).upgrade()] == ["0002_shop_name_idx"]
+        done = await Migrator(db, migs).upgrade(target="0002_shop_name_idx", ops="1-1")
+        assert [m.name for m in done] == ["0002_shop_name_idx"]  # the invalid index is dropped, then built
         assert await index_valid(db) == "t"
+        assert [s.applied for s in await Migrator(db, migs).status()] == [True, True]
 
 
-@pytest.mark.case("migrations::a_no_transaction_migration_with_a_data_step_is_refused")
-async def test_a_no_transaction_migration_with_a_data_step_is_refused(tmp_path):
+@pytest.mark.case("migrations::a_no_transaction_operation_with_code_is_refused")
+async def test_a_no_transaction_operation_with_code_is_refused(tmp_path):
     async with gate_database("postgres") as (db, _):
         await gate_apply(db, tmp_path, GATE_KEEP + GATE_SHOP)
-        migs = no_tx_folder(tmp_path, extra={"data.py": "async def run(db):\n    pass\n"})
-        with pytest.raises(MigrationError, match="0002_shop_name_idx is a no-transaction migration and has a data step"):
+        (tmp_path / "d.py").write_text("async def run(db):\n    pass\n")
+        migs = no_tx_folder(tmp_path, ops=[{"run_code": {"python": "d.py:run", "reverse": "noop"}, "atomic": False}])
+        with pytest.raises(MigrationError, match=r"0002_shop_name_idx: operation 1.*run_code.*atomic"):
             await Migrator(db, migs).upgrade()
-        assert await index_valid(db) is None
+        assert await gate_rows(db, "monorm_migrations") == 1
 
 
 @pytest.mark.case("migrations::a_no_transaction_migration_is_refused_on_sqlite")
@@ -477,12 +480,12 @@ async def test_a_no_transaction_migration_is_refused_on_sqlite(tmp_path):
     async with gate_database("sqlite") as (db, prefix):
         await gate_apply(db, tmp_path, prefix + GATE_KEEP + GATE_SHOP)
         migs = no_tx_folder(tmp_path)
-        with pytest.raises(MigrationError, match="0002_shop_name_idx is a no-transaction migration; sqlite has no such mode"):
+        with pytest.raises(MigrationError, match=r"0002_shop_name_idx: operation 1: .atomic.: false is not supported on SQLite"):
             await Migrator(db, migs).upgrade()
 
 
-@pytest.mark.case("migrations::a_no_transaction_migration_rolls_back_with_its_down_file")
-async def test_a_no_transaction_migration_rolls_back_with_its_down_file(tmp_path):
+@pytest.mark.case("migrations::a_no_transaction_migration_rolls_back_with_its_reverse")
+async def test_a_no_transaction_migration_rolls_back_with_its_reverse(tmp_path):
     async with gate_database("postgres") as (db, _):
         await gate_apply(db, tmp_path, GATE_KEEP + GATE_SHOP)
         migs = no_tx_folder(tmp_path)
@@ -556,18 +559,16 @@ async def test_a_no_transaction_migration_runs_between_normal_migrations_in_orde
     async with gate_database("postgres") as (db, _):
         await gate_apply(db, tmp_path, GATE_KEEP + GATE_SHOP)
         no_tx_folder(tmp_path)
-        after = tmp_path / "0003_after"
-        after.mkdir()
-        (after / "up.sql").write_text("CREATE TABLE after_tx (id integer);\n")
-        (after / "down.sql").write_text("DROP TABLE after_tx;\n")
+        write_migration(tmp_path, "0003_after", [AFTER_TX])
         migs = Migrations(tmp_path, models(GATE_KEEP + GATE_SHOP))
         assert [m.name for m in await Migrator(db, migs).upgrade()][-2:] == ["0002_shop_name_idx", "0003_after"]
         assert await gate_rows(db, "monorm_migrations") == 3
         assert await index_valid(db) == "t"
-        bad = tmp_path / "0004_bad"
-        bad.mkdir()
-        (bad / "up.sql").write_text("CREATE TABLE half (id integer);\nSELECT 1 / 0;\n")
-        (bad / "down.sql").write_text("DROP TABLE half;\n")
+        bad = [
+            {"run_sql": {"sql": "CREATE TABLE half (id integer)", "reverse_sql": "DROP TABLE half"}},
+            {"run_sql": {"sql": "SELECT 1 / 0", "reverse_sql": "noop"}},
+        ]
+        write_migration(tmp_path, "0004_bad", bad)
         with pytest.raises(monorm.DatabaseError, match="division by zero"):
             await Migrator(db, Migrations(tmp_path, models(GATE_KEEP + GATE_SHOP))).upgrade()
         assert await scalar(db, "SELECT to_regclass('half')") is None  # the normal migration rolls back whole
@@ -575,26 +576,11 @@ async def test_a_no_transaction_migration_runs_between_normal_migrations_in_orde
         assert await index_valid(db) == "t"  # the no-transaction one stays recorded
 
 
-@pytest.mark.case("migrations::a_no_transaction_down_file_is_refused_on_sqlite_and_names_the_folder")
-async def test_a_no_transaction_down_file_is_refused_on_sqlite_and_names_the_folder(tmp_path):
-    async with gate_database("sqlite") as (db, prefix):
-        await gate_apply(db, tmp_path, prefix + GATE_KEEP + GATE_SHOP)
-        migs = no_tx_folder(tmp_path, up="CREATE TABLE extra (id integer);\n")
-        migrator = Migrator(db, migs)
-        assert [m.name for m in await migrator.upgrade()] == ["0002_shop_name_idx"]
-        with pytest.raises(MigrationError, match="0002_shop_name_idx/down.sql is a no-transaction migration; sqlite has no such mode"):
-            await migrator.downgrade()
-        assert await gate_rows(db, "monorm_migrations") == 2
-
-
 @pytest.mark.case("migrations::a_rollback_waits_for_a_no_transaction_build_without_a_deadlock")
 async def test_a_rollback_waits_for_a_no_transaction_build_without_a_deadlock(tmp_path):
     async with gate_database("postgres") as (db, _):
         await gate_apply(db, tmp_path, GATE_KEEP + GATE_SHOP)
-        after = tmp_path / "0002_after"
-        after.mkdir()
-        (after / "up.sql").write_text("CREATE TABLE after_tx (id integer);\n")
-        (after / "down.sql").write_text("DROP TABLE after_tx;\n")
+        write_migration(tmp_path, "0002_after", [AFTER_TX])
         await Migrator(db, Migrations(tmp_path, models(GATE_KEEP + GATE_SHOP))).upgrade()
         migs = no_tx_folder(tmp_path, name="0003_shop_name_idx")
         other = await connect(models(GATE_KEEP + GATE_SHOP))
@@ -607,8 +593,8 @@ async def test_a_rollback_waits_for_a_no_transaction_build_without_a_deadlock(tm
                 await asyncio.sleep(1.5)  # longer than deadlock_timeout (1 s)
                 assert not build.done() and not rollback.done()
             assert [m.name for m in await build] == ["0003_shop_name_idx"]
-            assert [m.name for m in await rollback] == ["0002_after"]  # chosen before the build recorded its row
-            assert await index_valid(db) == "t"
+            assert [m.name for m in await rollback] == ["0003_shop_name_idx"]  # planned after the build finished
+            assert await index_valid(db) is None  # the rollback dropped the built index
         finally:
             await other.close()
 
@@ -638,7 +624,7 @@ async def test_online_migrate_ends_with_no_drift(tmp_path):
             await db.execute("INSERT INTO shop (name) VALUES ('a'), ('b'); INSERT INTO item (shop_id) VALUES (1), (2)")
             migs = Migrations(directory, models(last), online=online)
             migs.make()
-            assert len(migs.all()) == (4 if online else 2)
+            assert len(migs.all()) == 2  # one change, one file, online or not
             migrator = Migrator(db, migs)
             assert len(await migrator.upgrade()) == len(migs.all()) - 1
             assert not await migrator.drift()
@@ -648,12 +634,12 @@ async def test_online_migrate_ends_with_no_drift(tmp_path):
         assert ends[True] == ends[False]
         indexes, constraints = ends[True]
         assert any("shop_name_idx" in i for i in indexes) and any("item_shop_id_fkey" in c and c.endswith(" true") for c in constraints)
-        # the folders roll back one by one
+        # one migration holds the index and the foreign key: it rolls back whole
         migrator = Migrator(db, Migrations(tmp_path / "True", models(last), online=True))
-        assert len(await migrator.downgrade(steps=3)) == 3
+        assert len(await migrator.downgrade(steps=1)) == 1
         indexes, constraints = await online_schema(db)
         assert not any("shop_name_idx" in i for i in indexes) and not any("item_shop_id_fkey" in c for c in constraints)
-        assert len(await migrator.upgrade()) == 3
+        assert len(await migrator.upgrade()) == 1
         assert not await migrator.drift()
 
 
@@ -670,7 +656,7 @@ def squash_history(directory, prefix):
 
 
 async def migration_names(db):
-    return [r[0] for r in await db._fetch_text("SELECT name FROM monorm_migrations ORDER BY name")]
+    return sorted(r["name"] for r in await db.fetch("SELECT name FROM monorm_migrations"))
 
 
 @pytest.mark.case("migrations::squash_replays_on_a_fresh_database_with_no_drift")
@@ -681,7 +667,7 @@ async def test_squash_replays_on_a_fresh_database_with_no_drift(tmp_path, dialec
         old = [m.name for m in migs.all()]
         squashed = migs.squash(to="2")
         assert squashed.name == "0001_squashed_0002"
-        assert squashed.up_sql.startswith(f"-- monorm: replaces {old[0]} ")
+        assert json.loads(squashed.path.read_text())["replaces"] == old[:2]
         assert [m.name for m in migs.all()] == [squashed.name, old[2]]
         migrator = Migrator(db, migs)
         assert [m.name for m in await migrator.upgrade()] == [squashed.name, old[2]]
@@ -698,7 +684,7 @@ async def test_squash_runs_the_extensions_of_the_snapshot(tmp_path):
         migs = Migrations(tmp_path, models(GATE_KEEP + SQUASH_DOC))
         migs.make()
         squashed = migs.squash(to="2")
-        assert 'CREATE EXTENSION IF NOT EXISTS "citext"' in squashed.up_sql
+        assert any("citext" in json.dumps(op) for op in squashed.operations)
         try:
             await db.execute("DROP TABLE IF EXISTS ext_docs")
             assert [m.name for m in await Migrator(db, migs).upgrade()] == [squashed.name]
@@ -718,7 +704,7 @@ async def test_squash_adopts_on_a_database_that_applied_the_old_migrations(tmp_p
         squashed = migs.squash(to="2")
         migrator = Migrator(db, migs)
         assert [s.applied for s in await migrator.status()] == [True, True]
-        assert await migration_names(db) == old  # status reads only
+        assert await migration_names(db) == sorted(old)  # status reads only
         assert await migrator.upgrade() == []  # no SQL ran: the table keeps its row
         assert await migration_names(db) == sorted([squashed.name, old[2]])
         assert await gate_rows(db, "shop") == 1
@@ -763,10 +749,15 @@ async def test_squash_refuses_a_partly_applied_database(tmp_path, dialect):
 async def test_squash_refuses_a_data_step_in_the_range(tmp_path, dialect):
     migs = squash_history(tmp_path, GATE_SQLITE if dialect == "sqlite" else "")
     before = [m.name for m in migs.all()]
-    (migs.all()[1].path / "data.py").write_text("")
-    with pytest.raises(MigrationError, match="data step"):
+    append_op(migs.all()[1], {"run_sql": {"sql": "UPDATE shop SET name = 'x'", "reverse_sql": "noop"}})
+    with pytest.raises(MigrationError, match="not elidable"):
         migs.squash(to="3")
     assert [m.name for m in migs.all()] == before
+    path = migs.all()[1].path
+    data = json.loads(path.read_text())
+    data["operations"][-1]["run_sql"]["elidable"] = True
+    path.write_text(json.dumps(data))
+    assert migs.squash(to="3").name == "0001_squashed_0003"
 
 
 @pytest.mark.case("migrations::squash_checks_the_checksums_of_replaced_migrations")
@@ -778,9 +769,9 @@ async def test_squash_checks_the_checksums_of_replaced_migrations(tmp_path, dial
         await Migrator(db, migs).upgrade()
         await db.execute(f"UPDATE monorm_migrations SET checksum = 'edited' WHERE name = '{old[1]}'")
         migs.squash(to="3")
-        with pytest.raises(MigrationError, match=re.escape(f"{old[1]}/up.sql changed after it was applied")):
+        with pytest.raises(MigrationError, match=re.escape(f"{old[1]} changed after it was applied")):
             await Migrator(db, migs).upgrade()
-        assert await migration_names(db) == old
+        assert await migration_names(db) == sorted(old)
 
 
 @pytest.mark.case("migrations::squash_rollback_after_adoption")
@@ -814,3 +805,75 @@ async def test_squash_of_baselined_migrations_needs_force_to_roll_back(tmp_path,
         assert await gate_has_table(db, dialect, "shop")
         assert [m.name for m in await migrator.downgrade(force=True)] == [squashed.name]
         assert not await gate_has_table(db, dialect, "shop")
+
+
+GROUP_NAME = "0002_groups"
+
+
+def group_migrations(tmp_path, prefix, operations):
+    write_migration(tmp_path, "0001_base", [])
+    write_migration(tmp_path, GROUP_NAME, operations)
+    return Migrations(tmp_path, models(prefix + GATE_KEEP))
+
+
+@pytest.mark.case("migrations::a_commit_ends_a_group_and_a_failure_keeps_the_earlier_groups")
+@pytest.mark.parametrize("dialect", DIALECTS)
+async def test_a_commit_ends_a_group_and_a_failure_keeps_the_earlier_groups(tmp_path, dialect):
+    async with gate_database(dialect) as (db, prefix):
+        migs = group_migrations(tmp_path, prefix, [
+            {"run_sql": {"sql": "CREATE TABLE shop_a (id integer)", "reverse_sql": "DROP TABLE shop_a"}},
+            {"commit": {}},
+            {"run_sql": {"sql": "SELECT no_such_function()", "reverse_sql": "noop"}},
+        ])
+        try:
+            with pytest.raises(monorm.DatabaseError):
+                await Migrator(db, migs).upgrade()
+            assert await gate_has_table(db, dialect, "shop_a")  # the first group is committed
+            with pytest.raises(MigrationError, match=re.escape(f"continue it with `migrate {GROUP_NAME} --ops 3-3`")):
+                await Migrator(db, migs).upgrade()
+        finally:
+            await db.execute("DROP TABLE IF EXISTS shop_a")
+
+
+@pytest.mark.case("migrations::rollback_refuses_an_operation_with_no_reverse")
+@pytest.mark.parametrize("dialect", DIALECTS)
+async def test_rollback_refuses_an_operation_with_no_reverse(tmp_path, dialect):
+    async with gate_database(dialect) as (db, prefix):
+        migs = group_migrations(tmp_path, prefix, [{"run_sql": {"sql": "CREATE TABLE shop_b (id integer)"}}])
+        try:
+            await Migrator(db, migs).upgrade()
+            with pytest.raises(MigrationError, match="operation 1 \\(run_sql\\) has no reverse"):
+                await Migrator(db, migs).downgrade()
+            assert await gate_has_table(db, dialect, "shop_b")
+        finally:
+            await db.execute("DROP TABLE IF EXISTS shop_b")
+
+
+@pytest.mark.case("migrations::a_slice_must_start_after_the_operations_done")
+@pytest.mark.parametrize("dialect", DIALECTS)
+async def test_a_slice_must_start_after_the_operations_done(tmp_path, dialect):
+    async with gate_database(dialect) as (db, prefix):
+        migs = group_migrations(tmp_path, prefix, [
+            {"run_sql": {"sql": "SELECT 1", "reverse_sql": "noop"}},
+            {"run_sql": {"sql": "SELECT 2", "reverse_sql": "noop"}},
+        ])
+        await Migrator(db, migs).upgrade(target="0001_base")
+        with pytest.raises(MigrationError, match=re.escape("the next slice starts at 1 (--ops 1-)")):
+            await Migrator(db, migs).upgrade(target=GROUP_NAME, ops="2-2")
+        with pytest.raises(MigrationError, match="out of range"):
+            await Migrator(db, migs).upgrade(target=GROUP_NAME, ops="1-3")
+        assert [m.name for m in await Migrator(db, migs).upgrade(target=GROUP_NAME, ops="1-1")] == [GROUP_NAME]
+        assert [(s.applied) for s in await Migrator(db, migs).status()] == [True, False]
+
+
+@pytest.mark.case("migrations::migrations_with_numbers_and_timestamps_run_in_order_of_the_leading_number")
+@pytest.mark.parametrize("dialect", DIALECTS)
+async def test_migrations_with_numbers_and_timestamps_run_in_order_of_the_leading_number(tmp_path, dialect):
+    async with gate_database(dialect) as (db, prefix):
+        write_migration(tmp_path, "2500_first", [{"run_sql": {"sql": "SELECT 1", "reverse_sql": "noop"}}])
+        write_migration(tmp_path, "20261101120000_second", [{"run_sql": {"sql": "SELECT 2", "reverse_sql": "noop"}}])
+        migs = Migrations(tmp_path, models(prefix + GATE_KEEP))
+        migrator = Migrator(db, migs)
+        assert [m.name for m in await migrator.upgrade(target="2500_first")] == ["2500_first"]
+        assert [m.name for m in await migrator.upgrade()] == ["20261101120000_second"]
+        assert [m.name for m in await migrator.downgrade(target="2500_first")] == ["20261101120000_second"]

@@ -1,24 +1,28 @@
 //! Applying and reverting the migrations of a directory (`monorm_core::migrate::files`) on
 //! a database. The bindings and the `monorm` CLI all run this one implementation.
 //!
-//! Applied migrations are recorded with the SHA-256 of their `up.sql` in the
-//! `monorm_migrations` table; a migration whose file changed after it was applied stops
-//! [`upgrade`]. Each migration runs in its own transaction together with its row, under
-//! an advisory lock, so a failing migration leaves the database at the previous one and
-//! concurrent migrators apply each migration once.
+//! A migration is a list of operations. [`monorm_core::migrate::render`] turns a range of them into
+//! transaction groups. Each atomic group runs in one transaction under an advisory lock, with
+//! the progress of its migration recorded in the same transaction. An operation with
+//! `"atomic": false` runs alone outside a transaction, under a session lock, and marks itself
+//! started before it runs.
 //!
-//! A migration whose script starts with [`NO_TX_HEADER`] holds one statement that cannot
-//! run in a transaction (`CREATE INDEX CONCURRENTLY`). [`apply_no_transaction`] runs it
-//! on PostgreSQL under a session lock, then records it in a short transaction of its own.
+//! The `monorm_migrations` table holds one row for each migration that has started. `ops_done` is
+//! the number of operations applied from the start of the list, `ops_total` the length of the
+//! list and `started` the operation that runs outside a transaction. A migration is applied when
+//! `ops_done` equals `ops_total`. A migration that stopped halfway is refused by a plain run, which
+//! prints the `--ops` slice that continues it.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use monorm_core::dialect::Dialect;
-use monorm_core::migrate::files::{self, MigrationFolder};
+use monorm_core::migrate::diff::Op;
+use monorm_core::migrate::files::{self, MigrationEntry};
+use monorm_core::migrate::ops::{MigrationFile, OpKind};
 use monorm_core::migrate::pg::ident;
-use monorm_core::migrate::Destructive;
+use monorm_core::migrate::render::{self, Body, CodeCall, Direction, Group, Item, Rendered};
 
 use crate::db::{Driver, Executor, SessionLock, Transaction};
 use crate::error::{Error, Result};
@@ -27,97 +31,58 @@ pub const TABLE: &str = "monorm_migrations";
 /// Arbitrary constant: the advisory lock serializing concurrent migrators.
 pub const LOCK_ID: i64 = 0x6F72_6D6D;
 
-/// One migration folder.
+/// One migration file.
 #[derive(Debug, Clone)]
 pub struct Migration {
     pub name: String,
+    /// The `.json` file.
     pub path: PathBuf,
 }
 
 impl Migration {
-    fn read(&self, file: &str) -> Result<String> {
-        let p = self.path.join(file);
-        std::fs::read_to_string(&p).map_err(|e| Error::Migration(format!("{}: {e}", p.display())))
+    fn entry(&self) -> MigrationEntry {
+        MigrationEntry { name: self.name.clone(), path: self.path.clone() }
     }
 
-    pub fn up_sql(&self) -> Result<String> {
-        self.read("up.sql")
+    /// The directory of the file, and of the scripts it names.
+    pub fn dir(&self) -> &Path {
+        self.path.parent().unwrap_or(Path::new("."))
     }
 
-    pub fn down_sql(&self) -> Result<String> {
-        self.read("down.sql")
+    pub fn file(&self) -> Result<MigrationFile> {
+        files::read(&self.entry()).map_err(Error::Migration)
     }
 
-    /// The no-transaction header of `up.sql`, if it has one.
-    pub fn no_transaction(&self) -> Result<Option<NoTx>> {
-        NoTx::parse(&self.up_sql()?).map_err(|e| Error::Migration(format!("{}/up.sql: {e}", self.name)))
+    /// The names of the migrations this one replaces: empty unless it is a squash file.
+    pub fn replaces(&self) -> Result<Vec<String>> {
+        Ok(self.file()?.replaces)
     }
 
-    /// The (name, checksum) of each migration this one replaces: empty unless it is a squash folder.
-    pub fn replaces(&self) -> Result<Vec<(String, String)>> {
-        files::parse_replaces(&self.up_sql()?).map_err(|e| Error::Migration(format!("{}/up.sql: {e}", self.name)))
-    }
-
-    /// Hex SHA-256 of `up.sql`.
+    /// Hex SHA-256 of the file and the `.sql` files it names.
     pub fn checksum(&self) -> Result<String> {
-        Ok(checksum(&self.up_sql()?))
+        files::file_checksum(&self.entry()).map_err(Error::Migration)
     }
 }
 
-pub use files::{checksum, DATA_FILES, NO_TX_HEADER, REPLACES_HEADER};
-
-/// The index a no-transaction script builds or drops.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NoTxIndex {
-    Create(String),
-    Drop(String),
-}
-
-/// A parsed [`NO_TX_HEADER`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NoTx {
-    pub index: Option<NoTxIndex>,
-}
-
-impl NoTx {
-    /// The header of `sql`: `None` for a script that runs in a transaction.
-    pub fn parse(sql: &str) -> std::result::Result<Option<NoTx>, String> {
-        let first = sql.lines().next().unwrap_or("").trim_end();
-        let Some(rest) = first.strip_prefix(NO_TX_HEADER) else { return Ok(None) };
-        if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
-            return Ok(None);
-        }
-        let rest = rest.trim();
-        let (word, name) = rest.split_once(char::is_whitespace).map_or((rest, ""), |(w, n)| (w, n.trim()));
-        let index = match (word, name) {
-            ("", _) => None,
-            ("create-index", n) if !n.is_empty() => Some(NoTxIndex::Create(n.to_owned())),
-            ("drop-index", n) if !n.is_empty() => Some(NoTxIndex::Drop(n.to_owned())),
-            _ => return Err(format!("unknown no-transaction header `{}`; expected `{NO_TX_HEADER} [create-index <name> | drop-index <name>]`", first.trim())),
-        };
-        Ok(Some(NoTx { index }))
-    }
-}
-
-impl From<MigrationFolder> for Migration {
-    fn from(f: MigrationFolder) -> Self {
+impl From<MigrationEntry> for Migration {
+    fn from(f: MigrationEntry) -> Self {
         Migration { name: f.name, path: f.path }
     }
 }
 
-/// The migrations of `dir`, in order.
+/// The migrations of `dir` in order, without the files that a squash file replaces.
 pub fn list(dir: &Path) -> Result<Vec<Migration>> {
-    Ok(files::list(dir).map_err(Error::Migration)?.into_iter().map(Migration::from).collect())
+    Ok(files::effective(dir).map_err(Error::Migration)?.into_iter().map(|(m, _)| Migration::from(m)).collect())
 }
 
-/// A migration by folder name or number (`"3"`, `"0003"`, `"0003_add_tags"`).
+/// The place of `name` in the order of `statuses`: names compare by order key, not as text.
+fn position(statuses: &[Status], name: &str) -> Result<usize> {
+    statuses.iter().position(|s| s.migration.name == name).ok_or_else(|| Error::Migration(format!("no migration named {name}")))
+}
+
+/// A migration by name or number (`"3"`, `"0003"`, `"0003_add_tags"`).
 pub fn find(dir: &Path, name: &str) -> Result<Migration> {
     files::find(dir, name).map(Migration::from).map_err(Error::Migration)
-}
-
-/// Folds migrations 1..=`to` into one folder (see `files::squash`); no database is read.
-pub fn squash(dir: &Path, to: &str, name: Option<&str>) -> Result<Migration> {
-    files::squash(dir, to, name).map(Migration::from).map_err(Error::Migration)
 }
 
 #[derive(Debug, Clone)]
@@ -126,9 +91,11 @@ pub struct Status {
     pub applied: bool,
     /// When it was applied, as Postgres prints a `timestamptz`.
     pub applied_at: Option<String>,
+    /// The operations done and the operations in all, for a migration that stopped halfway.
+    pub partial: Option<(usize, usize)>,
 }
 
-/// What [`downgrade`] reverts.
+/// What [`plan_down`] reverts.
 #[derive(Debug, Clone)]
 pub enum Down {
     /// The last `n` applied migrations.
@@ -136,6 +103,9 @@ pub enum Down {
     /// Every migration after this one; `"zero"` reverts all.
     To(String),
 }
+
+/// The operations of one migration to run: numbers from 1, both ends included.
+pub type Slice = (usize, Option<usize>);
 
 fn lit(text: &str) -> String {
     format!("'{}'", text.replace('\'', "''"))
@@ -159,28 +129,45 @@ async fn exists(conn: &dyn Executor, table: &str) -> Result<bool> {
     flag(conn, sql).await
 }
 
-/// Refuses `sql` when a step it marks as destructive touches a table with rows.
+/// Refuses a group when an operation in it can delete the data of a table with rows.
 /// `what` starts the error text: the migration, and for a rollback its direction.
 /// `in_tx` is true for a migration transaction: on PostgreSQL the check then locks the
 /// table first, as the step itself will, so a write that commits later cannot slip past.
 /// SQLite holds the write lock for the whole transaction already.
-async fn gate(conn: &dyn Executor, what: &str, sql: &str, in_tx: bool) -> Result<()> {
+async fn gate(conn: &dyn Executor, what: &str, group: &Group, in_tx: bool) -> Result<()> {
     let mut seen: Vec<String> = vec![];
-    for d in sql.lines().filter_map(Destructive::parse_marker) {
-        if seen.contains(&d.table) {
-            continue;
-        }
-        if exists(conn, &d.table).await? {
-            if in_tx && conn.dialect() == Dialect::Postgres {
-                conn.batch(format!("LOCK TABLE {} IN ACCESS EXCLUSIVE MODE", ident(&d.table))).await?;
+    for step in group_steps(group) {
+        for d in &step.destructive {
+            if seen.contains(&d.table) {
+                continue;
             }
-            if flag(conn, format!("SELECT CAST(EXISTS (SELECT 1 FROM {}) AS integer)", ident(&d.table))).await? {
-                return Err(Error::Migration(format!("{what} {}, and {} has rows; {ALLOW_HINT}", d.describe(), d.table)));
+            if exists(conn, &d.table).await? {
+                if in_tx && conn.dialect() == Dialect::Postgres {
+                    conn.batch(format!("LOCK TABLE {} IN ACCESS EXCLUSIVE MODE", ident(&d.table))).await?;
+                }
+                if flag(conn, format!("SELECT CAST(EXISTS (SELECT 1 FROM {}) AS integer)", ident(&d.table))).await? {
+                    return Err(Error::Migration(format!("{what} {}, and {} has rows; {ALLOW_HINT}", d.describe(), d.table)));
+                }
             }
+            seen.push(d.table.clone());
         }
-        seen.push(d.table);
     }
     Ok(())
+}
+
+fn group_steps(group: &Group) -> impl Iterator<Item = &monorm_core::migrate::Step> {
+    group.items.iter().flat_map(|i| match &i.body {
+        Body::Sql(s) => s.as_slice(),
+        Body::Code(_) => &[],
+    })
+}
+
+async fn has_column(conn: &dyn Executor, column: &str) -> Result<bool> {
+    let sql = match conn.dialect() {
+        Dialect::Postgres => format!("SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass({}) AND attname = {} AND NOT attisdropped", lit(TABLE), lit(column)),
+        Dialect::Sqlite => format!("SELECT 1 FROM pragma_table_info({}) WHERE name = {}", lit(TABLE), lit(column)),
+    };
+    Ok(!conn.query_text(sql).await?.is_empty())
 }
 
 async fn ensure_table(conn: &dyn Executor) -> Result<()> {
@@ -189,22 +176,38 @@ async fn ensure_table(conn: &dyn Executor) -> Result<()> {
         Dialect::Sqlite => ("text NOT NULL DEFAULT CURRENT_TIMESTAMP", "integer NOT NULL DEFAULT 0"),
     };
     conn.batch(format!(
-        "CREATE TABLE IF NOT EXISTS {TABLE} (name text PRIMARY KEY, checksum text NOT NULL, applied_at {timestamp}, baseline {flag})"
+        "CREATE TABLE IF NOT EXISTS {TABLE} (name text PRIMARY KEY, checksum text NOT NULL, applied_at {timestamp}, baseline {flag}, \
+         ops_done integer NOT NULL DEFAULT 0, ops_total integer NOT NULL DEFAULT 0, started integer)"
     ))
     .await?;
-    // A table made by an older version lacks `baseline`; add it once, under the migration lock.
-    let has = match conn.dialect() {
-        Dialect::Postgres => format!(
-            "SELECT 1 FROM pg_attribute WHERE attrelid = to_regclass({}) AND attname = 'baseline' AND NOT attisdropped",
-            lit(TABLE)
-        ),
-        Dialect::Sqlite => format!("SELECT 1 FROM pragma_table_info({}) WHERE name = 'baseline'", lit(TABLE)),
-    };
-    if conn.query_text(has).await?.is_empty() {
-        let add = format!("ALTER TABLE {TABLE} ADD COLUMN {}baseline {flag}", if conn.dialect() == Dialect::Postgres { "IF NOT EXISTS " } else { "" });
-        locked(conn, None, |_| Some(["SELECT 1".to_owned(), add])).await?;
+    // A table made by an older version lacks columns; add them once, under the migration lock.
+    // The lock helper reads the progress columns, so this does its own transaction.
+    let mut missing = vec![];
+    for (column, ddl) in [("baseline", flag), ("ops_done", "integer NOT NULL DEFAULT 0"), ("ops_total", "integer NOT NULL DEFAULT 0"), ("started", "integer")] {
+        if !has_column(conn, column).await? {
+            missing.push(format!("ALTER TABLE {TABLE} ADD COLUMN {}{column} {ddl}", if conn.dialect() == Dialect::Postgres { "IF NOT EXISTS " } else { "" }));
+        }
     }
-    Ok(())
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let tx = conn.begin_migration().await?;
+    let run = async {
+        if conn.dialect() == Dialect::Postgres {
+            take_xact_lock(&*tx).await?;
+        }
+        for sql in missing {
+            tx.batch(sql).await?;
+        }
+        Ok::<_, Error>(())
+    };
+    match run.await {
+        Ok(()) => Ok(tx.commit().await?),
+        Err(e) => {
+            let _ = Transaction::rollback(&*tx).await;
+            Err(e)
+        }
+    }
 }
 
 /// Applied migrations that `baseline` recorded without running them.
@@ -213,15 +216,37 @@ async fn baselined(conn: &dyn Executor) -> Result<Vec<String>> {
     Ok(rows.into_iter().filter_map(|r| r.into_iter().next().flatten()).collect())
 }
 
-/// name → (checksum, applied_at)
-async fn applied(conn: &dyn Executor) -> Result<BTreeMap<String, (String, String)>> {
-    let rows = conn.query_text(format!("SELECT name, checksum, CAST(applied_at AS text) FROM {TABLE} ORDER BY name")).await?;
+/// The row of one migration.
+#[derive(Debug, Clone)]
+struct Row {
+    checksum: String,
+    applied_at: String,
+    done: usize,
+    total: usize,
+    started: Option<usize>,
+}
+
+impl Row {
+    fn complete(&self) -> bool {
+        self.done >= self.total
+    }
+}
+
+fn count(cell: Option<String>) -> usize {
+    cell.and_then(|v| v.parse().ok()).unwrap_or(0)
+}
+
+async fn applied(conn: &dyn Executor) -> Result<BTreeMap<String, Row>> {
+    let rows = conn.query_text(format!("SELECT name, checksum, CAST(applied_at AS text), ops_done, ops_total, started FROM {TABLE} ORDER BY name")).await?;
     Ok(rows
         .into_iter()
         .filter_map(|r| {
             let mut it = r.into_iter();
             match (it.next().flatten(), it.next().flatten(), it.next().flatten()) {
-                (Some(n), Some(c), Some(a)) => Some((n, (c, a))),
+                (Some(n), Some(c), Some(a)) => {
+                    let (done, total, started) = (count(it.next().flatten()), count(it.next().flatten()), it.next().flatten().and_then(|v| v.parse().ok()));
+                    Some((n, Row { checksum: c, applied_at: a, done, total, started }))
+                }
                 _ => None,
             }
         })
@@ -231,29 +256,26 @@ async fn applied(conn: &dyn Executor) -> Result<BTreeMap<String, (String, String
 /// Every migration of `dir` and whether it is applied. Migrations recorded in the
 /// database but missing from the directory are an error.
 pub async fn status(conn: &dyn Executor, dir: &Path) -> Result<Vec<Status>> {
-    for m in list(dir)? {
-        let snapshot = m.path.join("snapshot.json");
-        if snapshot.exists() {
-            let text = std::fs::read_to_string(&snapshot).map_err(|e| Error::Migration(e.to_string()))?;
-            let target = monorm_core::migrate::parse_snapshot(&text).map_err(Error::Migration)?.dialect;
-            if target != conn.dialect() {
-                return Err(Error::Migration(format!("{} targets {}, connection uses {}", m.name, target.name(), conn.dialect().name())));
-            }
-        }
-    }
+    let all = list(dir)?;
     ensure_table(conn).await?;
     let mut done = applied(conn).await?;
     let mut out: Vec<Status> = vec![];
-    for m in list(dir)? {
+    for m in all {
         let replaces = m.replaces()?;
-        let mut at = None;
+        let mut row = None;
         if replaces.is_empty() {
-            at = done.remove(&m.name).map(|(_, at)| at);
+            row = done.remove(&m.name);
         } else {
             match squash_state(&m, &replaces, &done) {
-                Squash::Own => at = done.remove(&m.name).map(|(_, at)| at),
+                Squash::Own => row = done.remove(&m.name),
                 Squash::Fresh => {}
-                Squash::Replaced => at = replaces.iter().filter_map(|(r, _)| done.remove(r)).map(|(_, at)| at).max(),
+                Squash::Replaced => {
+                    let rows: Vec<Row> = replaces.iter().filter_map(|r| done.remove(r)).collect();
+                    row = rows.into_iter().max_by(|a, b| a.applied_at.cmp(&b.applied_at));
+                    if let Some(r) = &mut row {
+                        r.done = r.total;
+                    }
+                }
                 Squash::Partial(n) => {
                     return Err(Error::Migration(format!(
                         "the database applied {n} of the {} migrations that {} replaces; migrate it with a release before the squash",
@@ -261,9 +283,13 @@ pub async fn status(conn: &dyn Executor, dir: &Path) -> Result<Vec<Status>> {
                         m.name
                     )))
                 }
+                Squash::Unfinished(r) => {
+                    return Err(Error::Migration(format!("{r}, which {} replaces, is only partly applied; finish it first", m.name)))
+                }
             }
         }
-        out.push(Status { applied: at.is_some(), applied_at: at, migration: m });
+        let partial = row.as_ref().filter(|r| !r.complete()).map(|r| (r.done, r.total));
+        out.push(Status { applied: row.as_ref().is_some_and(Row::complete), applied_at: row.map(|r| r.applied_at), partial, migration: m });
     }
     if !done.is_empty() {
         let names: Vec<&str> = done.keys().map(String::as_str).collect();
@@ -275,67 +301,60 @@ pub async fn status(conn: &dyn Executor, dir: &Path) -> Result<Vec<Status>> {
     Ok(out)
 }
 
-/// How the database stands to a squash folder (one with `replaces` lines).
+/// How the database stands to a squash file (one with `replaces`).
 #[derive(Debug, PartialEq, Eq)]
 enum Squash {
-    /// The squash folder itself is recorded (it ran, or the database adopted it).
+    /// The squash file itself is recorded (it ran, or the database adopted it).
     Own,
-    /// All the replaced migrations are recorded and the squash folder is not: adoption is due.
+    /// All the replaced migrations are recorded and the squash file is not: adoption is due.
     Replaced,
     Fresh,
     /// Only this many of the replaced migrations are recorded.
     Partial(usize),
+    /// A replaced migration is recorded but not finished.
+    Unfinished(String),
 }
 
-/// A squash named like one of the migrations it replaces shares a row with it: the checksum of the replaced
-/// migration (from its `replaces` line) tells the two apart.
-fn squash_state(m: &Migration, replaces: &[(String, String)], done: &BTreeMap<String, (String, String)>) -> Squash {
-    if let Some((sum, _)) = done.get(&m.name) {
-        // A row that is not the replaced migration of this name is the squash row, even after its `up.sql` changed.
-        if replaces.iter().find(|(r, _)| *r == m.name).is_none_or(|(_, replaced)| sum != replaced) {
-            return Squash::Own;
-        }
+fn squash_state(m: &Migration, replaces: &[String], done: &BTreeMap<String, Row>) -> Squash {
+    if done.contains_key(&m.name) {
+        return Squash::Own;
     }
-    match replaces.iter().filter(|(r, _)| done.contains_key(r)).count() {
+    if let Some(r) = replaces.iter().find(|r| done.get(*r).is_some_and(|row| !row.complete())) {
+        return Squash::Unfinished(r.clone());
+    }
+    match replaces.iter().filter(|r| done.contains_key(*r)).count() {
         0 => Squash::Fresh,
         n if n == replaces.len() => Squash::Replaced,
         n => Squash::Partial(n),
     }
 }
 
-/// Applied migrations must be a prefix of the directory and unchanged since. The recorded rows of the
-/// migrations that a squash folder replaces must still have the checksums of its `replaces` lines.
-fn verify(statuses: &[Status], applied: &BTreeMap<String, (String, String)>) -> Result<()> {
+/// Applied migrations must be a prefix of the directory and unchanged since. A migration that
+/// stopped halfway must be the last one with a row.
+fn verify(statuses: &[Status], applied: &BTreeMap<String, Row>) -> Result<()> {
     let mut pending: Option<&str> = None;
     for s in statuses {
-        if !s.applied {
-            pending = pending.or(Some(&s.migration.name));
+        let m = &s.migration;
+        let row = applied.get(&m.name);
+        if row.is_none() && !s.applied {
+            pending = pending.or(Some(&m.name));
         } else if let Some(p) = pending {
             return Err(Error::Migration(format!(
                 "{} is applied but the earlier {p} is not; renumber the unapplied migration after the applied ones",
-                s.migration.name
+                m.name
             )));
-        } else {
-            let m = &s.migration;
-            let replaces = m.replaces()?;
-            let sum = m.checksum()?;
-            if squash_state(m, &replaces, applied) == Squash::Replaced {
-                for (name, expected) in &replaces {
-                    if applied[name].0 != *expected {
-                        return Err(Error::Migration(format!("{name}/up.sql changed after it was applied (the checksum differs from the replaces line of {})", m.name)));
-                    }
-                }
-            } else if applied[&m.name].0 != sum {
-                return Err(Error::Migration(format!("{}/up.sql changed after it was applied", m.name)));
+        } else if let Some(row) = row {
+            if row.checksum != m.checksum()? {
+                return Err(Error::Migration(format!("{} changed after it was applied", m.name)));
             }
         }
     }
     Ok(())
 }
 
-/// For each squash folder whose replaced migrations are all recorded and which is not yet: records the
-/// folder and forgets the replaced rows, in one transaction under the migration lock, with no SQL of the
-/// folder run. The new row is baselined when any replaced row was. Gives the folders it adopted.
+/// For each squash file whose replaced migrations are all recorded and which is not yet: records the
+/// file and forgets the replaced rows, in one transaction under the migration lock, with no SQL of the
+/// file run. The new row is baselined when any replaced row was. Gives the files it adopted.
 pub async fn adopt(conn: &dyn Executor, dir: &Path) -> Result<Vec<Migration>> {
     let mut done = vec![];
     for m in list(dir)? {
@@ -345,19 +364,19 @@ pub async fn adopt(conn: &dyn Executor, dir: &Path) -> Result<Vec<Migration>> {
         }
         ensure_table(conn).await?;
         let sum = m.checksum()?;
-        let names = replaces.iter().map(|(n, _)| lit(n)).collect::<Vec<_>>().join(", ");
+        let total = m.file()?.operations.len();
+        let names = replaces.iter().map(|n| lit(n)).collect::<Vec<_>>().join(", ");
         let any = match conn.dialect() {
             Dialect::Postgres => "COALESCE(bool_or(baseline), false)",
             Dialect::Sqlite => "COALESCE(MAX(baseline), 0)",
         };
         let record = format!(
-            "INSERT INTO {TABLE} (name, checksum, baseline) SELECT {}, {}, {any} FROM {TABLE} WHERE name IN ({names}) \
-             ON CONFLICT (name) DO UPDATE SET checksum = excluded.checksum",
+            "INSERT INTO {TABLE} (name, checksum, ops_done, ops_total, baseline) SELECT {}, {}, {total}, {total}, {any} FROM {TABLE} WHERE name IN ({names})",
             lit(&m.name),
             lit(&sum)
         );
         let forget = format!("DELETE FROM {TABLE} WHERE name IN ({names}) AND name <> {}", lit(&m.name));
-        let ran = locked(conn, None, |now| (squash_state(&m, &replaces, now) == Squash::Replaced).then_some([record, forget])).await?;
+        let ran = locked(conn, |now| (squash_state(&m, &replaces, now) == Squash::Replaced).then(|| vec![record, forget])).await?;
         if ran {
             done.push(m);
         }
@@ -365,34 +384,39 @@ pub async fn adopt(conn: &dyn Executor, dir: &Path) -> Result<Vec<Migration>> {
     Ok(done)
 }
 
+/// The replaced files that stay on disk must still match what the database recorded for them.
+fn verify_replaced(dir: &Path, rows: &BTreeMap<String, Row>) -> Result<()> {
+    for entry in files::list(dir).map_err(Error::Migration)? {
+        let Some(row) = rows.get(&entry.name) else { continue };
+        let m = Migration::from(entry);
+        if row.checksum != m.checksum()? {
+            return Err(Error::Migration(format!("{} changed after it was applied", m.name)));
+        }
+    }
+    Ok(())
+}
+
 /// [`adopt`] after the checks of [`status`] and [`verify`], so a partly applied database or a changed checksum fails before anything is written.
 async fn adopt_if_ready(conn: &dyn Executor, dir: &Path) -> Result<()> {
     if list(dir)?.iter().any(|m| m.replaces().is_ok_and(|r| !r.is_empty())) {
         let statuses = status(conn, dir).await?;
-        verify(&statuses, &applied(conn).await?)?;
+        let rows = applied(conn).await?;
+        verify(&statuses, &rows)?;
+        verify_replaced(dir, &rows)?;
         adopt(conn, dir).await?;
     }
     Ok(())
 }
 
-/// In one transaction holding the migration lock: runs the scripts `scripts` gives for
-/// the migrations applied by then (none: nothing to do), and commits. With `gated`
-/// (error text start, SQL), the destructive markers of that SQL are checked first, in the
-/// transaction.
-async fn locked(
-    conn: &dyn Executor,
-    gated: Option<(&str, &str)>,
-    scripts: impl FnOnce(&BTreeMap<String, (String, String)>) -> Option<[String; 2]>,
-) -> Result<bool> {
+/// In one transaction holding the migration lock: runs the statements `scripts` gives for
+/// the rows present by then (none: nothing to do), and commits.
+async fn locked(conn: &dyn Executor, scripts: impl FnOnce(&BTreeMap<String, Row>) -> Option<Vec<String>>) -> Result<bool> {
     let tx = conn.begin_migration().await?;
     let run = async {
         if conn.dialect() == Dialect::Postgres {
             take_xact_lock(&*tx).await?;
         }
         let Some(scripts) = scripts(&applied(&*tx).await?) else { return Ok(false) };
-        if let Some((what, sql)) = gated {
-            gate(&*tx, what, sql, true).await?;
-        }
         for sql in scripts {
             tx.batch(sql).await?;
         }
@@ -411,69 +435,349 @@ async fn locked(
     }
 }
 
-impl Migration {
-    /// The data step (`data.py` / `data.ts`) of this migration, if it has one.
-    pub fn data_file(&self) -> Option<&'static str> {
-        DATA_FILES.into_iter().find(|f| self.path.join(f).is_file())
+/// What a host that runs code is: the language of its `run_code` entries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Host {
+    Python,
+    TypeScript,
+}
+
+impl Host {
+    pub fn name(self) -> &'static str {
+        match self {
+            Host::Python => "python",
+            Host::TypeScript => "typescript",
+        }
+    }
+
+    /// The `file:function` entry of `call` for this host.
+    pub fn entry(self, call: &CodeCall) -> Option<&str> {
+        match self {
+            Host::Python => call.python.as_deref(),
+            Host::TypeScript => call.typescript.as_deref(),
+        }
     }
 }
 
-/// The migrations [`upgrade`] would apply, in order: pending ones up to and including
-/// `target` (default: all), after the same checks. Unless `allow_destructive`, a pending
-/// migration that marks a step destructive on a table with rows is refused. This check
-/// holds no lock: [`begin_apply`] checks again in its transaction. A no-transaction
-/// migration (see [`apply_no_transaction`]) with a data step, or on SQLite, is refused.
-pub async fn pending(conn: &dyn Executor, dir: &Path, target: Option<&str>, allow_destructive: bool) -> Result<Vec<Migration>> {
-    adopt_if_ready(conn, dir).await?;
-    let statuses = status(conn, dir).await?;
-    verify(&statuses, &applied(conn).await?)?;
-    let stop = target.map(|t| find(dir, t)).transpose()?.map(|m| m.name);
-    let todo: Vec<Migration> = statuses
-        .into_iter()
-        .filter(|s| !s.applied && stop.as_ref().is_none_or(|stop| s.migration.name <= *stop))
-        .map(|s| s.migration)
-        .collect();
-    for m in &todo {
-        if m.no_transaction()?.is_none() {
-            continue;
+/// The work of one migration: the operations `range` in `direction`, rendered into groups.
+#[derive(Debug, Clone)]
+pub struct Plan {
+    pub migration: Migration,
+    pub direction: Direction,
+    /// The operations to run, from 1, both ends included.
+    pub range: (usize, usize),
+    /// The number of operations in the file.
+    pub total: usize,
+    pub rendered: Rendered,
+    pub checksum: String,
+    /// The error text starts with this: the migration, and for a rollback its direction.
+    pub what: String,
+}
+
+impl Plan {
+    /// For each group, the progress (`ops_done`) before it and after it.
+    pub fn bounds(&self) -> Vec<(usize, usize)> {
+        let (a, b) = self.range;
+        let groups = &self.rendered.groups;
+        let low = |g: &Group| g.items.iter().map(|i| i.first).min().unwrap_or(a);
+        let mut out = vec![];
+        for (k, g) in groups.iter().enumerate() {
+            match self.direction {
+                Direction::Up => {
+                    let before = if k == 0 { a - 1 } else { out.last().map_or(a - 1, |p: &(usize, usize)| p.1) };
+                    let after = groups.get(k + 1).map_or(b, |n| low(n) - 1);
+                    out.push((before, after));
+                }
+                Direction::Down => {
+                    let before = if k == 0 { b } else { out.last().map_or(b, |p: &(usize, usize)| p.1) };
+                    let after = if k + 1 == groups.len() { a - 1 } else { low(g) - 1 };
+                    out.push((before, after));
+                }
+            }
         }
+        out
+    }
+
+    /// The code calls of the plan, in run order.
+    pub fn code_calls(&self) -> impl Iterator<Item = (&Item, &CodeCall)> {
+        self.rendered.items().filter_map(|i| match &i.body {
+            Body::Code(c) => Some((i, c)),
+            Body::Sql(_) => None,
+        })
+    }
+}
+
+/// The error text of the `--ops` slice that continues a migration that stopped halfway.
+fn continue_hint(m: &Migration, done: usize, total: usize, direction: Direction) -> String {
+    match direction {
+        Direction::Up => format!("migrate {} --ops {}-{total}", m.name, done + 1),
+        Direction::Down => format!("rollback {} --ops 1-{done}", m.name),
+    }
+}
+
+/// Reads `--ops` text: `A-B` (both ends included) or `A-` (to the end); numbers start at 1.
+pub fn parse_slice(text: &str) -> Result<Slice> {
+    let bad = || Error::Migration(format!("--ops takes A-B or A- (operation numbers from 1), not {text:?}"));
+    let (a, b) = text.split_once('-').ok_or_else(bad)?;
+    let a: usize = a.trim().parse().map_err(|_| bad())?;
+    let b = match b.trim() {
+        "" => None,
+        b => Some(b.parse::<usize>().map_err(|_| bad())?),
+    };
+    if a < 1 || b.is_some_and(|b| b < a) {
+        return Err(bad());
+    }
+    Ok((a, b))
+}
+
+fn slice_range(slice: Slice, limit: usize) -> Result<(usize, usize)> {
+    let (a, b) = (slice.0, slice.1.unwrap_or(limit));
+    if a < 1 || a > b {
+        return Err(Error::Migration(format!("--ops {a}-{b} is not a range of operations (numbers start at 1)")));
+    }
+    Ok((a, b))
+}
+
+fn render_plan(m: &Migration, dialect: Dialect, direction: Direction, range: (usize, usize), what: String) -> Result<Plan> {
+    let dir = m.dir().to_path_buf();
+    let file = m.file()?;
+    let total = file.operations.len();
+    let start = files::state_before(&dir, &m.name, dialect).map_err(Error::Migration)?;
+    let rendered = render::render(&m.name, &dir, &file, &start, direction, Some(range)).map_err(Error::Migration)?;
+    Ok(Plan { migration: m.clone(), direction, range, total, rendered, checksum: m.checksum()?, what })
+}
+
+/// The refusals that hold before anything runs: a step outside a transaction needs PostgreSQL and a
+/// direct connection, and code needs a host with an entry for its language.
+fn check_plan(conn: &dyn Executor, plan: &Plan, host: Option<Host>) -> Result<()> {
+    let name = &plan.migration.name;
+    for g in plan.rendered.groups.iter().filter(|g| !g.atomic) {
+        let first = g.items.first().map_or(0, |i| i.first);
         if conn.dialect() != Dialect::Postgres {
-            return Err(no_tx_refusal(&m.name, conn.dialect()));
+            return Err(Error::Migration(format!("{name}: operation {first} runs outside a transaction; {} has no such mode", conn.dialect().name())));
         }
         if conn.pooler_transactions() {
-            return Err(pooler_refusal(&m.name));
-        }
-        if let Some(file) = m.data_file() {
-            return Err(Error::Migration(format!("{} is a no-transaction migration and has a data step ({file}); a data step needs a transaction", m.name)));
-        }
-    }
-    if !allow_destructive {
-        for m in &todo {
-            gate(conn, &m.name, &m.up_sql()?, false).await?;
+            return Err(Error::Migration(format!(
+                "{name}: operation {first} runs outside a transaction and needs a session lock, which needs {}",
+                crate::db::POOLER_LOCK_REFUSAL
+            )));
         }
     }
-    Ok(todo)
+    for (item, call) in plan.code_calls() {
+        match host {
+            None => {
+                return Err(Error::Migration(format!(
+                    "{name}: operation {} runs code (run_code); apply it with the Python or TypeScript Migrator (python -m monorm migrate, npx monorm migrate), not with this program",
+                    item.first
+                )))
+            }
+            Some(h) if h.entry(call).is_none() => {
+                return Err(Error::Migration(format!("{name}: operation {} has no run_code entry for {}; add a \"{}\" entry or run it from a host that has one", item.first, h.name(), h.name())))
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
-/// Starts applying `m`: a migration transaction holding the migration lock, with
-/// `up.sql` run in it. `None` when another migrator applied `m` meanwhile. The caller
-/// runs the data step in the transaction, then [`finish_apply`] (or rolls back).
-/// Unless `allow_destructive`, a destructive step on a table with rows is refused here,
-/// after the lock, so a row inserted since [`pending`] still counts.
-pub async fn begin_apply(conn: &dyn Executor, m: &Migration, allow_destructive: bool) -> Result<Option<Arc<dyn Transaction>>> {
-    let up = m.up_sql()?;
+/// The destructive check of every group of `plan`, with no lock. [`begin_group`] checks again in its
+/// transaction.
+async fn precheck(conn: &dyn Executor, plan: &Plan) -> Result<()> {
+    for g in &plan.rendered.groups {
+        gate(conn, &plan.what, g, false).await?;
+    }
+    Ok(())
+}
+
+/// A partial row may belong to a run that still holds the migration lock. Waits for that run, so a
+/// plan never refuses a migration that another migrator is about to finish.
+async fn wait_for_running(conn: &dyn Executor) -> Result<()> {
+    if conn.dialect() == Dialect::Postgres && applied(conn).await?.values().any(|r| !r.complete()) {
+        locked(conn, |_| None).await?;
+    }
+    Ok(())
+}
+
+/// The plans [`upgrade`] runs: the pending migrations up to and including `target` (default: all), after
+/// the same checks. With `slice` (`--ops A-B`), `target` names one migration and the plan is the slice of
+/// its operations that follows the ones done. Unless `allow_destructive`, a destructive operation on a table
+/// with rows is refused. This check holds no lock: [`begin_group`] checks again in its transaction.
+pub async fn plan_up(conn: &dyn Executor, dir: &Path, target: Option<&str>, slice: Option<Slice>, host: Option<Host>, allow_destructive: bool) -> Result<Vec<Plan>> {
+    adopt_if_ready(conn, dir).await?;
+    ensure_table(conn).await?;
+    wait_for_running(conn).await?;
+    let statuses = status(conn, dir).await?;
+    let rows = applied(conn).await?;
+    verify(&statuses, &rows)?;
+    let mut plans = vec![];
+    if let Some(slice) = slice {
+        let name = target.ok_or_else(|| Error::Migration("--ops needs one named migration".into()))?;
+        let m = find(dir, name)?;
+        let row = rows.get(&m.name);
+        let total = m.file()?.operations.len();
+        let done = row.map_or(0, |r| r.done.min(r.total));
+        if row.is_some_and(Row::complete) {
+            return Err(Error::Migration(format!("{} is already applied", m.name)));
+        }
+        let at = position(&statuses, &m.name)?;
+        if let Some(p) = statuses[..at].iter().find(|s| !s.applied && !rows.contains_key(&s.migration.name)) {
+            return Err(Error::Migration(format!("the earlier {} is not applied", p.migration.name)));
+        }
+        let (a, b) = slice_range(slice, total)?;
+        if b > total {
+            return Err(Error::Migration(format!("{} has {total} operations; --ops {a}-{b} is out of range", m.name)));
+        }
+        if a != done + 1 {
+            return Err(Error::Migration(format!("{} has {done} of {total} operations applied; the next slice starts at {} (--ops {}-)", m.name, done + 1, done + 1)));
+        }
+        plans.push(render_plan(&m, conn.dialect(), Direction::Up, (a, b), m.name.clone())?);
+    } else {
+        let stop = target.map(|t| find(dir, t).and_then(|m| position(&statuses, &m.name))).transpose()?;
+        for s in statuses.iter().enumerate().filter(|(i, s)| !s.applied && stop.is_none_or(|stop| *i <= stop)).map(|(_, s)| s) {
+            let m = &s.migration;
+            if let Some((done, total)) = s.partial {
+                return Err(Error::Migration(format!(
+                    "{} stopped after {done} of {total} operations; continue it with `{}`",
+                    m.name,
+                    continue_hint(m, done, total, Direction::Up)
+                )));
+            }
+            let total = m.file()?.operations.len();
+            plans.push(render_plan(m, conn.dialect(), Direction::Up, (1, total.max(1)), m.name.clone())?);
+        }
+    }
+    for p in &plans {
+        check_plan(conn, p, host)?;
+    }
+    if !allow_destructive {
+        for p in &plans {
+            precheck(conn, p).await?;
+        }
+    }
+    Ok(plans)
+}
+
+/// The plans [`downgrade`] runs, newest migration first, after the checks. With `slice`, `down` is
+/// `Down::To` no migration: `name` is the one newest migration, and the plan is the operations of
+/// the slice, which must end at the operations done.
+pub async fn plan_down(conn: &dyn Executor, dir: &Path, down: Down, slice: Option<(&str, Slice)>, host: Option<Host>, force: bool, allow_destructive: bool) -> Result<Vec<Plan>> {
+    adopt_if_ready(conn, dir).await?;
+    ensure_table(conn).await?;
+    wait_for_running(conn).await?;
+    let statuses = status(conn, dir).await?;
+    let rows = applied(conn).await?;
+    verify(&statuses, &rows)?;
+    let started: Vec<(usize, &Status)> = statuses.iter().enumerate().filter(|(_, s)| s.applied || s.partial.is_some()).collect();
+    let mut plans = vec![];
+    let revert: Vec<&Status> = if let Some((name, _)) = slice {
+        let m = find(dir, name)?;
+        match started.last() {
+            Some((_, last)) if last.migration.name == m.name => vec![*last],
+            Some((_, last)) => return Err(Error::Migration(format!("{} is not the newest applied migration ({} is); roll back the newer ones first", m.name, last.migration.name))),
+            None => return Err(Error::Migration(format!("{} is not applied", m.name))),
+        }
+    } else {
+        match down {
+            Down::To(t) => {
+                let keep = if t == "zero" { None } else { Some(position(&statuses, &find(dir, &t)?.name)?) };
+                started.into_iter().filter(|(i, _)| keep.is_none_or(|k| *i > k)).map(|(_, s)| s).collect()
+            }
+            Down::Steps(n) => {
+                let skip = started.len().saturating_sub(n);
+                started.into_iter().skip(skip).map(|(_, s)| s).collect()
+            }
+        }
+    };
+    if slice.is_none() {
+        if let Some(s) = revert.iter().find(|s| s.partial.is_some()) {
+            let (done, total) = s.partial.unwrap_or((0, 0));
+            return Err(Error::Migration(format!(
+                "{} stopped after {done} of {total} operations; roll back what is done with `{}`",
+                s.migration.name,
+                continue_hint(&s.migration, done, total, Direction::Down)
+            )));
+        }
+    }
+    if !force {
+        let marked = baselined(conn).await?;
+        if let Some(s) = revert.iter().find(|s| marked.contains(&s.migration.name)) {
+            return Err(Error::Migration(format!(
+                "{} was baselined: the database had its schema before, so reverting it would drop live tables; pass --force to revert it anyway",
+                s.migration.name
+            )));
+        }
+    }
+    for s in revert.iter().rev() {
+        let m = &s.migration;
+        let row = rows.get(&m.name);
+        let total = m.file()?.operations.len();
+        let done = row.map_or(total, |r| r.done.min(r.total));
+        let range = match slice {
+            Some((_, sl)) => {
+                let (a, b) = slice_range(sl, done)?;
+                if b != done {
+                    return Err(Error::Migration(format!("{} has {done} of {total} operations applied; a rollback slice must end at {done} (--ops {a}-{done})", m.name)));
+                }
+                (a, b)
+            }
+            None => (1, done.max(1)),
+        };
+        plans.push(render_plan(m, conn.dialect(), Direction::Down, range, format!("rolling back {}", m.name))?);
+    }
+    for p in &plans {
+        check_plan(conn, p, host)?;
+    }
+    if !allow_destructive {
+        for p in &plans {
+            precheck(conn, p).await?;
+        }
+    }
+    Ok(plans)
+}
+
+/// The SQL that records the progress of `plan` after a group: the row is added by the first group of a
+/// migration, deleted when a rollback reaches the start, and updated otherwise.
+fn progress_sql(plan: &Plan, exists: bool, done: usize, started: Option<usize>) -> String {
+    let name = lit(&plan.migration.name);
+    let started = started.map_or("NULL".to_owned(), |n| n.to_string());
+    match plan.direction {
+        Direction::Down if done == 0 => format!("DELETE FROM {TABLE} WHERE name = {name}"),
+        _ if !exists => format!(
+            "INSERT INTO {TABLE} (name, checksum, ops_done, ops_total, started) VALUES ({name}, {}, {done}, {}, {started})",
+            lit(&plan.checksum),
+            plan.total
+        ),
+        _ => format!("UPDATE {TABLE} SET ops_done = {done}, started = {started} WHERE name = {name}"),
+    }
+}
+
+/// Whether the row of `plan` stands where the group expects: the progress before it.
+fn expected(plan: &Plan, rows: &BTreeMap<String, Row>, before: usize) -> bool {
+    let row = rows.get(&plan.migration.name);
+    match plan.direction {
+        Direction::Up => row.map_or(0, |r| r.done) == before && row.is_none_or(|r| r.started.is_none() || r.started == Some(before + 1)),
+        Direction::Down => row.is_some_and(|r| r.done == before),
+    }
+}
+
+/// Starts group `k` of `plan`, an atomic one: a migration transaction holding the migration lock. `None`
+/// when another migrator ran the group meanwhile. The caller runs the items with [`run_item`] (and the
+/// code itself), then [`finish_group`] (or rolls back). Unless `allow_destructive`, a destructive
+/// operation on a table with rows is refused here, after the lock, so a row inserted since [`plan_up`]
+/// still counts.
+pub async fn begin_group(conn: &dyn Executor, plan: &Plan, k: usize, allow_destructive: bool) -> Result<Option<Arc<dyn Transaction>>> {
+    let (before, _) = plan.bounds()[k];
     let tx = conn.begin_migration().await?;
     let run = async {
         if conn.dialect() == Dialect::Postgres {
             take_xact_lock(&*tx).await?;
         }
-        if applied(&*tx).await?.contains_key(&m.name) {
+        if !expected(plan, &applied(&*tx).await?, before) {
             return Ok(false);
         }
         if !allow_destructive {
-            gate(&*tx, &m.name, &up, true).await?;
+            gate(&*tx, &plan.what, &plan.rendered.groups[k], true).await?;
         }
-        tx.batch(up).await?;
         Ok::<_, Error>(true)
     };
     match run.await {
@@ -489,10 +793,21 @@ pub async fn begin_apply(conn: &dyn Executor, m: &Migration, allow_destructive: 
     }
 }
 
-/// Records `m` in the transaction of [`begin_apply`] and commits; rolls back on error.
-pub async fn finish_apply(tx: &dyn Transaction, m: &Migration) -> Result<()> {
-    let record = format!("INSERT INTO {TABLE} (name, checksum) VALUES ({}, {})", lit(&m.name), lit(&m.checksum()?));
-    match tx.batch(record).await {
+/// Runs the SQL steps of one item in the transaction of [`begin_group`].
+pub async fn run_item(tx: &dyn Transaction, item: &Item) -> Result<()> {
+    if let Body::Sql(steps) = &item.body {
+        for s in steps {
+            tx.batch(s.sql.clone()).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Records the progress of group `k` in the transaction of [`begin_group`] and commits; rolls back on error.
+pub async fn finish_group(tx: &dyn Transaction, plan: &Plan, k: usize) -> Result<()> {
+    let (before, after) = plan.bounds()[k];
+    let exists = !(plan.direction == Direction::Up && before == 0);
+    match tx.batch(progress_sql(plan, exists, after, None)).await {
         Ok(_) => {
             tx.commit().await?;
             crate::db::forget_cascades(tx);
@@ -505,34 +820,37 @@ pub async fn finish_apply(tx: &dyn Transaction, m: &Migration) -> Result<()> {
     }
 }
 
-/// The refusal of a no-transaction script on a database that has no such mode.
-fn no_tx_refusal(what: &str, dialect: Dialect) -> Error {
-    Error::Migration(format!("{what} is a no-transaction migration; {} has no such mode", dialect.name()))
+/// A plan with no group to run still moves the progress to the end of its slice.
+pub async fn record_empty(conn: &dyn Executor, plan: &Plan) -> Result<()> {
+    let (a, b) = plan.range;
+    let (before, after) = match plan.direction {
+        Direction::Up => (a - 1, b),
+        Direction::Down => (b, a - 1),
+    };
+    let sql = |exists: bool| progress_sql(plan, exists, after, None);
+    let up = plan.direction == Direction::Up;
+    locked(conn, |rows| {
+        if !expected(plan, rows, before) {
+            return None;
+        }
+        Some(vec![sql(!(up && before == 0))])
+    })
+    .await?;
+    Ok(())
 }
 
-/// The refusal of a no-transaction script behind a pooler: its session lock needs a direct connection.
-fn pooler_refusal(what: &str) -> Error {
-    Error::Migration(format!(
-        "{what} runs outside a transaction and needs a session lock, which needs {}",
-        crate::db::POOLER_LOCK_REFUSAL
-    ))
-}
-
-/// An index name of a header as SQL: a quoted name stays as written.
+/// The refusal text of an index that a failed build left behind: nothing here, the build drops it.
 fn index_ref(name: &str) -> String {
     if name.starts_with('"') { name.to_owned() } else { ident(name) }
 }
 
-/// Runs `sql` (one statement, outside a transaction) and then `record`, under the session
-/// lock of the migration lock. The run happens only when `m` is recorded as applied exactly
-/// when `expect_applied` says so; otherwise it gives `false` and runs nothing.
-struct NoTxRun<'a> {
-    /// Starts the error text of the destructive check.
-    what: &'a str,
-    sql: String,
-    index: Option<NoTxIndex>,
-    record: String,
-    expect_applied: bool,
+/// The index that operation `number` of `file` builds, when it is a build outside a transaction.
+fn building_index(file: &MigrationFile, number: usize) -> Option<String> {
+    let op = file.operations.get(number.checked_sub(1)?)?;
+    match &op.kind {
+        OpKind::Schema(Op::CreateIndex { index, .. }) if !op.atomic => Some(index_ref(&index.name)),
+        _ => None,
+    }
 }
 
 /// Takes the transaction lock of the migration lock by polling, never by a blocked
@@ -559,36 +877,45 @@ async fn take_migration_lock(driver: &dyn Driver) -> Result<Arc<dyn SessionLock>
     }
 }
 
-async fn run_no_transaction(driver: &dyn Driver, m: &Migration, step: NoTxRun<'_>, allow_destructive: bool) -> Result<bool> {
-    let NoTxRun { what, sql, index, record, expect_applied } = step;
-    if driver.dialect() != Dialect::Postgres {
-        return Err(no_tx_refusal(&m.name, driver.dialect()));
-    }
-    if driver.pooler_transactions() {
-        return Err(pooler_refusal(&m.name));
-    }
-    // Before the lock: it may take the transaction lock, which the session lock would block.
+/// Runs group `k` of `plan`, one operation outside a transaction, on PostgreSQL: under a session lock,
+/// marks the operation started, runs it, then records the progress. A failed `CREATE INDEX CONCURRENTLY`
+/// leaves an INVALID index, and a rerun drops it before the build. `false` when another migrator ran
+/// the group meanwhile.
+pub async fn run_outside(driver: &dyn Driver, plan: &Plan, k: usize, allow_destructive: bool) -> Result<bool> {
+    let group = &plan.rendered.groups[k];
+    let (before, after) = plan.bounds()[k];
+    let number = group.items.first().map_or(0, |i| i.first);
+    let file = plan.migration.file()?;
     ensure_table(driver).await?;
     let lock = take_migration_lock(driver).await?;
     let run = async {
-        if applied(driver).await?.contains_key(&m.name) != expect_applied {
+        let rows = applied(driver).await?;
+        if !expected(plan, &rows, before) {
             return Ok(false);
         }
         if !allow_destructive {
-            gate(driver, what, &sql, false).await?;
+            gate(driver, &plan.what, group, false).await?;
         }
-        if let Some(NoTxIndex::Create(name)) = &index {
-            // A failed concurrent build leaves an INVALID index, and IF NOT EXISTS would keep it.
-            let target = index_ref(name);
-            let valid = driver.query_text(format!("SELECT CAST(indisvalid AS integer) FROM pg_index WHERE indexrelid = to_regclass({})", lit(&target))).await?;
-            if valid.into_iter().next().and_then(|r| r.into_iter().next().flatten()).is_some_and(|v| v == "0") {
-                driver.batch(format!("DROP INDEX CONCURRENTLY {target}")).await?;
+        let exists = rows.contains_key(&plan.migration.name);
+        // Marking the start needs a row for a migration that has none yet.
+        driver.batch(match (plan.direction, exists) {
+            (Direction::Up, false) => progress_sql(plan, false, 0, Some(number)),
+            _ => format!("UPDATE {TABLE} SET started = {number} WHERE name = {}", lit(&plan.migration.name)),
+        }).await?;
+        if plan.direction == Direction::Up {
+            if let Some(target) = building_index(&file, number) {
+                let valid = driver.query_text(format!("SELECT CAST(indisvalid AS integer) FROM pg_index WHERE indexrelid = to_regclass({})", lit(&target))).await?;
+                if valid.into_iter().next().and_then(|r| r.into_iter().next().flatten()).is_some_and(|v| v == "0") {
+                    driver.batch(format!("DROP INDEX CONCURRENTLY {target}")).await?;
+                }
             }
         }
-        driver.batch(sql).await?;
+        for item in &group.items {
+            run_item_outside(driver, item).await?;
+        }
         // A statement outside a transaction commits by itself. The transaction lock would wait
         // for this process's own session lock.
-        driver.batch(record).await?;
+        driver.batch(progress_sql(plan, true, after, None)).await?;
         Ok::<_, Error>(true)
     };
     let out = run.await;
@@ -599,40 +926,49 @@ async fn run_no_transaction(driver: &dyn Driver, m: &Migration, step: NoTxRun<'_
     Ok(ran)
 }
 
-/// Applies `m`, a migration whose `up.sql` starts with [`NO_TX_HEADER`], on PostgreSQL:
-/// under a session lock, the statement runs outside any transaction and the record row goes
-/// in a transaction of its own. `false` when another migrator applied `m` meanwhile. A failed
-/// `CREATE INDEX CONCURRENTLY` leaves an INVALID index; a rerun drops it before the build.
-/// Unless `allow_destructive`, a destructive step on a table with rows is refused.
-pub async fn apply_no_transaction(driver: &dyn Driver, m: &Migration, allow_destructive: bool) -> Result<bool> {
-    let up = m.up_sql()?;
-    let header = NoTx::parse(&up).map_err(|e| Error::Migration(format!("{}/up.sql: {e}", m.name)))?;
-    let Some(header) = header else {
-        return Err(Error::Migration(format!("{} has no `{NO_TX_HEADER}` header", m.name)));
-    };
-    let record = format!("INSERT INTO {TABLE} (name, checksum) VALUES ({}, {})", lit(&m.name), lit(&checksum(&up)));
-    let step = NoTxRun { what: &m.name, sql: up, index: header.index, record, expect_applied: false };
-    run_no_transaction(driver, m, step, allow_destructive).await
+async fn run_item_outside(conn: &dyn Executor, item: &Item) -> Result<()> {
+    if let Body::Sql(steps) = &item.body {
+        for s in steps {
+            conn.batch(s.sql.clone()).await?;
+        }
+    }
+    Ok(())
 }
 
-/// Applies pending migrations up to and including `target` (default: all); gives the
-/// ones it applied. A migration with a data step (`data.py`, `data.ts`) is refused
-/// before anything runs: the Python or TypeScript migrator applies it.
-pub async fn upgrade(conn: &dyn Driver, dir: &Path, target: Option<&str>, allow_destructive: bool) -> Result<Vec<Migration>> {
-    let todo = pending(conn, dir, target, allow_destructive).await?;
-    if let Some((m, file)) = todo.iter().find_map(|m| m.data_file().map(|f| (m, f))) {
-        let tool = if file == "data.py" { "python -m monorm migrate (or Migrator.upgrade())" } else { "npx monorm migrate (or Migrator.upgrade())" };
-        return Err(Error::Migration(format!("{} has a data step ({file}); apply it with {tool}", m.name)));
+/// Runs the SQL of every group of `plan` (the plan has no code: [`plan_up`] refuses it without a host).
+pub async fn apply(conn: &dyn Driver, plan: &Plan, allow_destructive: bool) -> Result<bool> {
+    if plan.rendered.groups.is_empty() {
+        record_empty(conn, plan).await?;
+        return Ok(true);
     }
-    let mut done = vec![];
-    for m in todo {
-        if m.no_transaction()?.is_some() {
-            if apply_no_transaction(conn, &m, allow_destructive).await? {
-                done.push(m);
+    for (k, g) in plan.rendered.groups.iter().enumerate() {
+        if g.atomic {
+            let Some(tx) = begin_group(conn, plan, k, allow_destructive).await? else { return Ok(false) };
+            for item in &g.items {
+                if let Err(e) = run_item(&*tx, item).await {
+                    let _ = Transaction::rollback(&*tx).await;
+                    return Err(e);
+                }
             }
-        } else if let Some(tx) = begin_apply(conn, &m, allow_destructive).await? {
-            finish_apply(&*tx, &m).await?;
-            done.push(m);
+            finish_group(&*tx, plan, k).await?;
+        } else if !run_outside(conn, plan, k, allow_destructive).await? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Applies pending migrations up to and including `target` (default: all); gives the ones it applied. With
+/// `slice`, applies those operations of the one migration `target`. A migration with code (`run_code`)
+/// is refused before anything runs: the Python or TypeScript migrator applies it.
+pub async fn upgrade(conn: &dyn Driver, dir: &Path, target: Option<&str>, slice: Option<Slice>, allow_destructive: bool) -> Result<Vec<Migration>> {
+    let plans = plan_up(conn, dir, target, slice, None, allow_destructive).await?;
+    let mut done = vec![];
+    for plan in plans {
+        if apply(conn, &plan, allow_destructive).await? {
+            done.push(plan.migration);
+        } else if slice.is_some() {
+            return Err(Error::Migration(format!("{} changed while this run waited for the lock; run it again", plan.migration.name)));
         }
     }
     Ok(done)
@@ -641,7 +977,7 @@ pub async fn upgrade(conn: &dyn Driver, dir: &Path, target: Option<&str>, allow_
 /// The names of the applied migrations, in order.
 pub async fn applied_names(conn: &dyn Executor) -> Result<Vec<String>> {
     ensure_table(conn).await?;
-    Ok(applied(conn).await?.into_keys().collect())
+    Ok(applied(conn).await?.into_iter().filter(|(_, r)| r.complete()).map(|(n, _)| n).collect())
 }
 
 /// Records the first migration of `dir` as applied without running it, for a database
@@ -649,16 +985,17 @@ pub async fn applied_names(conn: &dyn Executor) -> Result<Vec<String>> {
 pub async fn baseline(conn: &dyn Executor, dir: &Path) -> Result<Migration> {
     let first = list(dir)?.into_iter().next().ok_or_else(|| Error::Migration(format!("no migration in {}", dir.display())))?;
     ensure_table(conn).await?;
+    let total = first.file()?.operations.len();
     let record = format!(
-        "INSERT INTO {TABLE} (name, checksum, baseline) VALUES ({}, {}, {})",
+        "INSERT INTO {TABLE} (name, checksum, ops_done, ops_total, baseline) VALUES ({}, {}, {total}, {total}, {})",
         lit(&first.name),
         lit(&first.checksum()?),
         if conn.dialect() == Dialect::Postgres { "true" } else { "1" }
     );
     let mut applied = vec![];
-    let ran = locked(conn, None, |now| {
+    let ran = locked(conn, |now| {
         applied = now.keys().cloned().collect();
-        now.is_empty().then(|| ["SELECT 1".to_owned(), record])
+        now.is_empty().then(|| vec![record])
     })
     .await?;
     if !ran {
@@ -668,63 +1005,15 @@ pub async fn baseline(conn: &dyn Executor, dir: &Path) -> Result<Migration> {
 }
 
 /// Reverts applied migrations, newest first; gives the ones it reverted. A baselined
-/// migration was never run here, so its `down.sql` would drop live tables: refused
-/// unless `force`, before anything is reverted. Unless `allow_destructive`, a `down.sql`
-/// that marks a destructive step on a table with rows is refused too: checked first for
-/// every migration to revert, then again in the transaction of each.
-pub async fn downgrade(conn: &dyn Driver, dir: &Path, down: Down, force: bool, allow_destructive: bool) -> Result<Vec<Migration>> {
-    adopt_if_ready(conn, dir).await?;
-    let applied: Vec<Migration> = status(conn, dir).await?.into_iter().filter(|s| s.applied).map(|s| s.migration).collect();
-    let revert: Vec<Migration> = match down {
-        Down::To(t) => {
-            let keep = if t == "zero" { String::new() } else { find(dir, &t)?.name };
-            applied.into_iter().filter(|m| m.name > keep).collect()
-        }
-        Down::Steps(n) => {
-            let skip = applied.len().saturating_sub(n);
-            applied.into_iter().skip(skip).collect()
-        }
-    };
-    if !force {
-        let marked = baselined(conn).await?;
-        if let Some(m) = revert.iter().find(|m| marked.contains(&m.name)) {
-            return Err(Error::Migration(format!(
-                "{} was baselined: the database had its schema before, so reverting it would drop live tables; pass --force to revert it anyway",
-                m.name
-            )));
-        }
-    }
-    let what = |m: &Migration| format!("rolling back {}", m.name);
-    if !allow_destructive {
-        for m in &revert {
-            gate(conn, &what(m), &m.down_sql()?, false).await?;
-        }
-    }
-    let headers = revert
-        .iter()
-        .map(|m| NoTx::parse(&m.down_sql()?).map_err(|e| Error::Migration(format!("{}/down.sql: {e}", m.name))))
-        .collect::<Result<Vec<_>>>()?;
-    if conn.dialect() != Dialect::Postgres {
-        if let Some((m, _)) = revert.iter().zip(&headers).find(|(_, h)| h.is_some()) {
-            return Err(no_tx_refusal(&format!("{}/down.sql", m.name), conn.dialect()));
-        }
-    }
+/// migration was never run here, so its reverse would drop live tables: refused
+/// unless `force`, before anything is reverted. A reverse that is missing is refused
+/// before anything is reverted, and so is a destructive one unless `allow_destructive`.
+pub async fn downgrade(conn: &dyn Driver, dir: &Path, down: Down, slice: Option<(&str, Slice)>, force: bool, allow_destructive: bool) -> Result<Vec<Migration>> {
+    let plans = plan_down(conn, dir, down, slice, None, force, allow_destructive).await?;
     let mut done = vec![];
-    for (m, header) in revert.into_iter().zip(headers).rev() {
-        let scripts = [m.down_sql()?, format!("DELETE FROM {TABLE} WHERE name = {}", lit(&m.name))];
-        let label = what(&m);
-        if let Some(header) = header {
-            let [sql, record] = scripts;
-            let step = NoTxRun { what: &label, sql, index: header.index, record, expect_applied: true };
-            if run_no_transaction(conn, &m, step, allow_destructive).await? {
-                done.push(m);
-            }
-            continue;
-        }
-        let gated = (!allow_destructive).then(|| (label.as_str(), scripts[0].as_str()));
-        let known = |now: &BTreeMap<String, (String, String)>| now.contains_key(&m.name).then(|| scripts.clone());
-        if locked(conn, gated, known).await? {
-            done.push(m);
+    for plan in plans {
+        if apply(conn, &plan, allow_destructive).await? {
+            done.push(plan.migration);
         }
     }
     Ok(done)
@@ -734,43 +1023,27 @@ pub async fn downgrade(conn: &dyn Driver, dir: &Path, down: Down, force: bool, a
 mod tests {
     use super::*;
 
-    fn parse(sql: &str) -> Option<NoTx> {
-        NoTx::parse(sql).unwrap()
+    fn row(done: usize, total: usize) -> Row {
+        Row { checksum: String::new(), applied_at: String::new(), done, total, started: None }
     }
 
     #[test]
-    fn header_marks_a_no_transaction_script() {
-        assert_eq!(parse("-- monorm: no-transaction\nCREATE INDEX CONCURRENTLY i ON t (a);"), Some(NoTx { index: None }));
-        assert_eq!(parse("-- monorm: no-transaction\r\nSELECT 1"), Some(NoTx { index: None }));
+    fn a_row_is_complete_when_all_operations_are_done() {
+        assert!(row(3, 3).complete());
+        assert!(row(0, 0).complete());
+        assert!(!row(2, 3).complete());
     }
 
     #[test]
-    fn header_names_the_index() {
-        assert_eq!(parse("-- monorm: no-transaction create-index post_idx\nSELECT 1").unwrap().index, Some(NoTxIndex::Create("post_idx".into())));
-        assert_eq!(parse("-- monorm: no-transaction drop-index \"Post Idx\"\nSELECT 1").unwrap().index, Some(NoTxIndex::Drop("\"Post Idx\"".into())));
-    }
-
-    #[test]
-    fn other_first_lines_run_in_a_transaction() {
-        assert_eq!(parse(""), None);
-        assert_eq!(parse("CREATE TABLE t (a int);\n-- monorm: no-transaction"), None);
-        assert_eq!(parse("-- monorm: no-transactions\nSELECT 1"), None);
-        assert_eq!(parse("-- monorm: destructive drop-table t\nDROP TABLE t;"), None);
-    }
-
-    #[test]
-    fn unknown_header_words_are_an_error() {
-        assert!(NoTx::parse("-- monorm: no-transaction create-index").is_err());
-        assert!(NoTx::parse("-- monorm: no-transaction vacuum t").is_err());
-    }
-
-    #[test]
-    fn an_edited_squash_row_with_the_name_of_a_replaced_migration_is_still_the_squash_row() {
-        let m = Migration { name: "0001_init".into(), path: PathBuf::new() };
-        let replaces = vec![("0001_init".to_owned(), "old".to_owned()), ("0002_b".to_owned(), "b".to_owned())];
-        let row = |sum: &str| BTreeMap::from([("0001_init".to_owned(), (sum.to_owned(), String::new()))]);
-        assert_eq!(squash_state(&m, &replaces, &row("edited-squash")), Squash::Own);
-        // the row of the replaced migration itself is one of the replaced rows
-        assert_eq!(squash_state(&m, &replaces, &row("old")), Squash::Partial(1));
+    fn a_squash_file_with_one_replaced_row_is_a_partial_database() {
+        let m = Migration { name: "0003_squash".into(), path: PathBuf::new() };
+        let replaces = vec!["0001_a".to_owned(), "0002_b".to_owned()];
+        let rows = BTreeMap::from([("0001_a".to_owned(), row(1, 1))]);
+        assert_eq!(squash_state(&m, &replaces, &rows), Squash::Partial(1));
+        let rows = BTreeMap::from([("0001_a".to_owned(), row(1, 1)), ("0002_b".to_owned(), row(1, 1))]);
+        assert_eq!(squash_state(&m, &replaces, &rows), Squash::Replaced);
+        assert_eq!(squash_state(&m, &replaces, &BTreeMap::new()), Squash::Fresh);
+        let rows = BTreeMap::from([("0001_a".to_owned(), row(1, 2))]);
+        assert_eq!(squash_state(&m, &replaces, &rows), Squash::Unfinished("0001_a".into()));
     }
 }

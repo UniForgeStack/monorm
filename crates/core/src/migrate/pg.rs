@@ -116,15 +116,13 @@ fn fk_def(fk: &ForeignKey) -> String {
     s
 }
 
-/// `not_valid` adds a foreign key or check without scanning the table; `VALIDATE CONSTRAINT` does that later.
-fn constraint_def(c: &Constraint, not_valid: bool) -> String {
-    let tail = if not_valid { " NOT VALID" } else { "" };
+fn constraint_def(c: &Constraint) -> String {
     match c {
         Constraint::PrimaryKey(pk) => pk_def(pk),
         Constraint::Unique(u) => unique_def(u),
-        Constraint::Check(c) => format!("CONSTRAINT {} CHECK ({}){tail}", ident(&c.name), c.expr),
+        Constraint::Check(c) => format!("CONSTRAINT {} CHECK ({})", ident(&c.name), c.expr),
         Constraint::Exclusion(e) => exclusion_def(e),
-        Constraint::ForeignKey(fk) => format!("{}{tail}", fk_def(fk)),
+        Constraint::ForeignKey(fk) => fk_def(fk),
     }
 }
 
@@ -260,8 +258,6 @@ fn comment(c: &Option<String>) -> String {
 pub struct Online {
     /// `CREATE INDEX CONCURRENTLY IF NOT EXISTS` and `DROP INDEX CONCURRENTLY IF EXISTS`.
     pub concurrently: bool,
-    /// `ADD CONSTRAINT ... NOT VALID` for a foreign key or a check.
-    pub not_valid: bool,
 }
 
 /// SQL for one operation. `idempotent` renders `IF NOT EXISTS` / `OR REPLACE` forms
@@ -403,7 +399,7 @@ pub fn render_with(op: &Op, idempotent: bool, online: Online) -> String {
             )
         }
         Op::DropIdentity { table, column } => format!("{} ALTER COLUMN {} DROP IDENTITY", alter(table), ident(column)),
-        Op::AddConstraint { table, constraint } => format!("{} ADD {}", alter(table), constraint_def(constraint, online.not_valid)),
+        Op::AddConstraint { table, constraint } => format!("{} ADD {}", alter(table), constraint_def(constraint)),
         Op::DropConstraint { table, name } => format!("{} DROP CONSTRAINT {}", alter(table), ident(name)),
         Op::RenameConstraint { table, from, to } => {
             format!("{} RENAME CONSTRAINT {} TO {}", alter(table), ident(from), ident(to))

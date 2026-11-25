@@ -231,7 +231,7 @@ for (const change of ["body", "column_type", "table"] as const) {
       if (change === "body") migrationSchema(dir, "postgres", "Int", "SELECT id, value::text AS value FROM sv_review_items");
       else if (change === "column_type") migrationSchema(dir, "postgres", "BigInt");
       else migrationSchema(dir, "postgres", "Int", undefined, "added Int?");
-      const migration = migrations.make(change)[0]!;
+      const migration = migrations.make(change)!;
       const sql = migration.upSql;
       assert.ok(!sql.includes("OR REPLACE"));
       assert.ok(sql.indexOf("DROP VIEW") >= 0 && sql.indexOf("CREATE VIEW") > sql.indexOf("DROP VIEW"));
@@ -261,7 +261,7 @@ test("sqlite rebuild under a view copies rows with legacy alter table off", asyn
     const models = load(schema, { registry: new Registry() }) as unknown as Record<string, Open>;
     await models.ReviewItem!.objects.using(db).insertMany([{ id: 1, value: 7 }, { id: 2, value: 9 }]);
     migrationSchema(dir, "sqlite", "Int", undefined, "@@check(value >= 0)");
-    const migration = migrations.make("rebuild")[0]!;
+    const migration = migrations.make("rebuild")!;
     assert.ok(migration.upSql.includes("__orm_new_"));
     await migrator.upgrade(undefined, { allowDestructive: true });
     assert.deepEqual(await db.fetchText("PRAGMA legacy_alter_table"), [["0"]]);

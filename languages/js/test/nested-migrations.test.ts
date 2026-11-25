@@ -61,7 +61,7 @@ async function withDatabase(dialect: Dialect, source: string, body: (db: Databas
 
 async function migrate(db: Database, dir: string, source: string): Promise<void> {
   const migs = new Migrations(dir, models(source));
-  assert.ok(migs.make().length);
+  assert.ok(migs.make());
   await new Migrator(db, migs).upgrade(undefined, { allowDestructive: true });
 }
 

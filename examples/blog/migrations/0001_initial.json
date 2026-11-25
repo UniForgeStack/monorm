@@ -1,0 +1,445 @@
+{
+  "version": 1,
+  "operations": [
+    {
+      "create_extension": {
+        "name": "pg_trgm"
+      }
+    },
+    {
+      "create_enum": {
+        "name": "role",
+        "values": [
+          "member",
+          "editor",
+          "admin"
+        ]
+      }
+    },
+    {
+      "create_table": {
+        "foreign_keys": [],
+        "table": {
+          "columns": [
+            {
+              "identity": true,
+              "name": "id",
+              "type": "bigint"
+            },
+            {
+              "name": "email",
+              "type": "varchar(254)"
+            },
+            {
+              "name": "name",
+              "type": "varchar(100)"
+            },
+            {
+              "default": "now()",
+              "name": "created_at",
+              "type": "timestamp with time zone"
+            }
+          ],
+          "name": "users",
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "users_pkey"
+          },
+          "uniques": [
+            {
+              "columns": [
+                "email"
+              ],
+              "name": "users_email_key"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "create_table": {
+        "foreign_keys": [
+          {
+            "columns": [
+              "user_id"
+            ],
+            "name": "profiles_user_id_fkey",
+            "on_delete": "cascade",
+            "ref_columns": [
+              "id"
+            ],
+            "ref_table": "users"
+          }
+        ],
+        "table": {
+          "columns": [
+            {
+              "identity": true,
+              "name": "id",
+              "type": "bigint"
+            },
+            {
+              "name": "user_id",
+              "type": "bigint"
+            },
+            {
+              "default": "'member'",
+              "name": "role",
+              "type": "\"role\""
+            },
+            {
+              "default": "0",
+              "name": "balance",
+              "type": "numeric(12, 2)"
+            },
+            {
+              "default": "'{}'::text[]",
+              "name": "links",
+              "type": "text[]"
+            }
+          ],
+          "name": "profiles",
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "profiles_pkey"
+          },
+          "uniques": [
+            {
+              "columns": [
+                "user_id"
+              ],
+              "name": "profiles_user_id_key"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "create_table": {
+        "foreign_keys": [
+          {
+            "columns": [
+              "author_id"
+            ],
+            "name": "posts_author_id_fkey",
+            "on_delete": "cascade",
+            "ref_columns": [
+              "id"
+            ],
+            "ref_table": "users"
+          }
+        ],
+        "table": {
+          "checks": [
+            {
+              "expr": "views >= 0",
+              "name": "posts_views_not_negative"
+            }
+          ],
+          "columns": [
+            {
+              "identity": true,
+              "name": "id",
+              "type": "bigint"
+            },
+            {
+              "name": "author_id",
+              "type": "bigint"
+            },
+            {
+              "name": "title",
+              "type": "varchar(200)"
+            },
+            {
+              "name": "body",
+              "type": "text"
+            },
+            {
+              "default": "0",
+              "name": "views",
+              "type": "integer"
+            },
+            {
+              "default": "false",
+              "name": "published",
+              "type": "boolean"
+            },
+            {
+              "default": "now()",
+              "name": "created_at",
+              "type": "timestamp with time zone"
+            }
+          ],
+          "name": "posts",
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "posts_pkey"
+          }
+        }
+      }
+    },
+    {
+      "create_table": {
+        "foreign_keys": [
+          {
+            "columns": [
+              "post_id"
+            ],
+            "name": "comments_post_id_fkey",
+            "on_delete": "cascade",
+            "ref_columns": [
+              "id"
+            ],
+            "ref_table": "posts"
+          },
+          {
+            "columns": [
+              "author_id"
+            ],
+            "name": "comments_author_id_fkey",
+            "on_delete": "set_null",
+            "ref_columns": [
+              "id"
+            ],
+            "ref_table": "users"
+          }
+        ],
+        "table": {
+          "columns": [
+            {
+              "identity": true,
+              "name": "id",
+              "type": "bigint"
+            },
+            {
+              "name": "post_id",
+              "type": "bigint"
+            },
+            {
+              "name": "author_id",
+              "nullable": true,
+              "type": "bigint"
+            },
+            {
+              "name": "body",
+              "type": "text"
+            },
+            {
+              "default": "now()",
+              "name": "created_at",
+              "type": "timestamp with time zone"
+            }
+          ],
+          "name": "comments",
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "comments_pkey"
+          }
+        }
+      }
+    },
+    {
+      "create_table": {
+        "foreign_keys": [],
+        "table": {
+          "checks": [
+            {
+              "expr": "\"priority\" IN (1, 2, 3)",
+              "name": "tags_priority_enum_check"
+            }
+          ],
+          "columns": [
+            {
+              "identity": true,
+              "name": "id",
+              "type": "bigint"
+            },
+            {
+              "name": "name",
+              "type": "varchar(50)"
+            },
+            {
+              "default": "2",
+              "name": "priority",
+              "type": "integer"
+            }
+          ],
+          "name": "tags",
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "tags_pkey"
+          },
+          "uniques": [
+            {
+              "columns": [
+                "name"
+              ],
+              "name": "tags_name_key"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "create_table": {
+        "foreign_keys": [
+          {
+            "columns": [
+              "post_id"
+            ],
+            "name": "post_tags_post_id_fkey",
+            "on_delete": "cascade",
+            "ref_columns": [
+              "id"
+            ],
+            "ref_table": "posts"
+          },
+          {
+            "columns": [
+              "tag_id"
+            ],
+            "name": "post_tags_tag_id_fkey",
+            "on_delete": "cascade",
+            "ref_columns": [
+              "id"
+            ],
+            "ref_table": "tags"
+          }
+        ],
+        "table": {
+          "columns": [
+            {
+              "identity": true,
+              "name": "id",
+              "type": "bigint"
+            },
+            {
+              "name": "post_id",
+              "type": "bigint"
+            },
+            {
+              "name": "tag_id",
+              "type": "bigint"
+            },
+            {
+              "name": "position",
+              "nullable": true,
+              "type": "integer"
+            }
+          ],
+          "name": "post_tags",
+          "primary_key": {
+            "columns": [
+              "id"
+            ],
+            "name": "post_tags_pkey"
+          },
+          "uniques": [
+            {
+              "columns": [
+                "post_id",
+                "tag_id"
+              ],
+              "name": "post_tags_post_id_tag_id_key"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "create_index": {
+        "index": {
+          "keys": [
+            {
+              "column": "author_id"
+            }
+          ],
+          "name": "posts_author_id_idx"
+        },
+        "table": "posts"
+      }
+    },
+    {
+      "create_index": {
+        "index": {
+          "keys": [
+            {
+              "column": "author_id"
+            },
+            {
+              "column": "created_at",
+              "desc": true
+            }
+          ],
+          "name": "posts_author_id_created_at_idx",
+          "where": "published"
+        },
+        "table": "posts"
+      }
+    },
+    {
+      "create_index": {
+        "index": {
+          "keys": [
+            {
+              "column": "title",
+              "opclass": "gin_trgm_ops"
+            }
+          ],
+          "method": "gin",
+          "name": "posts_title_idx"
+        },
+        "table": "posts"
+      }
+    },
+    {
+      "create_index": {
+        "index": {
+          "keys": [
+            {
+              "column": "post_id"
+            }
+          ],
+          "name": "comments_post_id_idx"
+        },
+        "table": "comments"
+      }
+    },
+    {
+      "create_index": {
+        "index": {
+          "keys": [
+            {
+              "column": "author_id"
+            }
+          ],
+          "name": "comments_author_id_idx"
+        },
+        "table": "comments"
+      }
+    },
+    {
+      "create_index": {
+        "index": {
+          "keys": [
+            {
+              "column": "tag_id"
+            }
+          ],
+          "name": "post_tags_tag_id_idx"
+        },
+        "table": "post_tags"
+      }
+    }
+  ]
+}

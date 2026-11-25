@@ -17,7 +17,8 @@ use super::model::{
     Policy, Trigger, Unique, ShapeEntry, NestedShape,
 };
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Constraint {
     PrimaryKey(PrimaryKey),
     Unique(Unique),
@@ -51,7 +52,7 @@ impl Constraint {
 }
 
 /// A column using an enum type that is recreated.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct EnumColumn {
     pub table: String,
     pub column: String,
@@ -59,7 +60,9 @@ pub struct EnumColumn {
     pub array: bool,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+/// One schema operation. The serde form is the operation of a migration file: `{ "add_column": { ... } }`.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Op {
     CreateExtension(Extension),
     DropExtension(Extension),
@@ -201,16 +204,6 @@ pub enum DestructiveKind {
     AlterType,
 }
 
-impl DestructiveKind {
-    fn word(self) -> &'static str {
-        match self {
-            DestructiveKind::DropTable => "drop-table",
-            DestructiveKind::DropColumn => "drop-column",
-            DestructiveKind::AlterType => "alter-type",
-        }
-    }
-}
-
 /// A step that deletes data or can truncate it. `table` is the table as the database holds it
 /// before the migration runs; `column` is set for column steps.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -220,34 +213,7 @@ pub struct Destructive {
     pub column: Option<String>,
 }
 
-/// The prefix of the line that marks a destructive step in `up.sql` and `down.sql`.
-pub const DESTRUCTIVE_MARKER: &str = "-- monorm: destructive ";
-
 impl Destructive {
-    /// The marker line: `-- monorm: destructive <kind> <table>[.<column>]`.
-    pub fn marker(&self) -> String {
-        match &self.column {
-            Some(c) => format!("{DESTRUCTIVE_MARKER}{} {}.{c}", self.kind.word(), self.table),
-            None => format!("{DESTRUCTIVE_MARKER}{} {}", self.kind.word(), self.table),
-        }
-    }
-
-    /// Reads one line of a migration file; `None` unless it is a marker line.
-    pub fn parse_marker(line: &str) -> Option<Destructive> {
-        let rest = line.trim().strip_prefix(DESTRUCTIVE_MARKER.trim_end())?.strip_prefix(' ')?;
-        let (kind, target) = rest.trim().split_once(' ')?;
-        let target = target.trim();
-        let kind = [DestructiveKind::DropTable, DestructiveKind::DropColumn, DestructiveKind::AlterType]
-            .into_iter()
-            .find(|k| k.word() == kind)?;
-        if kind == DestructiveKind::DropTable {
-            return (!target.is_empty()).then(|| Destructive { kind, table: target.to_owned(), column: None });
-        }
-        let (table, column) = target.rsplit_once('.')?;
-        (!table.is_empty() && !column.is_empty())
-            .then(|| Destructive { kind, table: table.to_owned(), column: Some(column.to_owned()) })
-    }
-
     /// What the step does, for an error message: `drops column post.body`.
     pub fn describe(&self) -> String {
         let column = self.column.as_deref().unwrap_or_default();
@@ -452,7 +418,7 @@ fn constraints(t: &Table) -> Vec<Constraint> {
 
 /// `t` as it looks after the table and column renames in `renames`, so it can be
 /// compared with the new definition.
-fn apply_renames(t: &Table, table_map: &HashMap<&str, &str>, col_map: &HashMap<(&str, &str), &str>) -> Table {
+pub(super) fn apply_renames(t: &Table, table_map: &HashMap<&str, &str>, col_map: &HashMap<(&str, &str), &str>) -> Table {
     let new_table = table_map.get(t.name.as_str()).copied().unwrap_or(&t.name).to_owned();
     let col = |table: &str, c: &str| -> String { col_map.get(&(table, c)).copied().unwrap_or(c).to_owned() };
     let cols = |table: &str, cs: &[String]| -> Vec<String> { cs.iter().map(|c| col(table, c)).collect() };

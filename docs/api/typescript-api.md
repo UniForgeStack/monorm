@@ -1354,12 +1354,12 @@ The app `auth` comes with the `monorm` package and needs no install. Installed e
 (`crates/engine/src/migrate.rs`). `await pull(db)` reads a live database into a `Pulled`
 (`schema`, `gaps`, `differences`, `write(path)`), `migrator.baseline()` marks the first
 migration applied and does not run it, and `migrator.drift()` gives the `Drift`
-(`migration`, `steps`, `gaps`) between the database and the newest snapshot
+(`migration`, `steps`, `gaps`) between the database and the state that the migrations give
 (see [`schema.md`](../schema/schema.md#pull-baseline-and-drift-a-live-database-under-migrations)). A migration
-may hold a `data.ts` with `export async function run(db)`, run by `migrator.upgrade()` and
-`npx monorm migrate` in the migration's transaction (see [`schema.md`](../schema/schema.md#data-migrations)).
+may hold a `run_code` operation that names `file.ts:function`; `migrator.upgrade()` runs the function with `db` in the migration's transaction, and `migrations.squash({ to })` folds migrations into one file
+(see [`schema.md`](../schema/schema.md#code-operations)). The Rust CLI refuses `run_code`.
 ```ts
-const migrations = new Migrations("migrations", registry);   // or a schema path or source; a third argument { online: true } writes online folders
+const migrations = new Migrations("migrations", registry);   // or a schema path or source; a third argument { online: true } writes online files
 migrations.all(); migrations.plan(); migrations.make("add_tags");   // make() returns the Migration[] it wrote (several with online; [] when nothing changed)
 const migrator = new Migrator(db, migrations);
 await migrator.status(); await migrator.upgrade(); await migrator.downgrade({ steps: 1 });   // { target, force: true } reverts a baselined migration

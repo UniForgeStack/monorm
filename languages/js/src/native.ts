@@ -141,18 +141,23 @@ export interface NativeSchema extends NativeInspector {
     many?: NativeMany | null,
   ): string[];
   ddl(): string[];
-  snapshot(): string;
-  migration(previous?: string | null): string;
-  planMigration(dir: string, online?: boolean | null): string;
-  makeMigration(dir: string, name?: string | null, empty?: boolean | null, online?: boolean | null, baseline?: boolean | null): string[];
+  planMigration(dir: string, template?: string | null, online?: boolean | null, name?: string | null): string;
+  makeMigration(dir: string, name?: string | null, empty?: boolean | null, online?: boolean | null, baseline?: boolean | null, template?: string | null): string | null;
+  sqlmigrate(dir: string, name: string, down?: boolean | null): string;
+  squashMigration(dir: string, to: string, name?: string | null, template?: string | null): string[];
 }
 
 /** One traced statement: `start` in Unix milliseconds, `duration` in milliseconds. */
-/** A migration that `migrationPending` returns; `noTransaction` is true for a no-transaction script. */
-export interface NativePendingMigration {
-  name: string;
-  path: string;
-  noTransaction: boolean;
+/** The work of one migration in one direction: the transaction groups to run. */
+export interface NativeMigrationPlan {
+  readonly name: string;
+  readonly path: string;
+  /** `"up"` or `"down"`. */
+  readonly direction: string;
+  /** The error text starts with this. */
+  readonly what: string;
+  /** JSON `[{atomic, items: [{first, last, entry}]}]`; `entry` is the `file:function` of a code item, null for SQL. */
+  readonly groups: string;
 }
 
 export interface NativeQueryEvent {
@@ -279,15 +284,18 @@ export interface NativeEngine extends NativeInspector {
   fetchText(sql: string, tx: NativeTransaction | null): Promise<(string | null)[][]>;
   executeScript(statements: string[], tx: NativeTransaction | null): Promise<void>;
   migrationStatus(dir: string): Promise<string>;
-  migrateUp(dir: string, target: string | null, allowDestructive: boolean): Promise<string[]>;
-  migrateDown(dir: string, steps: number, target: string | null, force: boolean, allowDestructive: boolean): Promise<string[]>;
+  migrateUp(dir: string, target: string | null, allowDestructive: boolean, ops?: string | null): Promise<string[]>;
+  migrateDown(dir: string, steps: number, target: string | null, force: boolean, allowDestructive: boolean, opsMigration?: string | null, ops?: string | null): Promise<string[]>;
   pullSchema(extensions?: Record<string, string> | null): Promise<string>;
   migrationDrift(dir: string): Promise<string>;
   migrateBaseline(dir: string): Promise<string>;
-  migrationPending(dir: string, target: string | null, allowDestructive: boolean): Promise<NativePendingMigration[]>;
-  migrationBegin(name: string, path: string, allowDestructive: boolean): Promise<NativeTransaction | null>;
-  migrationApplyNoTransaction(name: string, path: string, allowDestructive: boolean): Promise<boolean>;
-  migrationFinish(tx: NativeTransaction, name: string, path: string): Promise<void>;
+  migrationPlanUp(dir: string, target: string | null, allowDestructive: boolean, ops?: string | null): Promise<NativeMigrationPlan[]>;
+  migrationPlanDown(dir: string, steps: number, target: string | null, force: boolean, allowDestructive: boolean, opsMigration?: string | null, ops?: string | null): Promise<NativeMigrationPlan[]>;
+  migrationBeginGroup(plan: NativeMigrationPlan, k: number, allowDestructive: boolean): Promise<NativeTransaction | null>;
+  migrationRunItem(tx: NativeTransaction, plan: NativeMigrationPlan, k: number, i: number): Promise<void>;
+  migrationFinishGroup(tx: NativeTransaction, plan: NativeMigrationPlan, k: number): Promise<void>;
+  migrationRunOutside(plan: NativeMigrationPlan, k: number, allowDestructive: boolean): Promise<boolean>;
+  migrationRecordEmpty(plan: NativeMigrationPlan): Promise<void>;
   createTables(): Promise<void>;
   dropTables(): Promise<void>;
   truncateTables(): Promise<void>;
@@ -333,7 +341,7 @@ interface Addon {
   cliMigrateArgs(argv: string[]): (string | null)[] | null;
   listMigrations(dir: string): string[][];
   findMigration(dir: string, name: string): string[];
-  squashMigration(dir: string, to: string, name?: string | null): string[];
+  migrationChecksum(dir: string, name: string): string;
 }
 
 /** The platforms of the bundled libraries: `${process.platform}-${process.arch}`, and `-musl` after a Linux key on a musl system. */
