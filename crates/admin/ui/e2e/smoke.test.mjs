@@ -1488,6 +1488,91 @@ test("single sign-on: a user signs in at the provider, gets the roles of the cla
   }
 });
 
+test("single sign-on with auto_start: no form, the requested page after the provider, the form at the break-glass URLs and no loop", async () => {
+  const idp = await startIdp({ claims: { email: "auto@example.com", roles: ["support"], hd: "example.com" } });
+  const copy = `${dir}-sso-auto`;
+  cpSync(dir, copy, { recursive: true });
+  const toml = readFileSync(join(copy, "monorm.toml"), "utf8");
+  writeFileSync(join(copy, "monorm.toml"), `${toml.trimEnd()}\n\n[admin.oidc]\nissuer = "${idp.issuer}"\nclient_id = "${CLIENT_ID}"\nhd = "example.com"\nauto_start = true\n`);
+  const env = { ...process.env, PYTHONPATH: ROOT, MONORM_DATABASE_URL: `sqlite://${copy}/app.db`, MONORM_ADMIN_SECRET: SECRET, MONORM_ADMIN_PORT: "0", MONORM_ADMIN_OIDC_CLIENT_SECRET: CLIENT_SECRET };
+  const other = spawn(PYTHON, ["-m", "monorm", "admin"], { cwd: copy, env, stdio: ["ignore", "ignore", "pipe"] });
+  let text = "";
+  try {
+    const url = await new Promise((resolveUrl, reject) => {
+      other.stderr.on("data", (chunk) => {
+        text += chunk;
+        const found = /"url":"([^"]+)"/.exec(text);
+        if (found && text.includes('"listening"')) resolveUrl(found[1]);
+      });
+      other.on("exit", (code) => reject(new Error(`the admin ended with ${code}\n${text}`)));
+    });
+    const context = await browser.newContext({ timezoneId: ZONE, locale: "en-US" });
+    const page = await context.newPage();
+    const starts = [];
+    page.on("request", (r) => r.url().includes("/admin/auth/start") && starts.push(r.url()));
+    // No session: the browser goes to the provider and returns to the page that it asked for.
+    await page.goto(`${url}/admin/Author`);
+    await page.getByRole("button", { name: "User menu" }).waitFor();
+    assert.equal(page.url(), `${url}/admin/Author`);
+    assert.equal((await context.request.get(`${url}/admin/api/me`)).status(), 200, "signed in with no form");
+    assert.equal(starts.length, 1);
+    assert.ok(decodeURIComponent(starts[0]).endsWith("next=/admin/Author"), starts[0]);
+
+    // A session that ends while the page is open (a 401) starts the flow again with the current page as `next`.
+    await context.clearCookies();
+    await page.evaluate(() => window.sessionStorage.clear());
+    // A page that mounts again reads its data again: the 401 comes from that query.
+    await page.getByRole("link", { name: "Admin", exact: true }).click();
+    await page.waitForURL(`${url}/admin`);
+    const restarted = page.waitForRequest((r) => r.url().includes("/admin/auth/start"));
+    await page.goBack();
+    await restarted;
+    await page.getByRole("button", { name: "User menu" }).waitFor();
+    assert.equal(page.url(), `${url}/admin/Author`);
+    assert.equal(starts.length, 2, "the 401 starts the flow once");
+    assert.ok(decodeURIComponent(starts[1]).endsWith("next=/admin/Author"), starts[1]);
+
+    // After the sign-out the form shows, and it does not start the flow again.
+    await page.getByRole("button", { name: "User menu" }).click();
+    await page.getByRole("menuitem", { name: "Sign out" }).click();
+    await page.waitForURL(`${url}/admin/-/login`);
+    await page.getByLabel("Username").waitFor();
+    assert.equal(starts.length, 2, "the page after sign-out starts no flow");
+
+    // The break-glass URL and a failed callback show the form with no redirect.
+    const fresh = await browser.newContext({ timezoneId: ZONE, locale: "en-US" });
+    try {
+      const guest = await fresh.newPage();
+      const guestStarts = [];
+      guest.on("request", (r) => r.url().includes("/admin/auth/start") && guestStarts.push(r.url()));
+      await guest.goto(`${url}/admin/?password=1`);
+      await guest.getByLabel("Username").waitFor();
+      await guest.goto(`${url}/admin/?sso_error=domain`);
+      await guest.getByText("This account is not in the allowed domain.").waitFor();
+      await guest.getByLabel("Username").waitFor();
+      assert.equal(guestStarts.length, 0, "neither page starts the flow");
+    } finally {
+      await fresh.close();
+    }
+
+    // A `next` outside the base path is dropped: the user lands on the home page.
+    const outside = await browser.newContext({ timezoneId: ZONE, locale: "en-US" });
+    try {
+      const visitor = await outside.newPage();
+      await visitor.goto(`${url}/admin/auth/start?next=${encodeURIComponent("https://evil.example/")}`);
+      await visitor.waitForURL((next) => next.origin === url && next.pathname.replace(/\/$/, "") === "/admin");
+    } finally {
+      await outside.close();
+    }
+    await context.close();
+  } finally {
+    other.removeAllListeners("exit");
+    other.kill("SIGTERM");
+    await idp.close();
+    rmSync(copy, { recursive: true, force: true });
+  }
+});
+
 // Last: it adds an author, and the tests above count the authors.
 test("the home page lists the last audit rows", async () => {
   const { context, page, idle } = await signedIn();
