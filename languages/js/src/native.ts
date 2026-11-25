@@ -171,6 +171,8 @@ export interface NativeAdminSite {
   isRaw(path: string): boolean;
   /** The startup warnings, for example a search field that no index serves. */
   readonly warnings: string[];
+  /** The host name that Rust gave to each local function id of the config. */
+  readonly handles: Record<string, string>;
   /** The normalized base path of the UI: the cookies are scoped to it. */
   readonly basePath: string;
   /** The normalized API prefix: `<basePath>/api` unless the config names one. */

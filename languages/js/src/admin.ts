@@ -423,7 +423,7 @@ function formComponentJson(name: string, path: unknown): string {
 
 const RELATION_KEYS = new Set(["label", "create", "choices"]);
 
-function relationsJson(name: string, cls: AnyModel, registry: Registry, value: unknown): Record<string, unknown> {
+function relationsJson(name: string, cls: AnyModel, registry: Registry, value: unknown, fns: Fns): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new AdminConfigError(`${name}: relations maps a relation name to its options`);
   const out: Record<string, unknown> = {};
   for (const [relName, options] of Object.entries(value)) {
@@ -436,11 +436,10 @@ function relationsJson(name: string, cls: AnyModel, registry: Registry, value: u
     const o = options as RelationConfig;
     if (o.label !== undefined && typeof o.label !== "string") throw new AdminConfigError(`${name}: relations['${relName}'].label is a column name`);
     if (o.create !== undefined && typeof o.create !== "boolean") throw new AdminConfigError(`${name}: relations['${relName}'].create is true or false`);
-    if (o.choices !== undefined && !(o.choices instanceof Prepared)) throw new AdminConfigError(`${name}: relations['${relName}'].choices takes a prepared query set of the target`);
     out[relName] = {
       ...(o.label === undefined ? {} : { label: o.label }),
       ...(o.create === undefined ? {} : { create: o.create }),
-      ...(o.choices === undefined ? {} : { choices: querysetJson({ _meta: registry.get(found.target) } as unknown as AnyModel, o.choices).json }),
+      ...(o.choices === undefined ? {} : { choices: querysetJson({ _meta: registry.get(found.target) } as unknown as AnyModel, o.choices, fns) }),
     };
   }
   return out;
@@ -537,8 +536,19 @@ function inlineParams(ir: unknown, params: readonly unknown[], where: string): u
   return Object.fromEntries(Object.entries(node).map(([k, v]) => [k, inlineParams(v, params, where)]));
 }
 
-function batchName(model: AnyModel, column: string, tag = ""): string {
-  return `column.${model._meta.name}${tag}.${column}`;
+/** The host functions of one config: a local id for each, sent as `{ $fn: id }`. Rust names them and returns the table. */
+class Fns {
+  readonly #makers = new Map<string, () => HostFunction>();
+
+  register(maker: () => HostFunction): { $fn: string } {
+    const key = `f${this.#makers.size}`;
+    this.#makers.set(key, maker);
+    return { $fn: key };
+  }
+
+  host(handles: Readonly<Record<string, string>>): Record<string, HostFunction> {
+    return Object.fromEntries(Object.entries(handles).map(([key, name]) => [name, this.#makers.get(key)!()]));
+  }
 }
 
 function dateHierarchyJson(model: AnyModel, value: AnyColumn | string | DateHierarchy): unknown {
@@ -555,7 +565,7 @@ function orderByJson(model: AnyModel, name: string, by: unknown): unknown {
   return irOf(model, by, `computed '${name}' order_by`);
 }
 
-function computedJson(model: AnyModel, items: readonly ComputedColumn[], tag = ""): unknown[] {
+function computedJson(model: AnyModel, items: readonly ComputedColumn[], fns: Fns): unknown[] {
   return items.map((item) => {
     if ((item.expr === undefined) === (item.function === undefined)) {
       throw new AdminConfigError(`${model._meta.name}: computed '${item.name}' sets expr or function, one of them`);
@@ -565,7 +575,7 @@ function computedJson(model: AnyModel, items: readonly ComputedColumn[], tag = "
       ...rest,
       ...(orderBy !== undefined ? { order_by: orderByJson(model, item.name, orderBy) } : {}),
       ...(expr !== undefined ? { expr: irOf(model, expr, `computed '${item.name}'`) } : {}),
-      ...(fn !== undefined ? { function: batchName(model, item.name, tag) } : {}),
+      ...(fn !== undefined ? { function: fns.register(() => batchHost(model, fn)) } : {}),
     };
   });
 }
@@ -632,31 +642,23 @@ function slotIr(ir: unknown, params: readonly unknown[], slots: string[] | undef
   return Object.fromEntries(Object.entries(node).map(([k, v]) => [k, slotIr(v, params, slots, where)]));
 }
 
-function querysetName(model: AnyModel, tag = ""): string {
-  return `queryset.${model._meta.name}${tag}`;
-}
-
-/** The queryset as config JSON, and the order it sets (column names) or `undefined`. */
-function querysetJson(model: AnyModel, queryset: NonNullable<ResourceConfig["queryset"]>, tag = ""): { json: unknown; order: string[] | undefined } {
+/** The queryset on the wire: `$fn` for a function, `$qs` for a prepared query set. Rust checks both. */
+function querysetJson(model: AnyModel, queryset: NonNullable<ResourceConfig["queryset"]>, fns: Fns): unknown {
   const name = model._meta.name;
-  if (typeof queryset === "function") return { json: { function: querysetName(model, tag) }, order: undefined };
-  if (!(queryset instanceof Prepared)) {
-    throw new AdminConfigError(`${name}: queryset takes a prepared query set (${name}.objects.filter(...).prepare()) or an async function`);
-  }
+  if (typeof queryset === "function") return fns.register(() => querysetHost(model, queryset));
+  if (!(queryset instanceof Prepared)) return { $host: typeof queryset };
   const qs = (queryset as any)["qs"];
   const state = qs.state;
-  if (qs.meta.name !== name) throw new AdminConfigError(`${name}: queryset is a query set of ${qs.meta.name}`);
-  const unused: [string, boolean][] = [
-    ["load()", Boolean(state.loads?.length) || state.modelFields !== undefined || state.related.length > 0 || state.prefetch.length > 0],
-    ["a slice", state.limit !== undefined || state.offset !== undefined],
-    ["from() or join()", state.from !== undefined || state.joins.length > 0],
-    ["lock()", state.lock !== undefined],
-    ["withoutDefaults()", state.withoutDefaults !== false],
-  ];
-  for (const [what, used] of unused) {
-    if (used) throw new AdminConfigError(`${name}: queryset takes a filter and an order; it does not take ${what}`);
-  }
-  if (state.filters.length === 0) throw new AdminConfigError(`${name}: queryset needs a filter`);
+  const body: Record<string, unknown> = {
+    model: qs.meta.name,
+    load: Boolean(state.loads?.length) || state.modelFields !== undefined || state.related.length > 0 || state.prefetch.length > 0,
+    slice: state.limit !== undefined || state.offset !== undefined,
+    join: state.from !== undefined || state.joins.length > 0,
+    lock: state.lock !== undefined,
+    without_defaults: state.withoutDefaults !== false,
+  };
+  // Rust refuses these with its code; building the filter first would raise a binding text before it.
+  if (qs.meta.name !== name || state.filters.length === 0 || ["load", "slice", "join", "lock", "without_defaults"].some((flag) => body[flag])) return { $qs: body };
   const where = `${name}: queryset`;
   const params = new SlotParams();
   const slots: string[] = [];
@@ -668,8 +670,10 @@ function querysetJson(model: AnyModel, queryset: NonNullable<ResourceConfig["que
     if (e instanceof AdminConfigError) throw e;
     throw new AdminConfigError(`${where}: ${e instanceof Error ? e.message : String(e)}`);
   }
-  const order = (state.order as Ordering<any, any>[]).map((o) => orderName(model, o));
-  return { json: { filter: irs.length === 1 ? irs[0] : { t: "and", items: irs }, slots }, order: order.length > 0 ? order : undefined };
+  body["filter"] = irs.length === 1 ? irs[0] : { t: "and", items: irs };
+  body["slots"] = slots;
+  body["order"] = (state.order as Ordering<any, any>[]).map((o) => orderName(model, o));
+  return { $qs: body };
 }
 
 /** The host function of a callable queryset: the filter for this user, with its values inline. */
@@ -730,7 +734,7 @@ function canJson(model: AnyModel, rules: CanRules): Record<string, unknown> {
   return out;
 }
 
-function listJson(model: AnyModel, config: ListConfig, tag = ""): Record<string, unknown> {
+function listJson(model: AnyModel, config: ListConfig, fns: Fns): Record<string, unknown> {
   const name = model._meta.name;
   for (const key of Object.keys(config)) {
     if (!LIST_KEYS.has(key)) throw new AdminConfigError(`${name}: unknown list option '${key}'`);
@@ -741,7 +745,7 @@ function listJson(model: AnyModel, config: ListConfig, tag = ""): Record<string,
   if (config.tabs !== undefined) out["tabs"] = config.tabs.map((c) => refName(model, c));
   if (config.editable !== undefined) out["editable"] = config.editable.map((c) => refName(model, c));
   if (config.namedFilters !== undefined) out["named_filters"] = namedJson(model, config.namedFilters);
-  if (config.computed !== undefined) out["computed"] = computedJson(model, config.computed, tag);
+  if (config.computed !== undefined) out["computed"] = computedJson(model, config.computed, fns);
   if (config.aggregates !== undefined) out["aggregates"] = aggregatesJson(model, config.aggregates);
   if (config.labels !== undefined) out["labels"] = { ...config.labels };
   if (config.empty !== undefined) out["empty"] = config.empty;
@@ -754,7 +758,7 @@ function listJson(model: AnyModel, config: ListConfig, tag = ""): Record<string,
   if (config.pageSize !== undefined) out["page_size"] = config.pageSize;
   if (config.sortable !== undefined) out["sortable"] = config.sortable.map((c) => label(model, c));
   if (config.search !== undefined) out["search"] = config.search.map((c) => label(model, c));
-  if (config.searchWith !== undefined) out["search_with"] = searchName(model, tag);
+  if (config.searchWith !== undefined) out["search_with"] = fns.register(() => searchHost(model, config.searchWith!));
   return out;
 }
 
@@ -775,10 +779,6 @@ function cellJson(value: unknown): unknown {
     return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, cellJson(v)]));
   }
   return value;
-}
-
-function searchName(model: AnyModel, tag = ""): string {
-  return `search.${model._meta.name}${tag}`;
 }
 
 /** The host function of a `searchWith`: the keys of the matches, at most `limit`. */
@@ -1066,11 +1066,6 @@ export class InlineDef {
     this.delete = options.delete ?? true;
     this.page = { ...(options.page ?? {}) };
   }
-
-  /** The suffix of the host function names of the page keys that this wrapper overrides. */
-  tag(parent: string): string {
-    return `@${parent}.${this.model._meta.name}${this.via ? `.${this.via}` : ""}`;
-  }
 }
 
 /**
@@ -1118,6 +1113,7 @@ export class Admin {
   readonly #storage: FileStorage | undefined;
   readonly #routes = new Map<string, { method: string; path: string; fn: RouteFunction; permission: string | undefined }>();
   readonly #packages = new Map<string, Record<string, unknown>>();
+  #fns = new Fns();
   #planned: { schema: unknown; site: NativeAdminSite } | null = null;
 
   constructor(
@@ -1195,7 +1191,8 @@ export class Admin {
   }
 
   #configJson(registry: Registry): string {
-    const resources = [...this.#resources].map(([model, { model: cls, config }]) => this.#resourceJson(model, cls, config, "", registry));
+    const fns = (this.#fns = new Fns());
+    const resources = [...this.#resources].map(([model, { model: cls, config }]) => this.#resourceJson(model, cls, config, registry, fns));
     return JSON.stringify({
       spelling: "camel",
       base_path: this.basePath,
@@ -1217,16 +1214,13 @@ export class Admin {
     });
   }
 
-  /** The config JSON of one page. `tag` names the host functions of an inline wrapper's overrides. */
-  #resourceJson(model: string, cls: AnyModel, config: ResourceConfig, tag: string, registry: Registry): Record<string, unknown> {
-    const queryset = config.queryset === undefined ? undefined : querysetJson(cls, config.queryset, tag);
-    if (queryset?.order !== undefined && config.list?.order !== undefined) {
-      throw new AdminConfigError(`${model}: the order is set twice: by the queryset and by list.order`);
-    }
-    const list = config.list === undefined && queryset?.order === undefined ? undefined : { ...(config.list === undefined ? {} : listJson(cls, config.list, tag)), ...(queryset?.order === undefined ? {} : { order: queryset.order }) };
+  /** The config JSON of one page. */
+  #resourceJson(model: string, cls: AnyModel, config: ResourceConfig, registry: Registry, fns: Fns): Record<string, unknown> {
+    const queryset = config.queryset === undefined ? undefined : querysetJson(cls, config.queryset, fns);
+    const list = config.list === undefined ? undefined : listJson(cls, config.list, fns);
     return {
       model,
-      ...(queryset === undefined ? {} : { queryset: queryset.json }),
+      ...(queryset === undefined ? {} : { queryset }),
       ...(config.can === undefined ? {} : { can: canJson(cls, config.can) }),
       ...(config.checkMessages === undefined ? {} : { check_messages: { ...config.checkMessages } }),
       ...(config.form === undefined ? {} : { form: formJson(model, config.form) }),
@@ -1236,7 +1230,7 @@ export class Admin {
       ...(config.detailTabs === undefined ? {} : { detail_tabs: [...config.detailTabs] }),
       frames: config.frames?.map(frameJson),
       fieldsets: config.fieldsets,
-      ...(config.relations === undefined ? {} : { relations: relationsJson(model, cls, registry, config.relations) }),
+      ...(config.relations === undefined ? {} : { relations: relationsJson(model, cls, registry, config.relations, fns) }),
       ...(config.files === undefined ? {} : { files: this.#filesOf(model, config.files) }),
       ...(list === undefined ? {} : { list }),
       ...this.#writesJson(model, cls, config),
@@ -1251,34 +1245,20 @@ export class Admin {
       ...(config.actions === undefined ? {} : { actions: actionsJson(model, cls, config.actions) }),
       ...(config.setPassword === undefined ? {} : { set_password: boolOption(model, "setPassword", config.setPassword) }),
       ...(config.bulkDelete === undefined ? {} : { bulk_delete: boolOption(model, "bulkDelete", config.bulkDelete) }),
-      ...(config.inlines === undefined ? {} : { inlines: inlineDefs(model, config.inlines).map((d) => this.#inlineJson(model, d, registry)) }),
+      ...(config.inlines === undefined ? {} : { inlines: inlineDefs(model, config.inlines).map((d) => this.#inlineJson(model, d, registry, fns)) }),
     };
   }
 
-  #inlineJson(parent: string, d: InlineDef, registry: Registry): Record<string, unknown> {
+  #inlineJson(parent: string, d: InlineDef, registry: Registry, fns: Fns): Record<string, unknown> {
     checkInlinePage(parent, d);
     const child = d.model._meta.name;
     const out: Record<string, unknown> = { model: child, save: d.save, style: d.style, max: d.max, collapsed: d.collapsed, delete: d.delete };
     if (d.via !== undefined) out["via"] = d.via;
     if (d.permission !== undefined) out["permission"] = d.permission;
     if (d.label !== undefined) out["label"] = d.label;
-    const page = this.#resourceJson(child, d.model, d.page, d.tag(parent), registry);
+    const page = this.#resourceJson(child, d.model, d.page, registry, fns);
     if (Object.keys(page).length > 1) out["page"] = page;
     return out;
-  }
-
-  /** Every page the site builds: the registered ones, and the page keys that an inline wrapper overrides. Each with its host function tag. */
-  #pages(): { model: AnyModel; config: ResourceConfig; tag: string }[] {
-    const pages: { model: AnyModel; config: ResourceConfig; tag: string }[] = [];
-    for (const [parent, { model, config }] of this.#resources) {
-      pages.push({ model, config, tag: "" });
-      for (const d of inlineDefs(parent, config.inlines ?? [])) {
-        if (Object.keys(d.page).length === 0) continue;
-        checkInlinePage(parent, d);
-        pages.push({ model: d.model, config: d.page, tag: d.tag(parent) });
-      }
-    }
-    return pages;
   }
 
   #inlineModels(): Map<string, AnyModel> {
@@ -1318,17 +1298,9 @@ export class Admin {
     return names;
   }
 
-  /** The host functions: login, the `searchWith` function of each resource and the function of each computed column. */
-  #host(): Record<string, HostFunction> {
-    const host: Record<string, HostFunction> = { ...HOST };
-    for (const { model, config, tag } of this.#pages()) {
-      if (typeof config.queryset === "function") host[querysetName(model, tag)] = querysetHost(model, config.queryset);
-      const search = config.list?.searchWith;
-      if (search !== undefined) host[searchName(model, tag)] = searchHost(model, search);
-      for (const column of config.list?.computed ?? []) {
-        if (column.function !== undefined) host[batchName(model, column.name, tag)] = batchHost(model, column.function);
-      }
-    }
+  /** The host functions: login, the functions of the config under the names that Rust gave them, and the writes, services, actions, files and routes. */
+  #host(handles: Readonly<Record<string, string>>): Record<string, HostFunction> {
+    const host: Record<string, HostFunction> = { ...HOST, ...this.#fns.host(handles) };
     const models = this.#inlineModels();
     host["admin.write"] = writerHost(this.#resources, models);
     host["admin.view"] = viewHost(new Map([...models, ...[...this.#resources.values()].map(({ model }) => [model._meta.name, model] as const)]));
@@ -1414,7 +1386,8 @@ export class Admin {
     const { secret, settings, ip } = options;
     if (secret === undefined && (settings !== undefined || ip !== undefined)) throw new TypeError("testClient takes `settings` and `ip` only with `secret`");
     const login = secret === undefined ? null : { secret, ...(settings === undefined ? {} : { settings }), ...(ip === undefined ? {} : { ip }) };
-    return new AdminTestClient(this.#site(database.registry), database, options.user ?? null, login, this.#host());
+    const site = this.#site(database.registry);
+    return new AdminTestClient(site, database, options.user ?? null, login, this.#host(site.handles));
   }
 
   /** @internal What `monorm admin` runs: serves this admin on the socket of `settingsJson`; `secret` is `MONORM_ADMIN_SECRET`. */
@@ -1422,7 +1395,7 @@ export class Admin {
     const site = this.#site(database.registry);
     let started: Promise<NativeAdminServer>;
     try {
-      started = site.serve(database.engine, settingsJson, hostDispatch(database, this.#host()), secret);
+      started = site.serve(database.engine, settingsJson, hostDispatch(database, this.#host(site.handles)), secret);
     } catch (e) {
       const err = adminError(e);
       throw err instanceof AdminSettingsError ? err : new AdminSettingsError(err.message);
