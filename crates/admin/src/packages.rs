@@ -13,12 +13,12 @@ use axum::extract::{Path, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Extension;
-use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::server::{authorize, reject, Shared, User};
 use crate::error::{code, Fault};
 use crate::site::{check_name, err_code};
+use crate::site_config::{PackageConfig, TabConfig};
 
 /// The major version of the widget contract. A package built for another major version does not load.
 pub const ADMIN_MAJOR: u32 = 1;
@@ -26,39 +26,6 @@ pub const ADMIN_MAJOR: u32 = 1;
 const MAX_FILES: usize = 256;
 const MAX_FILE: usize = 1024 * 1024;
 const MAX_TOTAL: usize = 8 * 1024 * 1024;
-
-/// One package as the host sends it. Names in `widgets` and `forms` map to a file of `dir`; `styles` are files of `dir`.
-#[derive(Deserialize, Clone, Debug)]
-#[serde(deny_unknown_fields)]
-pub struct PackageConfig {
-    pub name: String,
-    pub admin_major: u32,
-    pub dir: String,
-    #[serde(default)]
-    pub widgets: BTreeMap<String, String>,
-    #[serde(default)]
-    pub forms: BTreeMap<String, String>,
-    /// Detail tabs: a name to a module that the detail page shows as a tab.
-    #[serde(default)]
-    pub tabs: BTreeMap<String, TabConfig>,
-    #[serde(default)]
-    pub styles: Vec<String>,
-}
-
-#[derive(Deserialize, Clone, Debug)]
-#[serde(untagged)]
-pub enum TabConfig {
-    Module(String),
-    Options(TabOptions),
-}
-
-#[derive(Deserialize, Clone, Debug)]
-#[serde(deny_unknown_fields)]
-pub struct TabOptions {
-    module: String,
-    #[serde(default)]
-    embeddable: bool,
-}
 
 /// A loaded package: the declared names and every `.js`, `.mjs` and `.css` file of its directory, in memory.
 #[derive(Debug, Clone)]

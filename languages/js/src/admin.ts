@@ -439,7 +439,7 @@ function relationsJson(name: string, cls: AnyModel, registry: Registry, value: u
     out[relName] = {
       ...(o.label === undefined ? {} : { label: o.label }),
       ...(o.create === undefined ? {} : { create: o.create }),
-      ...(o.choices === undefined ? {} : { choices: querysetJson({ _meta: registry.get(found.target) } as unknown as AnyModel, o.choices, fns) }),
+      ...(o.choices === undefined ? {} : { choices: hostJson({ _meta: registry.get(found.target) } as unknown as AnyModel, "relations.choices", o.choices, "", fns) }),
     };
   }
   return out;
@@ -488,27 +488,26 @@ function formJson(name: string, form: unknown): unknown {
   throw new AdminConfigError(`${name}: form is a list of sections, or an object with create and edit`);
 }
 
-function label(model: AnyModel, ref: AnyColumn): string {
-  if (ref.root.name !== model._meta.name) {
-    throw new AdminConfigError(`${ref.text} belongs to ${ref.root.name}, not to ${model._meta.name}`);
-  }
-  return [...ref.path, ref.field.ir].join(".");
+/** The name of a host value's type, for a `$host` tag. */
+function hostType(value: unknown): string {
+  if (value === null) return "null";
+  if (typeof value === "object" || typeof value === "function") return (value as { constructor?: { name?: string } }).constructor?.name || typeof value;
+  return typeof value;
 }
 
-/** A column name: a string (a computed or aggregate column), a column or a relation of `model`. */
-function refName(model: AnyModel, ref: AnyColumn | AnyRelation | string): string {
+/** A column or relation of a model on the wire: a name stays, a column or relation is `$ref`, any other value is `$host`. Rust checks the model and the name. */
+function refJson(ref: unknown): unknown {
   if (typeof ref === "string") return ref;
-  if (ref instanceof Column) return label(model, ref);
-  const state = (ref as AnyRelation)[PATH];
-  if (state === undefined) throw new AdminConfigError(`${model._meta.name}: ${String(ref)} is not a column or a relation`);
-  if (state.root.name !== model._meta.name) throw new AdminConfigError(`${String(ref)} belongs to ${state.root.name}, not to ${model._meta.name}`);
-  return state.path.join(".");
+  if (ref instanceof Column) return { $ref: { model: ref.root.name, path: [...ref.path, ref.field.ir].join(".") } };
+  const state = (ref as AnyRelation | undefined)?.[PATH];
+  if (state !== undefined) return { $ref: { model: state.root.name, path: state.path.join(".") } };
+  return { $host: hostType(ref) };
 }
 
-/** The engine IR of an expression or a condition, with literals inlined. */
-function irOf(model: AnyModel, node: unknown, what: string, userSlot = false): unknown {
+/** The engine IR of an expression or a condition, with literals inlined. `wire` sends it as `{ $ir }`, with a `slot` node for each `param(...)`; Rust checks the slots. */
+function irOf(model: AnyModel, node: unknown, what: string, wire = false): unknown {
   const where = `${model._meta.name}: ${what}`;
-  const params: unknown[] = userSlot ? new SlotParams() : [];
+  const params: unknown[] = wire ? new SlotParams() : [];
   let ir: unknown;
   try {
     const value = node instanceof Condition ? resolveNullRule(node) : node instanceof Expression ? node : asCondition(node);
@@ -516,24 +515,85 @@ function irOf(model: AnyModel, node: unknown, what: string, userSlot = false): u
   } catch (e) {
     throw new AdminConfigError(`${where}: ${e instanceof Error ? e.message : String(e)}`);
   }
-  return userSlot ? slotIr(ir, params, undefined, where) : inlineParams(ir, params, where);
+  const inlined = inlineParams(ir, params, where, wire);
+  return wire ? { $ir: inlined } : inlined;
 }
 
-function inlineParams(ir: unknown, params: readonly unknown[], where: string): unknown {
-  if (Array.isArray(ir)) return ir.map((item) => inlineParams(item, params, where));
+function inlineParams(ir: unknown, params: readonly unknown[], where: string, wire = false): unknown {
+  if (Array.isArray(ir)) return ir.map((item) => inlineParams(item, params, where, wire));
   if (ir === null || typeof ir !== "object") return ir;
   const node = ir as Record<string, unknown>;
   if (node["t"] === "param") {
     const value = params[node["i"] as number];
+    if (wire && value instanceof Slot) return { t: "slot", name: value.name, transform: value.transform !== undefined };
     if (value === null) return { t: "null" };
     if (typeof value === "boolean") return { t: "const", value };
     if (typeof value === "string") return { t: "text", value };
     if (typeof value === "number" && Number.isSafeInteger(value)) return { t: "int", value };
     // The IR goes as a JSON number, which keeps an integer exactly only up to 2^53 - 1.
     if (typeof value === "bigint" && value >= BigInt(Number.MIN_SAFE_INTEGER) && value <= BigInt(Number.MAX_SAFE_INTEGER)) return { t: "int", value: Number(value) };
+    // A bigint out of range or a non-integer number is the user's integer; the limit comes from the JSON transport.
+    if (typeof value === "bigint" || typeof value === "number") throw new AdminConfigError(`${where}: ${typeof value === "bigint" ? "a bigint" : "the number " + String(value)} is not a literal of the admin; use an integer inside the safe range (±2^53 - 1)`);
+    if (wire) return { $host: hostType(value) };
     throw new AdminConfigError(`${where}: a value of this type is not a literal of the admin; use a safe integer, a string or a boolean`);
   }
-  return Object.fromEntries(Object.entries(node).map(([k, v]) => [k, inlineParams(v, params, where)]));
+  return Object.fromEntries(Object.entries(node).map(([k, v]) => [k, inlineParams(v, params, where, wire)]));
+}
+
+/** An order item on the wire: the column, with `desc` and `nulls` beside it. Rust refuses an expression and a placement. */
+function orderJson(model: AnyModel, item: unknown): unknown {
+  const ordering = item instanceof Ordering ? item : undefined;
+  const expr = ordering === undefined ? item : ordering.expr;
+  const by = expr instanceof Expression && !(expr instanceof Column) ? irOf(model, expr, "order", true) : refJson(expr);
+  const desc = ordering?.descending === true;
+  const nulls = ordering?.nulls;
+  if (typeof by !== "object" || by === null || (!desc && nulls === undefined)) return by;
+  return { ...by, ...(desc ? { desc: true } : {}), ...(nulls !== undefined ? { nulls } : {}) };
+}
+
+/** The config positions that hold a host object, and what each holds. The call sites send each one through `hostJson`. */
+const HOST_FIELDS: Readonly<Record<string, "column" | "relation" | "order" | "order_by" | "ir" | "queryset" | "function">> = {
+  "list.columns": "column",
+  "list.filters": "column",
+  "list.tabs": "column",
+  "list.editable": "column",
+  "list.sortable": "column",
+  "list.search": "column",
+  "list.dateHierarchy": "column",
+  "list.dateHierarchy.field": "column",
+  "list.order": "order",
+  "list.aggregates.relation": "relation",
+  "list.aggregates.field": "column",
+  "list.computed.orderBy": "order_by",
+  "list.computed.expr": "ir",
+  "list.namedFilters.choices.condition": "ir",
+  "list.searchWith": "function",
+  "list.computed.function": "function",
+  can: "ir",
+  "actions.can": "ir",
+  "actions.appliesTo": "ir",
+  queryset: "queryset",
+  "relations.choices": "queryset",
+};
+
+/** The wire form of the value at config position `path`, by its kind in `HOST_FIELDS`. */
+function hostJson(model: AnyModel, path: string, value: unknown, what = "", fns?: Fns, maker?: () => HostFunction): unknown {
+  switch (HOST_FIELDS[path]) {
+    case "column":
+      return refJson(value);
+    case "relation":
+      return typeof value === "string" || (value as AnyRelation | undefined)?.[PATH] !== undefined ? refJson(value) : { $host: hostType(value) };
+    case "order":
+      return orderJson(model, value);
+    case "order_by":
+      return value instanceof Column ? refJson(value) : value instanceof Expression || value instanceof Condition ? irOf(model, value, what, true) : { $host: hostType(value) };
+    case "ir":
+      return irOf(model, value, what, true);
+    case "queryset":
+      return querysetJson(model, value as NonNullable<ResourceConfig["queryset"]>, fns!);
+    default:
+      return fns!.register(maker!);
+  }
 }
 
 /** The host functions of one config: a local id for each, sent as `{ $fn: id }`. Rust names them and returns the table. */
@@ -552,17 +612,12 @@ class Fns {
 }
 
 function dateHierarchyJson(model: AnyModel, value: AnyColumn | string | DateHierarchy): unknown {
-  if (typeof value === "string" || value instanceof Column) return refName(model, value);
+  if (typeof value === "string" || value instanceof Column) return hostJson(model, "list.dateHierarchy", value);
   const { field, counts, ...rest } = value as DateHierarchy;
   const extra = Object.keys(rest)[0];
   if (extra !== undefined) throw new AdminConfigError(`${model._meta.name}: unknown dateHierarchy option '${extra}'`);
   if (field === undefined) throw new AdminConfigError(`${model._meta.name}: dateHierarchy needs a field`);
-  return { field: refName(model, field), ...(counts !== undefined ? { counts } : {}) };
-}
-
-function orderByJson(model: AnyModel, name: string, by: unknown): unknown {
-  if (by instanceof Column) return label(model, by);
-  return irOf(model, by, `computed '${name}' order_by`);
+  return { field: hostJson(model, "list.dateHierarchy.field", field), ...(counts !== undefined ? { counts } : {}) };
 }
 
 function computedJson(model: AnyModel, items: readonly ComputedColumn[], fns: Fns): unknown[] {
@@ -573,28 +628,18 @@ function computedJson(model: AnyModel, items: readonly ComputedColumn[], fns: Fn
     const { expr, function: fn, orderBy, ...rest } = item;
     return {
       ...rest,
-      ...(orderBy !== undefined ? { order_by: orderByJson(model, item.name, orderBy) } : {}),
-      ...(expr !== undefined ? { expr: irOf(model, expr, `computed '${item.name}'`) } : {}),
-      ...(fn !== undefined ? { function: fns.register(() => batchHost(model, fn)) } : {}),
+      ...(orderBy !== undefined ? { order_by: hostJson(model, "list.computed.orderBy", orderBy, `computed '${item.name}' order_by`) } : {}),
+      ...(expr !== undefined ? { expr: hostJson(model, "list.computed.expr", expr, `computed '${item.name}'`) } : {}),
+      ...(fn !== undefined ? { function: hostJson(model, "list.computed.function", fn, "", fns, () => batchHost(model, fn)) } : {}),
     };
   });
 }
 
 function aggregatesJson(model: AnyModel, items: readonly AggregateColumn[]): unknown[] {
   return items.map((item) => {
-    const where = `${model._meta.name}: aggregate '${item.name}'`;
-    const relation = item.relation as AnyRelation | undefined;
-    if (relation?.[PATH] === undefined) throw new AdminConfigError(`${where}: relation takes a relation such as ${model._meta.name}.<relation>`);
-    const name = refName(model, relation);
-    const out: Record<string, unknown> = { name: item.name, relation: name, fn: item.fn };
+    const out: Record<string, unknown> = { name: item.name, relation: hostJson(model, "list.aggregates.relation", item.relation), fn: item.fn };
     if (item.label !== undefined) out["label"] = item.label;
-    if (item.field !== undefined) {
-      const field = item.field;
-      if (!(field instanceof Column) || field.root.name !== model._meta.name || field.path.join(".") !== name) {
-        throw new AdminConfigError(`${where}: field takes a field of the relation '${name}'`);
-      }
-      out["field"] = field.field.ir;
-    }
+    if (item.field !== undefined) out["field"] = hostJson(model, "list.aggregates.field", item.field);
     return out;
   });
 }
@@ -607,46 +652,16 @@ function namedJson(model: AnyModel, items: readonly NamedFilter[]): unknown[] {
     choices: item.choices.map((c) => ({
       name: c.name,
       ...(c.label !== undefined ? { label: c.label } : {}),
-      expr: irOf(model, c.condition, `named filter '${item.name}'`),
+      expr: hostJson(model, "list.namedFilters.choices.condition", c.condition, `named filter '${item.name}'`),
     })),
   }));
-}
-
-function orderName(model: AnyModel, item: AnyColumn | Ordering<any, any>): string {
-  if (item instanceof Ordering) {
-    if (!(item.expr instanceof Column)) throw new AdminConfigError(`${model._meta.name}: order takes columns`);
-    if (item.nulls !== undefined) throw new AdminConfigError(`${model._meta.name}: order does not take a NULLs placement`);
-    return (item.descending ? "-" : "") + label(model, item.expr);
-  }
-  return label(model, item);
-}
-
-const SLOTS = ["user"];
-
-/** The IR of a filter with request slots: a `param("user")` becomes slot `i`, a literal goes inline. */
-function slotIr(ir: unknown, params: readonly unknown[], slots: string[] | undefined, where: string): unknown {
-  if (Array.isArray(ir)) return ir.map((item) => slotIr(item, params, slots, where));
-  if (ir === null || typeof ir !== "object") return ir;
-  const node = ir as Record<string, unknown>;
-  if (node["t"] === "param") {
-    const value = params[node["i"] as number];
-    if (!(value instanceof Slot)) return inlineParams(node, params, where);
-    if (!SLOTS.includes(value.name)) throw new AdminConfigError(`${where}: takes the param 'user', not '${value.name}'`);
-    if (slots === undefined) {
-      if (value.transform !== undefined) throw new AdminConfigError(`${where}: param("user") does not take a transform in a permission rule`);
-      return { t: "param", i: 0 };
-    }
-    if (!slots.includes(value.name)) slots.push(value.name);
-    return { t: "param", i: slots.indexOf(value.name) };
-  }
-  return Object.fromEntries(Object.entries(node).map(([k, v]) => [k, slotIr(v, params, slots, where)]));
 }
 
 /** The queryset on the wire: `$fn` for a function, `$qs` for a prepared query set. Rust checks both. */
 function querysetJson(model: AnyModel, queryset: NonNullable<ResourceConfig["queryset"]>, fns: Fns): unknown {
   const name = model._meta.name;
   if (typeof queryset === "function") return fns.register(() => querysetHost(model, queryset));
-  if (!(queryset instanceof Prepared)) return { $host: typeof queryset };
+  if (!(queryset instanceof Prepared)) return { $host: hostType(queryset) };
   const qs = (queryset as any)["qs"];
   const state = qs.state;
   const body: Record<string, unknown> = {
@@ -661,18 +676,16 @@ function querysetJson(model: AnyModel, queryset: NonNullable<ResourceConfig["que
   if (qs.meta.name !== name || state.filters.length === 0 || ["load", "slice", "join", "lock", "without_defaults"].some((flag) => body[flag])) return { $qs: body };
   const where = `${name}: queryset`;
   const params = new SlotParams();
-  const slots: string[] = [];
   let irs: unknown[];
   try {
     const ctx = new IRContext(model._meta as never, params);
-    irs = state.filters.map((f: Condition) => slotIr((resolveNullRule(f) as Expression<unknown>).ir(ctx), params, slots, where));
+    irs = state.filters.map((f: Condition) => inlineParams((resolveNullRule(f) as Expression<unknown>).ir(ctx), params, where, true));
   } catch (e) {
     if (e instanceof AdminConfigError) throw e;
     throw new AdminConfigError(`${where}: ${e instanceof Error ? e.message : String(e)}`);
   }
-  body["filter"] = irs.length === 1 ? irs[0] : { t: "and", items: irs };
-  body["slots"] = slots;
-  body["order"] = (state.order as Ordering<any, any>[]).map((o) => orderName(model, o));
+  body["filter"] = { $ir: irs.length === 1 ? irs[0] : { t: "and", items: irs } };
+  body["order"] = (state.order as Ordering<any, any>[]).map((o) => orderJson(model, o));
   return { $qs: body };
 }
 
@@ -713,8 +726,8 @@ function actionsJson(name: string, model: AnyModel, items: unknown): Record<stri
       if (d.label !== undefined) entry["label"] = d.label;
       if (d.confirm !== undefined) entry["confirm"] = d.confirm;
       if (d.inputs !== undefined && d.inputs.length > 0) entry["inputs"] = d.inputs.map((i) => i.json());
-      if (d.appliesTo !== undefined) entry["applies_to"] = irOf(model, d.appliesTo, `action '${d.name}' appliesTo`);
-      if (d.can !== undefined) entry["can"] = irOf(model, d.can, `action '${d.name}' can`, true);
+      if (d.appliesTo !== undefined) entry["applies_to"] = hostJson(model, "actions.appliesTo", d.appliesTo, `action '${d.name}' appliesTo`);
+      if (d.can !== undefined) entry["can"] = hostJson(model, "actions.can", d.can, `action '${d.name}' can`);
       if (d.replaceChange !== undefined) entry["replace_change"] = d.replaceChange;
     }
     const key = entry["name"] as string;
@@ -729,7 +742,7 @@ function canJson(model: AnyModel, rules: CanRules): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [rule, condition] of Object.entries(rules)) {
     if (rule !== "change" && rule !== "delete") throw new AdminConfigError(`${model._meta.name}: can takes 'change' and 'delete', not '${rule}'`);
-    if (condition !== undefined) out[rule] = irOf(model, condition, `can '${rule}'`, true);
+    if (condition !== undefined) out[rule] = hostJson(model, "can", condition, `can '${rule}'`);
   }
   return out;
 }
@@ -740,10 +753,10 @@ function listJson(model: AnyModel, config: ListConfig, fns: Fns): Record<string,
     if (!LIST_KEYS.has(key)) throw new AdminConfigError(`${name}: unknown list option '${key}'`);
   }
   const out: Record<string, unknown> = {};
-  if (config.columns !== undefined) out["columns"] = config.columns.map((c) => refName(model, c));
-  if (config.filters !== undefined) out["filters"] = config.filters.map((c) => refName(model, c));
-  if (config.tabs !== undefined) out["tabs"] = config.tabs.map((c) => refName(model, c));
-  if (config.editable !== undefined) out["editable"] = config.editable.map((c) => refName(model, c));
+  if (config.columns !== undefined) out["columns"] = config.columns.map((c) => hostJson(model, "list.columns", c));
+  if (config.filters !== undefined) out["filters"] = config.filters.map((c) => hostJson(model, "list.filters", c));
+  if (config.tabs !== undefined) out["tabs"] = config.tabs.map((c) => hostJson(model, "list.tabs", c));
+  if (config.editable !== undefined) out["editable"] = config.editable.map((c) => hostJson(model, "list.editable", c));
   if (config.namedFilters !== undefined) out["named_filters"] = namedJson(model, config.namedFilters);
   if (config.computed !== undefined) out["computed"] = computedJson(model, config.computed, fns);
   if (config.aggregates !== undefined) out["aggregates"] = aggregatesJson(model, config.aggregates);
@@ -754,11 +767,11 @@ function listJson(model: AnyModel, config: ListConfig, fns: Fns): Record<string,
   if (config.badges !== undefined) {
     out["badges"] = Object.fromEntries(Object.entries(config.badges).map(([column, map]) => [column, { ...map }]));
   }
-  if (config.order !== undefined) out["order"] = config.order.map((item) => orderName(model, item));
+  if (config.order !== undefined) out["order"] = config.order.map((item) => hostJson(model, "list.order", item));
   if (config.pageSize !== undefined) out["page_size"] = config.pageSize;
-  if (config.sortable !== undefined) out["sortable"] = config.sortable.map((c) => label(model, c));
-  if (config.search !== undefined) out["search"] = config.search.map((c) => label(model, c));
-  if (config.searchWith !== undefined) out["search_with"] = fns.register(() => searchHost(model, config.searchWith!));
+  if (config.sortable !== undefined) out["sortable"] = config.sortable.map((c) => hostJson(model, "list.sortable", c));
+  if (config.search !== undefined) out["search"] = config.search.map((c) => hostJson(model, "list.search", c));
+  if (config.searchWith !== undefined) out["search_with"] = hostJson(model, "list.searchWith", config.searchWith, "", fns, () => searchHost(model, config.searchWith!));
   return out;
 }
 
@@ -1216,7 +1229,7 @@ export class Admin {
 
   /** The config JSON of one page. */
   #resourceJson(model: string, cls: AnyModel, config: ResourceConfig, registry: Registry, fns: Fns): Record<string, unknown> {
-    const queryset = config.queryset === undefined ? undefined : querysetJson(cls, config.queryset, fns);
+    const queryset = config.queryset === undefined ? undefined : hostJson(cls, "queryset", config.queryset, "", fns);
     const list = config.list === undefined ? undefined : listJson(cls, config.list, fns);
     return {
       model,

@@ -4,42 +4,12 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use monorm_core::ir::{ColType, ConstraintIr};
 use monorm_core::schema::Schema;
-use serde::Deserialize;
 use serde_json::{json, Value};
 use url::{Origin, Url};
 
 use crate::error::{code, Fault};
 use crate::site::{check_name, column, Column, Resource, Site, err_code};
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct FrameConfig {
-    name: String,
-    title: String,
-    url: String,
-    #[serde(default)]
-    sandbox: Vec<String>,
-    scripts: Option<bool>,
-    same_origin: Option<bool>,
-    height: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct Fieldset {
-    pub name: String,
-    pub title: Option<String>,
-    pub fields: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct EmbedConfig {
-    resource: String,
-    tab: String,
-    lookup: String,
-    ancestors: Vec<String>,
-}
+use crate::site_config::{FrameConfig, Fieldset, EmbedConfig};
 
 #[derive(Debug)]
 pub(crate) struct Embed {

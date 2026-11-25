@@ -148,6 +148,22 @@ for (const provider of PROVIDERS) {
     assert.throws(() => build(["author.nope"]), (e) => e instanceof AdminConfigError && /author\.nope/.test(e.message));
   }));
 
+  test(`a column of another model or a host value in a config column is a build error (${provider})`, () => world(provider, async (w) => {
+    const C = w.Comment;
+    const cases: [Record<string, unknown>, RegExp][] = [
+      [{ columns: [w.Author.name] }, /belongs to FltAuthor, not to FltComment/],
+      [{ order: [w.Author.id] }, /belongs to FltAuthor, not to FltComment/],
+      [{ columns: [5] }, /a value of type number is not a column or a relation of FltComment/],
+      [{ order: [5] }, /order takes columns, not a value of type number/],
+    ];
+    for (const [list, text] of cases) {
+      const site = new Admin(w.registry);
+      site.register(C, { list: list as never });
+      site.register(w.Author);
+      assert.throws(() => site.check(), (e) => e instanceof AdminConfigError && text.test(e.message));
+    }
+  }));
+
   test(`a named filter has a default and an all choice (${provider})`, () => world(provider, async (w) => {
     const C = w.Comment;
     const namedFilters = [{
@@ -177,7 +193,7 @@ for (const provider of PROVIDERS) {
     assert.throws(() => {
       site.register(C, { list: { namedFilters } });
       site.check();
-    }, (e) => e instanceof AdminConfigError && /placeholder|literal/.test(e.message));
+    }, (e) => e instanceof AdminConfigError && /placeholder of a prepared query/.test(e.message));
   }));
 
   test(`an aggregate over a relation is one statement (${provider})`, () => world(provider, async (w) => {
@@ -272,7 +288,7 @@ for (const provider of PROVIDERS) {
     site.register(w.Author);
     assert.throws(() => site.check(), (e) => e instanceof AdminConfigError && /nope/.test(e.message));
     const big = [{ name: "big", type: "int", expr: func.coalesce(C.rank, 2n ** 60n as unknown as number) }];
-    assert.throws(() => siteOf(w, { columns: [C.body, "big"], computed: big }), (e) => e instanceof AdminConfigError && /safe integer/.test(e.message));
+    assert.throws(() => siteOf(w, { columns: [C.body, "big"], computed: big }), (e) => e instanceof AdminConfigError && /a bigint is not a literal of the admin; use an integer inside the safe range/.test(e.message));
   }));
 }
 
