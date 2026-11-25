@@ -421,16 +421,11 @@ model Book {
       await authors.insertMany([{ id: 1 }]);
       assert.equal(await authors.filter(Author.id.eq(1)).delete(), 1);
       await books.insertMany([{ id: 1, authorId: 1 }]);
+      // the guard stamps the book, so the hard delete of the author removes it on both databases
       const author = await authors.allWithDeleted().get(Author.id.eq(1));
-      if (dialect === "postgres") {
-        await (author as SoftDeletable).hardDelete();
-        assert.equal(await books.allWithDeleted().count(), 0);
-        assert.equal(await authors.allWithDeleted().count(), 0);
-      } else {
-        await assert.rejects((author as SoftDeletable).hardDelete(), /FOREIGN KEY constraint failed/);
-        assert.equal(await books.allWithDeleted().count(), 1);
-        assert.equal(await authors.allWithDeleted().count(), 1);
-      }
+      await (author as SoftDeletable).hardDelete();
+      assert.equal(await books.allWithDeleted().count(), 0);
+      assert.equal(await authors.allWithDeleted().count(), 0);
     } finally { await db.dropTables(); await db.close(); }
   });
 

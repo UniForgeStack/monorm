@@ -244,7 +244,10 @@ test("pull moves a soft delete rule to triggers", async () => {
   assert.ok(pulled.gaps.some((g) => g.includes("rule sdm_o_keep")));
   assert.ok(pulled.gaps.some((g) => g.includes("rule soft_delete_related_sdm_c")));
   assert.ok(!pulled.gaps.some((g) => g.includes("rule soft_delete ") || g.includes("rule sdm_d_soft_delete")));
-  assert.equal(pulled.differences.length, 0);
+  // the legacy database has no guard for a child under a deleted parent: the move adds it for the cascade child sdm_d
+  assert.deepEqual(pulled.differences.map((s) => s.summary), ["create or replace function sdm_d_soft_delete_guard_t()", "create trigger soft_delete_guard_t on sdm_d"]);
+  // a baseline records the schema as the database, so the guard goes in by hand
+  for (const step of pulled.differences) await db.execute(step.sql);
 
   const dir = mkdtempSync(join(tmpdir(), "monorm-soft-delete-move-"));
   pulled.write(join(dir, "schema.prisma"));

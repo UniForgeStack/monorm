@@ -101,7 +101,12 @@ The table lists them with the cascade pair of the parent table, which the revive
   An owner without soft delete counts as always live.
 * An owning relation into a level of a composed model is a schema error with a fix: point the relation at the root, or remove `owns: true`.
   Support for it is a later job.
-* A `keep_child_rows` relation gets no cascade and no revive: the child rows stay as they are.
+* A `keep_child_rows` relation gets no cascade, no revive and no guard: the child rows stay as they are.
+* `soft_delete_guard_<relation>` (child table, database mode): a live row that is inserted under, or moved to, a soft-deleted parent takes the stamp of the parent. On PostgreSQL a child with children of its own also gets `soft_delete_guard_<relation>_cascade`, which stamps the children of a moved row.
+  A row with its own stamp keeps it, and no error is raised.
+  PostgreSQL sets it in a `BEFORE INSERT OR UPDATE OF <foreign key>` trigger; SQLite has an `AFTER INSERT` and an `AFTER UPDATE OF` trigger (`..._update`) that update the row.
+  A composed level and a proxy get none.
+  It does not repair a live child that already sits under a soft-deleted parent.
 * A key move and an archive in one statement, and every owner in one statement, give the same result as separate statements.
   A raw `UPDATE` or `DELETE` gives the same result as the ORM call.
 * PostgreSQL: the sweep locks the target row first (`FOR UPDATE`), so two co-owners that archive at the same time stamp the target once.

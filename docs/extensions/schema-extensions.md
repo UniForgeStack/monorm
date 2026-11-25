@@ -142,8 +142,19 @@ model Book {
   With it, a soft delete of the parent keeps the child rows (the old behavior); a hard delete of the parent still deletes them through the database cascade.
   The Postgres delete trigger runs only at trigger depth 0 (`pg_trigger_depth() = 0`), so a hard delete of a soft-deleted parent leaves no orphan: the database cascade hard-deletes its children.
   The cost: a `DELETE` that runs inside another trigger is always a hard delete, and each row that the trigger tests calls `pg_trigger_depth()`.
-* SQLite: a hard delete of a soft-deleted parent whose live child rows exist fails with `FOREIGN KEY constraint failed`, and no row is deleted.
-  Delete or hard-delete the children first.
+* Guard, database mode: a live child row under a soft-deleted parent takes the stamp of the parent.
+  For each soft-delete child with `onDelete: Cascade`, the child gets a trigger `soft_delete_guard_<relation>` on the insert and on the update of the foreign key.
+  A row that is inserted under, or moved to, a soft-deleted parent gets the stamp of the parent, and no error is raised.
+  A row that has its own stamp keeps it. A row under a live parent is not changed.
+  The revive of the parent then clears the stamp, as for any child that carries the stamp of the parent.
+  A `keep_child_rows` relation, a level of a composed model and a proxy get no guard.
+  PostgreSQL sets the stamp in a `BEFORE` trigger. SQLite cannot set a column in a `BEFORE` trigger, so it has two `AFTER` triggers that update the row.
+  A moved row passes its stamp on to its own children on both databases.
+  PostgreSQL does this with a third trigger, `soft_delete_guard_<relation>_cascade`, on the child (`AFTER UPDATE OF` the foreign key), which runs the cascade of the child: the `BEFORE` stamp does not fire that cascade by itself.
+  SQLite needs no extra trigger: its guard updates the stamp, and that update fires the cascade.
+  SQLite: a hard delete of a soft-deleted parent removes its stamped children through the foreign key.
+  The guard does not repair a live child that already sits under a soft-deleted parent (a database from before the guard).
+  On SQLite, a hard delete of that parent fails with `FOREIGN KEY constraint failed` while such a live child exists: stamp or delete these children first.
 * Migration: a changed trigger body (the depth guard, the version bump) shows in the next migration diff; apply that migration to an existing database.
 * Application mode has no cascade; the schema check above is the same in both modes.
 * Revive cascade, database mode: `undelete()` of a parent clears the stamp of the child rows that carry the stamp of the parent.
