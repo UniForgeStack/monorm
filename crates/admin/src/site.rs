@@ -2155,12 +2155,12 @@ fn named_filters(schema: &Schema, idx: usize, name: &str, list: &ListConfig) -> 
             if !ident_ok(&c.name) || c.name == "all" || choices.iter().any(|o| o.name == c.name) {
                 return invalid_in(name, format!("named filter {:?}: choice {:?} has 1 to 40 letters, digits and _, is not \"all\" (that is every row) and has a name of its own", f.name, c.name));
             }
-            if has_binding(&c.expr) {
+            if has_binding(&c.condition) {
                 return invalid_in(name, format!("named filter {:?}: choice {:?}: an expression has no parameters or scope values", f.name, c.name));
             }
             let key = model.key_fields().first().map(|k| serde_json::json!({"t": "col", "path": [], "name": k.name}));
-            probe(schema, json_select(&model.ir.name, key.as_ref(), Some(&c.expr))).map_err(|e| invalid_fault(format!("{name}: named filter {:?}: choice {:?}: {e}", f.name, c.name)))?;
-            choices.push(NamedChoice { name: c.name.clone(), label: c.label.clone().unwrap_or_else(|| meta::humanize(&c.name)), expr: c.expr.clone() });
+            probe(schema, json_select(&model.ir.name, key.as_ref(), Some(&c.condition))).map_err(|e| invalid_fault(format!("{name}: named filter {:?}: choice {:?}: {e}", f.name, c.name)))?;
+            choices.push(NamedChoice { name: c.name.clone(), label: c.label.clone().unwrap_or_else(|| meta::humanize(&c.name)), expr: c.condition.clone() });
         }
         if let Some(d) = &f.default {
             if !choices.iter().any(|c| c.name == *d) {

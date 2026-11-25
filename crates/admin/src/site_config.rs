@@ -389,8 +389,8 @@ fn lower_list(list: &mut serde_json::Map<String, Value>, model: &str, tag: &str,
     for filter in list.get_mut("named_filters").and_then(Value::as_array_mut).into_iter().flatten() {
         let name = filter.get("name").and_then(Value::as_str).unwrap_or_default().to_owned();
         for choice in filter.get_mut("choices").and_then(Value::as_array_mut).into_iter().flatten() {
-            if let Some(expr) = choice.get_mut("expr") {
-                *expr = ir_of(expr, &format!("named filter '{name}'"), Slots::None)?.0;
+            if let Some(condition) = choice.get_mut("condition") {
+                *condition = ir_of(condition, &format!("named filter '{name}'"), Slots::None)?.0;
             }
         }
     }
@@ -443,13 +443,15 @@ fn lower_list(list: &mut serde_json::Map<String, Value>, model: &str, tag: &str,
 
 // ---- The config structs: what `site.rs` and the modules read after `lower`. ----
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     /// How the host spells an option key in an error text: `snake` (default) or `camel`. `Site::build` reads it first.
     #[allow(dead_code)] // `Site::build` reads it before this parse; the field only lets the key through `deny_unknown_fields`.
+    #[schemars(skip)]
     pub spelling: Option<Spelling>,
     /// The table of the active auth user model, supplied by the binding.
+    #[schemars(extend("x-monorm-internal" = true))]
     pub user_table: Option<String>,
     /// The path under which the UI and the API live, `/admin` by default.
     pub base_path: Option<String>,
@@ -472,14 +474,17 @@ pub struct Config {
     /// The service switcher of the code: the current service, the services and the build identity.
     pub switcher: Option<SwitcherConfig>,
     /// The `[admin.switcher]` table of `monorm.toml`, as the serve mode hands it to the code. A key set here and in `switcher` is an error.
+    #[schemars(extend("x-monorm-internal" = true))]
     pub switcher_file: Option<SwitcherConfig>,
     /// The registered resources. None: every concrete model is a read-only resource.
     #[serde(default)]
+    #[schemars(extend("x-monorm-internal" = true))]
     pub resources: Vec<ResourceConfig>,
     /// The time limit of each statement of a request, in seconds (PostgreSQL). 0: none. Default 15.
     pub statement_timeout: Option<f64>,
     /// True when the host gave the admin a file storage registry: a resource may then list `files`.
     #[serde(default)]
+    #[schemars(extend("x-monorm-internal" = true))]
     pub storage: bool,
     /// How long an export waits for the client to take the next chunk, in ms. 0: no limit. Default 30000.
     pub export_idle_timeout_ms: Option<u64>,
@@ -488,9 +493,11 @@ pub struct Config {
     pub widgets: BTreeMap<String, String>,
     /// Custom routes under `<prefix>/routes/`.
     #[serde(default)]
+    #[schemars(extend("x-monorm-internal" = true))]
     pub routes: Vec<RouteConfig>,
     /// Extension packages: static widgets, form modules and styles under `<prefix>/packages/`.
     #[serde(default)]
+    #[schemars(extend("x-monorm-internal" = true))]
     pub packages: Vec<PackageConfig>,
     #[serde(default)]
     pub frame_origins: Vec<String>,
@@ -501,7 +508,7 @@ pub struct Config {
 }
 
 /// The rows a resource shows to staff.
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct QuerysetConfig {
     /// A prepared filter. A `param` with index `i` reads `slots[i]`.
@@ -513,94 +520,112 @@ pub struct QuerysetConfig {
     pub function: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceConfig {
+    #[schemars(extend("x-monorm-internal" = true))]
     pub model: String,
+    /// The list page: columns, order, search, filters and the computed and aggregate columns.
     #[serde(default)]
     pub list: ListConfig,
-    /// The operations that the resource offers, for every user: `read`, `create`, `update`, `delete`.
+    /// The operations that the resource allows for every user, superusers too: `read`, `create`, `update`, `delete`.
+    #[schemars(extend("items" = {"type": "string", "enum": ["read", "create", "update", "delete"]}))]
     pub allow: Option<Vec<String>>,
-    /// Page levels: `read`, `manage` and, to split delete from manage, `delete`.
+    /// The `page` strategy only: add `delete` to split the delete permission from `manage`.
+    #[schemars(extend("items" = {"type": "string", "enum": ["read", "manage", "delete"]}))]
     pub perms: Option<Vec<String>>,
-    /// Overrides the site label in the names of this resource.
+    /// The label of the permission names of this resource, instead of the site label.
     pub label: Option<String>,
-    /// The name in the navigation and the page heading. The model name, spaced, by default.
+    /// The name in the navigation and the page heading (the model name, spaced, by default).
     pub title: Option<String>,
-    /// The navigation group of the resource.
+    /// The navigation group: one of `groups` of the admin.
     pub group: Option<String>,
-    /// A lucide icon name (`book-open`) for the navigation item.
+    /// A lucide icon name such as `book-open`, shown in the navigation.
     pub icon: Option<String>,
-    /// Names of field permissions (`see_cost`): `<label>.<name>`.
+    /// Names such as `see_credential` that become `<label>.<name>`.
     #[serde(default)]
     pub field_permissions: Vec<String>,
-    /// Field to permission name: only a user with that name sees the field. A bound name is declared as a field permission.
+    /// Field permissions that show a field: the entry `cost` with the value `"see_cost"` shows the column `cost` only to a user who holds `<label>.see_cost`. Without it the field leaves the list, detail, tabs, search, filters, sort, export, labels, inlines and the response. A filter, sort or write on it is an error.
     #[serde(default)]
     pub see: BTreeMap<String, String>,
-    /// Field to permission name: only a user with that name changes the field, the others see it read-only.
+    /// Field permissions that change a field: `{price: "change_price"}` makes `price` read-only for a user who does not hold `<label>.change_price`.
     #[serde(default)]
     pub change: BTreeMap<String, String>,
-    /// Actions: a permission name (`<label>.<action>_<resource>`), a placement, a confirmation and inputs.
+    /// The actions of the resource. A function that the action helper marked is a button. A plain name such as `refund` only declares the permission `<label>.<action>_<resource>`.
     #[serde(default)]
+    #[schemars(extend("x-monorm-type" = "actions"))]
     pub actions: Vec<ActionConfig>,
-    /// Bulk delete is on by default: `false` removes it from the list.
+    /// `false` removes the bulk delete of the list. It is on by default; it needs the delete permission, and a `delete` service gets the query set.
     #[serde(default = "yes")]
     pub bulk_delete: bool,
+    /// Enable the built-in password action on the active auth user resource.
     #[serde(default)]
     pub set_password: bool,
-    /// The rows that staff see and touch.
+    /// The rows that staff see: a prepared query set with a `param("user")` slot, which the admin fills, or an async function `(user)` that returns a condition (one host call per request). Its filter limits the list, the count, the search, the detail and the tabs; its order is the list order when the list sets none. A row outside the filter is a 404 on the detail. The bypass permission never lifts it.
+    #[schemars(extend("x-monorm-type" = "queryset"))]
     pub queryset: Option<QuerysetConfig>,
-    /// Per-row rules, `change` and `delete`: prepared expressions that the list and the detail select as flags.
+    /// Conditions that a row must meet for the user to change or delete it, as `change` and `delete`. The list and the detail select them as flags; the UI disables the button that a row does not allow.
     #[serde(default)]
+    #[schemars(extend("x-monorm-type" = "can_rules"))]
     pub can: BTreeMap<String, Value>,
-    /// The text of a form message for a named `@@check`: the name of the constraint, then the text.
+    /// The form message of each named `@@check`, by the name of the check. A failed check without an entry shows a generic message.
     #[serde(default)]
     pub check_messages: BTreeMap<String, String>,
-    /// Host functions that run the writes: `create`, `update`, `delete`, each with `sync` for a plain Python function.
+    /// Host functions that run the writes.
     #[serde(default)]
+    #[schemars(extend("x-monorm-type" = "flatten"))]
     pub service: ServiceConfig,
-    /// Controls that a form shows next to the fields. Only a service reads them.
+    /// Controls of the form that are no field. Only a service reads them.
     #[serde(default)]
+    #[schemars(extend("x-monorm-type" = "inputs"))]
     pub inputs: Vec<InputConfig>,
-    /// The resource opts in to writes of a protected model.
+    /// Open application write rules for this resource. The audit row records the opt-in.
     #[serde(default)]
     pub allow_protected_writes: bool,
     /// The model has host behavior that the host knows (a field adapter): its writes run through the host.
     #[serde(default)]
+    #[schemars(extend("x-monorm-internal" = true))]
     pub host_behavior: bool,
-    /// Sections: a list, or `{create, edit}` with a list for each form. A field that no section names goes last.
+    /// The sections of the form: one list for both forms, or `{create, edit}` with a list for each. A field that no section names trails in an untitled section. A name that is not a field of the form is an error at the start of the site.
+    #[schemars(extend("x-monorm-type" = "form"))]
     pub form: Option<Value>,
-    /// Fields that the form shows and a request cannot write.
+    /// Fields that the form shows but never writes, in the create and the edit form. A write to one of them is a 422.
     #[serde(default)]
     pub readonly: Vec<String>,
     /// Bytes fields that the host shows as another value: the field to `json` (the host converts both ways) or `text` (read-only).
     #[serde(default)]
+    #[schemars(extend("x-monorm-internal" = true))]
     pub views: BTreeMap<String, String>,
-    /// Widgets of this resource: a field, `Type.subfield`, or a type name, to a widget name.
+    /// The widget of a field (`blurb: "textarea"`), of a nested path (`Geo.lat`) or of a type (`Text`, an enum name). A field beats a path, a path beats a type; the site `widgets` come last.
     #[serde(default)]
     pub widgets: BTreeMap<String, String>,
-    /// The path of a JavaScript module that replaces the form.
+    /// The path of a JavaScript module that replaces the whole form: `export default (React) => function Form(props) {...}`. The admin reads the file when the site starts and serves it to signed-in staff.
+    #[schemars(extend("x-monorm-type" = "form_component"))]
     pub form_component: Option<String>,
-    /// Package detail tabs (`<package>.<tab>`) that the detail page shows after the relation tabs.
+    /// Package detail tabs, each `<package>.<tab>`: the detail page shows them after the relation tabs.
     #[serde(default)]
     pub detail_tabs: Vec<String>,
+    /// Frames that the detail page embeds.
     #[serde(default)]
     pub frames: Vec<FrameConfig>,
+    /// Named groups of fields, each with a title.
     #[serde(default)]
     pub fieldsets: Vec<Fieldset>,
-    /// Relation fields with a picker (to-one) or chips (many-to-many), by relation name.
+    /// The relation fields that the form edits, by relation name. A to-one relation becomes a picker with keyset autocomplete; a many-to-many relation (through a join model) becomes chips. The target of each needs a text column that names a row.
     #[serde(default)]
     pub relations: BTreeMap<String, RelationConfig>,
-    /// Json fields that hold an uploaded file: the form uploads and downloads them.
+    /// File fields by field name, each with the name of its storage in the `storage` registry of the admin (`{cover: "media"}`). A file field is a nullable `Json` field that holds the reference of the file.
     #[serde(default)]
+    #[schemars(extend("x-monorm-type" = "files"))]
     pub files: Vec<String>,
-    /// To-many relations whose rows the detail page edits in place. `Site::build` merges the page of the child into each one.
+    /// To-many relations that the detail page shows and edits in place, one inline for each (a bare model works too). The inline takes the registered page of the child model; the inline helper overrides page keys.
     #[serde(default)]
+    #[schemars(extend("x-monorm-type" = "inlines"))]
     pub inlines: Vec<InlineConfig>,
 }
 
 /// The wrapper of an inline: what a page cannot say. `page` holds the page keys that the wrapper overrides, merged over the registered page of the child model.
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct InlineConfig {
     pub model: String,
@@ -622,35 +647,45 @@ pub struct InlineConfig {
     pub page: Option<Box<ResourceConfig>>,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ListConfig {
-    /// Field names; `author.name` reaches a field through to-one relations. A computed or aggregate column is named here too.
+    /// Fields of the model; `author.name` reaches a field through to-one relations. A string names a computed or aggregate column.
+    #[schemars(extend("x-monorm-type" = "columns"))]
     pub columns: Option<Vec<String>>,
-    /// Field names of the model, `-created_at` for descending.
+    /// The list order: fields of the model, descending with `-created_at` or a descending ordering.
+    #[schemars(extend("x-monorm-type" = "order"))]
     pub order: Option<Vec<String>>,
+    /// Rows per page, 1 to 200 (25 by default).
     pub page_size: Option<usize>,
-    /// Field names of the model that the search box reads.
+    /// Fields of the model that the search box matches. The strategy comes from the indexes of each field.
+    #[schemars(extend("x-monorm-type" = "columns_ref"))]
     pub search: Option<Vec<String>>,
-    /// The name of a host function that replaces the search: it takes the text and returns keys.
+    /// Replaces `search`. A prepared query set with `param("q")` (its rows are the matches), or an async function `(q, limit)` that returns keys. One host call per request.
+    #[schemars(extend("x-monorm-type" = "search_with"))]
     pub search_with: Option<String>,
-    /// Field names whose cells the list edits in place: list columns that are scalar fields of the model.
+    /// List columns that a user edits in place and saves for several rows at once. Each is a plain field of the model that the update form may write.
     #[serde(default)]
+    #[schemars(extend("x-monorm-type" = "editable"))]
     pub editable: Vec<String>,
-    /// Field names that the sort headers may use. Default: the list columns that can sort.
+    /// The list columns that a sort header may use. Without it every list column that can sort.
+    #[schemars(extend("x-monorm-type" = "columns_ref"))]
     pub sortable: Option<Vec<String>>,
-    /// The title of a column, by column name.
+    /// The title of a column, by path (`author.name`) or name.
     #[serde(default)]
+    #[schemars(extend("x-monorm-type" = "column_map"))]
     pub labels: BTreeMap<String, String>,
-    /// What an empty value shows in every column of the list.
+    /// What an empty value shows in the list.
     pub empty: Option<String>,
-    /// What an empty value shows in one column, by column name.
+    /// What an empty value shows in one column, by path (`author.name`) or name.
     #[serde(default)]
+    #[schemars(extend("x-monorm-type" = "column_map"))]
     pub empty_fields: BTreeMap<String, String>,
-    /// Fields that the filter bar offers: a field, `author.name` (a field of a to-one relation) or a to-one relation.
+    /// The filter bar: a field, a field of a to-one relation, or a to-one relation (its key is the value).
     #[serde(default)]
+    #[schemars(extend("x-monorm-type" = "filters"))]
     pub filters: Vec<String>,
-    /// Filters made of prepared expressions: one choice at a time.
+    /// Filters made of fixed conditions: one choice at a time.
     #[serde(default)]
     pub named_filters: Vec<NamedFilterConfig>,
     /// Columns that a SQL expression or a host function computes.
@@ -659,53 +694,61 @@ pub struct ListConfig {
     /// Columns that count or sum the rows of a to-many relation.
     #[serde(default)]
     pub aggregates: Vec<AggregateConfig>,
-    /// The to-many relations that the detail page shows as tabs. Default: every one that leads to a resource.
+    /// The to-many relations that the detail page shows as tabs. Without it: every one that leads to a resource.
+    #[schemars(extend("x-monorm-type" = "relation_paths"))]
     pub tabs: Option<Vec<String>>,
-    /// A column name to a map of value (as text) to a colour of the palette: the list and the detail page show the value as a badge.
+    /// A column, by path or name, to a map of value to colour: the list and the detail page show the value as a badge. A value outside the map shows grey.
     #[serde(default)]
+    #[schemars(extend("x-monorm-type" = "badges"))]
     pub badges: BTreeMap<String, BTreeMap<String, String>>,
-    /// A date or datetime field: the list shows a bar of the years, months and days with their row counts.
+    /// A date or datetime field (one to-one hop allowed, as `author.joined`): a bar over the table drills down year, month and day. It joins `filters`.
+    #[schemars(extend("x-monorm-type" = "date_hierarchy"))]
     pub date_hierarchy: Option<DateHierarchyConfig>,
 }
 
 /// `date_hierarchy: "created"` or `date_hierarchy: {field: "created", counts: false}`.
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum DateHierarchyConfig {
     Field(String),
     Full(DateHierarchyFull),
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct DateHierarchyFull {
+    /// A date or datetime field, by path (`author.joined`) or column. One to-one hop is the most.
+    #[schemars(extend("x-monorm-type" = "column_or_path"))]
     pub field: String,
-    /// False: the bar shows the periods without counts and the route runs no counting statement.
+    /// `false` skips the counts: the bar shows the periods of the date range and runs no count statement.
     pub counts: Option<bool>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NamedFilterConfig {
+    /// The name in the URL (`n.<name>=<choice>`). The choice `all` is reserved: it applies no condition.
     pub name: String,
     pub label: Option<String>,
     pub choices: Vec<NamedChoiceConfig>,
-    /// The choice that applies when the URL names none. None: all rows.
+    /// The choice that applies when the URL names none. Without it: all rows.
     pub default: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct NamedChoiceConfig {
     pub name: String,
     pub label: Option<String>,
-    /// The condition, as an expression of the engine IR.
-    pub expr: Value,
+    /// A fixed condition on the model, such as `rank > 1`. It has no `param`: the choice is a fixed condition.
+    #[schemars(extend("x-monorm-type" = "condition"))]
+    pub condition: Value,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ComputedConfig {
+    /// The column name: list it in `columns` as a string.
     pub name: String,
     pub label: Option<String>,
     /// The declared type: `int`, `bigint`, `float`, `bool`, `string`, `text`, `datetime`, `date`, `uuid`, `json` or `decimal`.
@@ -713,32 +756,38 @@ pub struct ComputedConfig {
     pub ty: String,
     /// Whether the value may be null. Default: true.
     pub nullable: Option<bool>,
-    /// A SQL expression, as an expression of the engine IR.
+    /// An expression that the list statement computes, such as `lower(Note.title)`. It has no `param`.
+    #[schemars(extend("x-monorm-type" = "ir"))]
     pub expr: Option<Value>,
-    /// The name of a host function: it takes `{"keys": [...]}` for one page and returns one value per key.
+    /// Instead of `expr`: an async function that gets the keys of one page (one call per page) and returns one value per key.
+    #[schemars(extend("x-monorm-type" = "batch_function"))]
     pub function: Option<String>,
-    /// Whether the column has a sort header. It needs `order_by`, or `expr` and `nullable: false`.
+    /// A sort header. It needs `order_by`, or `expr` and `nullable: false`.
     pub sortable: Option<bool>,
-    /// What the sort header orders by: a field path (a string) or an expression of the engine IR. It makes the column sortable.
+    /// What the sort header orders by: a field of the model or of a to-one relation (`Note.author.name`, not null), or an expression (the column then must not be nullable). It makes the column sortable, also for `function`.
+    #[schemars(extend("x-monorm-type" = "order_by"))]
     pub order_by: Option<Value>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AggregateConfig {
     pub name: String,
     pub label: Option<String>,
-    /// A to-many relation of the model.
+    /// A to-many relation of the model, such as `Author.comments`.
+    #[schemars(extend("x-monorm-type" = "relation"))]
     pub relation: String,
     /// `count`, `sum`, `min`, `max` or `avg`.
     #[serde(rename = "fn")]
+    #[schemars(extend("enum" = ["count", "sum", "min", "max", "avg"]))]
     pub function: String,
-    /// A field of the related model: every function but `count` needs one.
+    /// A field of the related model, such as `Author.comments.rank`: every function but `count` needs it.
+    #[schemars(extend("x-monorm-type" = "column"))]
     pub field: Option<String>,
 }
 
 /// The config of one action as a host sends it. An entry with no placement only declares a permission.
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Clone, Debug, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ActionConfig {
     pub name: String,
@@ -751,8 +800,10 @@ pub struct ActionConfig {
     #[serde(default)]
     pub inputs: Vec<InputConfig>,
     /// A prepared filter: the rows that the action applies to.
+    #[schemars(extend("x-monorm-type" = "ir"))]
     pub applies_to: Option<Value>,
     /// A row permission condition with optional user slot 0.
+    #[schemars(extend("x-monorm-type" = "ir"))]
     pub can: Option<Value>,
     #[serde(default)]
     pub replace_change: bool,
@@ -762,16 +813,22 @@ pub struct ActionConfig {
     pub threaded: bool,
 }
 
-#[derive(Deserialize, Default, Clone, Debug)]
+#[derive(Deserialize, Default, Clone, Debug, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceConfig {
+    /// The service of a create: a function `(ctx, values)` returns the new record. It owns its transactions.
+    #[schemars(extend("x-monorm-type" = "service_create"))]
     pub create: Option<ServiceOp>,
+    /// The service of an update: a function `(ctx, qs, changes)`, where `qs` is the one-row query set of the record (with the `queryset` filter and the `can` rule). Check `ctx.loaded` for a version conflict (`VersionConflict` is a 409).
+    #[schemars(extend("x-monorm-type" = "service_update"))]
     pub update: Option<ServiceOp>,
+    /// The service of a delete: a function `(ctx, qs)`.
+    #[schemars(extend("x-monorm-type" = "service_delete"))]
     pub delete: Option<ServiceOp>,
 }
 
 /// A control that the form shows next to the fields. Only a service reads its value.
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Clone, Debug, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct InputConfig {
     pub name: String,
@@ -789,20 +846,21 @@ pub struct InputConfig {
 }
 
 /// The config of one relation field of a resource.
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RelationConfig {
-    /// The rows of the target that the field accepts, on top of the `queryset` of the target.
+    /// A prepared query set of the target that limits the picker. The server checks it again on write. It combines with the `queryset` of the target.
+    #[schemars(extend("x-monorm-type" = "prepared"))]
     pub choices: Option<QuerysetConfig>,
-    /// The form offers a modal that creates a record of the target.
+    /// Offer a modal in the form that creates a record of the target and fills the field.
     #[serde(default)]
     pub create: bool,
-    /// The text column of the target that names a row in the picker. By default the first text column.
+    /// The text column of the target that names a row in the picker (the first text column by default).
     pub label: Option<String>,
 }
 
 /// One route as the host sends it: `permission` is a full name, `<label>.<name>`.
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Clone, Debug, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RouteConfig {
     pub method: String,
@@ -810,51 +868,57 @@ pub struct RouteConfig {
     pub permission: Option<String>,
 }
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BrandConfig {
-    /// The name in the header and the page title. `Admin` by default.
+    /// The name in the header and the page title (`Admin` by default).
     pub name: Option<String>,
     /// The URL of the logo image.
     pub logo: Option<String>,
-    /// `primary` and `accent`, as `#rgb` or `#rrggbb`.
+    /// `primary` and `accent`, each as `#rgb` or `#rrggbb`.
     #[serde(default)]
+    #[schemars(extend("x-monorm-type" = "brand_colors"))]
     pub colors: BTreeMap<String, String>,
     /// Links in the header.
     #[serde(default)]
     pub links: Vec<LinkConfig>,
     /// A short label such as `staging`, shown in the header.
     pub environment: Option<String>,
-    /// `info`, `warning` or `danger`: the colour of the environment label. `production` gives danger, `staging` warning, else info.
+    /// The colour of the environment label. `production` gives `danger`, `staging` `warning`, any other label `info`.
+    #[schemars(extend("enum" = ["info", "warning", "danger"]))]
     pub environment_level: Option<String>,
 }
 
 /// The service switcher: which service this admin is, its siblings and the build that runs. Code and `monorm.toml` may each set some keys.
-#[derive(Deserialize, serde::Serialize, Default, Clone, Debug, PartialEq)]
+#[derive(Deserialize, serde::Serialize, Default, Clone, Debug, PartialEq, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SwitcherConfig {
     /// The `key` of the service that this admin is.
     pub current: Option<String>,
+    /// The services of your deploy, the current one included.
     pub services: Option<Vec<SwitcherService>>,
+    /// The build identity: the commit, the build time, the deploy time and the tree.
     #[serde(default)]
     pub build: SwitcherBuild,
 }
 
-#[derive(Deserialize, serde::Serialize, Clone, Debug, PartialEq)]
+#[derive(Deserialize, serde::Serialize, Clone, Debug, PartialEq, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SwitcherService {
+    /// Lower case letters, digits, `-` and `_`; unique.
     pub key: String,
+    /// 1 to 40 characters.
     pub title: String,
     /// A path that starts with `/` or an `https:` URL. Needed for every service but the current one.
     pub url: Option<String>,
-    /// A lucide icon name.
+    /// A lucide icon name such as `server`.
     pub icon: Option<String>,
-    /// `#rgb` or `#rrggbb`.
+    /// `#rgb` or `#rrggbb`. The colour of the current service sets the primary colour.
     pub color: Option<String>,
 }
 
 /// Plain strings that each project fills from its own environment. An empty string is no value.
-#[derive(Deserialize, serde::Serialize, Default, Clone, Debug, PartialEq)]
+#[derive(Deserialize, serde::Serialize, Default, Clone, Debug, PartialEq, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SwitcherBuild {
     pub commit: Option<String>,
@@ -936,23 +1000,28 @@ impl SwitcherConfig {
 
 /// The short form of the look of a site: the title, the logo and the brand colour. It sets the same values as `brand`
 /// (`title` is `brand.name`, `color` is `brand.colors.primary`); a value in both is a config error.
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ThemeConfig {
+    /// The name in the header and the page title (same as `brand.name`).
     pub title: Option<String>,
+    /// The URL of the logo image: a path or an `https` URL.
     pub logo: Option<String>,
+    /// The brand colour, `#rgb` or `#rrggbb` (same as `brand.colors.primary`). The UI picks a readable text colour for it.
     pub color: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct LinkConfig {
+    /// The text of the link.
     pub label: String,
+    /// The target of the link.
     pub url: String,
 }
 
 /// One package as the host sends it. Names in `widgets` and `forms` map to a file of `dir`; `styles` are files of `dir`.
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Clone, Debug, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PackageConfig {
     pub name: String,
@@ -969,14 +1038,14 @@ pub struct PackageConfig {
     pub styles: Vec<String>,
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Clone, Debug, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum TabConfig {
     Module(String),
     Options(TabOptions),
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct FrameConfig {
     pub name: String,
@@ -989,7 +1058,7 @@ pub struct FrameConfig {
     pub height: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Fieldset {
     pub name: String,
@@ -997,7 +1066,7 @@ pub struct Fieldset {
     pub fields: Vec<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EmbedConfig {
     pub resource: String,
@@ -1006,17 +1075,20 @@ pub struct EmbedConfig {
     pub ancestors: Vec<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SectionConfig {
+    /// The heading of the section.
     pub title: Option<String>,
+    /// The form fields of the section.
     pub fields: Vec<String>,
+    /// A collapsed section starts closed. It needs a `title`.
     #[serde(default)]
     pub collapsed: bool,
 }
 
 /// One service function of a resource. `sync` is a plain Python function; it runs in a thread.
-#[derive(Deserialize, Default, Clone, Debug)]
+#[derive(Deserialize, Default, Clone, Debug, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceOp {
     #[serde(default)]
@@ -1026,7 +1098,7 @@ pub struct ServiceOp {
     pub threaded: bool,
 }
 
-#[derive(Deserialize, Clone, Debug)]
+#[derive(Deserialize, Clone, Debug, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TabOptions {
     pub module: String,

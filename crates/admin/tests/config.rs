@@ -512,3 +512,15 @@ fn an_inline_page_takes_the_keys_that_a_binding_lowers() {
     let built = Site::build(schema(), &config.to_string());
     assert!(built.is_ok(), "{:?}", built.err().map(|e| e.message));
 }
+
+#[test]
+fn the_schema_key_of_a_named_choice_is_the_wire_key() {
+    use monorm_admin::site_config::NamedChoiceConfig;
+    let schema = serde_json::to_value(schemars::schema_for!(NamedChoiceConfig)).unwrap();
+    let mut keys: Vec<&str> = schema["properties"].as_object().unwrap().keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["condition", "label", "name"]);
+    let wire = json!({"name": "open", "condition": {"t": "bool", "value": true}});
+    assert!(serde_json::from_value::<NamedChoiceConfig>(wire).is_ok());
+    assert!(serde_json::from_value::<NamedChoiceConfig>(json!({"name": "open", "expr": {}})).is_err());
+}
