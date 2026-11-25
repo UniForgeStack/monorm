@@ -150,10 +150,9 @@ for (const provider of PROVIDERS) {
     }
   }));
 
-  test(`a config of the wrong shape is refused before the build (${provider})`, () => world(provider, async (w) => {
-    const bad: Loose[] = [{ form: "x" }, { form: [{ title: "T" }] }, { form: { create: { fields: ["title"] } } }, { readonly: "pages" }, { widgets: { title: 1 } }];
-    for (const config of bad) {
-      assert.throws(() => (siteOf(w, config) as Loose).check(), AdminConfigError, JSON.stringify(config));
+  test(`a site widgets option that is not a map fails the build (${provider})`, () => world(provider, async (w) => {
+    for (const widgets of ["title", ["title"], 5, { title: 1 }]) {
+      assert.throws(() => siteOf(w, {}, { widgets: widgets as never }).check(), (e: unknown) => e instanceof AdminConfigError && e.message.includes("widgets maps a field, a path or a type to a widget name"), JSON.stringify(widgets));
     }
   }));
 

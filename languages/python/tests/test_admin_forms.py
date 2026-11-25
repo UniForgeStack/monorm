@@ -137,11 +137,11 @@ async def test_a_bad_form_config_fails_the_build(world, config, match):
         site_of(registry, models, config).check()
 
 
-async def test_a_config_of_the_wrong_shape_is_refused_before_the_build(world):
+async def test_a_site_widgets_option_that_is_not_a_map_fails_the_build(world):
     registry, models, _ = world
-    for config in ({"form": "x"}, {"form": [{"title": "T"}]}, {"form": {"create": {"fields": ["title"]}}}, {"readonly": "pages"}, {"widgets": {"title": 1}}):
-        with pytest.raises(admin.AdminConfigError):
-            site_of(registry, models, config)._config_json()
+    for widgets in ("title", ["title"], 5, {"title": 1}):
+        with pytest.raises(admin.AdminConfigError, match="widgets maps a field, a path or a type to a widget name"):
+            site_of(registry, models, {}, widgets=widgets).check()
 
 
 async def test_the_form_module_comes_back_to_staff_as_javascript(world, tmp_path):

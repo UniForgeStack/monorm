@@ -348,6 +348,16 @@ async def test_a_badge_that_does_not_fit_is_a_build_error(world):
             site.check()
 
 
+async def test_a_badge_key_that_is_not_a_string_an_int_or_a_bool_is_a_build_error(world):
+    C = world.Comment
+    for key in (1.5, None, (1, 2)):
+        site = admin.Admin(world.registry)
+        site.register(C, {"list": {"columns": [C.body, C.rank], "badges": {C.rank: {key: "green"}}}})
+        site.register(world.Author)
+        with pytest.raises(admin.AdminConfigError, match="a badge value is a string, an integer or a boolean"):
+            site.check()
+
+
 def order_site(w, order_by, page_size=2, **column):
     C = w.Comment
     calls = []

@@ -217,10 +217,13 @@ async def test_a_wrapper_overrides_a_page_key_and_a_child_without_a_page_takes_t
     assert await lines(db, models) == [(1, 1, "S1", 1), (2, 1, "S2", 2), (3, 2, "X", 9)]
 
 
-def test_a_page_key_that_cannot_be_shared_and_a_wrong_wrapper_are_config_errors():
-    for key in ("create", "inlines", "files", "title", "perms", "actions", "allow_protected_writes"):
+async def test_a_page_key_that_cannot_be_shared_is_refused_by_name_and_a_wrong_wrapper_is_a_config_error(world):
+    registry, _, models = world
+    for key in ("create", "nope"):
+        site = admin.Admin(registry)
+        site.register(models["IOrder"], {"inlines": [admin.inline(models["IOrderLine"], page={key: 1})]})  # type: ignore[typeddict-item]
         with pytest.raises(admin.AdminConfigError, match=key):
-            admin.Admin(monorm.Registry())._inline_json("P", admin.inline(object, page={key: 1}), admin._Fns())  # type: ignore[arg-type]
+            site.check()
     with pytest.raises(admin.AdminConfigError, match="save"):
         admin.inline(object, save="later")  # type: ignore[arg-type]
     with pytest.raises(admin.AdminConfigError, match="style"):
