@@ -256,7 +256,7 @@ test("pull moves a soft delete rule to triggers", async () => {
   assert.equal(await scalar(db, "SELECT count(*) FROM sdm_t WHERE _deleted_at IS NOT NULL"), "1");
   await db.execute("TRUNCATE sdm_t CASCADE");
 
-  const [move] = migrations.make("move_soft_delete");
+  const move = migrations.make("move_soft_delete");
   const up = move!.upSql;
   assert.ok(up.indexOf('DROP RULE IF EXISTS "soft_delete" ON "sdm_t"') >= 0);
   assert.ok(up.indexOf('DROP RULE IF EXISTS "soft_delete" ON "sdm_t"') < up.indexOf("CREATE TRIGGER"));
@@ -582,7 +582,7 @@ model Task {
 `;
     writeFileSync(consumer, consumerSource);
     const ownerMigrations = new Migrations(join(dir, "owner"), owner);
-    const [initial] = ownerMigrations.make();
+    const initial = ownerMigrations.make();
     const registry = new Registry();
     const Account = load(consumer, { registry })["Account"]!;
     const db = await connect(url, { maxConnections: 1, default: false, registry });
@@ -598,7 +598,7 @@ model Task {
       }
       await db.execute("CREATE INDEX outside_index ON shared_account (label)");
       const consumerMigrations = new Migrations(join(dir, "consumer"), consumer);
-      const [migration] = consumerMigrations.make();
+      const migration = consumerMigrations.make();
       assert.ok(migration!.upSql.includes('REFERENCES "shared_account"'));
       assert.ok(!migration!.upSql.includes('CREATE TABLE "shared_account"'));
       await new Migrator(db, consumerMigrations).upgrade();

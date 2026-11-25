@@ -79,7 +79,7 @@ for (const dialect of ["sqlite", "postgres"]) {
       new Migrations(dir, registry(plain)).make();
       await new Migrator(db, new Migrations(dir, registry(plain))).upgrade();
       const later = new Migrations(dir, registry(deprecated));
-      assert.equal(later.make().length, 0);
+      assert.equal(later.make(), null);
       assert.equal((await new Migrator(db, later).drift()).steps.length, 0);
       await db.fetch(`SELECT legacy FROM ${table}`); // the column still exists
     } finally { await db.execute(cleanup); await db.close(); }

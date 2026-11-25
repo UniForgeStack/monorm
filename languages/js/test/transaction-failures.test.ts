@@ -1,16 +1,17 @@
 /** A failed statement marks its transaction failed, also when the block catches the error. */
 
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Migration, Migrations, Migrator } from "../src/migrations.js";
+import { Migrations, Migrator } from "../src/migrations.js";
 import { test } from "node:test";
 
 import { connect, DatabaseError, getDatabase, IntegrityError, loads, QueryError, Registry, TransactionAborted, type Database } from "../src/index.js";
 import { Post, PostTag, Tag, User } from "./blog/models.js";
 import { Author, sqliteRegistry } from "./sqlite/models.js";
 import { useDatabase } from "./helpers.js";
+import { writeMigration } from "./planned.js";
 
 useDatabase();
 
@@ -198,17 +199,18 @@ for (const applicationError of [false, true]) {
     run(async (c) => {
       const dir = mkdtempSync(join(tmpdir(), "monorm-tx-failure-"));
       const original = new TypeError("data migration failed");
-      const path = join(dir, "0001_failure");
-      mkdirSync(path);
-      writeFileSync(join(path, "up.sql"), "CREATE TABLE migration_probe (id INTEGER)");
-      writeFileSync(join(path, "down.sql"), "DROP TABLE migration_probe");
-      writeFileSync(join(path, "snapshot.json"), c.db.registry.prepare().snapshot());
+      writeFileSync(join(dir, "0001_failure.ts"), "export async function run(db) {}\n");
+      writeMigration(dir, "0001_failure", [
+        { run_sql: { sql: "CREATE TABLE migration_probe (id INTEGER)", reverse_sql: "DROP TABLE migration_probe" } },
+        { run_code: { typescript: "0001_failure.ts:run", reverse: "noop" } },
+      ]);
       const seen: string[] = [];
       try {
         await c.insert("dup");
         const migrator = new Migrator(c.db, new Migrations(dir, "unused.prisma"));
-        await migrator.loadPending(null);
-        const aborted = await migrator.apply([[new Migration("0001_failure", path), async (db) => {
+        const loaded = await migrator.loadUp(null, false, null);
+        // the closure stands in for the script
+        loaded[0]!.code.set("0:1", async (db: Database) => {
           await db.execute("INSERT INTO migration_probe VALUES (1)");
           await c.insert("lost");
           if (applicationError) {
@@ -217,7 +219,8 @@ for (const applicationError of [false, true]) {
             await assert.rejects(c.insert("dup"), IntegrityError);
           }
           await db.onCommit(() => void seen.push("ran"));
-        }, false]]).catch((e: unknown) => e);
+        });
+        const aborted = await migrator.run(loaded).catch((e: unknown) => e);
         assert.ok(aborted instanceof TransactionAborted);
         if (applicationError) assert.equal(aborted.cause, original);
         else assert.ok(aborted.cause instanceof IntegrityError);

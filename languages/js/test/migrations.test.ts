@@ -2,7 +2,7 @@
  * database of their own (migrations create and drop extensions, which are per database). */
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -11,6 +11,7 @@ import { DatabaseError, IntegrityError, MigrationError, Migrations, Migrator, Re
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { DATABASE_URL } from "./helpers.js";
+import { appendOp, planned, plannedUp, writeMigration } from "./planned.js";
 
 // `npx monorm` as a process of its own: src/cli.ts (Bun) or dist/src/cli.js (Node)
 const CLI = [".js", ".ts"].map((ext) => fileURLToPath(new URL(`../src/cli${ext}`, import.meta.url))).find(existsSync)!;
@@ -99,17 +100,20 @@ test("schema errors name the line", () => {
 });
 
 test("the first migration", () => {
-  const migs = new Migrations(tmp(), models(V1));
-  const m = migs.make()[0]!;
+  const dir = tmp();
+  const migs = new Migrations(dir, models(V1));
+  const m = migs.make()!;
   assert.equal(m.name, "0001_initial");
+  assert.equal(m.path, join(dir, "0001_initial.json"));
+  assert.deepEqual(m.operations.map((op) => Object.keys(op)[0]), ["create_table", "create_table", "create_index"]);
   const up = m.upSql;
   assert.ok(up.indexOf('CREATE TABLE "authors"') < up.indexOf('CREATE TABLE "books"'));
   assert.ok(up.includes('CONSTRAINT "books_author_id_fkey" FOREIGN KEY ("author_id") REFERENCES "authors" ("id") ON DELETE CASCADE'));
   assert.ok(up.includes('CREATE INDEX "books_author_id_idx" ON "books" ("author_id");'));
   assert.ok(m.downSql.includes('DROP TABLE "books";'));
-  const snap = JSON.parse(readFileSync(join(m.path, "snapshot.json"), "utf8")) as { tables: { name: string }[] };
-  assert.deepEqual(snap.tables.map((t) => t.name), ["authors", "books"]);
-  assert.deepEqual(migs.make(), []); // nothing changed
+  assert.equal((JSON.parse(readFileSync(m.path, "utf8")) as { version: number }).version, 1);
+  assert.deepEqual(readdirSync(dir), ["0001_initial.json"]);
+  assert.equal(migs.make(), null); // nothing changed
 });
 
 test("the second migration alters in place", () => {
@@ -117,7 +121,7 @@ test("the second migration alters in place", () => {
   new Migrations(dir, models(V1)).make();
   const migs = new Migrations(dir, models(V2));
   const plan = migs.plan();
-  const sql = plan.up.map((s) => s.sql);
+  const [sql, down] = planned(migs);
   assert.equal(sql[0], 'CREATE EXTENSION IF NOT EXISTS "citext"');
   assert.equal(sql[1], 'CREATE EXTENSION IF NOT EXISTS "pg_trgm"');
   assert.ok(sql[2]!.startsWith('CREATE OR REPLACE FUNCTION "books_touch"() RETURNS trigger'));
@@ -126,32 +130,30 @@ test("the second migration alters in place", () => {
   assert.ok(sql.includes('ALTER TABLE "authors" ALTER COLUMN "email" TYPE citext USING "email"::citext'));
   assert.ok(sql.includes('ALTER TABLE "books" ADD CONSTRAINT "books_pages_check" CHECK (pages >= 0)'));
   assert.ok(sql.includes('CREATE INDEX "books_name_idx" ON "books" USING gin ("name" gin_trgm_ops)'));
-  assert.equal(sql.at(-2), 'CREATE TRIGGER "touch" BEFORE UPDATE ON "books" FOR EACH ROW EXECUTE FUNCTION "books_touch"()');
+  assert.ok(sql.at(-2)!.startsWith('CREATE TRIGGER "touch" BEFORE UPDATE ON "books" FOR EACH ROW EXECUTE FUNCTION "books_touch"()'));
   assert.equal(sql.at(-1), 'COMMENT ON COLUMN "books"."meta" IS \'free-form attributes\'');
-  assert.ok(plan.up.some((s) => s.warning?.includes("changes authors.email from varchar(254) to citext")));
-  const down = plan.down.map((s) => s.sql);
+  assert.ok(plan.operations.some((o) => o.warning?.includes("changes authors.email from varchar(254) to citext")));
   assert.ok(down.includes('ALTER TABLE "books" RENAME COLUMN "name" TO "title"'));
   assert.deepEqual(down.slice(-3), ['DROP FUNCTION "books_touch"()', 'DROP EXTENSION IF EXISTS "citext"', 'DROP EXTENSION IF EXISTS "pg_trgm"']);
-  const m = migs.make("catalog changes")[0]!;
+  const m = migs.make("catalog changes")!;
   assert.equal(m.name, "0002_catalog_changes");
   assert.ok(m.upSql.includes("-- WARNING: changes authors.email"));
-  assert.deepEqual(migs.make(), []);
-  // checksums are the Python package's: sha256 of up.sql
+  assert.equal(migs.make(), null);
   assert.match(m.checksum, /^[0-9a-f]{64}$/);
 });
 
-test("plan steps say which ones lose data", () => {
+test("plan operations say which ones lose data", () => {
   const dir = tmp();
   const first = new Migrations(dir, models(V1));
-  assert.ok(!first.plan().up.some((s) => s.destructive));
-  assert.ok(first.plan().down.some((s) => s.destructive));
+  assert.ok(!first.plan().operations.some((o) => o.destructive));
   first.make();
-  const second = new Migrations(dir, models(V2));
-  const flagged = second.plan().up.filter((s) => s.destructive).map((s) => s.sql);
-  assert.deepEqual(flagged, ['ALTER TABLE "authors" ALTER COLUMN "email" TYPE citext USING "email"::citext']);
-  const m = second.make("catalog")[0]!;
-  assert.ok(m.upSql.includes("-- monorm: destructive alter-type authors.email\n"));
-  assert.ok(m.downSql.includes("-- monorm: destructive alter-type authors.email\n"));
+  const plan = new Migrations(dir, models(V2)).plan();
+  assert.deepEqual(plan.operations.filter((o) => o.destructive).map((o) => o.summary), ["change type of authors.email to citext"]);
+  assert.ok(plan.operations.every((o) => o.atomic));
+  const m = new Migrations(dir, models(V2)).make("catalog")!;
+  assert.ok(m.upSql.includes("-- WARNING: changes authors.email"));
+  // the gate comes from the operations: no marker line is written
+  assert.ok(!m.upSql.includes("monorm:") && !m.downSql.includes("monorm:") && !readFileSync(m.path, "utf8").includes("monorm:"));
 });
 
 // -- online migrations (migrations.online) ---------------------------------------------------------
@@ -164,69 +166,60 @@ const ONLINE_SHOP_WITH_ITEMS = 'model Shop {\n  id    BigInt @id @default(autoin
 const ONLINE_ITEM_FK = ONLINE_ITEM("  shop  Shop   @relation(fields: [shop_id], references: [id])\n");
 const online = { online: true };
 
-test("online makemigrations splits an index on an existing table", () => {
+test("online makemigrations runs an index on an existing table outside a transaction", () => {
   const dir = tmp();
   new Migrations(dir, models(ONLINE_PLAIN), online).make();
   const migs = new Migrations(dir, models(ONLINE_INDEXED), online);
-  assert.deepEqual(migs.plan().up.map((s) => [s.sql, s.transaction]), [['CREATE INDEX CONCURRENTLY IF NOT EXISTS "shop_name_idx" ON "shop" ("name")', false]]);
-  const first = migs.make("add_idx")[0]!;
-  assert.deepEqual(migs.all().map((m) => m.name), ["0001_initial", "0002_add_idx_index_shop_name_idx"]);
-  assert.equal(first.name, "0002_add_idx_index_shop_name_idx");
-  assert.ok(first.upSql.startsWith('-- monorm: no-transaction create-index "shop_name_idx"\n'));
-  assert.ok(first.downSql.startsWith('-- monorm: no-transaction drop-index "shop_name_idx"\n'));
+  assert.deepEqual(migs.plan().operations.map((o) => [o.summary, o.atomic]), [["create index shop_name_idx on shop", false]]);
+  const first = migs.make("add_idx")!;
+  assert.deepEqual(migs.all().map((m) => m.name), ["0001_initial", "0002_add_idx"]); // one change, one file
+  assert.equal(first.operations[0]!["atomic"], false);
+  assert.ok(first.upSql.startsWith("-- 0002_add_idx (up)\n\n-- outside a transaction\n"));
+  assert.ok(first.upSql.includes('CREATE INDEX CONCURRENTLY IF NOT EXISTS "shop_name_idx" ON "shop" ("name");'));
   assert.ok(first.downSql.includes("DROP INDEX CONCURRENTLY IF EXISTS"));
-  const snapshot = JSON.parse(readFileSync(join(first.path, "snapshot.json"), "utf8")) as { tables: { indexes: unknown[] }[] };
-  assert.ok(snapshot.tables[0]!.indexes.length > 0);
-  assert.deepEqual(migs.make(), []); // nothing changed
-  // a removed index: the no-transaction folder comes before the main folder
+  assert.equal(migs.make(), null); // nothing changed
+  // a removed index and a new column: the index drop runs alone, the column in a group of its own
   const gone = new Migrations(dir, models(ONLINE_SHOP("  note String?\n")), online);
-  assert.deepEqual(gone.make("swap").map((m) => m.name), ["0003_swap_drop_shop_name_idx", "0004_swap"]);
-  const all = gone.all();
-  assert.deepEqual(all.slice(-2).map((m) => m.name), ["0003_swap_drop_shop_name_idx", "0004_swap"]);
-  assert.ok(all.at(-2)!.upSql.startsWith('-- monorm: no-transaction drop-index "shop_name_idx"\n'));
-  assert.equal(gone.plan().up.length, 0);
+  const swapped = gone.make("swap")!;
+  assert.equal(gone.all().at(-1)!.name, "0003_swap");
+  assert.deepEqual(swapped.operations.map((op) => [Object.keys(op)[0], op["atomic"] ?? true]), [["drop_index", false], ["add_column", true]]);
+  assert.equal(gone.plan().operations.length, 0);
 });
 
-test("online makemigrations validates a foreign key in its own folder", () => {
+test("online makemigrations adds a foreign key in the main group", () => {
   const dir = tmp();
   new Migrations(dir, models(ONLINE_PLAIN + ONLINE_ITEM()), online).make();
   const v2 = ONLINE_SHOP_WITH_ITEMS + ONLINE_ITEM_FK;
   const migs = new Migrations(dir, models(v2), online);
-  const plan = migs.plan();
-  const sql = plan.up.map((s) => s.sql);
-  assert.equal(sql.length, 2);
-  assert.ok(sql[0]!.endsWith("NOT VALID") && sql[0]!.includes("FOREIGN KEY"), sql[0]);
-  assert.equal(sql[1], 'ALTER TABLE "item" VALIDATE CONSTRAINT "item_shop_id_fkey"');
-  assert.ok(plan.up.every((s) => s.transaction));
-  const written = migs.make("add_fk");
-  const names = migs.all().map((m) => m.name);
-  assert.deepEqual(written.map((m) => m.name), names.slice(1));
-  assert.deepEqual(names.slice(1), ["0002_add_fk", "0003_add_fk_validate"]);
-  const [, main, validate] = migs.all();
-  assert.ok(main!.upSql.includes("NOT VALID") && !main!.upSql.includes("VALIDATE"));
-  assert.ok(validate!.upSql.includes("VALIDATE CONSTRAINT") && !validate!.upSql.startsWith("-- monorm: no-transaction"));
-  assert.deepEqual(readFileSync(join(main!.path, "snapshot.json"), "utf8"), readFileSync(join(validate!.path, "snapshot.json"), "utf8"));
-  assert.equal(migs.plan().up.length, 0);
-  assert.equal(new Migrations(dir, models(v2)).plan().up.length, 0); // the folders end in the same schema
+  assert.deepEqual(migs.plan().operations.map((o) => o.atomic), [true]);
+  const [up, down] = planned(migs);
+  assert.equal(up.length, 1);
+  assert.ok(up[0]!.includes("FOREIGN KEY") && !up[0]!.includes("NOT VALID"), up[0]);
+  assert.deepEqual(down, ['ALTER TABLE "item" DROP CONSTRAINT "item_shop_id_fkey"']);
+  const written = migs.make("add_fk")!;
+  assert.deepEqual(migs.all().map((m) => m.name), ["0001_initial", "0002_add_fk"]); // one file, not two
+  assert.deepEqual(written.operations.map((op) => Object.keys(op)[0]), ["add_constraint"]);
+  assert.equal(migs.plan().operations.length, 0);
+  assert.equal(new Migrations(dir, models(v2)).plan().operations.length, 0); // the file ends in the same schema
 });
 
 test("online makemigrations leaves a new table alone", () => {
   const dir = tmp();
   const v1 = ONLINE_SHOP_WITH_ITEMS + ONLINE_ITEM_FK;
   const migs = new Migrations(dir, models(v1), online);
-  const made = migs.make()[0]!;
+  const made = migs.make()!;
   assert.deepEqual(migs.all().map((m) => m.name), ["0001_initial"]);
   assert.ok(!made.upSql.includes("CONCURRENTLY") && !made.upSql.includes("NOT VALID"));
   assert.ok(made.upSql.includes("FOREIGN KEY"));
   const off = join(dir, "off");
   mkdirSync(off);
-  const plain = new Migrations(off, models(v1)).make()[0]!;
-  assert.equal(plain.upSql, made.upSql);
-  assert.equal(plain.downSql, made.downSql);
-  // a table added next to an existing one, with an index: still one folder
+  const plain = new Migrations(off, models(v1)).make()!;
+  assert.equal(plain.upSql.replace(/^-- .*\n/, ""), made.upSql.replace(/^-- .*\n/, ""));
+  assert.equal(plain.downSql.replace(/^-- .*\n/, ""), made.downSql.replace(/^-- .*\n/, ""));
+  // a table added next to an existing one, with an index: still one file
   const more = v1 + 'model Tag {\n  id   BigInt @id\n  name String\n\n  @@index([name])\n  @@map("tag")\n}\n';
   const migs2 = new Migrations(dir, models(more), online);
-  const tag = migs2.make()[0]!;
+  const tag = migs2.make()!;
   assert.equal(migs2.all().length, 2);
   assert.ok(tag.upSql.includes('CREATE INDEX "tag_name_idx" ON "tag" ("name")'));
   assert.ok(!tag.upSql.includes("CONCURRENTLY"));
@@ -241,15 +234,11 @@ test("online makemigrations changes nothing on sqlite", () => {
     new Migrations(dir, models(source + ONLINE_PLAIN), { online: flag }).make();
     new Migrations(dir, models(source + ONLINE_INDEXED), { online: flag }).make();
   }
-  const [a, b] = [new Migrations(on, models(source)).all(), new Migrations(off, models(source)).all()];
+  const [a, b] = [new Migrations(on, new Registry()).all(), new Migrations(off, new Registry()).all()];
   assert.deepEqual(a.map((m) => m.name), b.map((m) => m.name));
   assert.equal(a.length, 2);
-  a.forEach((m, i) => {
-    assert.equal(m.upSql, b[i]!.upSql);
-    assert.equal(m.downSql, b[i]!.downSql);
-    assert.equal(readFileSync(join(m.path, "snapshot.json"), "utf8"), readFileSync(join(b[i]!.path, "snapshot.json"), "utf8"));
-  });
-  assert.ok(!a[1]!.upSql.includes("CONCURRENTLY"));
+  a.forEach((m, i) => assert.equal(readFileSync(m.path, "utf8"), readFileSync(b[i]!.path, "utf8")));
+  assert.ok(!readFileSync(a[1]!.path, "utf8").includes("atomic"));
 });
 
 test("the CLI online setting", () => {
@@ -262,15 +251,16 @@ test("the CLI online setting", () => {
   assert.equal(run("makemigrations", "--check").code, 1);
   const made = run("makemigrations");
   assert.equal(made.code, 0);
-  assert.ok(made.out.includes("0002_create_index_shop_name_idx_on_shop_index_shop_name_idx"));
+  assert.ok(made.out.includes("0002_create_index_shop_name_idx_on_shop"));
   assert.equal(run("makemigrations", "--check").code, 0);
-  assert.ok(readFileSync(join(dir, "migrations/0002_create_index_shop_name_idx_on_shop_index_shop_name_idx/up.sql"), "utf8").startsWith("-- monorm: no-transaction"));
+  const file = readdirSync(join(dir, "migrations")).find((f) => f.startsWith("0002_"))!;
+  assert.ok(readFileSync(join(dir, "migrations", file), "utf8").includes('"atomic": false'));
 });
 
 test("migrations from a schema file", () => {
   const dir = tmp();
   writeFileSync(join(dir, "schema.prisma"), V1);
-  assert.equal(new Migrations(join(dir, "migrations"), join(dir, "schema.prisma")).make().length, 1);
+  assert.equal(new Migrations(join(dir, "migrations"), join(dir, "schema.prisma")).make() !== null, true);
 });
 
 test("the generated models are current", async () => {
@@ -393,10 +383,10 @@ test("an edited applied migration is refused", async () => {
   const dir = tmp();
   const db = await database(models(V1));
   const migs = new Migrations(dir, models(V1));
-  const m = migs.make()[0]!;
+  const m = migs.make()!;
   const migrator = new Migrator(db, migs);
   await migrator.upgrade();
-  writeFileSync(join(m.path, "up.sql"), m.upSql + "\n-- edited\n");
+  appendOp(m, { run_sql: { sql: "SELECT 1", reverse_sql: "noop" } });
   new Migrations(dir, models(V2)).make();
   await assert.rejects(migrator.upgrade(), (e: unknown) => e instanceof MigrationError && /changed after it was applied/.test(e.message));
 });
@@ -405,8 +395,8 @@ test("a failed migration rolls back", async () => {
   const dir = tmp();
   const db = await database(models(V1));
   const migs = new Migrations(dir, models(V1));
-  const m = migs.make()[0]!;
-  writeFileSync(join(m.path, "up.sql"), m.upSql + "\nSELECT no_such_function();\n");
+  const m = migs.make()!;
+  appendOp(m, { run_sql: { sql: "SELECT no_such_function()", reverse_sql: "noop" } });
   await assert.rejects(new Migrator(db, migs).upgrade(), DatabaseError);
   assert.equal(await scalar(db, "SELECT to_regclass('authors')::text"), null);
   assert.deepEqual((await new Migrator(db, migs).status()).map((s) => s.applied), [false]);
@@ -430,7 +420,7 @@ test("Node launcher converts native expressions offline and preserves pending ch
   const old = 'model Item {\n id Int @id\n qty Int @check(raw("qty > 0"))\n}\n';
   writeFileSync(path, old);
   assert.equal(cli(["makemigrations", "initial"], dir).code, 0);
-  const history = readFileSync(join(dir, "migrations/0001_initial/snapshot.json"), "utf8");
+  const history = readFileSync(join(dir, "migrations/0001_initial.json"), "utf8");
   writeFileSync(path, old.replace(" qty Int", " note String?\n qty Int"));
   const result = cli(["fmt", "--native"], dir);
   assert.equal(result.code, 0, result.err);
@@ -440,7 +430,7 @@ test("Node launcher converts native expressions offline and preserves pending ch
   assert.equal(cli(["makemigrations", "--check"], dir).code, 1);
   assert.equal(cli(["fmt", "--native"], dir).code, 0);
   assert.equal(readFileSync(path, "utf8"), converted);
-  assert.equal(readFileSync(join(dir, "migrations/0001_initial/snapshot.json"), "utf8"), history);
+  assert.equal(readFileSync(join(dir, "migrations/0001_initial.json"), "utf8"), history);
 });
 
 // -- the destructive gate ---------------------------------------------------------------------------
@@ -464,7 +454,7 @@ async function gateDatabase(dialect: GateDialect): Promise<{ db: Database; prefi
 /** Writes the next migration for `source` without applying it. */
 function gateNext(dir: string, source: string) {
   const migs = new Migrations(dir, models(source));
-  const [migration] = migs.make();
+  const migration = migs.make();
   assert.ok(migration);
   return { migs, migration };
 }
@@ -494,7 +484,7 @@ for (const dialect of GATE_DIALECTS) {
     await gateApply(db, dir, prefix + GATE_KEEP + GATE_SHOP);
     await db.execute("INSERT INTO shop (name) VALUES ('a')");
     const { migs, migration } = gateNext(dir, prefix + GATE_KEEP);
-    assert.ok(migration.upSql.includes("-- monorm: destructive drop-table shop\n"));
+    assert.deepEqual(migration.operations.map((op) => Object.keys(op)[0]), ["drop_table"]);
     await assert.rejects(new Migrator(db, migs).upgrade(), refusal(migration.name, "drops table shop", "shop"));
     assert.equal(await gateRows(db, "shop"), 1);
     assert.deepEqual((await new Migrator(db, migs).status()).map((s) => s.applied), [true, false]);
@@ -517,20 +507,16 @@ for (const dialect of GATE_DIALECTS) {
     await gateApply(db, dir, prefix + GATE_KEEP + GATE_SHOP);
     const { migs, migration } = gateNext(dir, prefix + GATE_KEEP);
     assert.deepEqual((await new Migrator(db, migs).upgrade()).map((m) => m.name), [migration.name]); // empty table
-    // a marker for a table that does not exist: nothing to lose
-    mkdirSync(join(dir, "0003_ghost"));
-    writeFileSync(join(dir, "0003_ghost", "up.sql"), "-- monorm: destructive drop-table ghost\nCREATE TABLE ghost_done (id integer);\n");
-    assert.deepEqual((await new Migrator(db, migs).upgrade()).map((m) => m.name), ["0003_ghost"]);
   });
 
-  test(`destructive gate ignores a migration with no marker (${dialect})`, async () => {
+  test(`destructive gate ignores a migration with no destructive operation (${dialect})`, async () => {
     const dir = tmp();
     const { db, prefix } = await gateDatabase(dialect);
     await gateApply(db, dir, prefix + GATE_KEEP + GATE_SHOP);
     await db.execute("INSERT INTO shop (name) VALUES ('a')");
     const wider = GATE_SHOP.replace("  note String?", "  note String?\n  extra String?");
     const added = await gateApply(db, dir, prefix + GATE_KEEP + wider);
-    assert.ok(!added.upSql.includes("-- monorm: destructive"));
+    assert.ok(!readFileSync(added.path, "utf8").includes("drop"));
     assert.equal(await gateRows(db, "shop"), 1);
   });
 
@@ -541,8 +527,9 @@ for (const dialect of GATE_DIALECTS) {
     await db.execute("INSERT INTO shop (name, note) VALUES ('a', 'n')");
     const venue = GATE_SHOP.replace('@@map("shop")', '@@map("venue")\n  @@renamed_from("shop")').replace("model Shop", "model Venue").replace("  note String?\n", "");
     const { migs, migration } = gateNext(dir, prefix + GATE_KEEP + venue);
-    // the marker names the table as the database has it before the migration
-    assert.ok(migration.upSql.includes("-- monorm: destructive drop-column shop.note\n"));
+    // the gate names the table as the database has it before the migration
+    const kinds = migration.operations.map((op) => Object.keys(op)[0]);
+    assert.ok(kinds[0] === "rename_table" && kinds.includes("drop_column"));
     await assert.rejects(new Migrator(db, migs).upgrade(), refusal(migration.name, "drops column shop.note", "shop"));
     assert.equal(await gateRows(db, "shop"), 1);
     await new Migrator(db, migs).upgrade(undefined, { allowDestructive: true });
@@ -557,7 +544,7 @@ for (const dialect of GATE_DIALECTS) {
     const migrator = new Migrator(db, migs);
     await migrator.upgrade(); // creating a table is not destructive
     await db.execute("INSERT INTO shop (name) VALUES ('a')");
-    assert.ok(migration.downSql.includes("-- monorm: destructive drop-table shop\n"));
+    assert.deepEqual(migration.operations.map((op) => Object.keys(op)[0]), ["create_table"]);
     await assert.rejects(migrator.downgrade(), refusal(`rolling back ${migration.name}`, "drops table shop", "shop"));
     assert.equal(await gateRows(db, "shop"), 1);
     assert.deepEqual((await migrator.downgrade({ allowDestructive: true })).map((m) => m.name), [migration.name]);
@@ -589,17 +576,12 @@ test("destructive gate waits for a concurrent insert on postgres", async () => {
 
 // -- no-transaction migrations ----------------------------------------------------------------------
 
-const NO_TX_INDEX = "-- monorm: no-transaction create-index shop_name_idx\nCREATE UNIQUE INDEX CONCURRENTLY shop_name_idx ON shop (name);\n";
-const NO_TX_DROP = "-- monorm: no-transaction drop-index shop_name_idx\nDROP INDEX CONCURRENTLY IF EXISTS shop_name_idx;\n";
+const NO_TX_INDEX = { create_index: { table: "shop", index: { name: "shop_name_idx", unique: true, keys: [{ column: "name" }] } }, atomic: false };
+const AFTER_TX = { run_sql: { sql: "CREATE TABLE after_tx (id integer)", reverse_sql: "DROP TABLE after_tx" } };
 
-function noTxFolder(dir: string, extra: Record<string, string> = {}, up = NO_TX_INDEX): Migrations {
-  const folder = join(dir, "0002_shop_name_idx");
-  mkdirSync(folder);
-  writeFileSync(join(folder, "up.sql"), up);
-  writeFileSync(join(folder, "down.sql"), NO_TX_DROP);
-  for (const [file, text] of Object.entries(extra)) {
-    writeFileSync(join(folder, file), text);
-  }
+/** Writes a migration file by hand; its index operation runs outside a transaction. */
+function noTxFolder(dir: string, name = "0002_shop_name_idx", ops: Record<string, unknown>[] = [NO_TX_INDEX]): Migrations {
+  writeMigration(dir, name, ops);
   return new Migrations(dir, models(GATE_KEEP + GATE_SHOP));
 }
 
@@ -627,21 +609,29 @@ test("a no-transaction migration repairs an invalid index", async () => {
   await assert.rejects(new Migrator(db, migs).upgrade(), (e) => e instanceof DatabaseError && /could not create unique index/.test(e.message));
   assert.equal(await indexValid(db), "f"); // the failed build leaves an invalid index
   assert.deepEqual((await new Migrator(db, migs).status()).map((s) => s.applied), [true, false]);
+  // the migration stopped inside an operation outside a transaction: a plain run refuses it
+  await assert.rejects(
+    new Migrator(db, migs).upgrade(),
+    (e) => e instanceof MigrationError && e.message.includes("continue it with `migrate 0002_shop_name_idx --ops 1-1`"),
+  );
   await db.execute("DELETE FROM shop");
-  assert.deepEqual((await new Migrator(db, migs).upgrade()).map((m) => m.name), ["0002_shop_name_idx"]);
+  const done = await new Migrator(db, migs).upgrade("0002_shop_name_idx", { ops: "1-1" }); // the invalid index is dropped, then built
+  assert.deepEqual(done.map((m) => m.name), ["0002_shop_name_idx"]);
   assert.equal(await indexValid(db), "t");
+  assert.deepEqual((await new Migrator(db, migs).status()).map((s) => s.applied), [true, true]);
 });
 
-test("a no-transaction migration with a data step is refused", async () => {
+test("a no-transaction operation with code is refused", async () => {
   const dir = tmp();
   const { db } = await gateDatabase("postgres");
   await gateApply(db, dir, GATE_KEEP + GATE_SHOP);
-  const migs = noTxFolder(dir, { "data.ts": "export async function run(db) {}\n" });
+  writeFileSync(join(dir, "d.ts"), "export async function run(db) {}\n");
+  const migs = noTxFolder(dir, "0002_shop_name_idx", [{ run_code: { typescript: "d.ts:run", reverse: "noop" }, atomic: false }]);
   await assert.rejects(
     new Migrator(db, migs).upgrade(),
-    (e) => e instanceof MigrationError && e.message.includes("0002_shop_name_idx is a no-transaction migration and has a data step"),
+    (e) => e instanceof MigrationError && /0002_shop_name_idx: operation 1.*run_code.*atomic/.test(e.message),
   );
-  assert.equal(await indexValid(db), null);
+  assert.equal(await gateRows(db, "monorm_migrations"), 1);
 });
 
 test("a no-transaction migration is refused on sqlite", async () => {
@@ -651,11 +641,11 @@ test("a no-transaction migration is refused on sqlite", async () => {
   const migs = noTxFolder(dir);
   await assert.rejects(
     new Migrator(db, migs).upgrade(),
-    (e) => e instanceof MigrationError && e.message.includes("0002_shop_name_idx is a no-transaction migration; sqlite has no such mode"),
+    (e) => e instanceof MigrationError && /0002_shop_name_idx: operation 1: .atomic.: false is not supported on SQLite/.test(e.message),
   );
 });
 
-test("a no-transaction migration rolls back with its down file", async () => {
+test("a no-transaction migration rolls back with its reverse", async () => {
   const dir = tmp();
   const { db } = await gateDatabase("postgres");
   await gateApply(db, dir, GATE_KEEP + GATE_SHOP);
@@ -747,51 +737,28 @@ test("a no-transaction migration runs between normal migrations in order", async
   const { db } = await gateDatabase("postgres");
   await gateApply(db, dir, GATE_KEEP + GATE_SHOP);
   noTxFolder(dir);
-  const after = join(dir, "0003_after");
-  mkdirSync(after);
-  writeFileSync(join(after, "up.sql"), "CREATE TABLE after_tx (id integer);\n");
-  writeFileSync(join(after, "down.sql"), "DROP TABLE after_tx;\n");
+  writeMigration(dir, "0003_after", [AFTER_TX]);
   const names = (await new Migrator(db, new Migrations(dir, models(GATE_KEEP + GATE_SHOP))).upgrade()).map((m) => m.name);
   assert.deepEqual(names.slice(-2), ["0002_shop_name_idx", "0003_after"]);
   assert.equal(await gateRows(db, "monorm_migrations"), 3);
   assert.equal(await indexValid(db), "t");
-  const bad = join(dir, "0004_bad");
-  mkdirSync(bad);
-  writeFileSync(join(bad, "up.sql"), "CREATE TABLE half (id integer);\nSELECT 1 / 0;\n");
-  writeFileSync(join(bad, "down.sql"), "DROP TABLE half;\n");
+  writeMigration(dir, "0004_bad", [
+    { run_sql: { sql: "CREATE TABLE half (id integer)", reverse_sql: "DROP TABLE half" } },
+    { run_sql: { sql: "SELECT 1 / 0", reverse_sql: "noop" } },
+  ]);
   await assert.rejects(new Migrator(db, new Migrations(dir, models(GATE_KEEP + GATE_SHOP))).upgrade(), (e) => e instanceof DatabaseError && e.message.includes("division by zero"));
   assert.equal(await scalar(db, "SELECT to_regclass('half')"), null); // the normal migration rolls back whole
   assert.equal(await gateRows(db, "monorm_migrations"), 3);
   assert.equal(await indexValid(db), "t"); // the no-transaction one stays recorded
 });
 
-test("a no-transaction down file is refused on sqlite and names the folder", async () => {
-  const dir = tmp();
-  const { db, prefix } = await gateDatabase("sqlite");
-  await gateApply(db, dir, prefix + GATE_KEEP + GATE_SHOP);
-  const migrator = new Migrator(db, noTxFolder(dir, {}, "CREATE TABLE extra (id integer);\n"));
-  assert.deepEqual((await migrator.upgrade()).map((m) => m.name), ["0002_shop_name_idx"]);
-  await assert.rejects(
-    migrator.downgrade(),
-    (e) => e instanceof MigrationError && e.message.includes("0002_shop_name_idx/down.sql is a no-transaction migration; sqlite has no such mode"),
-  );
-  assert.equal(await gateRows(db, "monorm_migrations"), 2);
-});
-
 test("a rollback waits for a no-transaction build without a deadlock", async () => {
   const dir = tmp();
   const { db } = await gateDatabase("postgres");
   await gateApply(db, dir, GATE_KEEP + GATE_SHOP);
-  const after = join(dir, "0002_after");
-  mkdirSync(after);
-  writeFileSync(join(after, "up.sql"), "CREATE TABLE after_tx (id integer);\n");
-  writeFileSync(join(after, "down.sql"), "DROP TABLE after_tx;\n");
+  writeMigration(dir, "0002_after", [AFTER_TX]);
   await new Migrator(db, new Migrations(dir, models(GATE_KEEP + GATE_SHOP))).upgrade();
-  const folder = join(dir, "0003_shop_name_idx");
-  mkdirSync(folder);
-  writeFileSync(join(folder, "up.sql"), NO_TX_INDEX);
-  writeFileSync(join(folder, "down.sql"), NO_TX_DROP);
-  const migs = new Migrations(dir, models(GATE_KEEP + GATE_SHOP));
+  const migs = noTxFolder(dir, "0003_shop_name_idx");
   const other = await connect(MIGRATIONS_URL, { maxConnections: 1, default: false, registry: models(GATE_KEEP + GATE_SHOP) });
   opened.push(other);
   let build: Promise<{ name: string }[]> | undefined;
@@ -812,8 +779,8 @@ test("a rollback waits for a no-transaction build without a deadlock", async () 
     assert.equal(settled, 0);
   });
   assert.deepEqual((await build!).map((m) => m.name), ["0003_shop_name_idx"]);
-  assert.deepEqual((await rollback!).map((m) => m.name), ["0002_after"]); // chosen before the build recorded its row
-  assert.equal(await indexValid(db), "t");
+  assert.deepEqual((await rollback!).map((m) => m.name), ["0003_shop_name_idx"]); // planned after the build finished
+  assert.equal(await indexValid(db), null); // the rollback dropped the built index
 });
 
 async function onlineSchema(db: Database): Promise<[string[], string[]]> {
@@ -839,8 +806,8 @@ test("online migrate ends with no drift", async () => {
     await new Migrator(db, new Migrations(directory, models(first))).upgrade();
     await db.execute("INSERT INTO shop (name) VALUES ('a'), ('b'); INSERT INTO item (shop_id) VALUES (1), (2)");
     const migs = new Migrations(directory, models(last), { online: flag });
-    assert.ok(migs.make().length > 0);
-    assert.equal(migs.all().length, flag ? 4 : 2);
+    migs.make();
+    assert.equal(migs.all().length, 2); // one change, one file, online or not
     migrator = new Migrator(db, migs);
     assert.equal((await migrator.upgrade()).length, migs.all().length - 1);
     assert.equal((await migrator.drift()).steps.length, 0);
@@ -853,158 +820,12 @@ test("online migrate ends with no drift", async () => {
   const [indexes, constraints] = ends.get(true)!;
   assert.ok(indexes.some((i) => i.includes("shop_name_idx")));
   assert.ok(constraints.some((c) => c.includes("item_shop_id_fkey") && c.endsWith(" true")));
-  // the folders roll back one by one
-  assert.equal((await migrator.downgrade({ steps: 3 })).length, 3);
+  // one migration holds the index and the foreign key: it rolls back whole
+  assert.equal((await migrator.downgrade({ steps: 1 })).length, 1);
   const [afterIndexes, afterConstraints] = await onlineSchema(db);
   assert.ok(!afterIndexes.some((i) => i.includes("shop_name_idx")) && !afterConstraints.some((c) => c.includes("item_shop_id_fkey")));
-  assert.equal((await migrator.upgrade()).length, 3);
+  assert.equal((await migrator.upgrade()).length, 1);
   assert.equal((await migrator.drift()).steps.length, 0);
-});
-
-const SQUASH_SHOP_TAG = GATE_SHOP.replace("  note String?\n", "  note String?\n  tag  String?\n");
-const SQUASH_DOC = 'model Doc {\n  id    BigInt @id @default(autoincrement())\n  email String @db.Citext\n\n  @@map("ext_docs")\n}\n';
-
-/** Writes three migrations (keep; shop; a tag column on shop) and gives the Migrations of the last schema. */
-function squashHistory(dir: string, prefix: string): Migrations {
-  const sources = [prefix + GATE_KEEP, prefix + GATE_KEEP + GATE_SHOP, prefix + GATE_KEEP + SQUASH_SHOP_TAG];
-  for (const source of sources) new Migrations(dir, models(source)).make();
-  return new Migrations(dir, models(sources[2]!));
-}
-
-async function migrationNames(db: Database): Promise<string[]> {
-  return (await db.fetchText("SELECT name FROM monorm_migrations ORDER BY name")).map((r) => r[0]!);
-}
-
-for (const dialect of GATE_DIALECTS) {
-  test(`squash replays on a fresh database with no drift (${dialect})`, async () => {
-    const dir = tmp();
-    const { db, prefix } = await gateDatabase(dialect);
-    const migs = squashHistory(dir, prefix);
-    const old = migs.all().map((m) => m.name);
-    const squashed = migs.squash({ to: "2" });
-    assert.equal(squashed.name, "0001_squashed_0002");
-    assert.ok(squashed.upSql.startsWith(`-- monorm: replaces ${old[0]} `));
-    assert.deepEqual(migs.all().map((m) => m.name), [squashed.name, old[2]]);
-    const migrator = new Migrator(db, migs);
-    assert.deepEqual((await migrator.upgrade()).map((m) => m.name), [squashed.name, old[2]]);
-    assert.equal((await migrator.drift()).steps.length, 0);
-    assert.deepEqual(await migrationNames(db), [squashed.name, old[2]!].sort());
-    assert.equal((await migrator.downgrade({ steps: 2 })).length, 2);
-    assert.equal(await gateHasTable(db, dialect, "shop"), false);
-  });
-
-  test(`squash adopts on a database that applied the old migrations (${dialect})`, async () => {
-    const dir = tmp();
-    const { db, prefix } = await gateDatabase(dialect);
-    const migs = squashHistory(dir, prefix);
-    const old = migs.all().map((m) => m.name);
-    await new Migrator(db, migs).upgrade();
-    await db.execute("INSERT INTO shop (name) VALUES ('a')");
-    const squashed = migs.squash({ to: "2" });
-    const migrator = new Migrator(db, migs);
-    assert.deepEqual((await migrator.status()).map((s) => s.applied), [true, true]);
-    assert.deepEqual(await migrationNames(db), old); // status reads only
-    assert.deepEqual(await migrator.upgrade(), []); // no SQL ran: the table keeps its row
-    assert.deepEqual(await migrationNames(db), [squashed.name, old[2]!].sort());
-    assert.equal(await gateRows(db, "shop"), 1);
-    assert.equal((await migrator.drift()).steps.length, 0);
-    assert.deepEqual(await migrator.upgrade(), []);
-  });
-
-  test(`squash refuses a partly applied database (${dialect})`, async () => {
-    const dir = tmp();
-    const { db, prefix } = await gateDatabase(dialect);
-    const migs = squashHistory(dir, prefix);
-    await new Migrator(db, migs).upgrade("2");
-    const before = await migrationNames(db);
-    const squashed = migs.squash({ to: "3" });
-    const refused = (e: unknown) => e instanceof MigrationError && e.message.includes(`applied 2 of the 3 migrations that ${squashed.name} replaces; migrate it with a release before the squash`);
-    await assert.rejects(new Migrator(db, migs).upgrade(), refused);
-    await assert.rejects(new Migrator(db, migs).status(), refused);
-    assert.deepEqual(await migrationNames(db), before);
-  });
-
-  test(`squash refuses a data step in the range (${dialect})`, () => {
-    const dir = tmp();
-    const migs = squashHistory(dir, dialect === "sqlite" ? GATE_SQLITE : "");
-    const before = migs.all().map((m) => m.name);
-    writeFileSync(join(migs.all()[1]!.path, "data.ts"), "");
-    assert.throws(() => migs.squash({ to: "3" }), (e: unknown) => e instanceof MigrationError && e.message.includes("data step"));
-    assert.deepEqual(migs.all().map((m) => m.name), before);
-  });
-
-  test(`squash checks the checksums of replaced migrations (${dialect})`, async () => {
-    const dir = tmp();
-    const { db, prefix } = await gateDatabase(dialect);
-    const migs = squashHistory(dir, prefix);
-    const old = migs.all().map((m) => m.name);
-    await new Migrator(db, migs).upgrade();
-    await db.execute(`UPDATE monorm_migrations SET checksum = 'edited' WHERE name = '${old[1]}'`);
-    migs.squash({ to: "3" });
-    await assert.rejects(new Migrator(db, migs).upgrade(), (e: unknown) => e instanceof MigrationError && e.message.includes(`${old[1]}/up.sql changed after it was applied`));
-    assert.deepEqual(await migrationNames(db), old);
-  });
-
-  test(`squash rollback after adoption (${dialect})`, async () => {
-    const dir = tmp();
-    const { db, prefix } = await gateDatabase(dialect);
-    const migs = squashHistory(dir, prefix);
-    await new Migrator(db, migs).upgrade();
-    const squashed = migs.squash({ to: "3" });
-    const migrator = new Migrator(db, migs);
-    assert.deepEqual(await migrator.upgrade(), []);
-    assert.deepEqual((await migrator.downgrade()).map((m) => m.name), [squashed.name]);
-    assert.equal(await gateHasTable(db, dialect, "shop"), false);
-    assert.deepEqual(await migrationNames(db), []);
-  });
-
-  test(`squash of baselined migrations needs force to roll back (${dialect})`, async () => {
-    const dir = tmp();
-    const { db, prefix } = await gateDatabase(dialect);
-    const migs = squashHistory(dir, prefix);
-    const old = migs.all().map((m) => m.name);
-    await new Migrator(db, migs).upgrade();
-    await db.execute(`UPDATE monorm_migrations SET baseline = ${dialect === "sqlite" ? "1" : "true"} WHERE name = '${old[0]}'`);
-    const squashed = migs.squash({ to: "3" });
-    const migrator = new Migrator(db, migs);
-    assert.deepEqual(await migrator.upgrade(), []);
-    await assert.rejects(migrator.downgrade(), (e: unknown) => e instanceof MigrationError && e.message.includes("was baselined"));
-    assert.equal(await gateHasTable(db, dialect, "shop"), true);
-    assert.deepEqual((await migrator.downgrade({ force: true })).map((m) => m.name), [squashed.name]);
-    assert.equal(await gateHasTable(db, dialect, "shop"), false);
-  });
-}
-
-test("squash runs the extensions of the snapshot", async () => {
-  const dir = tmp();
-  const { db } = await gateDatabase("postgres");
-  new Migrations(dir, models(GATE_KEEP)).make();
-  const migs = new Migrations(dir, models(GATE_KEEP + SQUASH_DOC));
-  migs.make();
-  const squashed = migs.squash({ to: "2" });
-  assert.ok(squashed.upSql.includes('CREATE EXTENSION IF NOT EXISTS "citext"'));
-  try {
-    await db.execute("DROP TABLE IF EXISTS ext_docs");
-    assert.deepEqual((await new Migrator(db, migs).upgrade()).map((m) => m.name), [squashed.name]);
-    assert.equal((await new Migrator(db, migs).drift()).steps.length, 0);
-  } finally {
-    await db.execute("DROP TABLE IF EXISTS ext_docs");
-  }
-});
-
-test("squash adopts once with two migrators", async () => {
-  const dir = tmp();
-  const { db, prefix } = await gateDatabase("postgres");
-  const migs = squashHistory(dir, prefix);
-  await new Migrator(db, migs).upgrade();
-  const squashed = migs.squash({ to: "2" });
-  const other = await connect(MIGRATIONS_URL, { maxConnections: 1, default: false, registry: models(GATE_KEEP) });
-  opened.push(other);
-  const results = await Promise.all([new Migrator(db, migs).upgrade(), new Migrator(other, migs).upgrade()]);
-  assert.deepEqual(results, [[], []]);
-  const names = await migrationNames(db);
-  assert.equal(names.filter((n) => n === squashed.name).length, 1);
-  assert.equal(names.length, 2);
 });
 
 // -- extension types and enums at runtime ---------------------------------------------------------

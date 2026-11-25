@@ -684,40 +684,44 @@ impl JsSchema {
         migrate::create_all(&self.inner).map_err(schema_err)
     }
 
-    /// The database schema as a snapshot (JSON), the format migrations store.
+    /// The next migration for the migrations directory `dir`, without writing: JSON
+    /// `{name, operations: [{summary, warning, destructive, atomic}]}`; no operations when nothing changed.
     #[napi]
-    pub fn snapshot(&self) -> napi::Result<String> {
-        let s = migrate::snapshot(&self.inner).map_err(schema_err)?;
-        serde_json::to_string_pretty(&s).map_err(schema_err)
+    pub fn plan_migration(&self, dir: String, template: Option<String>, online: Option<bool>, name: Option<String>) -> napi::Result<String> {
+        let template = name_template(template.as_deref())?;
+        let opts = migrate::files::MakeOptions { name: name.as_deref(), template: &template, online: online.unwrap_or(false), ..Default::default() };
+        let (name, file) = migrate::files::next(std::path::Path::new(&dir), &self.inner, &opts).map_err(schema_err)?;
+        let ops: Vec<_> = file
+            .operations
+            .iter()
+            .map(|o| serde_json::json!({"summary": o.summary(), "warning": o.warning(), "destructive": o.destructive(), "atomic": o.atomic}))
+            .collect();
+        Ok(serde_json::json!({"name": name, "operations": ops}).to_string())
     }
 
-    /// The next migration for the migrations directory `dir`, as JSON, without writing.
-    /// With `online` on PostgreSQL the steps of every folder, in order.
+    /// Writes the next migration into `dir`; returns its name, or null when nothing changed
+    /// (and not `empty`).
     #[napi]
-    pub fn plan_migration(&self, dir: String, online: Option<bool>) -> napi::Result<String> {
-        let plans = migrate::files::next_folders(std::path::Path::new(&dir), &self.inner, online.unwrap_or(false)).map_err(schema_err)?;
-        serde_json::to_string(&migrate::files::merge(plans)).map_err(schema_err)
+    pub fn make_migration(&self, dir: String, name: Option<String>, empty: Option<bool>, online: Option<bool>, baseline: Option<bool>, template: Option<String>) -> napi::Result<Option<String>> {
+        let template = name_template(template.as_deref())?;
+        let opts = migrate::files::MakeOptions { name: name.as_deref(), template: &template, empty: empty.unwrap_or(false), online: online.unwrap_or(false), baseline: baseline.unwrap_or(false) };
+        let made = migrate::files::make(std::path::Path::new(&dir), &self.inner, &opts).map_err(schema_err)?;
+        Ok(made.map(|(entry, _)| entry.name))
     }
 
-    /// Writes the next migration into `dir`; returns the folder names in order (one, or
-    /// more with `online`), or an empty list when nothing changed (and not `empty`).
+    /// The numbered operations of the migration `name` of `dir` with their SQL for this schema's dialect
+    /// (what `sqlmigrate` prints).
     #[napi]
-    pub fn make_migration(&self, dir: String, name: Option<String>, empty: Option<bool>, online: Option<bool>, baseline: Option<bool>) -> napi::Result<Vec<String>> {
-        let made = migrate::files::make_with(std::path::Path::new(&dir), &self.inner, name.as_deref(), empty.unwrap_or(false), online.unwrap_or(false), baseline.unwrap_or(false))
-            .map_err(schema_err)?;
-        Ok(made.into_iter().map(|(folder, _)| folder.name).collect())
+    pub fn sqlmigrate(&self, dir: String, name: String, down: Option<bool>) -> napi::Result<String> {
+        let direction = if down.unwrap_or(false) { migrate::render::Direction::Down } else { migrate::render::Direction::Up };
+        migrate::render_migration(std::path::Path::new(&dir), &name, self.inner.dialect, direction).map_err(schema_err)
     }
+}
 
-    /// The migration from `previous` (a snapshot; null for an empty database) to this
-    /// schema, as JSON: `{"up": [step], "down": [step], "snapshot": {...}}`.
-    #[napi]
-    pub fn migration(&self, previous: Option<String>) -> napi::Result<String> {
-        let previous = match previous {
-            Some(json) => migrate::parse_snapshot(&json).map_err(schema_err)?,
-            None => migrate::DbSchema::default(),
-        };
-        let plan = migrate::plan(&self.inner, &previous).map_err(schema_err)?;
-        serde_json::to_string(&plan).map_err(schema_err)
+fn name_template(template: Option<&str>) -> napi::Result<migrate::files::NameTemplate> {
+    match template {
+        Some(t) => migrate::files::NameTemplate::parse(t).map_err(schema_err),
+        None => Ok(Default::default()),
     }
 }
 
@@ -750,13 +754,78 @@ impl Transaction {
     }
 }
 
-/// A migration that `migrationPending` would apply; `no_transaction` is true when it runs
-/// outside a transaction.
-#[napi(object)]
-pub struct PendingMigration {
-    pub name: String,
-    pub path: String,
-    pub no_transaction: bool,
+/// The work of one migration in one direction: the transaction groups to run (see `monorm_engine::migrate::Plan`).
+#[napi]
+pub struct MigrationPlan {
+    inner: Arc<engine_migrate::Plan>,
+}
+
+#[napi]
+impl MigrationPlan {
+    #[napi(getter)]
+    pub fn name(&self) -> String {
+        self.inner.migration.name.clone()
+    }
+
+    #[napi(getter)]
+    pub fn path(&self) -> String {
+        self.inner.migration.path.to_string_lossy().into_owned()
+    }
+
+    /// `"up"` or `"down"`.
+    #[napi(getter)]
+    pub fn direction(&self) -> String {
+        match self.inner.direction {
+            migrate::render::Direction::Up => "up".into(),
+            migrate::render::Direction::Down => "down".into(),
+        }
+    }
+
+    /// The error text starts with this.
+    #[napi(getter)]
+    pub fn what(&self) -> String {
+        self.inner.what.clone()
+    }
+
+    /// JSON `[{atomic, items: [{first, last, entry}]}]`: for each group whether it runs in a transaction,
+    /// and its items, `entry` being the `file:function` of a code item (null for SQL).
+    #[napi(getter)]
+    pub fn groups(&self) -> String {
+        let groups: Vec<_> = self
+            .inner
+            .rendered
+            .groups
+            .iter()
+            .map(|g| {
+                let items: Vec<_> = g
+                    .items
+                    .iter()
+                    .map(|i| {
+                        let entry = match &i.body {
+                            migrate::render::Body::Code(c) => engine_migrate::Host::TypeScript.entry(c).map(str::to_owned),
+                            migrate::render::Body::Sql(_) => None,
+                        };
+                        serde_json::json!({"first": i.first, "last": i.last, "entry": entry})
+                    })
+                    .collect();
+                serde_json::json!({"atomic": g.atomic, "items": items})
+            })
+            .collect();
+        serde_json::Value::Array(groups).to_string()
+    }
+}
+
+/// What a rollback names: the migrations to revert, and an `--ops` slice of one migration.
+fn down_args(steps: u32, target: Option<String>, ops_migration: Option<String>, ops: Option<String>) -> napi::Result<(engine_migrate::Down, Option<(String, engine_migrate::Slice)>)> {
+    let down = match target {
+        Some(t) => engine_migrate::Down::To(t),
+        None => engine_migrate::Down::Steps(steps as usize),
+    };
+    let slice = match (ops_migration, ops) {
+        (Some(name), Some(text)) => Some((name, engine_migrate::parse_slice(&text).map_err(engine_err)?)),
+        _ => None,
+    };
+    Ok((down, slice))
 }
 
 // -- trace ----------------------------------------------------------------------------------------
@@ -1491,13 +1560,14 @@ impl Engine {
             let out = engine_migrate::status(&*driver, Path::new(&dir)).await.map_err(engine_err)?;
             let rows: Vec<_> = out
                 .into_iter()
-                .map(|s| serde_json::json!({"name": s.migration.name, "path": s.migration.path, "applied": s.applied, "appliedAt": s.applied_at}))
+                .map(|s| serde_json::json!({"name": s.migration.name, "path": s.migration.path, "applied": s.applied, "appliedAt": s.applied_at, "partial": s.partial.map(|(done, total)| serde_json::json!({"done": done, "total": total}))}))
                 .collect();
             Ok(serde_json::Value::Array(rows).to_string())
         })
     }
 
-    /// Applies pending migrations (up to `target`); the names applied.
+    /// Applies pending migrations (up to `target`); the names applied. With `ops` (`"A-B"`, `"A-"`)
+    /// it applies those operations of the one migration `target`. A migration with `run_code` is refused.
     #[napi]
     pub fn migrate_up<'env>(
         &self,
@@ -1505,10 +1575,12 @@ impl Engine {
         dir: String,
         target: Option<String>,
         allow_destructive: bool,
+        ops: Option<String>,
     ) -> napi::Result<PromiseRaw<'env, Vec<String>>> {
         let driver = self.driver.clone();
+        let slice = ops.as_deref().map(engine_migrate::parse_slice).transpose().map_err(engine_err)?;
         env.spawn_future(async move {
-            let done = engine_migrate::upgrade(&*driver, Path::new(&dir), target.as_deref(), allow_destructive).await.map_err(engine_err)?;
+            let done = engine_migrate::upgrade(&*driver, Path::new(&dir), target.as_deref(), slice, allow_destructive).await.map_err(engine_err)?;
             Ok(done.into_iter().map(|m| m.name).collect())
         })
     }
@@ -1543,67 +1615,95 @@ impl Engine {
         env.spawn_future(async move { Ok(engine_migrate::baseline(&*driver, Path::new(&dir)).await.map_err(engine_err)?.name) })
     }
 
-    /// The migrations `migrateUp` would apply.
+    /// The work `migrateUp` would do for the TypeScript host: one plan for each migration.
     #[napi]
-    pub fn migration_pending<'env>(
+    pub fn migration_plan_up<'env>(
         &self,
         env: &'env Env,
         dir: String,
         target: Option<String>,
         allow_destructive: bool,
-    ) -> napi::Result<PromiseRaw<'env, Vec<PendingMigration>>> {
+        ops: Option<String>,
+    ) -> napi::Result<PromiseRaw<'env, Vec<MigrationPlan>>> {
         let driver = self.driver.clone();
+        let slice = ops.as_deref().map(engine_migrate::parse_slice).transpose().map_err(engine_err)?;
         env.spawn_future(async move {
-            let todo = engine_migrate::pending(&*driver, Path::new(&dir), target.as_deref(), allow_destructive).await.map_err(engine_err)?;
-            todo.into_iter()
-                .map(|m| {
-                    let no_transaction = m.no_transaction().map_err(engine_err)?.is_some();
-                    Ok(PendingMigration { name: m.name, path: m.path.to_string_lossy().into_owned(), no_transaction })
-                })
-                .collect()
+            let plans = engine_migrate::plan_up(&*driver, Path::new(&dir), target.as_deref(), slice, Some(engine_migrate::Host::TypeScript), allow_destructive).await.map_err(engine_err)?;
+            Ok(plans.into_iter().map(|p| MigrationPlan { inner: Arc::new(p) }).collect())
         })
     }
 
-    /// Applies one no-transaction migration (see `monorm_engine::migrate::apply_no_transaction`):
-    /// false when another migrator applied it meanwhile.
+    /// The work `migrateDown` would do for the TypeScript host. `opsMigration` and `ops` slice one migration.
     #[napi]
-    pub fn migration_apply_no_transaction<'env>(&self, env: &'env Env, name: String, path: String, allow_destructive: bool) -> napi::Result<PromiseRaw<'env, bool>> {
-        let driver = self.driver.clone();
-        env.spawn_future(async move {
-            let m = engine_migrate::Migration { name, path: path.into() };
-            engine_migrate::apply_no_transaction(&*driver, &m, allow_destructive).await.map_err(engine_err)
-        })
-    }
-
-    /// Starts applying one migration: its transaction, with the lock taken and `up.sql`
-    /// run; null when another migrator applied it meanwhile.
-    #[napi]
-    pub fn migration_begin<'env>(
+    #[allow(clippy::too_many_arguments)]
+    pub fn migration_plan_down<'env>(
         &self,
         env: &'env Env,
-        name: String,
-        path: String,
+        dir: String,
+        steps: u32,
+        target: Option<String>,
+        force: bool,
         allow_destructive: bool,
-    ) -> napi::Result<PromiseRaw<'env, Option<Transaction>>> {
+        ops_migration: Option<String>,
+        ops: Option<String>,
+    ) -> napi::Result<PromiseRaw<'env, Vec<MigrationPlan>>> {
         let driver = self.driver.clone();
+        let (down, slice) = down_args(steps, target, ops_migration, ops)?;
         env.spawn_future(async move {
-            let m = engine_migrate::Migration { name, path: path.into() };
-            let tx = engine_migrate::begin_apply(&*driver, &m, allow_destructive).await.map_err(engine_err)?;
+            let plans = engine_migrate::plan_down(&*driver, Path::new(&dir), down, slice.as_ref().map(|(n, s)| (n.as_str(), *s)), Some(engine_migrate::Host::TypeScript), force, allow_destructive).await.map_err(engine_err)?;
+            Ok(plans.into_iter().map(|p| MigrationPlan { inner: Arc::new(p) }).collect())
+        })
+    }
+
+    /// Starts group `k` of `plan`, an atomic one: its transaction with the lock taken; null when
+    /// another migrator ran the group meanwhile.
+    #[napi]
+    pub fn migration_begin_group<'env>(&self, env: &'env Env, plan: &MigrationPlan, k: u32, allow_destructive: bool) -> napi::Result<PromiseRaw<'env, Option<Transaction>>> {
+        let driver = self.driver.clone();
+        let plan = plan.inner.clone();
+        env.spawn_future(async move {
+            let tx = engine_migrate::begin_group(&*driver, &plan, k as usize, allow_destructive).await.map_err(engine_err)?;
             Ok(tx.map(|inner| Transaction { inner: db::guard(inner) }))
         })
     }
 
-    /// Records the migration in `tx` (from `migrationBegin`) and commits.
+    /// Runs the SQL of item `i` of group `k` in `tx` (from `migrationBeginGroup`).
     #[napi]
-    pub fn migration_finish<'env>(&self, env: &'env Env, tx: &Transaction, name: String, path: String) -> napi::Result<PromiseRaw<'env, ()>> {
+    pub fn migration_run_item<'env>(&self, env: &'env Env, tx: &Transaction, plan: &MigrationPlan, k: u32, i: u32) -> napi::Result<PromiseRaw<'env, ()>> {
         let inner = tx.inner.clone();
-        env.spawn_future(async move {
-            engine_migrate::finish_apply(&*inner, &engine_migrate::Migration { name, path: path.into() }).await.map_err(engine_err)
-        })
+        let plan = plan.inner.clone();
+        env.spawn_future(async move { engine_migrate::run_item(&*inner, &plan.rendered.groups[k as usize].items[i as usize]).await.map_err(engine_err) })
     }
 
-    /// Reverts the last `steps` migrations, or every one after `target`; the names reverted.
+    /// Records the progress of group `k` in `tx` and commits.
     #[napi]
+    pub fn migration_finish_group<'env>(&self, env: &'env Env, tx: &Transaction, plan: &MigrationPlan, k: u32) -> napi::Result<PromiseRaw<'env, ()>> {
+        let inner = tx.inner.clone();
+        let plan = plan.inner.clone();
+        env.spawn_future(async move { engine_migrate::finish_group(&*inner, &plan, k as usize).await.map_err(engine_err) })
+    }
+
+    /// Runs group `k` of `plan`, one operation outside a transaction (PostgreSQL): false when
+    /// another migrator ran it meanwhile.
+    #[napi]
+    pub fn migration_run_outside<'env>(&self, env: &'env Env, plan: &MigrationPlan, k: u32, allow_destructive: bool) -> napi::Result<PromiseRaw<'env, bool>> {
+        let driver = self.driver.clone();
+        let plan = plan.inner.clone();
+        env.spawn_future(async move { engine_migrate::run_outside(&*driver, &plan, k as usize, allow_destructive).await.map_err(engine_err) })
+    }
+
+    /// Moves the progress of a plan with no group to the end of its slice.
+    #[napi]
+    pub fn migration_record_empty<'env>(&self, env: &'env Env, plan: &MigrationPlan) -> napi::Result<PromiseRaw<'env, ()>> {
+        let driver = self.driver.clone();
+        let plan = plan.inner.clone();
+        env.spawn_future(async move { engine_migrate::record_empty(&*driver, &plan).await.map_err(engine_err) })
+    }
+
+    /// Reverts the last `steps` migrations, or every one after `target`; the names reverted. With
+    /// `opsMigration` and `ops` it reverts those operations of the one migration.
+    #[napi]
+    #[allow(clippy::too_many_arguments)]
     pub fn migrate_down<'env>(
         &self,
         env: &'env Env,
@@ -1612,14 +1712,13 @@ impl Engine {
         target: Option<String>,
         force: bool,
         allow_destructive: bool,
+        ops_migration: Option<String>,
+        ops: Option<String>,
     ) -> napi::Result<PromiseRaw<'env, Vec<String>>> {
         let driver = self.driver.clone();
-        let down = match target {
-            Some(t) => engine_migrate::Down::To(t),
-            None => engine_migrate::Down::Steps(steps as usize),
-        };
+        let (down, slice) = down_args(steps, target, ops_migration, ops)?;
         env.spawn_future(async move {
-            let done = engine_migrate::downgrade(&*driver, Path::new(&dir), down, force, allow_destructive).await.map_err(engine_err)?;
+            let done = engine_migrate::downgrade(&*driver, Path::new(&dir), down, slice.as_ref().map(|(n, s)| (n.as_str(), *s)), force, allow_destructive).await.map_err(engine_err)?;
             Ok(done.into_iter().map(|m| m.name).collect())
         })
     }
@@ -1766,8 +1865,8 @@ pub fn cli_schema(argv: Vec<String>) -> String {
 #[cfg(feature = "cli")]
 #[napi]
 pub fn cli_migrate_args(argv: Vec<String>) -> Option<Vec<Option<String>>> {
-    monorm_cli::migrate_args(&argv).map(|(schema, dir, url, target, allow)| {
-        vec![Some(schema.to_string_lossy().into_owned()), Some(dir.to_string_lossy().into_owned()), url, target, allow.then(|| "true".to_owned())]
+    monorm_cli::migrate_args(&argv).map(|(schema, dir, url, target, allow, ops)| {
+        vec![Some(schema.to_string_lossy().into_owned()), Some(dir.to_string_lossy().into_owned()), url, target, allow.then(|| "true".to_owned()), ops]
     })
 }
 
@@ -1781,11 +1880,17 @@ pub fn list_migrations(dir: String) -> napi::Result<Vec<Vec<String>>> {
 /// Folds the migrations up to `to` into one folder: `[name, path]`.
 #[napi]
 pub fn squash_migration(dir: String, to: String, name: Option<String>) -> napi::Result<Vec<String>> {
-    let m = engine_migrate::squash(Path::new(&dir), &to, name.as_deref()).map_err(engine_err)?;
-    Ok(vec![m.name, m.path.to_string_lossy().into_owned()])
+    let _ = (dir, to, name);
+    Err(schema_err("squashmigrations is not available in this build".to_owned()))
 }
 
-/// A migration folder by name or number: `[name, path]`.
+/// The checksum of a migration: its canonical JSON and the `.sql` files it names.
+#[napi]
+pub fn migration_checksum(dir: String, name: String) -> napi::Result<String> {
+    engine_migrate::find(Path::new(&dir), &name).and_then(|m| m.checksum()).map_err(engine_err)
+}
+
+/// A migration file by name or number: `[name, path]`.
 #[napi]
 pub fn find_migration(dir: String, name: String) -> napi::Result<Vec<String>> {
     let m = engine_migrate::find(Path::new(&dir), &name).map_err(engine_err)?;

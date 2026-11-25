@@ -402,7 +402,7 @@ test("a native schema without package directories leaves the hook bindings unres
   assert.doesNotThrow(() => new Schema(ir));
   assert.throws(() => new Schema(ir, {}), /acme\.outside: the schema binds its hooks, but no package directory was given/);
   assert.ok(new Schema(ir, hookPackages((JSON.parse(ir) as SchemaIR).behavior as Parameters<typeof hookPackages>[0], schema)));
-  assert.ok(new Migrations(join(root, "migrations"), schema).make().length > 0);
+  assert.ok(new Migrations(join(root, "migrations"), schema).make() !== null);
 });
 
 test("ESM-only and dual packages share runtime identity across generated models, load and loads", { timeout: 300_000 }, async (t) => {

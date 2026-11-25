@@ -175,15 +175,19 @@ async def test_a_joined_failure_in_a_savepoint_leaves_the_outer_usable(case, app
 
 @pytest.mark.parametrize("application_error", [False, True])
 async def test_a_caught_data_migration_failure_rolls_back_sql_data_history_and_callbacks(case, tmp_path, application_error):
-    from monorm.migrations import Migration, Migrations, Migrator
+    from monorm.migrations import Migrations, Migrator
+    from _planned import write_migration
 
     c, seen = case, []
-    path = tmp_path / "0001_failure"
-    path.mkdir()
-    (path / "up.sql").write_text("CREATE TABLE migration_probe (id INTEGER)")
-    (path / "down.sql").write_text("DROP TABLE migration_probe")
-    (path / "snapshot.json").write_text(c.db._registry.prepare().snapshot())
-    migration = Migration(path.name, path)
+    (tmp_path / "0001_failure.py").write_text("async def run(db):\n    pass\n")
+    write_migration(
+        tmp_path,
+        "0001_failure",
+        [
+            {"run_sql": {"sql": "CREATE TABLE migration_probe (id INTEGER)", "reverse_sql": "DROP TABLE migration_probe"}},
+            {"run_code": {"python": "0001_failure.py:run", "reverse": "noop"}},
+        ],
+    )
     original = ValueError("data migration failed")
 
     async def run(db):
@@ -200,9 +204,10 @@ async def test_a_caught_data_migration_failure_rolls_back_sql_data_history_and_c
 
     await seed(c)
     migrator = Migrator(c.db, Migrations(tmp_path, c.db._registry))
-    await migrator._load_pending(None)
+    loaded = await migrator._load_up(None, False, None)
+    loaded[0].code[(0, 1)] = run  # the closure stands in for the script
     with pytest.raises(monorm.TransactionAborted) as aborted:
-        await migrator._upgrade([(migration, run, False)])
+        await migrator._run(loaded)
     if application_error:
         assert aborted.value.__cause__ is original
     else:

@@ -1,4 +1,4 @@
-"""Data migrations: a ``data.py`` with ``async def run(db)`` next to ``up.sql``."""
+"""Code steps: a ``run_code`` operation names ``file.py:run`` (``async def run(db)``) next to the migration file."""
 
 import asyncio
 import os
@@ -14,6 +14,7 @@ from conftest import DATABASE_URL
 import monorm
 from monorm import Registry
 from monorm.migrations import MigrationError, Migrations, Migrator
+from _planned import append_op, write_migration
 
 _url = urlsplit(DATABASE_URL)
 DATA_DB = _url.path.lstrip("/") + "_data"
@@ -62,14 +63,22 @@ async def data_database():
         await admin.close()
 
 
+def add_code(migrations: Migrations, migration, file: str, text: str, reverse="noop") -> Path:
+    """Adds a Python `run_code` operation (and its script) to a written migration."""
+    script = migrations.directory / file
+    script.write_text(text)
+    append_op(migration, {"run_code": {"python": f"{file}:run", "reverse": reverse}})
+    return script
+
+
 def write_versions(tmp_path: Path) -> Migrations:
     schema = tmp_path / "schema.prisma"
     migrations = Migrations(tmp_path / "migrations", schema)
     schema.write_text(V1)
     migrations.make()
     schema.write_text(V2)
-    [second] = migrations.make("slug")
-    (second.path / "data.py").write_text(FILL)
+    second = migrations.make("slug")
+    add_code(migrations, second, "0002_slug.py", FILL)
     return migrations
 
 
@@ -83,7 +92,7 @@ async def test_a_data_step_runs_in_the_migration_transaction(tmp_path):
         await db.execute("INSERT INTO author (name) VALUES ('Ann'), ('Bob')")
 
         # the engine's own runner (and the standalone binary) refuses a data step
-        with pytest.raises(MigrationError, match=r"0002_slug has a data step \(data.py\)"):
+        with pytest.raises(MigrationError, match=r"0002_slug: operation 2 runs code"):
             await db._engine.migrate_up(str(migrations.directory), None)
 
         assert [m.name for m in await migrator.upgrade()] == ["0002_slug"]
@@ -92,8 +101,8 @@ async def test_a_data_step_runs_in_the_migration_transaction(tmp_path):
         # a failing data step rolls back its SQL and is not recorded
         schema = tmp_path / "schema.prisma"
         schema.write_text(V2 + "\nmodel Extra {\n  id BigInt @id\n}\n")
-        [third] = migrations.make("extra")
-        (third.path / "data.py").write_text(FAIL)
+        third = migrations.make("extra")
+        add_code(migrations, third, "0003_extra.py", FAIL)
         with pytest.raises(RuntimeError, match="data step failed"):
             await migrator.upgrade()
         assert await db._fetch_text("SELECT to_regclass('extra')") == [(None,)]
@@ -104,7 +113,7 @@ async def test_a_data_step_runs_in_the_migration_transaction(tmp_path):
 
 async def test_a_data_step_with_a_sync_run_is_refused(tmp_path):
     migrations = write_versions(tmp_path)
-    (migrations.directory / "0002_slug" / "data.py").write_text("def run(db):\n    pass\n")
+    (migrations.directory / "0002_slug.py").write_text("def run(db):\n    pass\n")
     db = await monorm.connect(DATA_URL, max_connections=2, default=False, registry=Registry())
     try:
         await db.execute("DROP TABLE IF EXISTS author, extra, monorm_migrations CASCADE")
@@ -129,8 +138,8 @@ def test_cli_migrate_runs_data_steps(tmp_path):
     schema.write_text(SQLITE + V1)
     migrations.make()
     schema.write_text(SQLITE + V2)
-    [second] = migrations.make("slug")
-    (second.path / "data.py").write_text(SEED)
+    second = migrations.make("slug")
+    add_code(migrations, second, "0002_slug.py", SEED)
 
     env = {**os.environ, "MONORM_DATABASE_URL": f"sqlite://{tmp_path / 'app.db'}"}
     base = [sys.executable, "-m", "monorm", "--schema", "schema.prisma", "--dir", "migrations"]
@@ -144,11 +153,7 @@ def test_cli_migrate_runs_data_steps(tmp_path):
     shown = monorm_cli("showmigrations").stdout
     assert "[x] 0001_initial" in shown and "[x] 0002_slug" in shown
 
-    (tmp_path / "migrations" / "0003_bad").mkdir()
-    (tmp_path / "migrations" / "0003_bad" / "up.sql").write_text("SELECT 1;\n")
-    (tmp_path / "migrations" / "0003_bad" / "data.py").write_text(
-        "async def run(db):\n    raise ValueError('bad data')\n"
-    )
+    data_migration(migrations, "0003_bad", "data.py", "async def run(db):\n    raise ValueError('bad data')\n")
     failed = monorm_cli("migrate")
     assert failed.returncode == 1
     assert "error: bad data" in failed.stderr
@@ -209,12 +214,15 @@ async def fresh(tmp_path: Path) -> tuple[monorm.Database, Migrations]:
     return db, migrations
 
 
-def data_migration(migrations: Migrations, name: str, file: str, text: str, sql: str = "SELECT 1;\n") -> Path:
-    folder = migrations.directory / name
-    folder.mkdir()
-    (folder / "up.sql").write_text(sql)
-    (folder / file).write_text(text)
-    return folder
+def data_migration(migrations: Migrations, name: str, file: str, text: str, sql: str = "SELECT 1") -> Path:
+    """Writes the migration `name`: one `run_sql` operation, then a code step in `file`'s language."""
+    suffix = Path(file).suffix
+    script = migrations.directory / f"{name}{suffix}"
+    script.write_text(text)
+    language = {".py": "python", ".ts": "typescript"}[suffix]
+    code = {"run_code": {language: f"{script.name}:run", "reverse": "noop"}}
+    write_migration(migrations.directory, name, [{"run_sql": {"sql": sql, "reverse_sql": "noop"}}, code])
+    return script
 
 
 async def test_a_data_step_can_nest_transactions_and_register_on_commit_callbacks(tmp_path):
@@ -239,7 +247,7 @@ async def test_data_steps_are_checked_before_anything_runs(tmp_path):
     db, migrations = await fresh(tmp_path)
     try:
         data_migration(migrations, "0002_ts", "data.ts", "export async function run(db) {}\n")
-        with pytest.raises(MigrationError, match=r"0002_ts has a data step \(data.ts\)"):
+        with pytest.raises(MigrationError, match=r"0002_ts: operation 2 has no run_code entry for python"):
             await Migrator(db, migrations).upgrade()
         assert await db._fetch_text("SELECT to_regclass('author')") == [(None,)]
     finally:
@@ -284,14 +292,12 @@ def test_cli_migrate_needs_no_schema_file_and_skips_applied_data_steps(tmp_path)
     schema.write_text(SQLITE + V1)
     migrations.make()
     # an applied data step whose import fails today must not stop later migrations
-    data_migration(migrations, "0002_old", "data.py", "import gone_module\n\nasync def run(db):\n    pass\n")
+    old = data_migration(migrations, "0002_old", "data.py", "import gone_module\n\nasync def run(db):\n    pass\n")
     env = {**os.environ, "MONORM_DATABASE_URL": f"sqlite://{tmp_path / 'app.db'}"}
     base = [sys.executable, "-m", "monorm", "--schema", "schema.prisma", "--dir", "migrations"]
-    (tmp_path / "migrations" / "0002_old" / "data.py").write_text("async def run(db):\n    pass\n")
+    old.write_text("async def run(db):\n    pass\n")
     assert subprocess.run([*base, "migrate"], cwd=tmp_path, env=env, capture_output=True, text=True).returncode == 0
-    (tmp_path / "migrations" / "0002_old" / "data.py").write_text(
-        "import gone_module\n\nasync def run(db):\n    pass\n"
-    )
+    old.write_text("import gone_module\n\nasync def run(db):\n    pass\n")
     data_migration(
         migrations,
         "0003_new",
@@ -311,14 +317,13 @@ async def test_an_edited_data_step_loads_again_in_the_same_process(tmp_path):
         def step(v: str) -> str:
             return f"async def run(db):\n    await db.execute(\"INSERT INTO author (name) VALUES ('{v}')\")\n"
 
-        folder = data_migration(migrations, "0002_edit", "data.py", step("v1"))
-        (folder / "down.sql").write_text("SELECT 1;\n")
+        script = data_migration(migrations, "0002_edit", "data.py", step("v1"))
         migrator = Migrator(db, migrations)
         await migrator.upgrade()
         await migrator.downgrade()
-        (folder / "data.py").write_text(step("v2"))
+        script.write_text(step("v2"))
         later = time.time() + 5  # the bytecode cache compares whole seconds and the size
-        os.utime(folder / "data.py", (later, later))
+        os.utime(script, (later, later))
         await migrator.upgrade()
         assert await db._fetch_text("SELECT name FROM author ORDER BY id") == [("v1",), ("v2",)]
     finally:

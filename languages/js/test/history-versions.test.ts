@@ -8,6 +8,7 @@ import { test } from "node:test";
 
 import { connect, loads, Migrations, Registry, scope, type Database } from "../src/index.js";
 import { hasExtension } from "./artifact-caps.js";
+import { plannedUp } from "./planned.js";
 
 type Any = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -295,7 +296,7 @@ model Bad {
 test("migrations create the version table and the unique index", { skip }, () => {
   const registry = new Registry();
   loads(`datasource db {\n  provider = "postgresql"\n}\n${SCHEMA}`, { registry });
-  const up = new Migrations(mkdtempSync(join(tmpdir(), "monorm-history-versions-")), registry).plan().up.map((x) => x.sql);
+  const up = plannedUp(new Migrations(mkdtempSync(join(tmpdir(), "monorm-history-versions-")), registry));
   const table = up.find((x) => x.startsWith('CREATE TABLE "hv_js_bundle_versions"'));
   assert.ok(table !== undefined);
   for (const column of ["version_number", "snapshot", "content_hash", "effective_at", "change_type", "restored_from", "xact_id", "user"]) assert.ok(table.includes(`"${column}"`), column);
@@ -306,6 +307,6 @@ test("migrations create the version table and the unique index", { skip }, () =>
 test("migrations give restored_from a self reference foreign key on SQLite", { skip }, () => {
   const registry = new Registry();
   loads(`datasource db {\n  provider = "sqlite"\n}\n${SCHEMA}`, { registry });
-  const up = new Migrations(mkdtempSync(join(tmpdir(), "monorm-history-versions-")), registry).plan().up.map((x) => x.sql).join("\n");
+  const up = plannedUp(new Migrations(mkdtempSync(join(tmpdir(), "monorm-history-versions-")), registry)).join("\n");
   assert.ok(up.includes('CONSTRAINT "hv_js_bundle_versions_restored_from_fkey" FOREIGN KEY ("restored_from") REFERENCES "hv_js_bundle_versions" ("id") ON DELETE SET NULL'));
 });

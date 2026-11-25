@@ -2,6 +2,7 @@ use serde_json::{json, Value};
 
 use super::*;
 use crate::ir::SchemaIr;
+use crate::migrate::model::{Index, SqlView};
 
 fn schema(ir: Value) -> Schema {
     let ir: SchemaIr = serde_json::from_value(ir).unwrap();
@@ -1158,80 +1159,6 @@ fn widening_type_changes_are_not_destructive() {
     }
 }
 
-#[test]
-fn marker_lines_round_trip() {
-    for d in [
-        destructive(DestructiveKind::DropTable, "post", None),
-        destructive(DestructiveKind::DropColumn, "post", Some("body")),
-        destructive(DestructiveKind::AlterType, "my table", Some("a b")),
-    ] {
-        assert_eq!(Destructive::parse_marker(&d.marker()), Some(d));
-    }
-    assert_eq!(Destructive::parse_marker("-- WARNING: drops table post"), None);
-    assert_eq!(Destructive::parse_marker("-- monorm: destructive drop-column post"), None);
-    assert_eq!(Destructive::parse_marker("-- monorm: destructive truncate post"), None);
-}
-
-fn marked(dialect: &str, before: Vec<Value>, after: Vec<Value>) -> MigrationPlan {
-    let make = |extra: Vec<Value>| {
-        let mut ir = blog(extra, json!({}));
-        ir["dialect"] = json!(dialect);
-        schema(ir)
-    };
-    let p1 = super::plan(&make(before), &DbSchema::default()).unwrap();
-    super::plan(&make(after), &p1.snapshot).unwrap()
-}
-
-#[test]
-fn migration_files_mark_each_destructive_step() {
-    for dialect in ["postgres", "sqlite"] {
-        let p = marked(dialect, vec![field("bio", "text"), field("views", "int")], vec![field("views", "text")]);
-        let up = files::render(&p.up, "up");
-        assert!(up.contains("-- monorm: destructive drop-column posts.bio\n"), "{dialect}: {up}");
-        assert!(up.contains("-- monorm: destructive alter-type posts.views\n"), "{dialect}: {up}");
-        assert_eq!(up.matches("-- monorm: destructive").count(), 2, "{dialect}: {up}");
-        // the down plan adds a column and converts one back: only the type change loses data
-        let down = files::render(&p.down, "down");
-        assert!(down.contains("-- monorm: destructive alter-type posts.views\n"), "{dialect}: {down}");
-        assert!(!down.contains("drop-column"), "{dialect}: {down}");
-        // the line follows the warning of its step
-        if dialect == "postgres" {
-            assert!(up.contains("-- WARNING: drops column posts.bio and its data\n-- monorm: destructive drop-column posts.bio\nALTER TABLE"), "{up}");
-        }
-    }
-    let first = super::plan(&schema(blog(vec![], json!({}))), &DbSchema::default()).unwrap();
-    let up = files::render(&first.up, "up");
-    assert!(!up.contains("monorm: destructive"), "{up}");
-    let down = files::render(&first.down, "down");
-    assert!(down.contains("-- monorm: destructive drop-table users\n"), "{down}");
-    assert!(down.contains("-- monorm: destructive drop-table posts\n"), "{down}");
-}
-
-#[test]
-fn a_marker_names_the_table_before_its_rename() {
-    for dialect in ["postgres", "sqlite"] {
-        let make = |table: &str, hint: bool, extra: Vec<Value>| {
-            let mut ir = blog(extra, json!({}));
-            ir["dialect"] = json!(dialect);
-            ir["models"][1]["table"] = json!(table);
-            if hint {
-                ir["models"][1]["renamed_from"] = json!("posts");
-            }
-            schema(ir)
-        };
-        let p1 = super::plan(&make("posts", false, vec![field("views", "int")]), &DbSchema::default()).unwrap();
-        let p2 = super::plan(&make("articles", true, vec![]), &p1.snapshot).unwrap();
-        let up = files::render(&p2.up, "up");
-        assert!(up.contains("-- monorm: destructive drop-column posts.views\n"), "{dialect}: {up}");
-        assert!(!up.contains("destructive drop-column articles"), "{dialect}: {up}");
-        let down = files::render(&p2.down, "down");
-        assert!(!down.contains("monorm: destructive"), "{dialect}: {down}");
-        assert!(p2.up.iter().any(|s| !s.destructive.is_empty()));
-        let json = serde_json::to_value(&p2.up).unwrap();
-        assert!(json.as_array().unwrap().iter().any(|s| s["destructive"] == json!(true)), "{json}");
-    }
-}
-
 fn generated_schema(dialect: &str, fields: &str) -> Schema {
     let text = format!("datasource db {{\n provider = \"{dialect}\"\n}}\nmodel Line {{\n id Int @id\n quantity Int\n price Int\n {fields}\n}}\n");
     Schema::from_ir(crate::dsl::compile(&text, None).unwrap()).unwrap_or_else(|e| panic!("{e}"))
@@ -1402,14 +1329,16 @@ fn sqlite_rebuilds_for_a_generated_column_and_copies_only_plain_columns() {
 
 // -- online (concurrent) generation -------------------------------------------------------
 
-fn kinds(plans: &[MigrationPlan]) -> Vec<String> {
-    plans
-        .iter()
-        .map(|p| match &p.kind {
-            FolderKind::Main => "main".to_owned(),
-            FolderKind::DropIndex(n) => format!("drop {n}"),
-            FolderKind::CreateIndex(n) => format!("create {n}"),
-            FolderKind::Validate => "validate".to_owned(),
+fn labels(ops: &[ops::Operation]) -> Vec<String> {
+    ops.iter()
+        .map(|o| {
+            let label = match &o.kind {
+                ops::OpKind::Schema(diff::Op::CreateIndex { index, .. }) => format!("create {}", index.name),
+                ops::OpKind::Schema(diff::Op::DropIndex { name }) => format!("drop {name}"),
+                ops::OpKind::Schema(diff::Op::AddConstraint { constraint, .. }) => format!("add {}", constraint.name()),
+                _ => "op".to_owned(),
+            };
+            if o.atomic { label } else { format!("{label} (outside)") }
         })
         .collect()
 }
@@ -1420,91 +1349,75 @@ fn views() -> Value {
 
 fn posts_v1() -> (Schema, DbSchema) {
     let s = schema(blog(vec![], json!({})));
-    let snap = super::plan(&s, &DbSchema::default()).unwrap().snapshot;
+    let snap = super::snapshot(&s).unwrap();
     (s, snap)
 }
 
-#[test]
-fn online_moves_a_new_index_of_an_existing_table_to_a_concurrent_folder() {
-    let (_, v1) = posts_v1();
-    let v2 = schema(blog(vec![views()], json!({"indexes": [{"columns": [{"field": "title"}]}]})));
-    let plans = plan_online(&v2, &v1).unwrap();
-    assert_eq!(kinds(&plans), ["main", "create \"posts_title_idx\""]);
-    assert_eq!(sql(&plans[0].up), ["ALTER TABLE \"posts\" ADD COLUMN \"views\" integer NOT NULL"]);
-    let index = &plans[1];
-    assert_eq!(sql(&index.up), ["CREATE INDEX CONCURRENTLY IF NOT EXISTS \"posts_title_idx\" ON \"posts\" (\"title\")"]);
-    assert!(index.up.iter().all(|s| !s.transaction));
-    assert!(plans[0].up.iter().all(|s| s.transaction));
-    // down: the main folder leaves the index to its own folder
-    assert_eq!(sql(&plans[0].down), ["ALTER TABLE \"posts\" DROP COLUMN \"views\""]);
-    assert_eq!(sql(&index.down), ["DROP INDEX CONCURRENTLY IF EXISTS \"posts_title_idx\""]);
-    assert!(index.down.iter().all(|s| !s.transaction));
+fn online(s: &Schema, previous: &DbSchema) -> Vec<ops::Operation> {
+    generate(s, previous, false, true).unwrap()
+}
+
+/// The operations replayed on `previous` reach the state of the schema.
+fn reaches(s: &Schema, previous: &DbSchema, operations: &[ops::Operation]) {
+    let mut state = previous.clone();
+    replay::replay(&mut state, operations).unwrap();
+    assert!(replay::same(&state, &super::snapshot(s).unwrap()), "{state:?}");
 }
 
 #[test]
-fn online_moves_a_dropped_index_before_the_main_folder() {
+fn online_moves_a_new_index_of_an_existing_table_outside_the_transaction() {
+    let (_, v1) = posts_v1();
+    let v2 = schema(blog(vec![views()], json!({"indexes": [{"columns": [{"field": "title"}]}]})));
+    let operations = online(&v2, &v1);
+    assert_eq!(labels(&operations), ["op", "create posts_title_idx (outside)"]);
+    reaches(&v2, &v1, &operations);
+}
+
+#[test]
+fn online_moves_a_dropped_index_before_the_main_operations() {
     let with_index = schema(blog(vec![], json!({"indexes": [{"columns": [{"field": "title"}]}]})));
-    let v1 = super::plan(&with_index, &DbSchema::default()).unwrap().snapshot;
+    let v1 = super::snapshot(&with_index).unwrap();
     let v2 = schema(blog(vec![views()], json!({})));
-    let plans = plan_online(&v2, &v1).unwrap();
-    assert_eq!(kinds(&plans), ["drop \"posts_title_idx\"", "main"]);
-    assert_eq!(sql(&plans[0].up), ["DROP INDEX CONCURRENTLY IF EXISTS \"posts_title_idx\""]);
-    assert!(!plans[0].up[0].transaction);
-    assert_eq!(sql(&plans[0].down), ["CREATE INDEX CONCURRENTLY IF NOT EXISTS \"posts_title_idx\" ON \"posts\" (\"title\")"]);
-    assert_eq!(sql(&plans[1].down), ["ALTER TABLE \"posts\" DROP COLUMN \"views\""]);
+    let operations = online(&v2, &v1);
+    assert_eq!(labels(&operations), ["drop posts_title_idx (outside)", "op"]);
+    reaches(&v2, &v1, &operations);
 }
 
 #[test]
 fn online_changes_an_index_definition_as_drop_then_create() {
     let before = schema(blog(vec![], json!({"indexes": [{"name": "p_title", "columns": [{"field": "title"}]}]})));
-    let v1 = super::plan(&before, &DbSchema::default()).unwrap().snapshot;
+    let v1 = super::snapshot(&before).unwrap();
     let after = schema(blog(vec![], json!({"indexes": [{"name": "p_title", "columns": [{"field": "title"}, {"field": "id"}]}]})));
-    let plans = plan_online(&after, &v1).unwrap();
-    assert_eq!(kinds(&plans), ["drop \"p_title\"", "create \"p_title\""]);
-    // rollback: drop the new index, then build the old one; the folders hold no other step
-    assert_eq!(sql(&plans[1].down), ["DROP INDEX CONCURRENTLY IF EXISTS \"p_title\""]);
-    assert_eq!(sql(&plans[0].down), ["CREATE INDEX CONCURRENTLY IF NOT EXISTS \"p_title\" ON \"posts\" (\"title\")"]);
+    let operations = online(&after, &v1);
+    assert_eq!(labels(&operations), ["drop p_title (outside)", "create p_title (outside)"]);
+    reaches(&after, &v1, &operations);
 }
 
 #[test]
-fn online_adds_a_foreign_key_and_a_check_not_valid_and_validates_them_in_a_folder() {
+fn online_adds_a_foreign_key_and_a_check_in_the_main_group() {
     let users_only = json!({"models": [
         {"name": "User", "table": "users", "fields": [id()]},
         {"name": "Post", "table": "posts", "fields": [id(), field("author_id", "big_int"), views()]},
     ]});
-    let v1 = super::plan(&schema(users_only), &DbSchema::default()).unwrap().snapshot;
+    let v1 = super::snapshot(&schema(users_only)).unwrap();
     let v2 = schema(blog(vec![views()], json!({"constraints": [{"kind": "check", "name": "views_positive", "expr": "views >= 0"}]})));
-    let plans = plan_online(&v2, &v1).unwrap();
-    assert_eq!(kinds(&plans).last().map(String::as_str), Some("validate"));
-    let main = sql(&plans[0].up);
-    assert!(main.iter().any(|s| s.ends_with("CHECK (views >= 0) NOT VALID")), "{main:?}");
-    assert!(main.iter().any(|s| s.contains("FOREIGN KEY") && s.ends_with("ON DELETE CASCADE NOT VALID")), "{main:?}");
-    let validate = plans.last().unwrap();
-    assert!(validate.up.iter().all(|s| s.transaction));
-    assert_eq!(validate.up.len(), 2);
-    assert!(sql(&validate.up).iter().all(|s| s.starts_with("ALTER TABLE \"posts\" VALIDATE CONSTRAINT ")));
-    assert!(validate.down.is_empty());
+    let operations = online(&v2, &v1);
+    assert_eq!(operations, generate(&v2, &v1, false, false).unwrap());
+    assert!(operations.iter().all(|o| o.atomic), "{:?}", labels(&operations));
+    let sql = ops::MigrationFile::new(operations.clone()).render();
+    assert!(!sql.contains("NOT VALID") && !sql.contains("VALIDATE"), "{sql}");
+    reaches(&v2, &v1, &operations);
 }
 
 #[test]
 fn online_leaves_a_new_table_and_a_unique_index_alone() {
-    // a new table with an index and a foreign key
-    let v0 = DbSchema::default();
     let new_table = schema(blog(vec![], json!({"indexes": [{"columns": [{"field": "title"}]}]})));
-    let plans = plan_online(&new_table, &v0).unwrap();
-    assert_eq!(kinds(&plans), ["main"]);
-    let plain = super::plan(&new_table, &v0).unwrap();
-    assert_eq!(sql(&plans[0].up), sql(&plain.up));
-    assert_eq!(sql(&plans[0].down), sql(&plain.down));
-    assert_eq!(plans[0].snapshot, plain.snapshot);
+    let plain = generate(&new_table, &DbSchema::default(), false, false).unwrap();
+    assert_eq!(online(&new_table, &DbSchema::default()), plain);
 
-    // a unique index on an existing table keeps its shape
     let (_, v1) = posts_v1();
     let unique = schema(blog(vec![], json!({"indexes": [{"columns": [{"field": "title"}], "unique": true}]})));
-    let plans = plan_online(&unique, &v1).unwrap();
-    assert_eq!(kinds(&plans), ["main"]);
-    assert_eq!(sql(&plans[0].up), sql(&super::plan(&unique, &v1).unwrap().up));
-
+    assert_eq!(online(&unique, &v1), generate(&unique, &v1, false, false).unwrap());
 }
 
 fn partitioned_posts(post: Value) -> Schema {
@@ -1519,16 +1432,13 @@ fn partition_posts(ir: &mut Value) {
 }
 
 #[test]
-fn online_keeps_an_index_and_a_foreign_key_of_a_partitioned_table_in_the_main_folder() {
-    // both snapshots declare the partition key, so only the index or the key differs
-    let v1 = super::plan(&partitioned_posts(json!({})), &DbSchema::default()).unwrap().snapshot;
+fn online_keeps_an_index_and_a_foreign_key_of_a_partitioned_table_in_the_transaction() {
+    let v1 = super::snapshot(&partitioned_posts(json!({}))).unwrap();
     assert!(v1.tables.iter().any(|t| t.name == "posts" && t.partition_by.is_some()));
     let indexed = partitioned_posts(json!({"indexes": [{"columns": [{"field": "title"}]}]}));
-    let plans = plan_online(&indexed, &v1).unwrap();
-    assert_eq!(kinds(&plans), ["main"]);
-    assert!(sql(&plans[0].up).iter().any(|s| s.starts_with("CREATE INDEX ")), "{:?}", sql(&plans[0].up));
+    let operations = online(&indexed, &v1);
+    assert!(operations.iter().all(|o| o.atomic), "{:?}", labels(&operations));
 
-    // PostgreSQL 16 refuses a foreign key NOT VALID on a partitioned table
     let users_only = {
         let mut ir = json!({"models": [
             {"name": "User", "table": "users", "fields": [id()]},
@@ -1537,60 +1447,34 @@ fn online_keeps_an_index_and_a_foreign_key_of_a_partitioned_table_in_the_main_fo
         partition_posts(&mut ir);
         schema(ir)
     };
-    let v1 = super::plan(&users_only, &DbSchema::default()).unwrap().snapshot;
-    let plans = plan_online(&partitioned_posts(json!({})), &v1).unwrap();
-    assert_eq!(kinds(&plans), ["main"]);
-    assert!(sql(&plans[0].up).iter().any(|s| s.contains("FOREIGN KEY") && !s.contains("NOT VALID")), "{:?}", sql(&plans[0].up));
+    let v1 = super::snapshot(&users_only).unwrap();
+    let operations = online(&partitioned_posts(json!({})), &v1);
+    assert!(operations.iter().all(|o| o.atomic), "{:?}", labels(&operations));
 }
 
 #[test]
-fn online_adds_a_check_of_a_partitioned_table_not_valid() {
-    let v1 = super::plan(&partitioned_posts(json!({})), &DbSchema::default()).unwrap().snapshot;
-    let checked = partitioned_posts(json!({"constraints": [{"kind": "check", "name": "title_set", "expr": "title <> ''"}]}));
-    let plans = plan_online(&checked, &v1).unwrap();
-    assert_eq!(kinds(&plans), ["main", "validate"]);
-    assert!(sql(&plans[0].up).iter().any(|s| s.ends_with("CHECK (title <> '') NOT VALID")), "{:?}", sql(&plans[0].up));
-    assert_eq!(sql(&plans[1].up), ["ALTER TABLE \"posts\" VALIDATE CONSTRAINT \"title_set\""]);
-}
-
-#[test]
-fn online_gives_the_same_plan_as_plan_when_nothing_moves() {
+fn online_gives_the_plain_operations_when_nothing_moves() {
     let (_, v1) = posts_v1();
     let v2 = schema(blog(vec![views()], json!({})));
-    let plain = super::plan(&v2, &v1).unwrap();
-    let plans = plan_online(&v2, &v1).unwrap();
-    assert_eq!(plans.len(), 1);
-    assert_eq!((sql(&plans[0].up), sql(&plans[0].down)), (sql(&plain.up), sql(&plain.down)));
-    assert_eq!(plans[0].snapshot, plain.snapshot);
-    assert!(plain.up.iter().chain(&plain.down).all(|s| s.transaction));
-
-    let v1 = super::plan(&v2, &DbSchema::default()).unwrap().snapshot;
-    assert!(plan_online(&v2, &v1).unwrap().iter().all(|p| p.up.is_empty()), "no change, no step");
+    assert_eq!(online(&v2, &v1), generate(&v2, &v1, false, false).unwrap());
+    assert!(online(&v2, &super::snapshot(&v2).unwrap()).is_empty(), "no change, no operation");
 }
 
 #[test]
-fn online_folders_carry_the_snapshot_after_each_of_them() {
+fn online_orders_the_drops_the_main_operations_and_the_builds() {
     let before = schema(blog(vec![], json!({"indexes": [{"name": "old_idx", "columns": [{"field": "title"}]}]})));
-    let v1 = super::plan(&before, &DbSchema::default()).unwrap().snapshot;
+    let v1 = super::snapshot(&before).unwrap();
     let after = schema(blog(
         vec![views()],
         json!({"indexes": [{"name": "a_idx", "columns": [{"field": "views"}]}, {"name": "b_idx", "columns": [{"field": "title"}, {"field": "views"}]}],
                "constraints": [{"kind": "check", "name": "views_positive", "expr": "views >= 0"}]}),
     ));
-    let plans = plan_online(&after, &v1).unwrap();
-    assert_eq!(kinds(&plans), ["drop \"old_idx\"", "main", "create \"a_idx\"", "create \"b_idx\"", "validate"]);
-    let names = |p: &MigrationPlan| -> Vec<String> {
-        p.snapshot.tables.iter().find(|t| t.name == "posts").unwrap().indexes.iter().map(|i| i.name.clone()).collect()
-    };
-    assert_eq!(names(&plans[0]), Vec::<String>::new(), "after the drop");
-    assert_eq!(names(&plans[1]), Vec::<String>::new(), "the main folder builds no index");
-    assert_eq!(names(&plans[2]), ["a_idx"]);
-    assert_eq!(names(&plans[3]), ["a_idx", "b_idx"]);
-    // the last folder is the whole schema, exactly: the drift check and the next makemigrations read it
-    assert_eq!(plans.last().unwrap().snapshot, super::plan(&after, &v1).unwrap().snapshot);
-    settled(&after, plans.last().unwrap());
-    // a NOT VALID constraint is in the snapshot of the main folder
-    assert_eq!(plans[1].snapshot.tables.iter().find(|t| t.name == "posts").unwrap().checks.len(), 1);
+    let operations = online(&after, &v1);
+    assert_eq!(
+        labels(&operations),
+        ["drop old_idx (outside)", "op", "add views_positive", "create a_idx (outside)", "create b_idx (outside)"]
+    );
+    reaches(&after, &v1, &operations);
 }
 
 #[test]
@@ -1598,54 +1482,11 @@ fn online_does_nothing_on_sqlite() {
     let mut ir = blog(vec![], json!({"indexes": [{"columns": [{"field": "title"}]}]}));
     ir["dialect"] = json!("sqlite");
     let s = schema(ir);
-    let plain = super::plan(&s, &DbSchema::default()).unwrap();
-    let plans = plan_online(&s, &DbSchema::default()).unwrap();
-    assert_eq!((plans.len(), sql(&plans[0].up)), (1, sql(&plain.up)));
-    assert!(plans[0].up.iter().all(|s| s.transaction));
+    let operations = generate(&s, &DbSchema::default(), false, true).unwrap();
+    assert_eq!(operations, generate(&s, &DbSchema::default(), false, false).unwrap());
+    assert!(operations.iter().all(|o| o.atomic));
 }
 
-#[test]
-fn make_online_gives_every_folder_the_migration_name() {
-    let dir = std::env::temp_dir().join(format!("monorm-online-name-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    files::make(&dir, &schema(blog(vec![], json!({}))), None, false, true).unwrap();
-    let v2 = schema(blog(vec![], json!({"indexes": [{"name": "t_idx", "columns": [{"field": "title"}]}]})));
-    let made = files::make(&dir, &v2, Some("add_title_idx"), false, true).unwrap();
-    // an index-only change has no main folder; the name stays on the one folder it writes
-    assert_eq!(made.iter().map(|(f, _)| f.name.as_str()).collect::<Vec<_>>(), ["0002_add_title_idx_index_t_idx"]);
-    let v3 = schema(blog(vec![views()], json!({"indexes": [{"name": "u_idx", "columns": [{"field": "views"}]}],
-                                         "constraints": [{"kind": "check", "name": "t_set", "expr": "title <> ''"}]})));
-    let made = files::make(&dir, &v3, Some("swap"), false, true).unwrap();
-    let names: Vec<_> = made.iter().map(|(f, _)| f.name.as_str()).collect();
-    assert_eq!(names, ["0003_swap_drop_t_idx", "0004_swap", "0005_swap_index_u_idx", "0006_swap_validate"]);
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn make_online_writes_ordered_folders_with_headers_and_snapshots() {
-    let dir = std::env::temp_dir().join(format!("monorm-online-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let first = files::make(&dir, &schema(blog(vec![], json!({}))), None, false, true).unwrap();
-    assert_eq!(first.iter().map(|(f, _)| f.name.as_str()).collect::<Vec<_>>(), ["0001_initial"]);
-    let v2 = schema(blog(vec![views()], json!({"indexes": [{"columns": [{"field": "title"}]}]})));
-    let made = files::make(&dir, &v2, None, false, true).unwrap();
-    let names: Vec<_> = made.iter().map(|(f, _)| f.name.clone()).collect();
-    assert_eq!(names, ["0002_add_column_posts_views", "0003_add_column_posts_views_index_posts_title_idx"]);
-    let create = &made[1].0.path;
-    let up = std::fs::read_to_string(create.join("up.sql")).unwrap();
-    assert!(up.starts_with("-- monorm: no-transaction create-index \"posts_title_idx\"\n"), "{up}");
-    assert!(up.contains("CREATE INDEX CONCURRENTLY IF NOT EXISTS \"posts_title_idx\""), "{up}");
-    let down = std::fs::read_to_string(create.join("down.sql")).unwrap();
-    assert!(down.starts_with("-- monorm: no-transaction drop-index \"posts_title_idx\"\n"), "{down}");
-    // the main folder has the snapshot without the index, the last folder the full one
-    let main_snapshot = std::fs::read_to_string(made[0].0.path.join("snapshot.json")).unwrap();
-    let last_snapshot = std::fs::read_to_string(create.join("snapshot.json")).unwrap();
-    assert!(!main_snapshot.contains("posts_title_idx") && last_snapshot.contains("posts_title_idx"));
-    assert_eq!(files::list(&dir).unwrap().len(), 3);
-    assert!(files::next_folders(&dir, &v2, true).unwrap().iter().all(|p| p.up.is_empty()));
-    assert!(files::make(&dir, &v2, None, false, true).unwrap().is_empty());
-    let _ = std::fs::remove_dir_all(&dir);
-}
 
 fn view(name: &str, body: &str, extra: Value) -> Value {
     let mut v = json!({"name": name, "table": name.to_lowercase(), "fields": [id(), field("title", "text")],
@@ -1856,260 +1697,6 @@ fn refresh_renders_only_for_a_materialized_view_on_postgres() {
     assert!(super::refresh_statement(&lite, "Titles", false).unwrap_err().contains("SQLite"));
 }
 
-fn squash_dir(label: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("monorm-squash-{label}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    dir
-}
-
-/// Three migrations: the blog, a `views` column, a `likes` column.
-fn squash_history(dir: &std::path::Path) {
-    files::make(dir, &schema(blog(vec![], json!({}))), None, false, false).unwrap();
-    files::make(dir, &schema(blog(vec![views()], json!({}))), None, false, false).unwrap();
-    files::make(dir, &schema(blog(vec![views(), field("likes", "int")], json!({}))), None, false, false).unwrap();
-}
-
-fn names(dir: &std::path::Path) -> Vec<String> {
-    files::list(dir).unwrap().into_iter().map(|m| m.name).collect()
-}
-
-#[test]
-fn squash_writes_one_folder_that_builds_the_snapshot_and_deletes_the_range() {
-    let dir = squash_dir("write");
-    squash_history(&dir);
-    let old = names(&dir);
-    let sums: Vec<String> = files::list(&dir).unwrap().iter().take(2).map(|m| files::checksum(&std::fs::read_to_string(m.path.join("up.sql")).unwrap())).collect();
-    let folder = files::squash(&dir, "2", None).unwrap();
-    assert_eq!(folder.name, "0001_squashed_0002");
-    assert_eq!(names(&dir), ["0001_squashed_0002", "0003_add_column_posts_likes"]);
-    let up = std::fs::read_to_string(folder.path.join("up.sql")).unwrap();
-    let lines: Vec<&str> = up.lines().collect();
-    assert_eq!(lines[0], format!("-- monorm: replaces {} {}", old[0], sums[0]));
-    assert_eq!(lines[1], format!("-- monorm: replaces {} {}", old[1], sums[1]));
-    assert_eq!(files::parse_replaces(&up).unwrap(), vec![(old[0].clone(), sums[0].clone()), (old[1].clone(), sums[1].clone())]);
-    assert!(up.contains("CREATE TABLE \"posts\"") && up.contains("\"views\""), "{up}");
-    let down = std::fs::read_to_string(folder.path.join("down.sql")).unwrap();
-    assert!(down.contains("DROP TABLE \"posts\"") && down.contains("DROP TABLE \"users\""), "{down}");
-    // the snapshot is the one of `--to`, so the next migration still diffs from it
-    let latest = files::latest_snapshot(&dir).unwrap();
-    assert_eq!(files::next(&dir, &schema(blog(vec![views(), field("likes", "int")], json!({})))).unwrap().up.len(), 0);
-    assert!(latest.tables.iter().any(|t| t.columns.iter().any(|c| c.name == "likes")));
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn squash_to_the_last_migration_leaves_no_change_to_make() {
-    let dir = squash_dir("last");
-    squash_history(&dir);
-    let folder = files::squash(&dir, "0003_add_column_posts_likes", Some("baseline")).unwrap();
-    assert_eq!(folder.name, "0001_baseline");
-    assert_eq!(names(&dir), ["0001_baseline"]);
-    let s = schema(blog(vec![views(), field("likes", "int")], json!({})));
-    assert!(files::make(&dir, &s, None, false, false).unwrap().is_empty());
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn squash_may_take_the_name_of_a_replaced_folder() {
-    let dir = squash_dir("samename");
-    squash_history(&dir);
-    assert_eq!(files::squash(&dir, "2", Some("initial")).unwrap().name, "0001_initial");
-    assert_eq!(names(&dir), ["0001_initial", "0003_add_column_posts_likes"]);
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn squash_of_sqlite_creates_the_tables_directly() {
-    let dir = squash_dir("sqlite");
-    let sqlite = |extra: Vec<Value>| {
-        let mut ir = blog(extra, json!({}));
-        ir["dialect"] = json!("sqlite");
-        schema(ir)
-    };
-    files::make(&dir, &sqlite(vec![]), None, false, false).unwrap();
-    files::make(&dir, &sqlite(vec![views()]), None, false, false).unwrap();
-    let folder = files::squash(&dir, "2", None).unwrap();
-    let up = std::fs::read_to_string(folder.path.join("up.sql")).unwrap();
-    assert!(up.contains("CREATE TABLE \"posts\"") && !up.contains("__orm_new_"), "{up}");
-    let down = std::fs::read_to_string(folder.path.join("down.sql")).unwrap();
-    assert!(down.contains("DROP TABLE"), "{down}");
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn squash_of_a_schema_with_an_extension_creates_it() {
-    let dir = squash_dir("extension");
-    let s = |extra: Vec<Value>| {
-        let mut ir = json!({"models": [{"name": "Doc", "table": "docs", "fields": [id(), {"name": "email", "column": "email", "type": "text", "db_type": "citext"}]}],
-                            "extensions": [{"name": "citext", "schema": "public"}]});
-        ir["models"][0]["fields"].as_array_mut().unwrap().extend(extra);
-        schema(ir)
-    };
-    files::make(&dir, &s(vec![]), None, false, false).unwrap();
-    files::make(&dir, &s(vec![views()]), None, false, false).unwrap();
-    let folder = files::squash(&dir, "2", None).unwrap();
-    let up = std::fs::read_to_string(folder.path.join("up.sql")).unwrap();
-    assert!(up.contains("CREATE EXTENSION IF NOT EXISTS \"citext\""), "{up}");
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-fn refuses(label: &str, to: &str, break_it: impl FnOnce(&std::path::Path), expect: &str) {
-    let dir = squash_dir(label);
-    squash_history(&dir);
-    break_it(&dir);
-    let before = names(&dir);
-    let err = files::squash(&dir, to, None).unwrap_err();
-    assert!(err.contains(expect), "{err}");
-    assert_eq!(names(&dir), before, "a refusal writes and deletes nothing");
-    assert!(!dir.join(".squash").exists());
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn squash_refuses_a_data_step() {
-    refuses("data", "3", |d| std::fs::write(d.join("0002_add_column_posts_views/data.py"), "").unwrap(), "data step (data.py)");
-}
-
-#[test]
-fn squash_refuses_a_folder_of_hand_written_sql() {
-    refuses("empty", "4", |d| { files::make(d, &schema(blog(vec![views(), field("likes", "int")], json!({}))), Some("manual"), true, false).unwrap(); }, "hand-written");
-}
-
-#[test]
-fn squash_refuses_a_squash_folder() {
-    let dir = squash_dir("nested");
-    squash_history(&dir);
-    files::squash(&dir, "2", None).unwrap();
-    files::make(&dir, &schema(blog(vec![views(), field("likes", "int"), field("shares", "int")], json!({}))), None, false, false).unwrap();
-    let err = files::squash(&dir, "4", None).unwrap_err();
-    assert!(err.contains("squash of a squash"), "{err}");
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn squash_refuses_a_no_transaction_folder() {
-    refuses("notx", "3", |d| {
-        let p = d.join("0002_add_column_posts_views/up.sql");
-        let text = std::fs::read_to_string(&p).unwrap();
-        std::fs::write(&p, format!("-- monorm: no-transaction\n{text}")).unwrap();
-    }, "no-transaction");
-}
-
-#[test]
-fn squash_refuses_a_hand_edit_of_a_generated_script() {
-    refuses("edit", "3", |d| {
-        let p = d.join("0002_add_column_posts_views/up.sql");
-        let text = std::fs::read_to_string(&p).unwrap();
-        std::fs::write(&p, format!("{text}\nCREATE INDEX hand_made ON posts (id);\n")).unwrap();
-    }, "hand edit");
-}
-
-#[test]
-fn squash_accepts_a_generated_folder_whose_text_changed() {
-    let dir = squash_dir("retext");
-    squash_history(&dir);
-    // an editor fixer, a header of an older release, a comment and a renamed folder title: none is an edit
-    let p = dir.join("0001_initial/up.sql");
-    let text = std::fs::read_to_string(&p).unwrap();
-    let text = text.replace("Generated by monorm; edit freely before applying.", "Generated by an older release").replace("0001_initial: up", "0001_old_name: up");
-    std::fs::write(&p, format!("{}\n-- a note\n", text.trim_end())).unwrap();
-    assert!(!std::fs::read_to_string(&p).unwrap().ends_with("\n\n"));
-    assert_eq!(files::squash(&dir, "3", None).unwrap().name, "0001_squashed_0003");
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn squash_refuses_an_edited_statement_that_a_comment_fix_would_miss() {
-    refuses("edit2", "3", |d| {
-        let p = d.join("0001_initial/up.sql");
-        let text = std::fs::read_to_string(&p).unwrap();
-        std::fs::write(&p, text.replacen("CREATE TABLE", "CREATE TABLE IF NOT EXISTS", 1)).unwrap();
-    }, "hand edit");
-}
-
-#[test]
-fn squash_refuses_the_leftover_of_an_interrupted_squash() {
-    let dir = squash_dir("leftover");
-    squash_history(&dir);
-    std::fs::create_dir_all(dir.join(".squash-replaced")).unwrap();
-    let err = files::squash(&dir, "2", None).unwrap_err();
-    assert!(err.contains("interrupted squash"), "{err}");
-    assert_eq!(names(&dir).len(), 3);
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn a_replaced_name_is_not_found_but_names_its_squash_folder() {
-    let dir = squash_dir("replaced");
-    squash_history(&dir);
-    files::squash(&dir, "2", None).unwrap();
-    let err = files::find(&dir, "0002_add_column_posts_views").unwrap_err();
-    assert!(err.contains("replaced by the squash folder 0001_squashed_0002"), "{err}");
-    assert!(files::find(&dir, "0009_nothing").unwrap_err().contains("no migration"));
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn squash_keeps_a_folder_with_a_rename_hint() {
-    let dir = squash_dir("rename");
-    files::make(&dir, &schema(blog(vec![], json!({}))), None, false, false).unwrap();
-    let mut ir = blog(vec![], json!({}));
-    ir["models"][0]["table"] = json!("members");
-    ir["models"][0]["renamed_from"] = json!("users");
-    files::make(&dir, &schema(ir), None, false, false).unwrap();
-    assert_eq!(files::squash(&dir, "2", None).unwrap().name, "0001_squashed_0002");
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn squash_folds_the_online_folders() {
-    let dir = squash_dir("online");
-    files::make(&dir, &schema(blog(vec![], json!({}))), None, false, true).unwrap();
-    let v2 = schema(blog(vec![views()], json!({"indexes": [{"columns": [{"field": "title"}]}],
-                                              "constraints": [{"kind": "check", "name": "t_set", "expr": "title <> ''"}]})));
-    files::make(&dir, &v2, None, false, true).unwrap();
-    // the index folder is a no-transaction folder: the squash of the whole chain is refused, a squash before it is not
-    let err = files::squash(&dir, "4", None).unwrap_err();
-    assert!(err.contains("no-transaction"), "{err}");
-    assert_eq!(files::squash(&dir, "2", None).unwrap().name, "0001_squashed_0002");
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn squash_folds_a_validate_folder_whose_snapshot_equals_the_one_before() {
-    let dir = squash_dir("validate");
-    files::make(&dir, &schema(blog(vec![], json!({}))), None, false, true).unwrap();
-    let v2 = schema(blog(vec![views()], json!({"constraints": [{"kind": "check", "name": "t_set", "expr": "title <> ''"}]})));
-    files::make(&dir, &v2, None, false, true).unwrap();
-    assert_eq!(names(&dir), ["0001_initial", "0002_add_column_posts_views", "0003_add_column_posts_views_validate"]);
-    let folder = files::squash(&dir, "3", None).unwrap();
-    let up = std::fs::read_to_string(folder.path.join("up.sql")).unwrap();
-    assert!(up.contains("t_set") && !up.contains("VALIDATE CONSTRAINT"), "{up}");
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn squash_refuses_one_migration() {
-    let dir = squash_dir("one");
-    squash_history(&dir);
-    assert!(files::squash(&dir, "1", None).unwrap_err().contains("at least two"));
-    assert!(files::squash(&dir, "9", None).unwrap_err().contains("no migration"));
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn plan_between_goes_from_one_snapshot_to_another_and_back() {
-    let p1 = super::plan(&schema(blog(vec![], json!({}))), &DbSchema::default()).unwrap();
-    let p2 = super::plan(&schema(blog(vec![views()], json!({}))), &p1.snapshot).unwrap();
-    let between = super::plan_between(&p1.snapshot, &p2.snapshot, &Default::default()).unwrap();
-    assert_eq!(sql(&between.up), sql(&p2.up));
-    assert_eq!(sql(&between.down), sql(&p2.down));
-    let empty = DbSchema { dialect: p2.snapshot.dialect, version: p2.snapshot.version, ..Default::default() };
-    let to_empty = super::plan_between(&p2.snapshot, &empty, &Default::default()).unwrap();
-    assert!(sql(&to_empty.up).iter().any(|s| s.starts_with("DROP TABLE \"posts\"")));
-    assert_eq!(to_empty.snapshot, empty);
-}
-
 fn replacing_rule() -> Schema {
     schema(blog(vec![], json!({
         "triggers": [{"name": "soft_delete", "timing": "before", "events": ["delete"], "body": "BEGIN RETURN OLD; END;", "replaces_rule": "posts_soft_delete"}],
@@ -2268,7 +1855,7 @@ fn a_change_of_the_shape_of_a_json_field_alone_gives_a_plan_that_records_it() {
         let same = super::plan(&json_source(dialect, &types("String @default(\"z\")")), &stored(&p1.snapshot)).unwrap();
         assert!(same.up.is_empty() && same.down.is_empty(), "{dialect}: an unchanged shape has no step");
         let p2 = super::plan(&json_source(dialect, &types("String?")), &stored(&p1.snapshot)).unwrap();
-        assert_eq!(sql(&p2.up), vec!["-- The shape of a json column is recorded in snapshot.json"], "{dialect}");
+        assert_eq!(sql(&p2.up), vec!["-- The shape of a json column is recorded in the migration state"], "{dialect}");
         assert_eq!(p2.down.len(), 1, "{dialect}");
         let p3 = super::plan(&json_source(dialect, &types("String?")), &stored(&p2.snapshot)).unwrap();
         assert!(p3.up.is_empty(), "{dialect}: the stored shape is the new one");
@@ -2444,7 +2031,7 @@ fn a_new_required_json_subfield_without_a_default_is_an_error() {
 #[test]
 fn a_new_nullable_json_subfield_changes_no_rows() {
     let up = nested_step("postgresql", NESTED_JSON_V1, &NESTED_JSON_V1.replace("  city String\n", "  city String\n  zip  String?\n")).up;
-    assert_eq!(sql(&up), ["-- The shape of a json column is recorded in snapshot.json"]);
+    assert_eq!(sql(&up), ["-- The shape of a json column is recorded in the migration state"]);
 }
 
 #[test]
@@ -2692,7 +2279,7 @@ fn unmanaged_migration_tracks_current_shape_and_switches_ownership_without_sql()
 
     for plan in [&initial, &handed_off, &updated, &reclaimed] {
         for steps in [&plan.up, &plan.down] {
-            assert_eq!(sql(steps), ["-- Unmanaged models are recorded in snapshot.json"]);
+            assert_eq!(sql(steps), ["-- Unmanaged models are recorded in the migration state"]);
         }
     }
     let changed = new_shape.replace("@@managed(false)", "").replace("note String?", "note String?\n extra String?");
@@ -2724,4 +2311,14 @@ fn database_write_rules_on_unmanaged_models_name_the_extension_and_model() {
     assert!(error.contains("acme.guard") && error.contains("unmanaged model User"), "{error}");
     ir["behavior"]["write_rules"][0]["layer"] = json!("app");
     Schema::from_ir(serde_json::from_value(ir).unwrap()).unwrap();
+}
+
+#[test]
+fn replay_keeps_one_copy_of_a_materialized_view_index() {
+    let index: Index = serde_json::from_value(json!({"name": "v_id", "unique": true, "keys": [{"column": "id"}]})).unwrap();
+    let view = SqlView { name: "v".into(), body: "SELECT 1 AS id".into(), materialized: true, indexes: vec![index.clone()], ..Default::default() };
+    let operations: Vec<_> = [Op::CreateView(view.clone()), Op::CreateIndex { table: "v".into(), index }].into_iter().map(ops::Operation::schema).collect();
+    let mut state = DbSchema::default();
+    replay::replay(&mut state, &operations).unwrap();
+    assert_eq!(state.views[0].indexes.len(), 1);
 }

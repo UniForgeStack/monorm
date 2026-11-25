@@ -3,6 +3,7 @@
 import pytest
 import monorm
 from monorm.fields import Integer
+from _planned import planned_up
 
 GOOD = """model User {
   id Int @id
@@ -98,4 +99,4 @@ def test_migrations_prepare_class_declarations(tmp_path):
     class Author(monorm.Model, registry=registry):
         id = Integer(primary_key=True)
 
-    assert 'CREATE TABLE "author"' in Migrations(tmp_path, registry).plan().up[0].sql
+    assert 'CREATE TABLE "author"' in planned_up(Migrations(tmp_path, registry))[0]

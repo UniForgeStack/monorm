@@ -91,11 +91,12 @@ impl Settings {
     }
 
     /// The `migrations` setting: a directory (`migrations = "db"`) or a table (`[migrations]`) with the keys
-    /// `dir` (the directory) and `online` (a boolean, default `false`: PostgreSQL migrations in the online form).
+    /// `dir` (the directory), `online` (a boolean, default `false`: PostgreSQL migrations in the online form) and
+    /// `name` (the template of new file names, default `{number}_{slug}`).
     pub fn migrations(&self) -> Result<MigrationsSettings, String> {
         match self.section("migrations") {
             None => Ok(MigrationsSettings::default()),
-            Some(Value::String(dir)) => Ok(MigrationsSettings { dir: Some(dir.clone()), online: false }),
+            Some(Value::String(dir)) => Ok(MigrationsSettings { dir: Some(dir.clone()), ..Default::default() }),
             Some(Value::Object(table)) => {
                 let mut out = MigrationsSettings::default();
                 for (name, value) in table {
@@ -104,7 +105,9 @@ impl Settings {
                         ("dir", _) => return Err(self.wrong("migrations.dir", "must be a string")),
                         ("online", Value::Bool(b)) => out.online = *b,
                         ("online", _) => return Err(self.wrong("migrations.online", "must be true or false")),
-                        _ => return Err(self.wrong(&format!("migrations.{name}"), "is not a setting; the keys are `dir` and `online`")),
+                        ("name", Value::String(s)) => out.name = Some(s.clone()),
+                        ("name", _) => return Err(self.wrong("migrations.name", "must be a string")),
+                        _ => return Err(self.wrong(&format!("migrations.{name}"), "is not a setting; the keys are `dir`, `online` and `name`")),
                     }
                 }
                 Ok(out)
@@ -150,6 +153,7 @@ impl Settings {
 pub struct MigrationsSettings {
     pub dir: Option<String>,
     pub online: bool,
+    pub name: Option<String>,
 }
 
 /// The settings table of `text`, or `None` when the file holds none (only `pyproject.toml` and `package.json` can).
@@ -239,10 +243,14 @@ mod tests {
     fn migrations_is_a_directory_or_a_table() {
         let migrations = |file: &str, text: &str| load(&[(file, text)]).and_then(|s| s.migrations());
         assert_eq!(load(&[]).unwrap().migrations().unwrap(), MigrationsSettings::default());
-        assert_eq!(migrations("monorm.toml", "migrations = \"db\"\n").unwrap(), MigrationsSettings { dir: Some("db".into()), online: false });
-        assert_eq!(migrations("monorm.toml", "[migrations]\nonline = true\n").unwrap(), MigrationsSettings { dir: None, online: true });
-        assert_eq!(migrations("pyproject.toml", "[tool.monorm.migrations]\ndir = \"db\"\nonline = true\n").unwrap(), MigrationsSettings { dir: Some("db".into()), online: true });
+        assert_eq!(migrations("monorm.toml", "migrations = \"db\"\n").unwrap(), MigrationsSettings { dir: Some("db".into()), ..Default::default() });
+        assert_eq!(migrations("monorm.toml", "[migrations]\nonline = true\n").unwrap(), MigrationsSettings { online: true, ..Default::default() });
+        assert_eq!(migrations("pyproject.toml", "[tool.monorm.migrations]\ndir = \"db\"\nonline = true\n").unwrap(), MigrationsSettings { dir: Some("db".into()), online: true, name: None });
+        assert_eq!(migrations("monorm.toml", "[migrations]\nname = \"{timestamp}_{slug}\"\n").unwrap().name.as_deref(), Some("{timestamp}_{slug}"));
         assert_eq!(migrations("package.json", "{\"monorm\": {\"migrations\": {\"online\": true}}}").unwrap().online, true);
+        assert_eq!(migrations("pyproject.toml", "[tool.monorm.migrations]\nname = \"{timestamp}-{slug}\"\n").unwrap().name.as_deref(), Some("{timestamp}-{slug}"));
+        assert_eq!(migrations("package.json", "{\"monorm\": {\"migrations\": {\"name\": \"{number}_{slug}\"}}}").unwrap().name.as_deref(), Some("{number}_{slug}"));
+        assert!(migrations("package.json", "{\"monorm\": {\"migrations\": {\"name\": 3}}}").unwrap_err().contains("migrations.name"));
         assert!(migrations("monorm.toml", "[migrations]\nonline = \"yes\"\n").unwrap_err().contains("migrations.online"));
         assert!(migrations("monorm.toml", "[migrations]\nonlien = true\n").unwrap_err().contains("migrations.onlien"));
         assert!(migrations("monorm.toml", "migrations = 3\n").unwrap_err().contains("directory or a table"));

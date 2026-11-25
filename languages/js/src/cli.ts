@@ -14,7 +14,7 @@ import { pathToFileURL } from "node:url";
 import { resolveApps } from "./apps.js";
 import { resolveExtensions, runtimeModules } from "./packages.js";
 import "./index.js"; // loads the modules in their order
-import { hasDataSteps, migrateCommand } from "./migrations.js";
+import { hasCode, migrateCommand } from "./migrations.js";
 import { native } from "./native.js";
 
 /** Runs the command line; gives the exit code. Output goes to stdout / stderr. */
@@ -37,10 +37,10 @@ export async function main(rawArgv: readonly string[]): Promise<number> {
   }
   const found = addon.cliMigrateArgs(argv);
   if (found !== null) {
-    const [schema, dir, url, target, allowDestructive] = found;
-    // data.ts runs in TypeScript, so this migrator applies the directory; without a URL the CLI reports the usage error
-    if (url && hasDataSteps(dir!)) {
-      return migrateCommand(schema!, dir!, url, target ?? null, allowDestructive === "true").catch((e: unknown) => {
+    const [schema, dir, url, target, allowDestructive, ops] = found;
+    // a run_code script runs in TypeScript, so this migrator applies the directory; without a URL the CLI reports the usage error
+    if (url && hasCode(dir!)) {
+      return migrateCommand(schema!, dir!, url, target ?? null, allowDestructive === "true", ops ?? null).catch((e: unknown) => {
         process.stderr.write(`error: ${e instanceof Error ? e.message : String(e)}\n`);
         return 1;
       });

@@ -135,12 +135,12 @@ async def test_the_scope_follows_async_work_and_reads_and_raw_sql_are_unchanged(
     assert (await Post.objects.using(db).get()).title == "raw"
 
 
-def test_protected_write_creates_no_ddl_and_no_snapshot_change():
+def test_protected_write_creates_no_ddl_change():
     def ddl(source):
         registry = monorm.Registry()
         monorm.loads(source, registry=registry)
         schema = registry.prepare()
-        return schema.ddl(), schema.snapshot()
+        return schema.ddl()
 
     assert ddl(SOURCE) == ddl(SOURCE.replace("@@write_rules.protect(layer: app)", ""))
     with pytest.raises(monorm.SchemaError, match=r"@@write_rules\.protect\(layer: app\)"):

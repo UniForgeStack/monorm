@@ -119,12 +119,12 @@ test("the scope follows async work and reads and raw SQL are unchanged", async (
   } finally { await db.close(); }
 });
 
-test("protected write creates no DDL and no snapshot change", () => {
+test("protected write creates no DDL change", () => {
   const schema = (text: string) => {
     const registry = new Registry();
     loads(text, { registry });
     const s = registry.native();
-    return [s.ddl(), s.snapshot()];
+    return s.ddl();
   };
   assert.deepEqual(schema(source), schema(source.replaceAll("@@write_rules.protect(layer: app)", "")));
   assert.throws(() => loads(source.replace("@@write_rules.protect(layer: app)", "@@protected_write"), { registry: new Registry() }),

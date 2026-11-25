@@ -5,6 +5,7 @@ import os
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from _planned import planned_up
 
 import monorm
 from artifact_caps import has_extension
@@ -332,7 +333,7 @@ def test_migrations_create_the_version_table_and_the_unique_index(tmp_path):
 
     registry = monorm.Registry()
     monorm.loads(SOURCES["postgresql"] + SCHEMA, registry=registry)
-    up = [s.sql for s in Migrations(tmp_path, registry).plan().up]
+    up = planned_up(Migrations(tmp_path, registry))
     table = next(x for x in up if x.startswith('CREATE TABLE "hv_bundle_versions"'))
     assert all(f'"{column}"' in table for column in ("version_number", "snapshot", "content_hash", "effective_at", "change_type", "restored_from", "xact_id", "user"))
     assert 'CREATE UNIQUE INDEX "hv_bundle_versions_bundle_id_version_key" ON "hv_bundle_versions" ("bundle_id", "version_number")' in up
@@ -344,5 +345,5 @@ def test_migrations_give_restored_from_a_self_reference_foreign_key_on_sqlite(tm
 
     registry = monorm.Registry()
     monorm.loads(SOURCES["sqlite"] + SCHEMA, registry=registry)
-    up = "\n".join(s.sql for s in Migrations(tmp_path, registry).plan().up)
+    up = "\n".join(planned_up(Migrations(tmp_path, registry)))
     assert 'CONSTRAINT "hv_bundle_versions_restored_from_fkey" FOREIGN KEY ("restored_from") REFERENCES "hv_bundle_versions" ("id") ON DELETE SET NULL' in up

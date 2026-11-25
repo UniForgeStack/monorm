@@ -1,15 +1,16 @@
-/** Data migrations: a `data.ts` with `export async function run(db)` next to `up.sql`. */
+/** Code steps: a `run_code` operation names `file.ts:run` (`export async function run(db)`) next to the migration file. */
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { Migrations, Migrator, Registry, connect, type Database } from "../src/index.js";
+import { Migrations, Migrator, Registry, connect, type Database, type Migration } from "../src/index.js";
 import { DATABASE_URL } from "./helpers.js";
+import { appendOp, writeMigration } from "./planned.js";
 
 const DATA_DB = new URL(DATABASE_URL).pathname.slice(1) + "_data_js";
 const DATA_URL = Object.assign(new URL(DATABASE_URL), { pathname: "/" + DATA_DB }).toString();
@@ -47,6 +48,14 @@ after(async () => {
   for (const db of opened) await db.close();
 });
 
+/** Adds a TypeScript `run_code` operation (and its script) to a written migration. */
+function addCode(migrations: Migrations, migration: Migration, file: string, text: string, reverse: unknown = "noop"): string {
+  const script = join(migrations.directory, file);
+  writeFileSync(script, text);
+  appendOp(migration, { run_code: { typescript: `${file}:run`, reverse } });
+  return script;
+}
+
 test("a data step runs in the migration transaction", async () => {
   const dir = mkdtempSync(join(tmpdir(), "monorm-data-"));
   const schema = join(dir, "schema.prisma");
@@ -54,8 +63,8 @@ test("a data step runs in the migration transaction", async () => {
   writeFileSync(schema, V1);
   migrations.make();
   writeFileSync(schema, V2);
-  const second = migrations.make("slug")[0]!;
-  writeFileSync(join(second.path, "data.ts"), FILL);
+  const second = migrations.make("slug")!;
+  addCode(migrations, second, "0002_slug.ts", FILL);
 
   const db = await connect(DATA_URL, { maxConnections: 2, default: false, registry: new Registry() });
   opened.push(db);
@@ -63,14 +72,14 @@ test("a data step runs in the migration transaction", async () => {
   const migrator = new Migrator(db, migrations);
   assert.deepEqual((await migrator.upgrade("1")).map((m) => m.name), ["0001_initial"]);
   await db.execute("INSERT INTO author (name) VALUES ('Ann'), ('Bob')");
-  await assert.rejects(db.engine.migrateUp(migrations.directory, null, false), /0002_slug has a data step \(data\.ts\)/);
+  await assert.rejects(db.engine.migrateUp(migrations.directory, null, false), /0002_slug: operation 2 runs code/);
   assert.deepEqual((await migrator.upgrade()).map((m) => m.name), ["0002_slug"]);
   assert.deepEqual(await db.fetchText("SELECT slug FROM author ORDER BY id"), [["ann"], ["bob"]]);
 
   // a failing data step rolls back its SQL and is not recorded
   writeFileSync(schema, V2 + "\nmodel Extra {\n  id BigInt @id\n}\n");
-  const third = migrations.make("extra")[0]!;
-  writeFileSync(join(third.path, "data.ts"), 'export async function run(db) { throw new Error("data step failed"); }\n');
+  const third = migrations.make("extra")!;
+  addCode(migrations, third, "0003_extra.ts", 'export async function run(db) { throw new Error("data step failed"); }\n');
   await assert.rejects(migrator.upgrade(), /data step failed/);
   assert.deepEqual(await db.fetchText("SELECT to_regclass('extra')"), [[null]]);
   assert.deepEqual((await migrator.status()).map((s) => s.applied), [true, true, false]);
@@ -87,9 +96,11 @@ test("cli migrate runs data steps", () => {
   writeFileSync(schema, sqlite + V1);
   migrations.make();
   writeFileSync(schema, sqlite + V2);
-  const second = migrations.make("slug")[0]!;
-  writeFileSync(
-    join(second.path, "data.ts"),
+  const second = migrations.make("slug")!;
+  addCode(
+    migrations,
+    second,
+    "0002_slug.ts",
     "export async function run(db) {\n  await db.execute(\"INSERT INTO author (name, slug) VALUES ('Ann', 'ann')\");\n}\n",
   );
   const env = { ...process.env, MONORM_DATABASE_URL: `sqlite://${join(dir, "app.db")}` };
@@ -101,9 +112,7 @@ test("cli migrate runs data steps", () => {
   const shown = run("showmigrations").stdout;
   assert.ok(shown.includes("[x] 0001_initial") && shown.includes("[x] 0002_slug"), shown);
 
-  mkdirSync(join(dir, "migrations", "0003_bad"));
-  writeFileSync(join(dir, "migrations", "0003_bad", "up.sql"), "SELECT 1;\n");
-  writeFileSync(join(dir, "migrations", "0003_bad", "data.ts"), 'export async function run() { throw new Error("bad data"); }\n');
+  dataMigration(migrations, "0003_bad", "data.ts", 'export async function run() { throw new Error("bad data"); }\n');
   const failed = run("migrate");
   assert.equal(failed.status, 1);
   assert.ok(failed.stderr.includes("error: bad data"), failed.stderr);
@@ -121,13 +130,17 @@ async function fresh(): Promise<{ db: Database; migrations: Migrations; dir: str
   return { db, migrations, dir };
 }
 
+/** Writes the migration `name`: one `run_sql` operation, then a code step in the language of `file`. */
 function dataMigration(migrations: Migrations, name: string, file: string, text: string): string {
-  const folder = join(migrations.directory, name);
-  mkdirSync(folder);
-  writeFileSync(join(folder, "up.sql"), "SELECT 1;\n");
-  writeFileSync(join(folder, "down.sql"), "SELECT 1;\n");
-  writeFileSync(join(folder, file), text);
-  return folder;
+  const extension = file.slice(file.lastIndexOf("."));
+  const script = join(migrations.directory, `${name}${extension}`);
+  writeFileSync(script, text);
+  const language = extension === ".py" ? "python" : "typescript";
+  writeMigration(migrations.directory, name, [
+    { run_sql: { sql: "SELECT 1", reverse_sql: "noop" } },
+    { run_code: { [language]: `${name}${extension}:run`, reverse: "noop" } },
+  ]);
+  return script;
 }
 
 const INDEX = JSON.stringify(fileURLToPath(new URL("../src/index.js", import.meta.url)));
@@ -171,7 +184,7 @@ export async function run(db) {
 test("data steps are checked before anything runs", async () => {
   const { db, migrations } = await fresh();
   dataMigration(migrations, "0002_py", "data.py", "async def run(db):\n    pass\n");
-  await assert.rejects(new Migrator(db, migrations).upgrade(), /0002_py has a data step \(data\.py\)/);
+  await assert.rejects(new Migrator(db, migrations).upgrade(), /0002_py: operation 2 has no run_code entry for typescript/);
   assert.deepEqual(await db.fetchText("SELECT to_regclass('author')"), [[null]]);
 
   const { db: db2, migrations: m2 } = await fresh();
@@ -184,12 +197,12 @@ test("data steps are checked before anything runs", async () => {
 test("an edited data step loads again in the same process", { skip: "bun" in process.versions }, async () => {
   const { db, migrations } = await fresh();
   const step = (v: string) => `export async function run(db) { await db.execute("INSERT INTO author (name) VALUES ('${v}')"); }\n`;
-  const folder = dataMigration(migrations, "0002_edit", "data.ts", step("v1"));
+  const script = dataMigration(migrations, "0002_edit", "data.ts", step("v1"));
   const migrator = new Migrator(db, migrations);
   await migrator.upgrade();
   await migrator.downgrade();
-  writeFileSync(join(folder, "data.ts"), step("v2"));
-  utimesSync(join(folder, "data.ts"), new Date(), new Date(Date.now() + 5000));
+  writeFileSync(script, step("v2"));
+  utimesSync(script, new Date(), new Date(Date.now() + 5000));
   await migrator.upgrade();
   assert.deepEqual(await db.fetchText("SELECT name FROM author ORDER BY id"), [["v1"], ["v2"]]);
 });
@@ -224,7 +237,7 @@ test("cli migrate needs no schema file and skips applied data steps", () => {
     spawnSync(process.execPath, [CLI, "--schema", "schema.prisma", "--dir", "migrations", ...args], { cwd: dir, env, encoding: "utf8" });
   assert.equal(run("migrate").status, 0);
   // an applied data step whose import fails today must not stop later migrations
-  writeFileSync(join(old, "data.ts"), 'import "./gone.js";\nexport async function run() {}\n');
+  writeFileSync(old, 'import "./gone.js";\nexport async function run() {}\n');
   dataMigration(migrations, "0003_new", "data.ts", "export async function run(db) { await db.execute(\"INSERT INTO author (name) VALUES ('x')\"); }\n");
   unlinkSync(schema);
   const done = run("migrate");

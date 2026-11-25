@@ -87,7 +87,7 @@ export type { FieldAdapter } from "./adapters.js";
 export { allowWrites } from "./protection.js";
 export * as debug from "./debug.js";
 export { Migration, MigrationError, Migrations, Migrator, Pulled, pull } from "./migrations.js";
-export type { Drift, Plan, Status, Step, SchemaSource } from "./migrations.js";
+export type { Drift, Plan, PlanOperation, Status, Step, SchemaSource } from "./migrations.js";
 
 export type { QueryInspection, StatementInspection } from "./inspection.js";
 export { statementInspection } from "./inspection.js";

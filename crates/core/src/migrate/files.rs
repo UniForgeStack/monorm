@@ -1,132 +1,150 @@
-//! The migrations directory: one folder per migration.
+//! The migrations directory: one JSON file per migration.
 //!
 //! ```text
 //! migrations/
-//!     0001_initial/
-//!         up.sql          forward DDL, a comment per step (and warnings)
-//!         down.sql        reverse DDL
-//!         snapshot.json   the database schema after up.sql
+//!     0001_initial.json     the operation list (see [`super::ops`])
+//!     0002_backfill.json
+//!     0002_backfill.sql     a script that an operation names, next to the file
 //! ```
 //!
-//! Generating the next migration diffs the schema against the newest snapshot, so it
-//! needs no database. Applying migrations is the bindings' job (they own connections).
+//! The state of the schema before a migration is the replay of the operations of the migrations
+//! before it, so generating the next migration needs no database. Applying migrations is the job of
+//! the engine and the bindings (they own connections).
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use sha2::{Digest, Sha256};
 
-use super::{plan, plan_with, plan_between, plan_online, plan_squash, DbSchema, FolderKind, MigrationPlan, Step};
+use super::model::{DbSchema, SNAPSHOT_VERSION};
+use super::ops::{FORMAT_VERSION, MigrationFile, OpKind, Operation};
+use super::{generate, pg, replay};
+use crate::dialect::Dialect;
 use crate::schema::{Result, Schema};
 
 #[derive(Debug, Clone)]
-pub struct MigrationFolder {
+pub struct MigrationEntry {
+    /// The file name without `.json`.
     pub name: String,
     pub path: PathBuf,
+}
+
+impl MigrationEntry {
+    /// The directory that holds the file, and the scripts it names.
+    pub fn dir(&self) -> &Path {
+        self.path.parent().unwrap_or(Path::new("."))
+    }
 }
 
 fn io(path: &Path, e: std::io::Error) -> String {
     format!("{}: {e}", path.display())
 }
 
-fn numbered(name: &str) -> bool {
-    name.len() > 5 && name[..4].bytes().all(|b| b.is_ascii_digit()) && name.as_bytes()[4] == b'_'
+/// The order key of a name: the number in its leading digits.
+pub fn order_key(name: &str) -> Option<u64> {
+    let digits: String = name.chars().take_while(char::is_ascii_digit).collect();
+    if digits.is_empty() { None } else { digits.parse().ok() }
 }
 
-/// Migrations in order. Two folders with the same number are an error (two branches
-/// each added one): renumber one and regenerate it.
-pub fn list(dir: &Path) -> Result<Vec<MigrationFolder>> {
-    if !dir.is_dir() {
-        return Ok(vec![]);
-    }
-    let mut out = vec![];
-    for entry in std::fs::read_dir(dir).map_err(|e| io(dir, e))? {
+const OLD_FORMAT: &str = "is a migration folder of the old format; delete the migration history and run `baseline`";
+
+/// The start state of a history: no tables.
+pub fn empty_state(dialect: Dialect) -> DbSchema {
+    DbSchema { dialect, version: SNAPSHOT_VERSION, ..Default::default() }
+}
+
+/// The migrations of `dir` in order. A missing directory holds none.
+pub fn list(dir: &Path) -> Result<Vec<MigrationEntry>> {
+    let Ok(read) = std::fs::read_dir(dir) else { return Ok(vec![]) };
+    let mut found = vec![];
+    for entry in read {
         let entry = entry.map_err(|e| io(dir, e))?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if entry.path().join("up.sql").is_file() && numbered(&name) {
-            out.push(MigrationFolder { name, path: entry.path() });
+        let path = entry.path();
+        let Some(file) = path.file_name().and_then(|n| n.to_str()) else { continue };
+        if order_key(file).is_none() { continue; }
+        if path.is_dir() {
+            if path.join("up.sql").exists() { return Err(format!("{} {OLD_FORMAT}", path.display())); }
+            continue;
+        }
+        if let Some(stem) = file.strip_suffix(".json") {
+            found.push(MigrationEntry { name: stem.to_owned(), path });
         }
     }
-    out.sort_by(|a, b| a.name.cmp(&b.name));
-    for w in out.windows(2) {
-        if w[0].name[..4] == w[1].name[..4] {
-            return Err(format!("migrations {} and {} share a number; renumber one", w[0].name, w[1].name));
-        }
-    }
-    Ok(out)
+    found.sort_by(|a, b| (order_key(&a.name), &a.name).cmp(&(order_key(&b.name), &b.name)));
+    check_unique(&found)?;
+    Ok(found)
 }
 
-pub fn find(dir: &Path, name: &str) -> Result<MigrationFolder> {
-    let padded = format!("{:0>4}", name);
+/// Two migrations with one order key are an error, unless a squash file replaces the other.
+fn check_unique(found: &[MigrationEntry]) -> Result<()> {
+    for pair in found.windows(2) {
+        if order_key(&pair[0].name) != order_key(&pair[1].name) { continue; }
+        let replaced = |a: &MigrationEntry, b: &MigrationEntry| read(a).is_ok_and(|f| f.replaces.contains(&b.name));
+        if replaced(&pair[0], &pair[1]) || replaced(&pair[1], &pair[0]) { continue; }
+        return Err(format!("migrations {} and {} have the same order key; rename one", pair[0].name, pair[1].name));
+    }
+    Ok(())
+}
+
+/// The migration `name`: the file name, or the order key alone (a number).
+pub fn find(dir: &Path, name: &str) -> Result<MigrationEntry> {
     let all = list(dir)?;
-    if let Some(m) = all.iter().find(|m| m.name == name || m.name[..4] == padded) {
-        return Ok(m.clone());
-    }
-    let replaced_by = all.iter().find(|m| std::fs::read_to_string(m.path.join("up.sql")).ok().and_then(|up| parse_replaces(&up).ok()).is_some_and(|r| r.iter().any(|(n, _)| n == name)));
-    Err(match replaced_by {
-        Some(m) => format!("migration {name:?} was replaced by the squash folder {}; use that name", m.name),
-        None => format!("no migration {name:?} in {}", dir.display()),
-    })
-}
-
-pub fn latest_snapshot(dir: &Path) -> Result<DbSchema> {
-    match list(dir)?.last() {
-        None => Ok(DbSchema::default()),
-        Some(m) => {
-            let p = m.path.join("snapshot.json");
-            super::parse_snapshot(&std::fs::read_to_string(&p).map_err(|e| io(&p, e))?)
-                .map_err(|e| format!("{}: {e}", p.display()))
+    let name = name.strip_suffix(".json").unwrap_or(name);
+    let key = (!name.is_empty() && name.chars().all(|c| c.is_ascii_digit())).then(|| name.parse::<u64>().ok()).flatten();
+    let hit = all.iter().find(|m| m.name == name).or_else(|| {
+        let key = key?;
+        let same: Vec<&MigrationEntry> = all.iter().filter(|m| order_key(&m.name) == Some(key)).collect();
+        // a squash file and the files it replaces share a key: the squash file is the one
+        same.iter().find(|m| read(m).is_ok_and(|f| !f.replaces.is_empty())).or(same.first()).copied()
+    });
+    if let Some(m) = hit { return Ok(m.clone()); }
+    for m in &all {
+        if read(m).is_ok_and(|f| f.replaces.iter().any(|r| r == name)) {
+            return Err(format!("migration {name} is replaced by the squash file {}", m.name));
         }
     }
+    Err(format!("no migration named {name} in {}", dir.display()))
 }
 
-/// What the next migration would contain.
-pub fn next(dir: &Path, schema: &Schema) -> Result<MigrationPlan> {
-    plan(schema, &latest_snapshot(dir)?)
+/// Reads and checks one migration file.
+pub fn read(entry: &MigrationEntry) -> Result<MigrationFile> {
+    let text = std::fs::read_to_string(&entry.path).map_err(|e| io(&entry.path, e))?;
+    MigrationFile::parse(&text).map_err(|e| format!("{}: {e}", entry.path.display()))
 }
 
-/// What the next migration would contain, as the folders `make` would write: one, or with `online`
-/// on PostgreSQL the folders of [`plan_online`].
-pub fn next_folders(dir: &Path, schema: &Schema, online: bool) -> Result<Vec<MigrationPlan>> {
-    next_folders_with(dir, schema, online, false)
+/// The files of `dir` in order, with the files that a squash file replaces left out.
+pub fn effective(dir: &Path) -> Result<Vec<(MigrationEntry, MigrationFile)>> {
+    let all: Vec<(MigrationEntry, MigrationFile)> = list(dir)?.into_iter().map(|m| read(&m).map(|f| (m, f))).collect::<Result<_>>()?;
+    let skip: HashSet<&String> = all.iter().flat_map(|(_, f)| f.replaces.iter()).collect();
+    Ok(all.iter().filter(|(m, _)| !skip.contains(&m.name)).cloned().collect())
 }
 
-/// [`next_folders`]; with `baseline` the snapshot of the folder is the baseline form (see [`super::baseline_snapshot`]).
-/// The baseline form is for the first folder of a database that `pull` read; it never combines with `online`.
-pub fn next_folders_with(dir: &Path, schema: &Schema, online: bool, baseline: bool) -> Result<Vec<MigrationPlan>> {
-    let previous = latest_snapshot(dir)?;
-    if online { plan_online(schema, &previous) } else { plan_with(schema, &previous, baseline).map(|p| vec![p]) }
-}
-
-/// The folders of `plans` as one plan: the steps in order; the down steps in reverse folder order;
-/// the snapshot of the last folder.
-pub fn merge(plans: Vec<MigrationPlan>) -> MigrationPlan {
-    let snapshot = plans.last().expect("a plan has at least one folder").snapshot.clone();
-    let (mut up, mut downs) = (Vec::new(), Vec::new());
-    for p in plans {
-        up.extend(p.up);
-        downs.push(p.down);
+/// The state after the migrations of `dir`.
+pub fn latest_state(dir: &Path, dialect: Dialect) -> Result<DbSchema> {
+    let mut state = empty_state(dialect);
+    for (m, f) in effective(dir)? {
+        replay::replay(&mut state, &f.operations).map_err(|e| format!("{}: {e}", m.name))?;
     }
-    MigrationPlan { up, down: downs.into_iter().rev().flatten().collect(), snapshot, kind: FolderKind::Main }
+    Ok(state)
 }
 
-pub fn render(steps: &[Step], title: &str) -> String {
-    let mut out = format!("-- {title}\n-- Generated by monorm; edit freely before applying.\n\n");
-    for s in steps {
-        out.push_str(&format!("-- {}\n", s.summary));
-        if let Some(w) = &s.warning {
-            out.push_str(&format!("-- WARNING: {w}\n"));
-        }
-        for d in &s.destructive {
-            out.push_str(&d.marker());
-            out.push('\n');
-        }
-        out.push_str(s.sql.trim_end());
-        out.push_str(";\n\n");
+/// The state before the migration `name`: the replay of the migrations that sort before it.
+pub fn state_before(dir: &Path, name: &str, dialect: Dialect) -> Result<DbSchema> {
+    let all: Vec<(MigrationEntry, MigrationFile)> = list(dir)?.into_iter().map(|m| read(&m).map(|f| (m, f))).collect::<Result<_>>()?;
+    let key = order_key(name).ok_or_else(|| format!("{name} has no order key"))?;
+    // the files that replace `name` hold it already
+    let skip: HashSet<&String> = all.iter().filter(|(_, f)| !f.replaces.iter().any(|r| r == name)).flat_map(|(_, f)| f.replaces.iter()).collect();
+    let mut state = empty_state(dialect);
+    for (m, f) in &all {
+        let covers = f.replaces.iter().any(|r| r == name);
+        if skip.contains(&m.name) || covers || m.name == name || order_key(&m.name).is_some_and(|k| k >= key) { continue; }
+        replay::replay(&mut state, &f.operations).map_err(|e| format!("{}: {e}", m.name))?;
     }
-    out
+    Ok(state)
 }
 
-fn slug(text: &str) -> String {
+/// The lowercase alphanumeric words of `text`, joined by `_`, at most 40 characters.
+pub fn slug(text: &str) -> String {
     let mut s = String::new();
     for c in text.to_lowercase().chars() {
         if c.is_ascii_alphanumeric() {
@@ -137,251 +155,173 @@ fn slug(text: &str) -> String {
     }
     let s: String = s.trim_matches('_').chars().take(40).collect();
     let s = s.trim_end_matches('_').to_owned();
-    if s.is_empty() {
-        "auto".into()
-    } else {
-        s
+    if s.is_empty() { "auto".into() } else { s }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Part {
+    Number,
+    Timestamp,
+    Slug,
+    Literal(String),
+}
+
+/// The template of new file names: `{number}_{slug}` by default. It starts with one order key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NameTemplate {
+    parts: Vec<Part>,
+    text: String,
+}
+
+impl Default for NameTemplate {
+    fn default() -> NameTemplate {
+        NameTemplate::parse("{number}_{slug}").expect("the default template is valid")
     }
 }
 
-/// First line of a script that runs outside a transaction. It may end with
-/// `create-index <name>` or `drop-index <name>`.
-pub const NO_TX_HEADER: &str = "-- monorm: no-transaction";
-
-/// The text of a script of a no-transaction folder: the header first, then the one statement.
-fn render_no_tx(header: &str, steps: &[Step], title: &str) -> String {
-    format!("{} {header}\n{}", NO_TX_HEADER, render(steps, title))
-}
-
-/// What `kind` adds to the name of its folder, and the first line of its up and down scripts.
-struct FolderText {
-    suffix: String,
-    up_header: Option<String>,
-    down_header: Option<String>,
-}
-
-fn folder_text(kind: &FolderKind) -> FolderText {
-    let (suffix, up_header, down_header) = match kind {
-        FolderKind::Main => (String::new(), None, None),
-        FolderKind::DropIndex(n) => (format!("_drop_{}", slug(n)), Some(format!("drop-index {n}")), Some(format!("create-index {n}"))),
-        FolderKind::CreateIndex(n) => (format!("_index_{}", slug(n)), Some(format!("create-index {n}")), Some(format!("drop-index {n}"))),
-        FolderKind::Validate => ("_validate".to_owned(), None, None),
-    };
-    FolderText { suffix, up_header, down_header }
-}
-
-/// Writes the next migration: one folder, or with `online` the folders of [`plan_online`], numbered in
-/// order. Returns no folder when the schema is unchanged (unless `empty`, which writes one anyway for
-/// hand-written SQL).
-pub fn make(dir: &Path, schema: &Schema, name: Option<&str>, empty: bool, online: bool) -> Result<Vec<(MigrationFolder, MigrationPlan)>> {
-    make_with(dir, schema, name, empty, online, false)
-}
-
-/// [`make`]; with `baseline` the snapshot is the baseline form (see [`next_folders_with`]).
-pub fn make_with(dir: &Path, schema: &Schema, name: Option<&str>, empty: bool, online: bool, baseline: bool) -> Result<Vec<(MigrationFolder, MigrationPlan)>> {
-    let plans = next_folders_with(dir, schema, online, baseline)?;
-    if plans.iter().all(|p| p.up.is_empty()) && !empty {
-        return Ok(vec![]);
+impl NameTemplate {
+    /// `{number}` (4 digits), `{timestamp}` (UTC `YYYYMMDDHHMMSS`) and `{slug}`; `_` and `-` separate.
+    pub fn parse(text: &str) -> Result<NameTemplate> {
+        let bad = |why: &str| format!("migration name template {text:?}: {why}");
+        let mut parts = vec![];
+        let mut rest = text;
+        while !rest.is_empty() {
+            if let Some(after) = rest.strip_prefix('{') {
+                let end = after.find('}').ok_or_else(|| bad("a `{` has no `}`"))?;
+                parts.push(match &after[..end] {
+                    "number" => Part::Number,
+                    "timestamp" => Part::Timestamp,
+                    "slug" => Part::Slug,
+                    other => return Err(bad(&format!("unknown placeholder {{{other}}}; use {{number}}, {{timestamp}} or {{slug}}"))),
+                });
+                rest = &after[end + 1..];
+            } else {
+                let end = rest.find('{').unwrap_or(rest.len());
+                let lit = &rest[..end];
+                if let Some(c) = lit.chars().find(|c| !(c.is_ascii_alphanumeric() || *c == '_' || *c == '-')) {
+                    return Err(bad(&format!("the character {c:?} is not allowed in a file name here")));
+                }
+                parts.push(Part::Literal(lit.to_owned()));
+                rest = &rest[end..];
+            }
+        }
+        if !matches!(parts.first(), Some(Part::Number | Part::Timestamp)) {
+            return Err(bad("it must start with {number} or {timestamp}"));
+        }
+        if parts.iter().filter(|p| matches!(p, Part::Number | Part::Timestamp)).count() != 1 {
+            return Err(bad("it needs exactly one of {number} and {timestamp}"));
+        }
+        let digits_run_on = parts.windows(2).any(|w| matches!(w[0], Part::Number | Part::Timestamp) && !matches!(&w[1], Part::Literal(l) if l.starts_with(['_', '-'])));
+        if digits_run_on {
+            return Err(bad("{number} and {timestamp} must be followed by `_` or `-`, or end the template"));
+        }
+        if parts.iter().filter(|p| **p == Part::Slug).count() > 1 {
+            return Err(bad("{slug} may appear once"));
+        }
+        Ok(NameTemplate { parts, text: text.to_owned() })
     }
+
+    pub fn as_str(&self) -> &str {
+        &self.text
+    }
+
+    fn timestamp(&self) -> bool {
+        self.parts.first() == Some(&Part::Timestamp)
+    }
+
+    /// The order key of the next file: one more than the newest key, or the clock for `{timestamp}`
+    /// (never below the newest key, so the new file sorts last).
+    pub fn next_key(&self, existing: &[MigrationEntry]) -> u64 {
+        let newest = existing.iter().filter_map(|m| order_key(&m.name)).max().unwrap_or(0);
+        if self.timestamp() {
+            let now: u64 = chrono::Utc::now().format("%Y%m%d%H%M%S").to_string().parse().unwrap_or(0);
+            now.max(newest + 1)
+        } else {
+            newest + 1
+        }
+    }
+
+    /// The file name (without `.json`) for `key` and `slug`.
+    pub fn render(&self, key: u64, slug: &str) -> String {
+        let mut out = String::new();
+        for p in &self.parts {
+            match p {
+                Part::Number => out.push_str(&format!("{key:04}")),
+                Part::Timestamp => out.push_str(&format!("{key:014}")),
+                Part::Slug => out.push_str(slug),
+                Part::Literal(l) => out.push_str(l),
+            }
+        }
+        // a template without a slug (or with an empty one) leaves no separator at the end
+        out.trim_end_matches(['_', '-']).to_owned()
+    }
+}
+
+pub struct MakeOptions<'a> {
+    pub name: Option<&'a str>,
+    pub template: &'a NameTemplate,
+    /// Write a file with no operations when there is no change.
+    pub empty: bool,
+    pub online: bool,
+    pub baseline: bool,
+}
+
+impl Default for MakeOptions<'_> {
+    fn default() -> Self {
+        static DEFAULT: std::sync::OnceLock<NameTemplate> = std::sync::OnceLock::new();
+        MakeOptions { name: None, template: DEFAULT.get_or_init(NameTemplate::default), empty: false, online: false, baseline: false }
+    }
+}
+
+/// The operations of the next migration for `schema`, with the file name it would get.
+pub fn next(dir: &Path, schema: &Schema, opts: &MakeOptions) -> Result<(String, MigrationFile)> {
     let existing = list(dir)?;
-    let first = match existing.last() {
-        Some(m) => m.name[..4].parse::<u32>().unwrap_or(0) + 1,
-        None => 1,
-    };
-    // every folder of the change carries the migration label, so `--name` survives on each of them
-    let label = match name {
+    let previous = latest_state(dir, schema.dialect)?;
+    let operations = generate(schema, &previous, opts.baseline, opts.online)?;
+    let label = match opts.name {
         Some(n) => slug(n),
         None if existing.is_empty() => "initial".into(),
-        None => plans
-            .iter()
-            .find(|p| p.kind == FolderKind::Main)
-            .or(plans.first())
-            .and_then(|p| p.up.first())
-            .map(|s| slug(&s.summary))
-            .unwrap_or_else(|| "manual".into()),
+        None => operations.iter().find_map(|o| match &o.kind { OpKind::Schema(op) => Some(slug(&pg::summary(op))), _ => None }).unwrap_or_else(|| "manual".into()),
     };
-    let mut made = Vec::new();
-    for (i, plan) in plans.into_iter().enumerate() {
-        let number = first + i as u32;
-        let FolderText { suffix, up_header, down_header } = folder_text(&plan.kind);
-        let folder = format!("{number:04}_{label}{suffix}");
-        let path = dir.join(&folder);
-        std::fs::create_dir_all(&path).map_err(|e| io(&path, e))?;
-        let write = |file: &str, text: String| std::fs::write(path.join(file), text).map_err(|e| io(&path.join(file), e));
-        let script = |header: &Option<String>, steps: &[Step], title: String| match header {
-            Some(h) => render_no_tx(h, steps, &title),
-            None => render(steps, &title),
-        };
-        write("up.sql", script(&up_header, &plan.up, format!("{folder}: up")))?;
-        write("down.sql", script(&down_header, &plan.down, format!("{folder}: down")))?;
-        let snapshot = serde_json::to_string_pretty(&plan.snapshot).map_err(|e| e.to_string())?;
-        write("snapshot.json", snapshot + "\n")?;
-        made.push((MigrationFolder { name: folder, path }, plan));
-    }
-    Ok(made)
+    let name = opts.template.render(opts.template.next_key(&existing), &label);
+    Ok((name, MigrationFile::new(operations)))
 }
 
-/// Files a migration may hold that run in a host language, not in the engine.
-pub const DATA_FILES: [&str; 2] = ["data.py", "data.ts"];
+/// Writes the next migration. `None` when there is nothing to change and `empty` is off.
+pub fn make(dir: &Path, schema: &Schema, opts: &MakeOptions) -> Result<Option<(MigrationEntry, MigrationFile)>> {
+    let (name, file) = next(dir, schema, opts)?;
+    if file.operations.is_empty() && !opts.empty { return Ok(None); }
+    std::fs::create_dir_all(dir).map_err(|e| io(dir, e))?;
+    let path = dir.join(format!("{name}.json"));
+    std::fs::write(&path, file.render()).map_err(|e| io(&path, e))?;
+    Ok(Some((MigrationEntry { name, path }, file)))
+}
 
-/// Starts each of the first lines of the `up.sql` of a squash folder; the rest of the line is the name and
-/// the checksum of a replaced migration.
-pub const REPLACES_HEADER: &str = "-- monorm: replaces";
+fn sql_files(ops: &[Operation], out: &mut Vec<String>) {
+    for op in ops {
+        match &op.kind {
+            OpKind::RunSql(r) => out.extend(r.file.iter().chain(r.reverse_file.iter()).cloned()),
+            OpKind::Separate { database, state } => { sql_files(database, out); sql_files(state, out); }
+            _ => {}
+        }
+    }
+}
 
-/// Hex SHA-256 of the text of an `up.sql`: the checksum that `monorm_migrations` records.
+/// The SHA-256 of a migration: its canonical JSON and the `.sql` files it names, in operation order.
+/// A `run_code` script is not part of it.
+pub fn file_checksum(entry: &MigrationEntry) -> Result<String> {
+    let file = read(entry)?;
+    let mut hash = Sha256::new();
+    hash.update(file.render().as_bytes());
+    let mut names = vec![];
+    sql_files(&file.operations, &mut names);
+    for n in names {
+        let path = entry.dir().join(&n);
+        hash.update(std::fs::read(&path).map_err(|e| io(&path, e))?);
+    }
+    Ok(hash.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
 pub fn checksum(text: &str) -> String {
     Sha256::digest(text.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// The (name, checksum) of each migration that `up_sql` replaces, from its leading [`REPLACES_HEADER`] lines.
-pub fn parse_replaces(up_sql: &str) -> std::result::Result<Vec<(String, String)>, String> {
-    let mut out = vec![];
-    for line in up_sql.lines().map_while(|l| l.strip_prefix(REPLACES_HEADER).filter(|r| r.is_empty() || r.starts_with(char::is_whitespace))) {
-        let mut words = line.split_whitespace();
-        match (words.next(), words.next(), words.next()) {
-            (Some(name), Some(sum), None) => out.push((name.to_owned(), sum.to_owned())),
-            _ => return Err(format!("bad `{REPLACES_HEADER}` line; expected `{REPLACES_HEADER} <name> <checksum>`")),
-        }
-    }
-    Ok(out)
-}
-
-fn read(path: &Path) -> Result<String> {
-    std::fs::read_to_string(path).map_err(|e| io(path, e))
-}
-
-fn first_line_is_no_tx(path: &Path) -> bool {
-    std::fs::read_to_string(path).is_ok_and(|t| t.lines().next().is_some_and(|l| l.starts_with(NO_TX_HEADER)))
-}
-
-/// A folder the online form wrote to validate constraints: every statement is `VALIDATE CONSTRAINT`.
-fn only_validates(up: &str) -> bool {
-    let mut statements = up.lines().filter(|l| !l.trim().is_empty() && !l.starts_with("--")).peekable();
-    statements.peek().is_some() && statements.all(|l| l.contains(" VALIDATE CONSTRAINT "))
-}
-
-/// Whether a generated `up.sql` is not what its snapshots give. The forms that the snapshots do not hold
-/// (a rename hint, the online `NOT VALID` form) can not be regenerated, so they are not compared.
-fn hand_edited(up: &str, previous: &DbSchema, snapshot: &DbSchema, name: &str) -> Result<bool> {
-    if up.lines().any(|l| l.starts_with("-- rename ")) || up.contains(" NOT VALID") {
-        return Ok(false);
-    }
-    let fresh = plan_between(previous, snapshot, &Default::default())?;
-    Ok(statements(&render(&fresh.up, &format!("{name}: up"))) != statements(up))
-}
-
-/// The SQL lines of a script, trimmed: no comment line (header, step summary, markers) and no blank line. A
-/// final newline, a header of an older release or a renamed folder then do not count as an edit.
-fn statements(script: &str) -> Vec<&str> {
-    script.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("--")).collect()
-}
-
-/// Folds the first migrations up to `to` into one folder, `<first number>_<name>` (`name` is `squashed_<last
-/// number>` by default), and deletes the folders it replaces. The new `up.sql` builds the snapshot of `to` and
-/// starts with one [`REPLACES_HEADER`] line for each replaced folder.
-///
-/// It refuses, before it writes anything, a range with a data step, a folder that holds only hand-written SQL
-/// or whose `up.sql` has a hand edit, a squash folder, or a no-transaction folder.
-pub fn squash(dir: &Path, to: &str, name: Option<&str>) -> Result<MigrationFolder> {
-    let last = find(dir, to)?;
-    let range: Vec<MigrationFolder> = list(dir)?.into_iter().take_while(|m| m.name <= last.name).collect();
-    if range.len() < 2 {
-        return Err(format!("{} is the first migration; a squash folds at least two", last.name));
-    }
-    let mut replaces = String::new();
-    let mut previous = DbSchema::default();
-    for m in &range {
-        let up_path = m.path.join("up.sql");
-        let up = read(&up_path)?;
-        if let Some(file) = DATA_FILES.iter().find(|f| m.path.join(f).is_file()) {
-            return Err(format!("{} has a data step ({file}), which depends on the schema between migrations; move it out of the range, or squash up to the migration before it", m.name));
-        }
-        if first_line_is_no_tx(&up_path) || first_line_is_no_tx(&m.path.join("down.sql")) {
-            return Err(format!("{} is a no-transaction migration; a squash does not fold it", m.name));
-        }
-        if !parse_replaces(&up).map_err(|e| format!("{}/up.sql: {e}", m.name))?.is_empty() {
-            return Err(format!("{} is a squash folder; a squash of a squash is not supported", m.name));
-        }
-        let snapshot_path = m.path.join("snapshot.json");
-        let snapshot = super::parse_snapshot(&read(&snapshot_path)?).map_err(|e| format!("{}: {e}", snapshot_path.display()))?;
-        if snapshot == previous && !only_validates(&up) {
-            return Err(format!("{} holds only hand-written SQL (its snapshot equals the one before it), and a squash would lose it; move it out of the range or delete it", m.name));
-        }
-        if hand_edited(&up, &previous, &snapshot, &m.name)? && !only_validates(&up) {
-            return Err(format!("{}/up.sql differs from the SQL its snapshots give: a squash builds the schema fresh and would lose the hand edit; undo the edit, or squash up to the migration before it", m.name));
-        }
-        replaces.push_str(&format!("{REPLACES_HEADER} {} {}\n", m.name, checksum(&up)));
-        previous = snapshot;
-    }
-    let plan = plan_squash(&previous)?;
-    let folder = format!("{}_{}", &range[0].name[..4], name.map_or_else(|| format!("squashed_{}", &last.name[..4]), slug));
-    let up = format!("{replaces}{}", render(&plan.up, &format!("{folder}: up")));
-    let snapshot = serde_json::to_string_pretty(&plan.snapshot).map_err(|e| e.to_string())? + "\n";
-    // The new folder can take the name of a replaced one, so it is staged beside them. The replaced folders move
-    // aside with one atomic rename each, so that a failure puts them back.
-    let (staging, parked) = (dir.join(".squash"), dir.join(".squash-replaced"));
-    if parked.exists() {
-        return Err(format!("{} holds the folders of an interrupted squash; move them back into {}, then run the squash again", parked.display(), dir.display()));
-    }
-    let _ = std::fs::remove_dir_all(&staging);
-    let write = |file: &str, text: String| std::fs::create_dir_all(&staging).map_err(|e| io(&staging, e)).and_then(|_| std::fs::write(staging.join(file), text).map_err(|e| io(&staging.join(file), e)));
-    let path = dir.join(&folder);
-    let swapped = write("up.sql", up)
-        .and_then(|_| write("down.sql", render(&plan.down, &format!("{folder}: down"))))
-        .and_then(|_| write("snapshot.json", snapshot))
-        .and_then(|_| swap(&staging, &parked, &path, &range));
-    let _ = std::fs::remove_dir_all(&staging);
-    // After an error the parked folders stay unless every one went back: `remove_dir` refuses a directory that holds one.
-    let _ = if swapped.is_ok() { std::fs::remove_dir_all(&parked) } else { std::fs::remove_dir(&parked) };
-    swapped?;
-    Ok(MigrationFolder { name: folder, path })
-}
-
-/// Moves the folders of `range` into `parked`, then `staging` to `path`. On an error the moved folders go back,
-/// so the directory holds the old folders or the new one, never a mix.
-fn swap(staging: &Path, parked: &Path, path: &Path, range: &[MigrationFolder]) -> Result<()> {
-    std::fs::create_dir_all(parked).map_err(|e| io(parked, e))?;
-    let mut moved = vec![];
-    let result = range
-        .iter()
-        .try_for_each(|m| {
-            std::fs::rename(&m.path, parked.join(&m.name)).map_err(|e| io(&m.path, e))?;
-            moved.push(m);
-            Ok(())
-        })
-        .and_then(|_| std::fs::rename(staging, path).map_err(|e| io(path, e)));
-    if result.is_err() {
-        for m in moved.into_iter().rev() {
-            let _ = std::fs::rename(parked.join(&m.name), &m.path);
-        }
-    }
-    result
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_failed_swap_puts_the_replaced_folders_back() {
-        let dir = std::env::temp_dir().join(format!("monorm-swap-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let folder = |n: &str| MigrationFolder { name: n.into(), path: dir.join(n) };
-        let (staging, parked) = (dir.join(".squash"), dir.join(".squash-replaced"));
-        std::fs::create_dir_all(dir.join("0001_a")).unwrap();
-        std::fs::create_dir_all(&staging).unwrap();
-        // the second folder does not exist, so its rename fails after the first moved
-        let err = swap(&staging, &parked, &dir.join("0001_new"), &[folder("0001_a"), folder("0002_b")]).unwrap_err();
-        assert!(err.contains("0002_b"), "{err}");
-        assert!(dir.join("0001_a").is_dir() && staging.is_dir() && !dir.join("0001_new").exists());
-        assert!(std::fs::read_dir(&parked).unwrap().next().is_none(), "nothing stays parked");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn slugs() {
-        assert_eq!(slug("create table users"), "create_table_users");
-        assert_eq!(slug("  !!"), "auto");
-        assert_eq!(slug("Add bookings & rooms"), "add_bookings_rooms");
-    }
 }

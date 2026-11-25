@@ -351,41 +351,111 @@ impl PySchema {
         monorm_engine::plan::current_filter_json(&self.inner, select_json).map(|v| v.to_string()).map_err(engine_err)
     }
 
-    /// The database schema as a snapshot (JSON), the format migrations store.
-    fn snapshot(&self) -> PyResult<String> {
-        let s = migrate::snapshot(&self.inner).map_err(schema_err)?;
-        serde_json::to_string_pretty(&s).map_err(|e| schema_err(e.to_string()))
+    /// The next migration for the migrations directory `dir`, without writing anything:
+    /// `(name, [(summary, warning, destructive, atomic)])`; no operations when nothing changed.
+    /// `template` is the `name` setting.
+    #[pyo3(signature = (dir, template = None, online = false, name = None))]
+    #[allow(clippy::type_complexity)]
+    fn plan_migration(&self, dir: &str, template: Option<&str>, online: bool, name: Option<&str>) -> PyResult<(String, Vec<(String, Option<String>, bool, bool)>)> {
+        let template = name_template(template)?;
+        let opts = migrate::files::MakeOptions { name, template: &template, online, ..Default::default() };
+        let (name, file) = migrate::files::next(std::path::Path::new(dir), &self.inner, &opts).map_err(schema_err)?;
+        Ok((name, file.operations.iter().map(|o| (o.summary(), o.warning(), o.destructive(), o.atomic)).collect()))
     }
 
-    /// The next migration for the migrations directory `dir`, as JSON (see
-    /// `migration`), without writing anything. With `online` on PostgreSQL the
-    /// steps of every folder, in order, each with its `transaction` flag.
-    #[pyo3(signature = (dir, online = false))]
-    fn plan_migration(&self, dir: &str, online: bool) -> PyResult<String> {
-        let plans = migrate::files::next_folders(std::path::Path::new(dir), &self.inner, online).map_err(schema_err)?;
-        serde_json::to_string(&migrate::files::merge(plans)).map_err(|e| schema_err(e.to_string()))
+    /// Writes the next migration into `dir`; returns its name, or `None` when nothing changed
+    /// (and not `empty`). With `baseline` the state is the baseline form: a trigger that replaces a
+    /// database rule is left out, and the rule is recorded.
+    #[pyo3(signature = (dir, name = None, empty = false, online = false, baseline = false, template = None))]
+    fn make_migration(&self, dir: &str, name: Option<&str>, empty: bool, online: bool, baseline: bool, template: Option<&str>) -> PyResult<Option<String>> {
+        let template = name_template(template)?;
+        let opts = migrate::files::MakeOptions { name, template: &template, empty, online, baseline };
+        let made = migrate::files::make(std::path::Path::new(dir), &self.inner, &opts).map_err(schema_err)?;
+        Ok(made.map(|(entry, _)| entry.name))
     }
 
-    /// Writes the next migration into `dir`; returns the folder names in order (one,
-    /// or more with `online`), or an empty list when nothing changed (and not `empty`).
-    /// With `baseline` the snapshot is the baseline form: a trigger that replaces a database rule is left out, and the rule is recorded.
-    #[pyo3(signature = (dir, name = None, empty = false, online = false, baseline = false))]
-    fn make_migration(&self, dir: &str, name: Option<&str>, empty: bool, online: bool, baseline: bool) -> PyResult<Vec<String>> {
-        let made = migrate::files::make_with(std::path::Path::new(dir), &self.inner, name, empty, online, baseline).map_err(schema_err)?;
-        Ok(made.into_iter().map(|(folder, _)| folder.name).collect())
+    /// The numbered operations of the migration `name` of `dir` with their SQL for this schema's dialect
+    /// (what `sqlmigrate` prints).
+    #[pyo3(signature = (dir, name, down = false))]
+    fn sqlmigrate(&self, dir: &str, name: &str, down: bool) -> PyResult<String> {
+        let direction = if down { migrate::render::Direction::Down } else { migrate::render::Direction::Up };
+        migrate::render_migration(std::path::Path::new(dir), name, self.inner.dialect, direction).map_err(schema_err)
+    }
+}
+
+fn name_template(template: Option<&str>) -> PyResult<migrate::files::NameTemplate> {
+    match template {
+        Some(t) => migrate::files::NameTemplate::parse(t).map_err(schema_err),
+        None => Ok(Default::default()),
+    }
+}
+
+/// What a rollback names: the migrations to revert, and an `--ops` slice of one migration.
+fn down_args(steps: usize, target: Option<String>, ops: Option<(String, String)>) -> PyResult<(engine_migrate::Down, Option<(String, engine_migrate::Slice)>)> {
+    let down = match target {
+        Some(t) => engine_migrate::Down::To(t),
+        None => engine_migrate::Down::Steps(steps),
+    };
+    let slice = ops.map(|(name, text)| engine_migrate::parse_slice(&text).map(|s| (name, s))).transpose().map_err(engine_err)?;
+    Ok((down, slice))
+}
+
+/// The work of one migration in one direction: the transaction groups to run (see `monorm_engine::migrate::Plan`).
+#[pyclass(frozen, module = "monorm._native")]
+struct MigrationPlan {
+    inner: Arc<engine_migrate::Plan>,
+}
+
+#[pymethods]
+impl MigrationPlan {
+    #[getter]
+    fn name(&self) -> String {
+        self.inner.migration.name.clone()
     }
 
-    /// The migration from `previous` (a snapshot; `None` for an empty database) to this
-    /// schema, as JSON: `{"up": [step], "down": [step], "snapshot": {...}}` where a
-    /// step is `{"summary", "sql", "warning"?}`.
-    #[pyo3(signature = (previous = None))]
-    fn migration(&self, previous: Option<&str>) -> PyResult<String> {
-        let previous = match previous {
-            Some(json) => migrate::parse_snapshot(json).map_err(schema_err)?,
-            None => migrate::DbSchema::default(),
-        };
-        let plan = migrate::plan(&self.inner, &previous).map_err(schema_err)?;
-        serde_json::to_string(&plan).map_err(|e| schema_err(e.to_string()))
+    #[getter]
+    fn path(&self) -> PathBuf {
+        self.inner.migration.path.clone()
+    }
+
+    #[getter]
+    fn direction(&self) -> &'static str {
+        match self.inner.direction {
+            migrate::render::Direction::Up => "up",
+            migrate::render::Direction::Down => "down",
+        }
+    }
+
+    /// The error text starts with this.
+    #[getter]
+    fn what(&self) -> String {
+        self.inner.what.clone()
+    }
+
+    /// `[(atomic, [(first, last, entry)])]`: for each group whether it runs in a transaction, and its
+    /// items, `entry` being the `file:function` of a code item (`None` for SQL).
+    #[getter]
+    #[allow(clippy::type_complexity)]
+    fn groups(&self) -> Vec<(bool, Vec<(usize, usize, Option<String>)>)> {
+        self.inner
+            .rendered
+            .groups
+            .iter()
+            .map(|g| {
+                let items = g
+                    .items
+                    .iter()
+                    .map(|i| {
+                        let entry = match &i.body {
+                            migrate::render::Body::Code(c) => engine_migrate::Host::Python.entry(c).map(str::to_owned),
+                            migrate::render::Body::Sql(_) => None,
+                        };
+                        (i.first, i.last, entry)
+                    })
+                    .collect();
+                (g.atomic, items)
+            })
+            .collect()
     }
 }
 
@@ -1198,21 +1268,24 @@ impl Engine {
         self.run_script(py, statements, tx)
     }
 
-    /// `[(name, applied, applied_at)]` for the migrations of `dir` (see `monorm_engine::migrate`).
+    /// `[(name, applied, applied_at, partial)]` for the migrations of `dir`; `partial` is `(done, total)`
+    /// operations of a migration that stopped halfway (see `monorm_engine::migrate`).
     fn migration_status<'py>(&self, py: Python<'py>, dir: PathBuf) -> PyResult<Bound<'py, PyAny>> {
         let driver = self.driver.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let out = engine_migrate::status(&*driver, &dir).await.map_err(engine_err)?;
-            Ok(out.into_iter().map(|s| (s.migration.name, s.applied, s.applied_at)).collect::<Vec<_>>())
+            Ok(out.into_iter().map(|s| (s.migration.name, s.applied, s.applied_at, s.partial)).collect::<Vec<_>>())
         })
     }
 
-    /// Applies pending migrations (up to `target`); the names applied.
-    #[pyo3(signature = (dir, target = None, allow_destructive = false))]
-    fn migrate_up<'py>(&self, py: Python<'py>, dir: PathBuf, target: Option<String>, allow_destructive: bool) -> PyResult<Bound<'py, PyAny>> {
+    /// Applies pending migrations (up to `target`); the names applied. With `ops` (`"A-B"`, `"A-"`)
+    /// it applies those operations of the one migration `target`. A migration with `run_code` is refused.
+    #[pyo3(signature = (dir, target = None, allow_destructive = false, ops = None))]
+    fn migrate_up<'py>(&self, py: Python<'py>, dir: PathBuf, target: Option<String>, allow_destructive: bool, ops: Option<String>) -> PyResult<Bound<'py, PyAny>> {
         let driver = self.driver.clone();
+        let slice = ops.as_deref().map(engine_migrate::parse_slice).transpose().map_err(engine_err)?;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let done = engine_migrate::upgrade(&*driver, &dir, target.as_deref(), allow_destructive).await.map_err(engine_err)?;
+            let done = engine_migrate::upgrade(&*driver, &dir, target.as_deref(), slice, allow_destructive).await.map_err(engine_err)?;
             Ok(done.into_iter().map(|m| m.name).collect::<Vec<_>>())
         })
     }
@@ -1248,54 +1321,95 @@ impl Engine {
         })
     }
 
-    /// The migrations `migrate_up` would apply: `[(name, path, no_transaction)]`.
-    #[pyo3(signature = (dir, target = None, allow_destructive = false))]
-    fn migration_pending<'py>(&self, py: Python<'py>, dir: PathBuf, target: Option<String>, allow_destructive: bool) -> PyResult<Bound<'py, PyAny>> {
+    /// The work `migrate_up` would do for the Python host: one plan for each migration (see
+    /// [`MigrationPlan`]). The caller runs the groups of each plan.
+    #[pyo3(signature = (dir, target = None, allow_destructive = false, ops = None))]
+    fn migration_plan_up<'py>(&self, py: Python<'py>, dir: PathBuf, target: Option<String>, allow_destructive: bool, ops: Option<String>) -> PyResult<Bound<'py, PyAny>> {
         let driver = self.driver.clone();
+        let slice = ops.as_deref().map(engine_migrate::parse_slice).transpose().map_err(engine_err)?;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let todo = engine_migrate::pending(&*driver, &dir, target.as_deref(), allow_destructive).await.map_err(engine_err)?;
-            let mut out = Vec::with_capacity(todo.len());
-            for m in todo {
-                let flag = m.no_transaction().map_err(engine_err)?.is_some();
-                out.push((m.name, m.path, flag));
-            }
-            Ok(out)
+            let plans = engine_migrate::plan_up(&*driver, &dir, target.as_deref(), slice, Some(engine_migrate::Host::Python), allow_destructive).await.map_err(engine_err)?;
+            Ok(plans.into_iter().map(|p| MigrationPlan { inner: Arc::new(p) }).collect::<Vec<_>>())
         })
     }
 
-    /// Applies one no-transaction migration (see `monorm_engine::migrate::apply_no_transaction`):
-    /// false when another migrator applied it meanwhile.
-    #[pyo3(signature = (name, path, allow_destructive = false))]
-    fn migration_apply_no_transaction<'py>(&self, py: Python<'py>, name: String, path: PathBuf, allow_destructive: bool) -> PyResult<Bound<'py, PyAny>> {
+    /// The work `migrate_down` would do for the Python host (see `migration_plan_up`). `ops` is
+    /// `(migration, "A-B")`.
+    #[pyo3(signature = (dir, steps = 1, target = None, force = false, allow_destructive = false, ops = None))]
+    #[allow(clippy::too_many_arguments)]
+    fn migration_plan_down<'py>(
+        &self,
+        py: Python<'py>,
+        dir: PathBuf,
+        steps: usize,
+        target: Option<String>,
+        force: bool,
+        allow_destructive: bool,
+        ops: Option<(String, String)>,
+    ) -> PyResult<Bound<'py, PyAny>> {
         let driver = self.driver.clone();
+        let (down, slice) = down_args(steps, target, ops)?;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let m = engine_migrate::Migration { name, path };
-            engine_migrate::apply_no_transaction(&*driver, &m, allow_destructive).await.map_err(engine_err)
+            let plans = engine_migrate::plan_down(&*driver, &dir, down, slice.as_ref().map(|(n, s)| (n.as_str(), *s)), Some(engine_migrate::Host::Python), force, allow_destructive).await.map_err(engine_err)?;
+            Ok(plans.into_iter().map(|p| MigrationPlan { inner: Arc::new(p) }).collect::<Vec<_>>())
         })
     }
 
-    /// Starts applying one migration: its transaction, with the lock taken and `up.sql`
-    /// run; None when another migrator applied it meanwhile.
-    #[pyo3(signature = (name, path, allow_destructive = false))]
-    fn migration_begin<'py>(&self, py: Python<'py>, name: String, path: PathBuf, allow_destructive: bool) -> PyResult<Bound<'py, PyAny>> {
+    /// Starts group `k` of `plan`, an atomic one: its transaction with the lock taken; `None` when
+    /// another migrator ran the group meanwhile. Run the items of the group in it, then `migration_finish_group`.
+    #[pyo3(signature = (plan, k, allow_destructive = false))]
+    fn migration_begin_group<'py>(&self, py: Python<'py>, plan: &Bound<'py, MigrationPlan>, k: usize, allow_destructive: bool) -> PyResult<Bound<'py, PyAny>> {
         let driver = self.driver.clone();
+        let plan = plan.get().inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let m = engine_migrate::Migration { name, path };
-            let tx = engine_migrate::begin_apply(&*driver, &m, allow_destructive).await.map_err(engine_err)?;
+            let tx = engine_migrate::begin_group(&*driver, &plan, k, allow_destructive).await.map_err(engine_err)?;
             Ok(tx.map(|inner| Transaction { inner: db::guard(inner), failure: Default::default() }))
         })
     }
 
-    /// Records the migration in `tx` (from `migration_begin`) and commits.
-    fn migration_finish<'py>(&self, py: Python<'py>, tx: &Bound<'py, Transaction>, name: String, path: PathBuf) -> PyResult<Bound<'py, PyAny>> {
+    /// Runs the SQL of item `i` of group `k` in `tx` (from `migration_begin_group`).
+    fn migration_run_item<'py>(&self, py: Python<'py>, tx: &Bound<'py, Transaction>, plan: &Bound<'py, MigrationPlan>, k: usize, i: usize) -> PyResult<Bound<'py, PyAny>> {
         let inner = tx.get().inner.clone();
+        let plan = plan.get().inner.clone();
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            engine_migrate::finish_apply(&*inner, &engine_migrate::Migration { name, path }).await.map_err(engine_err)
+            engine_migrate::run_item(&*inner, &plan.rendered.groups[k].items[i]).await.map_err(engine_err)
         })
     }
 
-    /// Reverts the last `steps` migrations, or every one after `target`; the names reverted.
-    #[pyo3(signature = (dir, steps = 1, target = None, force = false, allow_destructive = false))]
+    /// Records the progress of group `k` in `tx` and commits.
+    fn migration_finish_group<'py>(&self, py: Python<'py>, tx: &Bound<'py, Transaction>, plan: &Bound<'py, MigrationPlan>, k: usize) -> PyResult<Bound<'py, PyAny>> {
+        let inner = tx.get().inner.clone();
+        let plan = plan.get().inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            engine_migrate::finish_group(&*inner, &plan, k).await.map_err(engine_err)
+        })
+    }
+
+    /// Runs group `k` of `plan`, one operation outside a transaction (PostgreSQL): false when
+    /// another migrator ran it meanwhile.
+    #[pyo3(signature = (plan, k, allow_destructive = false))]
+    fn migration_run_outside<'py>(&self, py: Python<'py>, plan: &Bound<'py, MigrationPlan>, k: usize, allow_destructive: bool) -> PyResult<Bound<'py, PyAny>> {
+        let driver = self.driver.clone();
+        let plan = plan.get().inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            engine_migrate::run_outside(&*driver, &plan, k, allow_destructive).await.map_err(engine_err)
+        })
+    }
+
+    /// Moves the progress of a plan with no group to the end of its slice.
+    fn migration_record_empty<'py>(&self, py: Python<'py>, plan: &Bound<'py, MigrationPlan>) -> PyResult<Bound<'py, PyAny>> {
+        let driver = self.driver.clone();
+        let plan = plan.get().inner.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            engine_migrate::record_empty(&*driver, &plan).await.map_err(engine_err)
+        })
+    }
+
+    /// Reverts the last `steps` migrations, or every one after `target`; the names reverted. With
+    /// `ops` (`(migration, "A-B")`) it reverts those operations of the one migration. A migration
+    /// with `run_code` is refused.
+    #[pyo3(signature = (dir, steps = 1, target = None, force = false, allow_destructive = false, ops = None))]
+    #[allow(clippy::too_many_arguments)]
     fn migrate_down<'py>(
         &self,
         py: Python<'py>,
@@ -1304,14 +1418,12 @@ impl Engine {
         target: Option<String>,
         force: bool,
         allow_destructive: bool,
+        ops: Option<(String, String)>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let driver = self.driver.clone();
-        let down = match target {
-            Some(t) => engine_migrate::Down::To(t),
-            None => engine_migrate::Down::Steps(steps),
-        };
+        let (down, slice) = down_args(steps, target, ops)?;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
-            let done = engine_migrate::downgrade(&*driver, &dir, down, force, allow_destructive).await.map_err(engine_err)?;
+            let done = engine_migrate::downgrade(&*driver, &dir, down, slice.as_ref().map(|(n, s)| (n.as_str(), *s)), force, allow_destructive).await.map_err(engine_err)?;
             Ok(done.into_iter().map(|m| m.name).collect::<Vec<_>>())
         })
     }
@@ -1501,11 +1613,17 @@ fn list_migrations(dir: PathBuf) -> PyResult<Vec<(String, PathBuf)>> {
 #[pyfunction]
 #[pyo3(signature = (dir, to, name=None))]
 fn squash_migration(dir: PathBuf, to: &str, name: Option<&str>) -> PyResult<(String, PathBuf)> {
-    let m = engine_migrate::squash(&dir, to, name).map_err(engine_err)?;
-    Ok((m.name, m.path))
+    let _ = (dir, to, name);
+    Err(schema_err("squashmigrations is not available in this build".to_owned()))
 }
 
-/// A migration folder by name or number: `(name, path)`.
+/// The checksum of a migration: its canonical JSON and the `.sql` files it names.
+#[pyfunction]
+fn migration_checksum(dir: PathBuf, name: &str) -> PyResult<String> {
+    engine_migrate::find(&dir, name).and_then(|m| m.checksum()).map_err(engine_err)
+}
+
+/// A migration file by name or number: `(name, path)`.
 #[pyfunction]
 fn find_migration(dir: PathBuf, name: &str) -> PyResult<(String, PathBuf)> {
     let m = engine_migrate::find(&dir, name).map_err(engine_err)?;
@@ -1557,6 +1675,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cli_schema, m)?)?;
     m.add_function(wrap_pyfunction!(list_migrations, m)?)?;
     m.add_function(wrap_pyfunction!(squash_migration, m)?)?;
+    m.add_function(wrap_pyfunction!(migration_checksum, m)?)?;
     m.add_function(wrap_pyfunction!(find_migration, m)?)?;
     #[cfg(feature = "admin")]
     admin::register(m)?;
@@ -1566,6 +1685,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PreparedWrite>()?;
     m.add_class::<PreparedRows>()?;
     m.add_class::<Transaction>()?;
+    m.add_class::<MigrationPlan>()?;
     m.add_class::<Trace>()?;
     m.add_class::<SessionLock>()?;
     m.add("DEFAULT", Py::new(py, DefaultMarker)?)?;

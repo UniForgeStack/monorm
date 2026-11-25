@@ -515,6 +515,7 @@ MIGRATION_V4 = MIGRATION_V1.replace(" @@history.track\n", "")
 
 
 def test_migrations_create_change_add_and_drop_the_event_table_and_triggers(tmp_path):
+    from _planned import planned
     from monorm.migrations import Migrations
 
     def registry(source):
@@ -523,11 +524,10 @@ def test_migrations_create_change_add_and_drop_the_event_table_and_triggers(tmp_
         return reg
 
     def up_down(source):
-        plan = Migrations(tmp_path, registry(source)).plan()
-        return [s.sql for s in plan.up], [s.sql for s in plan.down]
+        return planned(Migrations(tmp_path, registry(source)))
 
     def make(source):
-        [m] = Migrations(tmp_path, registry(source)).make()
+        m = Migrations(tmp_path, registry(source)).make()
         return m
 
     up, _ = up_down(MIGRATION_V1)

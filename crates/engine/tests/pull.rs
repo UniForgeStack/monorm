@@ -81,7 +81,7 @@ fn make(dir: &Dir, schema: &str) -> PathBuf {
     let file = dir.join("schema.prisma");
     std::fs::write(&file, schema).unwrap();
     let migrations = dir.join("migrations");
-    ddl::files::make(&migrations, &pulled_schema(schema), None, false, false).unwrap();
+    ddl::files::make(&migrations, &pulled_schema(schema), &Default::default()).unwrap();
     migrations
 }
 
@@ -93,8 +93,8 @@ fn a_database_made_by_the_orm_pulls_back_without_differences() {
         let dir = Dir::new("blog");
         let blog = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/blog/schema.prisma")).unwrap();
         let migrations = dir.join("blog");
-        ddl::files::make(&migrations, &pulled_schema(&blog), None, false, false).unwrap();
-        assert!(!migrate::upgrade(&*conn, &migrations, None, true).await.unwrap().is_empty());
+        ddl::files::make(&migrations, &pulled_schema(&blog), &Default::default()).unwrap();
+        assert!(!migrate::upgrade(&*conn, &migrations, None, None, true).await.unwrap().is_empty());
         let drift = introspect::drift(&*conn, &migrations).await.unwrap();
         assert!(drift.steps.is_empty(), "{:?}", drift.steps);
         let pulled = pull(&*conn).await;
@@ -203,7 +203,7 @@ fn pull_reports_what_it_cannot_write() {
         let migrations = make(&dir, text);
         let other = db::connect(&urls().unwrap().0, 1).await.unwrap();
         other.batch("DROP SCHEMA public CASCADE; CREATE SCHEMA public".into()).await.unwrap();
-        migrate::upgrade(&*other, &migrations, None, true).await.unwrap();
+        migrate::upgrade(&*other, &migrations, None, None, true).await.unwrap();
     });
 }
 
@@ -236,8 +236,8 @@ fn audit_reports_each_state_of_a_trigger_and_pull_reads_the_forms_back() {
     with_database(setup, |conn, _, _| async move {
         let dir = Dir::new("triggers");
         let migrations = make(&dir, TRIGGERS);
-        migrate::upgrade(&*conn, &migrations, None, true).await.unwrap();
-        let target = ddl::files::latest_snapshot(&migrations).unwrap();
+        migrate::upgrade(&*conn, &migrations, None, None, true).await.unwrap();
+        let target = ddl::files::latest_state(&migrations, monorm_core::dialect::Dialect::Postgres).unwrap();
         let all_installed = states(&[("plain", "installed"), ("seen", "installed"), ("settled", "installed"), ("touch", "installed")]);
         assert_eq!(trigger_states(&*conn, &target).await, all_installed);
 
@@ -274,8 +274,8 @@ fn postgres_pull_unmanaged_baselines_without_owning_the_tables() {
             let dir = Dir::new("unmanaged");
             let migrations = make(&dir, &pulled.schema);
             let first = ddl::files::list(&migrations).unwrap().remove(0);
-            let up = std::fs::read_to_string(first.path.join("up.sql")).unwrap();
-            assert!(!up.contains("CREATE TABLE"), "{up}");
+            let file = std::fs::read_to_string(&first.path).unwrap();
+            assert!(!file.contains("create_table"), "{file}");
             migrate::baseline(&*conn, &migrations).await.unwrap();
             conn.batch("ALTER TABLE accounts ADD COLUMN outside_monorm text".into()).await.unwrap();
             let drift = introspect::drift(&*conn, &migrations).await.unwrap();

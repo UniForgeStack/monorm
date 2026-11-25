@@ -400,7 +400,7 @@ async def test_constraint_false_reads_and_writes_without_a_foreign_key(dialect, 
     schema = _constraint_schema(tmp_path, dialect)
     registry = monorm.Registry()
     m = monorm.load(schema, registry=registry)
-    sql = Migrations(tmp_path / "migrations", schema).make()[0].up_sql
+    sql = Migrations(tmp_path / "migrations", schema).make().up_sql
     assert "lc_stat" in sql and "FOREIGN KEY" not in sql and "REFERENCES" not in sql
     url = "sqlite://:memory:" if dialect == "sqlite" else DATABASE_URL
     try:
@@ -432,14 +432,14 @@ async def test_constraint_false_reads_and_writes_without_a_foreign_key(dialect, 
 def test_the_migration_diff_follows_the_constraint_flag(dialect, tmp_path):
     schema = _constraint_schema(tmp_path, dialect, constraint="")
     migrations = Migrations(tmp_path / "migrations", schema)
-    first = migrations.make()[0].up_sql
+    first = migrations.make().up_sql
     # a foreign key to a table, none to a view that cannot hold one
     assert "REFERENCES" in first
     _constraint_schema(tmp_path, dialect, constraint="constraint: false")
-    (drop,) = migrations.make("drop_fk")
+    drop = migrations.make("drop_fk")
     assert ("DROP CONSTRAINT" in drop.up_sql) if dialect == "postgres" else ("REFERENCES" not in drop.up_sql)
     _constraint_schema(tmp_path, dialect, constraint="")
-    (add,) = migrations.make("add_fk")
+    add = migrations.make("add_fk")
     assert "REFERENCES" in add.up_sql
 
 

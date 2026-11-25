@@ -99,7 +99,7 @@ async fn migrations(label: &str, sources: &[String]) -> (std::path::PathBuf, Arc
     std::fs::create_dir_all(&dir).unwrap();
     for (i, source) in sources.iter().enumerate() {
         let name = if i == 0 { "initial" } else { "change" };
-        assert!(!ddl::files::make(&dir, &schema(source), Some(name), false, false).unwrap().is_empty());
+        assert!(ddl::files::make(&dir, &schema(source), &ddl::files::MakeOptions { name: Some(name), ..Default::default() }).unwrap().is_some());
     }
     (dir, db::connect("sqlite://:memory:", 1).await.unwrap())
 }
@@ -114,14 +114,14 @@ fn cyclic_fks_table_rename_and_empty_sequence() {
         let source = "datasource db { provider = \"sqlite\" }\nmodel A {\n  id BigInt @id @default(autoincrement())\n  b_id BigInt?\n  b B? @relation(\"AB\", fields: [b_id], references: [id])\n  bs B[] @relation(\"BA\")\n}\nmodel B {\n  id BigInt @id @default(autoincrement())\n  a_id BigInt?\n  a A? @relation(\"BA\", fields: [a_id], references: [id])\n  as A[] @relation(\"AB\")\n}\nmodel Empty {\n  id BigInt @id @default(autoincrement())\n}\n".to_string();
         let renamed = source.replace("  bs B[] @relation(\"BA\")", "  bs B[] @relation(\"BA\")\n  @@map(\"renamed_a\")\n  @@renamed_from(\"a\")");
         let (dir, db) = migrations("cyclic", &[source, renamed]).await;
-        migrate::upgrade(&*db, &dir, Some("1"), true).await.unwrap();
+        migrate::upgrade(&*db, &dir, Some("1"), None, true).await.unwrap();
         db.batch("INSERT INTO a DEFAULT VALUES; INSERT INTO b (a_id) VALUES (1); UPDATE a SET b_id=1; INSERT INTO empty (id) VALUES (200); DELETE FROM empty".into()).await.unwrap();
-        migrate::upgrade(&*db, &dir, None, true).await.unwrap();
+        migrate::upgrade(&*db, &dir, None, None, true).await.unwrap();
         assert_eq!(db.query_text("SELECT b_id FROM renamed_a".into()).await.unwrap()[0][0].as_deref(), Some("1"));
         assert!(db.query_text("PRAGMA foreign_key_check".into()).await.unwrap().is_empty());
         db.batch("INSERT INTO empty DEFAULT VALUES".into()).await.unwrap();
         assert_eq!(db.query_text("SELECT id FROM empty".into()).await.unwrap()[0][0].as_deref(), Some("201"));
-        migrate::downgrade(&*db, &dir, migrate::Down::Steps(1), false, true).await.unwrap();
+        migrate::downgrade(&*db, &dir, migrate::Down::Steps(1), None, false, true).await.unwrap();
         assert_eq!(db.query_text("SELECT b_id FROM a".into()).await.unwrap()[0][0].as_deref(), Some("1"));
         assert!(db.query_text("PRAGMA foreign_key_check".into()).await.unwrap().is_empty());
         db.batch("INSERT INTO empty DEFAULT VALUES".into()).await.unwrap();
@@ -137,18 +137,18 @@ fn failed_rebuild_rolls_back_schema_rows_and_history() {
         let strict = SOURCE.replace("@check(raw(\"pages >= 0\"))", "@check(raw(\"pages >= 10\"))");
         assert_ne!(strict, SOURCE);
         let (dir, db) = migrations("rollback", &[SOURCE.to_string(), strict]).await;
-        migrate::upgrade(&*db, &dir, Some("1"), true).await.unwrap();
+        migrate::upgrade(&*db, &dir, Some("1"), None, true).await.unwrap();
         db.batch("INSERT INTO author (email, name) VALUES ('a', 'A'); INSERT INTO book (author_id, title) VALUES (1, 'kept')".into()).await.unwrap();
-        let error = migrate::upgrade(&*db, &dir, None, true).await.err().unwrap();
+        let error = migrate::upgrade(&*db, &dir, None, None, true).await.err().unwrap();
         assert!(matches!(&error, Error::Db(e) if e.kind == ErrorKind::Integrity), "{error}");
         assert_eq!(db.query_text("SELECT title, pages FROM book".into()).await.unwrap()[0], [Some("kept".into()), Some("0".into())]);
         assert_eq!(applied(&db, &dir).await, [true, false]);
         assert!(db.query_text("SELECT name FROM sqlite_schema WHERE name LIKE '__orm_%'".into()).await.unwrap().is_empty());
         assert_eq!(db.query_text("PRAGMA foreign_keys".into()).await.unwrap()[0][0].as_deref(), Some("1"));
         db.batch("UPDATE book SET pages=10".into()).await.unwrap();
-        migrate::upgrade(&*db, &dir, None, true).await.unwrap();
+        migrate::upgrade(&*db, &dir, None, None, true).await.unwrap();
         assert_eq!(applied(&db, &dir).await, [true, true]);
-        migrate::downgrade(&*db, &dir, migrate::Down::Steps(1), false, true).await.unwrap();
+        migrate::downgrade(&*db, &dir, migrate::Down::Steps(1), None, false, true).await.unwrap();
         db.close().await;
         let _ = std::fs::remove_dir_all(&dir);
     });
@@ -164,17 +164,17 @@ fn rebuild_refuses_unmanaged_objects() {
             ("CREATE TRIGGER custom_trigger AFTER INSERT ON author BEGIN SELECT 1; END", "DROP TRIGGER custom_trigger"),
         ] {
             let (dir, db) = migrations("unmanaged", &[SOURCE.to_string(), extra.clone()]).await;
-            migrate::upgrade(&*db, &dir, Some("1"), true).await.unwrap();
+            migrate::upgrade(&*db, &dir, Some("1"), None, true).await.unwrap();
             db.batch("INSERT INTO author (email, name) VALUES ('a', 'A')".into()).await.unwrap();
             db.batch(object.into()).await.unwrap();
-            let error = migrate::upgrade(&*db, &dir, None, true).await.err().unwrap();
+            let error = migrate::upgrade(&*db, &dir, None, None, true).await.err().unwrap();
             assert!(error.to_string().contains("monorm_unmanaged_index_or_trigger"), "{error}");
             assert_eq!(db.query_text("SELECT name FROM author".into()).await.unwrap()[0][0].as_deref(), Some("A"));
             assert_eq!(applied(&db, &dir).await, [true, false]);
             assert!(!db.query_text("SELECT name FROM sqlite_schema WHERE name LIKE 'custom_%'".into()).await.unwrap().is_empty());
             db.batch(drop.into()).await.unwrap();
-            migrate::upgrade(&*db, &dir, None, true).await.unwrap();
-            migrate::downgrade(&*db, &dir, migrate::Down::Steps(1), false, true).await.unwrap();
+            migrate::upgrade(&*db, &dir, None, None, true).await.unwrap();
+            migrate::downgrade(&*db, &dir, migrate::Down::Steps(1), None, false, true).await.unwrap();
             db.close().await;
             let _ = std::fs::remove_dir_all(&dir);
         }

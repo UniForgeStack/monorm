@@ -55,12 +55,12 @@ impl Live {
     /// Make the migration that leads to `source`, and apply it.
     async fn migrate(&self, source: &str) {
         let schema = dsl::check(dsl::compile(&self.source(source), None).unwrap()).unwrap().1;
-        assert!(!ddl::files::make(&self.dir.0, &schema, None, false, false).unwrap().is_empty(), "no change to migrate");
-        migrate::upgrade(&*self.db, &self.dir.0, None, true).await.unwrap();
+        assert!(ddl::files::make(&self.dir.0, &schema, &Default::default()).unwrap().is_some(), "no change to migrate");
+        migrate::upgrade(&*self.db, &self.dir.0, None, None, true).await.unwrap();
     }
 
     async fn downgrade(&self) {
-        migrate::downgrade(&*self.db, &self.dir.0, migrate::Down::Steps(1), false, true).await.unwrap();
+        migrate::downgrade(&*self.db, &self.dir.0, migrate::Down::Steps(1), None, false, true).await.unwrap();
     }
 
     async fn text(&self, sql: &str) -> Vec<Vec<Option<String>>> { self.db.query_text(sql.into()).await.unwrap() }

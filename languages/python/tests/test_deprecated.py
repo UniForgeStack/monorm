@@ -84,7 +84,7 @@ async def test_a_deprecated_column_that_exists_is_no_drift_and_no_migration(dial
         Migrations(tmp_path, registry(plain)).make()
         await Migrator(db, Migrations(tmp_path, registry(plain))).upgrade()
         later = Migrations(tmp_path, registry(deprecated))
-        assert later.make() == []
+        assert later.make() is None
         assert not await Migrator(db, later).drift()
         await db.fetch("SELECT legacy FROM deprecated_drift_items")  # the column still exists
     finally:

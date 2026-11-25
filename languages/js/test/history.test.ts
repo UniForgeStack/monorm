@@ -8,6 +8,7 @@ import { test } from "node:test";
 
 import { allowWrites, connect, Decimal, loads, Migrations, QueryError, Registry, scope, skipTriggers, WriteProtected, type Database } from "../src/index.js";
 import { hasExtension } from "./artifact-caps.js";
+import { planned } from "./planned.js";
 
 type Any = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -438,20 +439,20 @@ test("migrations create change add and drop the event table and triggers", { ski
     loads(source, { registry: r });
     return r;
   };
-  const plan = (source: string) => new Migrations(dir, registry(source)).plan();
+  const plan = (source: string) => planned(new Migrations(dir, registry(source)));
   const make = (source: string) => new Migrations(dir, registry(source)).make();
-  let up = plan(MIGRATION_V1).up.map((x) => x.sql);
+  let up = plan(MIGRATION_V1)[0];
   assert.ok(up.some((x) => x.startsWith('CREATE TABLE "hm_js_items_events"')));
   assert.ok(up.some((x) => x.startsWith('CREATE TRIGGER "h_events_ins" AFTER INSERT ON "hm_js_items"')));
   make(MIGRATION_V1);
-  up = plan(MIGRATION_V2).up.map((x) => x.sql); // a tracker change replaces triggers; the event table stays
+  up = plan(MIGRATION_V2)[0]; // a tracker change replaces triggers; the event table stays
   assert.ok(up.some((x) => x.startsWith('DROP TRIGGER "h_events_ins"')));
   assert.ok(!up.some((x) => x.startsWith("DROP TABLE")));
   make(MIGRATION_V2);
-  up = plan(MIGRATION_V3).up.map((x) => x.sql);
+  up = plan(MIGRATION_V3)[0];
   assert.ok(up.some((x) => x.startsWith('CREATE TABLE "item_audit"')));
   make(MIGRATION_V3);
-  const last = plan(MIGRATION_V4);
-  assert.ok(last.up.some((x) => x.sql === 'DROP TABLE "hm_js_items_events"') && last.up.some((x) => x.sql === 'DROP TABLE "item_audit"'));
-  assert.ok(last.down.some((x) => x.sql.startsWith('CREATE TABLE "hm_js_items_events"')));
+  const [last, lastDown] = plan(MIGRATION_V4);
+  assert.ok(last.some((x) => x === 'DROP TABLE "hm_js_items_events"') && last.some((x) => x === 'DROP TABLE "item_audit"'));
+  assert.ok(lastDown.some((x) => x.startsWith('CREATE TABLE "hm_js_items_events"')));
 });
