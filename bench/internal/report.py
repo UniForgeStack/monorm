@@ -19,6 +19,7 @@ from typing import Any
 
 LANGS = [("python", "Python"), ("js", "TypeScript on Node")]
 PATHS = ["unprepared", "prepared", "direct", "engine", "driver"]
+WRITE_CASES = ("update_many_expr", "update_many_values")  # the write cases have their own paths: unprepared, prepared, driver
 ADMIN_PREFIX = "admin_"  # the admin cases have their own paths: the route, the host encode, the driver
 
 
@@ -85,7 +86,7 @@ def main(out: Path) -> None:
         lines += ["| case | unprepared | prepared | direct IR | engine only | driver only |", "|---|---|---|---|---|---|"]
         rows = []
         for case in run["cases"]:
-            if case.startswith(ADMIN_PREFIX):
+            if case.startswith(ADMIN_PREFIX) or case in WRITE_CASES:
                 continue
             v: dict[str, Value] = {p: us(engine_run if p == "engine" else run, case, p) for p in PATHS}
             if engine_run is None:
@@ -126,6 +127,15 @@ def main(out: Path) -> None:
                 "`host encode` is the host path: it reads the same rows as model instances with the query set (the to-one author loaded) and writes the CSV in the host language, so it holds the hydration and the encoding; it is only in the export case.",
                 "",
             ]
+        write_rows = [c for c in run["cases"] if c in WRITE_CASES]
+        if write_rows:
+            lines += ["Write cases in µs per call (no direct-IR path; the Rust engine-only run does not take them):", ""]
+            lines += ["| case | unprepared | prepared | driver only | unprepared ÷ driver |", "|---|---|---|---|---|"]
+            for case in write_rows:
+                u, p, d = (us(run, case, x) for x in ("unprepared", "prepared", "driver"))
+                ratio = "–" if num(u) is None or not num(d) else f"{num(u) / num(d):.1f}×"  # type: ignore[operator]
+                lines.append(f"| {case} | {cell(u)} | {cell(p)} | {cell(d)} | {ratio} |")
+            lines += [""]
         if biggest:
             lines += ["Biggest monorm layer per case (the driver is the floor, not counted): " + "; ".join(f"{c}: {k}" for c, k in biggest.items()) + ".", ""]
     lines += [

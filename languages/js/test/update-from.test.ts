@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { connect, func, loads, param, Registry, UnfilteredWriteError } from "../src/index.js";
+import { hasExtension } from "./artifact-caps.js";
 import { DATABASE_URL } from "./helpers.js";
 
 const schema = `
@@ -135,6 +136,17 @@ for (const provider of ["sqlite", "postgresql"]) {
     }
   });
 
+  test(`update counts a to many relation in set (${provider})`, async () => {
+    const { db, Author, A } = await setup(provider);
+    try {
+      // An aggregate of a to-many path compiles as load() compiles it, to a correlated subquery.
+      assert.equal(await A.filter(Author.id.gt(0)).update({ postCount: func.count(Author.posts) }), 3);
+      assert.deepEqual(Object.fromEntries((await A.all()).map((a: any) => [a.name, a.postCount])), { A: 2, B: 1, C: 0 });
+    } finally {
+      await db.close();
+    }
+  });
+
   test(`update join errors (${provider})`, async () => {
     const { db, Author, Post, A, P, totals } = await setup(provider);
     try {
@@ -150,3 +162,30 @@ for (const provider of ["sqlite", "postgresql"]) {
     }
   });
 }
+
+const composed = `
+model Person {
+  id Int @id @default(autoincrement())
+  name String
+  @@map("uf_composed_person")
+}
+model Staff {
+  salary Int
+  @@composition.model(parent: "Person", parentRef: "person", childRef: "staff")
+  @@map("uf_composed_staff")
+}
+`;
+
+test("update refuses a join on a multi table model", { skip: !hasExtension("monorm.composition") }, async () => {
+  const registry = new Registry();
+  const models = loads(`datasource db {\n provider = "sqlite"\n}\n${composed}`, { registry });
+  const db = await connect("sqlite://:memory:", { registry, default: false });
+  await db.createTables();
+  try {
+    const Staff: any = models["Staff"];
+    const totals = Staff.objects.using(db).select({ salary: Staff.salary, n: func.count() }).groupBy(Staff.salary).cte("totals");
+    await assert.rejects(async () => { await Staff.objects.using(db).join(totals, totals.c.salary.eq(Staff.salary)).update({ salary: 1 }); }, /multi-table model can't read a join/);
+  } finally {
+    await db.close();
+  }
+});

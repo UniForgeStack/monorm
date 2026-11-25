@@ -5,6 +5,7 @@ import os
 import pytest
 
 import monorm
+from artifact_caps import has_extension
 from monorm import QueryError, func
 
 SCHEMA = """
@@ -158,6 +159,17 @@ async def test_a_prepared_update_reads_a_joined_cte(provider):
 
 
 @pytest.mark.parametrize("provider", ["sqlite", "postgresql"])
+async def test_update_counts_a_to_many_relation_in_set(provider):
+    db, Author, Post, A, P = await connect(provider)
+    try:
+        # An aggregate of a to-many path compiles as load() compiles it, to a correlated subquery.
+        assert await A.filter(Author.id > 0).update(post_count=func.count(Author.posts)) == 3
+        assert {a.name: a.post_count for a in await A.all()} == {"A": 2, "B": 1, "C": 0}
+    finally:
+        await db.close()
+
+
+@pytest.mark.parametrize("provider", ["sqlite", "postgresql"])
 async def test_update_join_errors(provider):
     db, Author, Post, A, P = await connect(provider)
     try:
@@ -174,5 +186,34 @@ async def test_update_join_errors(provider):
             A.join(totals, totals.c.author_id == Author.id, outer=True).update(nick="n")
         with pytest.raises(monorm.UnfilteredWriteError):
             P.update(author_name=Post.author.name)
+    finally:
+        await db.close()
+
+
+COMPOSED = """
+model Person {
+  id Int @id @default(autoincrement())
+  name String
+  @@map("uf_composed_person")
+}
+model Staff {
+  salary Int
+  @@composition.model(parent: "Person", parentRef: "person", childRef: "staff")
+  @@map("uf_composed_staff")
+}
+"""
+
+
+@pytest.mark.skipif(not has_extension("monorm.composition"), reason="requires the monorm.composition package")
+async def test_update_refuses_a_join_on_a_multi_table_model():
+    registry = monorm.Registry()
+    models = monorm.loads('datasource db {\n provider = "sqlite"\n}\n' + COMPOSED, registry=registry)
+    db = await monorm.connect("sqlite://:memory:", registry=registry, default=False)
+    await db.create_tables()
+    try:
+        Staff = models["Staff"]
+        totals = Staff.objects.using(db).select(Staff.salary, func.count().label("n")).group_by(Staff.salary).cte("totals")
+        with pytest.raises(QueryError, match="multi-table model can't read a join"):
+            await Staff.objects.using(db).join(totals, totals.c.salary == Staff.salary).update(salary=1)
     finally:
         await db.close()

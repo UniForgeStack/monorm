@@ -1174,7 +1174,14 @@ await User.objects.from_(chain)
   ```
 
   A row matching several CTE rows comes back once per match, as in SQL. Writes refuse
-  a query set with joins.
+  a query set with joins, except `update()`:
+  `Post.objects.join(totals, totals.c.author_id == Post.author_id).update(views=totals.c.n)` runs
+  `UPDATE ... FROM <cte> WHERE <on>`, and the `SET` values and the filters may read `totals.c.<name>`.
+  `outer=True` keeps the rows with no match (the `SET` reads `NULL`) and uses a self-join.
+  An inner join counts as a filter for the unfiltered-write guard, an outer join does not.
+  `update()` also reads a to-one path in a `SET` value (`update(title=Post.author.name)`).
+  A to-many path outside an aggregate (`func.count(Author.posts)` is fine), `from_()` with `update()` or `delete()`, and a join on a multi-table model raise `QueryError`.
+  When several rows of a joined source match one target row, the database picks one and the result is not predictable: give a CTE with one row per key (`group_by`).
 * **Subqueries in `FROM`**: `Model.objects.from_(cte)` reads the model's rows from a
   CTE with the model's columns (`Post.objects....cte(...)` or a `select(Post, ...)`),
   so filters, relation paths, `load()`, `count()` and
@@ -1367,6 +1374,13 @@ await post.load(Post.views, reload=True)         # some fields
   many rows as fit in the dialect's `max_params` unless `batch_size` says fewer, and run in one
   transaction. The query set's filters still apply (`alice.posts.update_many(rows)`
   leaves other authors' posts alone); ids that match nothing are skipped.
+  A row value may be an expression over the model's own columns (`{"id": 1, "views": Post.views + 1}`):
+  each shape of rows is one statement per batch, and the expression cells are part of the `SET`, not of the `VALUES`.
+  `update_values={"views": Post.views + excluded(Post.views)}` is a fixed expression map for every row:
+  `excluded(F)` reads the `VALUES` column, so `F` must be in the rows.
+  With a prepared `update_many(param("rows", fields=[...]), update_values=...)` the rows stay plain, and an expression row at call time raises.
+  The key that matches the rows, a generated field, and a field that a hook assigns refuse an expression, and `update_values` cannot set the key.
+  A duplicate key raises before any SQL runs.
 * A write statement that is never awaited emits a `RuntimeWarning`, the same safety
   net an un-awaited coroutine has.
 * `instance.update()` changes exactly the fields named, and the instance then shows

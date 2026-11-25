@@ -278,5 +278,26 @@
     }
    ]
   }
+ ],
+ "write_note": "Write cases run in Python and TypeScript only: the Rust runner replays read IR and inserts. Each call adds `1 + id % 3` to the views of posts 1..rows (1 000 rows, every post) (their views grow, no case reads views as an equality value).",
+ "write_cases": [
+  {
+   "name": "update_many_expr",
+   "inner": 3,
+   "rows": 1000,
+   "values": [
+    {}
+   ],
+   "sql": []
+  },
+  {
+   "name": "update_many_values",
+   "inner": 3,
+   "rows": 1000,
+   "values": [
+    {}
+   ],
+   "sql": []
+  }
  ]
 }

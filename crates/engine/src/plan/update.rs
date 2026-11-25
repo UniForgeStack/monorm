@@ -50,7 +50,7 @@ impl RowUpdate {
     pub fn row_value(&mut self, columns: Vec<String>, value: Expr) {
         self.values.push((columns, value));
     }
-    pub fn from_item(&mut self, item: FromItem) {
+    pub fn add_from_item(&mut self, item: FromItem) {
         self.from.push(item);
     }
     pub fn has_from(&self) -> bool {

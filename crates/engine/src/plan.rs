@@ -3744,17 +3744,17 @@ impl<'s> Planner<'s> {
         if self_join {
             let mut joins: Vec<FromJoin> = q.joins.iter().zip(ons).map(|(j, on)| FromJoin { outer: j.outer, table: j.cte.clone(), alias: None, on }).collect();
             joins.extend(relations.into_iter().map(|(table, alias, on)| FromJoin { outer: true, table, alias: Some(alias), on }));
-            stmt.from_item(FromItem { table: table.clone(), alias: Some(join_alias.clone()), joins });
+            stmt.add_from_item(FromItem { table: table.clone(), alias: Some(join_alias.clone()), joins });
             for k in self.model(self.root).key_fields() {
                 stmt.and_where(col(&table, &k.column).eq(col(&join_alias, &k.column)));
             }
         } else {
             for (j, on) in q.joins.iter().zip(ons) {
-                stmt.from_item(FromItem { table: j.cte.clone(), alias: None, joins: vec![] });
+                stmt.add_from_item(FromItem { table: j.cte.clone(), alias: None, joins: vec![] });
                 stmt.and_where(on);
             }
             for (table, alias, on) in relations {
-                stmt.from_item(FromItem { table, alias: Some(alias), joins: vec![] });
+                stmt.add_from_item(FromItem { table, alias: Some(alias), joins: vec![] });
                 stmt.and_where(on);
             }
         }
