@@ -19,7 +19,7 @@ pub fn generate(ir: &SchemaIr, schema: &Schema) -> Result<String, String> {
         return Err(format!("{}.{}: the Rust client does not support union or conditioned relations", m.ir.name, r.name));
     }
     // Do not accept an unrelated prepared schema and silently emit mismatched codecs.
-    let prepared = Schema::from_ir_unbound(SchemaIr::from_json(&super::embedded_schema_json(ir)?)?)?;
+    let prepared = Schema::from_ir_unbound(SchemaIr::from_json(&super::embedded_schema_json_compact(ir)?)?)?;
     if prepared.models.len() != schema.models.len()
         || prepared.models.iter().zip(&schema.models).any(|(a, b)| {
             a.ir.name != b.ir.name
@@ -203,7 +203,7 @@ pub fn generate(ir: &SchemaIr, schema: &Schema) -> Result<String, String> {
     writeln!(
         out,
         "const JSON: &'static str = {:?};\n}}\npub type Database = monorm_client::Database<Schema>;",
-        super::embedded_schema_json(ir)?
+        super::embedded_schema_json_compact(ir)?
     )
     .unwrap();
     for e in &schema.enums {

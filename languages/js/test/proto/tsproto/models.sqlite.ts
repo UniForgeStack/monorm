@@ -7,7 +7,69 @@
 /* eslint-disable */
 import { define, type Column, type Compat, type Expression, type Hop, type In, type Instance, type Many, type ManyRelatedSet, type ModelClass, type QuerySetOf, type RelatedSet, type RelationPath, type SchemaIR, type Via } from "../../../src/index.js";
 
-const SCHEMA: SchemaIR = {"dialect":"sqlite","models":[{"name":"TsProtoEvent","table":"ts_proto_event","mapped":true,"fields":[{"name":"id","column":"id","type":"int","primary_key":true},{"name":"body","column":"body","type":"bytes","nullable":true}]}],"behavior":{"read_defaults":[],"schema_contract":5,"schema_contract_minor":3,"declarations":[{"attribute":"proto.message","model":"TsProtoEvent","field":"body","field_type":"Bytes?","arguments":{},"positional":["acme.Note"],"location":{"file":"schema.sqlite.prisma","line":7,"column":15},"lowered":true}],"packages":{"monorm.proto":{"version":"0.1.4","manifest_hash":"9b77d9c30441e05678db8036d1380cdd07df12fb20ee9df6f396e45a51743965","passes":["monorm.proto.fields"],"attributes":["proto.message"],"languages":["python","typescript"],"databases":["postgres","sqlite"],"language_members":{"python":{"source":"integration/python/src/monorm_proto","query_set":"","instance":"","bound_query_set":"","overrides":[],"field_adapters":[{"adapter":"proto.message.v1","install":"install","module":"monorm_proto.model","imports":[],"value":"{class}","input":"{class}","members":[],"methods":[],"module_functions":[],"resolve":{"option":"message","setting":"proto"}}]},"typescript":{"source":"integration/typescript/src","query_set":"","instance":"","bound_query_set":"","overrides":[],"field_adapters":[{"adapter":"proto.message.v1","install":"install","module":"monorm/extensions/proto/model","imports":[],"value":"{class}","input":"{class}","members":[],"methods":[],"module_functions":[],"resolve":{"option":"message","setting":"proto"}}],"exports":{"./model":"model.js"}}},"dependencies":{}}},"lowered_models":["TsProtoEvent"],"result_fields":[],"storage":{"models":[{"name":"TsProtoEvent","table":"ts_proto_event","mapped":true,"fields":[{"name":"id","column":"id","type":"int","primary_key":true},{"name":"body","column":"body","type":"bytes","nullable":true}]}]},"field_storage":[],"owner_links":[],"field_adapters":[{"model":"TsProtoEvent","field":"body","adapter":"proto.message.v1","options":{"message":"acme.Note"},"null_only":true}]}};
+const SCHEMA: SchemaIR = {
+ "dialect":"sqlite",
+ "models":[
+  {
+   "name":"TsProtoEvent",
+   "table":"ts_proto_event",
+   "mapped":true,
+   "fields":[
+    {"name":"id","column":"id","type":"int","primary_key":true},
+    {"name":"body","column":"body","type":"bytes","nullable":true}
+   ]
+  }
+ ],
+ "behavior":{
+  "read_defaults":[],
+  "schema_contract":5,
+  "schema_contract_minor":3,
+  "declarations":[
+   {
+    "attribute":"proto.message",
+    "model":"TsProtoEvent",
+    "field":"body",
+    "field_type":"Bytes?",
+    "arguments":{},
+    "positional":["acme.Note"],
+    "location":{"file":"schema.sqlite.prisma","line":7,"column":15},
+    "lowered":true
+   }
+  ],
+  "packages":{
+   "monorm.proto":{
+    "version":"0.1.4",
+    "manifest_hash":"9b77d9c30441e05678db8036d1380cdd07df12fb20ee9df6f396e45a51743965",
+    "passes":["monorm.proto.fields"],
+    "attributes":["proto.message"],
+    "languages":["python","typescript"],
+    "databases":["postgres","sqlite"],
+    "language_members":{"python":{"source":"integration/python/src/monorm_proto","query_set":"","instance":"","bound_query_set":"","overrides":[],"field_adapters":[{"adapter":"proto.message.v1","install":"install","module":"monorm_proto.model","imports":[],"value":"{class}","input":"{class}","members":[],"methods":[],"module_functions":[],"resolve":{"option":"message","setting":"proto"}}]},"typescript":{"source":"integration/typescript/src","query_set":"","instance":"","bound_query_set":"","overrides":[],"field_adapters":[{"adapter":"proto.message.v1","install":"install","module":"monorm/extensions/proto/model","imports":[],"value":"{class}","input":"{class}","members":[],"methods":[],"module_functions":[],"resolve":{"option":"message","setting":"proto"}}],"exports":{"./model":"model.js"}}},
+    "dependencies":{}
+   }
+  },
+  "lowered_models":[
+   "TsProtoEvent"
+  ],
+  "result_fields":[],
+  "storage":{
+   "models":[
+    {"name":"TsProtoEvent","table":"ts_proto_event","mapped":true,"fields":[{"name":"id","column":"id","type":"int","primary_key":true},{"name":"body","column":"body","type":"bytes","nullable":true}]}
+   ]
+  },
+  "field_storage":[],
+  "owner_links":[],
+  "field_adapters":[
+   {
+    "model":"TsProtoEvent",
+    "field":"body",
+    "adapter":"proto.message.v1",
+    "options":{"message":"acme.Note"},
+    "null_only":true
+   }
+  ]
+ }
+};
 
 const models = define(SCHEMA, { requiredCapabilities: ["reference-loading"] });
 

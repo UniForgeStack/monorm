@@ -269,10 +269,97 @@ fn is_js_ident(s: &str) -> bool {
         && chars.all(|c| c == '$' || c == '_' || c.is_ascii_alphanumeric())
 }
 
-/// Compact schema payload for self-contained generated modules in every language.
+/// Schema payload for self-contained generated modules in every language.
 /// Compilation and validation stay in Rust; runtimes receive the same schema IR.
+/// Containers down to depth 4 take one line per child, so a schema change shows as a short diff.
 pub fn embedded_schema_json(ir: &crate::ir::SchemaIr) -> Result<String, String> {
+    use serde::Serialize;
+    let mut out = Vec::new();
+    let mut ser = serde_json::Serializer::with_formatter(&mut out, LineFormatter::default());
+    ir.serialize(&mut ser).map_err(|e| e.to_string())?;
+    String::from_utf8(out).map_err(|e| e.to_string())
+}
+
+/// The schema on one line, for payloads that sit inside a string literal.
+pub fn embedded_schema_json_compact(ir: &crate::ir::SchemaIr) -> Result<String, String> {
     serde_json::to_string(ir).map_err(|e| e.to_string())
+}
+
+/// Deepest container level that is broken across lines.
+const SPREAD_DEPTH: usize = 4;
+
+#[derive(Default)]
+struct LineFormatter {
+    depth: usize,
+    has_value: bool,
+}
+
+impl LineFormatter {
+    fn spread(&self) -> bool {
+        self.depth <= SPREAD_DEPTH
+    }
+    fn newline<W: ?Sized + std::io::Write>(&self, w: &mut W) -> std::io::Result<()> {
+        w.write_all(b"\n")?;
+        for _ in 0..self.depth {
+            w.write_all(b" ")?;
+        }
+        Ok(())
+    }
+    fn open<W: ?Sized + std::io::Write>(&mut self, w: &mut W, c: &[u8]) -> std::io::Result<()> {
+        self.depth += 1;
+        self.has_value = false;
+        w.write_all(c)
+    }
+    fn close<W: ?Sized + std::io::Write>(&mut self, w: &mut W, c: &[u8]) -> std::io::Result<()> {
+        let spread = self.spread();
+        self.depth -= 1;
+        if self.has_value && spread {
+            self.newline(w)?;
+        }
+        self.has_value = true;
+        w.write_all(c)
+    }
+    fn item<W: ?Sized + std::io::Write>(&mut self, w: &mut W, first: bool) -> std::io::Result<()> {
+        if !first {
+            w.write_all(b",")?;
+        }
+        if self.spread() {
+            self.newline(w)?;
+        }
+        Ok(())
+    }
+}
+
+impl serde_json::ser::Formatter for LineFormatter {
+    fn begin_array<W: ?Sized + std::io::Write>(&mut self, w: &mut W) -> std::io::Result<()> {
+        self.open(w, b"[")
+    }
+    fn end_array<W: ?Sized + std::io::Write>(&mut self, w: &mut W) -> std::io::Result<()> {
+        self.close(w, b"]")
+    }
+    fn begin_array_value<W: ?Sized + std::io::Write>(&mut self, w: &mut W, first: bool) -> std::io::Result<()> {
+        self.item(w, first)
+    }
+    fn end_array_value<W: ?Sized + std::io::Write>(&mut self, _: &mut W) -> std::io::Result<()> {
+        self.has_value = true;
+        Ok(())
+    }
+    fn begin_object<W: ?Sized + std::io::Write>(&mut self, w: &mut W) -> std::io::Result<()> {
+        self.open(w, b"{")
+    }
+    fn end_object<W: ?Sized + std::io::Write>(&mut self, w: &mut W) -> std::io::Result<()> {
+        self.close(w, b"}")
+    }
+    fn begin_object_key<W: ?Sized + std::io::Write>(&mut self, w: &mut W, first: bool) -> std::io::Result<()> {
+        self.item(w, first)
+    }
+    fn begin_object_value<W: ?Sized + std::io::Write>(&mut self, w: &mut W) -> std::io::Result<()> {
+        w.write_all(b":")
+    }
+    fn end_object_value<W: ?Sized + std::io::Write>(&mut self, _: &mut W) -> std::io::Result<()> {
+        self.has_value = true;
+        Ok(())
+    }
 }
 
 /// A default filter on `target` can hide it, so a reference to it can be absent.
@@ -414,6 +501,28 @@ impl Options {
 #[cfg(any(feature = "generate-python", feature = "generate-typescript"))]
 fn nullable(t: &str, nullable: bool, none: &str) -> String {
     if nullable { format!("{t} | {none}") } else { t.to_owned() }
+}
+
+#[cfg(test)]
+mod embedded_schema_tests {
+    use super::*;
+    const SOURCE: &str = "model User {\n id Int @id\n posts Post[]\n}\nmodel Post {\n id Int @id\n author_id Int?\n author User? @relation(fields: [author_id], references: [id])\n}";
+    #[test]
+    fn many_lines_round_trip_to_the_same_ir() {
+        let ir = crate::dsl::compile(SOURCE, None).unwrap();
+        let spread = embedded_schema_json(&ir).unwrap();
+        assert!(spread.lines().count() > 10);
+        let compact = embedded_schema_json_compact(&ir).unwrap();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&spread).unwrap(), serde_json::from_str::<serde_json::Value>(&compact).unwrap());
+        assert_eq!(embedded_schema_json_compact(&crate::ir::SchemaIr::from_json(&spread).unwrap()).unwrap(), compact);
+    }
+    #[test]
+    fn lines_stay_short_for_a_larger_schema() {
+        let ir = crate::dsl::compile(&std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples/blog/schema.prisma")).unwrap(), None).unwrap();
+        let spread = embedded_schema_json(&ir).unwrap();
+        let longest = spread.lines().map(str::len).max().unwrap();
+        assert!(longest <= 200, "longest line is {longest} bytes");
+    }
 }
 
 #[cfg(test)]
