@@ -38,8 +38,8 @@ const SCHEMA: SchemaIR = {
   ],
   "packages":{
    "monorm.proto":{
-    "version":"0.1.4",
-    "manifest_hash":"9b77d9c30441e05678db8036d1380cdd07df12fb20ee9df6f396e45a51743965",
+    "version":"0.1.5",
+    "manifest_hash":"a38ca5946e365f6e4cc1bcbcf8afdd27a54f2e0fbf2802f2834834ad24ce58ae",
     "passes":["monorm.proto.fields"],
     "attributes":["proto.message"],
     "languages":["python","typescript"],

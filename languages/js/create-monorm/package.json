@@ -1,6 +1,6 @@
 {
   "name": "create-monorm",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Start a MonOrm project: npm create monorm <dir> or bun create monorm <dir>",
   "license": "MIT",
   "author": "mh-alahdadi <mhalah15@gmail.com> (https://github.com/mh-alahdadi)",
@@ -39,6 +39,6 @@
     "node": "^20.19.0 || >=22.12.0"
   },
   "dependencies": {
-    "@ufstack/monorm": "0.1.4"
+    "@ufstack/monorm": "0.1.5"
   }
 }
