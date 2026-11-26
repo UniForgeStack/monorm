@@ -982,3 +982,46 @@ fn drift_unmanaged_warns_about_each_difference_on_postgres() {
         std::panic::resume_unwind(e);
     }
 }
+
+#[test]
+fn the_database_table_replaces_the_datasource_block_and_names_the_url_variable() {
+    let dir = std::env::temp_dir().join(format!("monorm-cli-database-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("monorm.toml"), "[database]\nprovider = \"sqlite\"\nurl_env = \"PROJECT_DB\"\n").unwrap();
+    std::fs::write(dir.join("schema.prisma"), SCHEMA).unwrap();
+    let url = format!("sqlite://{}", dir.join("live.db").display());
+    let run = |args: &[&str], var: bool| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_monorm"));
+        command.args(args).current_dir(&dir).env_remove("MONORM_DATABASE_URL").env_remove("PROJECT_DB");
+        if var { command.env("PROJECT_DB", &url); }
+        command.output().unwrap()
+    };
+
+    // compile-time commands need no URL
+    assert!(run(&["check"], false).status.success());
+    // a command that connects reads the variable that url_env names, and the default variable is not read
+    let none = run(&["migrate"], false);
+    assert_eq!(none.status.code(), Some(2));
+    assert!(text(&none.stderr).contains("no database; pass --url or set PROJECT_DB"), "{}", text(&none.stderr));
+    let default = Command::new(env!("CARGO_BIN_EXE_monorm")).args(["migrate"]).current_dir(&dir).env("MONORM_DATABASE_URL", &url).env_remove("PROJECT_DB").output().unwrap();
+    assert_eq!(default.status.code(), Some(2));
+    assert!(run(&["makemigrations"], false).status.success());
+    let applied = run(&["migrate"], true);
+    assert!(applied.status.success(), "{}", text(&applied.stderr));
+    assert!(dir.join("live.db").exists());
+    // --url wins over the variable
+    assert!(run(&["showmigrations", "--url", &url], false).status.success());
+
+    // a datasource block next to [database] is an error that names the file
+    std::fs::write(dir.join("schema.prisma"), format!("datasource db {{\n  provider = \"sqlite\"\n}}\n{SCHEMA}")).unwrap();
+    let both = run(&["check"], false);
+    assert_eq!(both.status.code(), Some(1));
+    assert!(text(&both.stderr).contains("a datasource block is not allowed when monorm.toml has a [database] table"), "{}", text(&both.stderr));
+    // a wrong [database] is a setup error
+    std::fs::write(dir.join("monorm.toml"), "[database]\nprovider = \"mysql\"\n").unwrap();
+    let wrong = run(&["check"], false);
+    assert_eq!(wrong.status.code(), Some(2));
+    assert!(text(&wrong.stderr).contains("monorm.toml: `database.provider` must be"), "{}", text(&wrong.stderr));
+    let _ = std::fs::remove_dir_all(&dir);
+}

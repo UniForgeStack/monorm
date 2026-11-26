@@ -1656,7 +1656,7 @@ impl Engine {
     #[napi]
     pub fn pull_schema<'env>(&self, env: &'env Env, extensions: Option<std::collections::HashMap<String, String>>) -> napi::Result<PromiseRaw<'env, String>> {
         let driver = self.driver.clone();
-        let installed = installed(None, extensions);
+        let installed = installed(None, extensions)?;
         env.spawn_future(async move {
             let p = monorm_engine::introspect::pull(&*driver, &installed).await.map_err(engine_err)?;
             Ok(serde_json::json!({"schema": p.schema, "gaps": p.gaps, "steps": p.steps, "views": p.views}).to_string())
@@ -1905,7 +1905,7 @@ fn compiled(env: &Env, project: monorm_core::dsl::CompiledProject) -> napi::Resu
 
 #[napi]
 pub fn compile_schema(env: &Env, source: String, path: Option<String>, extensions: Option<std::collections::HashMap<String, String>>) -> napi::Result<String> {
-    let apps = installed(None, extensions);
+    let apps = installed(None, extensions)?;
     let project = monorm_core::dsl::compile_project_with(&source, path.as_deref().map(std::path::Path::new), &apps).map_err(schema_err)?;
     compiled(env, project)
 }
@@ -1957,17 +1957,17 @@ pub fn find_migration(dir: String, name: String) -> napi::Result<Vec<String>> {
 }
 
 /// The installed apps and extension manifests that Node found, as the loader reads them.
-fn installed(apps: Option<std::collections::HashMap<String, String>>, extensions: Option<std::collections::HashMap<String, String>>) -> monorm_core::dsl::Installed {
+fn installed(apps: Option<std::collections::HashMap<String, String>>, extensions: Option<std::collections::HashMap<String, String>>) -> napi::Result<monorm_core::dsl::Installed> {
     let mut installed: monorm_core::dsl::Installed = apps.unwrap_or_default().into_iter().map(|(name, file)| (name, file.into())).collect();
     let mut extensions: Vec<_> = extensions.unwrap_or_default().into_iter().map(|(id, file)| (id, file.into())).collect();
     extensions.sort();
     installed.extensions = extensions;
-    installed
+    installed.with_settings_of(Path::new(".")).map_err(schema_err)
 }
 
 #[napi]
 pub fn compile_schema_file(env: &Env, path: String, apps: Option<std::collections::HashMap<String, String>>, extensions: Option<std::collections::HashMap<String, String>>) -> napi::Result<String> {
-    let apps = installed(apps, extensions);
+    let apps = installed(apps, extensions)?;
     let project = monorm_core::dsl::compile_project_file_with(std::path::Path::new(&path), &apps).map_err(schema_err)?;
     compiled(env, project)
 }
@@ -1985,7 +1985,7 @@ pub fn generate_typescript(
     extensions: Option<std::collections::HashMap<String, String>>,
 ) -> napi::Result<String> {
     let p = std::path::Path::new(&path);
-    let apps = installed(apps, extensions);
+    let apps = installed(apps, extensions)?;
     let project = monorm_core::dsl::compile_project_file_with(p, &apps).map_err(schema_err)?;
     emit_warnings(env, &project)?;
     let (ir, schema) = monorm_core::dsl::check(project.ir).map_err(schema_err)?;

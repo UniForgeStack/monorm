@@ -162,6 +162,20 @@ test("monorm admin names the wrong setting and the missing database", async () =
   assert.match(run.stderr(), /admin\.app `\.\/admin\.ts:nothing`/);
 });
 
+test("the url variable of the database table connects the admin", async () => {
+  const { dir, url } = project();
+  const schema = join(dir, "schema.prisma");
+  writeFileSync(schema, readFileSync(schema, "utf8").replace('datasource db {\n  provider = "sqlite"\n}\n\n', ""));
+  writeFileSync(join(dir, "monorm.toml"), '[database]\nprovider = "sqlite"\nurl_env = "APP_DATABASE_URL"\n\n[admin]\napp = "./admin.ts:admin"\n');
+  const failed = start(dir, "", { APP_DATABASE_URL: "" });
+  assert.equal(await failed.ended, 1);
+  assert.match(failed.stderr(), /APP_DATABASE_URL/);
+  const run = start(dir, "", { APP_DATABASE_URL: url });
+  assert.equal((await get(`${await run.listening()}/readyz`)).status, 200);
+  run.child.kill("SIGTERM");
+  assert.equal(await run.ended, 0, run.stderr());
+});
+
 test("the setup hook connects the database instead of the environment", async () => {
   const { dir, url } = project();
   writeFileSync(join(dir, "hooks.ts"), `import { connect } from "monorm";\n\nexport async function setup() {\n  await connect(${JSON.stringify(url)});\n}\n`);

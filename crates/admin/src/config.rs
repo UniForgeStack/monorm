@@ -52,6 +52,13 @@ pub struct Config {
     /// The service switcher (`[admin.switcher]`): each string may hold `${NAME}`, which reads the environment. The site merges it with the `switcher` of the code.
     #[serde(default)]
     pub switcher: Option<SwitcherConfig>,
+    /// The environment variable that holds the database URL when no setup hook connects (`[database] url_env`).
+    #[serde(default = "default_url_env")]
+    pub url_env: String,
+}
+
+fn default_url_env() -> String {
+    monorm_core::settings::DEFAULT_URL_ENV.to_owned()
 }
 
 const KEYS: [&str; 13] = ["app", "setup", "host", "port", "timeout", "db_settings", "idle_timeout", "session_timeout", "origins", "trusted_proxies", "base_path", "oidc", "switcher"];
@@ -171,7 +178,7 @@ impl Config {
             }
             Some(_) => return Err(st(code::SETTINGS_INVALID, format!("{place}`admin.switcher` must be a table"))),
         };
-        Ok(Config { app, setup: text("setup")?, host, port, timeout_ms, db_settings, idle_timeout_secs, session_timeout_secs, origins, trusted_proxies, base_path, oidc, switcher })
+        Ok(Config { app, setup: text("setup")?, host, port, timeout_ms, db_settings, idle_timeout_secs, session_timeout_secs, origins, trusted_proxies, base_path, oidc, switcher, url_env: settings.url_env().map_err(|e| st(code::SETTINGS_INVALID, e))? })
     }
 
     /// The settings come back from JSON, which never holds the OIDC client secret: read it again from the environment.

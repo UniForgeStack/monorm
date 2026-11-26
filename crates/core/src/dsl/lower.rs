@@ -344,6 +344,8 @@ pub struct Lowering<'l> {
     pub views: &'l HashSet<String>,
     /// The DSL type names that a manifest attribute owns, with the attribute that owns each (see `owned_types`).
     pub owned_types: &'l BTreeMap<String, String>,
+    /// The `[database]` table of the settings file. With it, the schema files hold no `datasource` block.
+    pub database: Option<&'l crate::settings::DatabaseConfig>,
 }
 
 struct Ctx<'l> {
@@ -406,9 +408,16 @@ impl Lowering<'_> {
             }
         }
 
+        if let Some(database) = self.database {
+            apply_database(&mut ir, database);
+        }
         let mut datasource = false;
         for item in &items {
             match item {
+                Item::Datasource { pos, .. } if self.database.is_some() => {
+                    let file = self.database.map(|d| d.file.as_str()).unwrap_or_default();
+                    return err(*pos, format!("a datasource block is not allowed when {file} has a [database] table; move its keys into [database] (the connection URL comes from the environment)"));
+                }
                 Item::Datasource { pos, props } => {
                     if std::mem::replace(&mut datasource, true) {
                         return err(*pos, "only one datasource block is allowed");
@@ -607,6 +616,29 @@ fn enum_block(e: &EnumDecl) -> Result<EnumIr> {
         out.values.push(EnumValueIr { name: name.clone(), value });
     }
     Ok(out)
+}
+
+/// Fills the IR from the `[database]` table. The keys are already checked, so this cannot fail.
+/// It runs after the extension catalog is filled, so an extension finds the types that it provides.
+fn apply_database(ir: &mut SchemaIr, db: &crate::settings::DatabaseConfig) {
+    ir.dialect = db.dialect;
+    ir.bypass_roles = db.bypass_roles.clone();
+    ir.exempt_roles = db.exempt_roles.clone();
+    if let Some(prefix) = &db.scope_prefix {
+        ir.scope_settings.prefix = prefix.clone();
+    }
+    if let Some((setting, value)) = &db.scope_bypass {
+        (ir.scope_settings.bypass, ir.scope_settings.bypass_value) = (setting.clone(), value.clone());
+    }
+    ir.scope_settings.role_check = db.scope_role_check;
+    if let Some(setting) = &db.hard_delete_setting {
+        ir.hard_delete_setting = setting.clone();
+    }
+    for call in &db.extensions {
+        let name = call.db_name().to_owned();
+        let provides = ir.catalog.iter().find(|x| x.name == name).map(|x| x.provides.clone()).unwrap_or_default();
+        ir.extensions.push(ExtensionIr { name, schema: call.schema.clone(), version: call.version.clone(), provides });
+    }
 }
 
 /// `datasource db { provider = "postgresql" extensions = [...] }`

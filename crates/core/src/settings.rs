@@ -7,7 +7,7 @@
 //! 3. `package.json`: the `"monorm"` object.
 //!
 //! A `pyproject.toml` without `[tool.monorm]` and a `package.json` without `"monorm"` hold no settings,
-//! so the lookup goes on. The settings are a table of keys. The `monorm` command reads `schema`, `migrations`,
+//! so the lookup goes on. The settings are a table of keys. The `monorm` command reads `schema`, `database`, `migrations`,
 //! `query_sets` and `model_methods` (`querySets` and `modelMethods` in `package.json`; the other spelling is an error, see [`Settings::reject_spelling`]);
 //! every other key (for example `[admin]`) belongs to its owner, which reads it with [`Settings::section`].
 
@@ -15,6 +15,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde_json::Value;
+
+use crate::dialect::Dialect;
 
 /// The file that the settings came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,6 +118,146 @@ impl Settings {
         }
     }
 
+    /// The `[database]` table, or `None` when the project has none (the defaults of today: PostgreSQL, no extensions).
+    /// The keys and their checks are the keys of the old `datasource` block; `url_env` is new.
+    /// An extension is a name or a table `{ name, map, schema, version }`, and `scope_bypass` a table `{ setting, value }`.
+    pub fn database(&self) -> Result<Option<DatabaseConfig>, String> {
+        let Some(section) = self.section("database") else { return Ok(None) };
+        let Value::Object(table) = section else { return Err(self.wrong("database", "must be a table")) };
+        const KEYS: [&str; 9] = ["provider", "url_env", "extensions", "bypass_roles", "exempt_roles", "scope_prefix", "scope_bypass", "scope_role_check", "hard_delete_setting"];
+        let mut unknown: Vec<&String> = table.keys().filter(|k| !KEYS.contains(&k.as_str())).collect();
+        unknown.sort();
+        if let Some(name) = unknown.first() {
+            return Err(self.wrong(&format!("database.{name}"), &format!("is not a setting; the keys are {}", KEYS.join(", "))));
+        }
+        let mut out = DatabaseConfig { file: self.source().map(|s| s.file().to_owned()).unwrap_or_default(), ..Default::default() };
+        out.dialect = match table.get("provider") {
+            Some(Value::String(p)) if p == "postgresql" || p == "postgres" => Dialect::Postgres,
+            Some(Value::String(p)) if p == "sqlite" => Dialect::Sqlite,
+            Some(_) => return Err(self.wrong("database.provider", r#"must be "postgresql" or "sqlite""#)),
+            None => return Err(self.wrong("database.provider", r#"is missing; write provider = "postgresql""#)),
+        };
+        out.url_env = self.non_empty(table, "url_env", r#"is the name of an environment variable, e.g. "DATABASE_URL""#)?;
+        out.bypass_roles = self.roles(table, "bypass_roles", "app_admin")?;
+        out.exempt_roles = self.roles(table, "exempt_roles", "reporting")?;
+        out.scope_prefix = self.non_empty(table, "scope_prefix", r#"is a non-empty string, e.g. "tenant""#)?;
+        out.hard_delete_setting = self.non_empty(table, "hard_delete_setting", r#"is a non-empty string, e.g. "rules.hard_deletion""#)?;
+        match table.get("scope_bypass") {
+            None => {}
+            Some(Value::Object(fields)) => {
+                const FORM: &str = r#"is { setting = "tenant.bypass", value = "on" }"#;
+                let (mut setting, mut value) = (None, None);
+                for (key, v) in fields {
+                    let slot = match key.as_str() {
+                        "setting" => &mut setting,
+                        "value" => &mut value,
+                        other => return Err(self.wrong(&format!("database.scope_bypass.{other}"), "is not a key; scope_bypass takes `setting` and `value`")),
+                    };
+                    match v {
+                        Value::String(text) if !text.is_empty() => *slot = Some(text.clone()),
+                        _ => return Err(self.wrong(&format!("database.scope_bypass.{key}"), "must be a non-empty string")),
+                    }
+                }
+                out.scope_bypass = match (setting, value) {
+                    (Some(setting), Some(value)) => Some((setting, value)),
+                    _ => return Err(self.wrong("database.scope_bypass", FORM)),
+                };
+            }
+            Some(_) => return Err(self.wrong("database.scope_bypass", r#"is { setting = "tenant.bypass", value = "on" }"#)),
+        }
+        match table.get("scope_role_check") {
+            None => {}
+            Some(Value::Bool(b)) => out.scope_role_check = *b,
+            Some(_) => return Err(self.wrong("database.scope_role_check", "must be true or false")),
+        }
+        match table.get("extensions") {
+            None => {}
+            Some(Value::Array(list)) => {
+                for item in list {
+                    let call = self.extension(item)?;
+                    if out.extensions.iter().any(|x| x.db_name() == call.db_name()) {
+                        return Err(self.wrong("database.extensions", &format!("lists extension {} twice", call.db_name())));
+                    }
+                    out.extensions.push(call);
+                }
+            }
+            Some(_) => return Err(self.wrong("database.extensions", r#"takes a list, e.g. ["postgis", { name = "citext", schema = "ext" }]"#)),
+        }
+        Ok(Some(out))
+    }
+
+    /// The name of the environment variable that holds the database URL: `[database] url_env`, else `MONORM_DATABASE_URL`.
+    /// The other keys of `[database]` are not checked here, so a command that only needs the URL does not stop on them.
+    pub fn url_env(&self) -> Result<String, String> {
+        match self.section("database") {
+            Some(Value::Object(table)) => match self.non_empty(table, "url_env", r#"is the name of an environment variable, e.g. "DATABASE_URL""#)? {
+                Some(name) => Ok(name),
+                None => Ok(DEFAULT_URL_ENV.to_owned()),
+            },
+            _ => Ok(DEFAULT_URL_ENV.to_owned()),
+        }
+    }
+
+    fn non_empty(&self, table: &serde_json::Map<String, Value>, key: &str, what: &str) -> Result<Option<String>, String> {
+        match table.get(key) {
+            None => Ok(None),
+            Some(Value::String(s)) if !s.is_empty() => Ok(Some(s.clone())),
+            Some(_) => Err(self.wrong(&format!("database.{key}"), what)),
+        }
+    }
+
+    fn roles(&self, table: &serde_json::Map<String, Value>, key: &str, example: &str) -> Result<Vec<String>, String> {
+        let name = format!("database.{key}");
+        match table.get(key) {
+            None => Ok(vec![]),
+            Some(Value::Array(list)) => {
+                let mut roles: Vec<String> = vec![];
+                for role in list {
+                    match role {
+                        Value::String(role) if !role.is_empty() => if !roles.contains(role) { roles.push(role.clone()) },
+                        _ => return Err(self.wrong(&name, &format!("holds a non-empty string for each role, e.g. \"{example}\""))),
+                    }
+                }
+                Ok(roles)
+            }
+            Some(_) => Err(self.wrong(&name, &format!("takes a list of role names, e.g. [\"{example}\"]"))),
+        }
+    }
+
+    fn extension(&self, item: &Value) -> Result<ExtensionCall, String> {
+        const FORM: &str = r#"is a name or a table, e.g. "postgis" or { name = "postgis", schema = "ext", version = "3.4" }"#;
+        match item {
+            Value::String(name) if !name.is_empty() => Ok(ExtensionCall { name: name.clone(), ..Default::default() }),
+            Value::Object(fields) => {
+                let mut call = ExtensionCall::default();
+                for (key, v) in fields {
+                    let slot = match key.as_str() {
+                        "name" => &mut call.name,
+                        "map" | "schema" | "version" => {
+                            let Value::String(text) = v else { return Err(self.wrong(&format!("database.extensions.{key}"), "must be a string")) };
+                            match key.as_str() {
+                                "map" => call.map = Some(text.clone()),
+                                "schema" => call.schema = Some(text.clone()),
+                                _ => call.version = Some(text.clone()),
+                            }
+                            continue;
+                        }
+                        other => return Err(self.wrong(&format!("database.extensions.{other}"), "is not a key; an extension takes `name`, `map`, `schema` and `version`")),
+                    };
+                    match v {
+                        Value::String(text) if !text.is_empty() => *slot = text.clone(),
+                        _ => return Err(self.wrong("database.extensions.name", "must be a non-empty string")),
+                    }
+                }
+                if call.name.is_empty() {
+                    return Err(self.wrong("database.extensions", "holds a table without a `name`"));
+                }
+                Ok(call)
+            }
+            _ => Err(self.wrong("database.extensions", FORM)),
+        }
+    }
+
     /// `key` as a table of strings (for example `query_sets`: model to target), empty when it is not set.
     pub fn string_table(&self, key: &str) -> Result<BTreeMap<String, String>, String> {
         match self.section(key) {
@@ -145,6 +287,45 @@ impl Settings {
             Some((source, _)) => format!("{}: `{}{key}` {what}", source.file(), source.prefix()),
             None => format!("`{key}` {what}"),
         }
+    }
+}
+
+/// The environment variable that holds the database URL when `[database]` does not name one.
+pub const DEFAULT_URL_ENV: &str = "MONORM_DATABASE_URL";
+
+/// The `[database]` table of the settings file, as one typed input for the compiler. It carries the keys of the old
+/// `datasource` block (the compiler fills the same IR fields from it) and `url_env`, which only the commands read.
+#[derive(Debug, Clone, Default)]
+pub struct DatabaseConfig {
+    /// The settings file that the table came from, for error texts.
+    pub file: String,
+    pub dialect: Dialect,
+    pub url_env: Option<String>,
+    pub extensions: Vec<ExtensionCall>,
+    pub bypass_roles: Vec<String>,
+    pub exempt_roles: Vec<String>,
+    pub scope_prefix: Option<String>,
+    /// The setting and the value that mark a scope bypass.
+    pub scope_bypass: Option<(String, String)>,
+    pub scope_role_check: bool,
+    pub hard_delete_setting: Option<String>,
+}
+
+/// One database extension of `[database] extensions`: the keys of the old call form `postgis(map: "x", schema: "ext", version: "3.4")`.
+#[derive(Debug, Clone, Default)]
+pub struct ExtensionCall {
+    /// The name of the extension definition (for the types that it provides).
+    pub name: String,
+    /// The name in the database, when it differs from `name`.
+    pub map: Option<String>,
+    pub schema: Option<String>,
+    pub version: Option<String>,
+}
+
+impl ExtensionCall {
+    /// The name that the database knows.
+    pub fn db_name(&self) -> &str {
+        self.map.as_deref().unwrap_or(&self.name)
     }
 }
 
@@ -350,5 +531,82 @@ mod tests {
     #[test]
     fn a_broken_file_after_the_winner_is_not_read() {
         assert!(load(&[("monorm.toml", ""), ("package.json", "{")]).is_ok());
+    }
+
+    const DATABASE: &str = r#"
+[database]
+provider = "postgresql"
+url_env = "DATABASE_URL"
+extensions = ["citext", { name = "postgis", schema = "ext", version = "3.4" }]
+bypass_roles = ["app_admin"]
+exempt_roles = ["reporting"]
+scope_prefix = "tenant"
+scope_bypass = { setting = "tenant.bypass", value = "on" }
+scope_role_check = true
+hard_delete_setting = "rules.hard_deletion"
+"#;
+
+    fn database(text: &str) -> Result<Option<DatabaseConfig>, String> {
+        load(&[("monorm.toml", text)])?.database()
+    }
+
+    #[test]
+    fn the_database_table_reads_every_key() {
+        let db = database(DATABASE).unwrap().unwrap();
+        assert_eq!((db.dialect, db.url_env.as_deref(), db.file.as_str()), (Dialect::Postgres, Some("DATABASE_URL"), "monorm.toml"));
+        assert_eq!(db.extensions.iter().map(|e| (e.name.as_str(), e.schema.as_deref(), e.version.as_deref())).collect::<Vec<_>>(), [("citext", None, None), ("postgis", Some("ext"), Some("3.4"))]);
+        assert_eq!((db.bypass_roles, db.exempt_roles), (vec!["app_admin".to_owned()], vec!["reporting".to_owned()]));
+        assert_eq!((db.scope_prefix.as_deref(), db.scope_role_check, db.hard_delete_setting.as_deref()), (Some("tenant"), true, Some("rules.hard_deletion")));
+        assert_eq!(db.scope_bypass, Some(("tenant.bypass".to_owned(), "on".to_owned())));
+    }
+
+    #[test]
+    fn the_database_table_has_one_spelling_in_each_file() {
+        let py = load(&[("pyproject.toml", "[tool.monorm.database]\nprovider = \"sqlite\"\n")]).unwrap().database().unwrap().unwrap();
+        assert_eq!((py.dialect, py.file.as_str()), (Dialect::Sqlite, "pyproject.toml"));
+        let js = load(&[("package.json", r#"{"monorm": {"database": {"provider": "postgres", "url_env": "DB"}}}"#)]).unwrap();
+        assert_eq!((js.database().unwrap().unwrap().dialect, js.url_env().unwrap().as_str()), (Dialect::Postgres, "DB"));
+    }
+
+    #[test]
+    fn no_database_table_means_the_defaults_and_the_default_url_variable() {
+        let settings = load(&[("monorm.toml", "migrations = \"db\"\n")]).unwrap();
+        assert!(settings.database().unwrap().is_none());
+        assert_eq!(settings.url_env().unwrap(), "MONORM_DATABASE_URL");
+        assert_eq!(load(&[]).unwrap().url_env().unwrap(), "MONORM_DATABASE_URL");
+        let no_url = load(&[("monorm.toml", "[database]\nprovider = \"sqlite\"\n")]).unwrap();
+        assert_eq!(no_url.url_env().unwrap(), "MONORM_DATABASE_URL");
+    }
+
+    #[test]
+    fn url_env_does_not_check_the_other_keys() {
+        let settings = load(&[("monorm.toml", "[database]\nurl_env = \"DB\"\nbogus = 1\n")]).unwrap();
+        assert_eq!(settings.url_env().unwrap(), "DB");
+        assert!(settings.database().is_err());
+    }
+
+    #[test]
+    fn a_wrong_database_table_names_the_file_and_the_key() {
+        let cases = [
+            ("database = 3\n", "monorm.toml: `database` must be a table"),
+            ("[database]\n", "`database.provider` is missing"),
+            ("[database]\nprovider = \"mysql\"\n", "`database.provider` must be"),
+            ("[database]\nprovider = \"sqlite\"\nurl = \"x\"\n", "`database.url` is not a setting"),
+            ("[database]\nprovider = \"sqlite\"\nurl_env = \"\"\n", "`database.url_env`"),
+            ("[database]\nprovider = \"sqlite\"\nbypass_roles = \"a\"\n", "`database.bypass_roles` takes a list"),
+            ("[database]\nprovider = \"sqlite\"\nexempt_roles = [1]\n", "`database.exempt_roles` holds"),
+            ("[database]\nprovider = \"sqlite\"\nscope_bypass = { setting = \"a\" }\n", "`database.scope_bypass` is { setting"),
+            ("[database]\nprovider = \"sqlite\"\nscope_bypass = { setting = \"a\", value = \"b\", more = \"c\" }\n", "`database.scope_bypass.more` is not a key"),
+            ("[database]\nprovider = \"sqlite\"\nscope_role_check = \"yes\"\n", "`database.scope_role_check` must be true or false"),
+            ("[database]\nprovider = \"sqlite\"\nhard_delete_setting = 1\n", "`database.hard_delete_setting`"),
+            ("[database]\nprovider = \"sqlite\"\nextensions = \"citext\"\n", "`database.extensions` takes a list"),
+            ("[database]\nprovider = \"sqlite\"\nextensions = [{ schema = \"x\" }]\n", "holds a table without a `name`"),
+            ("[database]\nprovider = \"sqlite\"\nextensions = [{ name = \"a\", color = \"x\" }]\n", "`database.extensions.color` is not a key"),
+            ("[database]\nprovider = \"postgresql\"\nextensions = [\"a\", { name = \"b\", map = \"a\" }]\n", "lists extension a twice"),
+        ];
+        for (text, expect) in cases {
+            let error = database(text).unwrap_err();
+            assert!(error.starts_with("monorm.toml: ") && error.contains(expect), "{text}: {error}");
+        }
     }
 }

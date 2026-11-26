@@ -100,6 +100,21 @@ def test_monorm_admin_names_the_wrong_setting_and_the_missing_database(tmp_path,
     assert code == 1 and "admin.app `admin:nothing`" in err, err
 
 
+def test_the_url_variable_of_the_database_table_connects_the_admin(tmp_path, monkeypatch):
+    url = project(tmp_path, monkeypatch)
+    schema = tmp_path / "schema.prisma"
+    schema.write_text(schema.read_text().replace('datasource db {\n  provider = "sqlite"\n}\n\n', ""))
+    (tmp_path / "monorm.toml").write_text('[database]\nprovider = "sqlite"\nurl_env = "APP_DATABASE_URL"\n\n[admin]\napp = "admin:admin"\n')
+    code, err = run_to_end(start(tmp_path, "", APP_DATABASE_URL=""))
+    assert code == 1 and "APP_DATABASE_URL" in err, err
+    proc = start(tmp_path, "", APP_DATABASE_URL=url)
+    try:
+        assert get(f"{listening(proc)}/readyz")[0] == 200
+    finally:
+        proc.send_signal(signal.SIGTERM)
+    assert run_to_end(proc)[0] == 0
+
+
 def test_the_setup_hook_connects_the_database_instead_of_the_environment(tmp_path, monkeypatch):
     url = project(tmp_path, monkeypatch)
     (tmp_path / "hooks.py").write_text(f"import monorm\n\nasync def setup():\n    await monorm.connect({url!r})\n")

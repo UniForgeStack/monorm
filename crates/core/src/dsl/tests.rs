@@ -400,7 +400,7 @@ fn a_through_name_with_the_model_placeholder_lowers_on_a_deferred_model_only() {
     let views = std::collections::HashSet::new();
     let lower_with = |deferred: &[&str], source: &str| {
         let deferred = deferred.iter().map(|m| m.to_string()).collect();
-        lower::Lowering { load: &load, deferred_identity: &deferred, views: &views, owned_types: &Default::default() }.lower(syntax::parse(source).unwrap()).map(|(ir, _)| ir).map_err(|e| e.msg)
+        lower::Lowering { load: &load, deferred_identity: &deferred, views: &views, owned_types: &Default::default(), database: None }.lower(syntax::parse(source).unwrap()).map(|(ir, _)| ir).map_err(|e| e.msg)
     };
     let ir = lower_with(&["A"], source).unwrap();
     let r = &ir.models[0].relations[0];
@@ -806,7 +806,7 @@ fn enum_subsets_lower_only_on_view_model_fields() {
     let views = std::collections::HashSet::from(["V".to_owned()]);
     let lowered = |field: &str| {
         let source = format!("enum E {{\n  a\n  b\n}}\nmodel M {{\n  id Int @id\n  e E\n}}\nmodel V {{\n  {field}\n}}");
-        lower::Lowering { load: &load, deferred_identity: &Default::default(), views: &views, owned_types: &Default::default() }.lower(syntax::parse(&source).unwrap()).map(|(ir, _)| ir).map_err(|e| e.msg)
+        lower::Lowering { load: &load, deferred_identity: &Default::default(), views: &views, owned_types: &Default::default(), database: None }.lower(syntax::parse(&source).unwrap()).map(|(ir, _)| ir).map_err(|e| e.msg)
     };
     for (field, message) in [("e E(c)", "V.e: E has no value c"), ("e E(a, a)", "V.e: a is listed twice"), ("e E(\"a\")", "V.e: an enum subset lists member names")] {
         let error = lowered(field).unwrap_err();
@@ -889,7 +889,7 @@ fn a_manifest_attribute_owns_a_field_type_or_drops_a_field() {
     assert_eq!(owned.get("Generic").map(String::as_str), Some("generic.relation"));
     let load = |_: &str| Err("no imports".to_owned());
     let (deferred, views) = Default::default();
-    let error = lower::Lowering { load: &load, deferred_identity: &deferred, views: &views, owned_types: &owned }.lower(items).unwrap_err().msg;
+    let error = lower::Lowering { load: &load, deferred_identity: &deferred, views: &views, owned_types: &owned, database: None }.lower(items).unwrap_err().msg;
     assert!(error.contains("unknown type Generic; a Generic field needs @generic.relation(...) (namespace generic.*)"), "{error}");
     // Without an owner, the type is plain unknown.
     let error = compile("model Tag {\n id Int @id\n target Generic?\n}", None).unwrap_err();
@@ -1993,7 +1993,7 @@ fn lower_deferred(source: &str) -> (crate::ir::SchemaIr, lower::Deferred) {
     let load = |_: &str| Err("no imports".to_owned());
     let views = std::collections::HashSet::new();
     let none = Default::default();
-    let (ir, _, deferred) = lower::Lowering { load: &load, deferred_identity: &none, views: &views, owned_types: &Default::default() }.lower_deferred(syntax::parse(source).unwrap()).unwrap();
+    let (ir, _, deferred) = lower::Lowering { load: &load, deferred_identity: &none, views: &views, owned_types: &Default::default(), database: None }.lower_deferred(syntax::parse(source).unwrap()).unwrap();
     (ir, deferred)
 }
 
@@ -2525,5 +2525,58 @@ fn managed_is_refused_on_an_extension_import() {
     std::fs::write(dir.join("schema.prisma"), "import \"acme.toml\" (managed: false)\nmodel A {\n id Int @id\n}\n").unwrap();
     let error = compile_file(&dir.join("schema.prisma")).unwrap_err();
     assert!(error.contains("managed is only allowed on schema imports"), "{error}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+fn database_project(name: &str, toml: &str, schema: &str) -> (Installed, PathBuf, PathBuf) {
+    let dir = std::env::temp_dir().join(format!("monorm-database-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("monorm.toml"), toml).unwrap();
+    std::fs::write(dir.join("schema.prisma"), schema).unwrap();
+    let installed = Installed { database: crate::settings::Settings::load(&dir).unwrap().database().unwrap(), ..Default::default() };
+    (installed, dir.join("schema.prisma"), dir)
+}
+
+#[test]
+fn the_database_table_fills_the_ir_like_a_datasource_block() {
+    let model = "model Post {\n id Int @id\n tenant_id Int\n}\n";
+    let keys = "bypass_roles = [\"app_admin\"]\nexempt_roles = [\"reporting\"]\nscope_prefix = \"tenant\"\nscope_bypass = { setting = \"tenant.bypass\", value = \"on\" }\nscope_role_check = true\nhard_delete_setting = \"rules.hard_deletion\"\nextensions = [\"citext\", { name = \"postgis\", schema = \"ext\", version = \"3.4\" }]\n";
+    let (installed, file, dir) = database_project("fills", &format!("[database]\nprovider = \"postgresql\"\n{keys}"), model);
+    let from_table = compile_project_file_with(&file, &installed).unwrap().ir;
+    std::fs::write(&file, format!("datasource db {{\n provider = \"postgresql\"\n bypass_roles = [\"app_admin\"]\n exempt_roles = [\"reporting\"]\n scope_prefix = \"tenant\"\n scope_bypass = {{ setting = \"tenant.bypass\", value = \"on\" }}\n scope_role_check = true\n hard_delete_setting = \"rules.hard_deletion\"\n extensions = [citext, postgis(schema: \"ext\", version: \"3.4\")]\n}}\n{model}")).unwrap();
+    let from_block = compile_project_file(&file).unwrap().ir;
+    assert_eq!(serde_json::to_value(&from_table).unwrap(), serde_json::to_value(&from_block).unwrap());
+    assert_eq!((from_table.bypass_roles.clone(), from_table.scope_settings.prefix.as_str(), from_table.extensions.len()), (vec!["app_admin".to_owned()], "tenant", 2));
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn the_database_provider_sets_the_dialect_and_the_view_body_folder() {
+    let schema = "view Totals {\n id Int @id\n}\n";
+    let (installed, file, dir) = database_project("dialect", "[database]\nprovider = \"sqlite\"\n", schema);
+    std::fs::create_dir_all(dir.join("views/main")).unwrap();
+    std::fs::write(dir.join("views/main/Totals.sql"), "SELECT 1 AS id").unwrap();
+    let ir = compile_project_file_with(&file, &installed).unwrap().ir;
+    assert_eq!(ir.dialect, crate::dialect::Dialect::Sqlite);
+    assert_eq!(ir.models[0].sql_view.as_ref().unwrap().body, "SELECT 1 AS id");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_datasource_block_with_a_database_table_is_an_error_that_names_the_file() {
+    let (installed, file, dir) = database_project("both", "[database]\nprovider = \"sqlite\"\n", "datasource db {\n provider = \"sqlite\"\n}\nmodel A {\n id Int @id\n}\n");
+    let error = compile_project_file_with(&file, &installed).err().unwrap();
+    assert!(error.contains("a datasource block is not allowed when monorm.toml has a [database] table"), "{error}");
+    assert!(error.contains("schema.prisma:1:"), "{error}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn without_a_database_table_the_datasource_block_and_the_defaults_stay() {
+    let (installed, file, dir) = database_project("none", "migrations = \"db\"\n", "datasource db {\n provider = \"sqlite\"\n}\nmodel A {\n id Int @id\n}\n");
+    assert_eq!(compile_project_file_with(&file, &installed).unwrap().ir.dialect, crate::dialect::Dialect::Sqlite);
+    std::fs::write(&file, "model A {\n id Int @id\n}\n").unwrap();
+    assert_eq!(compile_project_file_with(&file, &installed).unwrap().ir.dialect, crate::dialect::Dialect::Postgres);
     std::fs::remove_dir_all(dir).unwrap();
 }

@@ -3,7 +3,7 @@
 The settings come from the ``[admin]`` section (see ``monorm_core::settings``). The ``app`` setting names the
 ``Admin`` object (``module:attr``). The ``setup`` setting names a function (``module:function``, sync or async)
 that connects the database, the extensions and the file storage as the application does. Without ``setup``
-the admin connects to ``MONORM_DATABASE_URL`` after it imports ``app``.
+the admin connects to the environment variable of ``[database] url_env`` (``MONORM_DATABASE_URL`` by default) after it imports ``app``.
 """
 
 from __future__ import annotations
@@ -55,11 +55,10 @@ async def _open(config: dict[str, Any]) -> tuple[Any, Any]:
     try:
         db = get_database()
     except NotConnected:
-        url = os.environ.get("MONORM_DATABASE_URL")
+        name = config.get("url_env") or "MONORM_DATABASE_URL"
+        url = os.environ.get(name)
         if not url:
-            raise RuntimeError(
-                "no database: the setup hook did not connect, and MONORM_DATABASE_URL is not set"
-            ) from None
+            raise RuntimeError(f"no database: the setup hook did not connect, and {name} is not set") from None
         db = await connect(url)
     return admin, db
 

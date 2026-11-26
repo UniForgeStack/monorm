@@ -4,7 +4,7 @@
  * The settings come from the `[admin]` section (see `monorm_core::settings`). The `app` setting names the
  * `Admin` object (`./admin.ts:admin`). The `setup` setting names a function (`./setup.ts:setup`, sync or async)
  * that connects the database, the extensions and the file storage as the application does. Without `setup`
- * the admin connects to `MONORM_DATABASE_URL` after it imports `app`.
+ * the admin connects to the environment variable of `[database] url_env` (`MONORM_DATABASE_URL` by default) after it imports `app`.
  */
 
 import { AdminConfigError, AdminSettingsError, type Admin } from "./admin.js";
@@ -19,6 +19,7 @@ interface Settings {
   readonly setup: string | null;
   readonly base_path?: string | null;
   readonly switcher?: unknown;
+  readonly url_env?: string;
 }
 
 async function open(settings: Settings): Promise<{ admin: Admin; database: Database }> {
@@ -33,8 +34,9 @@ async function open(settings: Settings): Promise<{ admin: Admin; database: Datab
     database = getDatabase();
   } catch (e) {
     if (!(e instanceof NotConnected)) throw e;
-    const url = process.env.MONORM_DATABASE_URL;
-    if (!url) throw new Error("no database: the setup hook did not connect, and MONORM_DATABASE_URL is not set");
+    const name = settings.url_env || "MONORM_DATABASE_URL";
+    const url = process.env[name];
+    if (!url) throw new Error(`no database: the setup hook did not connect, and ${name} is not set`);
     database = await connect(url);
   }
   return { admin, database };

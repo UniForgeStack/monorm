@@ -1344,7 +1344,7 @@ impl Engine {
     #[pyo3(signature = (extensions = None))]
     fn pull_schema<'py>(&self, py: Python<'py>, extensions: Option<std::collections::BTreeMap<String, std::path::PathBuf>>) -> PyResult<Bound<'py, PyAny>> {
         let driver = self.driver.clone();
-        let installed = installed(None, extensions);
+        let installed = installed(None, extensions)?;
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let p = monorm_engine::introspect::pull(&*driver, &installed).await.map_err(engine_err)?;
             let views = p.views.into_iter().map(|(path, body)| (path.to_string_lossy().into_owned(), body)).collect::<Vec<_>>();
@@ -1568,7 +1568,7 @@ fn native_artifact() -> PyResult<String> {
 #[pyfunction]
 #[pyo3(signature = (source, path = None, extensions = None))]
 fn compile_schema(py: Python<'_>, source: &str, path: Option<&str>, extensions: Option<std::collections::BTreeMap<String, std::path::PathBuf>>) -> PyResult<String> {
-    let apps = installed(None, extensions);
+    let apps = installed(None, extensions)?;
     let project = monorm_core::dsl::compile_project_with(source, path.map(std::path::Path::new), &apps).map_err(schema_err)?;
     compiled(py, project)
 }
@@ -1590,16 +1590,16 @@ fn compiled(py: Python<'_>, project: monorm_core::dsl::CompiledProject) -> PyRes
 }
 
 /// The installed apps and extension manifests that Python found, as the loader reads them.
-fn installed(apps: Option<std::collections::BTreeMap<String, std::path::PathBuf>>, extensions: Option<std::collections::BTreeMap<String, std::path::PathBuf>>) -> monorm_core::dsl::Installed {
+fn installed(apps: Option<std::collections::BTreeMap<String, std::path::PathBuf>>, extensions: Option<std::collections::BTreeMap<String, std::path::PathBuf>>) -> PyResult<monorm_core::dsl::Installed> {
     let mut installed = monorm_core::dsl::Installed::from(apps.unwrap_or_default());
     installed.extensions = extensions.unwrap_or_default().into_iter().collect();
-    installed
+    installed.with_settings_of(std::path::Path::new(".")).map_err(schema_err)
 }
 
 #[pyfunction]
 #[pyo3(signature = (path, apps = None, extensions = None))]
 fn compile_schema_file(py: Python<'_>, path: &str, apps: Option<std::collections::BTreeMap<String, std::path::PathBuf>>, extensions: Option<std::collections::BTreeMap<String, std::path::PathBuf>>) -> PyResult<String> {
-    let apps = installed(apps, extensions);
+    let apps = installed(apps, extensions)?;
     let project = monorm_core::dsl::compile_project_file_with(std::path::Path::new(path), &apps).map_err(schema_err)?;
     compiled(py, project)
 }
@@ -1617,7 +1617,7 @@ fn generate_python(
     extensions: Option<std::collections::BTreeMap<String, std::path::PathBuf>>,
 ) -> PyResult<(String, String)> {
     let p = std::path::Path::new(path);
-    let project = monorm_core::dsl::compile_project_file_with(p, &installed(apps, extensions)).map_err(schema_err)?;
+    let project = monorm_core::dsl::compile_project_file_with(p, &installed(apps, extensions)?).map_err(schema_err)?;
     emit_warnings(py, &project)?;
     let (ir, schema) = monorm_core::dsl::check(project.ir).map_err(schema_err)?;
     let source = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();

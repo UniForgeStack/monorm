@@ -56,14 +56,22 @@ pub fn compile(source: &str, origin: Option<&Path>) -> Result<SchemaIr, String> 
 pub struct Installed {
     pub apps: std::collections::BTreeMap<String, PathBuf>,
     pub extensions: Vec<(String, PathBuf)>,
+    /// The `[database]` table of the settings file: the one typed input that replaces the `datasource` block.
+    pub database: Option<crate::settings::DatabaseConfig>,
 }
 
 impl Installed {
     pub fn new() -> Self { Self::default() }
+
+    /// Reads the `[database]` table of the settings file in `dir`, as the command line does for the working directory.
+    pub fn with_settings_of(mut self, dir: &Path) -> Result<Self, String> {
+        self.database = crate::settings::Settings::load(dir)?.database()?;
+        Ok(self)
+    }
 }
 
 impl From<std::collections::BTreeMap<String, PathBuf>> for Installed {
-    fn from(apps: std::collections::BTreeMap<String, PathBuf>) -> Self { Self { apps, extensions: vec![] } }
+    fn from(apps: std::collections::BTreeMap<String, PathBuf>) -> Self { Self { apps, extensions: vec![], database: None } }
 }
 
 impl<const N: usize> From<[(String, PathBuf); N]> for Installed {
@@ -229,9 +237,12 @@ pub fn view_body_path(sqlite: bool, name: &str) -> PathBuf {
 /// The SQL body of each `view` block: `views/<db schema>/<Name>.sql` next to the schema file that declares the view
 /// (`public` on PostgreSQL, `main` on SQLite). The text comes from the override map first, then from disk.
 /// Returns the files it read.
-fn view_bodies(items: &mut [syntax::Item], loader: &Loader<'_>) -> Result<Vec<PathBuf>, String> {
-    let sqlite = items.iter().any(|item| matches!(item, syntax::Item::Datasource { props, .. }
-        if props.iter().any(|(key, _, value)| key == "provider" && matches!(value, syntax::Value::Str(p) if p == "sqlite"))));
+fn view_bodies(items: &mut [syntax::Item], loader: &Loader<'_>, database: Option<&crate::settings::DatabaseConfig>) -> Result<Vec<PathBuf>, String> {
+    let sqlite = match database {
+        Some(database) => database.dialect == crate::dialect::Dialect::Sqlite,
+        None => items.iter().any(|item| matches!(item, syntax::Item::Datasource { props, .. }
+            if props.iter().any(|(key, _, value)| key == "provider" && matches!(value, syntax::Value::Str(p) if p == "sqlite")))),
+    };
     let mut read = vec![];
     for item in items {
         let syntax::Item::Model(m) = item else { continue };
@@ -281,7 +292,7 @@ fn compile_project_overlay(source: &str, origin: Option<&Path>, update: Option<I
     let mut loader = Loader { overrides, apps: &installed.apps, units: vec![], seen: Default::default(), active: vec![], locations: vec![], lines: 0, sourceless: origin.is_none() };
     let origin = origin.unwrap_or(Path::new("<schema>"));
     let mut items = loader.expand(source, origin, "the root schema", &Default::default(), true, None)?;
-    let sidecars = view_bodies(&mut items, &loader)?;
+    let sidecars = view_bodies(&mut items, &loader, installed.database.as_ref())?;
     let mut declared = std::collections::HashMap::new();
     for item in &items {
         let (name, pos) = match item {
@@ -356,7 +367,7 @@ fn compile_project_overlay(source: &str, origin: Option<&Path>, update: Option<I
         None => msg,
     };
     let owned_types = lower::owned_types(manifests);
-    let (mut ir, diagnostics, mut deferred) = lower::Lowering { load: &load, deferred_identity: &deferred_identity, views: &views, owned_types: &owned_types }.lower_deferred(items).map_err(|e| loader.located(e))?;
+    let (mut ir, diagnostics, mut deferred) = lower::Lowering { load: &load, deferred_identity: &deferred_identity, views: &views, owned_types: &owned_types, database: installed.database.as_ref() }.lower_deferred(items).map_err(|e| loader.located(e))?;
     let mut warnings: Vec<expr::Warning> = diagnostics.into_iter().map(|d| {
         let (file, span) = loader.located_span(d.span);
         expr::Warning { file, span, message: d.message }

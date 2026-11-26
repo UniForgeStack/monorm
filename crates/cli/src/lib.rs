@@ -26,7 +26,8 @@
 //! from the settings (`schema`, `migrations`), else `schema.prisma` and `migrations`.
 //! The settings come from the first of `monorm.toml`, `[tool.monorm]` in `pyproject.toml` and
 //! the `"monorm"` key of `package.json` (see `monorm_core::settings`; the files are not merged).
-//! The database URL comes from `--url` or `MONORM_DATABASE_URL`. `generate` also reads the query-set classes
+//! The database URL comes from `--url`, else from the environment variable that `[database] url_env` names
+//! (`MONORM_DATABASE_URL` when there is none). `generate` also reads the query-set classes
 //! from `query_sets` (`"querySets"` in `package.json`) and the model-methods classes from `model_methods`
 //! (`"modelMethods"`); each is a table of model name to target. Other sections, such as `[admin]`, belong to their owner.
 //!
@@ -113,7 +114,8 @@ const COMMANDS: &str = "  init [dir] [--lang python|typescript] [--tool uv|pip|n
 The schema and migrations directory come from --schema / --dir, else from the first settings
 file: monorm.toml, [tool.monorm] in pyproject.toml, or \"monorm\" in package.json (the files
 are not merged), else schema.prisma and migrations/.
-The database URL comes from --url or MONORM_DATABASE_URL.";
+The database URL comes from --url, else from the environment variable that [database] url_env names
+(MONORM_DATABASE_URL when there is none).";
 
 fn usage(host: Host) -> String {
     format!("usage: {} [--schema FILE] [--dir DIR] [--url URL] [--app NAME=PATH]... <command>\n{COMMANDS}", host.prog())
@@ -217,6 +219,7 @@ impl Args {
             let entry = (id.to_owned(), PathBuf::from(path));
             if !installed.extensions.contains(&entry) { installed.extensions.push(entry); }
         }
+        installed.database = settings()?.database().map_err(Failure::Setup)?;
         Ok(installed)
     }
 
@@ -337,7 +340,7 @@ pub fn migrate_args(argv: &[String]) -> Option<MigrateArgs> {
         schema_file(&args, &settings).ok()?,
         migrations_dir(&args, &settings).ok()?,
     );
-    let env = std::env::var("MONORM_DATABASE_URL").ok().filter(|u| !u.is_empty());
+    let env = settings.url_env().ok().and_then(|name| std::env::var(name).ok()).filter(|u| !u.is_empty());
     let url = args.opt(&["--url"]).map(String::from).or(env);
     Some((schema, dir, url, args.arg(0).map(String::from), args.flag("--allow-destructive"), args.opt(&["--ops"]).map(String::from)))
 }
@@ -820,9 +823,10 @@ async fn role_warning(driver: &dyn monorm_engine::db::Executor) -> Option<String
 }
 
 async fn database(command: &str, args: &Args, settings: &Settings, dir: &Path, schema: &Path) -> Result<i32> {
-    let env = std::env::var("MONORM_DATABASE_URL").ok().filter(|u| !u.is_empty());
+    let url_env = settings.url_env().map_err(Failure::Setup)?;
+    let env = std::env::var(&url_env).ok().filter(|u| !u.is_empty());
     let Some(url) = args.opt(&["--url"]).map(String::from).or(env) else {
-        return Err(Failure::Setup("no database; pass --url or set MONORM_DATABASE_URL".into()));
+        return Err(Failure::Setup(format!("no database; pass --url or set {url_env}")));
     };
     let driver = monorm_engine::db::connect(&url, 1).await.map_err(failed)?;
     let result = async {
