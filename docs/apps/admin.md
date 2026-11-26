@@ -959,6 +959,30 @@ The version check compares the stored bytes, so a row with such a value can stil
 It takes `{model, field, values}` and returns one value for each stored value.
 - The `json` widget pretty-prints every `json` field.
 
+### Banners
+
+`banners` is an async function that takes the record and returns the notices that the detail page shows.
+It returns a list of `{"level": ..., "text": ...}`: `level` is `info`, `warning` or `danger`, and `text` is not empty.
+The UI shows the banners under the tabs and above the sections.
+
+```python
+async def stock_banners(record):
+    if record["stock"] == 0:
+        return [{"level": "warning", "text": "Out of stock"}]
+    return []
+
+admin.register(Product, {"banners": stock_banners})
+```
+
+In TypeScript the option is `{ banners: async (record) => [{ level: "warning", text: "Out of stock" }] }`.
+
+- `record` is an object of the values that the detail page shows, by label. A field that the user may not see is not in it.
+- The host calls the function once for each detail read, and never for a list read, a form or an action. The call is direct, not a batch column, so its cost is one host call for each detail read.
+- Over a limit the page cuts the answer: it shows the first 20 banners, and cuts each text at 500 characters. No `danger` banner shows for this.
+- A function that raises, a result that is not a list, an unknown `level`, and an empty `text` give one `danger` banner. The page still loads, and the banner names the error type but not the message.
+- An inline page has no `banners`: the registered page of the child has them.
+- The detail body has the list as `banners` (an empty list when the option is not set).
+
 ### Edit in the list
 
 `list.editable` names the columns that staff edit in the cells of the list, as Django does with `list_editable`:
