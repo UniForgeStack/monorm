@@ -2,7 +2,7 @@ id = "monorm.generic"
 version = "0.1.5"
 abi = "0.2"
 library = "monorm_generic"
-schema_contract = "5.9"
+schema_contract = "5.14"
 language_contract = 1
 languages = ["python", "typescript"]
 databases = ["postgres", "sqlite"]
@@ -16,7 +16,7 @@ positional = [{ kind = "string", required = true }]
 [attributes.arguments]
 type = { kind = "string", required = true }
 key = { kind = "string", required = true }
-targets = { kind = "list", required = true }
+targets = { kind = "model_list", required = true }
 
 # The field form: `target Generic? @generic.relation(targets: [...])` creates the pair fields.
 [[attributes]]
@@ -25,7 +25,7 @@ target = "field"
 field_type = "Generic"
 identities = true
 [attributes.arguments]
-targets = { kind = "list", required = true }
+targets = { kind = "model_list", required = true }
 type = { kind = "string" }
 key = { kind = "string" }
 index = { kind = "boolean" }

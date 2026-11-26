@@ -2,7 +2,7 @@ id = "monorm.query-defaults"
 version = "0.1.5"
 abi = "0.2"
 library = "monorm_query_defaults"
-schema_contract = "5.4"
+schema_contract = "5.14"
 language_contract = 1
 languages = ["python", "typescript"]
 databases = ["postgres", "sqlite"]
@@ -24,7 +24,7 @@ kind = "list"
 [attributes.arguments.related]
 kind = "list"
 [attributes.arguments.parent]
-kind = "string"
+kind = "model"
 [attributes.arguments.order]
 kind = "list"
 
@@ -68,5 +68,5 @@ variadic = true
 name = "query.parent"
 target = "model"
 [[attributes.positional]]
-kind = "string"
+kind = "model"
 required = true

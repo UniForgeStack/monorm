@@ -2,7 +2,7 @@ id = "monorm.inherit"
 version = "0.1.5"
 abi = "0.2"
 library = "monorm_inherit"
-schema_contract = "5.4"
+schema_contract = "5.14"
 language_contract = 1
 languages = ["python", "typescript"]
 databases = ["postgres", "sqlite"]
@@ -20,19 +20,19 @@ name = "inherit.abstract"
 target = "model"
 no_table = true
 
-# `value`: one base is a bare name, `@@inherit.extends(A)`; a list is `@@inherit.extends([A, B])`. The pass checks both.
+# `model_list`: one base is a name, `@@inherit.extends(A)`; a list is `@@inherit.extends([A, B])`. The core resolves each name.
 [[attributes]]
 name = "inherit.extends"
 target = "model"
 [[attributes.positional]]
-kind = "value"
+kind = "model_list"
 required = true
 
 [[attributes]]
 name = "inherit.override"
 target = "model"
 [[attributes.positional]]
-kind = "value"
+kind = "model"
 required = true
 
 # The extension adds no members to a model; its language code is `model_for` / `modelFor`.
