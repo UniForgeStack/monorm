@@ -335,6 +335,8 @@ export interface Detail {
   /** The rows of each inline of the record. */
   inlines?: Record<string, InlineRows>;
   frames?: Frame[];
+  /** The banners of the record: one host call per read. */
+  banners?: { level: "info" | "warning" | "danger"; text: string }[];
   password_target?: { display: string | null; sso_only: boolean };
 }
 

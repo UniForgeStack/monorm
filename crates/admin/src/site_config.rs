@@ -105,6 +105,11 @@ fn lower_page(page: &mut Value, model: &str, tag: &str, schema: &Schema, handles
             list.insert("order".into(), order);
         }
     }
+    if let Some(value) = map.get("banners") {
+        if let Some(name) = host_function(value, format!("banners.{model}{tag}"), handles)? {
+            map.insert("banners".into(), Value::String(name));
+        }
+    }
     if let Some(list) = map.get_mut("list").and_then(Value::as_object_mut) {
         lower_list(list, model, tag, handles)?;
     }
@@ -561,6 +566,9 @@ pub struct ResourceConfig {
     /// Enable the built-in password action on the active auth user resource.
     #[serde(default)]
     pub set_password: bool,
+    /// An async function `(record)` that returns the banners of one record: a list of `{level, text}`, with `level` one of `info`, `warning` and `danger`. One host call for each detail read, under the tabs. A failure shows one danger banner.
+    #[schemars(extend("x-monorm-type" = "banners_function"))]
+    pub banners: Option<String>,
     /// The rows that staff see: a prepared query set with a `param("user")` slot, which the admin fills, or an async function `(user)` that returns a condition (one host call per request). Its filter limits the list, the count, the search, the detail and the tabs; its order is the list order when the list sets none. A row outside the filter is a 404 on the detail. The bypass permission never lifts it.
     #[schemars(extend("x-monorm-type" = "queryset"))]
     pub queryset: Option<QuerysetConfig>,

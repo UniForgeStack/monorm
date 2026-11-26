@@ -265,12 +265,15 @@ export async function startProject({ frame = false, embed = false } = {}) {
   assert.ok(module.includes("admin.register(Book)"), "the generated admin.py registers Book");
   assert.ok(module.includes("admin.register(Note)"), "the generated admin.py registers Note");
   // Book: a section layout with a collapsed section. Note: a custom form from a module file.
+  // Book: banners, an info and a warning on every record.
+  const BOOK_BANNERS = 'async def book_banners(record):\n    return [{"level": "info", "text": "Book " + str(record["id"]) + " is in the seed"}, {"level": "warning", "text": "Check the author"}]\n\n\n';
   let book = 'admin.register(Book, {"list": {"search": [Book.title], "filters": [Book.author]}, "form": [{"title": "Basics", "fields": ["title", "created_at"]}, {"title": "More", "fields": ["author_id"], "collapsed": True}]})';
   if (frame) {
     book = book.replace('{"list":', '{"frames": [{"name": "identity", "title": "Identity health", "url": "/identity/admin/-/embed/book_health?id={id}", "height": "65vh"}], "list":');
   } else if (embed) {
     book = book.replace('{"list":', '{"fieldsets": [{"name": "health", "title": "Book health", "fields": ["title"]}], "list":');
   }
+  book = BOOK_BANNERS + book.replace("admin.register(Book, {", 'admin.register(Book, {"banners": book_banners, ');
   writeFileSync(join(dir, "note-form.js"), NOTE_FORM);
   // Paper: a picker over Reviewer (with a create modal) and a file field in a memory store.
   assert.ok(module.includes("admin.register(Reviewer)") && module.includes("admin.register(Paper)"), "the generated admin.py registers Reviewer and Paper");

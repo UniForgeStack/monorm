@@ -392,6 +392,15 @@ def _batch_host(model: type[Model], function: Callable[[list[Any]], Awaitable[Se
     return run
 
 
+def _banners_host(function: Any) -> Callable[[Any, dict[str, Any]], Awaitable[Any]]:
+    """The host function of ``banners``: one call on a detail read with the record as a dict of JSON values. Rust checks the answer."""
+
+    async def run(database: Any, args: dict[str, Any]) -> Any:
+        return _cell_json(await function(args["record"]))
+
+    return run
+
+
 def _cell_json(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
@@ -832,6 +841,10 @@ class Admin:
             resource["list"] = _list(model, config["list"], fns)
         if "queryset" in config:
             resource["queryset"] = _host(model, "queryset", config["queryset"], fns=fns)
+        if "banners" in config:
+            banners = config["banners"]
+            # A value that is not a function goes as its type: Rust refuses it.
+            resource["banners"] = _host(model, "banners", banners, fns=fns, maker=partial(_banners_host, banners)) if callable(banners) else {"$host": type(banners).__name__}
         if "can" in config:
             resource["can"] = _can(model, config["can"])
         # These keys go as the user wrote them: Rust checks their shape and names the key in the error.

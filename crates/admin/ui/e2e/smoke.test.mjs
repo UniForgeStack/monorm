@@ -1361,6 +1361,25 @@ test("a list shows the related row as a link, hides a column, switches density, 
   await context.close();
 });
 
+test("record banners show under the tabs and above the sections, and a list read has none", async () => {
+  const { page, idle } = await signedIn();
+  await page.goto(`${base}/admin/Book/1`);
+  const banners = page.getByTestId("banners");
+  await banners.waitFor();
+  assert.equal(await banners.getByRole("status").count(), 2, "an info and a warning banner");
+  await banners.getByText("Book 1 is in the seed").waitFor();
+  await banners.getByText("Check the author").waitFor();
+  const above = await banners.evaluate((el) => {
+    const card = document.querySelector("section [role=region]");
+    return !card || !!(el.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+  assert.ok(above, "the banners come before the first section");
+  await idle();
+  await page.goto(`${base}/admin/Book`);
+  await page.getByRole("heading", { name: /Book/ }).waitFor();
+  assert.equal(await page.getByTestId("banners").count(), 0);
+});
+
 test("detail v2: breadcrumbs, the header bar, a folding section and the sticky footer", async () => {
   const { context, page, problems, idle } = await signedIn();
   await page.evaluate(() => localStorage.clear());

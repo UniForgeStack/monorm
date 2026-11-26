@@ -84,6 +84,9 @@ type AnyRelation = RelationPath<any, any, any>;
 
 export type BatchFunction = (keys: readonly any[]) => Promise<readonly unknown[]>;
 
+/** The banners of a record: the record as an object of JSON values; `level` is `info`, `warning` or `danger`. */
+export type BannersFunction = (record: Readonly<Record<string, unknown>>) => Promise<readonly { readonly level: string; readonly text: string }[]>;
+
 /** The keys of the matches: a key value, the key values in key order, or an object of key fields. */
 export type SearchFunction = (q: string, limit: number) => Promise<readonly RecordKey[]>;
 export type SearchWith = SearchFunction | Prepared<any, any, any>;
@@ -458,6 +461,11 @@ function listJson(model: AnyModel, config: ListConfig, fns: Fns): Record<string,
   if (config.search !== undefined) out["search"] = config.search.map((c) => hostJson(model, "list.search", c));
   if (config.searchWith !== undefined) out["search_with"] = hostJson(model, "list.searchWith", config.searchWith, "", fns, () => searchHost(model, config.searchWith!));
   return out;
+}
+
+/** The host function of `banners`: one call on a detail read with the record. Rust checks the answer. */
+function bannersHost(fn: BannersFunction): HostFunction {
+  return async (_database, args) => cellJson(await fn(args.record as Record<string, unknown>));
 }
 
 /** The host function of a computed column: one call with the keys of the page, one value per key. */
@@ -863,9 +871,12 @@ export class Admin {
   #resourceJson(model: string, cls: AnyModel, config: ResourceConfig, registry: Registry, fns: Fns, top = true): Record<string, unknown> {
     const queryset = config.queryset === undefined ? undefined : hostJson(cls, "queryset", config.queryset, "", fns);
     const list = config.list === undefined ? undefined : listJson(cls, config.list, fns);
+    // A value that is not a function goes as its type: Rust refuses it.
+    const banners = config.banners === undefined ? undefined : typeof config.banners === "function" ? hostJson(cls, "banners", config.banners, "", fns, () => bannersHost(config.banners!)) : { $host: hostType(config.banners) };
     return {
       model,
       ...(queryset === undefined ? {} : { queryset }),
+      ...(banners === undefined ? {} : { banners }),
       ...(config.can === undefined ? {} : { can: canJson(cls, config.can) }),
       // These values go as the user wrote them: Rust checks their shape and names the key in the error.
       ...(config.checkMessages === undefined ? {} : { check_messages: config.checkMessages }),

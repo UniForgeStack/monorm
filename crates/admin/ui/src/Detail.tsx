@@ -11,6 +11,7 @@ import { InlineRowsView } from "./Inlines";
 import { DetailFooter, DetailHeaderActions, loadedValues } from "./RecordActions";
 import { Breadcrumbs } from "./Bars";
 import { PackageTab, widgetCall, widgetStream } from "./Packages";
+import { Banners } from "./components/banner";
 import { buttonVariants } from "./components/ui/button";
 import { Card, CardContent } from "./components/ui/card";
 import { Section } from "./components/section";
@@ -49,6 +50,7 @@ export function DetailPage({ resource, id, zone, site }: { resource: string; id:
       {meta?.writable === false && <p className="muted" role="note">Read-only here: {meta.read_only_reason}</p>}
       {!active && meta?.bypass && meta.bypass.length > 0 && <div className="toolbar"><Bypass names={meta.bypass} params={params} change={change} /></div>}
       {allTabs.length > 0 && <DetailTabs tabs={allTabs} current={active?.name ?? null} base={detailUrl(resource, id)} />}
+      <Banners banners={d.banners} />
       {tab && target && api.may(target, "create") && <AddOnTab tab={tab} detail={d} />}
       {packageTab && site ? (
         <PackageTab key={packageTab.name} site={site} name={packageTab.name} embedded={false} resource={resource} id={id} record={Object.fromEntries(d.fields.map((f, i) => [f.label, d.values[i]]))} call={widgetCall} stream={widgetStream} />
