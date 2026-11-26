@@ -4,6 +4,8 @@ All notable changes are listed here, in the [Keep a Changelog](https://keepachan
 
 ## [Unreleased]
 
+- New command `monorm drift --unmanaged [--strict]`: it compares each `@@managed(false)` model with its live table (columns, types, nullability, foreign keys) and prints a warning for each difference. It exits with status 0, or 1 with `--strict`. It reads no migrations folder, works on PostgreSQL and SQLite, and takes the database from `--url` or `MONORM_DATABASE_URL`. A live column that the schema does not name is not a difference; defaults, constraint names and `ON DELETE` actions are not compared.
+
 ## [0.1.5] - 2026-11-26
 
 - Scope next to another ORM: the datasource takes `scope_prefix` (the setting of key `k` is `<prefix>.k`, read as a comma list, so a raw `set_config('tenant.shop', '1,2', true)` reads both shops; the insert fill takes a single value only), `scope_bypass = { setting = "...", value = "..." }` (`unscoped()` with no key opens every key, and the policy opens when the setting equals the value) and `scope_role_check`. A key whose setting is the bypass setting is an error. In the datasource an object accepts `=` or `:`. The schema contract is 5.12 when a scope setting is not the default. [Scope](docs/extensions/scope.md)

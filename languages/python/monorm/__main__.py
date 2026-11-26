@@ -11,7 +11,7 @@
     python -m monorm squashmigrations --to <migration> [--name X]
     python -m monorm pull [-o schema.prisma] [--force] [--unmanaged]
     python -m monorm baseline
-    python -m monorm drift
+    python -m monorm drift [--unmanaged [--strict]]
     python -m monorm init [dir]                        # a starter project; also `uvx monorm init`
 
 The schema file and migrations directory come from ``--schema`` / ``--dir`` or from

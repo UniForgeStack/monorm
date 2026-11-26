@@ -1817,3 +1817,130 @@ mod tests {
         assert_eq!(lite_generated("CREATE TABLE t (a INT, b INT)", "b"), None);
     }
 }
+
+// ---------------------------------------------------------------------------------------
+// Unmanaged check
+// ---------------------------------------------------------------------------------------
+
+/// One way in which an unmanaged table of the schema does not match the live table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnmanagedDifference {
+    pub table: String,
+    /// `None` for a difference of the whole table.
+    pub column: Option<String>,
+    pub what: UnmanagedKind,
+    /// What the schema says.
+    pub schema: String,
+    /// What the database has.
+    pub database: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnmanagedKind {
+    MissingTable,
+    MissingColumn,
+    Type,
+    Nullability,
+    ForeignKey,
+}
+
+impl UnmanagedKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            UnmanagedKind::MissingTable => "table",
+            UnmanagedKind::MissingColumn => "column",
+            UnmanagedKind::Type => "type",
+            UnmanagedKind::Nullability => "nullability",
+            UnmanagedKind::ForeignKey => "foreign key",
+        }
+    }
+}
+
+/// Compares the unmanaged tables of `target` with the live tables: the columns, their types and nullability, and the foreign keys.
+/// A live column that the schema does not name is not a difference. Names of constraints, `ON DELETE` actions, defaults, indexes, policies and triggers are not compared.
+pub async fn unmanaged_differences(conn: &dyn Executor, target: &DbSchema) -> Result<Vec<UnmanagedDifference>> {
+    let tables: Vec<&Table> = target.tables.iter().filter(|t| !t.managed).collect();
+    if tables.is_empty() {
+        return Ok(vec![]);
+    }
+    if target.dialect != conn.dialect() {
+        return Err(Error::Migration(format!("the schema is for {:?} and the database is {:?}", target.dialect, conn.dialect())));
+    }
+    let live = introspect(conn).await?.schema;
+    // The declared types, read back from the database, so that `varchar(20)` and `character varying(20)` agree.
+    let shape = DbSchema {
+        dialect: target.dialect,
+        version: target.version,
+        enums: target.enums.clone(),
+        tables: tables
+            .iter()
+            .map(|t| Table {
+                name: t.name.clone(),
+                columns: t.columns.iter().map(|c| Column { name: c.name.clone(), ty: c.ty.clone(), nullable: c.nullable, default: None, identity: false, generated: None, comment: None, nested: Default::default() }).collect(),
+                ..Table::default()
+            })
+            .collect(),
+        ..DbSchema::default()
+    };
+    let shadow = materialize(conn, &shape).await?.schema;
+    let mut found = vec![];
+    for table in tables {
+        let name = &table.name;
+        let Some(live_table) = live.tables.iter().find(|t| &t.name == name) else {
+            found.push(UnmanagedDifference { table: name.clone(), column: None, what: UnmanagedKind::MissingTable, schema: name.clone(), database: "no such table".into() });
+            continue;
+        };
+        let read_back = shadow.tables.iter().find(|t| &t.name == name);
+        let in_key = |column: &str| live_table.primary_key.as_ref().is_some_and(|k| k.columns.iter().any(|c| c == column));
+        for column in &table.columns {
+            let Some(live_column) = live_table.columns.iter().find(|c| c.name == column.name) else {
+                found.push(UnmanagedDifference { table: name.clone(), column: Some(column.name.clone()), what: UnmanagedKind::MissingColumn, schema: column.ty.clone(), database: "no such column".into() });
+                continue;
+            };
+            let expected = read_back.and_then(|t| t.columns.iter().find(|c| c.name == column.name)).map_or(column.ty.as_str(), |c| c.ty.as_str());
+            if !same_type(target.dialect, expected, &live_column.ty) {
+                found.push(UnmanagedDifference { table: name.clone(), column: Some(column.name.clone()), what: UnmanagedKind::Type, schema: expected.into(), database: live_column.ty.clone() });
+            }
+            // SQLite reads an `INTEGER PRIMARY KEY` as nullable: the key makes it not null.
+            let live_nullable = live_column.nullable && !in_key(&column.name);
+            if live_nullable != column.nullable {
+                let word = |nullable: bool| if nullable { "NULL" } else { "NOT NULL" };
+                found.push(UnmanagedDifference { table: name.clone(), column: Some(column.name.clone()), what: UnmanagedKind::Nullability, schema: word(column.nullable).into(), database: word(live_nullable).into() });
+            }
+        }
+        for fk in &table.foreign_keys {
+            let present = live_table.foreign_keys.iter().any(|l| l.columns == fk.columns && l.ref_table == fk.ref_table && l.ref_columns == fk.ref_columns);
+            if !present {
+                found.push(UnmanagedDifference {
+                    table: name.clone(),
+                    column: fk.columns.first().cloned().filter(|_| fk.columns.len() == 1),
+                    what: UnmanagedKind::ForeignKey,
+                    schema: format!("({}) -> {}({})", fk.columns.join(", "), fk.ref_table, fk.ref_columns.join(", ")),
+                    database: "no such foreign key".into(),
+                });
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// Equal type text, or on SQLite the same type affinity: SQLite keeps the declared text of a type but stores by affinity.
+fn same_type(dialect: Dialect, a: &str, b: &str) -> bool {
+    let (a, b) = (a.trim().to_ascii_lowercase(), b.trim().to_ascii_lowercase());
+    a == b || (dialect == Dialect::Sqlite && affinity(&a) == affinity(&b))
+}
+
+/// The rules of <https://www.sqlite.org/datatype3.html#determination_of_column_affinity>.
+fn affinity(declared: &str) -> &'static str {
+    if declared.contains("int") {
+        "integer"
+    } else if declared.contains("char") || declared.contains("clob") || declared.contains("text") {
+        "text"
+    } else if declared.is_empty() || declared.contains("blob") {
+        "blob"
+    } else if declared.contains("real") || declared.contains("floa") || declared.contains("doub") {
+        "real"
+    } else {
+        "numeric"
+    }
+}

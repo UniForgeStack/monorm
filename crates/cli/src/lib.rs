@@ -18,7 +18,7 @@
 //!   showmigrations
 //!   pull [-o FILE] [--force] [--unmanaged]
 //!   baseline
-//!   drift
+//!   drift [--unmanaged [--strict]]
 //!   audit
 //! ```
 //!
@@ -99,8 +99,11 @@ const COMMANDS: &str = "  init [dir] [--lang python|typescript] [--tool uv|pip|n
                                            write the schema file from the live database
   baseline                                 make the first migration if there is none and mark
                                            it applied; it does not run (after pull)
-  drift                                    compare the database with the last migration's
-                                           snapshot; exit 1 if they differ
+  drift [--unmanaged [--strict]]           compare the database with the last migration's
+                                           snapshot; exit 1 if they differ. With --unmanaged,
+                                           compare the unmanaged models with the live tables
+                                           (columns, types, nullability, foreign keys), print a
+                                           warning for each difference and exit 0; --strict exits 1
   audit                                    compare the row-level security of the database with the
                                            schema, and list each trigger as installed, disabled,
                                            outdated, missing or unknown (PostgreSQL); exit 1 if the
@@ -143,7 +146,7 @@ struct Args {
     options: Vec<(String, Option<String>)>,
 }
 
-const FLAGS: [&str; 10] = ["--native", "--empty", "--check", "--down", "--force", "--unmanaged", "--allow-destructive", "--yes", "-h", "--help"];
+const FLAGS: [&str; 11] = ["--native", "--empty", "--check", "--down", "--force", "--unmanaged", "--strict", "--allow-destructive", "--yes", "-h", "--help"];
 const VALUED: [&str; 22] = ["--models", "--lang", "--tool", "--db", "--ext", "--schema", "--dir", "--url", "-o", "--out", "--import", "--name", "--steps", "--to", "--rename", "--restore", "--query-set", "--model-methods", "--ext-dir", "--app", "--extension", "--extension-module"];
 
 impl Args {
@@ -526,6 +529,12 @@ async fn command(argv: &[String], host: Host) -> Result<i32> {
                 "migrate" => args.allow(command, &["--allow-destructive", "--ops"], 1)?,
                 "rollback" => args.allow(command, &["--steps", "--to", "--force", "--allow-destructive", "--ops"], 1)?,
                 "pull" => args.allow(command, &["-o", "--out", "--force", "--unmanaged"], 0)?,
+                "drift" => {
+                    args.allow(command, &["--unmanaged", "--strict"], 0)?;
+                    if args.flag("--strict") && !args.flag("--unmanaged") {
+                        return Err(Failure::Usage("--strict goes with drift --unmanaged".into()));
+                    }
+                }
                 _ => args.allow(command, &[], 0)?,
             }
             if command == "pull" {
@@ -940,6 +949,28 @@ async fn database(command: &str, args: &Args, settings: &Settings, dir: &Path, s
                     differs |= triggers.iter().any(|t| !matches!(t.state, introspect::TriggerState::Installed | introspect::TriggerState::Unknown));
                 }
                 return Ok(i32::from(differs));
+            }
+            "drift" if args.flag("--unmanaged") => {
+                let (_, compiled) = load(schema, args)?;
+                let target = files::snapshot(&compiled).map_err(failed)?;
+                let found = introspect::unmanaged_differences(&*driver, &target).await?;
+                let models = &compiled.physical().models;
+                for d in &found {
+                    let model = models.iter().find(|m| m.table() == d.table);
+                    let field = d.column.as_deref().and_then(|c| model?.fields().iter().find(|f| f.column == c)).map(|f| f.name.as_str());
+                    let at = match (model, field, &d.column) {
+                        (Some(m), Some(f), Some(c)) => format!("{}.{f} ({}.{c})", m.ir.name, d.table),
+                        (Some(m), _, Some(c)) => format!("{} ({}.{c})", m.ir.name, d.table),
+                        (Some(m), _, None) => format!("{} ({})", m.ir.name, d.table),
+                        (None, _, Some(c)) => format!("{}.{c}", d.table),
+                        (None, _, None) => d.table.clone(),
+                    };
+                    println!("warning: {at}: {}: the schema has {}, the database has {}", d.what.label(), d.schema, d.database);
+                }
+                if found.is_empty() {
+                    println!("The unmanaged models match the database.");
+                }
+                return Ok(i32::from(args.flag("--strict") && !found.is_empty()));
             }
             "drift" => {
                 let found = introspect::drift(&*driver, dir).await?;

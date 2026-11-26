@@ -863,3 +863,122 @@ fn pull_and_baseline_without_create_privilege() {
     assert_eq!(code, Some(0), "{stderr}");
     assert!(stdout.contains("warning: the database was not compared with 0001_initial"), "{stdout}");
 }
+
+const UNMANAGED_LIVE: &str = "\
+model Shop {
+  id    Int    @id
+  lines Line[]
+}
+
+model Order {
+  id      Int    @id
+  shop_id Int
+  qty     Int
+  note    String
+}
+
+model Line {
+  id      Int  @id
+  shop_id Int
+  shop    Shop @relation(fields: [shop_id], references: [id], onDelete: Cascade)
+  weight  Int
+}
+";
+
+/// The live schema as unmanaged models, with four differences on `Order`, and three that must give no warning: a `@default`, another `ON DELETE` and a model that has no table.
+const UNMANAGED_CHECKED: &str = "\
+model Shop {
+  id     Int     @id
+  orders Order[]
+  lines  Line[]
+
+  @@managed(false)
+}
+
+model Order {
+  id      Int    @id
+  shop_id Int
+  shop    Shop   @relation(fields: [shop_id], references: [id])
+  qty     String
+  note    String?
+  total   Int
+
+  @@managed(false)
+}
+
+model Line {
+  id      Int  @id
+  shop_id Int
+  shop    Shop @relation(fields: [shop_id], references: [id])
+  weight  Int  @default(5)
+
+  @@managed(false)
+}
+
+model Extra {
+  id Int @id
+}
+";
+
+fn unmanaged_check(dir: &Path, url: &str, header: &str) {
+    let write = |name: &str, body: &str| std::fs::write(dir.join(name), format!("{header}{body}")).unwrap();
+    write("live.prisma", UNMANAGED_LIVE);
+    write("checked.prisma", UNMANAGED_CHECKED);
+    write("same.prisma", &UNMANAGED_LIVE.replace("\n}", "\n\n  @@managed(false)\n}"));
+    let made = |args: &[&str]| monorm(dir, &[&["--url", url, "--schema", "live.prisma", "--dir", "made"][..], args].concat());
+    assert!(made(&["makemigrations"]).status.success());
+    let applied = made(&["migrate"]);
+    assert!(applied.status.success(), "{}", text(&applied.stderr));
+    let check = |schema: &str, extra: &[&str]| monorm(dir, &[&["--url", url, "--schema", schema, "drift", "--unmanaged"][..], extra].concat());
+
+    let found = check("checked.prisma", &[]);
+    let out = text(&found.stdout);
+    assert_eq!(found.status.code(), Some(0), "{out}{}", text(&found.stderr));
+    let warnings: Vec<&str> = out.lines().filter(|l| l.starts_with("warning:")).collect();
+    assert_eq!(warnings.len(), 4, "{out}");
+    let has = |parts: &[&str]| warnings.iter().any(|w| parts.iter().all(|p| w.to_lowercase().contains(&p.to_lowercase())));
+    assert!(has(&["Order.qty", "type", "integer"]), "{out}");
+    assert!(has(&["Order.note", "nullability", "NULL", "NOT NULL"]), "{out}");
+    assert!(has(&["Order.total", "column", "no such column"]), "{out}");
+    assert!(has(&["Order.shop_id", "foreign key", "shop(id)"]), "{out}");
+    assert!(!out.contains("Line") && !out.contains("Extra") && !out.contains("Shop"), "{out}");
+    assert_eq!(check("checked.prisma", &["--strict"]).status.code(), Some(1));
+    // the mode reads no migrations folder
+    assert!(!dir.join("migrations").exists());
+
+    let same = check("same.prisma", &["--strict"]);
+    assert_eq!(same.status.code(), Some(0), "{}", text(&same.stdout));
+    assert!(text(&same.stdout).contains("The unmanaged models match the database."), "{}", text(&same.stdout));
+    // a table that is gone is one warning for the table
+    let lonely = format!("{header}model Order {{\n  id Int @id\n  @@map(\"order_gone\")\n  @@managed(false)\n}}\n");
+    std::fs::write(dir.join("gone.prisma"), lonely).unwrap();
+    let gone = check("gone.prisma", &[]);
+    assert!(text(&gone.stdout).contains("warning: Order (order_gone): table: the schema has order_gone, the database has no such table"), "{}", text(&gone.stdout));
+    assert_eq!(monorm(dir, &["--schema", "same.prisma", "drift", "--strict"]).status.code(), Some(2));
+}
+
+#[test]
+fn drift_unmanaged_warns_about_each_difference_on_sqlite() {
+    let dir = project("unmanaged-sqlite", &[]);
+    let url = format!("sqlite://{}", dir.join("live.db").display());
+    unmanaged_check(&dir, &url, "datasource db {\n  provider = \"sqlite\"\n}\n\n");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn drift_unmanaged_warns_about_each_difference_on_postgres() {
+    let Ok(base) = std::env::var("ORM_RUST_TEST_POSTGRES_URL") else { return };
+    let (server, _) = base.rsplit_once('/').unwrap();
+    let name = format!("monorm_cli_unmanaged_{}", std::process::id());
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let admin = runtime.block_on(monorm_engine::db::connect(&base, 1)).unwrap();
+    runtime.block_on(admin.batch(format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)"))).unwrap();
+    runtime.block_on(admin.batch(format!("CREATE DATABASE {name}"))).unwrap();
+    let dir = project("unmanaged-postgres", &[]);
+    let result = std::panic::catch_unwind(|| unmanaged_check(&dir, &format!("{server}/{name}"), ""));
+    let _ = runtime.block_on(admin.batch(format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)")));
+    let _ = std::fs::remove_dir_all(&dir);
+    if let Err(e) = result {
+        std::panic::resume_unwind(e);
+    }
+}

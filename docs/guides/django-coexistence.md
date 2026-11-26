@@ -22,6 +22,15 @@ models and use them for queries and writes while Django continues to migrate the
 tables. Run Django migrations first when a managed monorm table has a foreign
 key to a Django table.
 
+Run `python -m monorm drift --unmanaged` to compare the unmanaged models with the live tables.
+It checks the columns, their types, their nullability and the foreign keys.
+It prints one `warning:` line for each model column that the table lacks or that differs, and for a missing table.
+It exits with status 0; `--strict` exits with status 1 when it prints a warning.
+It reads no migrations folder, and it takes the database from `--url` or `MONORM_DATABASE_URL`, so a test can run it against the Django test database.
+A live column that the schema does not name is not a difference.
+It does not compare defaults, constraint names, `ON DELETE` actions, indexes, policies or triggers.
+On SQLite, two types are equal when they have the same type affinity.
+
 A fresh monorm test database has no unmanaged tables. Run Django migrations or
 create the required tables in the test setup before running queries or applying
 monorm migrations that reference them.

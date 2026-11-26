@@ -987,6 +987,7 @@ python -m monorm pull [-o schema.prisma] [--force] [--unmanaged]   # the schema 
 python -m monorm baseline                       # mark the first migration applied (after pull)
 python -m monorm fmt --native                   # convert supported SQL expressions offline
 python -m monorm drift                          # exit 1 if the database differs from the replayed migrations
+python -m monorm drift --unmanaged [--strict]   # warn where an unmanaged model differs from its live table
 python -m monorm audit                          # exit 1 if the row-level security or a trigger differs from the schema
 ```
 
