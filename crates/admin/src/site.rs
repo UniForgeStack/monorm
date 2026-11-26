@@ -402,6 +402,8 @@ pub struct Resource {
     pub tabs: Vec<Tab>,
     /// The rows that staff see and touch: its filter joins every read of the resource.
     pub queryset: Option<Queryset>,
+    /// The host function that returns the banners of a record: one call for each detail read.
+    pub banners: Option<String>,
     /// The per-row rules (`change`, `delete`): each one is a flag in the list and the detail.
     pub can: Vec<(String, Value)>,
     /// The text that a failed named `@@check` shows in the form.
@@ -928,6 +930,7 @@ const INLINE_PAGE_REFUSED: &[(&str, &str)] = &[
     ("actions", "an inline has no actions"),
     ("bulk_delete", "an inline has no bulk delete"),
     ("set_password", "an inline has no set password action"),
+    ("banners", "an inline has no banners: the registered page of the child has them"),
     ("form_component", "a replaced form cannot be a row of a table"),
     ("detail_tabs", "a detail tab belongs to the registered page of the child"),
     ("frames", "a frame tab belongs to the registered page of the child"),
@@ -1180,7 +1183,7 @@ fn concrete(m: &monorm_core::schema::Model) -> bool {
 
 impl ResourceConfig {
     fn of(model: &str) -> ResourceConfig {
-        ResourceConfig { model: model.to_owned(), list: ListConfig::default(), allow: None, perms: None, label: None, title: None, group: None, icon: None, field_permissions: Vec::new(), see: BTreeMap::new(), change: BTreeMap::new(), actions: Vec::new(), bulk_delete: true, set_password: false, queryset: None, can: BTreeMap::new(), check_messages: BTreeMap::new(), service: Default::default(), inputs: Vec::new(), allow_protected_writes: false, host_behavior: false, form: None, readonly: Vec::new(), views: BTreeMap::new(), widgets: BTreeMap::new(), form_component: None, detail_tabs: Vec::new(), frames: Vec::new(), fieldsets: Vec::new(), relations: BTreeMap::new(), files: Vec::new(), inlines: Vec::new() }
+        ResourceConfig { model: model.to_owned(), list: ListConfig::default(), allow: None, perms: None, label: None, title: None, group: None, icon: None, field_permissions: Vec::new(), see: BTreeMap::new(), change: BTreeMap::new(), actions: Vec::new(), bulk_delete: true, set_password: false, banners: None, queryset: None, can: BTreeMap::new(), check_messages: BTreeMap::new(), service: Default::default(), inputs: Vec::new(), allow_protected_writes: false, host_behavior: false, form: None, readonly: Vec::new(), views: BTreeMap::new(), widgets: BTreeMap::new(), form_component: None, detail_tabs: Vec::new(), frames: Vec::new(), fieldsets: Vec::new(), relations: BTreeMap::new(), files: Vec::new(), inlines: Vec::new() }
     }
 }
 
@@ -1361,6 +1364,7 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
     let filters = filter_specs(schema, idx, &name, list, date_hierarchy.as_ref())?;
     let named_filters = named_filters(schema, idx, &name, list)?;
     let queryset = queryset_of(schema, idx, &name, config.queryset.as_ref())?;
+    let banners = banners_of(&name, config.banners.as_deref())?;
     let mut can = can_rules(schema, &name, &config.can)?;
     let actions = actions_of(schema, &name, &config.actions, &mut can, config.set_password)?;
     if let Some(k) = config.check_messages.keys().find(|k| !model.ir.constraints.iter().any(|c| matches!(c, ConstraintIr::Check { name: Some(n), .. } if n == *k))) {
@@ -1422,6 +1426,7 @@ fn resource(schema: &Schema, idx: usize, config: &ResourceConfig, strategy: Stra
         date_hierarchy,
         tabs: Vec::new(),
         queryset,
+        banners,
         can,
         check_messages: config.check_messages.clone(),
         service: config.service.clone(),
@@ -2190,6 +2195,12 @@ pub(crate) fn scope_default_names(model: &monorm_core::schema::Model) -> Vec<Str
 fn check_function(what: &str, name: &str) -> Result<(), Fault> {
     let ok = !name.is_empty() && name.chars().count() <= 80 && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ':' | '-' | '@'));
     if ok { Ok(()) } else { invalid(format!("{what} {name:?} is not a function name")) }
+}
+
+fn banners_of(name: &str, function: Option<&str>) -> Result<Option<String>, Fault> {
+    let Some(f) = function else { return Ok(None) };
+    check_function(&format!("{name}: banners"), f)?;
+    Ok(Some(f.to_owned()))
 }
 
 pub(crate) fn queryset_of(schema: &Schema, idx: usize, name: &str, config: Option<&QuerysetConfig>) -> Result<Option<Queryset>, Fault> {

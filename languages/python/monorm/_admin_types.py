@@ -171,6 +171,8 @@ class ResourceConfig(TypedDict):
     """The operations that the resource allows for every user, superusers too: ``read``, ``create``, ``update``, ``delete``."""
     allow_protected_writes: NotRequired[bool]
     """Open application write rules for this resource. The audit row records the opt-in."""
+    banners: NotRequired[Callable[[dict[str, Any]], Awaitable[Sequence[Mapping[str, str]]]]]
+    """An async function ``(record)`` that returns the banners of one record: a list of ``{level, text}``, with ``level`` one of ``info``, ``warning`` and ``danger``. One host call for each detail read, under the tabs. A failure shows one danger banner."""
     bulk_delete: NotRequired[bool]
     """``false`` removes the bulk delete of the list. It is on by default; it needs the delete permission, and a ``delete`` service gets the query set."""
     can: NotRequired[Mapping[Literal["change", "delete"], Any]]
@@ -287,6 +289,7 @@ class ThemeConfig(TypedDict):
 HOST_FIELDS: dict[str, str] = {
     "actions.applies_to": "ir",
     "actions.can": "ir",
+    "banners": "function",
     "can": "ir",
     "list.aggregates.field": "column",
     "list.aggregates.relation": "relation",

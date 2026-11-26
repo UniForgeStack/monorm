@@ -610,3 +610,86 @@ model CIndexOther {
     assert_eq!(warnings.len(), 1, "{warnings:?}");
     assert!(warnings[0].starts_with("CIndexOther: search field \"name\""), "{warnings:?}");
 }
+
+struct Banners {
+    calls: AtomicUsize,
+    seen: Mutex<Vec<Value>>,
+    answer: Mutex<Result<Value, BridgeError>>,
+}
+
+impl HostBridge for Banners {
+    fn call(&self, name: &str, payload: Value, _: CallContext) -> BoxFuture<Result<Value, BridgeError>> {
+        assert_eq!(name, "banners.Author");
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.seen.lock().unwrap().push(payload);
+        let answer = self.answer.lock().unwrap().clone();
+        Box::pin(async move { answer })
+    }
+}
+
+#[tokio::test]
+async fn a_banners_function_runs_once_for_a_detail_read_and_a_failure_is_one_danger_banner() {
+    let conn = database().await;
+    let site = site(json!({"resources": [{"model": "Author", "banners": {"$fn": "b1"}, "list": {"columns": ["name"], "order": ["id"]}}]}));
+    let host = Arc::new(Banners { calls: AtomicUsize::new(0), seen: Mutex::new(Vec::new()), answer: Mutex::new(Ok(json!([{"level": "warning", "text": "Check the nick"}]))) });
+    let auth = AuthConfig { security: Security::new(&[7u8; 32], SecurityOptions::default()).unwrap(), bridge: host.clone() };
+    let ask = |uri: &'static str| {
+        let (site, conn, auth) = (site.clone(), conn.clone(), auth.clone());
+        async move {
+            let (status, body) = monorm_admin::call_with(site, conn, "GET", uri, Some(json!({"is_superuser": true})), Some(auth)).await;
+            (status, serde_json::from_str::<Value>(&body).unwrap())
+        }
+    };
+    let (status, body) = ask("/admin/api/resources/Author/1").await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["banners"], json!([{"level": "warning", "text": "Check the nick"}]));
+    assert_eq!(host.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(host.seen.lock().unwrap()[0]["record"]["name"], json!("Ada"));
+    // A list read does not call the function.
+    assert_eq!(ask("/admin/api/resources/Author").await.0, 200);
+    assert_eq!(host.calls.load(Ordering::SeqCst), 1);
+    // A failure and a wrong answer each give one danger banner, and the page loads.
+    for answer in [Err(BridgeError::Host { kind: "ValueError".into(), message: "secret detail".into() }), Ok(json!({"level": "info"})), Ok(json!([{"level": "loud", "text": "x"}])), Ok(json!([{"level": "info", "text": ""}]))] {
+        *host.answer.lock().unwrap() = answer;
+        let (status, body) = ask("/admin/api/resources/Author/1").await;
+        assert_eq!(status, 200, "{body}");
+        let banners = body["banners"].as_array().unwrap();
+        assert_eq!(banners.len(), 1, "{body}");
+        assert_eq!(banners[0]["level"], "danger");
+        assert!(!banners[0]["text"].as_str().unwrap().contains("secret"), "{body}");
+    }
+}
+
+#[tokio::test]
+async fn banners_over_a_limit_are_cut_and_a_missing_bridge_is_one_danger_banner() {
+    let conn = database().await;
+    let site = site(json!({"resources": [{"model": "Author", "banners": {"$fn": "b1"}, "list": {"columns": ["name"], "order": ["id"]}}]}));
+    let many: Vec<Value> = (0..25).map(|i| json!({"level": "info", "text": format!("n{i}")})).collect();
+    let long = "é".repeat(600);
+    let host = Arc::new(Banners { calls: AtomicUsize::new(0), seen: Mutex::new(Vec::new()), answer: Mutex::new(Ok(json!(many))) });
+    let auth = AuthConfig { security: Security::new(&[7u8; 32], SecurityOptions::default()).unwrap(), bridge: host.clone() };
+    let ask = |auth: Option<AuthConfig>| {
+        let (site, conn) = (site.clone(), conn.clone());
+        async move {
+            let (status, body) = monorm_admin::call_with(site, conn, "GET", "/admin/api/resources/Author/1", Some(json!({"is_superuser": true})), auth).await;
+            assert_eq!(status, 200, "{body}");
+            serde_json::from_str::<Value>(&body).unwrap()["banners"].clone()
+        }
+    };
+    // More than 20 banners: the first 20, and no danger banner.
+    let banners = ask(Some(auth.clone())).await;
+    let banners = banners.as_array().unwrap();
+    assert_eq!(banners.len(), 20);
+    assert!(banners.iter().all(|b| b["level"] == "info"));
+    assert_eq!(banners[19]["text"], "n19");
+    // A text over 500 characters is cut at 500 characters (not bytes).
+    *host.answer.lock().unwrap() = Ok(json!([{"level": "warning", "text": long}]));
+    let banners = ask(Some(auth)).await;
+    assert_eq!(banners.as_array().unwrap().len(), 1);
+    assert_eq!(banners[0]["level"], "warning");
+    assert_eq!(banners[0]["text"].as_str().unwrap().chars().count(), 500);
+    // No bridge: one danger banner, and the page loads.
+    let banners = ask(None).await;
+    assert_eq!(banners[0]["level"], "danger");
+    assert_eq!(banners.as_array().unwrap().len(), 1);
+}

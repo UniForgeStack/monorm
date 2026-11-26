@@ -143,6 +143,20 @@ fn a_host_function_gets_its_name_from_rust() {
     assert_eq!(names, ["c1=column.Note.double", "q1=queryset.Note", "s1=search.Note"]);
 }
 
+#[test]
+fn a_banners_function_gets_its_name_from_rust_and_an_inline_refuses_it() {
+    let config = note(json!({"banners": {"$fn": "b1"}}));
+    let (_, handles) = Site::build_with_handles(schema(), &config.to_string()).unwrap();
+    assert_eq!(handles.get("b1").map(String::as_str), Some("banners.Note"));
+    let e = build(note(json!({"banners": {"$host": "str"}})));
+    assert!(e.message.contains("is not a host function"), "{}", e.message);
+    assert_eq!(build(note(json!({"banners": "a b"}))).code, code::INVALID_VALUE);
+    let page = json!({"model": "Book", "page": {"model": "Book", "banners": {"$fn": "b1"}}});
+    let e = build(json!({"resources": [{"model": "Author", "inlines": [page]}, {"model": "Book"}]}));
+    assert_eq!(e.code, code::UNSUPPORTED);
+    assert!(e.message.contains("an inline has no banners"), "{}", e.message);
+}
+
 fn book(relations: Value) -> Value {
     json!({"resources": [{"model": "Author", "list": {"search": ["name"]}}, {"model": "Book", "relations": relations}]})
 }

@@ -803,6 +803,37 @@ async fn inline_rows(s: &State_, parent: &Resource, user: &User, grants: &Grants
     Ok((scope, Value::Object(out)))
 }
 
+const BANNER_LEVELS: &[&str] = &["info", "warning", "danger"];
+const BANNERS_MAX: usize = 20;
+const BANNER_TEXT_MAX: usize = 500;
+
+fn danger_banner(text: &str) -> Value {
+    json!([{"level": "danger", "text": text}])
+}
+
+/// The banners of one record: one host call. Any failure, or an answer of the wrong shape, is one danger banner: the page stays whole.
+/// An answer over a limit is cut, not refused: the first `BANNERS_MAX` banners, each text at `BANNER_TEXT_MAX` characters.
+async fn record_banners(s: &State_, resource: &Resource, scope: &Scoped, values: &[Value]) -> Value {
+    let Some(name) = &resource.banners else { return json!([]) };
+    let Some((bridge, auth)) = &s.bridge else { return danger_banner("The banners of this record could not load: the host bridge is missing.") };
+    let record: serde_json::Map<String, Value> = resource.detail.iter().zip(values).map(|(c, v)| (c.label.clone(), v.clone())).collect();
+    let ctx = CallContext { request_id: auth.security.call_id(), scope: json!({}), tx: Some(scope.transaction()) };
+    let answer = match bridge.call(name, json!({"record": record}), ctx).await {
+        Ok(answer) => answer,
+        Err(e) => return danger_banner(&format!("The banners of this record could not load ({}).", e.kind())),
+    };
+    let wrong_value_banner = || danger_banner("The banners of this record could not load: the function returned a wrong value.");
+    let Value::Array(items) = answer else { return wrong_value_banner() };
+    let mut out = Vec::with_capacity(items.len().min(BANNERS_MAX));
+    for item in items.into_iter().take(BANNERS_MAX) {
+        let level = item.get("level").and_then(Value::as_str).filter(|l| BANNER_LEVELS.contains(l));
+        let text = item.get("text").and_then(Value::as_str).filter(|t| !t.is_empty());
+        let (Some(level), Some(text)) = (level, text) else { return wrong_value_banner() };
+        out.push(json!({"level": level, "text": text.chars().take(BANNER_TEXT_MAX).collect::<String>()}));
+    }
+    Value::Array(out)
+}
+
 /// One record: its fields, and a link to each to-one target that the user may read.
 async fn detail(State(s): Shared, user: Option<Extension<User>>, Path((name, _)): Path<(String, String)>, uri: Uri) -> Response {
     let (user, scope, grants) = match authorize(&s, user).await {
@@ -868,6 +899,7 @@ async fn detail(State(s): Shared, user: Option<Extension<User>>, Path((name, _))
             } else {
                 None
             };
+            let banners = record_banners(&s, &resource, &scope, &values).await;
             if let Err(e) = scope.commit().await {
                 return database_error(&e.message);
             }
@@ -887,7 +919,7 @@ async fn detail(State(s): Shared, user: Option<Extension<User>>, Path((name, _))
                     Some(json!({"name": l.name, "title": title, "resource": target.name, "key": key::encode(&parts)}))
                 })
                 .collect();
-            let mut body = json!({"ok": true, "resource": resource.name, "key": raw, "fields": resource.meta["fields"], "values": values, "flags": record.flags, "links": links, "inlines": inlines, "frames": frames});
+            let mut body = json!({"ok": true, "resource": resource.name, "key": raw, "fields": resource.meta["fields"], "values": values, "flags": record.flags, "links": links, "inlines": inlines, "frames": frames, "banners": banners});
             if let Some(target) = password_target {
                 body["password_target"] = target;
             }
