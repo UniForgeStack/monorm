@@ -15,6 +15,7 @@ import { Breadcrumbs, StickyFooter } from "./Bars";
 import { ActionFace, DeleteButton, actionLook, loadedValues } from "./RecordActions";
 import { Alert, message } from "./ui";
 import { Button as KitButton } from "./components/ui/button";
+import { sectionCard, sectionTitle } from "./components/section";
 import { Collapsible } from "./components/ui/collapsible";
 import { Label } from "./components/ui/label";
 import { cn } from "./lib/utils";
@@ -91,13 +92,9 @@ function useCustom(meta: api.Resource, site: api.Site | undefined) {
   });
 }
 
-/** The card look of a section: the element differs (a div, a details or a fieldset), so the look sits in one constant. */
-const sectionCard = "mb-4 rounded-xl border border-border bg-card p-5 text-card-foreground shadow-xs";
 const rowClass = "mb-4 grid gap-1.5 last:mb-0";
 const KEEP = "You have unsaved changes on this form. Leave without saving?";
 const KEEP_NEW = "You have unsaved changes in this new record. Discard them?";
-
-const sectionTitle = "text-xs font-semibold tracking-wide uppercase text-muted-foreground";
 
 function Block({ section, fields, children }: { section: api.Section; fields: string[]; children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
