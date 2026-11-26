@@ -692,6 +692,7 @@ fn project(name: &str, files: &[(&str, &str)]) -> std::path::PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     for (path, content) in files {
+        std::fs::create_dir_all(dir.join(path).parent().unwrap()).unwrap();
         std::fs::write(dir.join(path), content).unwrap();
     }
     dir
@@ -1023,5 +1024,36 @@ fn the_database_table_replaces_the_datasource_block_and_names_the_url_variable()
     let wrong = run(&["check"], false);
     assert_eq!(wrong.status.code(), Some(2));
     assert!(text(&wrong.stderr).contains("monorm.toml: `database.provider` must be"), "{}", text(&wrong.stderr));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_apps_table_builds_the_project_and_reports_a_wrong_app_with_its_file() {
+    let dir = project("apps-table", &[
+        ("monorm.toml", "[database]\nprovider = \"sqlite\"\n[apps]\nshop = \"shop.prisma\"\nauth = \"app:monorm-auth\"\n"),
+        ("shop.prisma", "import \"./items.prisma\"\nmodel Order {\n  id Int @id\n}\n"),
+        ("items.prisma", "model Item {\n  id Int @id\n}\n"),
+        ("auth/schema.prisma", "app settings {\n  label = \"auth\"\n}\nmodel User {\n  id Int @id\n}\n"),
+    ]);
+    // no schema file and no --schema: the apps are the project, and an installed app comes from --app
+    let ok = monorm(&dir, &["--app", "monorm-auth=auth/schema.prisma", "check"]);
+    assert!(ok.status.success(), "{}", text(&ok.stderr));
+    let missing = monorm(&dir, &["check"]);
+    assert_eq!(missing.status.code(), Some(1));
+    assert!(text(&missing.stderr).contains("`auth` is `app:monorm-auth`, which is not installed"), "{}", text(&missing.stderr));
+    // a wrong label in the package names both labels and the file
+    std::fs::write(dir.join("auth/schema.prisma"), "app settings {\n  label = \"identity\"\n}\nmodel User {\n  id Int @id\n}\n").unwrap();
+    let wrong = monorm(&dir, &["--app", "monorm-auth=auth/schema.prisma", "check"]);
+    assert_eq!(wrong.status.code(), Some(1));
+    let err = text(&wrong.stderr);
+    assert!(err.contains("`identity`") && err.contains("`auth`") && err.contains("auth/schema.prisma"), "{err}");
+    // the `schema` key is gone when [apps] is set
+    std::fs::write(dir.join("monorm.toml"), "schema = \"shop.prisma\"\n[apps]\nshop = \"shop.prisma\"\n").unwrap();
+    let both = monorm(&dir, &["check"]);
+    assert_eq!(both.status.code(), Some(2));
+    assert!(text(&both.stderr).contains("`schema` is not a setting when `[apps]` is set"), "{}", text(&both.stderr));
+    // --schema compiles one file as a one-app project and leaves [apps] alone
+    let one = monorm(&dir, &["--schema", "shop.prisma", "check"]);
+    assert!(one.status.success(), "{}", text(&one.stderr));
     let _ = std::fs::remove_dir_all(&dir);
 }

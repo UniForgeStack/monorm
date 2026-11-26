@@ -1,3 +1,7 @@
+app settings {
+  label = "admin"
+}
+
 model AdminLogEntry {
   id           Int      @id @default(autoincrement())
   at           DateTime @default(now())

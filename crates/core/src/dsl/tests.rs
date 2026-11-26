@@ -2580,3 +2580,155 @@ fn without_a_database_table_the_datasource_block_and_the_defaults_stay() {
     assert_eq!(compile_project_file_with(&file, &installed).unwrap().ir.dialect, crate::dialect::Dialect::Postgres);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+fn apps_project(name: &str, toml: &str, files: &[(&str, &str)]) -> (Installed, PathBuf, PathBuf) {
+    let dir = std::env::temp_dir().join(format!("monorm-apps-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("monorm.toml"), toml).unwrap();
+    for (path, text) in files {
+        std::fs::create_dir_all(dir.join(path).parent().unwrap()).unwrap();
+        std::fs::write(dir.join(path), text).unwrap();
+    }
+    let settings = crate::settings::Settings::load(&dir).unwrap();
+    let apps = settings.apps().unwrap();
+    let anchor = crate::settings::anchor(&apps).unwrap().to_path_buf();
+    (Installed::new().with_apps(apps), anchor, dir)
+}
+
+fn apps_error(installed: &Installed, anchor: &Path) -> String {
+    compile_project_file_with(anchor, installed).err().expect("the project does not compile")
+}
+
+const DATABASE: &str = "[database]\nprovider = \"sqlite\"\n";
+
+#[test]
+fn the_apps_table_builds_each_app_from_its_entry_file_and_parts() {
+    let toml = format!("{DATABASE}[apps]\nshop = {{ path = \"shop/shop.prisma\", managed = false }}\ncrm = \"crm/crm.prisma\"\n");
+    let (installed, anchor, dir) = apps_project("build", &toml, &[
+        ("shop/shop.prisma", "app settings {\n  label = \"shop\"\n  prefix = \"blk_\"\n  managed = true\n  migrations = \"history\"\n}\nimport \"./items.prisma\"\nmodel Order {\n id Int @id\n}\n"),
+        ("shop/items.prisma", "model Item {\n id Int @id\n}\n"),
+        ("crm/crm.prisma", "model Lead {\n id Int @id\n}\n"),
+    ]);
+    assert!(anchor.ends_with("crm/crm.prisma"));
+    let project = compile_project_file_with(&anchor, &installed).unwrap();
+    let apps: Vec<_> = project.apps.iter().map(|a| (a.label.as_str(), a.files.len(), a.prefix.as_str(), a.managed)).collect();
+    assert_eq!(apps, [("crm", 1, "", None), ("shop", 2, "blk_", Some(false))]);
+    assert!(project.apps[1].migrations.as_ref().unwrap().ends_with("shop/history"));
+    let mut models: Vec<_> = project.ir.models.iter().map(|m| m.name.as_str()).collect();
+    models.sort();
+    assert_eq!(models, ["Item", "Lead", "Order"]);
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_part_that_two_apps_import_is_an_error_that_names_both_apps() {
+    let toml = format!("{DATABASE}[apps]\na = \"a.prisma\"\nb = \"b.prisma\"\n");
+    let (installed, anchor, dir) = apps_project("owner", &toml, &[
+        ("a.prisma", "import \"./part.prisma\"\nmodel A {\n id Int @id\n}\n"),
+        ("b.prisma", "import \"./part.prisma\"\nmodel B {\n id Int @id\n}\n"),
+        ("part.prisma", "model P {\n id Int @id\n}\n"),
+    ]);
+    let error = apps_error(&installed, &anchor);
+    assert!(error.contains("a file belongs to one app") && error.contains("app `a`") && error.contains("app `b`"), "{error}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn an_entry_file_cannot_be_the_part_of_another_app() {
+    let toml = format!("{DATABASE}[apps]\na = \"a.prisma\"\nb = \"b.prisma\"\n");
+    let (installed, anchor, dir) = apps_project("entry-part", &toml, &[
+        ("a.prisma", "import \"./b.prisma\"\nmodel A {\n id Int @id\n}\n"),
+        ("b.prisma", "model B {\n id Int @id\n}\n"),
+    ]);
+    let error = apps_error(&installed, &anchor);
+    assert!(error.contains("a file belongs to one app"), "{error}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn an_app_block_is_only_valid_in_an_entry_file_and_has_known_keys() {
+    let toml = format!("{DATABASE}[apps]\na = \"a.prisma\"\n");
+    let model = "model A {\n id Int @id\n}\n";
+    let cases = [
+        (vec![("a.prisma", format!("import \"./p.prisma\"\n{model}")), ("p.prisma", format!("app settings {{\n label = \"a\"\n}}\n"))], "belongs in the entry file"),
+        (vec![("a.prisma", format!("app settings {{\n label = \"a\"\n}}\napp settings {{\n label = \"a\"\n}}\n{model}"))], "has one app block"),
+        (vec![("a.prisma", format!("app settings {{\n color = \"a\"\n}}\n{model}"))], "color is not a key of the app block"),
+        (vec![("a.prisma", format!("app settings {{\n managed = \"yes\"\n}}\n{model}"))], "managed is true or false"),
+        (vec![("a.prisma", format!("app settings {{\n label = \"my-app\"\n}}\n{model}"))], "label"),
+        (vec![("a.prisma", format!("app other {{\n label = \"a\"\n}}\n{model}"))], "settings"),
+    ];
+    for (n, (files, expect)) in cases.into_iter().enumerate() {
+        let files: Vec<(&str, &str)> = files.iter().map(|(p, t)| (*p, t.as_str())).collect();
+        let (installed, anchor, dir) = apps_project(&format!("block-{n}"), &toml, &files);
+        let error = apps_error(&installed, &anchor);
+        assert!(error.contains(expect) && error.contains(".prisma:"), "{n}: {error}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
+fn a_project_app_block_label_must_equal_its_apps_key() {
+    let toml = format!("{DATABASE}[apps]\nshop = \"shop.prisma\"\n");
+    let (installed, anchor, dir) = apps_project("label-key", &toml, &[("shop.prisma", "app settings {\n label = \"store\"\n}\nmodel A {\n id Int @id\n}\n")]);
+    let error = apps_error(&installed, &anchor);
+    assert!(error.contains("label `store`") && error.contains("[apps] key `shop`"), "{error}");
+    std::fs::write(&anchor, "app settings {\n label = \"shop\"\n}\nmodel A {\n id Int @id\n}\n").unwrap();
+    assert!(compile_project_file_with(&anchor, &installed).is_ok());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn app_mode_rejects_app_imports_and_import_options() {
+    let toml = format!("{DATABASE}[apps]\na = \"a.prisma\"\n");
+    let model = "model A {\n id Int @id\n}\n";
+    for (n, (import, expect)) in [("import \"app:monorm-auth\"", "app:"), ("import \"./p.prisma\" (prefix: \"x_\")", "prefix"), ("import \"./p.prisma\" (managed: false)", "managed")].into_iter().enumerate() {
+        let (installed, anchor, dir) = apps_project(&format!("imports-{n}"), &toml, &[("a.prisma", &format!("{import}\n{model}")), ("p.prisma", "model P {\n id Int @id\n}\n")]);
+        let error = apps_error(&installed, &anchor);
+        assert!(error.contains(expect) && error.contains("[apps]"), "{import}: {error}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
+fn an_installed_app_declares_its_label_and_takes_no_prefix() {
+    let toml = format!("{DATABASE}[apps]\nmain = \"main.prisma\"\nauth = \"app:monorm-auth\"\n");
+    let model = "model User {\n id Int @id\n}\n";
+    let (mut installed, anchor, dir) = apps_project("installed", &toml, &[("main.prisma", "model Post {\n id Int @id\n}\n"), ("pkg/schema.prisma", &format!("app settings {{\n label = \"auth\"\n}}\n{model}"))]);
+    // the host finds the package; here the test does
+    let entry = dir.join("pkg/schema.prisma");
+    installed.apps.insert("monorm-auth".to_owned(), entry.clone());
+    let project = compile_project_file_with(&anchor, &installed).unwrap();
+    assert_eq!(project.apps.iter().map(|a| (a.label.as_str(), a.package.as_deref())).collect::<Vec<_>>(), [("auth", Some("monorm-auth")), ("main", None)]);
+
+    let cases = [
+        ("app settings {\n label = \"identity\"\n}\n", "declares the label `identity`", "must be `identity`, not `auth`"),
+        ("", "has no label", "app settings { label = \"auth\" }"),
+        ("app settings {\n label = \"auth\"\n prefix = \"x_\"\n}\n", "sets `prefix`", "take the prefix `auth_`"),
+    ];
+    for (block, first, second) in cases {
+        std::fs::write(&entry, format!("{block}{model}")).unwrap();
+        let error = apps_error(&installed, &anchor);
+        assert!(error.contains(first) && error.contains(second) && error.contains("schema.prisma"), "{error}");
+    }
+    installed.apps.clear();
+    let error = apps_error(&installed, &anchor);
+    assert!(error.contains("`auth` is `app:monorm-auth`, which is not installed"), "{error}");
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn a_single_schema_file_is_a_one_app_project_with_a_derived_label() {
+    let dir = std::env::temp_dir().join(format!("monorm-one-app-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let model = "model A {\n id Int @id\n}\n";
+    let file = dir.join("blog-v2.prisma");
+    std::fs::write(&file, model).unwrap();
+    let label = |file: &Path| compile_project_file(file).unwrap().apps.iter().map(|a| a.label.clone()).collect::<Vec<_>>();
+    assert_eq!(label(&file), ["blog_v2"]);
+    std::fs::write(&file, format!("app settings {{\n label = \"blog\"\n}}\n{model}")).unwrap();
+    assert_eq!(label(&file), ["blog"]);
+    assert_eq!(compile_project(model, None).unwrap().apps[0].label, "main");
+    std::fs::remove_dir_all(dir).unwrap();
+}

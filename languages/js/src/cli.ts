@@ -28,7 +28,7 @@ export async function main(rawArgv: readonly string[]): Promise<number> {
   }
   try {
     const schema = addon.cliSchema(argv);
-    for (const [name, file] of Object.entries(resolveApps(schema))) argv.push("--app", `${name}=${file}`);
+    for (const [name, file] of Object.entries(resolveApps(schema, addon.cliAppPackages(argv)))) argv.push("--app", `${name}=${file}`);
     for (const [id, module] of Object.entries(runtimeModules(schema))) argv.push("--extension-module", `${id}=${module}`);
     for (const [id, manifest] of Object.entries(resolveExtensions(schema))) argv.push("--extension", `${id}=${manifest}`);
   } catch (e) {

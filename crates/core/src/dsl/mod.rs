@@ -38,6 +38,7 @@ use std::path::{Path, PathBuf};
 
 use crate::ir::SchemaIr;
 use crate::schema::Schema;
+use crate::settings;
 
 pub(crate) use lower::reads_row;
 pub use syntax::Pos;
@@ -58,20 +59,29 @@ pub struct Installed {
     pub extensions: Vec<(String, PathBuf)>,
     /// The `[database]` table of the settings file: the one typed input that replaces the `datasource` block.
     pub database: Option<crate::settings::DatabaseConfig>,
+    /// The `[apps]` table. When it is not empty, a schema file path compiles the apps instead of one file (the CLI sets it; see [`Installed::with_apps`]).
+    pub project: Vec<crate::settings::AppEntry>,
 }
 
 impl Installed {
     pub fn new() -> Self { Self::default() }
 
     /// Reads the `[database]` table of the settings file in `dir`, as the command line does for the working directory.
+    /// It reads no `[apps]`: a binding that compiles one file path gets a one-app project.
     pub fn with_settings_of(mut self, dir: &Path) -> Result<Self, String> {
         self.database = crate::settings::Settings::load(dir)?.database()?;
         Ok(self)
     }
+
+    /// Sets the apps of the project: the file-based compile functions then build these apps, not one file.
+    pub fn with_apps(mut self, apps: Vec<crate::settings::AppEntry>) -> Self {
+        self.project = apps;
+        self
+    }
 }
 
 impl From<std::collections::BTreeMap<String, PathBuf>> for Installed {
-    fn from(apps: std::collections::BTreeMap<String, PathBuf>) -> Self { Self { apps, extensions: vec![], database: None } }
+    fn from(apps: std::collections::BTreeMap<String, PathBuf>) -> Self { Self { apps, extensions: vec![], database: None, project: vec![] } }
 }
 
 impl<const N: usize> From<[(String, PathBuf); N]> for Installed {
@@ -92,8 +102,27 @@ pub struct SchemaUnit {
     pub types: Vec<String>,
 }
 
+/// One app of the project: the entry file, the part files that it imports, and its settings after the rules
+/// `[apps]` entry, then the app block, then the default.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppUnit {
+    pub label: String,
+    /// The package of an installed app (`app:<package>`); `None` for an app of the project.
+    pub package: Option<String>,
+    pub entry: PathBuf,
+    /// The entry file first, then every part file in import order.
+    pub files: Vec<PathBuf>,
+    /// The table prefix; J1 reads and stores it, the table names do not use it yet.
+    pub prefix: String,
+    pub managed: Option<bool>,
+    /// The history folder: the `[apps]` key (against the settings folder), else the app block (against the entry file).
+    pub migrations: Option<PathBuf>,
+}
+
 pub struct CompiledProject {
     pub ir: SchemaIr,
+    /// The apps of the project in `[apps]` order (by label); one app for a single schema file.
+    pub apps: Vec<AppUnit>,
     pub units: Vec<SchemaUnit>,
     /// Source files and database catalog resources read by compilation.
     pub inputs: Vec<PathBuf>,
@@ -101,6 +130,34 @@ pub struct CompiledProject {
     pub warnings: Vec<expr::Warning>,
     /// The manifests of the artifact and of the selected libraries.
     pub manifests: Vec<crate::behavior::Manifest>,
+}
+
+/// What a file is to its app.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Role {
+    /// The root schema, or the entry file of an app of `[apps]`.
+    Root,
+    /// The entry file of an installed app that a schema imports (`import "app:..."`, the old form).
+    Entry,
+    /// A part file.
+    Part,
+}
+
+/// The keys of an `app settings` block.
+#[derive(Default)]
+struct AppBlock {
+    label: Option<String>,
+    prefix: Option<String>,
+    managed: Option<bool>,
+    migrations: Option<String>,
+}
+
+/// The app that the loader reads: its `[apps]` entry, its settings after the precedence rules, and its files.
+struct AppState {
+    entry: settings::AppEntry,
+    options: syntax::ImportOptions,
+    migrations: Option<PathBuf>,
+    files: Vec<PathBuf>,
 }
 
 struct Loader<'a> {
@@ -113,6 +170,14 @@ struct Loader<'a> {
     lines: u32,
     /// The root schema is source text without a file: it has no directory to resolve an app from.
     sourceless: bool,
+    /// The app that is being read, when the project has `[apps]`.
+    app: Option<AppState>,
+    /// The app of each file that `[apps]` loaded, to name both apps when two claim one file.
+    owners: std::collections::HashMap<PathBuf, String>,
+    /// The extension definitions that an app loaded: a definition that two files import loads once.
+    definitions: std::collections::HashSet<PathBuf>,
+    /// The label and settings of the root schema's own `app settings` block (a single schema file).
+    root_block: Option<AppBlock>,
 }
 
 impl Loader<'_> {
@@ -133,7 +198,67 @@ impl Loader<'_> {
         (label.to_string(), expr::Span { line: span.line.saturating_sub(start) + 1, ..span })
     }
 
-    fn expand(&mut self, source: &str, origin: &Path, via: &str, options: &syntax::ImportOptions, root: bool, owner: Option<&str>) -> Result<Vec<syntax::Item>, String> {
+    /// The `app settings` block of one file: its keys and their types, one block, and only in an entry file.
+    fn block_of(&self, items: &[syntax::Item], role: Role) -> Result<Option<AppBlock>, String> {
+        let mut found: Option<AppBlock> = None;
+        for item in items {
+            let syntax::Item::AppSettings { pos, props } = item else { continue };
+            let fail = |pos: syntax::Pos, msg: String| self.located(syntax::Error { pos, msg });
+            if role == Role::Part {
+                return Err(fail(*pos, "app settings: the app block belongs in the entry file of the app, not in a part file; move it there".into()));
+            }
+            if found.is_some() {
+                return Err(fail(*pos, "app settings: an entry file has one app block".into()));
+            }
+            let mut block = AppBlock::default();
+            for (key, key_pos, value) in props {
+                match (key.as_str(), value) {
+                    ("label", syntax::Value::Str(label)) => {
+                        settings::check_label(label).map_err(|m| fail(*key_pos, format!("app settings: label {m}")))?;
+                        block.label = Some(label.clone());
+                    }
+                    ("prefix", syntax::Value::Str(prefix)) => block.prefix = Some(prefix.clone()),
+                    ("managed", syntax::Value::Bool(managed)) => block.managed = Some(*managed),
+                    ("migrations", syntax::Value::Str(dir)) => block.migrations = Some(dir.clone()),
+                    ("label" | "prefix" | "migrations", _) => return Err(fail(*key_pos, format!("app settings: {key} is a string, e.g. {key} = \"x\""))),
+                    ("managed", _) => return Err(fail(*key_pos, "app settings: managed is true or false".into())),
+                    _ => return Err(fail(*key_pos, format!("app settings: {key} is not a key of the app block; the keys are label, prefix, managed and migrations"))),
+                }
+            }
+            found = Some(block);
+        }
+        Ok(found)
+    }
+
+    /// The settings of the app that is being read once its entry file is parsed. `[apps]` wins over the block, the block over the default.
+    /// An installed app declares its label in the block, equal to its `[apps]` key, and takes no prefix.
+    fn settle(&mut self, origin: &Path, block: Option<AppBlock>) -> Result<(), String> {
+        let Some(app) = &mut self.app else { return Ok(()) };
+        let entry = &app.entry;
+        let installed = matches!(entry.source, settings::AppSource::Installed(_));
+        let block = block.unwrap_or_default();
+        let name = match &entry.source { settings::AppSource::Installed(package) => format!("app `{}` (`{package}`)", entry.label), _ => format!("app `{}`", entry.label) };
+        let file = origin.display();
+        match (&block.label, installed) {
+            (Some(label), true) if *label != entry.label => return Err(format!(
+                "{name}: the package declares the label `{label}` in {file}, so its [apps] key must be `{label}`, not `{}`; the project cannot relabel an installed app", entry.label)),
+            (Some(label), false) if *label != entry.label => return Err(format!(
+                "{name}: the app block of {file} has the label `{label}`, which differs from the [apps] key `{}`; use one label for both", entry.label)),
+            (None, true) => return Err(format!("{name}: {file} has no label; an installed app declares it: `app settings {{ label = \"{}\" }}`", entry.label)),
+            _ => {}
+        }
+        if installed && block.prefix.is_some() {
+            return Err(format!("{name}: {} sets `prefix`; the tables of an installed app take the prefix `{}_`, and no prefix can change it", origin.display(), entry.label));
+        }
+        app.options = syntax::ImportOptions {
+            prefix: entry.prefix.clone().or(block.prefix).unwrap_or_default(),
+            managed: entry.managed.or(block.managed),
+        };
+        app.migrations = entry.migrations.clone().or_else(|| block.migrations.map(|dir| origin.parent().unwrap_or(Path::new("")).join(dir)));
+        Ok(())
+    }
+
+    fn expand(&mut self, source: &str, origin: &Path, via: &str, options: &syntax::ImportOptions, role: Role, owner: Option<&str>) -> Result<Vec<syntax::Item>, String> {
         let canonical = if origin.exists() {
             origin.canonicalize().map_err(|e| e.to_string())?
         } else {
@@ -142,7 +267,15 @@ impl Loader<'_> {
         if self.active.contains(&canonical) {
             return Err(format!("{}: cyclic schema import", origin.display()));
         }
-        if let Some(first) = self.seen.get(&canonical) {
+        if let Some(app) = &self.app {
+            match self.owners.get(&canonical) {
+                Some(first) if *first == app.entry.label => return Ok(vec![]),
+                Some(first) => return Err(format!(
+                    "{}: a file belongs to one app, and this one belongs to app `{first}` and to app `{}` ({via}); import it from one app only",
+                    origin.display(), app.entry.label)),
+                None => { self.owners.insert(canonical.clone(), app.entry.label.clone()); }
+            }
+        } else if let Some(first) = self.seen.get(&canonical) {
             return Err(format!("{}: schema imported more than once, by {first} and by {via}; import a shared app once", origin.display()));
         }
         self.seen.insert(canonical.clone(), via.to_owned());
@@ -152,12 +285,41 @@ impl Loader<'_> {
         self.locations.push((offset + 1, self.lines + 1, origin.display().to_string()));
         let items = if offset == 0 { syntax::parse(source) } else { syntax::parse_at(source, offset + 1) }
             .map_err(|e| self.located(e))?;
+        let block = self.block_of(&items, role)?;
+        let mut root_options = None;
+        if let Some(app) = self.app.as_mut() { app.files.push(origin.to_path_buf()); }
+        if self.app.is_some() {
+            if role == Role::Root { self.settle(origin, block)?; }
+        } else if let Some(block) = block {
+            if role == Role::Entry && block.prefix.is_some() {
+                return Err(format!("{}: an installed app takes no `prefix`; its tables take `<label>_`", origin.display()));
+            }
+            if role == Role::Root {
+                root_options = Some(syntax::ImportOptions { prefix: block.prefix.clone().unwrap_or_default(), managed: block.managed });
+                self.root_block = Some(block);
+            }
+        }
+        let options = match (&self.app, root_options) {
+            (Some(app), _) => syntax::ImportOptions { prefix: app.options.prefix.clone(), managed: app.options.managed },
+            (None, Some(own)) => own,
+            (None, None) => syntax::ImportOptions { prefix: options.prefix.clone(), managed: options.managed },
+        };
+        let options = &options;
         let index = self.units.len();
         self.units.push(SchemaUnit { path: origin.to_path_buf(), app: owner.map(str::to_owned), models: vec![], enums: vec![], types: vec![] });
         let mut out = vec![];
         for mut item in items {
             match &mut item {
                 syntax::Item::Import { pos, path, options: local } => {
+                    if self.app.is_some() {
+                        let fail = |msg: String| self.located(syntax::Error { pos: *pos, msg });
+                        if let Some(name) = path.strip_prefix("app:") {
+                            return Err(fail(format!("import {path:?}: an import only adds a part file of this app; list the app in [apps], e.g. {name} = \"{path}\"")));
+                        }
+                        if !local.prefix.is_empty() || local.managed.is_some() {
+                            return Err(fail("import options prefix: and managed: are gone; set `prefix` or `managed` in the [apps] entry or in the app settings block of the entry file".into()));
+                        }
+                    }
                     let app = path.strip_prefix("app:").map(str::to_owned);
                     let imported = match &app {
                         Some(name) => {
@@ -180,21 +342,25 @@ impl Loader<'_> {
                             prefix: format!("{}{}", options.prefix, local.prefix),
                             managed: options.managed.or(local.managed),
                         };
-                        out.extend(self.expand(&text, &imported, &via, &child, false, app.as_deref().or(owner))?);
+                        let role = if app.is_some() { Role::Entry } else { Role::Part };
+                        out.extend(self.expand(&text, &imported, &via, &child, role, app.as_deref().or(owner))?);
                         continue;
                     }
                     if local.managed.is_some() {
                         return Err(self.located(syntax::Error { pos: *pos, msg: "managed is only allowed on schema imports".into() }));
                     }
-                    if !root || !local.prefix.is_empty() {
+                    if self.app.is_none() && (role != Role::Root || !local.prefix.is_empty()) {
                         return Err(self.located(syntax::Error { pos: *pos,
                             msg: "extension imports belong in the main schema and cannot have a prefix".into() }));
                     }
-                    *path = imported.canonicalize().map_err(|e| self.located(syntax::Error {
+                    let file = imported.canonicalize().map_err(|e| self.located(syntax::Error {
                         pos: *pos, msg: format!("import {path:?}: {e}")
-                    }))?.to_string_lossy().into_owned();
+                    }))?;
+                    // Two files of an app can import one definition: it loads once.
+                    if self.app.is_some() && !self.definitions.insert(file.clone()) { continue; }
+                    *path = file.to_string_lossy().into_owned();
                 }
-                syntax::Item::Datasource { pos, .. } if !root => {
+                syntax::Item::Datasource { pos, .. } if role != Role::Root => {
                     return Err(self.located(syntax::Error { pos: *pos,
                         msg: "datasource settings are only allowed in the main schema".into() }));
                 }
@@ -288,10 +454,65 @@ fn compile_project_mode(source: &str, origin: Option<&Path>, update: Option<Iden
     compile_project_overlay(source, origin, update, installed, &Default::default())
 }
 
+/// The label of a single schema file with no app block: the file stem as a Python identifier, and `main` for source text.
+fn stem_label(origin: &Path, sourceless: bool) -> String {
+    let stem = origin.file_stem().map(|s| s.to_string_lossy().into_owned()).filter(|_| !sourceless).unwrap_or_default();
+    let mut label: String = stem.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+    if label.is_empty() || label == "project" { return "main".into(); }
+    if label.starts_with(|c: char| c.is_ascii_digit()) { label.insert(0, '_'); }
+    label
+}
+
+/// The apps of `[apps]`: each entry file with the part files that it imports. The `origin` of the compile is the anchor of the project.
+fn expand_apps(loader: &mut Loader<'_>, installed: &Installed) -> Result<(Vec<syntax::Item>, Vec<AppUnit>), String> {
+    let mut items = vec![];
+    let mut apps: Vec<AppUnit> = vec![];
+    for entry in &installed.project {
+        if let Some(first) = apps.iter().find(|a| a.label == entry.label) {
+            return Err(format!("[apps]: two apps have the label `{}` ({}); a label is unique", entry.label, first.entry.display()));
+        }
+        let (file, package) = match &entry.source {
+            settings::AppSource::Path(file) => (file.clone(), None),
+            settings::AppSource::Installed(package) => {
+                let file = installed.apps.get(package).ok_or_else(|| format!(
+                    "[apps]: app `{}` is `app:{package}`, which is not installed; install the `{package}` package", entry.label))?;
+                (file.clone(), Some(package.clone()))
+            }
+        };
+        let canonical = file.canonicalize().unwrap_or_else(|_| file.clone());
+        let text = loader.overrides.get(&canonical).cloned().map(Ok).unwrap_or_else(|| std::fs::read_to_string(&file))
+            .map_err(|e| format!("[apps]: app `{}`: {}: {e}", entry.label, file.display()))?;
+        loader.app = Some(AppState { entry: entry.clone(), options: syntax::ImportOptions::default(), migrations: None, files: vec![] });
+        let via = format!("the entry file of app `{}`", entry.label);
+        items.extend(loader.expand(&text, &file, &via, &Default::default(), Role::Root, package.as_deref())?);
+        let state = loader.app.take().expect("the app that was read");
+        apps.push(AppUnit { label: entry.label.clone(), package, entry: file, files: state.files, prefix: state.options.prefix, managed: state.options.managed, migrations: state.migrations });
+    }
+    Ok((items, apps))
+}
+
 fn compile_project_overlay(source: &str, origin: Option<&Path>, update: Option<IdentityUpdate<'_>>, installed: &Installed, overrides: &std::collections::BTreeMap<PathBuf, String>) -> Result<CompiledProject, String> {
-    let mut loader = Loader { overrides, apps: &installed.apps, units: vec![], seen: Default::default(), active: vec![], locations: vec![], lines: 0, sourceless: origin.is_none() };
+    compile_project_inner(source, origin, update, installed, overrides, false)
+}
+
+/// `apps`: compile the apps of `installed.project` (the entry files) and not `source`. `origin` is then the anchor path of the project.
+fn compile_project_inner(source: &str, origin: Option<&Path>, update: Option<IdentityUpdate<'_>>, installed: &Installed, overrides: &std::collections::BTreeMap<PathBuf, String>, apps: bool) -> Result<CompiledProject, String> {
+    let mut loader = Loader { overrides, apps: &installed.apps, units: vec![], seen: Default::default(), active: vec![], locations: vec![], lines: 0, sourceless: origin.is_none(),
+        app: None, owners: Default::default(), definitions: Default::default(), root_block: None };
     let origin = origin.unwrap_or(Path::new("<schema>"));
-    let mut items = loader.expand(source, origin, "the root schema", &Default::default(), true, None)?;
+    let (mut items, mut app_units) = if apps {
+        expand_apps(&mut loader, installed)?
+    } else {
+        (loader.expand(source, origin, "the root schema", &Default::default(), Role::Root, None)?, vec![])
+    };
+    if !apps {
+        let label = loader.root_block.as_ref().and_then(|b| b.label.clone()).unwrap_or_else(|| stem_label(origin, loader.sourceless));
+        let files = loader.units.iter().map(|u| u.path.clone()).collect();
+        let block = loader.root_block.as_ref();
+        app_units.push(AppUnit { label, package: None, entry: origin.to_path_buf(), files,
+            prefix: block.and_then(|b| b.prefix.clone()).unwrap_or_default(), managed: block.and_then(|b| b.managed),
+            migrations: block.and_then(|b| b.migrations.as_ref()).map(|dir| origin.parent().unwrap_or(Path::new("")).join(dir)) });
+    }
     let sidecars = view_bodies(&mut items, &loader, installed.database.as_ref())?;
     let mut declared = std::collections::HashMap::new();
     for item in &items {
@@ -422,7 +643,7 @@ fn compile_project_overlay(source: &str, origin: Option<&Path>, update: Option<I
     inputs.extend(catalog_inputs.into_inner());
     inputs.extend(sidecars);
     if ir.identities.is_some() { inputs.push(path); }
-    Ok(CompiledProject { ir, units: loader.units, inputs, warnings, manifests: manifests.to_vec() })
+    Ok(CompiledProject { ir, apps: app_units, units: loader.units, inputs, warnings, manifests: manifests.to_vec() })
 }
 
 pub fn compile_project_file(path: &Path) -> Result<CompiledProject, String> {
@@ -430,6 +651,9 @@ pub fn compile_project_file(path: &Path) -> Result<CompiledProject, String> {
 }
 
 pub fn compile_project_file_with(path: &Path, installed: &Installed) -> Result<CompiledProject, String> {
+    if !installed.project.is_empty() {
+        return compile_project_inner("", Some(path), None, installed, &Default::default(), true);
+    }
     let source = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     compile_project_with(&source, Some(path), installed)
 }
@@ -466,8 +690,12 @@ pub fn generate_identities(path: &Path, renames: &[(String, String)], restores: 
 }
 
 pub fn generate_identities_with(path: &Path, renames: &[(String, String)], restores: &[String], installed: &Installed) -> Result<monorm::identity::IdentityManifest, String> {
-    let source = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let project = compile_project_mode(&source, Some(path), Some((renames, restores)), installed)?;
+    let project = if installed.project.is_empty() {
+        let source = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        compile_project_mode(&source, Some(path), Some((renames, restores)), installed)?
+    } else {
+        compile_project_inner("", Some(path), Some((renames, restores)), installed, &Default::default(), true)?
+    };
     let manifest = project.ir.identities.clone().ok_or("missing generated identities")?;
     if project.ir.behavior.declarations.is_empty() { check(project.ir)?; }
     crate::identity::write(&crate::identity::manifest_path(path), &manifest)?;

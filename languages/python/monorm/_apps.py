@@ -11,6 +11,7 @@ import importlib.metadata
 import importlib.util
 import os
 import re
+from collections.abc import Iterable
 from pathlib import Path
 
 from ._native import SchemaError
@@ -42,11 +43,15 @@ def _schema_of(name: str) -> Path | None:
     return path
 
 
-def resolve_apps(schema: str | os.PathLike[str]) -> dict[str, str]:
-    """``{name: schema file}`` of every app the schema, its imports and their apps import.
+def resolve_apps(schema: str | os.PathLike[str], packages: Iterable[str] = ()) -> dict[str, str]:
+    """``{name: schema file}`` of every app the schema, its imports and their apps import, and of each package that ``[apps]`` names.
     An app that is not installed is left out: the schema loader reports it."""
     apps: dict[str, str] = {}
     pending = [Path(schema).resolve()]
+    for name in packages:
+        if (found := _schema_of(name)) is not None:
+            apps[name] = str(found)
+            pending.append(found)
     seen: set[Path] = set()
     while pending:
         file = pending.pop()

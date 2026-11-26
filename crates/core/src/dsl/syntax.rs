@@ -9,6 +9,7 @@
 //!            | "type" IDENT "{" member* "}"         (a nested type; members as in a model)
 //!            | "enum" IDENT "{" (IDENT attr* | "@@" NAME args?)* "}"
 //!            | "datasource" IDENT "{" prop* "}"
+//!            | "app" "settings" "{" prop* "}"        (the app block: label, prefix, managed, migrations)
 //!            | "generator" IDENT "{" prop* "}"      (only `extensions = [...]` is read)
 //!            | "function" IDENT "{" prop* "}"
 //!            | "import" STRING
@@ -386,6 +387,8 @@ pub enum Item {
     Type(ModelDecl),
     Enum(EnumDecl),
     Datasource { pos: Pos, props: Props },
+    /// `app settings { label = ... }`: the keys of the app block of an entry file (checked by the loader).
+    AppSettings { pos: Pos, props: Props },
     /// `generator name { ... }`: only the `extensions` key is read.
     Generator { props: Props },
     Function { pos: Pos, name: String, props: Props },
@@ -496,6 +499,14 @@ impl<'a> Parser<'a> {
                     let props = self.props("datasource");
                     self.eq_keys = false;
                     items.push(Item::Datasource { pos, props: props? });
+                }
+                "app" => {
+                    let (name_pos, name) = self.ident("`settings`")?;
+                    if name != "settings" {
+                        return err(name_pos, format!("the app block is `app settings {{ ... }}`, not `app {name}`"));
+                    }
+                    let props = self.props("app settings")?;
+                    items.push(Item::AppSettings { pos, props });
                 }
                 // Prisma's own generators (`prisma-client-js`, ...) may share the file.
                 "generator" => {

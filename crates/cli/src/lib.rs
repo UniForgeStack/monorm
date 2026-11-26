@@ -219,7 +219,12 @@ impl Args {
             let entry = (id.to_owned(), PathBuf::from(path));
             if !installed.extensions.contains(&entry) { installed.extensions.push(entry); }
         }
-        installed.database = settings()?.database().map_err(Failure::Setup)?;
+        let settings = settings()?;
+        installed.database = settings.database().map_err(Failure::Setup)?;
+        // `--schema FILE` is a one-app project: the flag answers `[apps]`.
+        if self.opt(&["--schema"]).is_none() {
+            installed.project = settings.apps().map_err(Failure::Setup)?;
+        }
         Ok(installed)
     }
 
@@ -250,8 +255,15 @@ fn path_option(
     ))
 }
 
-/// The schema file: `--schema`, else `schema`, else `schema.prisma`.
+/// The schema file: `--schema`, else the entry file of the first project app of `[apps]` (the anchor of the project),
+/// else `schema`, else `schema.prisma`.
 fn schema_file(args: &Args, settings: &Settings) -> Result<PathBuf> {
+    if args.opt(&["--schema"]).is_none() {
+        let apps = settings.apps().map_err(Failure::Setup)?;
+        if let Some(anchor) = monorm_core::settings::anchor(&apps) {
+            return Ok(anchor.to_path_buf());
+        }
+    }
     path_option(args, settings, "--schema", "schema", "schema.prisma")
 }
 
@@ -352,6 +364,15 @@ pub fn schema_path(argv: &[String]) -> PathBuf {
         .ok()
         .and_then(|args| schema_file(&args, &settings().ok()?).ok())
         .unwrap_or_else(|| PathBuf::from("schema.prisma"))
+}
+
+/// The installed packages that `[apps]` names (`app:<package>`) for a command line, in label order.
+/// The Python and Node hosts find their schema files, as they do for `import "app:NAME"`; a wrong `[apps]` gives none, and the command reports it.
+pub fn app_packages(argv: &[String]) -> Vec<String> {
+    let Ok(args) = Args::parse(argv) else { return vec![] };
+    if args.opt(&["--schema"]).is_some() { return vec![] }
+    let apps = settings().ok().and_then(|s| s.apps().ok()).unwrap_or_default();
+    apps.into_iter().filter_map(|a| match a.source { monorm_core::settings::AppSource::Installed(package) => Some(package), _ => None }).collect()
 }
 
 /// Runs the command line `argv` (without the program name) and gives the exit code.

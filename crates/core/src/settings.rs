@@ -12,7 +12,7 @@
 //! every other key (for example `[admin]`) belongs to its owner, which reads it with [`Settings::section`].
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
@@ -53,6 +53,8 @@ impl Source {
 #[derive(Debug, Clone, Default)]
 pub struct Settings {
     found: Option<(Source, serde_json::Map<String, Value>)>,
+    /// The folder of the settings file: a relative path in `[apps]` resolves against it.
+    dir: std::path::PathBuf,
 }
 
 impl Settings {
@@ -67,10 +69,10 @@ impl Settings {
                 Err(e) => return Err(format!("{}: {e}", source.file())),
             };
             if let Some(root) = parse(source, &text)? {
-                return Ok(Settings { found: Some((source, root)) });
+                return Ok(Settings { found: Some((source, root)), dir: dir.to_path_buf() });
             }
         }
-        Ok(Settings::default())
+        Ok(Settings { dir: dir.to_path_buf(), ..Default::default() })
     }
 
     /// The file of the settings, or `None` when the project has none.
@@ -186,6 +188,58 @@ impl Settings {
         Ok(Some(out))
     }
 
+    /// The `[apps]` table: the apps of the project, sorted by label (the key).
+    /// An entry is `label = "path/entry.prisma"`, `label = "app:<package>"` or `label = { path, prefix, managed, migrations }`
+    /// (`path` takes a file or `app:<package>`). A relative path resolves against the folder of the settings file.
+    /// Empty when the project has no `[apps]`. A `schema` key next to `[apps]` is an error: `[apps]` replaces it.
+    pub fn apps(&self) -> Result<Vec<AppEntry>, String> {
+        let Some(section) = self.section("apps") else { return Ok(vec![]) };
+        let Value::Object(table) = section else { return Err(self.wrong("apps", "must be a table of apps, e.g. orders = \"orders.prisma\"")) };
+        if self.section("schema").is_some() {
+            return Err(self.wrong("schema", "is not a setting when `[apps]` is set; `[apps]` replaces it: list the schema file as an app, e.g. main = \"schema.prisma\""));
+        }
+        let mut out = vec![];
+        for (label, value) in table {
+            check_label(label).map_err(|m| self.wrong(&format!("apps.{label}"), &m))?;
+            let key = |name: &str| format!("apps.{label}.{name}");
+            let mut entry = AppEntry { label: label.clone(), source: AppSource::Path(PathBuf::new()), prefix: None, managed: None, migrations: None };
+            let path = match value {
+                Value::String(path) => path,
+                Value::Object(fields) => {
+                    let mut path = None;
+                    for (name, v) in fields {
+                        match (name.as_str(), v) {
+                            ("path", Value::String(p)) => path = Some(p),
+                            ("path", _) => return Err(self.wrong(&key("path"), "must be a string")),
+                            ("prefix", Value::String(p)) => entry.prefix = Some(p.clone()),
+                            ("prefix", _) => return Err(self.wrong(&key("prefix"), "must be a string")),
+                            ("managed", Value::Bool(b)) => entry.managed = Some(*b),
+                            ("managed", _) => return Err(self.wrong(&key("managed"), "must be true or false")),
+                            ("migrations", Value::String(p)) => entry.migrations = Some(self.dir.join(p)),
+                            ("migrations", _) => return Err(self.wrong(&key("migrations"), "must be a folder")),
+                            _ => return Err(self.wrong(&key(name), "is not a key of an app; the keys are `path`, `prefix`, `managed` and `migrations`")),
+                        }
+                    }
+                    path.ok_or_else(|| self.wrong(&format!("apps.{label}"), "has no `path`"))?
+                }
+                _ => return Err(self.wrong(&format!("apps.{label}"), "is a path, `app:<package>` or a table with a `path`")),
+            };
+            if path.is_empty() {
+                return Err(self.wrong(&format!("apps.{label}"), "has an empty path"));
+            }
+            entry.source = match path.strip_prefix("app:") {
+                Some("") => return Err(self.wrong(&format!("apps.{label}"), "names no package after `app:`")),
+                Some(package) => AppSource::Installed(package.to_owned()),
+                None => AppSource::Path(self.dir.join(path)),
+            };
+            if let (AppSource::Installed(_), Some(_)) = (&entry.source, &entry.prefix) {
+                return Err(self.wrong(&key("prefix"), &format!("is not allowed on an installed app; its tables take the prefix `{label}_`")));
+            }
+            out.push(entry);
+        }
+        Ok(out)
+    }
+
     /// The name of the environment variable that holds the database URL: `[database] url_env`, else `MONORM_DATABASE_URL`.
     /// The other keys of `[database]` are not checked here, so a command that only needs the URL does not stop on them.
     pub fn url_env(&self) -> Result<String, String> {
@@ -288,6 +342,46 @@ impl Settings {
             None => format!("`{key}` {what}"),
         }
     }
+}
+
+/// An app label: a Python identifier, and not `project` (the name of the project history).
+pub fn check_label(label: &str) -> Result<(), String> {
+    let mut chars = label.chars();
+    let first = chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+    if !first || !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(format!("{label:?} is not a label; a label is a Python identifier, such as `orders`"));
+    }
+    if label == "project" {
+        return Err("`project` is reserved for the project history; choose another label".into());
+    }
+    Ok(())
+}
+
+/// Where the schema of an app comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AppSource {
+    /// A `.prisma` entry file of the project.
+    Path(PathBuf),
+    /// An installed package (`app:<package>`); the host finds its entry file.
+    Installed(String),
+}
+
+/// One entry of `[apps]`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppEntry {
+    /// The key: the unique label of the app.
+    pub label: String,
+    pub source: AppSource,
+    pub prefix: Option<String>,
+    pub managed: Option<bool>,
+    /// A history folder, resolved against the folder of the settings file.
+    pub migrations: Option<PathBuf>,
+}
+
+/// The file that stands for the project where one schema path is needed (the identity file, the output folder of `generate`):
+/// the entry file of the first project app by label.
+pub fn anchor(apps: &[AppEntry]) -> Option<&Path> {
+    apps.iter().find_map(|a| match &a.source { AppSource::Path(p) => Some(p.as_path()), AppSource::Installed(_) => None })
 }
 
 /// The environment variable that holds the database URL when `[database]` does not name one.
@@ -606,6 +700,43 @@ hard_delete_setting = "rules.hard_deletion"
         ];
         for (text, expect) in cases {
             let error = database(text).unwrap_err();
+            assert!(error.starts_with("monorm.toml: ") && error.contains(expect), "{text}: {error}");
+        }
+    }
+
+    fn apps(text: &str) -> Result<Vec<AppEntry>, String> {
+        load(&[("monorm.toml", text)]).unwrap().apps()
+    }
+
+    #[test]
+    fn the_apps_table_reads_the_three_entry_forms() {
+        let entries = apps("[apps]\nmain = \"schema.prisma\"\nauth = \"app:monorm-auth\"\norders = { path = \"orders/orders.prisma\", prefix = \"ord_\", managed = false, migrations = \"history/shop\" }\n").unwrap();
+        let labels: Vec<_> = entries.iter().map(|e| e.label.as_str()).collect();
+        assert_eq!(labels, ["auth", "main", "orders"]);
+        assert_eq!(entries[0].source, AppSource::Installed("monorm-auth".to_owned()));
+        assert!(matches!(&entries[1].source, AppSource::Path(p) if p.ends_with("schema.prisma") && p.is_absolute()));
+        assert_eq!((entries[2].prefix.as_deref(), entries[2].managed), (Some("ord_"), Some(false)));
+        assert!(entries[2].migrations.as_ref().unwrap().ends_with("history/shop"));
+        assert!(anchor(&entries).unwrap().ends_with("schema.prisma"));
+        assert!(apps("migrations = \"db\"\n").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_wrong_apps_table_names_the_file_and_the_key() {
+        let cases = [
+            ("apps = 3\n", "monorm.toml: `apps` must be a table"),
+            ("schema = \"a.prisma\"\n[apps]\nmain = \"a.prisma\"\n", "`schema` is not a setting when `[apps]` is set"),
+            ("[apps]\n\"my-app\" = \"a.prisma\"\n", "`apps.my-app`"),
+            ("[apps]\nproject = \"a.prisma\"\n", "`apps.project`"),
+            ("[apps]\n\"1a\" = \"a.prisma\"\n", "`apps.1a`"),
+            ("[apps]\nmain = 3\n", "`apps.main`"),
+            ("[apps]\nmain = { prefix = \"a_\" }\n", "`apps.main` has no `path`"),
+            ("[apps]\nmain = { path = \"a.prisma\", color = 1 }\n", "`apps.main.color` is not a key"),
+            ("[apps]\nauth = { path = \"app:monorm-auth\", prefix = \"x_\" }\n", "is not allowed on an installed app"),
+            ("[apps]\nmain = { path = \"a.prisma\", managed = \"no\" }\n", "`apps.main.managed`"),
+        ];
+        for (text, expect) in cases {
+            let error = apps(text).unwrap_err();
             assert!(error.starts_with("monorm.toml: ") && error.contains(expect), "{text}: {error}");
         }
     }

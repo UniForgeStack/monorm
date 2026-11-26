@@ -368,6 +368,7 @@ interface Addon {
   _testValidationText(error: unknown): string;
   cli(argv: string[]): Promise<number>;
   cliSchema(argv: string[]): string;
+  cliAppPackages(argv: string[]): string[];
   cliMigrateArgs(argv: string[]): (string | null)[] | null;
   listMigrations(dir: string): string[][];
   findMigration(dir: string, name: string): string[];

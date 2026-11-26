@@ -425,7 +425,7 @@ impl Lowering<'_> {
                     datasource_block(&mut ir, *pos, props)?;
                 }
                 Item::Function { pos, name, props } => ir.functions.push(function(*pos, name, props)?),
-                Item::Model(_) | Item::Type(_) | Item::Enum(_) | Item::Import { .. } | Item::Partition { .. } | Item::Generator { .. } => {}
+                Item::Model(_) | Item::Type(_) | Item::Enum(_) | Item::Import { .. } | Item::Partition { .. } | Item::Generator { .. } | Item::AppSettings { .. } => {}
             }
         }
 

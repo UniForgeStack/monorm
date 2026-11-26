@@ -1925,6 +1925,13 @@ pub fn cli_schema(argv: Vec<String>) -> String {
     monorm_cli::schema_path(&argv).to_string_lossy().into_owned()
 }
 
+/// The installed packages that `[apps]` names, as the CLI reads them.
+#[cfg(feature = "cli")]
+#[napi]
+pub fn cli_app_packages(argv: Vec<String>) -> Vec<String> {
+    monorm_cli::app_packages(&argv)
+}
+
 /// For `npx monorm migrate`: `[schema, dir, url, target, allowDestructive]` as the CLI resolves
 /// them (null for a missing URL or target; "true" or null for the flag), or null for any other
 /// command line.

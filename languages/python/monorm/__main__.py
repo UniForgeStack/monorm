@@ -46,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
 
         return run(args[1] if len(args) > 1 else "serve")
     try:
-        apps = resolve_apps(_native.cli_schema(args))
+        apps = resolve_apps(_native.cli_schema(args), _native.cli_app_packages(args))
         extensions = resolve_extensions()
     except SchemaError as e:
         print(f"error: {e}", file=sys.stderr)

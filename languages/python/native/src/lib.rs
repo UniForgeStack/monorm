@@ -1643,6 +1643,13 @@ fn cli_schema(argv: Vec<String>) -> PathBuf {
     monorm_cli::schema_path(&argv)
 }
 
+/// The installed packages that `[apps]` names, as the CLI reads them.
+#[cfg(feature = "cli")]
+#[pyfunction]
+fn cli_app_packages(argv: Vec<String>) -> Vec<String> {
+    monorm_cli::app_packages(&argv)
+}
+
 /// For `python -m monorm migrate`: `(schema, dir, url, target, allow_destructive)` as the CLI resolves them,
 /// or None for any other command line.
 #[cfg(feature = "cli")]
@@ -1714,6 +1721,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(cli_migrate_args, m)?)?;
     #[cfg(feature = "cli")]
     m.add_function(wrap_pyfunction!(cli_schema, m)?)?;
+    m.add_function(wrap_pyfunction!(cli_app_packages, m)?)?;
     m.add_function(wrap_pyfunction!(list_migrations, m)?)?;
     m.add_function(wrap_pyfunction!(migration_checksum, m)?)?;
     m.add_function(wrap_pyfunction!(find_migration, m)?)?;

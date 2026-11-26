@@ -38,11 +38,18 @@ function schemaOf(name: string, from: string): string | undefined {
   }
 }
 
-/** `{name: schema file}` of every app the schema, its imports and their apps import.
+/** `{name: schema file}` of every app the schema, its imports and their apps import, and of each package that `[apps]` names.
  * An app that is not installed is left out: the schema loader reports it. */
-export function resolveApps(schema: string): Record<string, string> {
+export function resolveApps(schema: string, packages: readonly string[] = []): Record<string, string> {
   const apps: Record<string, string> = {};
   const pending = [resolve(schema)];
+  for (const name of packages) {
+    const found = schemaOf(name, process.cwd());
+    if (found !== undefined) {
+      apps[name] = found;
+      pending.push(found);
+    }
+  }
   const seen = new Set<string>();
   while (pending.length > 0) {
     const file = pending.pop()!;

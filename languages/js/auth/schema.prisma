@@ -1,3 +1,7 @@
+app settings {
+  label = "auth"
+}
+
 model AbstractUser {
   id           Int          @id @default(autoincrement())
   username     String       @unique
