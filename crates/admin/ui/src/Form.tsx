@@ -97,6 +97,8 @@ const rowClass = "mb-4 grid gap-1.5 last:mb-0";
 const KEEP = "You have unsaved changes on this form. Leave without saving?";
 const KEEP_NEW = "You have unsaved changes in this new record. Discard them?";
 
+const sectionTitle = "text-xs font-semibold tracking-wide uppercase text-muted-foreground";
+
 function Block({ section, fields, children }: { section: api.Section; fields: string[]; children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
   // A field error inside a collapsed section opens it.
@@ -107,14 +109,14 @@ function Block({ section, fields, children }: { section: api.Section; fields: st
   if (section.title === null) return <div className={sectionCard}>{children}</div>;
   if (section.collapsed) {
     return (
-      <Collapsible className={sectionCard} title={section.title} open={open} onOpenChange={setOpen}>
+      <Collapsible className={sectionCard} title={section.title} titleClassName={sectionTitle} open={open} onOpenChange={setOpen}>
         {children}
       </Collapsible>
     );
   }
   return (
     <fieldset className={cn(sectionCard, "[&>legend+*]:clear-both")}>
-      <legend className="float-left mb-4 w-full p-0 text-base font-semibold">{section.title}</legend>
+      <legend className={cn("float-left mb-4 w-full p-0", sectionTitle)}>{section.title}</legend>
       {children}
     </fieldset>
   );

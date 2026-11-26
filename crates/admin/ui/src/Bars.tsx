@@ -23,7 +23,7 @@ export function Breadcrumbs({ group, items }: { group?: string | null; items: { 
 /** The bar at the bottom of a record page. It sticks to the viewport: Delete (or nothing) on the left, the actions that go on from here on the right. */
 export function StickyFooter({ left, children, className }: { left?: ReactNode; children?: ReactNode; className?: string }) {
   return (
-    <div role="group" aria-label="Page actions" className={cn("savebar sticky bottom-0 z-10 mt-2 flex flex-wrap items-center gap-2 rounded-xl border-t border-border bg-card p-3 shadow-[0_-4px_12px_rgb(0_0_0/0.08)]", className)}>
+    <div role="group" aria-label="Page actions" className={cn("savebar sticky bottom-0 z-10 mt-2 flex flex-wrap items-center gap-2 rounded-lg border-t border-border bg-card p-3 shadow-[0_-4px_12px_rgb(0_0_0/0.08)]", className)}>
       {left}
       <div className="ml-auto flex flex-wrap items-center gap-2">{children}</div>
     </div>
