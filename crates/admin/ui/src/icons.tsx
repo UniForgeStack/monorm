@@ -1,4 +1,11 @@
-import { Activity, AlertTriangle, Archive, BarChart3, Bell, Book, BookOpen, Box, Boxes, Briefcase, Building2, Calendar, Clipboard, Clock, Cloud, Cog, CreditCard, Database, DollarSign, File, FileText, Flag, Folder, Gift, Globe, Heart, History, House, Image, Inbox, Key, Layers, LayoutDashboard, LifeBuoy, Link as LinkIcon, List, Lock, Mail, Map, MessageSquare, Package, Percent, Receipt, RefreshCw, Search, Server, Settings, Shield, ShoppingBag, ShoppingCart, Star, Store, Tag, Tags, Ticket, Truck, User, UserCog, Users, Wallet, Wrench, Zap, type LucideIcon } from "lucide-react";
+import {
+  Activity, AlertTriangle, Archive, Ban, BarChart3, Bell, Book, BookOpen, Box, Boxes, Briefcase, Building2, Calendar, Check, CircleCheck, CircleX,
+  Clipboard, Clock, Cloud, Cog, Copy, CreditCard, Database, DollarSign, Download, Ellipsis, ExternalLink, Eye, EyeOff, File, FileText, Flag, Folder,
+  Gift, Globe, Heart, History, House, Image, Inbox, Key, Layers, LayoutDashboard, LifeBuoy, Link as LinkIcon, List, Lock, Mail, Map, MessageSquare,
+  Package, Pencil, Percent, Play, Plus, Printer, Receipt, RefreshCw, RotateCcw, Search, Send, Server, Settings, Shield, ShoppingBag, ShoppingCart,
+  Star, Store, Tag, Tags, Ticket, Trash2, Truck, Undo2, Unlock, Upload, User, UserCog, Users, Wallet, Wrench, Zap,
+  type LucideIcon,
+} from "lucide-react";
 import type { SVGProps } from "react";
 
 /** The icons that a resource, a group or a service can name, by lucide name (kebab case). A name that is not here shows a plain dot. */
@@ -10,6 +17,8 @@ const ICONS: Record<string, LucideIcon> = {
   "message-square": MessageSquare, package: Package, percent: Percent, receipt: Receipt, "refresh-cw": RefreshCw, search: Search, server: Server, settings: Settings,
   shield: Shield, "shopping-bag": ShoppingBag, "shopping-cart": ShoppingCart, star: Star, store: Store, tag: Tag, tags: Tags, ticket: Ticket, truck: Truck, user: User,
   "user-cog": UserCog, users: Users, wallet: Wallet, wrench: Wrench, zap: Zap,
+  ban: Ban, check: Check, "circle-check": CircleCheck, "circle-x": CircleX, "x-circle": CircleX, copy: Copy, download: Download, ellipsis: Ellipsis, "external-link": ExternalLink,
+  eye: Eye, "eye-off": EyeOff, pencil: Pencil, play: Play, plus: Plus, printer: Printer, "rotate-ccw": RotateCcw, send: Send, "trash-2": Trash2, "undo-2": Undo2, unlock: Unlock, upload: Upload,
 };
 
 /** The icon of a lucide name, or a plain dot for a name that the UI does not know (or no name: `fallback`). */

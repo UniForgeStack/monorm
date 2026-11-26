@@ -671,7 +671,14 @@ A host route adds `inputs`, `service` (whether a service wrote) and `allow_prote
 
 A widget follows the type unless the config sets one (see [Layout, read-only fields and widgets](#layout-read-only-fields-and-widgets)): a checkbox for a Boolean, a select for an enum, a text area for long text, JSON and lists, a date or time input, and a text input for the rest.
 A key field is read-only on the change form.
-The save bar stays at the bottom and has "Save" (back to the record), "Save and continue" (stay in the form, on the new record for a create) and "Save and add another" (an empty create form).
+The footer is sticky and stays at the bottom of the page.
+On the change form it has Delete on the left (when the user may delete), and on the right the `submit` actions in their `variant`, then "Save and add another" (an empty create form), "Save and continue" (stay in the form, on the new record for a create) and "Save" (back to the record).
+The list, detail and form pages start with breadcrumbs ("Home", the resource, the record) in place of a back link.
+The header of a detail page shows each `detail` action without a `menu` as a button, and each `menu` as one dropdown.
+After three buttons the rest go to "More", which also holds "History" (a link to the audit log filtered on the record, when the site has the audit page).
+A `+` button opens the create form when the user may add.
+The footer of the detail page has Delete on the left and Edit on the right.
+Each section of the detail page is a card with a title that folds, and the browser keeps the state per resource and section.
 The form sends only the fields that changed, and never a read-only field.
 "Add" on a to-many tab opens the create form of the child, with the field that points at the parent filled in.
 Delete asks first, in a dialog on the record page.
@@ -1113,6 +1120,7 @@ For example, `Account` extending `AbstractUser` uses `AccountRole`.
 - `AdminLogEntry` is the audit log.
 It is read-only for everyone, superusers too: a write gives `403`.
 A reader who cannot see a field of the logged resource (see [field permissions](#field-permissions)) gets no value of that field in `changes`.
+Its list always filters on `resource` and `record_key` (they join any `filters` that you set), so the History link of a record page opens `?f.resource=<name>&f.record_key=<key>`.
 
 ### `admin.permissions` and `sync-permissions`
 
@@ -1216,6 +1224,25 @@ A selection of more than 10,000 rows needs a second confirmation: the request an
 The request that follows carries `confirm_large: true`, and the function then runs on all rows that match, with no upper bound.
 The action's query set carries the same rules into each read or write.
 A concurrent change can affect which rows still match after the count.
+
+### Look and place: `variant`, `icon` and `menu`
+
+Three optional fields set how the UI draws an action.
+`variant` is `default`, `primary`, `success`, `warning` or `danger`, and it sets the colour of the button.
+`icon` is a [lucide](https://lucide.dev/icons/) name in kebab case, such as `"refresh-cw"`.
+The UI shows a plain glyph for a name that it does not know.
+`menu` is for `detail` actions only: actions with the same `menu` text share one dropdown button with that text.
+An action with no `menu` is a button.
+Python and TypeScript pass the three fields to Rust, and Rust checks them when the site starts: an unknown `variant`, an icon name that is not in kebab case, an empty or longer than 40 characters `menu`, and a `menu` on another placement are config errors.
+The values reach the UI in the `/site` metadata as `variant`, `icon` and `menu` of each action (`null` when not set).
+
+```python
+@admin.action(placement="detail", label="Close", variant="danger", icon="x-circle", menu="Status")
+async def close(ctx, qs):
+    await qs.update(status="closed")
+```
+
+In TypeScript the options are `{ placement: "detail", variant: "danger", icon: "x-circle", menu: "Status" }`.
 
 ### Confirmation, inputs and files
 

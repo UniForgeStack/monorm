@@ -12,6 +12,7 @@ import { actionDisabled, ActionDialog, deleteAction, needsDialog, useQuick, type
 import { buttonVariants } from "./components/ui/button";
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "./components/ui/dropdown-menu";
 import { Input, Select } from "./components/ui/input";
+import { Breadcrumbs } from "./Bars";
 import { Alert, Bypass, Button, message } from "./ui";
 
 const SIZES = [10, 25, 50, 100, 200];
@@ -75,6 +76,7 @@ export function ListPage({ resource, zone, site }: { resource: string; zone: Zon
   const meta = site?.resources.find((r) => r.name === resource);
   return (
     <section>
+      <Breadcrumbs group={meta?.group} items={[{ label: meta?.title ?? resource }]} />
       <h1>{meta?.title ?? resource}</h1>
       <ListView key={resource} resource={resource} zone={zone} meta={meta} params={params} change={change} />
     </section>

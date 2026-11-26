@@ -793,6 +793,12 @@ pub struct ActionConfig {
     pub name: String,
     pub label: Option<String>,
     pub placement: Option<String>,
+    /// The colour of the button: `default`, `primary`, `success`, `warning` or `danger`.
+    pub variant: Option<String>,
+    /// A lucide icon name (`refresh-cw`).
+    pub icon: Option<String>,
+    /// The label of a dropdown menu in the detail header; needs the placement `detail`.
+    pub menu: Option<String>,
     /// The permission name `<label>.<permission>_<resource>`. None: the action needs `manage`.
     pub permission: Option<String>,
     /// The text of the confirmation. None: no confirmation.

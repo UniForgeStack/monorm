@@ -216,6 +216,22 @@ async fn metadata_lists_only_what_the_user_can_use_with_the_filtered_names() {
 }
 
 #[tokio::test]
+async fn metadata_carries_the_variant_icon_and_menu_of_an_action() {
+    let schema = schema();
+    let actions = json!([
+        {"name": "close", "placement": "detail", "variant": "danger", "icon": "x-circle", "menu": "Status"},
+        {"name": "plain", "placement": "detail"}
+    ]);
+    let site = site(&schema, json!({"resources": [{"model": "Note", "actions": actions}]}));
+    let mut grants = Grants::default();
+    grants.names.extend(["admin.access", "admin.manage_note"].map(String::from));
+    let meta = site.metadata(&grants);
+    let shown = &meta["resources"][0]["actions"];
+    assert_eq!((&shown[0]["variant"], &shown[0]["icon"], &shown[0]["menu"]), (&json!("danger"), &json!("x-circle"), &json!("Status")));
+    assert_eq!((&shown[1]["variant"], &shown[1]["icon"], &shown[1]["menu"]), (&Value::Null, &Value::Null, &Value::Null));
+}
+
+#[tokio::test]
 async fn metadata_offers_bulk_delete_only_to_a_user_who_may_delete() {
     let schema = schema();
     let site = site(&schema, json!({"resources": [{"model": "Note"}, {"model": "Order"}]}));

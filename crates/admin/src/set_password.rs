@@ -25,6 +25,9 @@ pub(crate) fn action(can: Option<Value>) -> Action {
         name: NAME.into(),
         label: "Set password".into(),
         placement: Some(Placement::Detail),
+        variant: None,
+        icon: None,
+        menu: None,
         permission: None,
         confirm: Some("Set a new password for {display}? All sessions of this user end.".into()),
         inputs: [

@@ -246,7 +246,7 @@ async def test_a_bulk_action_gets_the_selected_rows_with_the_can_rule_and_the_re
     assert (summary["placement"], summary["count"], summary["selection"], summary["keys"]) == ("bulk", 1, "keys", ["1", "3"])
     meta = (await client.get("/admin/api/resources")).json()
     actions = next(r for r in meta["resources"] if r["name"] == "AItem")["actions"]
-    assert actions == [{"name": "double", "label": "Double", "placement": "bulk", "confirm": "Double these?", "inputs": [], "applies": False}]
+    assert actions == [{"name": "double", "label": "Double", "placement": "bulk", "variant": None, "icon": None, "menu": None, "confirm": "Double these?", "inputs": [], "applies": False}]
 
 
 async def test_all_rows_that_match_the_list_filters_run_in_batches_with_a_date_filter_and_a_search_free_query_set(world):
@@ -573,6 +573,26 @@ async def test_an_action_is_a_plain_function_that_a_unit_test_calls_with_no_admi
     ctx = admin.Context(inputs={"by": 10}, database=db)
     assert await add(ctx, item.objects.using(db).filter(item.shop_id == 2)) == "added 10"
     assert await qtys(db, models) == [("a", 1), ("b", 2), ("c", 3), ("d", 14), ("e", 15)]
+
+
+async def test_an_action_variant_icon_and_menu_reach_the_metadata_and_are_checked(world):
+    registry, db, models = world
+
+    def make(**options):
+        @admin.action(name="close", placement="detail", **options)
+        async def close(ctx, qs):
+            pass
+        return close
+
+    client = site_of(registry, models, make(variant="danger", icon="x-circle", menu="Status")).test_client(db, user=SU)
+    meta = next(r for r in (await client.get("/admin/api/resources")).json()["resources"] if r["name"] == "AItem")
+    shown = next(a for a in meta["actions"] if a["name"] == "close")
+    assert (shown["variant"], shown["icon"], shown["menu"]) == ("danger", "x-circle", "Status")
+    for options, text in [({"variant": "loud"}, "variant"), ({"icon": "Not A Name"}, "lucide icon name"), ({"menu": ""}, "menu")]:
+        site = admin.Admin(registry)
+        site.register(models["AItem"], {"actions": [make(**options)]})
+        with pytest.raises(admin.AdminConfigError, match=text):
+            site.check()
 
 
 def test_a_wrong_action_config_is_an_admin_config_error(world):

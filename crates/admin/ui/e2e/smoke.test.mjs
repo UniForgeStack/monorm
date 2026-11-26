@@ -466,7 +466,7 @@ test("filter a list, keep the view in the URL, and open a tab", async () => {
   await page.waitForURL(`${base}/admin/Book/2`);
   await page.getByRole("heading", { name: /Book/ }).waitFor();
   await page.getByText("Second").first().waitFor();
-  await page.getByRole("link", { name: /← Book/ }).click();
+  await page.getByRole("navigation", { name: "Breadcrumb" }).getByRole("link", { name: "Book", exact: true }).click();
   await page.waitForURL(`${base}/admin/Book?f.author%3Aempty=1`);
   await rowsAre(["Second"]);
   await page.getByText("1 record", { exact: true }).waitFor();
@@ -1356,6 +1356,68 @@ test("a list shows the related row as a link, hides a column, switches density, 
   await submit.waitFor();
   assert.equal(await submit.isDisabled(), true);
   assert.equal(await submit.getAttribute("title"), "You may not run this action on this record");
+  await idle();
+  assert.deepEqual(problems, []);
+  await context.close();
+});
+
+test("detail v2: breadcrumbs, the header bar, a folding section and the sticky footer", async () => {
+  const { context, page, problems, idle } = await signedIn();
+  await page.evaluate(() => localStorage.clear());
+  await page.goto(`${base}/admin/Book/1`);
+  await page.getByRole("heading", { name: /Book/ }).waitFor();
+  const crumbs = page.getByRole("navigation", { name: "Breadcrumb" });
+  await crumbs.getByRole("link", { name: "Home" }).waitFor();
+  assert.equal(await crumbs.getByRole("link", { name: "Book", exact: true }).count(), 1);
+  assert.equal(await crumbs.locator("[aria-current=page]").count(), 1);
+
+  // The header holds the primary plus and a More menu with the built-in History item.
+  await page.getByRole("link", { name: "Add", exact: true }).waitFor();
+  await page.getByRole("group", { name: "Actions", exact: true }).getByRole("button", { name: "More", exact: true }).click();
+  const audit = page.waitForResponse((r) => r.request().method() === "GET" && /\/resources\/AdminLogEntry\?/.test(r.url()));
+  await page.getByRole("menuitem", { name: "History" }).click();
+  await page.waitForURL(/\/admin\/AdminLogEntry\?.*f\.resource=Book.*f\.record_key=1|\/admin\/AdminLogEntry\?.*f\.record_key=1.*f\.resource=Book/);
+  const logged = await audit;
+  assert.equal(logged.status(), 200, "the audit list accepts the History filters");
+  const entries = (await logged.json()).rows;
+  assert.ok(entries.every((row) => row.includes("Book") && row.includes("1")), "every row shown is a row of Book 1 (the list may hold none when this case runs alone)");
+  // The group of the resource is the first crumb after Home, as text.
+  const trail = page.getByRole("navigation", { name: "Breadcrumb" });
+  await trail.getByText("Users and access", { exact: true }).waitFor();
+  assert.equal(await trail.getByRole("link", { name: "Users and access" }).count(), 0);
+  await idle();
+
+  // A section with `collapsed` starts folded, opens on a click and keeps its state after a reload.
+  await page.goto(`${base}/admin/Book/1`);
+  const fold = page.getByRole("region", { name: "More" }).getByRole("button", { name: "More", exact: true });
+  await fold.waitFor();
+  assert.equal(await fold.getAttribute("aria-expanded"), "false");
+  await fold.click();
+  assert.equal(await fold.getAttribute("aria-expanded"), "true");
+  await page.reload();
+  const again = page.getByRole("region", { name: "More" }).getByRole("button", { name: "More", exact: true });
+  await again.waitFor();
+  assert.equal(await again.getAttribute("aria-expanded"), "true", "the fold state survives a reload");
+
+  // The detail footer: Delete on the left, Edit on the right, and the header has no Delete.
+  const footer = page.getByRole("group", { name: "Page actions" });
+  const del = footer.getByRole("button", { name: "Delete", exact: true });
+  const edit = footer.getByRole("link", { name: "Edit", exact: true });
+  await del.waitFor();
+  const [d, e] = [await del.boundingBox(), await edit.boundingBox()];
+  assert.ok(d && e && d.x < e.x, "Delete is left of Edit");
+  assert.equal(await page.getByRole("button", { name: "Delete", exact: true }).count(), 1);
+
+  // The form footer: a variant action on the right of Delete, and breadcrumbs.
+  await page.goto(`${base}/admin/Ticket/1/edit`);
+  const bar = page.getByRole("group", { name: "Page actions" });
+  const mark = bar.getByRole("button", { name: "Save and mark closed" });
+  await mark.waitFor();
+  assert.equal(await bar.evaluate((el) => getComputedStyle(el).position), "sticky");
+  const left = await bar.getByRole("button", { name: "Delete", exact: true }).boundingBox();
+  const right = await mark.boundingBox();
+  assert.ok(left && right && left.x < right.x, "Delete is left of the variant action");
+  await page.getByRole("navigation", { name: "Breadcrumb" }).getByRole("link", { name: "Ticket", exact: true }).waitFor();
   await idle();
   assert.deepEqual(problems, []);
   await context.close();
