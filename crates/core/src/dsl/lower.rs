@@ -750,6 +750,7 @@ fn model_fields(m: &ModelDecl, models: &HashMap<&str, &ModelDecl>, ctx: &Ctx<'_>
     let mut ir = ModelIr {
         partition: None,
         name: m.name.clone(),
+        app: String::new(),
         table: m.name.to_lowercase(),
         mapped: m.mapped,
         managed: true,
@@ -2456,11 +2457,32 @@ pub(super) fn generator_extensions(items: &[Item]) -> Result<Vec<String>> {
     Ok(out)
 }
 
+/// A `model` or `model_list` argument: each model name becomes its identity, and an unknown name is an error at the name.
+fn model_argument(models: &HashSet<String>, pos: Pos, value: &Value, kind: ArgumentKind) -> Result<serde_json::Value> {
+    let one = |pos: Pos, v: &Value| -> Result<serde_json::Value> {
+        let written = match v {
+            Value::Str(s) => s.clone(),
+            Value::Path(path, None) => path.join("."),
+            _ => return err(pos, "expects a model name"),
+        };
+        crate::model_ref::resolve(models, "", &written).map(serde_json::Value::String).or_else(|msg| err(pos, msg))
+    };
+    match (kind, value) {
+        (ArgumentKind::ModelList, Value::List(items)) => Ok(serde_json::Value::Array(items.iter().map(|(p, v)| one(*p, v)).collect::<Result<_>>()?)),
+        _ => one(pos, value),
+    }
+}
+
 /// Preserve namespaced behavioral declarations before ordinary schema lowering.
 /// Database type attributes keep their existing interpretation.
 pub(super) fn behavior_declarations(items: &mut [Item], file: &str, manifests: &[crate::behavior::Manifest]) -> Result<Vec<crate::behavior::Declaration>> {
     let mut out = vec![];
     let names: HashSet<String> = items.iter().filter_map(|i| match i { Item::Model(m) => Some(m.name.clone()), Item::Enum(e) => Some(e.name.clone()), _ => None }).collect();
+    let models: HashSet<String> = items.iter().filter_map(|i| match i { Item::Model(m) => Some(m.name.clone()), _ => None }).collect();
+    let value_of = |pos: Pos, value: &Value, kind: Option<ArgumentKind>| match kind {
+        Some(k @ (ArgumentKind::Model | ArgumentKind::ModelList)) => model_argument(&models, pos, value, k),
+        _ => declaration_value(pos, value, kind),
+    };
     let mut collect = |attrs: &mut Vec<Attr>, model: &str, field: Option<(&str, String)>| -> Result<()> {
         let mut ordinary = vec![];
         for a in attrs.drain(..) {
@@ -2470,10 +2492,11 @@ pub(super) fn behavior_declarations(items: &mut [Item], file: &str, manifests: &
             }
             let declared = declared(manifests, &a.name, field.is_some());
             let mut arguments = BTreeMap::new();
-            for (name, pos, value) in &a.args.named {
+            for (i, (name, name_pos, value)) in a.args.named.iter().enumerate() {
                 let kind = declared.and_then(|d| d.arguments.get(name)).map(|arg| arg.kind);
-                if arguments.insert(name.clone(), declaration_value(*pos, value, kind)?).is_some() {
-                    return err(*pos, format!("@{}: duplicate argument {name}", a.name));
+                let pos = a.args.named_values.get(i).copied().filter(|_| matches!(kind, Some(ArgumentKind::Model | ArgumentKind::ModelList))).unwrap_or(*name_pos);
+                if arguments.insert(name.clone(), value_of(pos, value, kind)?).is_some() {
+                    return err(*name_pos, format!("@{}: duplicate argument {name}", a.name));
                 }
             }
             out.push(crate::behavior::Declaration {
@@ -2482,7 +2505,7 @@ pub(super) fn behavior_declarations(items: &mut [Item], file: &str, manifests: &
                 field: field.as_ref().map(|(name, _)| (*name).to_owned()), field_type: field.as_ref().map(|(_, ty)| ty.clone()),
                 arguments,
                 positional: a.args.positional.iter().enumerate()
-                    .map(|(i, (pos, v))| declaration_value(*pos, v, declared.and_then(|d| d.positional_at(i)).map(|arg| arg.kind)))
+                    .map(|(i, (pos, v))| value_of(*pos, v, declared.and_then(|d| d.positional_at(i)).map(|arg| arg.kind)))
                     .collect::<Result<_>>()?,
                 location: crate::behavior::SourceLocation { file: file.to_owned(), line: a.pos.line, column: a.pos.col },
             });

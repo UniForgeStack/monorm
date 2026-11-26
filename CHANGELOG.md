@@ -4,6 +4,7 @@ All notable changes are listed here, in the [Keep a Changelog](https://keepachan
 
 ## [Unreleased]
 
+- Extension manifests get the argument kinds `model` and `model_list` (schema contract 5.14). The core resolves a model name against the declared models before a pass runs, so a pass reads the model identity, and an unknown name is an error at the name. `@@inherit.extends`, `@@inherit.override`, `@@proxy.of`, `@@query.parent`, `@@query.defaults(parent:)`, `@@composition.model(parent:)` and the `targets` of `@generic` use them. A model that a pass makes carries the `app` of the model that declares the pass. History `restore()` in Python compares `_meta.name`, not the class `__name__`. [Optional packaging](docs/contracts/optional-packaging.md)
 - New command `monorm drift --unmanaged [--strict]`: it compares each `@@managed(false)` model with its live table (columns, types, nullability, foreign keys) and prints a warning for each difference. It exits with status 0, or 1 with `--strict`. It reads no migrations folder, works on PostgreSQL and SQLite, and takes the database from `--url` or `MONORM_DATABASE_URL`. A live column that the schema does not name is not a difference; defaults, constraint names and `ON DELETE` actions are not compared.
 
 ## [0.1.5] - 2026-11-26

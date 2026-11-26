@@ -196,7 +196,7 @@ A bound query set mixin reads the objects of a bound write with these helpers (t
 
 ### Source syntax, attributes and passes
 
-An attribute declares its `name`, `target` (`model` or `field`), and typed `arguments` (`string`, `integer`, `boolean`, `list`, `value`).
+An attribute declares its `name`, `target` (`model` or `field`), and typed `arguments` (`string`, `integer`, `boolean`, `list`, `value`, `model`, `model_list`).
 Only a `value` argument takes a bare name (as a string), `null` and objects; the other kinds take strict literals, also inside a list.
 The extension pass checks the shape of a `value` argument.
 Source declarations use namespaced attributes, for example `name String @app.rename(to: "public_name")` or `@@app.audit(level: 2)`.
@@ -363,6 +363,12 @@ An IR with a non-default value is stamped 5.12.
 The manifest format does not change, and no extension declares 5.12.
 Schema contract 5.13 adds `hard_delete_setting` to the IR, the setting that a hard delete turns on. An IR with a non-empty value is stamped 5.13.
 The manifest format does not change, and no extension declares 5.13.
+Schema contract 5.14 adds the argument kinds `model` and `model_list` to the manifest, and `app` to a model in the IR.
+The core resolves such an argument against the declared models before any pass runs, and the pass reads the model identity. A name that no model has is an error at the name.
+A bare name and a quoted name both work. `model_list` takes one name or a list and keeps that shape.
+The identity is the model name while a project has one app. A model that a pass makes copies `app` from the model that declares the pass.
+`app` is empty for a project with one app, and an empty `app` stays out of the IR, so the IR is not stamped 5.14.
+An older host fails to read a manifest with these kinds; install an older release of the extension or update the ORM.
 
 A version fits when its major equals the engine major and its minor is at most the engine minor.
 This holds for `schema_contract` and for `abi`, and for the `abi` that the library reports.

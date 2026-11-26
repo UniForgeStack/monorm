@@ -723,6 +723,38 @@ fn behavioral_literal_forms_need_an_argument_of_kind_value() {
 }
 
 #[test]
+fn model_arguments_resolve_to_identities_and_an_unknown_name_fails_at_the_name() {
+    let manifest: crate::behavior::Manifest = serde_json::from_value(serde_json::json!({
+        "id": "test", "version": "1", "schema_contract": "5.14", "languages": [], "databases": [],
+        "attributes": [{"name": "test.base", "target": "model",
+            "arguments": {"parent": {"kind": "model"}, "targets": {"kind": "model_list"}},
+            "positional": [{"kind": "model_list"}]}]
+    })).unwrap();
+    let lower = |source: &str| {
+        let mut items = syntax::parse(source).unwrap();
+        super::lower::behavior_declarations(&mut items, "t.prisma", std::slice::from_ref(&manifest))
+    };
+    let schema = |attr: &str| format!("enum Kind {{ A }}\nmodel User {{ id Int @id }}\nmodel Post {{ id Int @id }}\nmodel V {{\n  {attr}\n}}");
+    // A bare name, a quoted name, one name and a list all resolve; a list keeps its shape.
+    let ok = lower(&schema(r#"@@test.base(User, parent: "Post", targets: [User, "Post"])"#)).unwrap();
+    assert_eq!(ok[0].positional[0], serde_json::json!("User"));
+    assert_eq!(ok[0].arguments["parent"], serde_json::json!("Post"));
+    assert_eq!(ok[0].arguments["targets"], serde_json::json!(["User", "Post"]));
+    assert_eq!(lower(&schema("@@test.base([User, Post])")).unwrap()[0].positional[0], serde_json::json!(["User", "Post"]));
+    // The error sits at the unknown name: the value of a named argument, or the item of a list.
+    for (attr, line, col, msg) in [
+        ("@@test.base(Nope)", 5, 15, "unknown model Nope"),
+        ("@@test.base(User, parent: \"Nope\")", 5, 29, "unknown model Nope"),
+        ("@@test.base(User, targets: [User, Nope])", 5, 37, "unknown model Nope"),
+        ("@@test.base(User, parent: Kind)", 5, 29, "unknown model Kind"),
+        ("@@test.base(User, parent: 3)", 5, 29, "expects a model name"),
+    ] {
+        let error = lower(&schema(attr)).unwrap_err();
+        assert_eq!((error.pos.line, error.pos.col, error.msg.as_str()), (line, col, msg), "{attr}");
+    }
+}
+
+#[test]
 fn client_defaults_stay_out_of_the_database_schema() {
     let src = "enum Status {\n  ACTIVE @map(\"active\")\n  OLD @map(\"old\")\n}\nmodel A {\n  id String @id @client_default(uuid7()) @db.Uuid\n  token String @client_default(uuid())\n  \
                status Status @default(OLD) @client_default(ACTIVE)\n  tags Status[] @client_default([ACTIVE, OLD])\n  \

@@ -66,6 +66,7 @@ impl Model {
         let ir = ModelIr {
             partition: None,
             name: name.to_owned(),
+            app: String::new(),
             table: name.to_owned(),
             mapped: false,
             managed: true,

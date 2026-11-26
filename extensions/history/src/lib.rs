@@ -276,6 +276,7 @@ fn build_triggers(dialect: Dialect, names: &ScopeSettingsIr, t: &Tracker, touche
 
 fn event_model(t: &Tracker, root: &ModelIr) -> Result<ModelIr, String> {
     let mut model: ModelIr = serde_json::from_value(serde_json::json!({"name": t.event_model, "table": t.event_table, "fields": []})).map_err(|e| e.to_string())?;
+    model.app = root.app.clone();
     let mut id = FieldIr::plain("id", ColType::BigInt);
     (id.nullable, id.primary_key, id.auto_increment) = (false, true, true);
     model.fields.push(id);

@@ -473,6 +473,9 @@ pub struct ModelIr {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub partition: Option<PartitionKeyIr>,
     pub name: String,
+    /// The label of the app that owns the model. Empty while the project has one app with no label; a pass copies it from the model that declares the one it makes.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub app: String,
     pub table: String,
     /// Whether the schema explicitly declares `@@map`, independently of import prefixes.
     #[serde(default, skip_serializing_if = "crate::ir::is_false")]

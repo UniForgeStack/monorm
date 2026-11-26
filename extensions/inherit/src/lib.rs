@@ -376,7 +376,7 @@ fn join_model(
         foreign_key: true, on_delete: Some(OnDelete::Cascade), ..RelationIr::one(side, to, &field.name, &key.name)
     };
     let model = ModelIr {
-        name: join_name.clone(), table: table.clone(), mapped: false, managed: ir.models[ci].managed, primary_key: vec![], pk_name: None, partition: None, renamed_from: None, comment: None,
+        name: join_name.clone(), app: ir.models[ci].app.clone(), table: table.clone(), mapped: false, managed: ir.models[ci].managed, primary_key: vec![], pk_name: None, partition: None, renamed_from: None, comment: None,
         query_set: None, model_methods: None, classes_from: None, sql_view: None, indexes: vec![], triggers: vec![], rls: Default::default(), policies: vec![],
         relations: vec![link(&child_side, &source, child, &child_key), link(&target_side, &target, &rel.target, &target_key)],
         constraints: vec![ConstraintIr::Unique {
