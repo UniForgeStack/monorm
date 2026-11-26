@@ -6,12 +6,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use monorm_core::ir::ColType;
 use monorm_core::schema::Schema;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::list::{is_text, ranged};
 use crate::error::{opt, Fault};
 use crate::site::{invalid, Column, Filter, FilterKind, Resource, Source};
 use crate::site_config::{BrandConfig, SwitcherBuild, SwitcherConfig, ThemeConfig};
+use crate::wire;
 
 /// A link target that a page may use: a path on this host or an `http` or `https` URL.
 pub(crate) fn url_ok(url: &str) -> bool {
@@ -82,13 +83,15 @@ pub fn brand(config: Option<&BrandConfig>, theme: Option<&ThemeConfig>, switcher
         if !url_ok(&l.url) {
             return invalid(format!("brand.links: {:?} must be a path that starts with / or an http or https URL", l.url));
         }
-        links.push(json!({"label": l.label, "url": l.url}));
+        links.push(wire::BrandLink { label: l.label.clone(), url: l.url.clone() });
     }
     if c.environment.as_ref().is_some_and(|e| e.trim().is_empty() || e.chars().count() > 32) {
         return invalid("brand.environment must have 1 to 32 characters".into());
     }
     let level = environment_level(c)?;
-    Ok(json!({"name": name, "logo": logo, "colors": colors, "links": links, "environment": c.environment, "environment_level": level, "switcher": switcher.map(|v| v.json)}))
+    let colors = wire::BrandColors { primary: colors.remove("primary"), accent: colors.remove("accent") };
+    let brand = wire::Brand { name, logo, colors, links, environment: c.environment.clone(), environment_level: level, switcher: switcher.map(|v| v.meta) };
+    Ok(serde_json::to_value(brand).expect("the brand is JSON"))
 }
 
 /// The colour of the environment label: the set level, else the one the label implies.
@@ -128,7 +131,7 @@ fn short(sha: &str) -> String {
 
 /// The `build` part of the switcher: the value sent, the rows and the subheader.
 struct BuildView {
-    json: Value,
+    meta: wire::SwitcherBuildMeta,
     rows: Vec<String>,
     subheader: String,
 }
@@ -150,12 +153,13 @@ fn build_view(b: &SwitcherBuild) -> BuildView {
     }
     let head: Vec<String> = deployed.map(str::to_owned).into_iter().chain(tree.map(short)).collect();
     let subheader = if head.is_empty() { "dev".to_owned() } else { head.join(" · ") };
-    BuildView { json: json!({"commit": commit, "built_at": built, "deployed_at": deployed, "tree": tree}), rows, subheader }
+    let own = |v: Option<&str>| v.map(str::to_owned);
+    BuildView { meta: wire::SwitcherBuildMeta { commit: own(commit), built_at: own(built), deployed_at: own(deployed), tree: own(tree) }, rows, subheader }
 }
 
 /// The switcher as sent, and the colour of the current service.
 struct SwitcherView {
-    json: Value,
+    meta: wire::Switcher,
     color: Option<String>,
 }
 
@@ -175,14 +179,14 @@ fn switcher_view(s: &SwitcherConfig, brand_primary: bool) -> Result<Option<Switc
         if is_current {
             current_color = svc.color.clone();
         }
-        out.push(json!({"key": svc.key, "title": svc.title, "url": url, "icon": svc.icon, "color": svc.color}));
+        out.push(wire::SwitcherService { key: svc.key.clone(), title: svc.title.clone(), url, icon: svc.icon.clone(), color: svc.color.clone() });
     }
     if current_color.is_some() && brand_primary {
         return invalid("the colour of the current switcher service and the brand set the primary colour: set one of them (brand.colors.primary, theme.color or the service colour)".to_owned());
     }
     let build = build_view(&s.build);
-    let json = json!({"current": current, "services": out, "subheader": build.subheader, "rows": build.rows, "build": build.json});
-    Ok(Some(SwitcherView { json, color: current_color }))
+    let meta = wire::Switcher { current: current.map(str::to_owned), services: out, subheader: build.subheader, rows: build.rows, build: build.meta };
+    Ok(Some(SwitcherView { meta, color: current_color }))
 }
 
 /// `created_at` and `BlogPost` become `Created at` and `Blog post`; a `.` of a path becomes a space.
@@ -225,52 +229,61 @@ pub(crate) fn widget(c: &Column) -> &'static str {
 }
 
 /// One column or field: the key in a row, the title, the type and the widget.
-pub fn column(schema: &Schema, c: &Column) -> Value {
-    let mut out = json!({"label": c.label, "title": humanize(&c.label), "type": c.ty.ty, "nullable": c.nullable, "array": c.ty.array, "widget": widget(c)});
-    if let Some(e) = c.ty.enum_idx.and_then(|i| schema.enums.get(i as usize)) {
-        out["choices"] = json!(e.values.iter().map(|v| v.name.clone()).collect::<Vec<_>>());
+pub fn column(schema: &Schema, c: &Column) -> wire::ColumnMeta {
+    wire::ColumnMeta {
+        label: c.label.clone(),
+        title: humanize(&c.label),
+        ty: c.ty.ty,
+        nullable: c.nullable,
+        array: c.ty.array,
+        widget: widget(c).to_owned(),
+        choices: enum_names(schema, c),
+        empty: None,
+        computed: None,
+        ref_: None,
+        ref_by: None,
+        badge: None,
     }
-    out
+}
+
+fn enum_names(schema: &Schema, c: &Column) -> Option<Vec<String>> {
+    let e = c.ty.enum_idx.and_then(|i| schema.enums.get(i as usize))?;
+    Some(e.values.iter().map(|v| v.name.clone()).collect())
 }
 
 /// A column of a list: the title and the empty text that the config gives, and whether the value is computed.
-fn list_column(schema: &Schema, r: &Resource, c: &Column) -> Value {
+fn list_column(schema: &Schema, r: &Resource, c: &Column) -> wire::ColumnMeta {
     let mut out = column(schema, c);
     if let Some(title) = r.labels.get(&c.label) {
-        out["title"] = json!(title);
+        out.title = title.clone();
     }
-    if let Some(text) = r.empty_fields.get(&c.label).or(r.empty.as_ref()) {
-        out["empty"] = json!(text);
-    }
+    out.empty = r.empty_fields.get(&c.label).or(r.empty.as_ref()).cloned();
     if !matches!(c.source, Source::Field) {
-        out["computed"] = json!(true);
+        out.computed = Some(true);
     }
-    if let Some(f) = r.refs.iter().find(|f| f.column == c.label) {
-        out["ref"] = json!({"resource": f.target});
-    }
-    if let Some(badge) = r.badges.get(&c.label) {
-        out["badge"] = json!(badge);
-    }
+    out.ref_ = r.refs.iter().find(|f| f.column == c.label).map(|f| wire::ColumnRef { resource: f.target.clone() });
+    out.badge = r.badges.get(&c.label).cloned();
     // The key of a union link names its record by the value of the type column.
     if let Some(Linked::Union { type_column, members, .. }) = r.relations.iter().filter_map(|x| x.linked.as_ref()).find(|l| matches!(l, Linked::Union { key, .. } if key.label == c.label)) {
-        out["ref_by"] = json!({"column": type_column.label, "targets": members.iter().map(|m| (m.value.as_str().map_or_else(|| m.value.to_string(), str::to_owned), json!(m.target))).collect::<serde_json::Map<_, _>>()});
+        let targets = members.iter().map(|m| (m.value.as_str().map_or_else(|| m.value.to_string(), str::to_owned), m.target.clone())).collect();
+        out.ref_by = Some(wire::ColumnRefBy { column: type_column.label.clone(), targets });
     }
     out
 }
 
 /// A column of the list: a foreign key shows the name of its relation ("Author") as the title, unless the config gives one.
-fn list_header(schema: &Schema, r: &Resource, c: &Column) -> Value {
+fn list_header(schema: &Schema, r: &Resource, c: &Column) -> wire::ColumnMeta {
     let mut out = list_column(schema, r, c);
     if !r.labels.contains_key(&c.label) && c.path.is_empty() && c.source == Source::Field {
         if let Some(link) = r.links.iter().find(|l| l.from.len() == 1 && r.detail.get(l.from[0]).is_some_and(|d| d.label == c.label)) {
-            out["title"] = json!(humanize(&link.name));
+            out.title = humanize(&link.name);
         }
     }
     out
 }
 
 /// One filter of the filter bar: the name in the URL, the kind of value, and the operators that it takes.
-fn filter(schema: &Schema, r: &Resource, f: &Filter) -> Value {
+fn filter(schema: &Schema, r: &Resource, f: &Filter) -> wire::FilterMeta {
     let title = r.labels.get(&f.name).cloned().unwrap_or_else(|| humanize(&f.name));
     match &f.kind {
         FilterKind::Field(c) => {
@@ -294,103 +307,94 @@ fn filter(schema: &Schema, r: &Resource, f: &Filter) -> Value {
             if c.nullable || is_text(c.ty) {
                 operators.extend(["empty", "notempty"]);
             }
-            let mut out = json!({"name": f.name, "title": title, "kind": kind, "type": c.ty.ty, "nullable": c.nullable, "operators": operators});
-            if let Some(e) = c.ty.enum_idx.and_then(|i| schema.enums.get(i as usize)) {
-                out["choices"] = json!(e.values.iter().map(|v| v.name.clone()).collect::<Vec<_>>());
-            }
-            out
+            wire::FilterMeta { name: f.name.clone(), title, kind, ty: Some(c.ty.ty), nullable: c.nullable, operators, choices: enum_names(schema, c), target: None }
         }
         FilterKind::Relation { target, from, .. } => {
             let nullable = from.iter().all(|c| c.nullable);
-            json!({"name": f.name, "title": title, "kind": "relation", "target": target, "nullable": nullable, "operators": if nullable { json!(["eq", "empty", "notempty"]) } else { json!(["eq"]) }})
+            let operators = if nullable { vec!["eq", "empty", "notempty"] } else { vec!["eq"] };
+            wire::FilterMeta { name: f.name.clone(), title, kind: "relation", ty: None, nullable, operators, choices: None, target: Some(target.clone()) }
         }
     }
 }
 
 /// For "Add" on a to-many tab: the field of the new child record and the field of the open record that gives its value.
-fn prefill(schema: &Schema, parent: &Resource, tab: &crate::site::Tab) -> Value {
+fn prefill(schema: &Schema, parent: &Resource, tab: &crate::site::Tab) -> Vec<wire::PrefillMeta> {
     let model = schema.model(parent.model);
-    let Some(rel) = model.ir.relations.iter().find(|x| x.name == tab.name) else { return json!([]) };
-    let Some(child) = schema.models.iter().position(|m| m.ir.name == tab.target) else { return json!([]) };
+    let Some(rel) = model.ir.relations.iter().find(|x| x.name == tab.name) else { return Vec::new() };
+    let Some(child) = schema.models.iter().position(|m| m.ir.name == tab.target) else { return Vec::new() };
     let name_of = |m: usize, n: &String| schema.model(m).ir.fields.iter().find(|f| f.name == *n || f.column == *n).map(|f| f.name.clone());
-    let pairs = rel.from.iter().zip(&rel.to).filter_map(|(from, to)| Some(json!({"parent": name_of(parent.model, from)?, "child": name_of(child, to)?})));
-    Value::Array(pairs.collect())
+    rel.from.iter().zip(&rel.to).filter_map(|(from, to)| Some(wire::PrefillMeta { parent: name_of(parent.model, from)?, child: name_of(child, to)? })).collect()
 }
 
 /// The metadata of one inline: how it looks and saves, and the form of its rows without the fields that the parent fixes.
-fn inline(schema: &Schema, inline: &crate::site::Inline) -> Value {
+fn inline(schema: &Schema, inline: &crate::site::Inline) -> wire::InlineInfo {
     let r = &inline.resource;
-    let pins: Vec<&str> = inline.child_to.iter().map(|c| c.label.as_str()).collect();
+    let pins: Vec<String> = inline.child_to.iter().map(|c| c.label.clone()).collect();
     let mut form = crate::write::form_meta(schema, r);
-    if let Some(fields) = form["form"].as_array_mut() {
-        fields.retain(|f| !pins.contains(&f["name"].as_str().unwrap_or_default()));
-    }
-    for part in ["create", "edit"] {
-        if let Some(sections) = form["sections"][part].as_array_mut() {
-            for s in sections.iter_mut() {
-                if let Some(fields) = s["fields"].as_array_mut() {
-                    fields.retain(|f| !pins.contains(&f.as_str().unwrap_or_default()));
-                }
-            }
-            sections.retain(|s| s["fields"].as_array().is_none_or(|f| !f.is_empty()));
+    form.form.retain(|f| !pins.contains(&f.name));
+    for sections in [&mut form.sections.create, &mut form.sections.edit] {
+        for s in sections.iter_mut() {
+            s.fields.retain(|f| !pins.contains(f));
         }
+        sections.retain(|s| !s.fields.is_empty());
     }
-    let mut out = json!({
-        "name": inline.name,
-        "label": inline.label,
-        "style": inline.style,
-        "max": inline.max,
-        "collapsed": inline.collapsed,
-        "delete": inline.delete,
-        "save": match inline.save { crate::site::InlineSave::WithParent => "with_parent", crate::site::InlineSave::Row => "row" },
-        "link": inline.link,
-        "model": r.name,
-        "fields": r.detail.iter().map(|c| list_column(schema, r, c)).collect::<Vec<_>>(),
-        "pins": pins,
-        "key": r.key_columns.iter().map(|c| c.label.clone()).collect::<Vec<_>>(),
-        "can": r.can.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
-    });
-    if let (Some(m), Value::Object(form)) = (out.as_object_mut(), form) {
-        m.extend(form);
+    wire::InlineInfo {
+        name: inline.name.clone(),
+        label: inline.label.clone(),
+        style: if inline.style == "stacked" { "stacked" } else { "table" },
+        max: inline.max,
+        collapsed: inline.collapsed,
+        delete: inline.delete,
+        save: match inline.save { crate::site::InlineSave::WithParent => "with_parent", crate::site::InlineSave::Row => "row" },
+        link: inline.link.clone(),
+        model: r.name.clone(),
+        fields: r.detail.iter().map(|c| list_column(schema, r, c)).collect(),
+        pins,
+        key: r.key_columns.iter().map(|c| c.label.clone()).collect(),
+        can: r.can.iter().map(|(n, _)| n.clone()).collect(),
+        form,
+        user: None,
     }
-    out
 }
 
 /// The metadata of one resource that does not depend on the user.
 pub fn resource(schema: &Schema, r: &Resource, builds: &AtomicUsize) -> Value {
     builds.fetch_add(1, Ordering::SeqCst);
-    let mut meta = json!({
-        "name": r.name,
-        "title": r.title,
-        "group": r.group,
-        "icon": r.icon,
-        "columns": r.columns.iter().map(|c| list_header(schema, r, c)).collect::<Vec<_>>(),
-        "order": r.order.iter().map(|o| json!({"column": o.column.label, "desc": o.desc})).collect::<Vec<_>>(),
-        "page_size": r.page_size,
-        "max_page_size": crate::site::MAX_PAGE_SIZE,
-        "sortable": r.sortable.iter().map(|c| json!({"column": c.column.label, "indexed": c.indexed})).collect::<Vec<_>>(),
-        "sortable_explicit": r.sortable_explicit,
-        "editable": r.editable,
-        "search": json!({"fields": r.search.iter().map(|f| f.column.label.clone()).collect::<Vec<_>>(), "custom": r.search_with.is_some()}),
-        "permissions": ["read"],
-        "table": schema.model(r.model).table(),
-        "key": r.key_columns.iter().map(|c| c.label.clone()).collect::<Vec<_>>(),
-        "name_column": crate::site::name_of(r).map(|c| c.label.clone()),
-        "fields": r.detail.iter().map(|c| list_column(schema, r, c)).collect::<Vec<_>>(),
-        "linked": r.relations.iter().filter_map(|x| x.linked.as_ref().map(|l| json!({"name": x.name, "title": humanize(&x.name), "many": matches!(l, Linked::Many { .. })}))).collect::<Vec<_>>(),
-        "links": r.links.iter().map(|l| json!({"name": l.name, "title": humanize(&l.name), "target": l.target})).collect::<Vec<_>>(),
-        "filters": r.filters.iter().map(|f| filter(schema, r, f)).collect::<Vec<_>>(),
-        "named_filters": r.named_filters.iter().map(|n| json!({"name": n.name, "title": n.label, "default": n.default, "choices": n.choices.iter().map(|c| json!({"name": c.name, "title": c.label})).collect::<Vec<_>>()})).collect::<Vec<_>>(),
-        "date_hierarchy": r.date_hierarchy.as_ref().map(|d| json!({"field": d.field, "counts": d.counts, "kind": if d.column.ty.ty == monorm_core::ir::ColType::Date { "date" } else { "datetime" }})),
-        "tabs": r.tabs.iter().map(|t| json!({"name": t.name, "title": r.labels.get(&t.name).cloned().unwrap_or_else(|| humanize(&t.name)), "target": t.target, "prefill": prefill(schema, r, t)})).collect::<Vec<_>>(),
-        "fieldsets": r.fieldsets.iter().map(|f| json!({"name": f.name, "title": f.title.clone().unwrap_or_else(|| humanize(&f.name)), "fields": f.fields})).collect::<Vec<_>>(),
-        "package_tabs": r.package_tabs.iter().map(|t| json!({"name": t.name, "title": t.title, "module": t.module})).collect::<Vec<_>>(),
-        "inlines": r.inlines.iter().map(|i| inline(schema, i)).collect::<Vec<_>>(),
-        "empty": r.empty,
-        "can": r.can.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(),
-    });
-    if let (Some(m), Value::Object(form)) = (meta.as_object_mut(), crate::write::form_meta(schema, r)) {
-        m.extend(form);
-    }
-    meta
+    let meta = wire::ResourceMeta {
+        name: r.name.clone(),
+        title: r.title.clone(),
+        group: r.group.clone(),
+        icon: r.icon.clone(),
+        columns: r.columns.iter().map(|c| list_header(schema, r, c)).collect(),
+        order: r.order.iter().map(|o| wire::OrderMeta { column: o.column.label.clone(), desc: o.desc }).collect(),
+        page_size: r.page_size,
+        max_page_size: crate::site::MAX_PAGE_SIZE,
+        sortable: r.sortable.iter().map(|c| wire::SortableMeta { column: c.column.label.clone(), indexed: c.indexed }).collect(),
+        sortable_explicit: r.sortable_explicit,
+        editable: r.editable.clone(),
+        search: wire::SearchMeta { fields: r.search.iter().map(|f| f.column.label.clone()).collect(), custom: r.search_with.is_some() },
+        permissions: vec!["read"],
+        table: schema.model(r.model).table().to_owned(),
+        key: r.key_columns.iter().map(|c| c.label.clone()).collect(),
+        name_column: crate::site::name_of(r).map(|c| c.label.clone()),
+        fields: r.detail.iter().map(|c| list_column(schema, r, c)).collect(),
+        linked: r.relations.iter().filter_map(|x| x.linked.as_ref().map(|l| wire::LinkedMeta { name: x.name.clone(), title: humanize(&x.name), many: matches!(l, Linked::Many { .. }) })).collect(),
+        links: r.links.iter().map(|l| wire::LinkMeta { name: l.name.clone(), title: humanize(&l.name), target: l.target.clone() }).collect(),
+        filters: r.filters.iter().map(|f| filter(schema, r, f)).collect(),
+        named_filters: r
+            .named_filters
+            .iter()
+            .map(|n| wire::NamedFilterMeta { name: n.name.clone(), title: n.label.clone(), default: n.default.clone(), choices: n.choices.iter().map(|c| wire::NamedChoiceMeta { name: c.name.clone(), title: c.label.clone() }).collect() })
+            .collect(),
+        date_hierarchy: r.date_hierarchy.as_ref().map(|d| wire::DateHierarchyMeta { field: d.field.clone(), counts: d.counts, kind: if d.column.ty.ty == ColType::Date { "date" } else { "datetime" } }),
+        tabs: r.tabs.iter().map(|t| wire::TabMeta { name: t.name.clone(), title: r.labels.get(&t.name).cloned().unwrap_or_else(|| humanize(&t.name)), target: t.target.clone(), prefill: prefill(schema, r, t) }).collect(),
+        fieldsets: r.fieldsets.iter().map(|f| wire::FieldsetMeta { name: f.name.clone(), title: f.title.clone().unwrap_or_else(|| humanize(&f.name)), fields: f.fields.clone() }).collect(),
+        package_tabs: r.package_tabs.iter().map(|t| wire::PackageTabMeta { name: t.name.clone(), title: t.title.clone(), module: t.module.clone() }).collect(),
+        inlines: r.inlines.iter().map(|i| inline(schema, i)).collect(),
+        empty: r.empty.clone(),
+        can: r.can.iter().map(|(n, _)| n.clone()).collect(),
+        form: crate::write::form_meta(schema, r),
+        user: None,
+    };
+    serde_json::to_value(meta).expect("the resource metadata is JSON")
 }

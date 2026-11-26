@@ -50,8 +50,8 @@ pub const INPUT_KINDS: [&str; 5] = ["text", "textarea", "number", "checkbox", "s
 pub const ACTION_INPUT_KINDS: [&str; 7] = ["text", "textarea", "number", "checkbox", "select", "file", "password"];
 
 impl InputConfig {
-    pub fn meta(&self) -> Value {
-        json!({"name": self.name, "type": self.kind, "label": self.label.clone().unwrap_or_else(|| crate::meta::humanize(&self.name)), "required": self.required, "help": self.help, "choices": self.choices})
+    pub fn meta(&self) -> crate::wire::InputInfo {
+        crate::wire::InputInfo { name: self.name.clone(), kind: self.kind.clone(), label: self.label.clone().unwrap_or_else(|| crate::meta::humanize(&self.name)), required: self.required, help: self.help.clone(), choices: self.choices.clone() }
     }
 }
 

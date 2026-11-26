@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use monorm_core::ir::{ColType, FieldIr, ValueType};
 use monorm_core::schema::Schema;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::packages::Packages;
 use crate::permissions::Op;
@@ -39,8 +39,8 @@ pub struct Section {
 }
 
 impl Section {
-    pub fn json(&self) -> Value {
-        json!({"title": self.title, "fields": self.fields, "collapsed": self.collapsed, "other": self.other})
+    pub fn meta(&self) -> crate::wire::SectionMeta {
+        crate::wire::SectionMeta { title: self.title.clone(), fields: self.fields.clone(), collapsed: self.collapsed, other: self.other }
     }
 }
 
