@@ -81,7 +81,7 @@ class History:
 
     def _tracker(self, name: str | None) -> dict[str, Any]:
         trackers = self._trackers()
-        model = self._model.__name__
+        model = self._model._meta.name
         if not trackers:
             raise TypeError(f"{model} has no @@history.track attribute")
         if name is None:
@@ -110,9 +110,9 @@ class History:
         else:
             values = [row]
         if len(values) != len(names):
-            raise ValueError(f"{self._model.__name__} has the key ({', '.join(names)}): got {len(values)} value(s)")
+            raise ValueError(f"{self._model._meta.name} has the key ({', '.join(names)}): got {len(values)} value(s)")
         if any(v is None for v in values):
-            raise ValueError(f"{self._model.__name__}: the key of the row has a None value; save the row first")
+            raise ValueError(f"{self._model._meta.name}: the key of the row has a None value; save the row first")
         return values
 
     def _database(self, row: Any = None) -> Database:
@@ -131,7 +131,7 @@ class History:
         key = self._key(row)
         rows = await db.fetch(t["event_sql"], label, *key)
         if not rows:
-            raise LookupError(f"{self._model.__name__} {key[0] if len(key) == 1 else tuple(key)} does not exist")
+            raise LookupError(f"{self._model._meta.name} {key[0] if len(key) == 1 else tuple(key)} does not exist")
         event_class = self._event_class(t)
         return await event_class.objects.using(db).get(event_class.id == rows[0]["id"])
 
@@ -197,9 +197,9 @@ class History:
         if self._version_model() is not None:
             return await self._restore_version(event)
         event_class = type(event)
-        t = next((t for t in self._trackers() if t["event_model"] == event_class.__name__), None)
+        t = next((t for t in self._trackers() if t["event_model"] == event_class._meta.name), None)
         if t is None:
-            raise TypeError(f"{event_class.__name__} is not the event model of a tracker of {self._model.__name__}")
+            raise TypeError(f"{event_class._meta.name} is not the event model of a tracker of {self._model._meta.name}")
         model = self._model
         meta = model._meta
         db = self._database(event)
@@ -226,7 +226,7 @@ class History:
             else:
                 if not t["full"]:
                     raise ValueError(
-                        f"cannot restore {model.__name__} from {event_class.__name__} {event.id}: the row is gone "
+                        f"cannot restore {model._meta.name} from {event_class._meta.name} {event.id}: the row is gone "
                         "and the tracker covers only some fields, so an insert would write a half row"
                     )
                 self._check_required(values, known, event)
@@ -244,13 +244,13 @@ class History:
     def _versions(self) -> dict[str, Any]:
         v = self._version_model()
         if v is None:
-            raise TypeError(f"{self._model.__name__} has no @@history.versions attribute")
+            raise TypeError(f"{self._model._meta.name} has no @@history.versions attribute")
         return v
 
     def _functions(self) -> tuple[Callable[..., Any], Callable[..., Any]]:
         found = _REGISTERED.get(self._model)
         if found is None:
-            name = self._model.__name__
+            name = self._model._meta.name
             raise RuntimeError(f"{name}.history is not registered; call {name}.history.register(generate=..., restore=...) first")
         return found
 
@@ -336,7 +336,7 @@ class History:
     async def _restore_version(self, version: Any) -> Any:
         v = self._versions()
         if not isinstance(version, self._model):
-            raise TypeError(f"{type(version).__name__} is not a version of {self._model.__name__}")
+            raise TypeError(f"{type(version).__name__} is not a version of {self._model._meta.name}")
         _, restore = self._functions()
         db = self._database(version)
         entity_id = getattr(version, v["of_field"])
@@ -348,7 +348,7 @@ class History:
         missing = [n for n, f in known.items() if n not in values and not f.nullable and not f.has_insert_default]
         if missing:
             raise ValueError(
-                f"cannot restore {self._model.__name__} from {type(event).__name__} {event.id}: "
+                f"cannot restore {self._model._meta.name} from {type(event)._meta.name} {event.id}: "
                 f"the event has no value for the required field(s) {', '.join(missing)}"
             )
 

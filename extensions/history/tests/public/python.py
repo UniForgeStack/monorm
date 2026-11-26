@@ -27,6 +27,8 @@ async def run(provider: str, url: str) -> None:
         entries = await Post.history.using(db).timeline(post, diff=True)
         assert [e.event.label for e in entries] == ["insert", "update"], entries
         assert entries[1].diff == {"title": {"old": "a", "new": "b"}, "views": {"old": 1, "new": 2}}, entries[1].diff
+        # restore() finds the tracker by the model name in the schema, not by the Python class name
+        type(entries[0].event).__name__ = "RenamedByTheApp"
         restored = await Post.history.using(db).restore(entries[0].event)
         assert (restored.title, restored.views) == ("a", 1)
         labels = [e.event.label for e in await Post.history.using(db).timeline(post)]

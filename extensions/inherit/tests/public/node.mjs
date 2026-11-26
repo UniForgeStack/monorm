@@ -48,5 +48,10 @@ async function run(provider, url) {
   }
 }
 
+// A model-name argument that names no model fails at the name, one case for each kind.
+for (const [attribute, position] of [['@@inherit.override("Nope")', '3:21'], ['@@inherit.extends(Nope)', '3:20'], ['@@inherit.extends([A, Nope])', '3:24']]) {
+  assert.throws(() => loads(`model A {\n id Int @id\n ${attribute}\n}\n`, { registry: new Registry() }), (e) => e.message.includes(`:${position}: unknown model Nope`), attribute);
+}
+
 await run('sqlite', 'sqlite://:memory:');
 console.log('inherit node ok');

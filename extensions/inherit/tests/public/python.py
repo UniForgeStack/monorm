@@ -54,5 +54,17 @@ async def run(provider: str, url: str) -> None:
         await db.close()
 
 
+def unknown_models() -> None:
+    """A model-name argument that names no model fails at the name, one case for each kind."""
+    for attribute, position in (("@@inherit.override(\"Nope\")", "3:21"), ("@@inherit.extends(Nope)", "3:20"), ("@@inherit.extends([A, Nope])", "3:24")):
+        try:
+            monorm.loads(f"model A {{\n id Int @id\n {attribute}\n}}\n", registry=monorm.Registry())
+        except monorm.SchemaError as e:
+            assert f":{position}: unknown model Nope" in str(e), (attribute, str(e))
+        else:
+            raise AssertionError(f"{attribute} must fail")
+
+
+unknown_models()
 asyncio.run(run("sqlite", "sqlite://:memory:"))
 print("inherit python ok")

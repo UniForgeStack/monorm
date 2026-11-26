@@ -80,6 +80,11 @@ async function run(provider, url) {
   }
 }
 
+// A parent that names no model fails at the name, for the positional and the named kind.
+for (const [attribute, position] of [['@@query.parent("Nope")', '4:17'], ['@@query.defaults(parent: "Nope")', '4:27']]) {
+  assert.throws(() => loads(`model Bad {\n id Int @id\n owner Int\n ${attribute}\n}`, { registry: new Registry() }), (e) => e.message.includes(`:${position}: unknown model Nope`), attribute);
+}
+
 await run('sqlite', 'sqlite://:memory:');
 if (process.env.ORM_TEST_DATABASE_URL) await run('postgresql', process.env.ORM_TEST_DATABASE_URL);
 console.log('Node compiled query defaults: passed');

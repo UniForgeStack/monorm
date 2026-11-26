@@ -156,7 +156,19 @@ async def run(provider: str, url: str) -> None:
         await db.close()
 
 
+def unknown_parents() -> None:
+    """A parent that names no model fails at the name, for the positional and the named kind."""
+    for attribute, position in (('@@query.parent("Nope")', "4:17"), ('@@query.defaults(parent: "Nope")', "4:27")):
+        try:
+            monorm.loads(f"model Bad {{\n id Int @id\n owner Int\n {attribute}\n}}", registry=monorm.Registry())
+        except monorm.SchemaError as e:
+            assert f":{position}: unknown model Nope" in str(e), (attribute, str(e))
+        else:
+            raise AssertionError(f"{attribute} must fail")
+
+
 async def main() -> None:
+    unknown_parents()
     await run("sqlite", "sqlite://:memory:")
     if os.environ.get("ORM_TEST_DATABASE_URL"):
         await run("postgresql", os.environ["ORM_TEST_DATABASE_URL"])

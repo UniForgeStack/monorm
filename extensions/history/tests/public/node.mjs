@@ -24,6 +24,8 @@ async function run(provider, url) {
     const entries = await post.history.timeline(post, { diff: true });
     assert.deepEqual(entries.map((e) => e.event.label), ['insert', 'update']);
     assert.deepEqual(entries[1].diff, { title: { old: 'a', new: 'b' }, views: { old: 1, new: 2 } });
+    // restore() finds the tracker by the model name in the schema, not by the class name
+    Object.defineProperty(entries[0].event.constructor, 'name', { value: 'RenamedByTheApp' });
     const restored = await post.history.restore(entries[0].event);
     assert.deepEqual([restored.title, restored.views], ['a', 1]);
     assert.deepEqual((await post.history.timeline(post)).map((e) => e.event.label), ['insert', 'update', 'restore']);
