@@ -1073,7 +1073,7 @@ test("a section layout with a collapsed section, and a custom form", async () =>
   await page.getByLabel("Author id").waitFor();
   // The fields that no section names get a title beside the titled cards.
   assert.equal(await page.locator("form fieldset").count(), 2);
-  assert.equal(await page.locator("form fieldset legend").last().innerText(), "Other");
+  assert.equal(await page.locator("form fieldset legend").last().textContent(), "Other");
 
   await idle();
   // The module of the resource replaces the form. The first save has no title, and the 422 comes back as `errors`.
