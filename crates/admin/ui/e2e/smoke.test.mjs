@@ -710,8 +710,11 @@ test("a protobuf message shows as JSON, a bad JSON is a field error, and the edi
   await page.goto(`${base}/admin/Setting`);
   // The server sorts the keys of the JSON.
   await page.getByText('{"priority":3,"tags":["a"],"title":"hi"}').waitFor();
+  // A full page load fetches /site: let it finish, or the next load aborts it.
+  await idle();
   await page.goto(`${base}/admin/Setting/1`);
   assert.deepEqual(JSON.parse(await page.locator("pre.json-value").innerText()), { title: "hi", priority: 3, tags: ["a"] });
+  await idle();
   await page.goto(`${base}/admin/Setting/1/edit`);
   const config = page.getByLabel("Config");
   assert.match(await config.evaluate((e) => getComputedStyle(e).fontFamily), /mono/i, "the JSON field is monospace");
