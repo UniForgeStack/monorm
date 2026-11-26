@@ -46,6 +46,7 @@ pub mod sql;
 pub mod tables;
 pub mod ui;
 pub mod view;
+pub mod wire;
 pub mod write;
 
 pub use auth::AuthConfig;

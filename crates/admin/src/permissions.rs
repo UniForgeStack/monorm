@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use monorm_core::ir::{ColType, RelKind};
 use monorm_engine::db::{Cell, Executor};
 use sea_query::Value;
-use serde_json::{json, Value as Json};
+use serde_json::Value as Json;
 
 use crate::error::{code, AdminError, Fault, Spelling};
 use crate::json;
@@ -274,11 +274,14 @@ impl Site {
                 let sight = self.sight_of(page, grants);
                 let r: &Resource = &sight;
                 let mut meta = r.meta.clone();
-                meta["actions"] = json!(r.actions.iter().filter(|a| a.placement.is_some() && self.action_allowed(grants, r, a)).map(action_meta).collect::<Vec<_>>());
-                meta["ops"] = json!([Op::Create, Op::Update, Op::Delete].iter().filter(|o| r.allow.contains(o) && self.allows(grants, r, **o) && crate::write::write_reason(&self.schema, r, **o).is_none()).map(|o| o.name()).collect::<Vec<_>>());
-                meta["bulk_delete"] = json!(r.bulk_delete && r.allow.contains(&Op::Delete) && self.allows(grants, r, Op::Delete) && crate::write::write_reason(&self.schema, r, Op::Delete).is_none());
-                meta["bypass"] = json!(self.bypassable(grants, r));
-                meta["field_permissions"] = json!(r.field_permissions.iter().filter(|f| self.allowed_extra(grants, r, &format!("{}.{f}", r.label))).collect::<Vec<_>>());
+                let user = crate::wire::UserKeys {
+                    actions: r.actions.iter().filter_map(|a| self.action_allowed(grants, r, a).then_some(action_meta(a, a.placement?))).collect(),
+                    ops: [Op::Create, Op::Update, Op::Delete].iter().filter(|o| r.allow.contains(o) && self.allows(grants, r, **o) && crate::write::write_reason(&self.schema, r, **o).is_none()).map(|o| o.name()).collect(),
+                    bulk_delete: r.bulk_delete && r.allow.contains(&Op::Delete) && self.allows(grants, r, Op::Delete) && crate::write::write_reason(&self.schema, r, Op::Delete).is_none(),
+                    bypass: self.bypassable(grants, r),
+                    field_permissions: r.field_permissions.iter().filter(|f| self.allowed_extra(grants, r, &format!("{}.{f}", r.label))).cloned().collect(),
+                };
+                merge(&mut meta, &user);
                 let shown: Vec<Json> = r
                     .inlines
                     .iter()
@@ -286,7 +289,8 @@ impl Site {
                     .filter(|(i, _)| self.inline_allows(grants, r, i, Op::Read))
                     .map(|(i, m)| {
                         let mut m = m.clone();
-                        m["ops"] = json!([Op::Create, Op::Update, Op::Delete].iter().filter(|o| self.inline_allows(grants, r, i, **o) && crate::write::write_reason(&self.schema, &i.resource, **o).is_none()).map(|o| o.name()).collect::<Vec<_>>());
+                        let ops = [Op::Create, Op::Update, Op::Delete].iter().filter(|o| self.inline_allows(grants, r, i, **o) && crate::write::write_reason(&self.schema, &i.resource, **o).is_none()).map(|o| o.name()).collect();
+                        merge(&mut m, &crate::wire::InlineUserKeys { ops });
                         if m["link"].as_str().and_then(|l| self.resource(l)).is_none_or(|l| !self.allows(grants, l, Op::Read)) {
                             m["link"] = Json::Null;
                         }
@@ -298,7 +302,7 @@ impl Site {
             })
             .collect();
         let permissions: Vec<String> = if self.gate(grants) { self.permission_names().into_iter().filter(|n| grants.has(n)).collect() } else { Vec::new() };
-        json!({"resources": resources, "permissions": permissions})
+        serde_json::to_value(crate::wire::UserMetadata { resources, permissions }).expect("the user metadata is JSON")
     }
 
     /// The user may run the action: the permission of the action, or `manage` when it has none. Bulk delete is not an action: it needs `delete`.
@@ -453,16 +457,22 @@ fn plan(site: &Site) -> Result<Option<Plan>, String> {
 }
 
 /// What the SPA needs to show one action.
-fn action_meta(a: &crate::site::Action) -> Json {
-    json!({
-        "name": a.name,
-        "label": a.label,
-        "placement": a.placement.map(|p| p.name()),
-        "variant": a.variant,
-        "icon": a.icon,
-        "menu": a.menu,
-        "confirm": a.confirm,
-        "inputs": a.inputs.iter().map(|i| i.meta()).collect::<Vec<_>>(),
-        "applies": a.applies.is_some(),
-    })
+/// Sets the keys of `keys` on the JSON object `meta`.
+fn merge(meta: &mut Json, keys: &impl serde::Serialize) {
+    let Json::Object(keys) = serde_json::to_value(keys).expect("the user keys are JSON") else { unreachable!("the user keys are an object") };
+    meta.as_object_mut().expect("the resource metadata is an object").extend(keys);
+}
+
+fn action_meta(a: &crate::site::Action, placement: crate::site::Placement) -> crate::wire::ActionInfo {
+    crate::wire::ActionInfo {
+        name: a.name.clone(),
+        label: a.label.clone(),
+        placement: placement.name(),
+        confirm: a.confirm.clone(),
+        variant: a.variant.clone(),
+        icon: a.icon.clone(),
+        menu: a.menu.clone(),
+        inputs: a.inputs.iter().map(|i| i.meta()).collect(),
+        applies: a.applies.is_some(),
+    }
 }

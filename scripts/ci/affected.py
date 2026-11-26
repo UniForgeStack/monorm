@@ -71,7 +71,7 @@ RULES: list[tuple[str, set[str]]] = [
     (r"^languages/js/create-monorm/", {"create-monorm"}),
     (r"^languages/js/test/", {"node", "test-twins"}),
     (r"^languages/js/packaging/", {"node", "packages"}),
-    # The check builds the `admin-schema` binary and compares the generated Python and TypeScript files.
+    # The check builds the `admin-schema` binary and compares the generated Python and TypeScript files (crates/admin/ is matched above).
     (r"^(scripts/(gen-admin-types\.py|tests/test_admin_types\.py)|languages/js/src/admin-types\.ts)$", {"rust", "python", "node", "packages"}),
     (r"^languages/js/(auth|admin)/", {"node", "packages"}),
     # The cargo typing tests compile generated code with `tsc` against these files and node_modules/@types.

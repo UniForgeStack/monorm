@@ -56,7 +56,7 @@ class PlanTest(unittest.TestCase):
             self.assertEqual(plan(path), {"names", "python"}, path)
 
     def test_admin_type_files_run_the_stale_check(self) -> None:
-        for path in ("scripts/gen-admin-types.py", "scripts/tests/test_admin_types.py", "languages/js/src/admin-types.ts"):
+        for path in ("scripts/gen-admin-types.py", "scripts/tests/test_admin_types.py", "languages/js/src/admin-types.ts", "crates/admin/ui/src/generated/api-types.ts"):
             self.assertEqual(plan(path), {"names", "rust", "python", "node", "packages"}, path)
 
     def test_typescript_only(self) -> None:

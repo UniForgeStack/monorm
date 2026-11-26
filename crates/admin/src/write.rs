@@ -113,10 +113,11 @@ pub(crate) fn model_read_only_reason(schema: &Schema, model: usize) -> Option<St
 }
 
 /// The metadata of the form of a resource: whether it is writable, and what each field needs.
-pub fn form_meta(schema: &Schema, r: &Resource) -> Value {
+pub fn form_meta(schema: &Schema, r: &Resource) -> crate::wire::FormMeta {
+    use crate::wire::{FormFieldMeta, FormMeta, SectionsMeta};
     let reason = read_only_reason(schema, r);
     let model = schema.model(r.model);
-    let fields: Vec<Value> = r
+    let fields: Vec<FormFieldMeta> = r
         .detail
         .iter()
         .filter(|c| writable(c))
@@ -124,24 +125,32 @@ pub fn form_meta(schema: &Schema, r: &Resource) -> Value {
             let f = model.field(&c.field).ok()?;
             let key = model.ir.primary_key.contains(&f.name) || f.primary_key;
             let relation = r.relations.iter().find(|x| !x.field.is_empty() && x.field == c.field).map(Relation::meta);
-            Some(json!({
-                "name": c.label,
-                "relation": relation,
-                "file": r.files.contains(&c.field),
-                "required": !f.nullable && !has_default(f),
-                "default": has_default(f),
-                "readonly_on_update": key || field_protected(schema, r, f),
-                "readonly": r.form.readonly.contains(&c.label),
-                "widget": r.form.widgets.get(&c.label).map_or_else(|| crate::meta::widget(c), String::as_str),
-                "max_length": f.max_length,
-            }))
+            Some(FormFieldMeta {
+                name: c.label.clone(),
+                relation,
+                file: r.files.contains(&c.field),
+                required: !f.nullable && !has_default(f),
+                default: has_default(f),
+                readonly_on_update: key || field_protected(schema, r, f),
+                readonly: r.form.readonly.contains(&c.label),
+                widget: r.form.widgets.get(&c.label).map_or_else(|| crate::meta::widget(c).to_owned(), Clone::clone),
+                max_length: f.max_length,
+            })
         })
         .collect();
-    let sections = json!({"create": r.form.create.iter().map(Section::json).collect::<Vec<_>>(), "edit": r.form.edit.iter().map(Section::json).collect::<Vec<_>>()});
-    let chips: Vec<Value> = r.relations.iter().filter(|x| x.through.is_some()).map(Relation::meta).collect();
-    let inputs: Vec<Value> = r.inputs.iter().map(crate::site_config::InputConfig::meta).collect();
+    let sections = SectionsMeta { create: r.form.create.iter().map(Section::meta).collect(), edit: r.form.edit.iter().map(Section::meta).collect() };
     let host_write = [Op::Create, Op::Update, Op::Delete].iter().any(|&op| hostwrite::route(schema, r, op).is_some());
-    json!({"writable": reason.is_none(), "read_only_reason": reason, "form": fields, "chips": chips, "sections": sections, "form_component": r.form.component.is_some() || r.form.module.is_some(), "form_module": r.form.module, "inputs": inputs, "host_write": host_write})
+    FormMeta {
+        writable: reason.is_none(),
+        read_only_reason: reason,
+        form: fields,
+        chips: r.relations.iter().filter(|x| x.through.is_some()).map(Relation::meta).collect(),
+        sections,
+        form_component: r.form.component.is_some() || r.form.module.is_some(),
+        form_module: r.form.module.clone(),
+        inputs: r.inputs.iter().map(crate::site_config::InputConfig::meta).collect(),
+        host_write,
+    }
 }
 
 pub(crate) fn has_default(f: &FieldIr) -> bool {

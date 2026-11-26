@@ -87,8 +87,8 @@ pub struct Relation {
 
 impl Relation {
     /// What the form needs to draw the field: the name, the target resource and the label.
-    pub fn meta(&self) -> Value {
-        json!({"name": self.name, "target": self.target, "label": self.label.label, "create": self.create, "choices": self.choices.is_some()})
+    pub fn meta(&self) -> crate::wire::RelationInfo {
+        crate::wire::RelationInfo { name: self.name.clone(), target: self.target.clone(), label: self.label.label.clone(), create: self.create, choices: self.choices.is_some() }
     }
 
     /// The columns of the source that the relation reads: a user who may not see one of them gets no relation.
