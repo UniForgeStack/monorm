@@ -405,6 +405,28 @@ pub struct DatabaseConfig {
     pub hard_delete_setting: Option<String>,
 }
 
+impl DatabaseConfig {
+    /// The `[database]` table for the keys that `pull` finds in a live database: provider, bypass roles and extensions.
+    pub fn to_toml(&self) -> String {
+        let quote = |s: &str| serde_json::to_string(s).expect("a string prints");
+        let mut out = format!("[database]\nprovider = {}\n", quote(if self.dialect == Dialect::Sqlite { "sqlite" } else { "postgresql" }));
+        if !self.bypass_roles.is_empty() {
+            out.push_str(&format!("bypass_roles = [{}]\n", self.bypass_roles.iter().map(|r| quote(r)).collect::<Vec<_>>().join(", ")));
+        }
+        if !self.extensions.is_empty() {
+            let list: Vec<String> = self.extensions.iter().map(|e| {
+                let mut keys = vec![format!("name = {}", quote(&e.name))];
+                for (key, value) in [("map", &e.map), ("schema", &e.schema), ("version", &e.version)] {
+                    if let Some(v) = value { keys.push(format!("{key} = {}", quote(v))); }
+                }
+                if keys.len() == 1 { quote(&e.name) } else { format!("{{ {} }}", keys.join(", ")) }
+            }).collect();
+            out.push_str(&format!("extensions = [{}]\n", list.join(", ")));
+        }
+        out
+    }
+}
+
 /// One database extension of `[database] extensions`: the keys of the old call form `postgis(map: "x", schema: "ext", version: "3.4")`.
 #[derive(Debug, Clone, Default)]
 pub struct ExtensionCall {

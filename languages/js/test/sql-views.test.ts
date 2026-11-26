@@ -272,6 +272,7 @@ test("sqlite rebuild under a view copies rows with legacy alter table off", asyn
 
 for (const dialect of ["sqlite", "postgres"] as const) {
   test(`views pull back as blocks and sidecars without drift (${dialect})`, async () => {
+    const cwd = process.cwd();
     const db = await emptyDatabase(dialect);
     try {
       await db.execute("CREATE TABLE sv_pull_items (id INTEGER PRIMARY KEY, value INTEGER NOT NULL);" +
@@ -284,6 +285,8 @@ for (const dialect of ["sqlite", "postgres"] as const) {
       assert.deepEqual(pulled.differences, []);
       const dir = scratch("monorm-view-pull-");
       const schema = join(dir, "pulled.prisma");
+      writeFileSync(join(dir, "monorm.toml"), pulled.database);
+      process.chdir(dir);
       pulled.write(schema);
       const sidecars = join(dir, "views", dialect === "sqlite" ? "main" : "public");
       assert.ok(readFileSync(join(sidecars, "SvPullView.sql"), "utf8").includes("value > 0"));
@@ -298,6 +301,7 @@ for (const dialect of ["sqlite", "postgres"] as const) {
       await migrator.baseline();
       assert.deepEqual((await migrator.drift()).steps, []);
     } finally {
+      process.chdir(cwd);
       if (dialect === "postgres") await db.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public");
       await db.close();
     }

@@ -1494,6 +1494,8 @@ pub struct Pull {
     /// Steps a migration from the schema would still run on the database; empty when
     /// the schema reproduces it.
     pub steps: Vec<Step>,
+    /// The `[database]` table that the schema needs: the schema file has no `datasource` block.
+    pub database: monorm_core::settings::DatabaseConfig,
 }
 
 /// The live database as a schema file, checked by creating it again in a shadow.
@@ -1529,8 +1531,15 @@ pub async fn pull_with(conn: &dyn Executor, installed: &monorm_core::dsl::Instal
         let line = rule_gap(&live.rules[*i]);
         if let Some(at) = rule_gaps.iter().position(|g| *g == line) { rule_gaps.remove(at); }
     }
+    // The pulled provider, roles and extensions replace those of the project's own table; its other keys stay.
     let compile = |pulled: &pulling::Pulled| {
-        monorm_core::dsl::compile_installed_with_overrides(&pulled.schema, None, installed, &pulled.views).and_then(monorm_core::dsl::check)
+        let mut with = installed.clone();
+        let mut database = installed.database.clone().unwrap_or_default();
+        database.dialect = pulled.database.dialect;
+        database.bypass_roles = pulled.database.bypass_roles.clone();
+        database.extensions = pulled.database.extensions.clone();
+        with.database = Some(database);
+        monorm_core::dsl::compile_installed_with_overrides(&pulled.schema, None, &with, &pulled.views).and_then(monorm_core::dsl::check)
     };
     // The attempts, from the most claims to none. A claim that makes the schema fail to compile is not a claim, and
     // an object claim that leaves a difference with the database is not one either: the objects stay as they were, and a gap line says why.
@@ -1572,7 +1581,7 @@ pub async fn pull_with(conn: &dyn Executor, installed: &monorm_core::dsl::Instal
                 continue;
             }
         }
-        let (mut gaps, schema, views) = (pulled.gaps, pulled.schema, pulled.views);
+        let (mut gaps, schema, views, database) = (pulled.gaps, pulled.schema, pulled.views, pulled.database);
         gaps.append(&mut notes);
         let steps = match checked {
             Ok((steps, _)) => steps,
@@ -1581,7 +1590,7 @@ pub async fn pull_with(conn: &dyn Executor, installed: &monorm_core::dsl::Instal
                 vec![]
             }
         };
-        return Ok(Pull { schema, gaps, views, steps });
+        return Ok(Pull { schema, gaps, views, steps, database });
     }
     unreachable!("the last attempt returns")
 }

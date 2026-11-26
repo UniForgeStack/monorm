@@ -932,7 +932,8 @@ fn pull_emits_checked_native_expressions_and_lossless_escapes() {
         let original = expression_schema(dialect, "@@check(raw(\"(\\\"Qty\\\" BETWEEN 1 AND 10) AND (label IS NOT NULL OR NOT (\\\"Qty\\\" IN (2, 3)))\"), name: \"range_rule\")\n @@check(raw(\"mystery(label) = 'it''s  odd'\"), name: \"escape_rule\")\n @@index([sql(\"abs( \\\"Qty\\\" )\")], where: raw(\"\\\"Qty\\\" > 0\"))\n @@index([sql(\"lower(label)\", sort: Desc)], name: \"sorted_label\")", "");
         let before = snapshot(&original).unwrap();
         let pulled = pull::pull(&before, &[]);
-        let compiled = crate::dsl::compile_project(&pulled.schema, None).unwrap();
+        let installed = crate::dsl::Installed { database: Some(pulled.database.clone()), ..Default::default() };
+        let compiled = crate::dsl::compile_project_with(&pulled.schema, None, &installed).unwrap();
         assert!(compiled.warnings.iter().all(|w| !w.message.contains("not checked")), "{:?}", compiled.warnings);
         assert!(pulled.schema.contains(".between(1, 10)"), "{}", pulled.schema);
         assert!(pulled.schema.contains("abs(Qty)"), "{}", pulled.schema);

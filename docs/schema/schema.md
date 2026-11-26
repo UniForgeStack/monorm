@@ -1010,6 +1010,7 @@ The `query_sets` and `model_methods` tables come from the winning file for every
 The lookup reads the working directory only.
 The URL comes from `MONORM_DATABASE_URL`.
 `monorm init` writes a `monorm.toml` with the default `schema` and `migrations`.
+`monorm pull` prints the `[database]` table of the database it read; put it in the settings file.
 `migrations` is a directory name, or a table `{ dir = "migrations", online = true, name = "{number}_{slug}" }`.
 Exit codes: 0 success, 1 failure (including
 `makemigrations --check` finding changes and `drift` finding differences), 2 bad usage. This

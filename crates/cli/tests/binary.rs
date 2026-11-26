@@ -137,6 +137,9 @@ fn pull_baseline_and_drift_on_sqlite() {
     assert!(pulled.status.success(), "{}", text(&pulled.stderr));
     assert!(text(&pulled.stdout).contains("The schema reproduces the database."), "{}", text(&pulled.stdout));
     assert!(std::fs::read_to_string(dir.join("schema.prisma")).unwrap().contains("model Book {"));
+    // the schema has no datasource block; the command prints the [database] table for the settings file
+    assert!(!std::fs::read_to_string(dir.join("schema.prisma")).unwrap().contains("datasource"));
+    assert!(text(&pulled.stdout).contains("[database]\nprovider = \"sqlite\""), "{}", text(&pulled.stdout));
     assert_eq!(monorm(&dir, &["--url", &url, "pull"]).status.code(), Some(2));
 
     let unmanaged = monorm(&dir, &["--url", &url, "pull", "--unmanaged", "-o", "unmanaged.prisma"]);

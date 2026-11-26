@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, before, test } from "node:test";
+import { after, afterEach, before, test } from "node:test";
 
 import { MigrationError, Migrations, Migrator, Registry, connect, load, loads, pull, type Database } from "../src/index.js";
 import { hasExtension } from "./artifact-caps.js";
@@ -103,8 +103,18 @@ test("owned serials read as identity; a shared sequence stays a raw default", as
   ]);
 });
 
+const START_DIR = process.cwd();
+afterEach(() => process.chdir(START_DIR));
+
+/** A pulled schema names no dialect: the `[database]` table of the pull goes in the settings file. */
+function usePulledSettings(pulled: { readonly database: string }, dir: string): void {
+  writeFileSync(join(dir, "monorm.toml"), pulled.database);
+  process.chdir(dir);
+}
+
 async function assertGeneratedPullIsClean(db: Database, dir: string, wanted: string): Promise<void> {
   const pulled = await pull(db);
+  usePulledSettings(pulled, dir);
   assert.ok(pulled.schema.includes(wanted), pulled.schema);
   assert.ok(!pulled.gaps.some((g) => g.includes("generated")));
   assert.deepEqual(pulled.differences, []);
@@ -136,6 +146,7 @@ test("a virtual generated column pulls back without drift on postgres", async (t
 test("sqlite generated columns pull back without drift", async () => {
   for (const kind of ["STORED", "VIRTUAL"]) {
     const dir = mkdtempSync(join(tmpdir(), "monorm-generated-sqlite-"));
+    process.chdir(dir);
     const registry = new Registry();
     loads('datasource db { provider = "sqlite" }\nmodel Keep { id Int @id }', { registry });
     const db = await connect(`sqlite://${join(dir, "live.db")}`, { default: false, registry });
@@ -387,8 +398,10 @@ model Pet {
 
   const pulled = await pull(db);
   assert.deepEqual(pulled.differences, []);
+  assert.ok(pulled.database.includes('provider = "sqlite"') && !pulled.schema.includes("datasource"));
   assert.ok(pulled.schema.includes('@@check((age >= 0), name: "pet_age")'));
   pulled.write(join(dir, "pulled.prisma"));
+  usePulledSettings(pulled, dir);
   await db.execute("DROP TABLE monorm_migrations");
   const migrator = new Migrator(db, new Migrations(join(dir, "migrations"), join(dir, "pulled.prisma")));
   await migrator.baseline();
@@ -543,7 +556,9 @@ test("sqlite pull reads column clauses", async () => {
   let text: string;
   try {
     await db.execute(DJANGO_SQLITE);
-    text = (await pull(db)).schema;
+    const pulled = await pull(db);
+    text = pulled.schema;
+    usePulledSettings(pulled, dir);
   } finally {
     await db.close();
   }

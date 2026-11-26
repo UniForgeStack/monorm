@@ -125,7 +125,7 @@ def test_native_adoption_survives_registry_ir_and_unrelated_snapshots(tmp_path):
 
 
 @pytest.mark.parametrize("provider", PROVIDERS)
-async def test_offline_native_conversion_preserves_live_rules_and_later_migrations(provider, tmp_path):
+async def test_offline_native_conversion_preserves_live_rules_and_later_migrations(provider, tmp_path, monkeypatch):
     import subprocess
     import sys
 
@@ -165,24 +165,30 @@ async def test_offline_native_conversion_preserves_live_rules_and_later_migratio
         # Shadow verification must accept the native form of the existing rules.
         pulled = await pull(db)
         assert pulled.differences == [], (pulled.schema, pulled.differences)
-        fresh_registry = monorm.Registry()
-        monorm.loads(pulled.schema, registry=fresh_registry)
-        fresh = await monorm.connect(url, registry=fresh_registry, default=False, max_connections=1)
-        try:
-            if provider == "postgres":
-                await fresh.execute("CREATE SCHEMA pl12_fresh; SET search_path = pl12_fresh")
-            await fresh.create_tables()
-            await fresh.execute('INSERT INTO conversion_item (id, "Qty") VALUES (1, 2), (2, 3)')
-            with pytest.raises(monorm.IntegrityError):
-                await fresh.execute('INSERT INTO conversion_item (id, "Qty") VALUES (3, -1)')
-            assert not (await pull(fresh)).differences
-        finally:
-            if provider == "postgres":
-                await fresh.execute("SET search_path = public; DROP SCHEMA pl12_fresh CASCADE")
-            await fresh.close()
-        pulled_path = tmp_path / "pulled.prisma"
-        pulled.write(pulled_path)
-        baseline = Migrator(db, Migrations(tmp_path / "baseline", pulled_path))
+        # A pulled schema names no dialect: its `[database]` table is the settings file of a fresh folder.
+        pulled_dir = tmp_path / "pulled_project"
+        pulled_dir.mkdir()
+        (pulled_dir / "monorm.toml").write_text(pulled.database)
+        with monkeypatch.context() as scoped:
+            scoped.chdir(pulled_dir)
+            fresh_registry = monorm.Registry()
+            monorm.loads(pulled.schema, registry=fresh_registry)
+            fresh = await monorm.connect(url, registry=fresh_registry, default=False, max_connections=1)
+            try:
+                if provider == "postgres":
+                    await fresh.execute("CREATE SCHEMA pl12_fresh; SET search_path = pl12_fresh")
+                await fresh.create_tables()
+                await fresh.execute('INSERT INTO conversion_item (id, "Qty") VALUES (1, 2), (2, 3)')
+                with pytest.raises(monorm.IntegrityError):
+                    await fresh.execute('INSERT INTO conversion_item (id, "Qty") VALUES (3, -1)')
+                assert not (await pull(fresh)).differences
+            finally:
+                if provider == "postgres":
+                    await fresh.execute("SET search_path = public; DROP SCHEMA pl12_fresh CASCADE")
+                await fresh.close()
+            pulled_path = tmp_path / "pulled.prisma"
+            pulled.write(pulled_path)
+            baseline = Migrator(db, Migrations(tmp_path / "baseline", pulled_path))
         assert not (await runner.drift()).steps
         path.write_text(path.read_text().replace(" qty Int", " note String?\n qty Int"))
         unrelated = migrations.make("unrelated")
@@ -200,9 +206,12 @@ async def test_offline_native_conversion_preserves_live_rules_and_later_migratio
         await runner.downgrade(target="zero", allow_destructive=True)
         await db.execute('CREATE TABLE conversion_item (id INTEGER PRIMARY KEY, "Qty" INTEGER NOT NULL CHECK ("Qty" > 0))')
         pulled = await pull(db)
-        pulled.write(pulled_path)
-        await baseline.baseline()
-        assert not (await baseline.drift()).steps
+        (pulled_dir / "monorm.toml").write_text(pulled.database)
+        with monkeypatch.context() as scoped:
+            scoped.chdir(pulled_dir)
+            pulled.write(pulled_path)
+            await baseline.baseline()
+            assert not (await baseline.drift()).steps
     finally:
         if provider == "postgres":
             await db.execute("SET search_path = public; DROP SCHEMA pl12_conversion CASCADE")

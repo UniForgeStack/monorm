@@ -65,7 +65,10 @@ async def test_pull_baseline_and_drift_of_a_django_style_database(tmp_path):
         assert 'ops: raw("varchar_pattern_ops")' in text
         assert "with: { fillfactor: 70 }" in text
         # a trigger with REFERENCING transition tables reads back with them
-        assert "@@trigger(account_shop_updated_at, referencing(new: new_rows), when: after, operation: [update], level: statement" in text
+        assert (
+            "@@trigger(account_shop_updated_at, referencing(new: new_rows), when: after, operation: [update], level: statement"
+            in text
+        )
         assert not any("account_shop_updated_at" in g for g in pulled.gaps)
         assert "function set_updated_at {" in text and "volatility = immutable" in text
         assert "status ShopStatus @default(active)" in text
@@ -153,8 +156,15 @@ async def test_owned_serials_pull_as_identity_and_shared_sequences_stay_defaults
         await db.close()
 
 
-async def _assert_generated_pull_is_clean(db, tmp_path, wanted):
+def use_pulled_settings(pulled, tmp_path, monkeypatch):
+    """A pulled schema names no dialect: the `[database]` table of the pull goes in the settings file."""
+    (tmp_path / "monorm.toml").write_text(pulled.database)
+    monkeypatch.chdir(tmp_path)
+
+
+async def _assert_generated_pull_is_clean(db, tmp_path, wanted, monkeypatch):
     pulled = await pull(db)
+    use_pulled_settings(pulled, tmp_path, monkeypatch)
     assert wanted in pulled.schema
     assert not any("generated" in g for g in pulled.gaps)
     assert pulled.differences == []
@@ -165,13 +175,13 @@ async def _assert_generated_pull_is_clean(db, tmp_path, wanted):
     assert (await migrator.drift()).steps == []
 
 
-async def test_generated_columns_pull_back_without_drift(tmp_path):
+async def test_generated_columns_pull_back_without_drift(tmp_path, monkeypatch):
     db = await fresh(
         "CREATE TABLE gen_lines (id bigint PRIMARY KEY, quantity integer NOT NULL, price integer NOT NULL, "
         "total integer GENERATED ALWAYS AS (quantity * price) STORED)"
     )
     try:
-        await _assert_generated_pull_is_clean(db, tmp_path, "@generated(((quantity * price)))")
+        await _assert_generated_pull_is_clean(db, tmp_path, "@generated(((quantity * price)))", monkeypatch)
     finally:
         await db.close()
 
@@ -192,18 +202,18 @@ async def test_bytea_pulls_as_bytes_without_drift(tmp_path):
         await db.close()
 
 
-async def test_a_sqlite_blob_pulls_as_bytes_without_drift(tmp_path):
+async def test_a_sqlite_blob_pulls_as_bytes_without_drift(tmp_path, monkeypatch):
     registry = Registry()
     monorm.loads('datasource db { provider = "sqlite" }\nmodel Keep { id Int @id }', registry=registry)
     db = await monorm.connect(f"sqlite://{tmp_path / 'live.db'}", default=False, registry=registry)
     try:
         await db.execute("CREATE TABLE blobs (id INTEGER PRIMARY KEY, data BLOB)")
-        await _assert_generated_pull_is_clean(db, tmp_path, "data Bytes?")
+        await _assert_generated_pull_is_clean(db, tmp_path, "data Bytes?", monkeypatch)
     finally:
         await db.close()
 
 
-async def test_a_virtual_generated_column_pulls_back_without_drift_on_postgres(tmp_path):
+async def test_a_virtual_generated_column_pulls_back_without_drift_on_postgres(tmp_path, monkeypatch):
     db = await fresh("SELECT 1")
     try:
         if int((await db._fetch_text("SHOW server_version_num"))[0][0]) < 180000:
@@ -212,15 +222,18 @@ async def test_a_virtual_generated_column_pulls_back_without_drift_on_postgres(t
             "CREATE TABLE gen_lines (id bigint PRIMARY KEY, quantity integer NOT NULL, price integer NOT NULL, "
             "total integer GENERATED ALWAYS AS (quantity * price) VIRTUAL)"
         )
-        await _assert_generated_pull_is_clean(db, tmp_path, "@generated(((quantity * price)), stored: false)")
+        await _assert_generated_pull_is_clean(
+            db, tmp_path, "@generated(((quantity * price)), stored: false)", monkeypatch
+        )
     finally:
         await db.close()
 
 
-async def test_sqlite_generated_columns_pull_back_without_drift(tmp_path):
+async def test_sqlite_generated_columns_pull_back_without_drift(tmp_path, monkeypatch):
     for kind in ("STORED", "VIRTUAL"):
         folder = tmp_path / kind
         folder.mkdir()
+        monkeypatch.chdir(folder)
         registry = Registry()
         monorm.loads('datasource db { provider = "sqlite" }\nmodel Keep { id Int @id }', registry=registry)
         db = await monorm.connect(f"sqlite://{folder / 'live.db'}", default=False, registry=registry)
@@ -229,8 +242,12 @@ async def test_sqlite_generated_columns_pull_back_without_drift(tmp_path):
                 "CREATE TABLE gen_lines (id INTEGER PRIMARY KEY, quantity INTEGER NOT NULL, price INTEGER NOT NULL, "
                 f"total INTEGER GENERATED ALWAYS AS (quantity * price) {kind})"
             )
-            wanted = "@generated((quantity * price))" if kind == "STORED" else "@generated((quantity * price), stored: false)"
-            await _assert_generated_pull_is_clean(db, folder, wanted)
+            wanted = (
+                "@generated((quantity * price))"
+                if kind == "STORED"
+                else "@generated((quantity * price), stored: false)"
+            )
+            await _assert_generated_pull_is_clean(db, folder, wanted, monkeypatch)
         finally:
             await db.close()
 
@@ -240,7 +257,9 @@ async def test_sqlite_triggers_pull_back_as_trigger_attributes_without_drift(tmp
     monorm.loads('datasource db { provider = "sqlite" }\nmodel Keep { id Int @id }', registry=registry)
     db = await monorm.connect(f"sqlite://{tmp_path / 'live.db'}", default=False, registry=registry)
     try:
-        await db.execute("CREATE TABLE tr_posts (id INTEGER PRIMARY KEY, title TEXT NOT NULL, touched INTEGER NOT NULL DEFAULT 0)")
+        await db.execute(
+            "CREATE TABLE tr_posts (id INTEGER PRIMARY KEY, title TEXT NOT NULL, touched INTEGER NOT NULL DEFAULT 0)"
+        )
         await db.execute(
             'CREATE TRIGGER "tr_posts_touch_trigger" AFTER UPDATE OF "title" ON "tr_posts" FOR EACH ROW WHEN (old.title <> new.title) BEGIN\n'
             'UPDATE "tr_posts" SET "touched" = "touched" + 1 WHERE "id" = NEW."id";\nEND'
@@ -248,7 +267,10 @@ async def test_sqlite_triggers_pull_back_as_trigger_attributes_without_drift(tmp
         # a trigger in another form is a gap, not an attribute
         await db.execute("CREATE TRIGGER other AFTER INSERT ON tr_posts BEGIN SELECT 1; END")
         pulled = await pull(db)
-        assert '@@trigger(touch, when: after, operation: [update_of(title)], condition: "old.title <> new.title", func: ' in pulled.schema
+        assert (
+            '@@trigger(touch, when: after, operation: [update_of(title)], condition: "old.title <> new.title", func: '
+            in pulled.schema
+        )
         assert "@@trigger(other" not in pulled.schema
         assert any(g.startswith("trigger other on tr_posts") for g in pulled.gaps)
         assert not any(g.startswith("trigger tr_posts_touch_trigger") for g in pulled.gaps)
@@ -273,7 +295,10 @@ async def test_add_identity_refuses_a_column_that_owns_a_sequence_but_defaults_t
         )
         migrator = Migrator(db, Migrations(tmp_path / "migrations", schema))
         await migrator.baseline()
-        with pytest.raises(monorm.migrations.MigrationError, match="t_owns.id: the column takes its values from a sequence it does not own"):
+        with pytest.raises(
+            monorm.migrations.MigrationError,
+            match="t_owns.id: the column takes its values from a sequence it does not own",
+        ):
             await migrator.drift()
     finally:
         await db.close()
@@ -311,7 +336,7 @@ async def test_an_older_migrations_table_gets_the_baseline_column(tmp_path):
         await db.close()
 
 
-async def test_a_database_made_by_the_orm_pulls_back_without_differences(tmp_path):
+async def test_a_database_made_by_the_orm_pulls_back_without_differences(tmp_path, monkeypatch):
     blog = monorm.load(BLOG, registry=Registry())
     db = await fresh()
     try:
@@ -323,7 +348,8 @@ async def test_a_database_made_by_the_orm_pulls_back_without_differences(tmp_pat
         pulled = await pull(db)
         assert pulled.differences == []
         assert pulled.gaps == []
-        assert "@@check(" in pulled.schema and "extensions = [pg_trgm]" in pulled.schema
+        assert "@@check(" in pulled.schema and 'extensions = ["pg_trgm"]' in pulled.database
+        assert "datasource" not in pulled.schema
         assert blog  # the blog models compile from the same file
     finally:
         await db.close()
@@ -361,7 +387,7 @@ model Pet {
 """
 
 
-async def test_sqlite_pull_baseline_and_drift(tmp_path):
+async def test_sqlite_pull_baseline_and_drift(tmp_path, monkeypatch):
     source = tmp_path / "schema.prisma"
     source.write_text(SQLITE)
     url = f"sqlite://{tmp_path / 'live.db'}"
@@ -375,11 +401,12 @@ async def test_sqlite_pull_baseline_and_drift(tmp_path):
 
         pulled = await pull(db)
         assert pulled.differences == []
-        assert 'provider = "sqlite"' in pulled.schema
+        assert 'provider = "sqlite"' in pulled.database and "datasource" not in pulled.schema
         assert '@@check((age >= 0), name: "pet_age")' in pulled.schema
 
         schema = tmp_path / "pulled.prisma"
         pulled.write(schema)
+        use_pulled_settings(pulled, tmp_path, monkeypatch)
         await db.execute("DROP TABLE monorm_migrations")
         migrator = Migrator(db, Migrations(tmp_path / "migrations", schema))
         await migrator.baseline()
@@ -534,7 +561,7 @@ INSERT INTO auth_user (is_staff, joined, age, price) VALUES (1, '2024-01-02 03:0
 """
 
 
-async def test_sqlite_pull_reads_column_clauses(tmp_path):
+async def test_sqlite_pull_reads_column_clauses(tmp_path, monkeypatch):
     url = f"sqlite://{tmp_path / 'django.db'}"
     db = await monorm.connect(url, default=False, registry=Registry(dialect="sqlite"))
     try:
@@ -543,6 +570,7 @@ async def test_sqlite_pull_reads_column_clauses(tmp_path):
     finally:
         await db.close()
     text = pulled.schema
+    use_pulled_settings(pulled, tmp_path, monkeypatch)
     assert '@@check((age >= 0), name: "auth_user_age_check")' in text, text
     assert '@@check((price > 0), name: "auth_user_check")' in text
     assert "is_staff Boolean" in text and "joined DateTime" in text and "price Float" in text
@@ -625,7 +653,10 @@ async def test_pull_moves_a_soft_delete_rule_to_triggers(tmp_path):
         assert any("rule soft_delete_related_sdm_c" in g for g in pulled.gaps)
         assert not any("rule soft_delete " in g or "rule sdm_d_soft_delete" in g for g in pulled.gaps)
         # the legacy database has no guard for a child under a deleted parent: the move adds it for the cascade child sdm_d
-        assert [s.summary for s in pulled.differences] == ["create or replace function sdm_d_soft_delete_guard_t()", "create trigger soft_delete_guard_t on sdm_d"]
+        assert [s.summary for s in pulled.differences] == [
+            "create or replace function sdm_d_soft_delete_guard_t()",
+            "create trigger soft_delete_guard_t on sdm_d",
+        ]
         # a baseline records the schema as the database, so the guard goes in by hand
         for step in pulled.differences:
             await db.execute(step.sql)
@@ -643,11 +674,16 @@ async def test_pull_moves_a_soft_delete_rule_to_triggers(tmp_path):
         move = migrations.make("move_soft_delete")
         up = move.up_sql
         assert up.index('DROP RULE IF EXISTS "soft_delete" ON "sdm_t"') < up.index("CREATE TRIGGER")
-        assert 'DROP RULE IF EXISTS "soft_delete" ON "sdm_c"' in up and 'DROP RULE IF EXISTS "sdm_d_soft_delete" ON "sdm_d"' in up
+        assert (
+            'DROP RULE IF EXISTS "soft_delete" ON "sdm_c"' in up
+            and 'DROP RULE IF EXISTS "sdm_d_soft_delete" ON "sdm_d"' in up
+        )
         assert "sdm_o_keep" not in up and "soft_delete_related" not in up
         assert [m.name for m in await migrator.upgrade()] == [move.name]
 
-        rules = await scalar(db, "SELECT string_agg(rulename, ',' ORDER BY rulename) FROM pg_rules WHERE schemaname = 'public'")
+        rules = await scalar(
+            db, "SELECT string_agg(rulename, ',' ORDER BY rulename) FROM pg_rules WHERE schemaname = 'public'"
+        )
         assert rules == "sdm_o_keep,soft_delete_related_sdm_c"
         await db.execute(
             "INSERT INTO sdm_t (name) VALUES ('a'); INSERT INTO sdm_c (t_id) SELECT id FROM sdm_t;"
@@ -661,7 +697,10 @@ async def test_pull_moves_a_soft_delete_rule_to_triggers(tmp_path):
 
         drift = await migrator.drift()
         assert not drift.steps
-        assert sorted(g.split()[1] for g in drift.gaps if g.startswith("rule ")) == ["sdm_o_keep", "soft_delete_related_sdm_c"]
+        assert sorted(g.split()[1] for g in drift.gaps if g.startswith("rule ")) == [
+            "sdm_o_keep",
+            "soft_delete_related_sdm_c",
+        ]
         # with only recognized rules left, a new pull reproduces the database: no step and no gap line, as `pull` prints
         # "The schema reproduces the database." only for that
         await db.execute("DROP RULE sdm_o_keep ON sdm_o; DROP RULE soft_delete_related_sdm_c ON sdm_t")
@@ -758,7 +797,9 @@ model BundleVersion {
 """
 
 
-@pytest.mark.skipif(not has_extension("monorm.history", "monorm.timestamps"), reason="requires the history and timestamps packages")
+@pytest.mark.skipif(
+    not has_extension("monorm.history", "monorm.timestamps"), reason="requires the history and timestamps packages"
+)
 @pytest.mark.parametrize("provider", ["sqlite", "postgresql"])
 async def test_history_and_timestamps_pull_back_as_attributes_without_drift(provider, tmp_path):
     registry = Registry()
@@ -777,7 +818,15 @@ async def test_history_and_timestamps_pull_back_as_attributes_without_drift(prov
         assert "@@history.versions(of: bundle_id)" in text
         assert '@@timestamps.updated_at("touched_at", mode: "database")' in text
         # what the extensions generate is not a model, a trigger or a function of its own
-        for generated in ["pe_posts_events", "comment_audit", "h_events_", "h_comment_audit_", "updated_at_touched_at", "version_number", "@@trigger("]:
+        for generated in [
+            "pe_posts_events",
+            "comment_audit",
+            "h_events_",
+            "h_comment_audit_",
+            "updated_at_touched_at",
+            "version_number",
+            "@@trigger(",
+        ]:
             assert generated not in text, generated
         assert [s.summary for s in pulled.differences] == []
     finally:
@@ -813,11 +862,16 @@ UNSHOWN_TRACKER_ARGUMENTS = [
 @pytest.mark.skipif(not has_extension("monorm.history"), reason="requires the history package")
 @pytest.mark.parametrize("provider", ["sqlite", "postgresql"])
 @pytest.mark.parametrize(("arguments", "gap"), UNSHOWN_TRACKER_ARGUMENTS)
-async def test_a_tracker_with_arguments_the_database_cannot_show_pulls_back_as_plain_objects(provider, arguments, gap, tmp_path):
+async def test_a_tracker_with_arguments_the_database_cannot_show_pulls_back_as_plain_objects(
+    provider, arguments, gap, tmp_path
+):
     models = f'model Post {{\n id Int @id @default(autoincrement())\n title String\n body String\n @@history.track({arguments})\n @@map("pf_posts")\n}}'
     pulled = await pulled_from(provider, tmp_path, models)
     assert "@@history.track" not in pulled.schema
-    assert any(g.startswith("object claims skipped, the schema with them differs from the database") for g in pulled.gaps) == gap
+    assert (
+        any(g.startswith("object claims skipped, the schema with them differs from the database") for g in pulled.gaps)
+        == gap
+    )
     assert [s.summary for s in pulled.differences] == []
 
 
@@ -829,7 +883,11 @@ async def test_two_trackers_of_one_table_pull_back_as_two_attributes(provider, t
     assert pulled.schema.count("@@history.track(") == 2
     assert "@@history.track()" in pulled.schema
     assert '@@history.track(model: "PostAudit")' in pulled.schema
-    assert "p2_posts_events" not in pulled.schema and "post_audit" not in pulled.schema and "@@trigger(" not in pulled.schema
+    assert (
+        "p2_posts_events" not in pulled.schema
+        and "post_audit" not in pulled.schema
+        and "@@trigger(" not in pulled.schema
+    )
     assert [s.summary for s in pulled.differences] == []
 
 
@@ -854,10 +912,15 @@ async def test_a_version_model_with_scope_pulls_back_with_the_scope_column_as_a_
     assert [s.summary for s in pulled.differences] == []
 
 
-@pytest.mark.skipif(not has_extension("monorm.history", "monorm.soft-delete"), reason="requires the history and soft-delete packages")
+@pytest.mark.skipif(
+    not has_extension("monorm.history", "monorm.soft-delete"), reason="requires the history and soft-delete packages"
+)
 async def test_a_failing_rule_claim_is_named_when_object_claims_were_tried_with_it(tmp_path):
     registry = Registry()
-    monorm.loads('datasource db { provider = "postgresql" }\nmodel Post {\n id Int @id @default(autoincrement())\n title String\n @@history.track\n @@map("pl_posts")\n}', registry=registry)
+    monorm.loads(
+        'datasource db { provider = "postgresql" }\nmodel Post {\n id Int @id @default(autoincrement())\n title String\n @@history.track\n @@map("pl_posts")\n}',
+        registry=registry,
+    )
     db = await monorm.connect(PULL_URL, max_connections=2, default=False, registry=registry)
     try:
         await db.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public")
@@ -873,7 +936,10 @@ CREATE RULE soft_delete AS ON DELETE TO sdm_x
         )
         pulled = await pull(db)
         # the first attempt holds both kinds of claim; the gap names both, and the rule claims are tried again alone
-        assert any(g.startswith("object claims skipped, the schema with the rule and object claims does not compile") for g in pulled.gaps)
+        assert any(
+            g.startswith("object claims skipped, the schema with the rule and object claims does not compile")
+            for g in pulled.gaps
+        )
         assert any(g.startswith("rule claims skipped, the schema with them does not compile") for g in pulled.gaps)
         assert "@@history.track" not in pulled.schema
         assert [s.summary for s in pulled.differences] == []
@@ -890,13 +956,16 @@ async def test_services_share_unmanaged_models(tmp_path, dialect):
     owner = tmp_path / "owner.prisma"
     owner.write_text(datasource + 'import "shared.prisma" (prefix: "shared_")\n')
     consumer = tmp_path / "consumer.prisma"
-    consumer_source = datasource + '''import "shared.prisma" (prefix: "shared_", managed: false)
+    consumer_source = (
+        datasource
+        + """import "shared.prisma" (prefix: "shared_", managed: false)
 model Task {
   id Int @id
   account_id Int
   account Account @relation(fields: [account_id], references: [id])
 }
-'''
+"""
+    )
     consumer.write_text(consumer_source)
     owner_migrations = Migrations(tmp_path / "owner", owner)
     initial = owner_migrations.make()
@@ -935,7 +1004,8 @@ model Task {
         assert not drift.steps and not drift.gaps, drift
         index_query = (
             "SELECT indexname FROM pg_indexes WHERE schemaname = 'managed_owner' AND indexname = 'outside_index'"
-            if postgres else "SELECT name FROM sqlite_schema WHERE name = 'outside_index'"
+            if postgres
+            else "SELECT name FROM sqlite_schema WHERE name = 'outside_index'"
         )
         assert await db._fetch_text(index_query) == [("outside_index",)]
         assert (await Account.objects.using(db).get()).label == "updated"

@@ -901,6 +901,7 @@ async fn database(command: &str, args: &Args, settings: &Settings, dir: &Path, s
                 let pulled = introspect::pull_with(&*driver, &args.installed()?, unmanaged).await?;
                 write(&out, &pulled.schema)?;
                 println!("wrote {}", out.display());
+                println!("The schema holds no datasource block. Put this table in the settings file (monorm.toml):\n\n{}", pulled.database.to_toml());
                 for (path, body) in &pulled.views {
                     let file = out.parent().unwrap_or(Path::new("")).join(path);
                     write(&file, body)?;

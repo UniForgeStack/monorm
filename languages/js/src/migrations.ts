@@ -185,6 +185,8 @@ export class Pulled {
     readonly differences: readonly Step[],
     /** The SQL body of each view, by its path (`views/<db schema>/<Name>.sql`) next to the schema file. */
     readonly views: Readonly<Record<string, string>> = {},
+    /** The `[database]` table for the settings file. The schema has no `datasource` block, so a project needs this table. */
+    readonly database: string = "",
   ) {}
 
   /** Writes the schema file and the view bodies next to it. */
@@ -209,8 +211,9 @@ export async function pull(db: Database): Promise<Pulled> {
     gaps: string[];
     steps: Step[];
     views: Record<string, string>;
+    database: string;
   };
-  return new Pulled(out.schema, out.gaps, out.steps, out.views);
+  return new Pulled(out.schema, out.gaps, out.steps, out.views, out.database);
 }
 
 /** The live database against the schema the migrations reach (`Migrator.drift()`). */

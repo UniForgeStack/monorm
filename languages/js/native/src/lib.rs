@@ -1651,7 +1651,7 @@ impl Engine {
         })
     }
 
-    /// The live database as a schema file: JSON `{schema, gaps, steps: [{summary, sql}], views: {path: sql}}`
+    /// The live database as a schema file: JSON `{schema, gaps, steps: [{summary, sql}], views: {path: sql}, database}`
     /// (see `monorm_engine::introspect::pull`).
     #[napi]
     pub fn pull_schema<'env>(&self, env: &'env Env, extensions: Option<std::collections::HashMap<String, String>>) -> napi::Result<PromiseRaw<'env, String>> {
@@ -1659,7 +1659,7 @@ impl Engine {
         let installed = installed(None, extensions)?;
         env.spawn_future(async move {
             let p = monorm_engine::introspect::pull(&*driver, &installed).await.map_err(engine_err)?;
-            Ok(serde_json::json!({"schema": p.schema, "gaps": p.gaps, "steps": p.steps, "views": p.views}).to_string())
+            Ok(serde_json::json!({"schema": p.schema, "gaps": p.gaps, "steps": p.steps, "views": p.views, "database": p.database.to_toml()}).to_string())
         })
     }
 

@@ -22,6 +22,8 @@ pub struct Pulled {
     pub gaps: Vec<String>,
     /// The SQL body of each view, by the path the compiler reads it from (`views/<db schema>/<Name>.sql`), relative to the schema file.
     pub views: BTreeMap<PathBuf, String>,
+    /// What the old `datasource` block held: the `[database]` table that the pulled schema needs (`DatabaseConfig::to_toml`).
+    pub database: crate::settings::DatabaseConfig,
 }
 
 /// A database rule as introspection reads it.
@@ -1118,30 +1120,16 @@ pub fn pull_claims(db: &DbSchema, gaps: &[String], claimed: &[ClaimedRule], obje
 
     // -- output ----------------------------------------------------------------------------
     let mut out = String::from("// Pulled from a live database by `monorm pull`. Review it before the first migration.\n\n");
-    out.push_str("datasource db {\n");
-    out.push_str(&format!("  provider = {}\n", if dialect == Dialect::Sqlite { "\"sqlite\"" } else { "\"postgresql\"" }));
-    if !bypass_roles.is_empty() {
-        out.push_str(&format!("  bypass_roles = [{}]\n", bypass_roles.iter().map(|role| quoted(role)).collect::<Vec<_>>().join(", ")));
-    }
-    if !db.extensions.is_empty() {
-        let list: Vec<String> = db
-            .extensions
-            .iter()
-            .map(|e| {
-                let mut opts = vec![];
-                let ident = if is_ident(&e.name) { e.name.clone() } else {
-                    opts.push(format!("map: {}", quoted(&e.name)));
-                    identifier(&e.name)
-                };
-                if let Some(s) = &e.schema {
-                    opts.push(format!("schema: {}", quoted(s)));
-                }
-                if opts.is_empty() { ident } else { format!("{ident}({})", opts.join(", ")) }
-            })
-            .collect();
-        out.push_str(&format!("  extensions = [{}]\n", list.join(", ")));
-    }
-    out.push_str("}\n");
+    let database = crate::settings::DatabaseConfig {
+        dialect,
+        bypass_roles,
+        extensions: db.extensions.iter().map(|e| {
+            // an extension whose database name is not an identifier keeps it in `map`
+            let name = if is_ident(&e.name) { e.name.clone() } else { identifier(&e.name) };
+            crate::settings::ExtensionCall { map: (name != e.name).then(|| e.name.clone()), name, schema: e.schema.clone(), version: None }
+        }).collect(),
+        ..Default::default()
+    };
     for f in &db.functions {
         if rule_functions.contains(f.name.as_str()) && !ordinary_functions.contains(f.name.as_str()) { continue; }
         if !writable(f) {
@@ -1207,7 +1195,7 @@ pub fn pull_claims(db: &DbSchema, gaps: &[String], claimed: &[ClaimedRule], obje
     if let Ok(ir) = crate::dsl::compile_installed_with_overrides(&out, None, installed, &sidecars) {
         if let Ok((native, _)) = crate::dsl::native::convert_source(&out, &ir) { out = native; }
     }
-    Pulled { schema: out, gaps, views: sidecars }
+    Pulled { schema: out, gaps, views: sidecars, database }
 }
 
 /// Whether a function can be written as a function block.

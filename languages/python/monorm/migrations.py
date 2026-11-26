@@ -219,6 +219,8 @@ class Pulled:
     differences: list[Step]
     #: The SQL body of each view, by its path (``views/<db schema>/<Name>.sql``) next to the schema file.
     views: dict[str, str] = field(default_factory=dict)
+    #: The ``[database]`` table for the settings file. The schema has no ``datasource`` block, so a project needs this table.
+    database: str = ""
 
     def write(self, path: str | os.PathLike[str]) -> None:
         """Writes the schema file and the view bodies next to it."""
@@ -234,8 +236,8 @@ async def pull(db: Database) -> Pulled:
     """Reads the database ``db`` connects to (Postgres: its current schema) as a schema
     file, and checks the result by creating it again in a shadow schema that is rolled
     back (SQLite: an in-memory database)."""
-    schema, gaps, steps, views = await db._engine.pull_schema(resolve_extensions())
-    return Pulled(schema, gaps, [Step(*step) for step in steps], dict(views))
+    schema, gaps, steps, views, database = await db._engine.pull_schema(resolve_extensions())
+    return Pulled(schema, gaps, [Step(*step) for step in steps], dict(views), database)
 
 
 @dataclass(frozen=True)

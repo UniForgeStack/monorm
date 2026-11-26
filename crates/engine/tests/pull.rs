@@ -100,7 +100,8 @@ fn a_database_made_by_the_orm_pulls_back_without_differences() {
         let pulled = pull(&*conn).await;
         assert!(pulled.steps.is_empty(), "{:?}", pulled.steps);
         assert!(pulled.gaps.is_empty(), "{:?}", pulled.gaps);
-        assert!(pulled.schema.contains("@@check(") && pulled.schema.contains("extensions = [pg_trgm]"));
+        assert!(pulled.schema.contains("@@check(") && !pulled.schema.contains("datasource"));
+        assert!(pulled.database.to_toml().contains("extensions = [\"pg_trgm\"]"), "{}", pulled.database.to_toml());
     });
 }
 

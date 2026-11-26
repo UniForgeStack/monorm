@@ -278,7 +278,7 @@ async def test_sqlite_rebuild_under_a_view_copies_rows_with_legacy_alter_table_o
 
 
 @pytest.mark.parametrize("dialect", ["sqlite", "postgres"])
-async def test_views_pull_back_as_blocks_and_sidecars_without_drift(dialect, tmp_path):
+async def test_views_pull_back_as_blocks_and_sidecars_without_drift(dialect, tmp_path, monkeypatch):
     db = await _empty_database(dialect)
     try:
         await db.execute("CREATE TABLE sv_pull_items (id INTEGER PRIMARY KEY, value INTEGER NOT NULL);"
@@ -287,6 +287,8 @@ async def test_views_pull_back_as_blocks_and_sidecars_without_drift(dialect, tmp
             await db.execute("CREATE MATERIALIZED VIEW sv_pull_totals AS SELECT id, value FROM sv_pull_view;"
                              "CREATE UNIQUE INDEX sv_pull_totals_id ON sv_pull_totals(id)")
         pulled = await pull(db)
+        (tmp_path / "monorm.toml").write_text(pulled.database)
+        monkeypatch.chdir(tmp_path)
         assert "view SvPullView {" in pulled.schema
         assert not [gap for gap in pulled.gaps if "view" in gap]
         assert pulled.differences == []
